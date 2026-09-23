@@ -38,6 +38,54 @@ All output is JSON on stdout. Every result carries `id`, `name`, `repo`,
 entry directly at that line for the full text. Canonical-name collisions also
 carry `name_ambiguous` and `same_name_ids`; cite the ID, never the name alone.
 
+A real run (loader logs on stderr omitted; cold start is dominated by model load):
+
+```json
+$ ./fault-rag search "loss spike 但无 NaN" --topk 2
+{
+ "query": "loss spike 但无 NaN",
+ "elapsed_ms": 6752,
+ "results": [
+  {
+   "rank": 1,
+   "score": 0.031592,
+   "dense_rank": 0,
+   "bm25_rank": 7,
+   "id": "LOSS.02",
+   "name": "attention_logit_growth_without_qk_norm",
+   "repo": "training",
+   "category": "LOSS",
+   "confidence": "documented",
+   "neg": false,
+   "entry_type": "fault",
+   "name_ambiguous": false,
+   "same_name_ids": [],
+   "file": "…/fault_review/catalogs/training/FAULT_MASTER_REFERENCE.zh.md",
+   "line": 1418,
+   "links": []
+  },
+  {
+   "rank": 2,
+   "score": 0.031281,
+   "dense_rank": 2,
+   "bm25_rank": 6,
+   "id": "LOSS.03",
+   "name": "post_ln_vanishing_then_explode",
+   "repo": "training",
+   "category": "LOSS",
+   "confidence": "documented",
+   "neg": false,
+   "entry_type": "fault",
+   "name_ambiguous": false,
+   "same_name_ids": [],
+   "file": "…/fault_review/catalogs/training/FAULT_MASTER_REFERENCE.zh.md",
+   "line": 1427,
+   "links": []
+  }
+ ]
+}
+```
+
 ## Commands
 
 | Command | Purpose |
