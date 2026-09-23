@@ -66,5 +66,5 @@ slice；标签来自源条目，不得按当前 top-k 反向生成。
 ## 故障排查
 
 - `index not built yet` → 先跑 `reindex`。
-- 模型缺失 → `https_proxy=http://127.0.0.1:7890 python3 scripts/download_model.py`。
+- 模型缺失 → `python3 scripts/download_model.py`（需能访问 huggingface.co）。
 - 编目真源仓库搬家了 → 给 `scripts/sync_catalogs.sh` 设 `FAULT_RAG_SRC_INFERENCE` / `FAULT_RAG_SRC_TRAINING` 环境变量（或改脚本默认值）后重跑。

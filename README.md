@@ -21,8 +21,8 @@ Reciprocal Rank Fusion (k=60). One catalog entry = one document; no chunking.
 ## Quick start
 
 ```bash
-# one-time after clone: model + index (model download needs the lab proxy)
-https_proxy=http://127.0.0.1:7890 python3 scripts/download_model.py
+# one-time after clone: model + index
+python3 scripts/download_model.py
 ./fault-rag reindex --full     # builds data/ from the vendored catalogs/ (~10 min CPU)
                                # later runs: plain `reindex` is incremental
 
@@ -115,5 +115,4 @@ never writes into the source catalogs.
 
 - `index not built yet` → `./fault-rag reindex` (reads the vendored `catalogs/`)
 - live catalog repos moved → set `FAULT_RAG_SRC_INFERENCE` / `FAULT_RAG_SRC_TRAINING` for `scripts/sync_catalogs.sh`
-- model missing → `https_proxy=http://127.0.0.1:7890 python3 scripts/download_model.py`
-- huggingface.co unreachable → the lab proxy `127.0.0.1:7890` (mihomo) is required
+- model missing → `python3 scripts/download_model.py`
