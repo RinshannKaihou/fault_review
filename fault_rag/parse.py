@@ -1,10 +1,15 @@
-"""Parse the two fault catalogs (+ negative docs) into entries.jsonl.
+"""Parse the vendored catalog snapshots (+ negative docs) into entries.jsonl.
 
-Consumed strictly read-only:
-  - /workspace/inference_error_review/FAULT_MASTER_REFERENCE.zh.md  (1171 entries)
-  - /workspace/training_error_review/catalog/FAULT_MASTER_REFERENCE.zh.md  (217 entries)
-  - /workspace/training_error_review/catalog/rejected.md
-  - /workspace/training_error_review/catalog/blindspots.md
+Reads the snapshots under ``catalogs/`` in this repo:
+  - catalogs/inference/FAULT_MASTER_REFERENCE.zh.md  (inference master)
+  - catalogs/training/FAULT_MASTER_REFERENCE.zh.md   (training master)
+  - catalogs/training/rejected.md
+  - catalogs/training/blindspots.md
+
+The snapshots are read-only vendored copies; the live sources of truth are
+the two catalog repos (/workspace/inference_error_review,
+/workspace/training_error_review). `scripts/sync_catalogs.sh` refreshes the
+snapshots and rebuilds the index.
 
 Entry header grammar (validated against the catalogs' own stated counts):
   inference:  ### 1.1 `snake_name`        ### K1.1 `snake_name`
@@ -20,13 +25,14 @@ import json
 import os
 import re
 
-INFERENCE_ROOT = "/workspace/inference_error_review"
-TRAINING_ROOT = "/workspace/training_error_review"
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+CATALOGS = os.path.join(ROOT, "catalogs")
 
-INFERENCE_MASTER = os.path.join(INFERENCE_ROOT, "FAULT_MASTER_REFERENCE.zh.md")
-TRAINING_MASTER = os.path.join(TRAINING_ROOT, "catalog", "FAULT_MASTER_REFERENCE.zh.md")
-TRAINING_REJECTED = os.path.join(TRAINING_ROOT, "catalog", "rejected.md")
-TRAINING_BLINDSPOTS = os.path.join(TRAINING_ROOT, "catalog", "blindspots.md")
+INFERENCE_MASTER = os.path.join(CATALOGS, "inference", "FAULT_MASTER_REFERENCE.zh.md")
+TRAINING_MASTER = os.path.join(CATALOGS, "training", "FAULT_MASTER_REFERENCE.zh.md")
+TRAINING_REJECTED = os.path.join(CATALOGS, "training", "rejected.md")
+TRAINING_BLINDSPOTS = os.path.join(CATALOGS, "training", "blindspots.md")
 
 # Entry headers: `### 1.1 `name``  /  `### K1.1 `name``  /  `### HW.01 `name``
 # Tolerates trailing notes（（arxiv）/ ⚑§9）, uppercase in names, and dual-name

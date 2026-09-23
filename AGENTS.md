@@ -2,7 +2,8 @@
 
 本仓库是**故障编目检索工具**（RAG），供任意 interactive agent CLI 通过 Bash 调用。
 不是在维护编目本身——编目真源在 `/workspace/inference_error_review` 与
-`/workspace/training_error_review`，本仓库对它们**严格只读**。
+`/workspace/training_error_review`，本仓库对它们**严格只读**。检索与引用读的是
+`catalogs/` 下的 vendored 快照（`scripts/sync_catalogs.sh` 定期同步，可能滞后于真源）。
 
 ## 入口
 
@@ -19,7 +20,7 @@ stdout 一律是 JSON。出错信息在 stderr。
 | 用症状/机制描述找相似故障模式 | `search "<描述>" --topk 5` |
 | 已知编号或 snake_case 名，取完整条目 | `lookup HW.01` / `lookup sdc_multibit_warp_spray` |
 | 顺覆盖关系/交叉指针找关联条目 | `related HW.05 --depth 1` |
-| 编目有更新（每日扫描合并后） | `reindex`（只重嵌变更条目） |
+| 编目有更新（每日扫描合并后） | `scripts/sync_catalogs.sh`（拷快照 + reindex + 门禁），再 commit `catalogs/` |
 
 ## search 要点
 
@@ -38,7 +39,7 @@ stdout 一律是 JSON。出错信息在 stderr。
 ## 回答用户时的引用纪律
 
 - 引用条目必须带 **编号 + snake_case 名 + file:line**，例如
-  `HW.05 training_sdc_checkpoint_inherit`（training FAULT_MASTER_REFERENCE.zh.md:139）。
+  `HW.05 training_sdc_checkpoint_inherit`（catalogs/training/FAULT_MASTER_REFERENCE.zh.md:140）。
 - 置信度照实标注（`verified` / `documented` / `speculative`），不要把
   `documented` 说成已复现。
 - 跨仓库关联用 `related` 查，不要凭记忆猜指针。
@@ -48,7 +49,7 @@ stdout 一律是 JSON。出错信息在 stderr。
 
 ## 本仓库不做什么
 
-- 不写进两个编目仓库（连 `data/` 也不放那边）。
+- 不写进两个编目仓库（连 `data/` 也不放那边）；`catalogs/` 只是它们的只读快照，不在此手工编辑。
 - 不缓存查询结果当知识——条目以 reindex 后的 `data/entries.jsonl` 为准。
 - 不把 `speculative` 条目当检测结论；检索到负结果要如实转告。
 
@@ -66,4 +67,4 @@ slice；标签来自源条目，不得按当前 top-k 反向生成。
 
 - `index not built yet` → 先跑 `reindex`。
 - 模型缺失 → `https_proxy=http://127.0.0.1:7890 python3 scripts/download_model.py`。
-- 两个编目仓库的 master 文件路径变了 → 改 `fault_rag/parse.py` 顶部常量并重跑 `reindex --full`。
+- 编目真源仓库搬家了 → 给 `scripts/sync_catalogs.sh` 设 `FAULT_RAG_SRC_INFERENCE` / `FAULT_RAG_SRC_TRAINING` 环境变量（或改脚本默认值）后重跑。

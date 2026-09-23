@@ -66,11 +66,12 @@ class IndexedPointerIntegrationTests(unittest.TestCase):
         self.assertIn("10.4", {r["id"] for r in included})
 
     def test_stats_separates_fault_pointer_and_negative(self):
+        # Floor checks: vendored catalogs grow on every sync; the structural
+        # invariant is that the three entry types stay separated.
         counts = S.stats()["by_entry_type"]
-        self.assertEqual(
-            counts,
-            {"fault": 1387, "negative": 14, "pointer": 1},
-        )
+        self.assertGreaterEqual(counts["fault"], 1404)
+        self.assertGreaterEqual(counts["negative"], 14)
+        self.assertEqual(counts["pointer"], 1)
 
 
 class DuplicateNameIntegrationTests(unittest.TestCase):

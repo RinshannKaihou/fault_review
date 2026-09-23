@@ -3,11 +3,16 @@
 Retrieval over the lab's two living fault catalogs, built for **agent consumption**
 (interactive CLI agents such as Kimi Code / Claude Code call it via Bash).
 
-| Source (read-only) | Entries |
+| Vendored snapshot (read-only) | Entries |
 |---|---|
-| `/workspace/inference_error_review/FAULT_MASTER_REFERENCE.zh.md` | 1171 catalog entries + appendix C/D negative chunks |
-| `/workspace/training_error_review/catalog/FAULT_MASTER_REFERENCE.zh.md` | 217 catalog entries |
-| `/workspace/training_error_review/catalog/rejected.md`, `blindspots.md` | negative-doc chunks |
+| `catalogs/inference/FAULT_MASTER_REFERENCE.zh.md` | 1184 catalog entries + appendix C/D negative chunks |
+| `catalogs/training/FAULT_MASTER_REFERENCE.zh.md` | 221 catalog entries |
+| `catalogs/training/rejected.md`, `blindspots.md` | negative-doc chunks |
+
+Snapshots are refreshed from the live catalog repos
+(`/workspace/inference_error_review`, `/workspace/training_error_review`) by
+`scripts/sync_catalogs.sh` and may lag behind them between syncs. The live
+repos are never written from here.
 
 **Retrieval**: hybrid — Okapi BM25 (jieba CJK + code tokens, inline implementation)
 + dense `BAAI/bge-m3` embeddings (CPU, via `transformers.AutoModel`), fused with
@@ -16,9 +21,10 @@ Reciprocal Rank Fusion (k=60). One catalog entry = one document; no chunking.
 ## Quick start
 
 ```bash
-# one-time: model + index (model download needs the lab proxy)
+# one-time after clone: model + index (model download needs the lab proxy)
 https_proxy=http://127.0.0.1:7890 python3 scripts/download_model.py
-./fault-rag reindex            # incremental; --full to rebuild from scratch
+./fault-rag reindex --full     # builds data/ from the vendored catalogs/ (~10 min CPU)
+                               # later runs: plain `reindex` is incremental
 
 ./fault-rag search "loss spike 但无 NaN" --topk 5
 ./fault-rag search "GRPO advantage std zero" --repo training --category RL-ADV
@@ -72,9 +78,10 @@ carry `name_ambiguous` and `same_name_ids`; cite the ID, never the name alone.
 ```
 fault-rag            CLI entry point (bash wrapper, works from any cwd)
 fault_rag/           parse.py · embed.py · index.py · search.py · cli.py
-data/                entries.jsonl · embeddings.npy · bm25.pkl · meta.json (derived)
+catalogs/            vendored catalog snapshots (tracked; synced from the live repos)
+data/                entries.jsonl · embeddings.npy · bm25.pkl · meta.json (derived, gitignored)
 models/bge-m3/       embedding model (2.3 GB, gitignored)
-scripts/download_model.py
+scripts/download_model.py · sync_catalogs.sh
 tests/smoke.sh       CLI check + query battery (tests/smoke.py)
 eval/                36 source-labelled queries + Recall/MRR/nDCG gate
 ```
@@ -91,12 +98,22 @@ current ranking. See `eval/README.md` for schema and thresholds.
 
 ## Updating
 
-The catalogs are maintained by other agents (daily scans merge into the masters).
-Run `./fault-rag reindex` to pick up changes — only new/changed entries are
-re-embedded. This repo never writes into the source catalogs.
+The catalogs are maintained by other agents in two live repos (daily scans
+merge into the masters); `catalogs/` here is a vendored snapshot. On a machine
+that can read the live repos:
+
+```bash
+./scripts/sync_catalogs.sh   # copy snapshots -> reindex -> eval quality gate
+git add catalogs/ && git commit -m "sync catalogs $(date +%F)" && git push
+```
+
+Only new/changed entries are re-embedded. Override the live locations with
+`FAULT_RAG_SRC_INFERENCE` / `FAULT_RAG_SRC_TRAINING` if they move. This repo
+never writes into the source catalogs.
 
 ## Troubleshooting
 
-- `index not built yet` → `./fault-rag reindex`
+- `index not built yet` → `./fault-rag reindex` (reads the vendored `catalogs/`)
+- live catalog repos moved → set `FAULT_RAG_SRC_INFERENCE` / `FAULT_RAG_SRC_TRAINING` for `scripts/sync_catalogs.sh`
 - model missing → `https_proxy=http://127.0.0.1:7890 python3 scripts/download_model.py`
 - huggingface.co unreachable → the lab proxy `127.0.0.1:7890` (mihomo) is required

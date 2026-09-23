@@ -31,17 +31,21 @@ def cats(res):
 
 
 # 1. index counts -----------------------------------------------------------
+# Catalogs are vendored snapshots (catalogs/) that grow on every sync; floor
+# checks catch parse regressions (lost entries) without breaking on growth.
 st = S.stats()
-check("inference catalog == 1171", st["by_category"] and
+check("inference catalog >= 1184", st["by_category"] and
       sum(v for k, v in st["by_category"].items()
-          if k.startswith("inference:") and "neg" not in k) == 1171)
-check("training catalog == 217",
+          if k.startswith("inference:") and "neg" not in k) >= 1184)
+check("training catalog >= 221",
       sum(v for k, v in st["by_category"].items()
-          if k.startswith("training:") and "neg" not in k) == 217)
+          if k.startswith("training:") and "neg" not in k) >= 221)
 n_neg = sum(v for k, v in st["by_category"].items() if ":neg_" in k)
-check("negative-doc chunks == 14", n_neg == 14, f"got {n_neg}")
-check("entry types == 1387 fault / 1 pointer / 14 negative",
-      st["by_entry_type"] == {"fault": 1387, "negative": 14, "pointer": 1},
+check("negative-doc chunks >= 14", n_neg >= 14, f"got {n_neg}")
+check("entry types: fault >= 1404, negative >= 14, pointer == 1",
+      st["by_entry_type"]["fault"] >= 1404
+      and st["by_entry_type"]["negative"] >= 14
+      and st["by_entry_type"]["pointer"] == 1,
       str(st["by_entry_type"]))
 
 idx = S.get_index()
