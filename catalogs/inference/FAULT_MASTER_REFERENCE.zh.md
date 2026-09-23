@@ -35,7 +35,9 @@
 
 ## 滚动汇总（共 1184 条，逐条解析自本文档正文，非人工计数）
 
-> 2026-09-22 更新：合并每日扫描 2026-09-22 的发现（8 个新子签名 + 5 个已知类别变体 = **13 条新增**，1171 → 1184；扫描窗口 created:>=2026-09-20，与 09-21 扫描重叠两日已逐条去重）。分布：第 1 类 +4（1.241 host BFP4/BFP2 packer 直接舍入 vs 设备 BFP8-再截断 42.5% 分歧 NEW、1.242 unary SFPU SFPSTORE 截断窄化 square≠mul NEW、1.243 slice 非最内维截断+非对齐 begin 漏跳行 NEW、1.244 近似 tanh SFPLUT reland e2e BERTScore 跌破门禁 NEW）、第 5 类 +3（5.42 MiniMax-M3 ascend_fuseep 漏检双重 all-reduce var:5.26、5.43 PD retract rebootstrap 不钉绑定 rank 双侧 300s 超时 NEW、5.44 GB300 autotune sm_100a-only cubin 无超时 boot wedge var:5.40）、第 6 类 +1（6.252 partial block KV 事件 parent hash 从未上报链不可重建 var:6.220）、第 7 类 +1（7.96 SM90 W4A16 MXFP4 fused MoE TMA 描述符更新竞态错专家 scale NEW）、第 10 类 +3（10.82 普通 token 拼分隔符绕过 Qwen parser 流式丢 tool call NEW、10.83 cross-encoder max_length padding token_type_ids 双缺陷 NEW、10.84 Hunyuan A13B 流式泄漏闭合标记 var:10.79）、第 11 类 +1（11.85 MTP draft 不继承 dict hf-overrides dummy-0 接受率坍塌 var:11.63）。1.241 与 1.242 构成"同一数学函数双入口数值分歧"对（host/device 舍入路径 × unary/binary 舍入模式）；1.244 与 1.233/1.234 构成验证面盲点三方向（幅度失明/恒绿/容差内通过但语义退化）；10.82 首次把 parser 分歧根因定到 token-ID 表示层（EBNF 字符串域 ≠ parser 专属 ID 域）；11.85 为 11.63 MTP 坍塌族补上确定性配置断链成因；7.96 是量化 MoE 内核首条 TMA 描述符竞态签名。不收录：vLLM #58203（多模态×MTP profile_run fail-loud crash）、#58035（DiffusionGemma 静默 clamp 子机制但结果面 fail-loud——shape mismatch 杀引擎留观）、#58214（arm64 CPU Triton fallback 死补丁——静态分析预期 fail-loud、待运行时确认留观）、#58135（/score Unicode 截断超预算——单端点资源域留观）、#58191（watermark opt-out 安全面）、#58155（API 兼容）、#58145（主循环 regex 性能）、#58144（api-key 绕过安全面）、#58087（KVCR 工厂 TypeError fail-loud）、#58063（NixlConnector 资源滞留治理）、#58178（UVA offload Feature/Design）、#58134（CI）、SGLang #40623（megamoe×EAGLE IMA fail-loud 未支持组合留观）、tt-metal #57394/#57370/#57403（fabric bring-up/CI flake/feature）、#57360–#57367（8 份静态审计 meta-issue ~86 项缺陷——无逐项运行时证据整批留观、待单项复现后逐条编目）、flashinfer #5393（CI 数值分歧无根因留观）。arxiv 当日 5 组查询全部成功（1 组 0 命中、无 429）：全部命中已编目或已判方法论文（SProbe/TrainSDC/SCOUT/LLM-PRISM/BitSifter/2609.17983/2608.07408/2608.05863/2606.28958/2604.00726/2604.10390 已编目；Nexus/ReaLM 方法论文不收录）。GitHub Search API 当日 10 组查询全部有效、无限流 403、无 Validation Failed；core REST 详情调用 17 次全部成功（`--http1.1`）。
+> 2026-09-22 更新：合并每日扫描 2026-09-22 的发现（8 个新子签名 + 5 个已知类别变体 = **13 条新增**，1171 → 1184；扫描窗口 created:>=2026-09-20，与 09-21 扫描重叠两日已逐条去重）。分布：第 1 类 +4（1.241 host BFP4/BFP2 packer 直接舍入 vs 设备 BFP8-再截断 42.5% 分歧 NEW、1.242 unary SFPU SFPSTORE 截断窄化 square≠mul NEW、1.243 slice 非最内维截断+非对齐 begin 漏跳行 NEW、1.244 近似 tanh SFPLUT reland e2e BERTScore 跌破门禁 NEW）、第 5 类 +3（5.42 MiniMax-M3 ascend_fuseep 漏检双重 all-reduce var:5.26、5.43 PD retract rebootstrap 不钉绑定 rank 双侧 300s 超时 NEW、5.44 GB300/SM103 autotune 40+ 分钟无进度、根因未定（原 cubin 归因 09-23 撤回；仅启动活性症状相关 5.40））、第 6 类 +1（6.252 partial block KV 事件 parent hash 从未上报链不可重建 var:6.220）、第 7 类 +1（7.96 SM90 W4A16 MXFP4 fused MoE TMA 描述符更新竞态错专家 scale NEW）、第 10 类 +3（10.82 普通 token 拼分隔符绕过 Qwen parser 流式丢 tool call NEW、10.83 cross-encoder max_length padding token_type_ids 双缺陷 NEW、10.84 Hunyuan A13B 流式泄漏闭合标记 var:10.79）、第 11 类 +1（11.85 MTP draft 不继承 dict hf-overrides dummy-0 接受率坍塌 var:11.63）。1.241 与 1.242 构成"同一数学函数双入口数值分歧"对（host/device 舍入路径 × unary/binary 舍入模式）；1.244 与 1.233/1.234 构成验证面盲点三方向（幅度失明/恒绿/容差内通过但语义退化）；10.82 首次把 parser 分歧根因定到 token-ID 表示层（EBNF 字符串域 ≠ parser 专属 ID 域）；11.85 为 11.63 MTP 坍塌族补上确定性配置断链成因；7.96 是量化 MoE 内核首条 TMA 描述符竞态签名。不收录：vLLM #58203（多模态×MTP profile_run fail-loud crash）、#58035（DiffusionGemma 静默 clamp 子机制但结果面 fail-loud——shape mismatch 杀引擎留观）、#58214（arm64 CPU Triton fallback 死补丁——静态分析预期 fail-loud、待运行时确认留观）、#58135（/score Unicode 截断超预算——单端点资源域留观）、#58191（watermark opt-out 安全面）、#58155（API 兼容）、#58145（主循环 regex 性能）、#58144（api-key 绕过安全面）、#58087（KVCR 工厂 TypeError fail-loud）、#58063（NixlConnector 资源滞留治理）、#58178（UVA offload Feature/Design）、#58134（CI）、SGLang #40623（megamoe×EAGLE IMA fail-loud 未支持组合留观）、tt-metal #57394/#57370/#57403（fabric bring-up/CI flake/feature）、#57360–#57367（8 份静态审计 meta-issue ~86 项缺陷——无逐项运行时证据整批留观、待单项复现后逐条编目）、flashinfer #5393（CI 数值分歧无根因留观）。arxiv 当日 5 组查询全部成功（1 组 0 命中、无 429）：全部命中已编目或已判方法论文（SProbe/TrainSDC/SCOUT/LLM-PRISM/BitSifter/2609.17983/2608.07408/2608.05863/2606.28958/2604.00726/2604.10390 已编目；Nexus/ReaLM 方法论文不收录）。GitHub Search API 当日 10 组查询全部有效、无限流 403、无 Validation Failed；core REST 详情调用 17 次全部成功（`--http1.1`）。
+
+> 2026-09-23 勘误（不改写 09-22 历史扫描记录）：5.44 / vLLM #58031 的「`trtllm_gemm.so` 无 SM103 可执行 cubin 导致永久 wedge」根因已由报告者撤回；本 op 属含 sm_103a cubin 的 fused MoE 模块。40+ 分钟无中间日志和空 cache 不能证明永久挂死，5.44 改按启动调优长期无进度症状编目，置信度 `verified` → `documented`；详见条目与当日报告事后注释。
 
 > 2026-09-21 更新：合并每日扫描 2026-09-21 的发现（7 个新子签名 + 6 个已知类别变体 = **13 条新增**，1158 → 1171；扫描窗口 created:>=2026-09-19，与 09-20 扫描重叠两日已逐条去重）。分布：第 1 类 +4（1.237 ProgramSpec 缓存别名预热绑定冻结首匹配错绑 NEW、1.238 nonzero bank-major 页索引双重映射 NEW、1.239 grid_sample golden 忽略 use_precomputed_grid var:1.233、1.240 topk column split 残留 Tensix 状态毒化下一 indexer_score var:1.129）、第 5 类 +1（5.41 async EPLB 重排计数器跑负静默停摆 var:5.32）、第 6 类 +2（6.250 引擎解析 prefix match unit 不达 worker mamba checkpoint 静默丢弃 NEW、6.251 LMCache KV load 失败 xfer-finished 断言杀 EngineCore var:6.139）、第 9 类 +1（9.28 HunYuan dynamic RoPE host-side bool 同步破坏 CUDA graph capture NEW）、第 10 类 +4（10.78 Whisper verbose_json 切点后残段词静默丢失 NEW、10.79 FunctionGemma 连字符工具名流式/非流式分裂 NEW、10.80 batch logprobs/token_ids 泄漏隐藏推理链 var:10.65、10.81 derender 丢 prompt_logprobs var:11.51）、第 11 类 +1（11.84 allowed_token_ids×bad_words 交集空静默破防 NEW）。1.237 与 6.211 构成跨层"缓存键退化"对（设备程序缓存按地址绑定 vs 服务栈请求缓存 uuid 逐字键）；1.239 使 golden `**_` 吞噬族成三形态（数值参数/工厂签名/语义模式 flag）；11.84 与 10.47/10.73 构成约束栈三方向失效谱系（放飞/拒收/不施加）；1.240 是 1.129 架构状态位跨算子泄漏假设在功能输出面的首份复现级证据（eltwise 可清、L1 清零不可清）。不收录：vLLM #57999/#57998/#57997（API 语义/错误信封/元数据质量）、#57996（echo 元数据字段留观）、#57974（有界内存滞留资源治理）、#57971（性能）、#57944（已修）、#57941（fail-loud IMA 留观）、#57936（容量建议工具）、#57932（fail-loud 后端拒绝）、#57927（pooler 归一化单例留观）、#57878（fail-loud 启动 crash）、#57853（fail-loud 生命周期留观）、#57847（bench 工具性能）、#57839（水印工具域）、#57894（容量阈值陈旧）、#57981（性能）、#57956（CI 治理）、SGLang #40564（fail-loud null 包装留观）、#40504（性能）、tt-metal #57212（comparison mode 覆盖缺口已 xfail 固化、作验证面语境）、#57211（1.221 语境补充——设计歧义报告）、#57230/#57236/#57155（profiler/工具/CI）、#57178（性能）、flashinfer #5389（fail-closed 拒绝型留观）、TRT-LLM #19501（RFC）。arxiv 当日 5 组查询全部成功（1 组 0 命中、无 429）：全部命中已编目或已判方法论文（SProbe/TrainSDC/SCOUT/LLM-PRISM/BitSifter/2609.17983/2608.07408/2608.05863/2606.28958 已编目；ReaLM 为 2025 ABFT 方法论文不收录）。GitHub Search API 当日 10 组查询全部有效、无限流 403、无 Validation Failed；core REST 详情调用 32 次全部成功（`--http1.1`）。
 
@@ -123,14 +125,13 @@
 
 || 轴 | 分布 |
 ||---|---|
-|| **族（Family）** | `infra_off` **1004** · `model_on` **71** · `ambiguous` **92** · `n/a` **2**（K 层资源/结构性条目） · 历史条目家族标签特例（`hw_specific`，1.58）**1** · 源文档未给出（10.4）**1** |
-|| **触发（vLLM/CUDA）** | `config` **242+6⚠** · `other_stack` **226+25⚠** · `partial` **242** · `hw_specific` **292** · `yes` **121** · `no` **23** · `n/a` **23+1⚠** · 非标标签 **2**（5.25 `ncclCommWindowRegister`、6.162 `shutdown()`） |
-|| **置信度** | `documented` **679** · `verified` **485** · `speculative` **6** · 源文档未给出（10.4）**1** |
-|| **覆盖（Cov）** | `NEW` **866** · `var:x` **302** · `rationale` / `baseline` / `existing` **3** |
+|| **族（Family）** | `infra_off` **1017** · `model_on` **71** · `ambiguous` **92** · `n/a` **2**（K 层资源/结构性条目） · 历史条目家族标签特例（`hw_specific`，1.58）**1** · 源文档未给出（10.4）**1** |
+|| **触发（vLLM/CUDA）** | `config` **243+6⚠** · `other_stack` **202+25⚠** · `partial` **242** · `hw_specific` **297** · `yes` **121** · `no` **23** · `n/a` **22+1⚠** · 非标标签 **2**（5.25 `ncclCommWindowRegister`、6.162 `shutdown()`） |
+|| **置信度** | `documented` **682** · `verified` **495** · `speculative` **6** · 源文档未给出（10.4）**1** |
+|| **覆盖（Cov）** | `NEW` **874** · `var:x` **307** · `rationale` / `baseline` / `existing` **3** |
 
-> **可直接动手的是 `config` + `yes` = 363 条（31.0%），再加 `partial` 共 605 条（51.7%）**；
-> 真正搁置的只有 `no` + `hw_specific` = 315 条（26.9%）。`other_stack`（226+25⚠ 条）指故障主路径在
-> SGLang / TRT-LLM / llama.cpp / TGI，机制通常可迁移到 vLLM，但原文复现需换栈。
+> **可直接动手的是未标 ⚠ 的 `config` + `yes` = 364 条（30.7%），再加 `partial` 共 606 条（51.2%）**；
+> `no` + `hw_specific` = 320 条（27.0%），其中 `hw_specific` 仅表示需特定硬件，不等同于不可复现。`other_stack`（202+25⚠ 条）指原报告主路径或依赖栈非本项目默认路径，需按条目触发面复核。
 >
 > **32 条带 `⚠` 标记的条目为待复核**（25 条 `other_stack`、6 条 `config`、1 条 `n/a`）——触发标签继承自旧环境评估，机制通常可迁移但需逐条核对**触发面**与**复现方式**字段。
 >
@@ -3819,15 +3820,15 @@
 - **触发面**：SGLang P/D 分离 + 多 prefill DP + retraction 重算 + 客户端未 pin disagg_prefill_dp_rank（config）
 - **发现来源**：2026-09-22 每日扫描。
 
-### 5.44 `vllm_flashinfer_autotune_sm103_sm100a_only_cubin_no_ptx_no_timeout_boot_wedge`
+### 5.44 `vllm_flashinfer_autotune_sm103_prolonged_no_progress_boot`
 
-`infra_off`（vLLM + FlashInfer 0.6.18.post1 在 GB300（SM103）上 `trtllm_fp4_block_scale_moe` autotune **无限 wedge**：`trtllm_gemm` 预构建 cubin 仅 sm_100a、无 PTX，候选内核在不支持的架构上永不终止，而 autotuner 对单候选**无超时**——boot 到 autotune 步后 40+ 分钟 100% GPU、零日志推进、autotune cache 目录创建但 `autotune_configs.json` 从未写入；无 error/traceback/timeout，启动永不完成） · Cov: `var:vllm_flashinfer_autotune_config_cache_rank0_only_dump_multi_rank_launch_deadlock`（5.40 FlashInfer autotune 栈活性失效族） · 触发 `other_stack` · 置信度 `verified`
+`infra_off`（vLLM + FlashInfer 0.6.18.post1 在 GB300（SM103）上 `trtllm_fp4_block_scale_moe` autotune：报告者观察到启动停在 autotune **40+ 分钟**，GPU 利用率 100%、期间无进度日志、cache 目录已创建但 `autotune_configs.json` 未写入；未见 error/traceback；跳过该 op 的 autotune 后同配置约 8 分钟进入服务。**未证明永久挂死**） · Cov: `var:vllm_flashinfer_autotune_config_cache_rank0_only_dump_multi_rank_launch_deadlock`（仅按 autotune 启动活性症状关联 5.40；5.40 有独立已知根因，本条根因未定） · 触发 `hw_specific` · 置信度 `documented`
 
-- **机制**：架构覆盖缺口（sm_100a-only cubin 无 PTX 回退）× 治理缺口（autotuner 无 per-candidate 超时）复合：不可用候选内核表现为"永不返回"而非错误，autotuner 无法区分慢与挂。5.40（autotune 缓存仅 rank0 dump 致多 rank 死锁）之后 FlashInfer autotune 活性族新成员：本条在**单 rank 架构不可用候选**维度。
-- **来源**：vLLM #58031（2026-09-21 open，vLLM 0.29.1rc1 nightly + FlashInfer 0.6.18.post1 + DGX Station GB300 + DeepSeek-V4.1-Flash MXFP4，含 wedge 日志时间线、空 cache 目录取证、环境变量绕过说明）。https://github.com/vllm-project/vllm/issues/58031
-- **行为效应**：无 crash——**启动静默挂起**（服务永不就绪、无诊断信号）；同样模式（不可用 cubin + 无超时 autotune）适用于任何 SM 变体上 JIT 覆盖不足的 op；运维侧只见健康检查超时。
-- **触发面**：vLLM + GB300/SM103 + FlashInfer trtllm_fp4_block_scale_moe autotune 未跳过（other_stack：FlashInfer cubin 架构覆盖）
-- **发现来源**：2026-09-22 每日扫描。
+- **机制**：**根因未定**。2026-09-23 报告者撤回「`trtllm_gemm.so` 仅有 sm_100a cubin 且无 PTX → SM103 候选永不终止」归因：该库是 dense GEMM 模块，`fp4_block_scale_moe` 符号实际位于含 sm_103a cubin 的 `fused_moe_trtllm_sm100.so`；前者的架构观察虽真实，但与本 op 无关。autotuner 开始/结束之间缺逐 bucket 进度日志，cache 只在完成时写出；40+ 分钟和空目录不能区分极慢调优与真正卡死。报告者认为极慢爬行更可能，但仍待进程栈/完成时间验证；不得把无 per-candidate 超时或不兼容 cubin 断言为已证根因。
+- **来源**：vLLM #58031（2026-09-21 报告，2026-09-23 EDIT 撤回原归因；报告者在评论中确认模块符号和 sm_103a cubin）。https://github.com/vllm-project/vllm/issues/58031 ；更正评论 https://github.com/vllm-project/vllm/issues/58031#issuecomment-5788562400
+- **行为效应**：观察窗口内启动未就绪、无中途进度日志和完成态 cache 文件；**不等于永久挂死**，亦无证据证明候选内核无法在 SM103 执行。跳过调优可绕过该次启动延迟，但不构成故障根因验证。
+- **触发面**：vLLM + GB300/SM103 + FlashInfer `trtllm_fp4_block_scale_moe` autotune 未跳过（hw_specific；SM103 上的报告，其他架构不可泛化）
+- **发现来源**：2026-09-22 每日扫描；2026-09-23 依据原 issue EDIT/评论更正（保留历史发现）。
 
 ## 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
 
