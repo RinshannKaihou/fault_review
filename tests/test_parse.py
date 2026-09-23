@@ -112,5 +112,122 @@ class EmbeddingHashTests(unittest.TestCase):
         self.assertEqual(parse.embedding_hash(text), parse.embedding_hash(text))
 
 
+class TrainingBoundaryTests(unittest.TestCase):
+    def test_fenced_rules_and_headings_stay_in_multiline_field(self):
+        for fence in ("```", "~~~"):
+            with self.subTest(fence=fence):
+                content = f"""# DATA · 数据管线
+## DATA
+### DATA.01 `data_example`
+stage: `pretrain` · Cov: `NEW` · 置信度 `documented`
+- **机制**：起因。
+{fence}markdown
+---
+# example heading
+{fence}
+- **发现来源**：每日扫描
+### DATA.02 `next_example`
+stage: `pretrain` · Cov: `NEW` · 置信度 `documented`
+- **机制**：下一条。
+"""
+                with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+                    f.write(content)
+                    path = f.name
+                try:
+                    entries = parse.parse_master(path, "training")
+                finally:
+                    os.unlink(path)
+                self.assertEqual([e["id"] for e in entries], ["DATA.01", "DATA.02"])
+                self.assertEqual(entries[0]["fields"]["mechanism"], f"起因。\n{fence}markdown\n---\n# example heading\n{fence}")
+                self.assertEqual(entries[0]["fields"]["discovery"], "每日扫描")
+                self.assertIn(f"{fence}markdown\n---\n# example heading\n{fence}", entries[0]["raw"])
+                self.assertEqual(entries[0]["line_end"], 10)
+
+    def test_horizontal_rules_inside_entry_keep_continuation_and_next_field(self):
+        content = """# DATA · 数据管线
+## DATA
+### DATA.01 `data_example`
+stage: `pretrain` · Cov: `NEW` · 置信度 `documented`
+- **机制**：起因。
+---
+后续正文。
+  ---
+# 正文中的标题
+- **发现来源**：每日扫描
+### DATA.02 `next_example`
+stage: `pretrain` · Cov: `NEW` · 置信度 `documented`
+- **机制**：下一条。
+"""
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+            f.write(content)
+            path = f.name
+        try:
+            entries = parse.parse_master(path, "training")
+        finally:
+            os.unlink(path)
+        self.assertEqual([e["id"] for e in entries], ["DATA.01", "DATA.02"])
+        self.assertEqual(entries[0]["fields"]["mechanism"], "起因。\n---\n后续正文。\n  ---\n# 正文中的标题")
+        self.assertEqual(entries[0]["fields"]["discovery"], "每日扫描")
+        self.assertIn("---\n后续正文。\n  ---\n# 正文中的标题", entries[0]["raw"])
+        self.assertEqual(entries[0]["line_end"], 10)
+
+    def test_unmatched_heading_after_rule_stays_in_entry(self):
+        content = """# DATA · 数据管线
+## DATA
+### DATA.01 `data_example`
+stage: `pretrain` · Cov: `NEW` · 置信度 `documented`
+- **机制**：起因。
+---
+
+# 使用注意
+继续说明。
+- **发现来源**：每日扫描
+### DATA.02 `next_example`
+stage: `pretrain` · Cov: `NEW` · 置信度 `documented`
+- **机制**：下一条。
+"""
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+            f.write(content)
+            path = f.name
+        try:
+            entries = parse.parse_master(path, "training")
+        finally:
+            os.unlink(path)
+        self.assertEqual([e["id"] for e in entries], ["DATA.01", "DATA.02"])
+        self.assertEqual(entries[0]["fields"]["mechanism"], "起因。\n---\n# 使用注意\n继续说明。")
+        self.assertEqual(entries[0]["fields"]["discovery"], "每日扫描")
+        self.assertIn("---\n\n# 使用注意\n继续说明。", entries[0]["raw"])
+        self.assertEqual(entries[0]["line_end"], 10)
+
+    def test_entry_stops_before_next_chapter_separator(self):
+        content = """# CKPT · 检查点
+## CKPT
+### CKPT.28 `checkpoint_example`
+stage: `pretrain/sft` · Cov: `NEW` · 置信度 `documented`
+- **机制**：上一章故障。
+- **发现来源**：2026-09-23 每日扫描
+
+---
+
+# DATA · 数据管线
+## DATA
+### DATA.01 `data_example`
+stage: `pretrain` · Cov: `NEW` · 置信度 `documented`
+- **机制**：下一章故障。
+- **发现来源**：2026-09-24 每日扫描
+"""
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+            f.write(content)
+            path = f.name
+        try:
+            entries = parse.parse_master(path, "training")
+        finally:
+            os.unlink(path)
+        self.assertEqual([e["id"] for e in entries], ["CKPT.28", "DATA.01"])
+        self.assertEqual(entries[0]["fields"]["discovery"], "2026-09-23 每日扫描")
+        self.assertNotIn("# DATA", entries[0]["raw"])
+        self.assertEqual(entries[1]["category"], "DATA")
+
+
 if __name__ == "__main__":
     unittest.main()

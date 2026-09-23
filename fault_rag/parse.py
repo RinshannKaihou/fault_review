@@ -138,6 +138,7 @@ def parse_master(path, repo):
     section_line = 0
     cur = None          # current entry dict being accumulated
     cur_field = None    # current normalized field name for continuation lines
+    fence = None
 
     def flush():
         nonlocal cur, cur_field
@@ -149,7 +150,43 @@ def parse_master(path, repo):
             cur = None
             cur_field = None
 
+    def chapter_boundary(i):
+        # i is the index immediately after '---'; only a confirmed chapter flushes.
+        if i >= len(lines) or lines[i].strip():
+            return False
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        heading = re.fullmatch(r"# ([A-Z][A-Z0-9-]*)(?: · .+)?\s*", lines[j]) if j < len(lines) else None
+        if not heading:
+            return False
+        chapter = heading.group(1)
+        j += 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j == len(lines) or lines[j].strip() != f"## {chapter}":
+            return False
+        j += 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        entry = ENTRY_RE.match(lines[j]) if j < len(lines) else None
+        return bool(entry and entry.group(1).startswith(f"{chapter}."))
+
     for i, line in enumerate(lines, start=1):
+        fence_match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence_match:
+            marker, rest = fence_match.groups()
+            if fence is None:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip():
+                fence = None
+        if (
+            repo == "training" and cur is not None and fence is None
+            and line.startswith("---") and line.strip() == "---"
+            and chapter_boundary(i)
+        ):
+            flush()
+            continue
         sec = SECTION_RE.match(line)
         ent = ENTRY_RE.match(line)
 
