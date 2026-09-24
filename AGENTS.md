@@ -3,7 +3,7 @@
 本仓库是**故障编目检索工具**（RAG），供任意 interactive agent CLI 通过 Bash 调用。
 不是在维护编目本身——编目真源在 `/workspace/inference_error_review` 与
 `/workspace/training_error_review`，本仓库对它们**严格只读**。检索与引用读的是
-`catalogs/` 下的 vendored 快照（`scripts/sync_catalogs.sh` 定期同步，可能滞后于真源）。
+`catalogs/` 下的 vendored 快照（经人工审查后通常每周手动同步，可能滞后于真源；每日扫描不自动同步 RAG）。
 
 ## 入口
 
@@ -20,7 +20,7 @@ stdout 一律是 JSON。出错信息在 stderr。
 | 用症状/机制描述找相似故障模式 | `search "<描述>" --topk 5` |
 | 已知编号或 snake_case 名，取完整条目 | `lookup HW.01` / `lookup sdc_multibit_warp_spray` |
 | 顺覆盖关系/交叉指针找关联条目 | `related HW.05 --depth 1` |
-| 编目有更新（每日扫描合并后） | `scripts/sync_catalogs.sh`（拷快照 + reindex + 门禁），再 commit `catalogs/` |
+| 人工确认发布已审查的编目更新 | 先在隔离副本运行 `scripts/sync_catalogs.sh` 与定向校验；无读者窗口在正式库重跑、核验后才提交 `catalogs/`。脚本非原子，失败不得发布 |
 
 ## search 要点
 
@@ -31,6 +31,7 @@ stdout 一律是 JSON。出错信息在 stderr。
   `--full`（返回条目全部字段）。
 - pointer 默认不参与 search；精确 `lookup` 仍可读取并沿 links 找到真实条目。
 - BM25 完全零命中时返回空结果，不要把空结果解释成“目录前几条最相关”。
+- 精确查不到的合法 ID 不会模糊命中别的 ID；已退役的 `1.70 → 1.44`、`11.30 → 11.24` 需按编目勘误手动查保留 ID，当前没有自动跳转。
 - 每条结果带 `file` 和 `line`：需要完整上下文时直接用 Read 打开源文件该行，
   不要只凭 snippet 下结论。
 - 结果里 `neg: true` 的是**负结果**（rejected/blindspots/附录C/D）——
@@ -43,6 +44,7 @@ stdout 一律是 JSON。出错信息在 stderr。
 - 置信度照实标注（`verified` / `documented` / `speculative`），不要把
   `documented` 说成已复现。
 - 跨仓库关联用 `related` 查，不要凭记忆猜指针。
+- `related` 只表示存在编目关联，`link_kind: var` 是来源作者更强的变体断言，不能据此声称机制已核实相同；`6.254` 的该关系仍待复核。
 - `entry_type: pointer` 不是独立故障，不得作为故障证据引用。
 - `name_ambiguous: true` 时必须使用 repo + ID + name + file:line；不能只写
   snake name。当前同名的 `6.28` / `6.33` 是两条不同来源记录。
@@ -62,6 +64,7 @@ python3 eval/run_eval.py --cases eval/cases.jsonl --check eval/baseline.json
 
 该命令检查 36 条人工核验 query 的 Recall@5、MRR@10、nDCG@10 及 negative
 slice；标签来自源条目，不得按当前 top-k 反向生成。
+旧题通过不代表新增、退役或修订条目语义正确；每次发布须补本次变更的定向检查。
 
 ## 故障排查
 
