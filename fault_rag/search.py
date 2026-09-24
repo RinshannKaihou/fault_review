@@ -1,4 +1,5 @@
 """Hybrid retrieval: BM25 + dense cosine, fused with Reciprocal Rank Fusion."""
+import re
 
 import numpy as np
 
@@ -109,13 +110,16 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
 
 
 def lookup(q):
-    """Exact id / name / alias, then substring fallback on names."""
+    """Exact id / name / alias, then name substring for non-ID queries."""
     idx = get_index()
     rows = []
     if q in idx.by_id:
         rows = idx.by_id[q]
     elif q in idx.by_name:
         rows = idx.by_name[q]
+    elif re.fullmatch(r"(?:\d+|[A-Z][A-Z0-9-]*)\.\d+", q):
+        # A retired/missing catalog ID must not partially match an unrelated ID.
+        rows = []
     else:
         ql = q.lower()
         rows = [i for i, e in enumerate(idx.entries)

@@ -56,6 +56,9 @@
 > 2026-09-21：每日扫描。新增 CKPT.27 / DATA.14 共 **2 条**（verl v0/v1 trainer 在非 Megatron 策略下 `async_save=True` 跳写 `latest_checkpointed_iteration.txt` 而 FSDPCheckpointManager 从不补写——ckpt 完好落盘但 `resume_mode=auto` 判无 ckpt、静默从 step 0 重训并覆写；trl GRPO/RLOO metric flush 按本地 key 集合调 collective——rank 间 key 集合分叉时指标混列 + mean-of-means 错权、reward/KL 诊断静默失准），补 RL-RO.19（修复 PR ms-swift #10207 已于 09-20 merge）、KER.16（修复 PR DeepSpeed #8591 已于 09-19 merge）、OPT.17（#7452 finding 8 被 dundysm 认领）、DATA.13（#7931 维护者确认 bug 在 veRL 能力探测侧）来源。**216 条**。
 > 2026-09-22：每日扫描。新增 NUM.15（trl #7320 维护者 root-cause：transformers<5 `TrainingArguments` 把 mixed precision 发布为进程级环境变量并读回作默认值——`bf16=False` 无法清除先前 trainer 钉下的 bf16，同进程后续 fp32 阶段/bare `Accelerator` 静默继承 bf16 autocast；trl 默认 `bf16=True` 使第一个 trainer 即钉死进程；修复 PR #7321 已 merge），补 KER.14（修复 PR #7466 draft）/ LOSS.10（修复 PR #7513）/ OPT.17（修复 PR #7530 已开）/ OPT.18（vipulsarode 认领）/ MOE.12（Connor-XY 请 zhongbozhu 评审 #7481）/ KER.10（#7463 同 packed+CP 路径 256K crash 面补充：oncall 分配 hxbai triage）来源。**217 条**。
 > 2026-09-23：每日扫描。新增 CKPT.28 / DATA.15 / MOE.14 / RL-KL.09 共 **4 条**（Megatron 原生路径加载 contiguous SwiGLU ckpt 缺 gate/up interleave 转换——SwiGLU 配错通道、initial loss 0.2→2.2 无 crash、Bridge 已转换而 main 缺步；torchtitan DSV4 重写 `get_attention_masks()` 丢 positions/文档边界元数据——sparse attention 窗口跨 packed 文档边界、position 重置契约被 override 破坏；trl `router_aux_loss_coef` 用可选字段 `output_router_logits` 推断 MoE——64 个 MoE config 中 30 个不声明（DeepSeek/GLM4-MoE/Kimi-Linear 全中）、近半架构 aux loss 静默 no-op；全管线 FP8 RL 复合量化噪声把负 advantage token 的 ratio 推出 trust region——惩罚梯度被错误归零、entropy surge + 乱码、Calibrated Clipping 缓解），补 RL-RO.01 来源（2609.22870 TIM 残差经非线性 clip 放大）；#7310 报告者给出 20 行最小 repro 坐实 DATA.14 死锁面；verl #7987（#7978 修复）1×B200 验证通过。**221 条**。
+> 2026-09-24：每日扫描。新增 RL-RWD.08（trl OpenReward `env.reward` 哨兵 0.0 与合法 0 分坍缩——从未打分的 rollout 与真 0 分 bit 级同值、`unscorable_mask` 失效、放弃/超限被当真实负信号进 advantage；先行修复 PR #6430 曾获维护者正评后被关未合、缺陷在 HEAD 仍活），补 KER.14（Megatron #7464 第三方独立复现：TP1 vs TP2 全梯度相对 L2 0.0515、三机复现）/ OPT.18（vipulsarode scoped 修复 PR #7613 已开：GDN/GDN2 × RMSNorm/LayerNorm 全覆盖 + finalizer 恰好一次求和单测）/ CKPT.26（修复 PR trl #7294 cross-ref 落定，仍 open）来源。窗口内其余候选均判边界外（trl #7362 fail-fast + 纯成本、#7354 启动期 KeyError、#7353 文档；DeepSpeed #8639 初始化 fail-fast、#8572 启动期校验放宽边界；Megatron #7464 即 KER.14 独立复现；verl #7990 closed completed）。**222 条**。
+
+> 2026-09-24：跨分支回填复核：远程 15 条中 12 条为已收录的同机制，新增 CKPT.29 / RL-ADV.10；DeepSpeed #8586 仅属性能开销，拒绝入库。**224 条**。
 
 | 轴 | 分布 |
 |---|---|
@@ -72,7 +75,7 @@
 | HW | 硬件 / 训练期 SDC | 9 |
 | NUM | 数值 / 混精 / 非确定性 | 15 |
 | PAR | 并行 / 梯度归约 | 17 |
-| CKPT | 检查点 / resume | 28 |
+| CKPT | 检查点 / resume | 29 |
 | DATA | 数据管线 | 15 |
 | OPT | 优化器 | 18 |
 | ACT | 重计算 / 卸载 | 7 |
@@ -80,8 +83,8 @@
 | MOE | MoE 路由 / EP | 14 |
 | LOSS | loss spike / 长跑退化 | 11 |
 | SFT | 模板 / packing / 标签 | 15 |
-| RL-RWD | reward | 7 |
-| RL-ADV | advantage / GRPO 统计 | 9 |
+| RL-RWD | reward | 8 |
+| RL-ADV | advantage / GRPO 统计 | 10 |
 | RL-KL | KL / entropy | 9 |
 | RL-RO | rollout ↔ train（TIM） | 19 |
 | OBS | 观测性骗过 | 12 |
@@ -718,7 +721,7 @@ stage: `shared` · Cov: `NEW` · 置信度 `documented`
 stage: `rl` · Cov: `var:async_rollout_buffer_state_lost_on_resume` · 置信度 `documented`
 
 - **机制**：trl AsyncGRPO `_save_checkpoint` 用「不在 `_trained_groups` 中的最小 group id」推 resume 位置——但 `RolloutQueueDataset.__iter__` 的 staleness 检查**丢弃**的 group（如慢 group 超 `max_staleness=4`）永远到不了 collator、永远不会进 `_trained_groups`：一个 stale-dropped group 把保存的 resume 游标**钉死**在它的位置。ckpt 正常写出、无任何错误。无 GPU 12 秒 repro（150 组、1 慢组）：run 1 实际训完 150 组、saved `prompt_index=2`（被 group 2 钉住）；resume 后从行 2 重启——**147/150 行被训练两次**、只有 3 行是新的。`AsyncDistillationTrainer._save_checkpoint` 的 `_trained_prompts` 同代码同病。修复 = resume 游标对 `_trained_groups ∪ _dropped_groups` 取（在途组仍照旧压住游标）。
-- **来源**：trl #7274（2026-09-18；纯 CPU repro gist + 双 run 对照）。https://github.com/huggingface/trl/issues/7274
+- **来源**：trl #7274（2026-09-18；纯 CPU repro gist + 双 run 对照）。https://github.com/huggingface/trl/issues/7274 ；修复 PR trl #7294（cross-ref 于 2026-09-18，仍 open）——修法即「`_trained_groups ∪ _dropped_groups`」并加在途组照旧压游标，与本条记载的修复方向一致。https://github.com/huggingface/trl/pull/7294
 - **行为效应**：无 crash、ckpt 可加载、指标正常——**resume 后近全量数据被重复训练**（数据分布被旧样本主导），有效样本量与预算核算系统性失真；「保存的数字看起来合理」（在合法范围内）使其不被怀疑。与 CKPT.16（异步 RL resume 丢在途 rollout 状态）同族**异步 RL 的 resume 契约缺状态面**第 4 个实例：那边丢 buffer 内容、这边游标被死键钉住，方向相反（丢 vs 重）；与 CKPT.18（sampler 重建丢 epoch 种子 → 81% 重复）行为效应同型「resume 后大比例样本重复」，这边重复是**staleness 丢弃副作用**而非种子丢失。
 - **发现来源**：2026-09-19 每日扫描
 
@@ -739,6 +742,15 @@ stage: `pretrain/sft` · Cov: `NEW` · 置信度 `documented`
 - **来源**：Megatron-LM #7576（2026-09-22；Qwen3.5-35B-A3B text SFT、16×GB200、TP1/PP1/CP8/EP16、DCP、seqlen 131072；三配置对照 + Bridge 同 MXFP8/CuTeDSL/GroupedTensor 配置正常训练的反证——排除 single-weight / FP8 param gather 因素；launcher 已设 interleave flag）。https://github.com/NVIDIA/Megatron-LM/issues/7576
 - **行为效应**：无 crash、无 warning——initial LM loss ~0.2（BF16+GroupedTensor 正确路径）→ ~2.2（MXFP8+CuTeDSL 两配置同样中招），训练正常推进但激活-权重通道系统错配（报告者明确：layout mismatch 而非 FP8 rounding）。与 CKPT.09（MXFP8 round-trip 丢 requant scale）同族「ckpt 边界的布局/量化契约断裂」，差异在这边 **BF16 同样中招的纯置换缺失**、不经量化放大；与 MOE.07 / RL-RO.09（量化专家布局 republish 破坏训推同步契约）共享「容器/引擎对权重布局假设不一致」病根——这边打击静态 load、那边打击在线 sync；「flag 改变解释约定但转换不在其职责内」的契约空洞与 CKPT.06（config 默认吞 CLI override）同型。
 - **发现来源**：2026-09-23 每日扫描
+
+### CKPT.29 `hf_rotary_inv_freq_uninitialized_after_to_empty`
+
+stage: `pretrain/sft/rl` · Cov: `NEW` · 置信度 `documented`
+
+- **机制**：torchtitan 的 Transformers modeling backend 先在 `meta` 设备建模、再 `to_empty()`，使 rotary 模块的非持久化缓冲区 `inv_freq` 未初始化。旧兼容补丁依赖实例属性 `rope_init_fn` 重新计算，但 Transformers 5.x 已将它移入 `__init__` 局部变量；backend 同时覆写 `_init_weights` 且漏掉 rotary 分支。因此模型初始化与 checkpoint load 都不会恢复正确的 RoPE 频率。
+- **来源**：torchtitan #4783（2026-09-16；针对当前 5.x 路径的 CPU-only 复现将 `to_empty()` 后缓冲区填为 NaN，执行初始化后仍为 NaN，且与正常构造的 `inv_freq` 不相等；截至 2026-09-24 issue 为 open）。https://github.com/pytorch/torchtitan/issues/4783
+- **行为效应**：CPU 复现确认该路径的旋转频率保持错误且无异常；在使用该 backend 的训练中，错误频率会污染位置编码与前向。来源提及旧问题 #3775 的 loss 差异，**不是本条当前版本的端到端训练效果实测**；未评估检测器效果。与 CKPT.25 的 PP 层键错位不同，此处失效的是 `meta` 实例化后的非持久化缓冲区初始化契约。
+- **发现来源**：2026-09-16 远程扫描回填；2026-09-24 合并复核
 
 ---
 
@@ -1045,7 +1057,7 @@ stage: `shared` · Cov: `NEW` · 置信度 `documented`
 stage: `shared` · Cov: `NEW` · 置信度 `documented`
 
 - **机制**：Megatron GDN（GatedDeltaNet）的 `out_norm`（common.py:267）建在 `value_head_dim` 上——**一个向量施加到所有 head**，而 head 被 TP 切分。`finalize_model_grads.py:452` 只在 **SP 开启**或参数名含 `q_layernorm`/`k_layernorm` 时对该类共享向量做 TP 梯度求和；GDN + TP>1 + **SP 关**时 `out_norm.weight` 的梯度从不 all-reduce，两个 TP 副本各自持有部分和。TP=2 全 GDN 模块 repro：其余参数梯度与未分片参照吻合 7.5e-9，`out_norm` 梯度 `[0.1200,0.0400]` / `[0.0197,-0.0077]` vs 完整 `[0.1397,0.0323]`；20 步 Adam 后两副本差 0.0039，加 TP sum 后每步 2.4e-7。暴露面：Bridge Qwen3.5 full-SFT recipes 用 TP=2/4 **不开 SP** 跑 MCore GDN。
-- **来源**：Megatron-LM #7452（2026-09-17；finding 11，全 GDN 模块 CPU repro + 20 步 Adam 漂移对比）。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；2026-09-22 补：vipulsarode 09-21 认领 finding 11（计划按 `11_gdn_out_norm_missing_tp_sum.py` repro 走），oncall tracking map 要求认领时链接 scoped PR——PR 尚未开出。
+- **来源**：Megatron-LM #7452（2026-09-17；finding 11，全 GDN 模块 CPU repro + 20 步 Adam 漂移对比）。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；2026-09-22 补：vipulsarode 09-21 认领 finding 11（计划按 `11_gdn_out_norm_missing_tp_sum.py` repro 走），oncall tracking map 要求认领时链接 scoped PR——PR 尚未开出；2026-09-24 补：scoped 修复 PR #7613 已开（2026-09-23）——在 `6a36609` 上用原 repro 复现，修复后两 TP rank 的 `out_norm` 梯度与单进程参照吻合，覆盖 GDN/GDN2 × RMSNorm/LayerNorm，附参数 tagging 与 finalizer 恰好一次求和（SP on/off）单测。https://github.com/NVIDIA/Megatron-LM/pull/7613
 - **行为效应**：无 crash、无 NaN——TP 副本从第一步起**确定性分叉**（不是 SDC 式随机，是结构性的部分和），`out_norm` 权重跨 rank 漂移、且永远偏小（漏加其余 rank 贡献）；下游 loss 无立刻信号。与 PAR.13（DDP reducer hooks 早退）/PAR.09（分桶谓词跳过 allreduce）同族「梯度归约静默缺失」，差异在这边只打击**名字白名单外的共享向量参数**——选择性漏归约；与 SFT 侧 `q_layernorm` 特判（同函数）对照可见这是**白名单式 finalize 假设**的固有脆弱性（新架构新参数不在名单）。
 - **发现来源**：2026-09-18 每日扫描
 
@@ -1246,7 +1258,7 @@ stage: `shared` · Cov: `NEW` · 置信度 `documented`
 stage: `pretrain` · Cov: `NEW` · 置信度 `documented`
 
 - **机制**：Megatron `vocab_parallel_cross_entropy` 的 label-smoothing 尾部按 **TP 本地词表分片**计算：`vocab_size = exp_logits.size(-1)` 取 per-rank 分片宽度（cross_entropy.py:158）、`log_probs.mean(dim=-1)` 只在本地 shard 上平均（L175）、backward 复用 `ctx.vocab_size`（L191）。base CE 的 max/target-logit/exp-sum 都正确 all-reduce，**只有 smoothing 尾是局部的**——局部均值是 Partial 值，却与已完整的 CE 基项直接相加、无归约。TP=2、smoothing 0.2 repro：两 rank loss `[1.4401896, 1.0951819]`（互不相等）、全局公式 `[0.8401898, 0.8618487]`，max 梯度误差 0.1333。修复 = 对 TP 组 sum 本地 log-prob 和再除全局词表（PR #5522 提出过精确该修复、被关未合）；#737（2026-09-17 有第三方独立同分析评论）。
-- **来源**：Megatron-LM #7452（2026-09-17；finding 1，126 行 CPU/Gloo repro 附 spmd_types `Found types: [I, P]` 拒绝见证）；上游线索 #737 / PR #5522。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；修复 PR（2026-09-22 补）：#7466 by gss10282025（draft，uses the global vocabulary size and global mean log-prob）——Connor-XY 09-21 在 #7452 建立 oncall tracking map 列 finding 1 已挂该 PR。https://github.com/NVIDIA/Megatron-LM/pull/7466
+- **来源**：Megatron-LM #7452（2026-09-17；finding 1，126 行 CPU/Gloo repro 附 spmd_types `Found types: [I, P]` 拒绝见证）；上游线索 #737 / PR #5522。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；修复 PR（2026-09-22 补）：#7466 by gss10282025（draft，uses the global vocabulary size and global mean log-prob）——Connor-XY 09-21 在 #7452 建立 oncall tracking map 列 finding 1 已挂该 PR。https://github.com/NVIDIA/Megatron-LM/pull/7466 ；独立社区复现（2026-09-24 补）：Megatron-LM #7464——与 finding 1 无依赖的第三方报告，RTX 5090 + FP32、TP1 vs TP2 全梯度相对 L2 `0.0515`、三台主机复现，修复后 discrepancy 降至原值 ~1.7e-6 并对齐 float64 参照；再引 #737 / #5522 相同上游线索。https://github.com/NVIDIA/Megatron-LM/issues/7464
 - **行为效应**：无 crash——**每个 TP rank 打出不同的 loss**、梯度带 0.1 量级误差；单卡 vs TP>1 的 run 从第一步起不可比，且 per-rank loss 差异常被当作「数值噪声/归约顺序」忽略。与 KER.13（fused CE 路径就地覆写）同文件域不同断点：那边破坏 autograd 契约、这边是**分布式归约域错误**（Partial 进非线性组合）；与 PAR.04（Ulysses 头数锁死）同型「TP 切分下 per-rank 常数被当全局常数」。
 - **发现来源**：2026-09-18 每日扫描
 
@@ -1715,6 +1727,15 @@ stage: `rl` · Cov: `NEW` · 置信度 `documented`
 - **行为效应**：无 crash、无 NaN；reward 与训练指标一切正常。低烈度但系统性的方向污染：符号翻转的 advantage 把策略往 verifier 错判的方向推，且组内相关使「多采样平均」的去噪效率比名义低约 4.7×。与 RL-RWD.03（RM 过优化）不同：错不在 reward 模型被钻、在**测量误差的组内结构**被组相对估计器假设掉；与 RL-ADV.08（guess 与 reasoning 同 advantage）互补：那边是 outcome 无法区分路径，这边是 outcome 本身带相关噪声。
 - **发现来源**：2026-09-10 每日扫描
 
+### RL-RWD.08 `unscored_rollout_defaults_to_zero_reward`
+
+stage: `rl` · Cov: `NEW` · 置信度 `documented`
+
+- **机制**：trl OpenReward 环境 `environment.py:192` 把 `self.reward` 初始化为 `0.0`、只在 `_call_ors_tool`（L266-296）拿到非 null reward 时覆写；默认 reward 函数 `_outcome_only_reward_func`（`_spec.py:69-75`）无条件返回 `env.reward`。从未调过打分工具的 rollout（放弃 / 撞 `max_tool_calling_iterations` / 全部工具调用抛异常）与「真被打 0 分」的 rollout **bit 级同值**——sentinel 与合法测量坍缩成同一个数。修复形状已有先例：PR #6430 的 `has_reward` 标志（仅工具返回非 null 时置位、`reset()` 复位、未打分返回 `None` 使 `unscorable_mask` 正确剔除）曾被维护者正面评审为 "a clean, well-reasoned fix for a real reward-hacking vector"，后因无关测试覆盖问题被关未合；`environment.py`/`_spec.py` 此后无 commit，缺陷在当前 HEAD 仍活。
+- **来源**：trl #7364（2026-09-24；逐函数源替换 repro 三例对照：A 未打分 vs B 真错 vs C 真对——A/B 下游全同；附 PR #6430 兴衰史）。https://github.com/huggingface/trl/issues/7364 ；trl #6430（先行修复、正评后被关）。https://github.com/huggingface/trl/pull/6430
+- **行为效应**：无 crash——组内中心化后「未测」与「测了且零分」同为 0.0：genuinely-failed 样本无法与 never-scored 区分，`unscorable_mask` 剔除逻辑失效；放弃/超限 rollout 被当作真实负信号参与 advantage，按 0 分中心化的组统计把「评分覆盖缺口」转成方向性梯度偏置（放弃行为可能被错误奖励或惩罚，取决于组内其余得分）。与 RL-RWD.05（prefilled tag 使 reward 恒 0 的死区）行为效应同型「合法 0 分与未测坍缩」，差异在这边是**环境侧哨兵值**而非 tokenizer/模板错位；与 RL-RWD.07（verifier 误差组内相关）互补：那边是测量的噪声结构、这边是测量的**缺席**被编码为测量值。
+- **发现来源**：2026-09-24 每日扫描
+
 ---
 
 # RL-ADV · advantage
@@ -1801,6 +1822,15 @@ stage: `rl` · Cov: `NEW` · 置信度 `documented`
 - **来源**：arXiv:2609.13866（2026-09-12；受控 GSM8K 对照 + verl native trainer 复现）。https://arxiv.org/abs/2609.13866
 - **行为效应**：无 crash、指标看似正常推进——**训练信号在系统性学习「失败组内的 shaping 差异」**，收敛终点被拉向格式/过程分黑客方向（EM 0.160 vs 0.763 同预算同配置）；filter 命中率 telemetry（refill 次数）是唯一可观测异常。与 RL-ADV.04（drop 谓词只认二值 std）同族：**过滤谓词与奖励语义错配**，那边漏掉软奖励近同分组、这边反向放行全失败组；与 RL-ADV.08（guess 路径伪优势）互补：那边是 outcome 不区分路径、这边是 filter 不区分 outcome 与 shaping；对 RL-RWD 家族（shaped reward 黑客）是 estimator 侧的放大器。
 - **发现来源**：2026-09-16 每日扫描
+
+### RL-ADV.10 `pfppo_v1_resampled_advantage_trajectory_mispair`
+
+stage: `rl` · Cov: `NEW` · 置信度 `documented`
+
+- **机制**：verl v1 trainer 在 `algorithm.use_pf_ppo=true` 且 GAE advantage 路径下，PF-PPO 对整批数据有放回重采样；v1 的 `_compute_advantage` 却先从 TransferQueue 取**原始行序**的 `response_mask`，再把重采样后的 `advantages` / `returns` 依原键写回。原轨迹的 response、old/ref log-prob 留在队列原位置，因而更新时 advantage 与其对应轨迹错配；v0 trainer 将重采样后的整个 `DataProto` 一起传下去，不属于本问题。
+- **来源**：verl #7956（2026-09-18；在 main `23a341e3` 上的代码路径核对与无 GPU 的 CPU 复现；截至 2026-09-24 issue 为 open）。https://github.com/verl-project/verl/issues/7956
+- **行为效应**：来源的 CPU 路径复现了优势值与轨迹键错配而没有异常；在上述配置下，策略梯度会把 credit assignment 赋给错误轨迹。**未提供长程训练回报或任务指标实测，未评估检测器效果**。与 RL-ADV.09 的 shaped reward 过滤谓词错配不同，这里是有放回重采样后跨键写回破坏样本身份。
+- **发现来源**：2026-09-18 远程扫描回填；2026-09-24 合并复核
 
 ---
 
