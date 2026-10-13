@@ -1,0 +1,60 @@
+id: INF-0854
+legacy_ids:
+- '8.70'
+slug: vllm_flashinfer_cudagraph_support_target_heads_over_draft_kv_heads
+aliases: []
+title: 用 target 头数判 draft 组致 CUDA graph 全关
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: get_cudagraph_support 判定
+  behavior: get_cudagraph_support() 对 draft 的 KV 组仍用 target 的每 rank 查询头数除以该组 num_kv_heads，未按 is_eagle_group 区分，头比算错判为不支持
+effect:
+  objects:
+  - 性能/资源
+  detail: spec decode 加入 draft KV 组且 target/draft 头比不同时（如 TP=3：target 66 头/draft 36 头），全引擎 CUDA graph 被静默关闭，输出正确但性能塌方；TP=2 同镜像正常捕获，难以归因
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + spec decode（draft KV 组）+ FlashInfer 后端 + target/draft 头比不同的 TP 划分（拓扑×模型对触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55581
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（`FlashInferMetadataBuilder.get_cudagraph_support()` 判定 KV-cache 组的 CUDA-graph 支持时把 **target 模型**的每 rank 查询头数除以**该组**的 `num_kv_heads`——组属于 draft 模型时两个数来自不同模型、头比不同即算错：spec decode 加入 draft 侧 KV 组后 `_check_and_update_cudagraph_mode` 对 draft 组也喂 target config，TP=3（target 66 头/draft 36 头）下判定失败——**全引擎每个 CUDA graph 被静默关闭**，而实际会跑的 XQA decode 路径选择且工作正常；TP=2 同镜像正常捕获） · Cov: `NEW`（跨模型头比算错子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 判定的输入域（单一 vllm_config）与被判定对象（多模型 KV 组）不匹配：`AttentionSpec` 不携带查询头数、`is_eagle_group` 是现成的 draft 侧标记但未被使用。修复让 draft 侧组（`is_eagle_group=True`）用 `speculative_config.draft_model_config` 判定、其余用 target config；环境为 3×DGX Spark GB10 sm_121 TP=3 + GLM-5.3-Flash EXL3 + DFlash drafter（fp8 draft KV 选择 FlashInfer 组）。
+  source: 'vLLM #55581（2026-09-06 open，含 check 源码定位与 TP=2/TP=3 对照）；修复 PR #55593（含 CPU 回归测试）。https://github.com/vllm-project/vllm/issues/55581'
+  behavior: 无 crash、输出正确——**spec decode 静默失去全部 CUDA graph**（性能塌方，TP 相关、难归因：同镜像换个 TP 数行为不同）。新子签名「**支持性判定的分子分母来自不同模型**」：纯性能型缺陷但根因是正确性判定逻辑错；与 8.71（KV dtype 从全局 config 而非组 spec 取）构成"全局 config 污染组级判定"对。
+  trigger_surface: vLLM + spec decode（draft KV 组）+ FlashInfer 后端 + target/draft 头比不同的 TP 划分（拓扑×模型对触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem：取 解码/采样。依据 rule 1：缺陷只在 spec decode 加入 draft KV 组时出现；原文修复是让 is_eagle_group=True 的 draft 组改用 speculative_config.draft_model_config 判定，即补的是推测解码对 draft 模型的处理，而非通用 CUDA graph 机制的缺陷，故不取 运行时/执行。其余字段与独立判断一致，维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 运行时/执行
+        status: unanimous

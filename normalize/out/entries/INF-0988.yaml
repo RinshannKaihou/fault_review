@@ -1,0 +1,57 @@
+id: INF-0988
+legacy_ids:
+- '10.72'
+slug: vllm_internlm_tool_parser_opening_marker_split_across_stream_chunks_drops_call
+aliases: []
+title: vLLM internlm parser 开标记跨 chunk 时丢弃工具调用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: internlm 流式 tool parser
+  behavior: 流式 parser 的标记匹配只看当前增量缓冲，不保留跨增量边界的部分前缀，开标记跨 chunk 分裂时状态机停在未进入 tool call 态。
+effect:
+  objects:
+  - 输出内容
+  detail: 流式解码中 <tool_call> 等开标记恰被 chunk 边界劈开时，整个 tool call 被静默丢弃，无错误无部分结果；非流式整段解析正常，是否触发取决于服务端增量切分。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + internlm tool parser + 流式输出 + 标记恰被 chunk 边界劈开（partial：边界对齐概率触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-18'
+remarks: subsystem 缺「输出解析（tool/reasoning parser）」：parser 既非分词/模板也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57490
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_loss
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM internlm tool parser：流式解码中 tool call 的**开标记（如 `<tool_call>`）被 chunk 边界劈开**（同一标记的前半在上一增量、后半在下一增量到达）时 parser 无法识别完整标记，整个 tool call 被静默丢弃——输出流无该调用、无错误、无部分结果。批式（非流式）聚合后完整文本可正确解析，即缺陷仅在**增量切分边界**上） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_loss`（10.42 parser 通道假设族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: 流式 parser 的标记匹配窗口只看当前增量缓冲，不保留跨增量边界的部分前缀——开标记跨 chunk 分裂时状态机停在"未进入 tool call"态，后续参数文本被当普通内容放行/丢弃。
+  source: 'vLLM #57490（2026-09-18 open，bug/tool-calling，含标记劈裂场景描述）。https://github.com/vllm-project/vllm/issues/57490'
+  behavior: 无 crash——**tool call 静默丢失**（agent 侧表现为模型"忘记"调用工具或跳步），流式场景特有的边界概率触发（取决于服务端增量切分）。10.42（Kimi-K3 parser 终止符假设）与 10.60（非流式截断丢 post-tool 文本）之后 parser 族新成员：本条在 **跨 chunk 边界的开标记分裂**维度——修复模式应为跨增量部分前缀保持。
+  trigger_surface: vLLM + internlm tool parser + 流式输出 + 标记恰被 chunk 边界劈开（partial：边界对齐概率触发）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

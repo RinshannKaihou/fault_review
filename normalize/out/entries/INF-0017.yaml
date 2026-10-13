@@ -1,0 +1,56 @@
+id: INF-0017
+legacy_ids:
+- '1.17'
+slug: triton_blackwell_rmw_accumulator_mma_miscompile
+aliases: []
+title: Blackwell 上 Triton 误编译读改写 TMEM 累加器
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: AssignLatencies/pipeliner
+  behavior: loop-carried TMEM 累加器每轮被读改写且又作同一循环内另一 MMA 的操作数时，AssignLatencies 给该 MMA 赋 latency=1，pipeliner 将累加器多缓冲化，消费侧 MMA 读到去同步的副本。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: sm_100 上 num_warps≥4（async tcgen05）且 num_stages≥2 时触发，chunked simple-GLA/Mamba-2（SSD）前向内核的递归 [K,V] 状态静默出错、污染下游 logits；num_warps≤2 或 num_stages=1 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 绑定 Blackwell/新 arch kernel 路径；通用 Ampere/Ada/Hopper 上通常不可复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/pull/10993
+  kind: github_pr
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（编译器累加器调度错误） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 在 sm_100（Blackwell）上，当一个 loop-carried TMEM 累加器在每次迭代中被 read-modify-written（`tmem_load → elementwise-modify → tmem_store`），**同时又作为同一循环内另一个不同 MMA 的操作数**时，在 `num_warps ≥ 4`（async tcgen05 路径）+ `num_stages ≥ 2` 下被**静默误编译**。`AssignLatencies` 给该 MMA 状态 `tt.latency = 1`，于是 pipeliner 将累加器多缓冲化、提升进旋转寄存器 iter-arg；消费侧 MMA 随后读取一份**去同步化的累加器副本**。`num_warps ≤ 2`（register mma.sync）和 `num_stages = 1` 不受影响。表现为 chunked simple-GLA / Mamba-2（SSD）前向内核中递归 [K,V] 状态的静默错误。
+  source: 'triton-lang/triton #10993（2026-07-21 open PR）。关联 revert/reland 链 #10858 → #10971 → #10988 → #10993。https://github.com/triton-lang/triton/pull/10993'
+  behavior: 无 crash、无 NaN。read-modify-write 累加器被错误多缓冲化，使线性注意力/SSM 递归状态静默错误，下游 logits 被污染。属"编译器 pipeliner 对 RMW + 跨 MMA 累加器的调度缺陷"新子签名。与 1.16 `triton_dual_dot_single_accumulator_sm103_wrong` 同族（累加器调度）但不同架构（Blackwell sm_100 vs B300 sm_103）和不同机制（RMW pipeline vs 双 dot 共享）。
+  trigger_surface: 绑定 Blackwell/新 arch kernel 路径；通用 Ampere/Ada/Hopper 上通常不可复现
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 数值结果
+        to: KV状态
+        status: panel7

@@ -1,0 +1,58 @@
+id: INF-0213
+legacy_ids:
+- '1.214'
+slug: ttmetal_gdn_chunk_decay_exp_factorization_ftz_state_nan_wipe
+aliases: []
+title: ttnn GDN 衰减因子指数拆分在 FTZ 下毁坏循环状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: chunk_gdn_prep 衰减因子计算
+  behavior: 把可正常表示的 dl=exp(g_sum) 拆成 exp(g_sum−decay)·exp(decay) 两个指数之积，中间量在 Tensix FTZ/DAZ 下各自下溢为 +0.0 或上溢为 +inf，0×inf 即 NaN。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 强负门控（g0≤−87.34）时，若 g_sum−g0≥88.72 则 recurrent state 被 NaN 不可逆毒化、后续 chunk 全输出 NaN，否则 state 归零造成灾难性遗忘；无 crash，长序列/强衰减模型最易命中，WH B0 硅片与 BH ttsim 验证。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal（WH B0 硅片/BH ttsim）+ chunk_gated_delta_rule / gated-delta-rule 族内核 + 强负 gating 输入（hw_specific；数值触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-14'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56550
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn `chunk_gated_delta_rule`（gated-delta-rule / FLA 家族 SSM 注意力内核）把 chunk 间状态衰减因子 dl=exp(g_sum) 拆成两个指数乘积 `exp(g_sum−decay)·exp(decay)`（`chunk_gdn_prep.cpp` `ew(cb_decayfac, cb_decay_exp, cb_dl, 1, 2)`）；在 Tensix FTZ/DAZ 下 g0≤−87.34 时 exp(g0) 下溢冲刷 +0.0f，若 g_sum−g0≥88.72 则 decayfac=+∞，**+∞×0.0=NaN** 不可逆毒化整个 recurrent state 矩阵 S；否则有限×0=**0.0f** 全抹除累计记忆（灾难性遗忘）——而数学真值 exp(g_sum) 本身完全正常（>10^−38，无需拆分）。fp32 in/out、dest_acc=Yes；Wormhole B0 硅片 + Blackhole ttsim 验证，含五档 (g0, g_sum) 门控条件 × 位级输出 × S 影响对照表与 PyTorch/FLA golden 对照） · Cov: `NEW`（代数恒等式拆分 × FTZ 边界：中间量单独溢出/下溢而真值正常子签名） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 把单个可表示的指数拆成两个指数的乘积，使中间量各自越过 fp32 指数边界（下溢被 FTZ 冲刷为 +0.0 / 上溢为 +inf）；IEEE 语义下 0×inf 即 NaN。真值正常说明这是**实现引入**的边界而非数学困难。
+  source: 'tt-metal #56550（2026-09-14 open，community label，含门控条件×期望值×位级输出×S 影响的五行矩阵与源码定位 chunk_gdn_prep.cpp:470-482,585-590 / chunk_gdn_scan.cpp:170-178）。https://github.com/tenstorrent/tt-metal/issues/56550'
+  behavior: 无 crash——两种静默终态：NaN 毒化（后续所有 chunk 输出 NaN）或 state 归零（灾难性遗忘、输出忽然"失忆"）；触发面为 gating 值域（g0≤−87.34 且 g_sum−g0 条件组合），长序列/强衰减模型最易命中。1.114（exp2 指数重构上溢 guard 缺失回绕）之后"指数函数实现边界"族新成员：本条在**代数拆分引入的中间量边界**维度、且后果直达 recurrent state 全矩阵。
+  trigger_surface: tt-metal（WH B0 硅片/BH ttsim）+ chunk_gated_delta_rule / gated-delta-rule 族内核 + 强负 gating 输入（hw_specific；数值触发）
+  discovery: |-
+    2026-09-14 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 visibility=数值异常（维持）：两种终态均在原文，无 rule 可分；原文 meta 与 mechanism 的核心是“+∞×0.0=NaN 不可逆毒化整个 recurrent state”，NaN 是首列且决定后续所有 chunk 输出的终态，按主签名取 数值异常。保留意见：g_sum−g0<88.72 时为 state 静默归零（静默错误），已写入 effect.detail。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

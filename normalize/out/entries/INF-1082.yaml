@@ -1,0 +1,52 @@
+id: INF-1082
+legacy_ids:
+- '11.59'
+slug: sglang_dflash_target_layer_ids_fallback_guess_count_collision_silent
+aliases: []
+title: SGLang DFlash fallback 静默猜错 tap 层
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: DFlash 目标层 fallback 公式
+  behavior: draft config 缺 target_layer_ids 时 fallback 用等距公式猜 tap 层；tap 层是训练期决定的，猜出的层数相同但层号错（[1,16,31,46,61] vs [5,19,33,47,61]）
+effect:
+  objects:
+  - 性能/资源
+  detail: draft config 缺 dflash_config.target_layer_ids 时权重干净加载、形状检查通过、零报错，drafter 读错目标层，acceptance 系统性偏低、吞吐受损，唯一症状是 accept rate；20 个公开 checkpoint 中 14 个若触发会猜错
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + DFlash/DFlash2 + 缺 `dflash_config.target_layer_ids` 的 draft config（config 缺失即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37475
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1064
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（DFlash draft config 缺 `target_layer_ids` 时的 fallback 公式**猜错 tap 层**：对 z-lab/Qwen3.8-27B-DFlash2 猜出 `[1,16,31,46,61]` 而训练用的是 `[5,19,33,47,61]`——**数量恰好相同**（count collision），权重干净加载、零报错，draft 静默读错目标层 → acceptance 塌缩；tap 列表是训练期烧进 checkpoint 的选择（决定 fc 输入宽度），load 期不可重算——fallback 永远不可能是对的（20 个已发布 checkpoint 全设此键，14/20 若触发即猜错；参考实现正删除该 helper 并把键改为 required）） · Cov: `var:vllm_ngram_gpu_spec_decode_xgrammar_concurrent_500`（11.41 DFlash 系族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`DFlashDraftConfig.resolve_target_layer_ids` fallback 到 `build_target_layer_ids`（等距公式）；危险形态是 count collision—— drafter 从错误的目标层读 hidden states，与训练分布脱钩，draft 质量静默劣化（accept len 下降但无任何加载/运行信号）。手写 config、未来 checkpoint 格式变更即触发；z-lab/dflash#156 调研了全部 20 个公开 checkpoint，#157 在参考实现中移除 fallback。'
+  source: 'SGLang #37475（2026-09-01 open，20 checkpoint 调研 + count-collision 具体数值对照 + 参考实现修复链）。https://github.com/sgl-project/sglang/issues/37475 · 参考：z-lab/dflash#156、z-lab/dflash#157'
+  behavior: 无 crash——drafter 静默读错层：推测解码 acceptance 系统性偏低（吞吐损失），唯一症状是 accept rate 指标；权重加载、形状检查全通过。属「**不可推导配置的公式 fallback = 结构性猜错**」：修复原则是"训练期决策必须 required，不可 guess"（参考实现已这么做）；与 11.54（MTP prompt 门控退化）同为 draft 质量静默劣化，本条根因在配置解析层。
+  trigger_surface: SGLang + DFlash/DFlash2 + 缺 `dflash_config.target_layer_ids` 的 draft config（config 缺失即触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: INF-0769
+legacy_ids:
+- '7.96'
+slug: flashinfer_sm90_w4a16_mxfp4_fused_moe_tma_descriptor_update_race_wrong_expert_scales
+aliases: []
+title: MXFP4 fused MoE TMA 描述符竞态致用错专家 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: flashinfer
+    component: cutlass_fused_moe TMA 描述符
+  behavior: CUTLASS collective 在内核执行中原地覆写 TMA descriptor 的指针/形状字段，而前一 CTA 的 scale 加载仍在途，读到更新一半的描述符时从错误专家的 scale 区取数。
+effect:
+  objects:
+  - 数值结果
+  detail: flashinfer 0.6.10–0.6.15.post1 在 Hopper 上以 w4 group scaling 做大 M prefill 时，约 0.75% 调用中某专家单个 tile 行级误差 15–30%，相同调用结果不一致；decode（M≤256）正常，0.6.18 消除。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: flashinfer-python 0.6.10–0.6.15.post1 + SM90 + `cutlass_fused_moe` + `use_w4_group_scaling=True` + prefill 大 M（other_stack）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-22'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5438
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（flashinfer-python **0.6.10–0.6.15.post1** 的 SM90 `cutlass_fused_moe(use_w4_group_scaling=True)`（MXFP4 权重 + BF16 激活）**偶发写错一个专家的一个 CTA tile**（如 16 token 行）、行级相对误差最高 ~15–30%、相同调用间非确定：2000 次相同调用 15 次错；正交对照证明错 tile 用的是**另一个专家的 scale**（专家 scale 相同→零错误、权重相同 scale 不同→照常错——权重/激活无误）；pin tactic 时 19/28 tactic 出错（约半数在多数调用上错）；decode 尺寸（M≤256）全对；根因是 **TMA 描述符原地更新与在途 scale 加载竞态**（#3084 引入、#3738 重写后 0.6.18 清洁）） · Cov: `NEW`（量化 MoE GEMM TMA 描述符原地更新 × 在途加载竞态子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: CUTLASS collective 在内核执行中原地（in-place）覆写 TMA descriptor 的指针/形状字段，而上一 CTA 的 scale 加载可能仍在途（in-flight）——读到更新到一半的描述符即从**错误专家的 scale 区**取数；规模化 prefill（大 M）多 CTA 并发窗口使竞态可见，decode 单波次不可见。
+  source: 'flashinfer #5438（2026-09-22 open，含 2000-call 错误率表（0.6.12 vs 一行修复 vs 0.6.18）、28-tactic 扫描、scale/权重正交对照实验、影响版本区间 git 历史定位、2 分钟公开 API 复现脚本）。https://github.com/flashinfer-ai/flashinfer/issues/5438'
+  behavior: 无 crash——**低频（~0.75%/调用）非确定静默错值**，错值幅度大（行级 15–30%）但只落在单 tile 少数行；pin 到 0.6.10–0.6.15.post1 的 SGLang/vLLM MXFP4 MoE on Hopper 部署受影响，长窗口生产流量的期望错行数不可忽略；升级 0.6.18 即消除。
+  trigger_surface: flashinfer-python 0.6.10–0.6.15.post1 + SM90 + `cutlass_fused_moe` + `use_w4_group_scaling=True` + prefill 大 M（other_stack）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

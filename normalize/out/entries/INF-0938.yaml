@@ -1,0 +1,55 @@
+id: INF-0938
+legacy_ids:
+- '10.22'
+slug: trtllm_deepseekr1_parser_finish_discards_unawaited_tag_buffer
+aliases: []
+title: TRT-LLM DeepSeekR1Parser 流结束时丢弃尾部推理内容
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: tensorrt-llm
+    component: DeepSeekR1Parser.finish
+  behavior: finish() 在 buffer 恰为 <think> 或 </think> 时将其当作标记丢弃，未区分是否为 parser 正在等待的标签，buffer 内残留的推理文本随该判断被一并丢弃。
+effect:
+  objects:
+  - 输出内容
+  detail: DeepSeek-R1 reasoning parser 下生成在推理块中途结束（max_tokens/abort/EOS）时触发；无 crash，尾部推理内容整块静默丢失。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM；DeepSeek-R1 reasoning parser + 推理块内截断/EOS
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-16'
+remarks: subsystem 缺“输出解析（reasoning/tool parser）”：解析器把生成文本切分为 content/reasoning/tool_calls，既非 detokenize 也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/17774
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（finish() 把恰为 think 标签的残留 buffer 当分隔符丢弃 → EOS 时推理内容整块丢失） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`DeepSeekR1Parser.finish()` 在 buffer 恰好是 `<think>` 或 `</think>` 时将其丢弃（理由：完整标签是标记而非模型输出）。但这只对**parser 正在等待的那个 tag** 成立：流结束时 buffer 内的 `</think>` 若是当前推理块的闭标签则是有效内容边界，而 buffer 内残留的**推理文本本身**（未等到闭标签）被连同标签判断一起丢弃。修复（PR #17774，fixes #17296）只丢弃 parser 仍在等待的 tag。'
+  source: 'TensorRT-LLM PR #17774（2026-08-16 closed merged，fixes #17296）。https://github.com/NVIDIA/TensorRT-LLM/pull/17774'
+  behavior: 无 crash。生成在推理块中途结束时（max_tokens / abort / EOS），**尾部推理内容整块静默丢失**——与 10.20（Muse Glimmer parser 截断丢块）同族不同栈实例。属「流结束时的 buffer 处置 × 状态相关语义」已知类别新实例（reasoning parser 丢弃家族）。
+  trigger_surface: TRT-LLM；DeepSeek-R1 reasoning parser + 推理块内截断/EOS
+  discovery: 2026-08-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

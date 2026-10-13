@@ -1,0 +1,67 @@
+id: TRN-0199
+legacy_ids:
+- RL-RWD.06
+slug: reward_tokenizer_vocab_mismatch_silent_scores
+aliases: []
+title: trl XPO/NashMD 把策略 token id 直接喂给 RM 打分
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: XPO/NashMD get_reward 输入
+  behavior: XPO/NashMD 的 get_reward() 把策略 token id 直接送入 RM，不做 re-tokenize；XPO 不用 reward_processing_classes，NashMD 硬编码策略 tokenizer。
+effect:
+  objects:
+  - 训练信号
+  - 输入编码
+  detail: RM 词表更小时则 embedding IndexError；同词表时即落入静默面，RM 对错位 token 打分，reward 量级正常但语义无效，reward 曲线照样能涨。Llama RM + Qwen policy 命中；同 model id 的 CI 测试不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/pull/6952
+  kind: github_pr
+- url: https://github.com/huggingface/trl/pull/6955
+  kind: github_pr
+- url: https://github.com/huggingface/trl/issues/6951
+  kind: github_issue
+relations: []
+original:
+  category: RL-RWD
+  section: RL-RWD
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: trl `XPOTrainer`/`NashMDTrainer`（Online DPO 变体）的 `get_reward()` 把**策略 tokenizer 的 input_ids 直接喂 RM forward**，不做 decode/re-tokenize。RM 词表较小时要么 embedding 越界 IndexError（fail-fast 面），要么**同尺寸不同映射时静默给错位 token 打分**（silent 面）。且 `XPOTrainer` 接受 `reward_processing_classes` 却从不使用、`NashMDTrainer` 硬编码成 policy tokenizer——「换 reward tokenizer」两条路都是静默 no-op。
+  source: 'trl #6952 + #6955（同缺陷的补功能/加校验一对 PR：`get_reward` 行级代码对照；正路参照 `OnlineDPOTrainer._calculate_rewards_from_functions` 的 decode→re-tokenize）。https://github.com/huggingface/trl/pull/6952 · https://github.com/huggingface/trl/pull/6955 ；母 issue trl #6951（2026-09-03 补：XPO 接受 `reward_processing_classes` 却从不使用、NashMD 硬接 policy tokenizer 的签名级证据；异词表 RM 的 late-fail 是 embedding `IndexError`，同词表时即落入本条静默面；报告者实测 Llama RM + Qwen policy 命中，trainer 自带测试因 RM 与 policy 同 model id 而 CI 不可见）。https://github.com/huggingface/trl/issues/6951'
+  behavior: silent 面无任何信号——RM 在错位 token 序列上打分，reward 是**量级正常的真实数字**但语义无效，偏好梯度被随机化优势驱动，reward 曲线照样能涨。与 RL-RWD.01（策略钻奖励空子）正交：这是**奖励输入管线静默错接**；与 DATA.04（tokenizer id mismatch）同根因，落在 RL reward 路径上。
+  discovery: 2026-08-30 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 RL训练回路：修复落在 XPO/NashMD 的 get_reward（应 decode→re-tokenize 并使用 reward_processing_classes），tokenizer 本身没有缺陷；该缺陷只出现在 RL reward 计算路径上（rule1）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 输入编码
+        to: 训练信号
+        status: unanimous
+    rewritten:
+    - detail

@@ -1,0 +1,52 @@
+id: INF-0651
+legacy_ids:
+- '6.258'
+slug: vllm_simplecpu_offload_misaligned_explicit_block_size_write_only_offload
+aliases: []
+title: vLLM SimpleCPU offload 块尺寸不对齐致只写不读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: SimpleCPU offload 块映射
+  behavior: mamba 页对齐使实际 attention block size（如 896）≠ 显式 --block-size；SimpleCPU connector 按显式值构建读写映射，写路径能存入，读路径块查找永远 miss。
+effect:
+  objects:
+  - 性能/资源
+  detail: hybrid GDN 模型设 VLLM_USE_SIMPLE_KV_OFFLOAD=1 且显式 --block-size 不对齐时，CPU RSS 持续增长、external_kv_transfer 恒 0，逐出后重问耗时约等于全冷 prefill；无错误无警告，省略该 flag 即正常。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid GDN + `VLLM_USE_SIMPLE_KV_OFFLOAD=1` + 显式不对齐 `--block-size`（config；省略 flag 即免疫）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-26'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58653
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0620
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM hybrid GDN 模型（Qwen3.5/Qwen3.8 族，linear_attention + 周期 full_attention）+ `VLLM_USE_SIMPLE_KV_OFFLOAD=1` + **显式 `--block-size` 与 mamba 页对齐不一致**时，CPU KV 卸载连接器退化为**只写不读**：CPU 侧 RSS 持续增长（写路径活跃）、`external_kv_transfer` 恒 0、强制逐出后 re-ask 的 T3/T1 = 1.006–1.46（≈全冷 prefill）；省略 `--block-size` 让引擎自动计算对齐尺寸则完全正常。**无错误无警告**——外部观察与"offload 正常工作"不可区分。启动日志自证机制：`Setting attention block size to 896 tokens to ensure that attention page size is >= mamba page size` → KV cache group 896 对齐，而 connector 的传输粒度仍按显式 block-size 计算的页/块映射，读路径的 slot 映射全部落空。两独立部署（A：Qwen3.8-27B W4A16 + fp8 KV + MTP + 16 GiB offload；B：fp32 mamba cache + 30 GB/584 blocks）同 wheel 同病） · Cov: `var:vllm_cpu_offload_gb_lost_across_enginecore_boundary_noopoffloader`（6.227 配置静默失效族——本条在对齐边界维度：offload 半功能失效而非预算丢失） · 触发 `config` · 置信度 `documented`'
+  mechanism: mamba 页对齐约束使引擎内部实际 attention block size（如 896）≠ 用户显式 `--block-size`（如 128）；SimpleCPU connector 的读写映射按显式值构建，写路径容忍错配（存得进）而读路径的块查找永 miss（读不出）。报告者提供冷/热/逐出/re-ask 四腿计时 + `prompt_tokens_by_source` 指标差分与两部署环境表。
+  source: 'vLLM #58653（2026-09-25 open，含两独立生产部署对照、T3/T1 计时、external_kv_transfer=0 指标证据与建议修复"启动时拒绝或警告"）。https://github.com/vllm-project/vllm/issues/58653'
+  behavior: 无 crash、输出正确——受害者是**成本与容量规划**：CPU 内存被逐出块填满（写路径活跃）却从不回收收益（读路径死），长上下文服务退化为准无卸载系统；显存节省假设失效。6.227（`--cpu-offload-gb` 跨边界归零 → Noop）之后"offload 配置静默失效"族第二形态：本条失效是**半边的**（写活读死），比全 Noop 更具伪装性（RSS 增长像在干活）。
+  trigger_surface: vLLM + hybrid GDN + `VLLM_USE_SIMPLE_KV_OFFLOAD=1` + 显式不对齐 `--block-size`（config；省略 flag 即免疫）
+  discovery: 2026-09-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

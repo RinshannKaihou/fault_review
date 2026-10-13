@@ -1,0 +1,51 @@
+id: INF-0637
+legacy_ids:
+- '6.244'
+slug: vllm_reset_prefix_cache_success_cpu_offload_tier_keeps_serving_blocks
+aliases: []
+title: vLLM reset_prefix_cache 不清 CPU 卸载层
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: reset_prefix_cache 跨层失效
+  behavior: reset_prefix_cache 端点只调用引擎内 KVCacheManager 的失效路径，不向已注册的 KV connector 广播失效，CPU 卸载层的块生存期独立于引擎侧缓存。
+effect:
+  objects:
+  - 指标/日志
+  - 测试判定
+  detail: 配置 SimpleCPUOffloadConnector 时 /reset_prefix_cache 返回 success，但同 prompt 下一请求由 CPU 层命中（1024-token 实测 external hits +1008）；以 reset 为冷基线的 TTFT/吞吐测量测到暖路径。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + 任一保留 CPU/host 层的 KV connector + `POST /reset_prefix_cache`（config：API 调用即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-19'
+remarks: effect_object 缺“测量基线/控制面操作语义”：admin API 报成功但缓存未真正回到冷态，输出与计数器本身都正确，暂选 指标/日志、测试判定。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57727
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM 配置 KV connector（`SimpleCPUOffloadConnector`）时 `POST /reset_prefix_cache` 返回 `{"success":true}` 并清空 GPU 前缀缓存，但 **connector 的 CPU 卸载层原样保留**：reset 后同 prompt 的下一次请求由外部层服务——GPU 前缀命中计数保持 0，而 `vllm:external_prefix_cache_hits_total` 跳升整个 prompt 长度（1024-token prompt 实测：reset 后 external hits +1008）。端点名与成功响应都暗示引擎回到冷前缀状态，实际不是，且响应与日志均无任何提示。任何以"reset 后发送"为冷基线的测量都在**静默测热路径**；本地前缀缓存与外部层在 reset 语义上分裂（一个清一个不清）） · Cov: `NEW`（管理层 reset 语义跨层不传播子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: reset 端点只调用引擎内 KVCacheManager 的失效路径，不向已注册 KV connector 广播失效——外部层（CPU offload tier）的块生存期独立于引擎侧缓存代际，形成"半冷"状态：GPU 层冷、外部层热，请求路径自动路由到热的外部层。
+  source: 'vLLM #57727（2026-09-19 open，含 stdlib-only 复现脚本、cold/warm/reset/salted 四腿计数器差分与指标读数对照）。https://github.com/vllm-project/vllm/issues/57727'
+  behavior: 无 crash、输出内容正确（外部层命中是合法 KV）——受害者是**测量与实验方法论**：冷启动 TTFT/吞吐评测、前缀缓存 A/B、缓存污染排查全部在不知情下测到暖路径数据；指标侧 GPU 命中率与外部命中率对同一请求给出相反叙述。6.180（Responses prompt_cache_key 静默丢弃）与 K§4 族（cross-request 缓存键污染）之后缓存管理族新成员：本条在 **admin API 语义跨层不传播**维度——损坏的是可观测性与测量基线而非输出。
+  trigger_surface: vLLM + 任一保留 CPU/host 层的 KV connector + `POST /reset_prefix_cache`（config：API 调用即触发）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

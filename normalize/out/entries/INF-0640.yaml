@@ -1,0 +1,57 @@
+id: INF-0640
+legacy_ids:
+- '6.247'
+slug: vllm_skipped_prefix_lookup_requests_counted_full_external_cache_miss_metrics_dilution
+aliases: []
+title: vLLM 跳过前缀查找的请求被计为外部前缀缓存满额 miss
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: vllm
+    component: 外部前缀缓存命中统计
+  behavior: 调度器已对 skip_reading_prefix_cache 请求跳过 KV connector 命中，但外部缓存统计仍按 num_tokens 次查询、0 命中入账，与本地前缀缓存排除此类请求的规则相反。
+effect:
+  objects:
+  - 指标/日志
+  detail: 含 prompt_logprobs 或 pooling 类请求的负载下，vllm:external_prefix_cache_queries/hits 与 External prefix cache hit rate 日志被系统性稀释（复现中降为 0），与并排本地命中率口径不一致；推理输出正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + 任一 KV connector + prompt_logprobs / pooling 类请求（config：默认请求类型即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57596
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM 自 #57269 起 scheduler 对设置 `skip_reading_prefix_cache` 的请求（`prompt_logprobs`、`token_embed`/`token_classify`/`plugin` pooling）**正确跳过使用** KV connector 命中——但该请求仍被记入外部前缀缓存统计的 `num_tokens` 次查询、0 命中：每个此类请求在 `vllm:external_prefix_cache_queries`/`vllm:external_prefix_cache_hits` 与"External prefix cache hit rate"日志行中都计为**满额 miss**。本地前缀缓存对同类请求**有意排除**（`KVCacheManager.record_prefix_cache_stats`："Don''t count a request that skipped the cache lookup"）——并排打印的本地/外部两个命中率对同一请求遵循**不同规则**。CPU 后台 + in-tree ExampleConnector 无 GPU 复现（关闭 prefix caching 使每个 prompt token 都成为 connector 查询、同 401-token prompt 发三次）：metrics 里外部命中率被系统性稀释为 0） · Cov: `NEW`（跳过语义在统计路径不对称传播子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: '#57269 修复了行为路径（不再消费命中）但没同步统计路径——"跳过查找"的语义只在查询侧落地、记录侧仍按"查了且没命中"入账；本地缓存管理器与外部 connector 统计代码各自独立演化出相反约定。'
+  source: 'vLLM #57596（2026-09-18 open，含 CPU 后台 ExampleConnector 三连发复现、metrics reader 代码级定位与本地缓存排除规则引文对照）。https://github.com/vllm-project/vllm/issues/57596'
+  behavior: 无 crash、输出正确——受害者是**可观测性**：混合负载下外部缓存命中率被含 prompt_logprobs/pooling 的流量系统性稀释，容量规划与缓存收益评估读到偏低数字；两个并排命中率遵循不同分母规则使交叉核对必然"发现异常"。6.188（DSV4 mem_usage 恒 0 缺 finalize）与 6.234（HiCacheFile 混合池存在性 min 端点误报）之后指标语义族新成员：本条在**排除规则跨子系统不一致**维度——不是指标缺失而是口径分裂。
+  trigger_surface: vLLM + 任一 KV connector + prompt_logprobs / pooling 类请求（config：默认请求类型即触发）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 观测/评测。按“修复要改哪里”：#57269 已修好行为路径（不再消费命中），剩下的缺陷只在统计记录侧把跳过查找的请求按“查了 0 命中”入账，修复改外部前缀缓存统计代码；词表 观测/评测 明确含 指标、日志。rule 1 的功能域优先是用来压过 算子/内核/编译器/运行时/执行 等通用层的，不改变“指标口径错误归 观测/评测”。KV 存储与命中行为本身无误。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

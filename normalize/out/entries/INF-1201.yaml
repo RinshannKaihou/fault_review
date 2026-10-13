@@ -1,0 +1,53 @@
+id: INF-1201
+legacy_ids:
+- '13.33'
+slug: hf_switch_transformers_token_priority_cumsum_dim_and_router_tie
+aliases: []
+title: SwitchTransformers token 优先级 cumsum 疑错维
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: transformers
+    component: router token_priority 累加
+  behavior: token_priority 的 torch.cumsum 取 dim=-3，报告者按 expert_index 形状质疑应为 -2；另返回的 router_probs 与 router_logits 数值恒等，两点均待维护者裁定。
+effect:
+  objects:
+  - 训练信号
+  - 数值结果
+  detail: 使用 SwitchTransformers 系 MoE 模型即暴露；若成立则无 crash、无 NaN，token 优先级静默错维，MoE 路由的训练/评估信号失真，下游若消费 router_probs 则分布偏差难以从外部察觉。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers + SwitchTransformers 系 MoE 模型（模型选择即暴露；需上游裁定后重估）
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-08-25'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48293
+  kind: github_issue
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（SwitchTransformers token_priority 的 `torch.cumsum(dim=-3)` 疑应为 −2（`expert_index` 形状 `[batch, seq_len, 1, num_experts]`，累加应在 seq_len 维）；同时 router_probs 与 router_logits 输出恒等——维度错误 + 输出恒等两个疑点并存，待官方裁定） · Cov: `NEW` · 触发 `config` · 置信度 `speculative`'
+  mechanism: '`modeling_switch_transformers.py:102` 对形状 `[batch_size, seq_len, 1, num_experts]` 的 `expert_index` 做 `torch.cumsum(token_priority, dim=-3)`——dim=-3 是 seq_len 维（若张量如注释所述）而累加语义按文档应在专家/序列维之一；报告者质疑应为 −2。伴随疑点：返回的 `router_probs` 与 `router_logits` 数值恒等——若 router 输出管线正确，二者经 softmax 后不应全等（或暴露下游从未区分二者）。issue 开放，未获维护者裁定；两条线索均指向 token 优先级/路由辅助损失的计算图可能长期与设计意图不符。'
+  source: 'transformers #48293（2026-08-25 open，"Wrong dim for torch.cumsum(token_priority) & Identical router_probs / router_logits Output"，指向 550d7b38 代码行）。https://github.com/huggingface/transformers/issues/48293'
+  behavior: 待裁定——若 dim 错误成立：无 crash、无 NaN，token 优先级（负载均衡辅助量）静默错维，MoE 路由训练/评估信号失真；推理路径若消费 router_probs 则分布偏差难以从外部察觉。模型图域「**维度超参数与张量语义错配**」待证实例，与 4.11 的归约维度问题不同 locus（本条在模型代码常量而非归约内核）。
+  trigger_surface: transformers + SwitchTransformers 系 MoE 模型（模型选择即暴露；需上游裁定后重估）
+  discovery: |-
+    2026-08-25 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

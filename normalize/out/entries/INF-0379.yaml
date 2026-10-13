@@ -1,0 +1,52 @@
+id: INF-0379
+legacy_ids:
+- '5.32'
+slug: vllm_dbo_ubatch_early_leaver_ring_handoff_none_deref_and_parked_hang
+aliases: []
+title: vLLM DBO 微批早退撕裂 handoff 致崩溃或挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: UBatchContext 微批 handoff
+  behavior: UBatchContext.__exit__ 在其他微批仍运行时清空离开者的上下文槽位；recv-hook 查找只判全局表非空而非 peer 仍在；异常微批不再 yield，exit 信号只释放一次。
+effect:
+  objects:
+  - 可用性/进度
+  detail: DBO/ubatch slicing 下某微批抛异常或提前完成时，幸存微批或因 recv_hook 查找得 None 抛 AttributeError 崩溃，或 parked 在 yield 等待永不到来的 handoff，step 无限挂起。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + DBO/ubatch slicing + 微批异常或提前完成（并发异常路径触发；V2 runner 动机、V1 同修）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55586
+  kind: github_pr
+relations:
+- kind: var
+  target_raw: sglang_pdmux_mixed_batch_deadlock
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（DBO 微批经 `threading.Event` ring handoff 传递控制权，`UBatchContext.__exit__` 在其他微批仍在运行时清空离开者的 `_CURRENT_CONTEXTS` 槽位——(a) 幸存者的 recv-hook 查找返回 None 被解引用 `AttributeError: ''NoneType'' object has no attribute ''recv_hook''`（退出信号恰把幸存者唤醒进这个窗口）；(b) parked 在 yield 的幸存者等待永不到来的 handoff——step 挂起而非失败（raise 的微批不再 yield，exit 信号只释放一次）） · Cov: `var:sglang_pdmux_mixed_batch_deadlock`（6.195 微批生命周期族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`dbo_register_recv_hook` 与 `_register_ubatch_function` 包装器只守卫 `_THREAD_ID_TO_CONTEXT` 非空——这回答"是否有 DBO step 在跑"而非"我的 peer 还在吗"（调用者自身条目使 peer 走后仍非空）。修复把查找路由经单一 `_current_ubatch_context()` helper（调用者已离开即返回 None，跳过而非解引用）+ 给每个 context group 共享 `aborted` event：异常 `__exit__` 置位并唤醒所有 waiter，waiter 恢复时抛 `UBatchAbortedError` 而非继续。修复落在共享 `ubatching.py`，V1/V2 runner 均受益。'
+  source: 'vLLM PR #55586（2026-09-06，含两个回归测试：watchdog join 防 regression 卡死套件）。https://github.com/vllm-project/vllm/pull/55586'
+  behavior: 两种显形——幸存者 crash（NoneType deref）或 **step 无限挂起**（parked 微批无人唤醒）；原测试文件注释自认"挂起而非失败"是已知未修缺陷。「微批生命周期不对称：早退者撕裂共享 handoff 协议」与 6.195（PDMux 混合 batch 死锁）同域，本条在 intra-step 微批 ring 层。
+  trigger_surface: vLLM + DBO/ubatch slicing + 微批异常或提前完成（并发异常路径触发；V2 runner 动机、V1 同修）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

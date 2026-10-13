@@ -1,0 +1,53 @@
+id: TRN-0048
+legacy_ids:
+- PAR.20
+slug: lazy_clone_materialization_unordered_on_stream
+aliases: []
+title: PyTorch _lazy_clone 物化拷贝不按 stream 排序
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: Tensor._lazy_clone 物化拷贝
+  behavior: copy-on-write 张量在首次请求可变指针（如 data_ptr()）时才物化拷贝，该拷贝不在当前 CUDA stream 上排序，CUDA graph capture 时也不被录进图。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 非默认 stream 上物化先于生产 kernel、读到陈旧内存：eager 下随机 CUDA error 与错文本，full CUDA graphs 下确定性 NaN 与错文本；命中链路为 torchtitan vLLM generator + Dist-MoE。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/5125
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: PyTorch copy-on-write 张量（`Tensor._lazy_clone()`）在**首次请求可变指针**（如 `data_ptr()`——恰是 Triton/CuTe DSL 等 raw-pointer launcher 的调用点）时才物化拷贝，而该物化拷贝**不在当前 CUDA stream 上排序**：默认 stream 正确；非默认 stream 上拷贝可能排在该 stream 已排队、仍在产出数据的生产 kernel 之前（物化出陈旧内存）；CUDA graph capture 下拷贝**不被录进图**，每次 replay 都读 capture 时刻的 buffer。`clone()` 无此问题（正常 stream-ordered kernel）。实际命中路径：torchtitan vLLM generator + Dist-MoE（Qwen3.5-35B-A3B、TP=2）——torchtitan 用 spmd_types `redistribute(x, src=I, dst=S(0))` 分片 MoE 输入，`_replicate_to_varying` 做 `chunks[rank].contiguous()`（行 chunk 仍别名输入）后返回 `result._lazy_clone()`；Dist-MoE 经 `data_ptr()` 把该张量喂 Triton/CuTe kernel；vLLM 在专用非默认 stream 跑模型，物化拷贝与产出 MoE 输入的 RMSNorm kernel 竞态。
+  source: 'torchtitan #5125（2026-10-07；上游定位为 PyTorch CoW `_lazy_clone` 物化排序缺失，含 stream 语义三段分析 + torchtitan Dist-MoE 命中链路逐层定位）。https://github.com/pytorch/torchtitan/issues/5125'
+  behavior: 两种表象——eager：随机 CUDA error（illegal address / misaligned address / illegal instruction / cuBLAS 失败）与错文本；full CUDA graphs：**确定性 NaN 与错文本**（每次 replay 读 capture 时刻 buffer）。长期被误判为 Dist-MoE 自身 bug。训练侧凡对 `_lazy_clone` 张量在非默认 stream/graph 下走 raw-pointer kernel 即中招（EMA 权重副本、offload 暂存是常见来源）。与 KER.17（fused RoPE 就地写绕过 version counter）同族「autograd/stream 排序契约之外的隐藏拷贝/写」：那边是别名绕过 version counter、这边是**物化拷贝绕过 stream 排序与 graph 录制**；OBS.14 同为「CUDA graph replay 读到 capture 时刻数据」表象家族但根因在更底层的 PyTorch CoW 原语。截至收录 open、0 评论。
+  discovery: 2026-10-09 每日扫描（停机补扫）
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - detail

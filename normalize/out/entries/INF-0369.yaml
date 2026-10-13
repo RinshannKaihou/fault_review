@@ -1,0 +1,51 @@
+id: INF-0369
+legacy_ids:
+- '5.22'
+slug: sglang_mooncake_pd_mamba_ssm_dtype_item_length_mismatch_state_corruption
+aliases: []
+title: SGLang PD 两端 SSM dtype 不一致致状态静默错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: Mooncake PD SSM state 传输
+  behavior: PD 两端各自解析 Mamba SSM state dtype，传输层用源端 item length 同时定拷贝长度和目的 slot stride 且无校验；两端 dtype 不同时目的 state 布局错位。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: Kimi-K3 + ReplaySSM 部署中 prefill 默认 BF16、decode 开 --enable-linear-replayssm-spec 强制 FP32 时无错误、HTTP 200，多轮/长上下文输出质量严重退化，短输出可能看似正常；两端对齐 dtype 即恢复。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Mooncake PD + hybrid/SSM 模型 + 两端 Mamba SSM dtype 配置不一致（默认路径即可踩中；机制可迁移）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36371
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（equal-TP Mooncake PD 分离式下 SGLang 静默接受 prefill/decode 两端**不同的 Mamba SSM state dtype / item length / 布局**——传输用**源端** item length 同时做拷贝长与目的 slot stride，recurrent state 布局错位写入：无错误、HTTP 200，长/多轮输出质量严重退化；显式对齐两端 dtype 即恢复） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: Kimi-K3 + ReplaySSM 的 Mooncake PD 部署中，prefill 端未显式设置 Mamba SSM dtype 解析为 BF16 存储，decode 端 `--enable-linear-replayssm-spec` 曾强制 FP32——两端各自注册成功，KV/SSM 传输层以源端 item length 决定 copy 长度与目的地 slot stride，dtype 不一致时目的 recurrent state 布局错位（FP32↔BF16 元素尺寸/布局不同），无任何校验或告警。显式把两端对齐到同一 dtype（FP32 或 BF16 均可）输出语义恢复。与 5.17（hetero TP replicated GQA head 传输 gap）同为 PD 传输两端**独立协商出的形状/布局失配**族，但本条在 SSM state 且静默。
+  source: 'SGLang #36371（2026-08-25 closed，GB300、TP8/DCP8、FP8 E4M3 KV、block size 7；含 BF16 双端成功对照）。https://github.com/sgl-project/sglang/issues/36371'
+  behavior: '**无 crash、静默状态损坏**——多轮/长上下文质量严重退化（state 布局错位后每步递推都基于错误状态），短输出可能看似正常；两端 ServerArgs 各自合法使配置审计失效。属「**PD 两端独立解析无握手校验的传输布局失配**」新子签名。'
+  trigger_surface: SGLang + Mooncake PD + hybrid/SSM 模型 + 两端 Mamba SSM dtype 配置不一致（默认路径即可踩中；机制可迁移）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0518
+legacy_ids:
+- '6.125'
+slug: vllm_voxtral_zero_embed_fallback_infinite_decode_hang
+aliases: []
+title: vLLM Voxtral 零嵌入 fallback 致无限解码与全引擎 hang
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: Voxtral 空嵌入零填充 fallback
+  behavior: Realtime 模型收到空 multimodal embeddings 时，防御性 fallback 以零嵌入替代输入以避免 crash，且该路径缺乏解码终止条件。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Voxtral-Mini-4B-Realtime 经 /v1/audio/transcriptions 处理某特定 WAV 时，模型永不输出 EOS、无限解码（GPU 100%），/health 停止响应，只能 kill 进程；同文件确定性复现。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM V1；Voxtral-Mini-4B-Realtime + /v1/audio/transcriptions + 触发空嵌入的音频输入
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52926
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（实时音频特定输入产生空 multimodal embeddings，零嵌入 fallback 永不产生 EOS → 单请求无限解码、全引擎永久 hang） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: Voxtral-Mini-4B-Realtime 的 `/v1/audio/transcriptions` 路径：某个特定 WAV（16kHz/mono/5.4s，RMS 统计与同批 9 个正常文件几乎相同）触发 `Realtime model received empty multimodal embeddings for 1 input tokens. Returning zero embeddings to avoid engine crash.`（`voxtral_realtime.py:305`）的防御性 fallback；零嵌入输入使模型**永不输出 EOS**，引擎对该请求无限解码（GPU 100%、VRAM 21/24GB），`/health` 停止响应，只能 kill 进程。同文件确定性复现两次；前 150 个同批请求全部成功。该 fallback 以"避免 crash"为名把输入层故障转换成活性故障。
+  source: 'vLLM #52926（2026-08-19 open，vLLM v0.27.1 V1 engine，附复现 WAV 链接；已排除 #38233 encoder-cache 饱和与 #45022 boot-OOM 两类既有 Voxtral hang）。https://github.com/vllm-project/vllm/issues/52926'
+  behavior: 全引擎永久 hang（活性故障，非静默损坏）——单请求把整个服务变成不可响应。属「防御性零填充 fallback × 无界解码循环」**新子签名**：静默 fallback（避免 crash）+ 缺乏终止条件 = DoS。与 6.x 其他 hang 族差异：根因在**输入嵌入为空的 guard 分支**而非调度/缓存。
+  trigger_surface: vLLM V1；Voxtral-Mini-4B-Realtime + /v1/audio/transcriptions + 触发空嵌入的音频输入
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 调度/服务
+        status: panel7

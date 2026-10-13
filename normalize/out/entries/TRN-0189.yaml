@@ -1,0 +1,54 @@
+id: TRN-0189
+legacy_ids:
+- SFT.12
+slug: trajectory_split_default_scale_reweights_turns
+aliases: []
+title: ms-swift 多轮轨迹拆分时默认 loss_scale 重复计权前段轮次
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: 多轮调度器轨迹拆分 loss_scale
+  behavior: 多轮调度器把同一轨迹按轮拆成多条训练样本时，默认 loss_scale 让每轮 assistant 内容都全权计入 loss，前几轮在多条样本中被重复训练；默认值不随拆分模式切到 last_round，也无警告。
+effect:
+  objects:
+  - 训练样本流
+  - 梯度
+  detail: 不叠加序列并行时无报错：前段/中间轮次 token 的有效梯度权重按拆分轮数放大，训练静默偏向对话前段行为；叠加 SP 时非整除维度直接 AssertionError。需显式 loss_scale=last_round 规避。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/9996
+  kind: github_issue
+relations: []
+original:
+  category: SFT
+  section: SFT
+  meta: 'stage: `sft/rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: ms-swift 多轮调度器把同一条对话轨迹**拆成多条训练样本**（每轮一条）时，默认 `loss_scale` 权重使每一轮的 assistant 内容都按全权计入 loss：同一轨迹的前几轮在多条样本中被**重复训练**、非末轮拿到与末轮相同的权重——loss 面向的不是「每条轨迹一次」而是「每轮一次、前段轮次被放大」。维护者确认拆分场景必须显式 `loss_scale=last_round`，「不然前面轮次可能会多次训练」；该约束无警告、默认值不跟随拆分模式，且该调度路径已被标记将移除。叠加面：拆分 + 序列并行不兼容（非整除维度直接 assert，fail-fast；`padding_free` 同不支持）。
+  source: 'ms-swift #9996（GRPO 多轮重载 run 拆轨迹，SP 下 `AssertionError: The dimension to split (1533) is not a multiple of world size (2)`；维护者 hjh0119 2026-08-28 确认「多轮的和sp还没兼容」「megatron 的 sp/cp 是支持的，实现不同。但是 megatron 多轮不支持拆分为多条的场景」「拆分多条的场景，使用 last_round」；日志含 deprecation 警告）。https://github.com/modelscope/ms-swift/issues/9996'
+  behavior: 静默面（不叠 SP 时）无报错：早期/中间轮次 token 的有效梯度权重按拆分轮数放大，训练静默偏向对话前段行为，无日志指出权重语义已从「每轨迹一次」变成「每轮一次」。与 SFT.03（mask 丢末轮）对偶：那边丢轮次、这边重复计权；与 DATA.03（prompt 计入 loss）同族——样本内容没错，错在**哪些 token 以多大权重进 loss** 的语义随调度器行为静默分叉。
+  discovery: 2026-09-03 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

@@ -1,0 +1,55 @@
+id: INF-0936
+legacy_ids:
+- '10.20'
+slug: vllm_muse_glimmer_parser_drops_completed_reasoning_blocks_on_truncation
+aliases: []
+title: vLLM Muse Glimmer 推理解析器截断时丢弃已完成块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: Muse Glimmer 推理解析器
+  behavior: extract_reasoning 在 collapse 串（已吃掉早先块的 <|eom|>）上做闭合块匹配，却在未 collapse 原文上做截断 fallback；末块未终止时闭合匹配为空，fallback 只取最后开放块。
+effect:
+  objects:
+  - 输出内容
+  detail: 多 reasoning 块且末块因 max_tokens/abort 未终止时触发；如 A/B/C 三块在 C 内截断，客户端只收到 C，A、B 整块静默消失；流式与非流式返回也不一致。无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；Muse Glimmer 模型 + 多 reasoning 块 + max_tokens 截断（或 abort）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: subsystem 缺“输出解析（reasoning/tool parser）”：解析器把生成文本切分为 content/reasoning/tool_calls，既非 detokenize 也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52465
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（reasoning parser 在 collapse 串与原文串两个不同字符串上分别匹配 → 截断时丢弃已完成块） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 'Muse Glimmer reasoning parser 的 `extract_reasoning` 在 `collapsed`（`_COLLAPSE_RE` 把连续 reasoning 块之间的间隔改写为换行、吃掉每个早先块的 `<|eom|>`）上跑 closed-block 匹配，却在 `model_output`（未 collapse 原文）上跑截断 fallback。当最后一块因 max_tokens/abort 未终止时，merged span 里没有任何 `<|eom|>`，closed-block 正则匹配不到 → `reasoning=None`；fallback 又只在原文里找到最后那个仍开着的块。三块 A/B/C 在 C 内截断时，客户端只收到 "C"，**A、B 整块消失**。流式与非流式路径对同一生成也不一致。修复（PR #52465）统一在 collapse 串上匹配。'
+  source: 'vLLM PR #52465（2026-08-15 open）。组件 Muse Glimmer reasoning parser。https://github.com/vllm-project/vllm/pull/52465'
+  behavior: 无 crash。**已完成的 reasoning 内容在截断时被静默丢弃**，且流式/非流式返回不一致——上游按 reasoning 内容做路由/评估的管线会静默丢数据。属「同一文本的两个变换视图上分别做匹配 → 语义丢失」**新子签名**（解析器状态一致性）。
+  trigger_surface: vLLM；Muse Glimmer 模型 + 多 reasoning 块 + max_tokens 截断（或 abort）
+  discovery: 2026-08-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

@@ -1,0 +1,60 @@
+id: INF-1040
+legacy_ids:
+- '11.16'
+slug: vllm_minimax_m3_structured_output_silently_ignored_thinking
+aliases: []
+title: vLLM MiniMax-M3 thinking 下结构化输出被静默忽略
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: MiniMax-M3 推理结束检测
+  behavior: 推理结束检测在 _reasoning_active_streaming 置位时早返回 False，该 flag 只由前端 detokenizer 路径清除、scheduler 从不清除，thinking 下 grammar 永不启用。
+effect:
+  objects:
+  - 输出内容
+  detail: 'MiniMax-M3 + thinking_mode: enabled + response_format json_schema/json_object 时，服务器返回 HTTP 200 和无约束 prose，structured output 被静默忽略，无警告。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 'vLLM 主路径；MiniMax-M3 + `thinking_mode: enabled` + structured output'
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51230
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（thinking 启用时 structured output gate 永不触发 → grammar 静默不启用） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: 'MiniMax-M3 启用 `thinking_mode: enabled` 时，structured output（`response_format: json_schema`/`json_object`）被**静默忽略**——服务器返回 HTTP 200 + 无约束 prose。根因：`StructuredOutputManager.should_advance` 调用请求局部 parser 的 `is_reasoning_end_streaming`，但 `MiniMaxM3ReasoningParser.is_reasoning_end_streaming` 在 `_reasoning_active_streaming` 置位时早返回 `False`，而该 flag **只被** frontend/detokenizer 的 `extract_reasoning_streaming` 清除（scheduler 从不调用）。`thinking_mode: enabled` 时 flag 初始化 `True` → detection 永不触发 → `reasoning_ended` 不锁存 → `should_fill_bitmask` 永远 `False` → grammar 不启用 → 请求正常完成，对客户端不可见。'
+  source: 'vLLM PR #51230（2026-08-06 open）。https://github.com/vllm-project/vllm/pull/51230'
+  behavior: 无 crash、无 NaN、无警告。structured output 静默失效，服务器返回无约束 prose 且 HTTP 200。属「reasoning parser 状态机与 scheduler gate 分离 → structured output 静默旁路」新子签名——post-forward 结构性盲点。
+  trigger_surface: 'vLLM 主路径；MiniMax-M3 + `thinking_mode: enabled` + structured output'
+  discovery: 2026-08-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 解码/采样：rules 功能域优先——缺陷（MiniMaxM3ReasoningParser 的 _reasoning_active_streaming 标志只由前端清除）只在 structured output gate（should_advance/should_fill_bitmask）路径上生效，后果是 grammar 不启用；词表 解码/采样 含结构化输出。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 输出解析
+        status: panel7

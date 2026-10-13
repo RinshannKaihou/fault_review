@@ -1,0 +1,52 @@
+id: INF-0845
+legacy_ids:
+- '8.61'
+slug: xpu_gdn_attention_ragged_ngram_draft_length_assert_engine_death
+aliases: []
+title: XPU gdn_attention 遇 ragged draft 断言致引擎死亡
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: gdn_attention 推测 token 计数
+  behavior: XPU gdn_attention 的 AOT 编译子模块按 batch 内 draft 长度均匀的假定计算 spec_token 总数，ngram 部分匹配产生的 ragged draft 长度使 shape 不符而触发内核断言
+effect:
+  objects:
+  - 可用性/进度
+  detail: Intel XPU 上 hybrid GDN 模型启用 ngram 推测解码时，常规部分匹配即触发 assert（单流即可、非混合 batch/空 draft），EngineDeadError 致引擎关闭、请求返回 500，需重启服务
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Intel XPU + hybrid GDN 模型 + `--speculative-config {"method":"ngram"}`（config 组合即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54740
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_pd_mamba_spec_padding_window_align_clip_mismatch
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（XPU `gdn_attention` 内核要求 batch 内 speculative draft 长度均匀——ngram 部分匹配产出 **ragged** draft 长度（单流即可触发，非混合 batch、非空 draft）：`Expected spec_token == num_spec_decodes * (num_speculative_tokens + 1)` assert → EngineDeadError → 500；survives #53077 修复） · Cov: `var:vllm_pd_mamba_spec_padding_window_align_clip_mismatch`（6.172 ragged-draft × Mamba/GDN 路径族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`ngram` 方法按部分 n-gram 匹配 draft 少于 `num_speculative_tokens` 个 token（ragged per-request 长度）；XPU `gdn_attention` 的 AOT 编译子模块以均匀 draft 假定计算 `spec_token` 总数，shape 不符即 kernel 级断言。调用链 qwen3_5.py:591 → qwen3_next.py:627 → AOT submodule → `_xpu_C.gdn_attention`。引擎不可恢复（fatal error + shutdown）。'
+  source: 'vLLM #54740（2026-09-01 open，单流复现、`vllm/_xpu_ops.py:171`、明确排除 mixed-batch 与 empty-draft 两情形）。https://github.com/vllm-project/vllm/issues/54740'
+  behavior: crash（EngineDeadError）——服务级死亡需重启；触发是常规 ngram 部分匹配（无需特殊输入），单流命中。6.172（PD Mamba spec padding 窗口穿过 align 裁剪）在 XPU gdn_attention 的新显形面：ragged draft 与均匀假定内核的组合正确性缺口，彼条静默损坏、本条 fail-loud。
+  trigger_surface: Intel XPU + hybrid GDN 模型 + `--speculative-config {"method":"ngram"}`（config 组合即触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

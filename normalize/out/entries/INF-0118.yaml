@@ -1,0 +1,50 @@
+id: INF-0118
+legacy_ids:
+- '1.119'
+slug: ttmetal_matmul_multicore_reuse_oversubscribed_block_silent_drop
+aliases: []
+title: MatmulMultiCoreReuse 块数超核数时过剩块静默不算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: MatmulMultiCoreReuse 块数校验
+  behavior: 程序隐式假定每核恰写一个输出块，但块数超过核数时无校验：校验函数对 interleaved 输入（sharded==nullptr）提前 return，过剩输出块永不被计算。
+effect:
+  objects:
+  - 数值结果
+  detail: Blackhole 110 核、per_core_M=5 得 128 块时输出尾部保留 buffer 旧内容，PCC≈−0.000009，无错误无警告；若先跑的 matmul 在同 buffer 留下正确值则误判通过、像非确定。MLA wkv_b2 生产 shape 可达。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `MatmulMultiCoreReuseProgramConfig` + interleaved 输入 + num_output_blocks > 核数（MLA wkv_b2 大 batch 生产 shape 可达）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54798
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（MatmulMultiCoreReuse 隐式契约"每核恰写一个输出块"× 过订阅无校验：blocks=128 > grid 110 核时**过剩块永不被计算**，输出尾部保持 buffer 原有内容，无错误无警告；校验函数对 interleaved 输入提前 return） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 块数 = `batch × (M_t/per_core_M) × (N_t/per_core_N)`；`validate_matmul_reuse_sharded_output_block_divisibility` 已算出 `num_output_blocks` 并与核数比较，但 `if (sharded == nullptr) return;` 使 interleaved 输入完全绕过。复现：Blackhole 11×10=110 核、batch 32、`[20,16]×[16,4]` tile（MLA `wkv_b2` 640-token 生产 chunk）、`per_core_M=5` → 128 块，PCC vs torch = **−0.000009**（3 连跑稳定）；`per_core_M=10`（64 块）同 shape PCC 0.999917。更隐蔽：先跑过的 matmul 把正确值留在同一 buffer，过订阅 config 后跑"通过"——失败被运行顺序掩盖，初看像非确定。
+  source: 'tt-metal #54798（2026-08-29 open，含 PCC 对照与运行顺序掩盖分析）。https://github.com/tenstorrent/tt-metal/issues/54798'
+  behavior: 无 crash——**部分正确 + 部分 stale/未初始化混合**的输出；buffer 偶然持有历史正确值时读回 pass（测试顺序依赖的假阴性）。属「隐式契约 × 未校验过订阅」新子签名，与 1.35（K-tile pad 未初始化 L1）同"输出 buffer 旧内容当结果"域但本条由块数算术触发且可用运行顺序掩盖。
+  trigger_surface: tt-metal + `MatmulMultiCoreReuseProgramConfig` + interleaved 输入 + num_output_blocks > 核数（MLA wkv_b2 大 batch 生产 shape 可达）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

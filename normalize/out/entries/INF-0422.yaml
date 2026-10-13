@@ -1,0 +1,60 @@
+id: INF-0422
+legacy_ids:
+- '6.29'
+slug: vllm_minimax_m3_fp8_query_alloc_unstable_cudagraph_replay
+aliases: []
+title: MiniMax-M3 query_fp8 分配跨 graph 回放不稳定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: MiniMax-M3 query_fp8 分配条件
+  behavior: query_fp8 在 eager CUDA-graph break 之外分配，但分配条件依赖在 eager attention 段内重新评估的动态请求 metadata，跨 capture/replay 不稳定。
+effect:
+  objects:
+  - 可用性/进度
+  detail: FP8 + CUTLASS MSA + CUDA graph 下，graph 在无 CUTLASS plan 时捕获、replay 时请求已可走 CUTLASS，eager CUTLASS 路径收到 query_fp8=None，assert query_fp8 is not None 失败崩溃。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；MiniMax-M3 + FP8 + CUTLASS MSA + CUDA graph capture/replay
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51203
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（CUDA graph capture/replay 间 FP8 query 分配条件依赖动态 metadata → replay 时 None → assert） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: MiniMax-M3 在 eager CUDA-graph break 外分配 FP8 query buffer（`query_fp8`），但当前分配条件依赖**在 eager attention 段内重新评估的请求 metadata**（动态）。一个在**无 CUTLASS MSA plan** 时捕获的 CUDA graph，后来在 replay 时可能已有合法 plan（因为 per-request CUTLASS-vs-Triton 决策在 eager 段内做）→ eager CUTLASS 路径收到 `query_fp8=None` 并在 `assert query_fp8 is not None` 失败。根因是分配条件跨 capture/replay **不稳定**（依赖 replay 时才确定的动态量）。修复：当配置支持 CUTLASS decode 时**总是**分配 `query_fp8`（capture/replay 间静态），把 per-request CUTLASS/Triton 决策保留在 eager 段内。
+  source: 'vLLM PR #51203（2026-08-05 open）。组件：MiniMax-M3 FP8 query 分配 + CUTLASS MSA + CUDA graph。https://github.com/vllm-project/vllm/pull/51203'
+  behavior: crash（`assert query_fp8 is not None`），非静默。CUDA graph 在无 CUTLASS plan 时捕获、replay 时变 CUTLASS-eligible → FP8 query 为 None → assert 失败。属「CUDA graph capture/replay 间 FP8 query 分配条件依赖动态 metadata → 不变量破裂」新子签名。与 K8.7 `cudagraph_padded_batch_stale_block_table`、6.x CUDA-graph replay 静态缓冲问题同族，但对象是 **FP8 query 分配条件**而非 block-table/slot/mamba track。
+  trigger_surface: vLLM 主路径；MiniMax-M3 + FP8 + CUTLASS MSA + CUDA graph capture/replay
+  discovery: 2026-08-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 模型定义：出错的是 MiniMax-M3 建模代码中 query_fp8 相对 CUDA graph break 的分配条件（原文“分配条件跨 capture/replay 不稳定”），不涉及 scale/量化方案本身；FP8 + CUTLASS MSA 属 rule 所说触发条件。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 运行时/执行
+        status: unanimous

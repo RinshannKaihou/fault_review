@@ -1,0 +1,54 @@
+id: INF-1271
+legacy_ids:
+- K6.6
+slug: quest_page_minmax_criticality_underestimate
+aliases: []
+title: Quest 页 Min/Max 重要性估计漏选关键页
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: Quest 页重要性 Top-K 选择
+  behavior: Quest 在 decode 时只加载 Top-K 页，用 query 与每页 Min/Max Key 的逐通道乘积估计页重要性；若页内唯一关键 token 不主导 min/max 包络，该页可能落在 Top-K 外被跳过。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 原文按机制推断：特定 query 上出现静默检索失败（针尖 token 所在页被跳过），注意力低估真正的 argmax token；其余 decode 步与其他 query 完全正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: 非 vLLM 一等实现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2406.10774
+  kind: arxiv
+relations: []
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: Quest 保留全部 KV，但在 decode 时只加载 Top-K 页，用 query 与每页 Min-Key/Max-Key 元数据的逐通道乘积（一个上界）估计页的重要性；若某页里唯一的关键 token 不主导该 min/max 包络，该页就可能排在 Top-K 之外被跳过 → query 注意到错误的页。
+  source: Quest arXiv:2406.10774（ICML'24）。
+  behavior: 源文档未单列该字段；由机制可得——特定 query 上出现静默的检索失败（针尖 token 所在页被跳过），同一模型对其他 query 表现完全正常。
+  trigger_surface: 非 vLLM 一等实现
+  signature: ambiguous——只在「被跳过的页恰好持有真正的最大值」这一触发条件下才出现签名，其余 decode 步与健康运行逐位一致。触发时在该 query token 处离流形：注意力输出低估真正的 argmax token，注意力 top-k 召回相对稠密注意力下降（attention-map / cheap 的 top-k 召回探针可见）。会漏检：所有对全序列取平均的 statistical/geometric 指标（单步事件被平均掉），以及不做逐步对齐的 trajectory 指标。
+  repro: （方案）把 prefill KV 按固定页大小分块，用每页的 Min-Key/Max-Key 包络与当前 query 计算 Quest 的上界打分，强制**跳过**（置零或排除出注意力）真实 argmax key 所在但打分排名跌出 Top-K 的那一页；单钩子即可实现，但需在 decode 步逐步计算打分，故只算 partial。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

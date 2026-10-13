@@ -1,0 +1,52 @@
+id: INF-0983
+legacy_ids:
+- '10.67'
+slug: vllm_truncate_prompt_tokens_applied_before_multimodal_expansion_final_prompt_overrun
+aliases: []
+title: vLLM 截断早于多模态占位符展开致 prompt 超限
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: prompt 截断与多模态展开次序
+  behavior: 渲染管线在多模态占位符扩展之前执行 truncate_prompt_tokens，按扩展前 token 数计算限额，单 token 占位符扩展为数百音频 token 后不再校正。
+effect:
+  objects:
+  - 输入编码
+  detail: Qwen3-ASR 请求截断到 96 token 实际 prompt 为 147 token，请求被接受但超限；完整音频 span 本可放入 96 窗口。按上下文/KV 预算或计费的下游假设静默失准。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `truncate_prompt_tokens` + 多模态（音频/图像）占位符输入（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57038
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: rope_offload_pretokenized_mask_length_drift
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`ambiguous`（vLLM `truncate_prompt_tokens` 在渲染管线中于**多模态占位符扩展之前**作用：占位 `<|audio_pad|>` 单 token 在扩展后变为数百音频 token，截断限额按扩展前 token 数执行 → 最终 prompt 超出请求限额。Qwen3-ASR 实测：请求 96 token 返回 **147 token**；完整音频 span 本可放入 96-token 窗口（span.offset+span.length ≤ 96），即无需截断/丢弃音频也能合规——纯管线次序缺陷。无权重最小复现（4 秒静音 + 真实 processor）） · Cov: `var:rope_offload_pretokenized_mask_length_drift`（9.19 截断/长度计算作用于错误流水线阶段族） · 触发 `config` · 置信度 `verified`'
+  mechanism: 截断点的语义基准（"最终送入模型的 token 序列"）与实现的作用点（占位符展开前的 token 序列）错位；多模态扩展系数（音频 ~每秒数十 token）放大差额，文本位被保留而限额被突破。
+  source: 'vLLM #57038（2026-09-15 open，含无权重复现脚本（AutoProcessor 对照、span 偏移断言）与扩展前后 token 计数演示（96 → 147））。https://github.com/vllm-project/vllm/issues/57038'
+  behavior: 无 crash——请求被接受但实际 prompt 超限；下游按 `max_model_len`/上下文预算做的假设（位置预算、KV 预算、计费）静默失准，超长请求可能随后在别处触发截断/拒绝的连锁。9.19（pretokenized 重分词 mask 长度漂移）之后"长度语义作用点错位"族新成员：本条在**多模态扩展边界**维度。
+  trigger_surface: vLLM + `truncate_prompt_tokens` + 多模态（音频/图像）占位符输入（config）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

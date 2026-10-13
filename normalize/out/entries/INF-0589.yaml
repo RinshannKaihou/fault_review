@@ -1,0 +1,51 @@
+id: INF-0589
+legacy_ids:
+- '6.196'
+slug: sglang_spec_custom_mask_torch_cat_unbounded_growth_stale_mask
+aliases: []
+title: SGLang EAGLE/DFlash custom_mask 只增不减
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: EAGLE/DFlash custom_mask
+  behavior: generate_attn_arg_prefill 在 batch 增大时用 torch.cat 追加 True padding 扩展 custom_mask 并存回 self，只增不减；超出当前 batch 的陈旧条目留在张量中。
+effect:
+  objects:
+  - 性能/资源
+  - 数值结果
+  detail: batch 尺寸波动时 GPU 显存随峰值 batch 无界增长，长时间运行最终 OOM；若注意力内核读越当前 batch 边界则吃到过期掩码；无即时错误，波动越大越快显形。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + EAGLE/DFlash 推测解码 + batch 尺寸波动（负载触发；波动越大越快显形）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37553
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（EAGLE/DFlash 推测解码的 `generate_attn_arg_prefill` 在 batch 增大时用 `torch.cat` 追加 True padding 扩展 `custom_mask` 并存回 `self`——**掩码永不收缩**：GPU 内存无界增长 + 陈旧掩码数据继续喂注意力内核） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 跨 decode step 复用的可变状态按"只增不减"策略扩张（cat 到足够大即止），两个后果分开成立：(1) 高峰值 batch 决定的 mask 尺寸永占显存（泄漏式增长）；(2) 超出当前 batch 的陈旧条目留在张量里，若内核读越当前 batch 边界即吃到过期掩码。`eagle_info.py:123-136`/`dflash_info.py:190-204` 双站点同型。
+  source: 'SGLang #37553（2026-09-02 open，双文件定位 + 根因代码摘录）。https://github.com/sgl-project/sglang/issues/37553'
+  behavior: 双效显形——长时间运行显存无界增长（最终 OOM）+ 掩码语义随 batch 历史漂移；无即时错误。与 6.150（SWA store-skip）同为 spec decode 状态管理缺陷，本条是**可变共享状态的伸缩策略错误**（cat-and-keep）。属「**按峰值累积的复用缓冲永不释放**」新子签名：内存泄漏与陈旧数据同源。
+  trigger_surface: SGLang + EAGLE/DFlash 推测解码 + batch 尺寸波动（负载触发；波动越大越快显形）
+  discovery: 2026-09-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: TRN-0260
+legacy_ids:
+- OBS.11
+slug: synthetic_padding_dilutes_rollout_correction_metrics
+aliases: []
+title: verl 离策略诊断均值计入合成 padding 行，训推偏移被低估
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: verl
+    component: compute_offpolicy_metrics
+  behavior: _balance_batch 补入 response_mask=0 的 padding 行，compute_offpolicy_metrics 对所有行取平均，padding 行以 logprob 均值 0 / PPL 1 计入而未剔除。
+effect:
+  objects:
+  - 指标/日志
+  detail: 无 crash；padding 行越多，rollout_corr/log_ppl_abs_diff、training_ppl 等训推 gap 指标越小（同批加 0/1/3 行单调漂移），真实 token 的 logprob 不变；下游 is_padding 过滤救不回已算入的均值。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7771
+  kind: github_issue
+relations: []
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: verl V1 `_step_once` 无条件调用 `_balance_batch`，其 padding 模板设 `response_mask=0`、`is_padding=True`；`_compute_advantage` 把含 padding 行的整批传给 `compute_offpolicy_metrics`，后者算 masked per-sequence 均值后**对所有行取平均**——零有效 token 的 padding 行贡献 logprob 均值 0 / PPL 1，而不是被剔除。下游 `_compute_metrics` 的 `is_padding` 过滤救不回这些已算进均值的指标。padding 行越多，报告的训练-推理 gap（`rollout_corr/log_ppl_abs_diff`、`training_ppl`）显得越小——而每个真实 token 的 logprob 一字未动。
+  source: 'verl #7771（CPU-only 合成张量复现：同一 batch 加 0/1/3 条 padding 行，指标单调漂移；调用链逐行定位 padding_utils / trainer_base / rollout_corr_helper）。https://github.com/verl-project/verl/issues/7771'
+  behavior: 无 crash；RL-RO 诊断面板系统性低估训练-推理偏移，padding 量随 batch 几何波动→gap 指标带非模型因素的伪趋势。与 OBS.09（gathered 均值重复计 padding）同族但方向相反：那边**多算**、这边把真实差异**稀释**；与 RL-RO 条目（TIM 本体）的关系是诊断层：本条不改训练目标，只让最常用来发现 TIM 的仪表失准——观测骗过直接削弱 RL-RO 家族的检测面。
+  discovery: 2026-09-09 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

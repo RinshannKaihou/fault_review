@@ -1,0 +1,52 @@
+id: INF-0124
+legacy_ids:
+- '1.125'
+slug: ttmetal_tanh_bw_fp32_inherits_bf16_asymptotic_tail
+aliases: []
+title: tanh_bw fp32 路径沿用 BF16 渐近尾式致导数偏大
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: tanh_bw 渐近尾式（fp32 路径）
+  behavior: tanh_derivative 的 |x|≥3 尾分支返回 4·exp(−2|x|)，丢掉分母 (1+exp(−2|x|))⁻²；该近似按 BF16 精度目标设计，却被 fp32 路径原样复用，BF16 穷举校验全绿使缺陷存活。
+effect:
+  objects:
+  - 梯度
+  detail: FLOAT32 输入 |x|≥3 时 sech² 偏大最多 65,346 fp32 ULP（相对误差 4.96e-3），|x|=3.0 处阶跃不连续；BF16 路径仅 1 ULP；训练梯度/微分校验在 |x|≈3 邻域失真。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal SFPU tanh_bw + FLOAT32 输入 + |x|≥3（hw_specific 数值路径）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54882
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.tanh_bw` 的 **fp32 路径**复用按 BF16 精度目标设计的渐近尾式——`ckernel_sfpu_tanh_derivative.h` 尾分支返回 `4·exp(−2|x|)`，丢掉自身 API 文档给出的恒等式分母 `(1+exp(−2|x|))⁻²`：|x|≥3 时 sech² 偏大最多 **65,346 fp32 ULP**（相对误差 4.96e-3），|x|=3.0 处**阶跃不连续**；BF16 路径 1 ULP） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`CORE_REGION_LIMIT = 3.0f` 分支的尾式注释自述「对 |x|≥3 精确到 1 BF16 ULP」——精度承诺按 BF16 有效位（8 bit mantissa）成立，被 fp32 路径原样继承后在 fp32 的 24 位 mantissa 尺度下成为千分位级误差。BF16 穷举校验全绿正是缺陷存活的直接原因（校验 dtype 与近似目标 dtype 重合）。ttsim Blackhole、4094 点几何抽样、golden 对独立 60 位计算 bit-exact（测的是 kernel 不是参考）。'
+  source: 'tt-metal #54882（2026-08-29 open，含逐点 ULP 表与 2.9999/3.0000 阶跃对照）。https://github.com/tenstorrent/tt-metal/issues/54882'
+  behavior: 无 crash、无 NaN——fp32 反向 tanh 导数静默偏大 ~0.5%，训练梯度/微分校验在 |x|≈3 邻域出现阶跃状失真。属「**近似式的 dtype 限定符未随路径传播**」新子签名：与 1.126（digamma fp32 继承低精度 log 体）同日同构造；与 1.50（域外饱和常数）的区别在本条在**域内**且误差连续可控。
+  trigger_surface: tt-metal SFPU tanh_bw + FLOAT32 输入 + |x|≥3（hw_specific 数值路径）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

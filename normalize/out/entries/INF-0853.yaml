@@ -1,0 +1,56 @@
+id: INF-0853
+legacy_ids:
+- '8.69'
+slug: vllm_rocm_aiter_mla_qseqlen8_gfx942_missing_kernel_abort
+aliases: []
+title: AITER MLA 超支持域 abort 杀测试进程且容差低于 ULP
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: AITER MLA query_len 支持声明
+  - subsystem: 观测/评测
+    stack: vllm
+    component: chunked-context MLA 测试容差
+  behavior: ROCM_AITER_MLA 宣称支持多 token 查询，但 gfx942 无 gqa_ratio≥16、qseqlen>4 的 kernel，守卫只覆盖 heads<16；另测试容差 1e-2 低于 1 bf16 ULP
+effect:
+  objects:
+  - 可用性/进度
+  - 测试判定
+  detail: gfx942 上 spec decode query_len>4 + bf16 KV 时 kernel 查找失败，修复前 aiter 以 std::abort 杀死 pytest worker 及同 shard 测试；另有 2 ULP 正常舍入差被判失败（假阳性）
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm + ROCM_AITER_MLA + spec decode query_len>4 + bf16 KV（gfx942）（hw_specific；后端×查询长度触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55609
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_fp8_kv_sparse_mla_sm90_storage_dtype_startup_reject
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（`ROCM_AITER_MLA` 被无条件加入 ROCm 测试后端并宣称多 token 查询支持，但 aiter 的 `get_heuristic_kernel_mla` 在 gfx942 上无 `gqa_ratio>=16, qseqlen>4` 的 persistent bf16 kernel（查找表止于 qseqlen 4）——查找失败；修复前 aiter 以 `std::abort()` 失败、直接杀死 pytest worker 连带整个 shard 的其他测试（ROCm/aiter#5297 引入 ctypes error-bridge 后才变为可捕获 RuntimeError）；另 chunked-context v_head_dim=256 bf16 的测试容差 atol/rtol=1e-2 **低于 1 bf16 ULP**——2 ULP 差（2.03125 vs 2.0）被误判失败） · Cov: `var:vllm_fp8_kv_sparse_mla_sm90_storage_dtype_startup_reject`（8.62 后端能力矩阵族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 后端宣称的 query_len 支持域与 aiter kernel 家族实际覆盖域（gfx942 表止于 4 / gfx950 有 qseqlen-8 折叠 kernel）不一致；`_ASM_PADDED_MAX_PS_QLEN` 守卫只覆盖 `_decode_num_heads < 16`。容差问题独立：bf16 在量级 ~2 处 1 ULP=0.0156，一元素/2,883,584 差 2 ULP 属正常舍入却被 1e-2 阈值判死——测试假阳性。伴随发现：ROCm MLA prefill 后端在 CI 上近乎零覆盖（`ROCM_AITER_FA` 需 `VLLM_ROCM_USE_AITER=1` 而 CI 不设，#53944）。
+  source: 'vLLM #55609（2026-09-06 open，rocm label，MI300X gfx942 实测，含 16 个受影响 case 清单与两条修复路径）。https://github.com/vllm-project/vllm/issues/55609'
+  behavior: spec_decode query_len>4 + bf16 KV 触发 abort/异常（修复前**杀死整个测试进程**而非单测失败）；容差侧则把健康后端误判为坏（假阳性）。8.62（fp8 KV sparse-MLA SM90 启动拒绝）之后后端能力矩阵族新成员：本条叠加"abort 语义破坏测试隔离"与"容差低于表示精度"两个测试基础设施缺陷。
+  trigger_surface: vLLM ROCm + ROCM_AITER_MLA + spec decode query_len>4 + bf16 KV（gfx942）（hw_specific；后端×查询长度触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

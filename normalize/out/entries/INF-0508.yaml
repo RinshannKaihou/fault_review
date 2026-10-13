@@ -1,0 +1,52 @@
+id: INF-0508
+legacy_ids:
+- '6.115'
+slug: sglang_radix_evictable_shared_page_double_count_idle_die
+aliases: []
+title: SGLang radix 共享页重复计数致空闲检查杀死 scheduler
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: radix evictable_size()
+  behavior: radix cache 的 evictable_size() 按节点引用累计而 total 按物理页计量，被多节点共享的页被重复计入，与池不变量检查的计量单位不一致。
+effect:
+  objects:
+  - 可用性/进度
+  detail: '默认配置下，全部请求成功完成后的下一次空闲时 _check_all_pools() 不变量检查失败，抛 ValueError: pool memory leak detected! 杀死 scheduler；无数据损坏，dLLM 路径 page_size=32 放大触发。'
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；radix cache + 共享页负载（dLLM 路径 page_size=32 放大）；默认开启
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35270
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（radix evictable_size() 按节点引用计数共享页不去重 → 默认开启的 idle 池不变量检查以错位单位比较杀 scheduler——"跑完才死"） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'radix cache 的 `evictable_size()` 按**节点引用**累计而 `total` 按**物理页**计量——共享页（树中多节点引用同一页）被计多次。默认 `SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=True` 且 `on_idle()` 的 `_check_all_pools()` 不受 env 门控，空闲时执行 `total == available + evictable + ...` 不变量检查，因单位错配必然失败（实测 +160 token / 5 页）抛 `ValueError: pool memory leak detected!` 杀 scheduler。探针证明：物理页精确平衡、tree∩free=0（无 UAF、无泄漏、无 stale KV 服务）——纯计数单位 bug。'
+  source: 'SGLang #35270（2026-08-17 open，Ascend NPU dLLM LLaDA2.1 首报；`_dllm_page_size` 无设备谓词强制 page_size=32，CUDA dLLM 同路径；Qwen3-8B 自回归负对照通过）。https://github.com/sgl-project/sglang/issues/35270'
+  behavior: crash（全部请求成功完成后、下一次空闲时 scheduler 死亡——延迟崩溃形态，默认配置即触发）。无数据损坏。属「不变量检查两边使用不同计量单位」**新子签名**——断言把计数 bug 放大为生产可用性故障。
+  trigger_surface: SGLang；radix cache + 共享页负载（dLLM 路径 page_size=32 放大）；默认开启
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,54 @@
+id: INF-0513
+legacy_ids:
+- '6.120'
+slug: vllm_kimi_k3_ngram_spec_strided_state_indices_gpu_fault
+aliases: []
+title: vLLM ngram 推测下 GDN state_indices 非连续致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: spec 掩码切片的 state_indices
+  behavior: ngram 推测路径以 block_table_tensor[~spec_mask, 0] 切片得到 stride≠1 的非连续 state_indices（数据对、布局错）；aiter/ROCm 对混合批 GDN 状态索引布局另有缺陷。
+effect:
+  objects:
+  - 可用性/进度
+  detail: ROCm/aiter + GDN hybrid 启用 ngram 推测时 KDA decode kernel 报 must be contiguous；紧致化修复后单流 spec-only 稳定，混合 spec/non-spec 并发批仍触发 GPU memory access fault。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm/aiter；KimiLinear/GDN hybrid + ngram 推测（单流修复后混合批仍崩）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52792
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0476
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（Kimi-K3 GDN + ngram 推测：spec 掩码切片产出 stride≠1 的 state_indices 被 KDA decode kernel 拒绝；修复后混合 spec/non-spec 并发批仍 GPU fault） · Cov: `var:vllm_gdn_non_spec_state_indices_strided_view_non_contiguous` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: ROCm/aiter 构建上启用 ngram 推测后，`block_table_tensor[~spec_mask, 0]` 的列切片产出 `stride=(num_spec+1,)` 的 strided `state_indices`，被 `fused_recurrent_kda_packed_decode` 以「must be contiguous and one-dimensional」拒绝（与 6.83 non-spec 路径 `[:, 0]` 全列 view 同签名）；紧致化拷贝可无损修复（数据正确、仅布局错）。修复后暴露第二故障：**混合 spec/non-spec 并发批**在 GPU memory access fault 崩（单流 spec-only 稳定）——aiter/ROCm 路径对混合批 GDN 状态索引布局另有缺陷。
+  source: 'vLLM #52792（2026-08-18 open，8×MI300X gfx942 ROCm 7.2，Kimi-K3 MXFP4 专家剪枝变体，KDA/GDN/MLA 层与原版逐字节一致）。https://github.com/vllm-project/vllm/issues/52792'
+  behavior: crash（kernel ValueError / GPU memory access fault，非静默）。属 6.83 strided-state_indices 族的 spec 路径 ROCm 变体；混合批 fault 为新报告面。
+  trigger_surface: vLLM ROCm/aiter；KimiLinear/GDN hybrid + ngram 推测（单流修复后混合批仍崩）
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

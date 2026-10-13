@@ -1,0 +1,63 @@
+id: INF-0808
+legacy_ids:
+- '8.24'
+slug: sglang_gdn_chunked_extend_neg1_sentinel_arithmetic
+aliases: []
+title: SGLang GDN chunked extend 未守卫 -1 索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: GDN chunked extend kernel
+  behavior: padding 行状态索引被置为 -1；decode kernel 有 idx>=0 守卫，chunked GDN extend kernel 却把 -1 直接用于初始状态读取与最终状态写回的指针算术。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: GDN 模型（如 Qwen3.5-397B-A17B-FP8）在 breakable prefill CUDA graph + DP attention 下，padded 行携带 sentinel，在状态池之前寻址，可能 crash 或静默读写池前内存；boundary_check 不捕获。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；GDN 模型 + chunked extend + breakable prefill CG + DP attention
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33810
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（GDN chunked extend kernel 将 -1 padding sentinel 馈入指针算术→状态池前寻址） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`_forward_metadata` 用状态索引 -1 毒化 padding 行（`mamba_cache_indices[_real_bs:] = -1`）。decode kernel 守卫 `if idx >= 0`，但 chunked gated-delta-net extend kernel 将 -1 直接馈入 initial-state load 和 in-place final-state store 的指针算术→在状态池*前*寻址。`boundary_check` 不捕获（验证声明块形状，非分配）。breakable prefill CUDA graph + DP attention 暴露（padded/fabricated 行携带 sentinel）。'
+  source: 'SGLang PR #33810（2026-08-06 open）。组件 chunked GDN extend kernel。Qwen3.5-397B-A17B-FP8 + 4xGB300 + DP attention。https://github.com/sgl-project/sglang/pull/33810'
+  behavior: 非法寻址（crash 或静默读池前内存）。属「padding sentinel 未在所有 kernel 路径守卫」签名——SSM state 索引 sentinel 处理新子签名。
+  trigger_surface: SGLang；GDN 模型 + chunked extend + breakable prefill CG + DP attention
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 算子/内核 vs KV缓存：原文 decode kernel 已有 idx>=0 守卫、仅 chunked GDN extend kernel 缺失，修复在该 kernel 的指针算术守卫，定为 算子/内核；状态池分配/管理逻辑本身无误。visibility 原文为“crash 或静默读池前内存”，按编目关注的静默后果维持 静默错误。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+        status: panel7
+    uncertain:
+    - visibility

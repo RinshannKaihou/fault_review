@@ -1,0 +1,60 @@
+id: INF-0342
+legacy_ids:
+- '4.26'
+slug: vllm_glm5x_replicated_indexer_key_norm_per_rank_autotune_nondeterministic_tp_greedy_forks
+aliases: []
+title: vLLM GLM-5.x 逐 rank autotune 致 TP 输出分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: indexer k_norm autotune
+  behavior: 各 rank 复制计算 indexer key 路径须 bit-identical，但 _fused_indexer_k_norm 的 Inductor autotune 逐 rank 自选 XBLOCK，候选含归约顺序不同的不等价配置。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 2×GB10 TP2 16 次启动出现三种状态，部分 rank 选 XBLOCK=1 致 indexer top-512 候选集分歧，temperature 0 输出随启动分叉；单次启动内自一致，重放验证失效。TORCHINDUCTOR_DETERMINISTIC=1 因 torch bug 无效。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + GLM-5.x（kpool indexer 复制路径）+ TP>1 + `torch.compile`（config：小 batch decode 尤其；钉 config / row-sharding 可避）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58636
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0328
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（GLM-5.x kpool sparse indexer 的 key 路径在 TP 下**每个 rank 复制计算**（`wq_b` ReplicatedLinear、`wk_weights_proj` disable_tp）——正确性依赖各 rank **bit-identical**，但 `_fused_indexer_k_norm` 经 `torch.compile(dynamic=True)` 编译后 Inductor 为该 persistent reduction 保留 3 个候选 config（XBLOCK 1/8/32）且**首次运行时逐 rank benchmark 自选**：XBLOCK=1 的行归约顺序不同，固定 2048×160 输入上与 8/32 在 2048 行中 2 行分歧。indexer 随后做 **540 池取 top-512** 的离散选择——near-tie 处不同 rank 选出不同候选集 → 两 rank attention 输出分歧 → all-reduce 混合 → **temperature 0 greedy completion 随启动时各 rank 调优结果分叉**。2×GB10 TP2 实测 16 次启动：11 次 state1（双 rank 8/32）、3 次 state2（一 rank 落 XBLOCK=1，858 次 indexer 调用中 10 次键分歧、layer 19 候选集分歧 2 行）、2 次 state3；**因果以干预闭合**——仅钉该内核 config（8/1 复现 state2 逐行一致、8/8 还原 state1），两次实验间唯一变化即 rank 1 该内核输出。`TORCHINDUCTOR_DETERMINISTIC=1` 因 torch 2.13 bug（pytorch#198563：Dynamo 全局态恢复把 deterministic 拉回 False）失效，强制 config 入口可用） · Cov: `var:sglang_vlm_greedy_cross_build_near_tie_flip_worker_nondeterminism`（4.12 near-tie 放大族——本条根因定位到**逐 rank autotune 选择**这一新机制面，并给出干预级因果证明；通用水律：跨 rank 复制且喂离散选择（top-k/argmax）的计算需要 bit-identical 内核或单一写者） · 触发 `config` · 置信度 `documented`'
+  mechanism: '复制计算 × 自适应调优的组合破坏复制前提——autotune 本为性能设计，但其选择空间包含数值不等价的归约分块；row-sharding PR（#54394/#58536，单 rank 计算 + all-gather int32 索引）从结构上消除分歧但 #58536 仅覆盖 ≥8 请求均匀 decode batch，小 batch 服务仍走复制路径。'
+  source: 'vLLM #58636（2026-09-24 open，含三态启动×16 记录、per-layer 键/候选集分歧计数、钉配置干预 A/B（8/1 vs 8/8）、pytorch#198563 关联与两个修复方向）。https://github.com/vllm-project/vllm/issues/58636'
+  behavior: 无 crash——temp=0 输出跨启动非确定（"这台服务器答什么"取决于调优 benchmark 的偶然结果）；每次启动内自一致（请求内可复现）使"重放即验证"探针失效，只有跨启动对拍才暴露。4.12/4.24 之后非确定族新成员：根因首次定到 **Inductor per-rank autotune**。
+  trigger_surface: vLLM + GLM-5.x（kpool indexer 复制路径）+ TP>1 + `torch.compile`（config：小 batch decode 尤其；钉 config / row-sharding 可避）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 编译器。依据：原文“根因首次定到 Inductor per-rank autotune”，干预实验仅钉 _fused_indexer_k_norm 的 config 即复现/还原状态；TP>1 的复制计算是触发条件（rule：触发条件不是对象，按出错的那段代码归属），出错的是 torch.compile 产物的逐 rank 配置选择。与同族 INF-0343 保持一致。保留意见：row-sharding 修复方向属 并行切分，但原文称其仅覆盖部分 batch，非唯一修复。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

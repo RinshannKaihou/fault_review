@@ -1,0 +1,50 @@
+id: INF-0648
+legacy_ids:
+- '6.255'
+slug: vllm_dsv41_sparse_mqa_nan_row_stale_col_indices_silent_topk_selection
+aliases: []
+title: vLLM DSV4.1 indexer NaN 行后复用陈旧 top-k
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: MQA indexer 与 DeepSelect
+  behavior: DeepSelect 遇 NaN 行只写首槽哨兵即返回，其余 topk−1 槽不写；vLLM 跨步复用且不清零 col_indices_buffer，陈旧索引通过越界检查被当作真实位置。
+effect:
+  objects:
+  - 数值结果
+  detail: DeepSeek-V4.1 sparse MQA 中出现 NaN logits 行后，该步 sparse attention 静默读取陈旧位置集，无 crash、无 IMA；报告者已撤回服务层影响的演示，生产接受率下降归因待验证。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + DSV4.1 sparse MQA indexer + DeepSelect NaN 路径（config：`abort_when_nan_found=False` 为 vLLM 调用方式）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58627
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DeepSeek-V4.1 sparse MQA indexer：DeepSelect 以 `abort_when_nan_found=False` 被调用、检测到 NaN 行时**只写 `output_idx[row,0]=0x3f3f3f3f` 哨兵即返回**，其余 `index_topk − 1` 个槽**不写**；V4.1 路径跨步复用调用方持有的 `col_indices_buffer`（`SparseMQAIndexer.forward` 清 `topk_indices_buffer` 却不清这块 DeepSelect scratch）——#58215 修好的越界界检查把首槽哨兵映射为 −1，**其余陈旧槽保留上一行索引、落在 [0,width) 内通过新界检查、被当作真实 attention 位置重映射**。非第二次 OOB：是 **NaN 行之后的静默陈旧 top-k 选择**。修复方向（未实施）：调用前把 `end > topk` 行的 NaN logits 原位置换为 −inf，使 DeepSelect 从有限候选中产出完整 top-k；事后回填不充分（selector 从未排序其余槽）） · Cov: `NEW`（NaN 哨兵半写出 × 复用 scratch 陈旧数据子签名；与 8.91（NaN 经 P·V 绕 mask 引爆）同域但本条在索引选择层） · 触发 `config` · 置信度 `documented`'
+  mechanism: pinned DeepSelect（`d96d33afe1`，其 main 同行为）的 `take_action_when_have_nan` 只写槽 0 即返回；vLLM 侧 `indexer_topk.py` 传 `abort_when_nan_found=False`、`sparse_indexer.py` 一次性分配 `col_indices_buffer` 且 forward 不重置——两份代码的契约缝隙只在 NaN 出现时显形。
+  source: 'vLLM #58627（2026-09-24 open，含源码证据、修复提案与回归测试设计（毒化预填 + NaN 注入断言等价 `nan_to_num(-inf).topk`）；**报告者同日评论撤回"已演示的服务影响"**——29 个空回复采样 0 个重复尾巴、文本连贯，不得把本条读作观测到的长推理收敛回归之因；GB200 生产 A/B 中 #58215 使接受率 −3.39% 的观察仍真实但归因待验证）。https://github.com/vllm-project/vllm/issues/58627'
+  behavior: 无 crash、无 IMA——NaN 行之后该步的 sparse 注意力**静默读错位置集**（陈旧列而非任何良定义选择）；触发依赖上游 NaN 出现（本身是故障信号），本条把"暴露 NaN"退化为"静默错读"。
+  trigger_surface: vLLM + DSV4.1 sparse MQA indexer + DeepSelect NaN 路径（config：`abort_when_nan_found=False` 为 vLLM 调用方式）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

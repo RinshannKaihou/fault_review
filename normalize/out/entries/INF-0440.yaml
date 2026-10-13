@@ -1,0 +1,59 @@
+id: INF-0440
+legacy_ids:
+- '6.47'
+slug: vllm_gdn_kda_stale_zero_accept_silent_neg1_corruption
+aliases: []
+title: vLLM 零接受计数致 GDN/KDA 状态 -1 索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: GDN/KDA 后端的接受计数索引
+  behavior: async scheduling 丢弃的步骤把 valid_sampled_token_count=0 写入 num_accepted_tokens，消费者假设计数 ≥1，用 count-1 索引得到 -1。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: GDN/KDA 模型开 async scheduling 与推测解码时触发；Triton kernel 路径越界崩溃（illegal memory access），CPU 对齐模式下 -1 是合法索引，静默从 state 末尾读取，输出损坏且无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；GDN/KDA 模型 + async scheduling + 推测解码 + CPU align 模式（静默）/ Triton（崩溃）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51508
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（推测解码 stale zero-accept 步骤：Triton 越界崩溃，CPU 对齐模式 -1 静默损坏） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: async-scheduling 丢弃的步骤把 `valid_sampled_token_count=0` 写入 `num_accepted_tokens`。所有消费者假设计数在 `1..1+num_speculative_tokens`，用 `count-1` 索引→`-1`。Triton kernel（`fused_recurrent`/`fused_sigmoid_gating`/`causal_conv1d_update`/KDA recurrent）越界崩溃；但 CPU align 模式 `-1` 是合法 Python 索引→静默从 state 末尾读取，输出损坏无错误。
+  source: 'vLLM PR #51508（2026-08-08 open）。组件 GDN/KDA attention backends + async scheduling。https://github.com/vllm-project/vllm/pull/51508'
+  behavior: Triton 路径崩溃（illegal memory access）；CPU 对齐路径静默损坏（无 crash/NaN）。属「stale row 的 0 被当合法计数→-1 索引」签名——async scheduling 与 SSM recurrent state 的交互新子签名。
+  trigger_surface: vLLM；GDN/KDA 模型 + async scheduling + 推测解码 + CPU align 模式（静默）/ Triton（崩溃）
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 解码/采样：错误值来自推测解码的 num_accepted_tokens 计数（async scheduling 丢弃步骤写 0），各消费者按接受计数语义索引；缺陷只出现在推测解码路径，按 rule 功能域优先归 解码/采样；SSM 状态被错读是后果。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

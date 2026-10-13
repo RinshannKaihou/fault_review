@@ -1,0 +1,54 @@
+id: TRN-0080
+legacy_ids:
+- CKPT.31
+slug: cyclic_unsharded_resume_epoch_boundary_dp_remainder
+aliases: []
+title: Megatron 非分片 sampler 换 DP 续训 epoch 边界错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: megatron-lm
+    component: RandomSampler epoch 边界推导
+  behavior: --no-data-sharding 下 sampler 以 total_samples 减 total%(mbs×dp) 推导 epoch 边界，epoch 长度含 DP 尾数，而 ckpt 只存消费样本数。
+effect:
+  objects:
+  - 训练样本流
+  detail: 数据集大小不能被 mbs×dp 整除时换 DP resume，当前 epoch 尾部被重放或跳过，此后每个 epoch 从错误 offset 开始（DP1→8 时 19 条重复、19 条丢失）；整除组合不受影响，无 crash 无 warning，端到端影响未实测。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7646
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7649
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0079
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `pretrain` · Cov: `var:cyclic_sharded_resume_dp_resize_reorder` · 置信度 `documented`'
+  mechanism: '与 CKPT.30 同一总病根（ckpt 只存 `consumed_train_samples`、sampler 重建参数依赖 DP 尺寸），断点不同：`--no-data-sharding` 时排列本身与 DP 无关，但 `MegatronPretrainingRandomSampler.__iter__` 以 `active_total_samples = total_samples − last_batch_size`（`last_batch_size = total % (mbs×dp)`）推导 epoch 边界——**epoch 长度含 DP 尾数**。数据集大小不整除 `mbs×dp` 时换 DP，恢复 rank 把 epoch 边界放到别处：重放/跳过当前 epoch 尾部且此后每个 epoch 从错误 offset 开始；整除组合（如 N=250 的 DP2↔4）不受影响。应用 #7299 的 diff 后同样计数（独立于该修复）。'
+  source: 'Megatron-LM #7646（2026-09-24；CPU repro `main`@`ec806b2`：DP1→8 @ step 15 → 19 duplicated / 19 dropped、DP1→2 @ step 7 → 3/3、DP 不变 → 0/0）。https://github.com/NVIDIA/Megatron-LM/issues/7646 ；修复 PR #7649（2026-09-24 开：cyclic sampler 改用 DP 无关 permutation epoch、允许 global batch 跨被丢尾部，恢复后保持同样本序列；#7648 的 no-sharding 对应物）。https://github.com/NVIDIA/Megatron-LM/pull/7649'
+  behavior: 与 CKPT.30 相同的静默面（无 crash 无 warning、部分样本重放/零覆盖），触发面更窄（需非整除尾数）。同样无端到端训练影响实测。与 CKPT.30 共享「resume 进度标量不含 DP 几何」失效机制，不同触发点：那边 bucket 分片几何随 DP 变、这边 epoch 长度尾数随 DP 变。
+  discovery: 2026-09-25 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

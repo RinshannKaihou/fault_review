@@ -1,0 +1,55 @@
+id: INF-0583
+legacy_ids:
+- '6.190'
+slug: vllm_mrv2_workspace_unlocked_postcapture_growth_invalidates_graphs
+aliases: []
+title: vLLM MRV2 workspace 未加锁致 graph 写已释放内存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: MRV2 WorkspaceManager 扩容
+  behavior: V2 的 _ensure_workspace_size 在需求超出时替换整个 arena 并释放旧缓冲，但 V2 重写丢失了 V1 在 capture 后 lock workspace 的保护，已捕获 graph 仍引用旧地址。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: Model Runner V2（DSV4 等默认 V2）+ CUDA graphs，捕获后出现更大 workspace 需求（长上下文/大 batch 晚到）时，replay 写入已转交他用的内存：多为无 crash 的跨请求静默数据损坏，偶发 IMA/输出损坏，易误归因于硬件或模型。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM Model Runner V2（DSV4 等默认 V2 架构）+ CUDA graphs + 捕获后更大的 workspace 请求（负载时序触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55336
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（Model Runner V2 的 `WorkspaceManager` 从共享 arena 切片，请求超出当前 arena 时 `_ensure_workspace_size` **替换整个 arena 张量**并释放旧缓冲——而 V2 从不 lock workspace：capture 期已把旧地址烤进 CUDA graph 内核，替换后 replay **写入 allocator 已转交给别人的内存**；V1 runner capture 后锁 workspace，V2 重写丢失了这把锁；DeepSeek-V4-Flash 默认即 V2 架构） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`self._current_workspaces[workspace_id] = None; del current_workspace; empty_cache(); torch.empty(required_bytes)` 序列在旧地址仍被已捕获 graph 引用时释放重分配——经典的 use-after-free，但发生在 graph replay 路径上且**无任何守护**：不崩溃时表现为其它请求/其它分配的静默数据损坏。触发条件是捕获后出现更大的 workspace 需求（长上下文/大 batch 晚到）。'
+  source: 'vLLM #55336（2026-09-04 closed，源级定位 `vllm/v1/worker/workspace.py` + V1/V2 对照，8×GB200 及单 GB200 复现）。https://github.com/vllm-project/vllm/issues/55336'
+  behavior: '**无 crash 的跨请求内存损坏**（最险形态：症状与根因完全解耦——受害的是恰好拿到旧地址的任意分配）；偶发 IMA/输出损坏可能被归因于硬件或模型。属「**graph capture 期固化的地址假设被运行期 realloc 打破**」新子签名：与 6.174（decode graph 语义损坏）同为 graph×地址/状态失配，本条根因在 workspace 生命周期管理而非图内容本身；V1→V2 重写丢锁是"重写未携带全部不变式"的典型。'
+  trigger_surface: vLLM Model Runner V2（DSV4 等默认 V2 架构）+ CUDA graphs + 捕获后更大的 workspace 请求（负载时序触发）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - detail

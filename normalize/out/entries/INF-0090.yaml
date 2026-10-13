@@ -1,0 +1,57 @@
+id: INF-0090
+legacy_ids:
+- '1.91'
+slug: ttmetal_get_max_l1_space_hybrid_percore_blind
+aliases: []
+title: get_max_l1_space 在 HYBRID 下高估 CB 空间
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tt-metal
+    component: get_max_l1_space L1 预算查询
+  behavior: get_max_l1_space() 依赖的设备级查询在 HYBRID allocator 下只问 bank 0 分配器，看不到其他 bank 的 per-core 分配；验证器却逐核遍历全部分配器，口径分叉。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: HYBRID allocator + per-core 分配下，走该预算的 op（untilize/transpose/matmul 等）构建出超额 CB 计划：有验证路径时被拒绝而 crash，无验证路径时 CB 与数据静默重叠。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal；HYBRID allocator + per-core allocation + 走 get_max_l1_space 预算的 op
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53538
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（get_max_l1_space() 只查 bank 0 分配器、看不见 HYBRID per-core 分配 → CB 预算高估，与验证器逐核遍历口径不一致） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: ttnn 的 `get_max_l1_space()`/`is_enough_space()` 用 `device->lowest_occupied_compute_l1_address()` 预算 CB 空间，而该 device 级查询在 HYBRID allocator 模式下只问 default sub-device manager 的 bank 0 分配器（`sub_device_manager_tracker.cpp:160` 硬编码 `global_bank_id = 0`），看不到其他 bank 的 per-core 分配与 per-device allocator；`ProgramImpl::validate_circular_buffer_region()` 却逐核遍历每个 CB core range 的全部物理设备分配器（`program.cpp:1895-1911`）。同一约束的两个查询实现分叉：helper 高估可用空间 → op 构建出验证器随后拒绝的 CB 计划（或在无验证路径静默重叠）。
+  source: 'tt-metal #53538（2026-08-18 open）。受影响调用方：untilize/transpose/matmul_utilities/reshard_rm_program_factory 等经 `common.cpp:432` 的全部 op。https://github.com/tenstorrent/tt-metal/issues/53538'
+  behavior: crash（验证器拒绝路径）或与 1.90 同类的静默 CB/数据重叠（无验证路径）。属「同一布局约束的预算器与验证器实现分叉」**新子签名**——与 1.90 构成 L1 预算上下游双缺口（1.90 是 hit 路径不验，本条是预算口径本身错）。
+  trigger_surface: Tenstorrent TT-Metal；HYBRID allocator + per-core allocation + 走 get_max_l1_space 预算的 op
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - effect.objects
+  note: visibility 维持 静默错误：原文并列验证器拒绝路径 crash 与无验证路径静默 CB/数据重叠；词表规定 报错 只在伴随静默后果时出现，本条入编价值在静默重叠，故取 静默错误。effect.objects 补 可用性/进度：原文明确“crash（验证器拒绝路径）”，op 构建被拒属作业中断。subsystem 运行时/执行 与独立判断一致（缺陷在 sub_device_manager_tracker 只问 bank 0 分配器的设备级查询）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

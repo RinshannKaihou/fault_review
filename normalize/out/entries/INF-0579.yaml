@@ -1,0 +1,52 @@
+id: INF-0579
+legacy_ids:
+- '6.186'
+slug: vllm_rocm_sparse_mla_indexer_decode_logits_workspace_prefill_bound_locked
+aliases: []
+title: vLLM ROCm indexer 缓冲按 prefill 上界锁定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: ROCm indexer decode 缓冲行数
+  behavior: decode-logits workspace 行数在 profiling 时取 hidden_states.shape[0]（即 prefill 上界），而非 batch_size*next_n，随后被 lock 终身冻结。
+effect:
+  objects:
+  - 性能/资源
+  detail: ROCm（gfx942/gfx950）+ sparse-MLA indexer 模型 + 1M 上下文 + MTP 时保留 8192 行而 decode 实需 256 行，每 GPU 白锁 32 GiB、占 KV cache 21%，并发/吞吐静默缩水，无 crash。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm（gfx942/gfx950）+ sparse-MLA indexer 模型 + 1M 上下文 + MTP
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55132
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0566
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（ROCm sparse-MLA indexer 在**profiling run** 按 `max_num_batched_tokens`（prefill 上界）行申请 decode-logits workspace 并被 `WorkspaceManager.lock()` 终身冻结——而 decode 步至多 `max_num_seqs*(num_speculative_tokens+1)` 行（实测 256 vs 保留 8192，32× 过量）：1M 上下文模型 per-GPU **32 GiB**、占 KV cache 21%；GLM-5.3 TP4 MI355X、MTP k=3 复现，profile 峰值 34.18 GiB 中单笔分配独占 32 GiB） · Cov: `var:vllm_kv_pool_first_boot_capacity_under_allocation`（6.173 容量失准族；12.29 profiler 冻结维度的 AMD 镜像） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 注释写对了 bound（`batch_size*next_n`）代码却取 `hidden_states.shape[0]`（profiling 时 = max_num_batched_tokens）；`_ensure_workspace_size` 经 `get_simultaneous` 以峰值冻结。gfx942/gfx950 路径专属。
+  source: 'vLLM #55132（2026-09-02 open，`torch.cuda.memory._record_memory_history` profile 证据 + 行数推导）。https://github.com/vllm-project/vllm/issues/55132'
+  behavior: 无 crash——21% KV 容量被理论下界白锁，吞吐/并发静默缩水；与 6.185 构成 indexer workspace 容量错配双栈（NVIDIA 单位错 / AMD bound 错）。
+  trigger_surface: vLLM ROCm（gfx942/gfx950）+ sparse-MLA indexer 模型 + 1M 上下文 + MTP
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

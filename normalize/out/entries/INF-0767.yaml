@@ -1,0 +1,58 @@
+id: INF-0767
+legacy_ids:
+- '7.94'
+slug: sglang_quickreduce_q8_low_amplitude_reciprocal_scale_cliff_block_attenuation
+aliases: []
+title: QuickReduce Q8 低幅值 scale 饱和致归约衰减
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: QuickReduce Q8 编解码
+  behavior: CodecQ8<half> 把 encoding_scale≈1/decoding_scale 存为 FP16，block_max<≈0.00195 时倒数饱和于 65504，编解码不再互逆，整块被衰减；two-shot 通信中可施加两次。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: ROCm 启用 INT8 量化与 BF16→FP16 cast 时，低幅值激活块 all-reduce 结果系统性衰减（MI350X 长 prefill 层 4 相对 L2 误差 0.68，RCCL 为 0.0026），长上下文续写不连贯；四 rank 一致，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang ROCm + QuickReduce INT8 + BF16→FP16 cast + 低幅值激活块（block_max<~2e-3，长上下文深层层激活常见）（hw_specific：MI350X 实测）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40084
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0741
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（SGLang ROCm QuickReduce `ROCM_QUICK_REDUCE_QUANTIZATION=INT8` + `ROCM_QUICK_REDUCE_CAST_BF16_TO_FP16=1`：`CodecQ8<half>` 对每个 32 值交织块存 `decoding_scale ≈ block_max/128`（FP16）并算 `encoding_scale ≈ reciprocal(decoding_scale)`（FP16）——**`block_max < 128/65504 ≈ 0.001954` 时 reciprocal 达不到所需值、饱和于 65504**，编解码不再互逆 → 整块衰减；two-shot 集体通信可施加两次。MI350X（gfx950）TP4/EP4 GLM-5.3 74,584-token prefill 实测：layer-4 MLP all-reduce 相对 L2 误差 **0.6797**（同输入 RCCL 对照 0.0026，**266.5×**），layer-5 attention 0.1690（67.4×）；**99.35%**（m04）/76.17%（a05）的块低于悬崖；四 rank 输出互相 bitwise 一致（非同步/秩分歧）；CPU 复刻原生 two-shot Q8/FP16 codec **bit-for-bit** 重现两处 GPU 输出。`INT8+cast=0` / `FP+cast=1` / `NONE` 对照全部 coherent，单独换回任一损坏调用的 RCCL 结果即修复首 token 与 128-token 续写。既有 BF16 range test 的 "low" 用例 `2^-8` 恰在悬崖上方 2×，从未测过 sub-cliff） · Cov: `var:vllm_rocm_quickreduce_bf16_to_fp16_no_saturation_inf_poison`（7.68 QuickReduce 值域假设崩塌族——高端溢出的低幅值对偶） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: FP16 倒数的可表示下限（1/65504 量级）与 Q8 满量程映射所需的大倒数在低 block_max 处不相交——量化 codec 把"倒数尺度"存进 FP16 而未对 sub-normal 幅值块做上提（pre-scaling）；encode/decode 循环性在悬崖下方静默破坏。
+  source: 'SGLang #40084（2026-09-18 open，含同输入算子级 FP64/FP32 oracle 对照、逐层相对误差表、块分布统计、CPU codec bit-for-bit 复现、四格控制矩阵与已验证 workaround）。https://github.com/sgl-project/sglang/issues/40084'
+  behavior: 无 crash、无 NaN——低幅值激活块的 all-reduce 结果**系统性衰减**（误差可达 0.68 相对 L2），端到端表现为长上下文续写不连贯；因为四 rank bitwise 一致且无任何错误信号，极易被归因于模型/量化而非通信层。7.68（bf16→fp16 高端无饱和 inf 毒化）之后 QuickReduce 值域族新成员：本条在 **低幅值 reciprocal 饱和**维度——与 7.68 恰构成同一 codec 的两个值域方向（上溢 inf / 下潜衰减），且本条有 bit-for-bit 算子级因果链。
+  trigger_surface: SGLang ROCm + QuickReduce INT8 + BF16→FP16 cast + 低幅值激活块（block_max<~2e-3，长上下文深层层激活常见）（hw_specific：MI350X 实测）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 量化 vs 集合通信：按 rule 1（功能域优先）定为 量化——原文 INT8+cast=0、FP+cast=1、NONE 对照全部 coherent，缺陷只出现在 QuickReduce 的 INT8 量化 codec 路径；缺陷本身是 encoding_scale 存为 FP16 后倒数饱和，属词表 量化 的 scale 处理。集合通信通道本身（非量化模式）无误。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

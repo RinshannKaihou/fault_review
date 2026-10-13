@@ -1,0 +1,53 @@
+id: INF-0268
+legacy_ids:
+- '1.269'
+slug: ttmetal_fused_scale_mask_softmax_tile_padding_participates_in_denominator_non32_widths
+aliases: []
+title: scale_mask_softmax 非 32 倍宽度 padding 进分母
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: scale_mask_softmax 融合小核
+  behavior: 融合小核（softmax.cpp）在应用用户 mask 后未对最后 tile 消费 MASK_PADDED_DATA，padding 列没有隐式 -inf mask，参与 softmax 分母。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 逻辑宽度非 32 倍数（如 17/50/197/1001）且提供用户/causal mask 时，输出行和不为 1，最低约 0.04，概率质量漏进 padding 列，注意力输出塌缩；32 对齐宽度、plain ttnn.softmax 与大张量 masked 内核不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + scale_mask_softmax 族融合小核 + 非 32 倍数逻辑宽度 + 用户/causal mask（hw_specific；plain softmax、对齐宽度免疫）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58495
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0244
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal 融合小核 `ttnn.scale_mask_softmax` / `scale_mask_softmax_in_place` / `ttnn.transformer.attention_softmax_` 在逻辑宽度**非 32 倍数**且提供用户 mask 时，不对最后 tile 的 padding 列施加隐式 `-inf` mask——**padding 列参与 softmax 分母**：输出行不再和为 1，causal mask 下概率质量可几乎全部漏进 padding（实测报告最小行和约 **0.04**；宽度 17/50/197/1001 均复现，32 对齐宽度、plain `ttnn.softmax` 与大张量 masked 内核不受影响——大张量内核已正确应用 padded mask，小核路径漏用 `MASK_PADDED_DATA`） · Cov: `var:1.245`（非 32 倍数宽度 tile padding 未屏蔽族——1.245 是 SDPA padding 值泄漏进输出，本条是 **softmax 分母泄漏**：同一"padding 参与归一化"失效面在注意力 softmax 维度；$750 bounty 挂出） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 融合小核路径（`softmax/device/kernels/attention/compute/softmax.cpp`）应用用户 mask 后未对最终 tile 消费 `MASK_PADDED_DATA`；大张量 masked kernel 已有正确实现可对照。
+  source: 'tt-metal #58495（2026-09-29 open，$750 bounty，含宽度集 17/50/197/1001、行和 0.04–0.98 实测范围、修复范围与验收标准）。https://github.com/tenstorrent/tt-metal/issues/58495'
+  behavior: '无 crash——**注意力 softmax 概率质量静默漏进 padding 列**：行和最低 0.04 意味有效 token 只分得 4% 概率、causal 注意力输出整体塌缩；非 32 倍数 seq 宽度（可变长批处理常态）命中。 回访（2026-10-09）：issue #58495 已 closed/completed（10-06），维护者确认 bounty 完成并启动支付——修复合并与发布版本待核。'
+  trigger_surface: tt-metal + scale_mask_softmax 族融合小核 + 非 32 倍数逻辑宽度 + 用户/causal mask（hw_specific；plain softmax、对齐宽度免疫）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

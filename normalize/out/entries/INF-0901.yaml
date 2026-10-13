@@ -1,0 +1,53 @@
+id: INF-0901
+legacy_ids:
+- '9.18'
+slug: hf_nested_rope_parameters_layer_types_misparse_pollution
+aliases: []
+title: transformers 短层模型嵌套 rope 参数误判为扁平
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: transformers
+    component: rope 参数嵌套判别
+  behavior: standardize_rope_params/validate_rope 以 key 是否为实际 layer_types 子集判别嵌套；短层模型无 full_attention 层时，嵌套 dict 被当作扁平全局 dict。
+effect:
+  objects:
+  - 模型权重
+  - 指标/日志
+  detail: Gemma3/Olmo3 两层等短 config 下顶层被注入 rope_type/rope_theta=None 并随 save_pretrained 持久化进 checkpoint，真实 per-layer yarn/linear 参数从未被校验，且产生假 warning；当前推理仍正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: HF transformers（含 v5.16.1）+ Gemma3/Olmo3 短层 config（num_hidden_layers 小到 pattern 不含 full_attention）+ save_pretrained（纯软件）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: effect_object 缺「模型配置/校验结果」：本条变错的是 config 内容与参数校验结论，暂取 模型权重（检查点内容）
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48392
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（嵌套 per-layer `rope_parameters` dict 在 `layer_types` 未含其全部 key 时被误判为扁平全局 dict——`set(rope_parameters.keys()).issubset(layer_types)` 对短层模型（Gemma3/Olmo3 2 层无 full_attention 层）为 False：注入 `rope_type`/`rope_theta=None` 到顶层且 `save_pretrained` **持久化进 checkpoint**，真实 per-layer yarn/linear 参数**静默从未被校验**；当前推理仍正确） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`standardize_rope_params`（L784）与 `validate_rope`（L828）两处都以 `issubset(layer_types)` 判别嵌套 vs 扁平——分类点测试的是「实际实例化的层类型列表」，而 Gemma3/Olmo3 的 config 无条件为**每种可能**的层类型填 `rope_parameters`；短模型（2 层 + sliding-window pattern）合法地无 full_attention 层 → 误入"一个全局 dict"分支：layer-type key 被当 rope 参数名读出假 warning、wrapper 被注入 `rope_type`/`rope_theta` 且 round-trip 持久化、validate 校验 wrapper 而漏真实条目。模型运行正确仅因推理直接按 `config.rope_parameters[layer_type]` 索引。transformers main/v5.16.1 均受影响。'
+  source: 'transformers #48392（2026-08-28 open，含 Gemma3 2 层 vs 6 层对照与 Olmo3 round-trip 复现）。https://github.com/huggingface/transformers/issues/48392'
+  behavior: 无 crash、当前推理正确——**校验静默失效 + checkpoint 持久化污染**的组合：坏数据（非法 per-layer 参数）可无告警通过校验，污染键随 save 扩散。属「**解析结果依赖层数的分支歧义**」新子签名：与 9.13（Qwen2-VL get_rope_index shape 回归）同 transformers RoPE 配置域，本条静默（彼条 fail-loud）且损坏的是**校验面 + 持久化数据**而非即时计算。
+  trigger_surface: HF transformers（含 v5.16.1）+ Gemma3/Olmo3 短层 config（num_hidden_layers 小到 pattern 不含 full_attention）+ save_pretrained（纯软件）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    rewritten:
+    - component

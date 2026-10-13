@@ -1,0 +1,57 @@
+id: INF-1091
+legacy_ids:
+- '11.68'
+slug: vllm_hybrid_gdn_mtp_scheduler_three_wide_concurrency_window
+aliases: []
+title: vLLM GDN hybrid+MTP 并发≥4 时只调度 3 条序列
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: mamba 状态池 MTP slot 预算
+  behavior: 原文推断：mamba/GDN 状态池在 target 递归状态与 MTP draft slot 间的预算划分，把有效 spec 并发压到与状态容量相关的窄窗，max_num_seqs/batched_tokens 均未触及
+effect:
+  objects:
+  - 性能/资源
+  detail: 27B Qwen3.5 族 hybrid GDN（48 GDN+16 full attn）+ MTP 在 batch≥4 时每次 decode 迭代只调度 3/8 序列，其余等待轮换，MTP 比无 spec 慢 2–3×，输出正确；bs≤3 健康，24 层 GDN 的 9B 模型 bs=20 仍健康
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid GDN（Qwen3.5/Qwen3.8 27B 级）+ MTP + batch≥4（负载模式触发；GDN 深度依赖）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55533
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0529
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（27B Qwen3.5 族 hybrid GDN（48 linear-attention GDN + 16 full attention）+ MTP：v1 scheduler 在 batch≥4 时每 decode 迭代只调度 **3/8 序列**（per-seq dist [2,2,2]）——其余 5 个无限等待、按完成轮换进 ~3 宽的 MTP 并发窗；mean emitted tokens/seq/iteration 跌到 0.27-0.6、MTP 比无 spec 慢 2-3×；bs≤3 健康（acceptance 0.67-0.74、吞吐 +33-72%）；24 层 GDN 的 9B 兄弟模型 bs=20 仍健康——上限随 GDN 层数/每序列 mamba state 大小缩放，指向 scheduler 记账中 target 状态与 MTP draft slot 共享 mamba cache 预算） · Cov: `var:vllm_hidden_states_kv_budget_overestimate_startup_reject`（6.136 混合状态预算记账域） · 触发 `partial` · 置信度 `documented`'
+  mechanism: 混合架构下 mamba/GDN state 池在 target 递归状态与 MTP draft slot 间的预算划分使有效 spec 并发被压到与状态容量相关的窄窗（模型越大窗越窄）；调度器表面 max_num_seqs/batched_tokens 均未触及。
+  source: 'vLLM #55533（2026-09-06 open，scheduler label，含 per-seq 分布证据、9B 对照与健康/塌陷分界）。https://github.com/vllm-project/vllm/issues/55533'
+  behavior: 无 crash、输出正确——**并发场景下 spec 吞吐静默倒挂**（batch≥4 即触发、随模型 GDN 深度恶化）：单流/低并发基准健康的部署在并发负载下性能反转。与 11.67（GLM-5.3 proposer 噪声）构成 spec 失效的两个正交轴：proposer 质量 vs scheduler 容量记账；与 6.136/5.33 同属混合状态预算域，本条显形为**并发调度窗**而非启动拒绝。
+  trigger_surface: vLLM + hybrid GDN（Qwen3.5/Qwen3.8 27B 级）+ MTP + batch≥4（负载模式触发；GDN 深度依赖）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem（KV缓存 vs 调度/服务）：维持 KV缓存。原文 mechanism 指向“mamba/GDN state 池在 target 递归状态与 MTP draft slot 间的预算划分”，且 max_num_seqs/batched_tokens 都未触及，上限随每序列 mamba state 大小缩放；词表 KV缓存 明含线性注意力/SSM 的循环状态池，rule 1 功能域优先。调度器只是表现出窄窗的地方。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

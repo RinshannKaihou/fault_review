@@ -1,0 +1,56 @@
+id: INF-0151
+legacy_ids:
+- '1.152'
+slug: ttmetal_xlogy_zero_first_operand_nan_guard_second_only
+aliases: []
+title: ttnn.xlogy(0,y) 在 y≤0 时返回 NaN 而非 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: sfpu_binary XLOGY 守卫
+  behavior: XLOGY 分支的 NaN 守卫只检查第二操作数（in1<0 或 NaN），缺少 x==0 短路：xlogy(0,0) 走 log(0)=−inf 再乘 0 得 NaN，xlogy(0,−1) 直接命中 NaN 分支。
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: torch/scipy 约定 x==0 时恒返 0，ttnn 返回 NaN；交叉熵/KL 中零目标对零或负预测很常见，单个此类元素即可把整个 loss 变为 NaN；无 crash。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent WH/BH + `ttnn.xlogy` + x==0 且 y≤0（软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55320
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.xlogy(0, y)` 对 y≤0 返回 NaN 而约定是 0：kernel 的 NaN 守卫只检查第二操作数（`in1<0 || in1==nan` → NaN），`x==0` 永无短路机会——`xlogy(0,0)` 走 else 分支 `log(0)=-inf` 再 `-inf*0=NaN`、`xlogy(0,-1)` 直接命中 NaN 分支；torch/scipy 一致约定 x==0 时恒返 0） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`ckernel_sfpu_binary.h` XLOGY 分支的守卫谓词只测 in1；该约定正是 xlogy 存在的意义（交叉熵/KL 中 `0*log(0)` 必须为 0）——零目标对零/负预测是常客，**单个此类元素把整个 loss 变 NaN**。修复为在最前加 `v_if(in0==0)` 短路（一个谓词）。Wormhole 副本同构。'
+  source: 'tt-metal #55320（2026-09-03 closed，ttsim BH 实测 + 守卫分支逐路分析 + 一谓词修复）。https://github.com/tenstorrent/tt-metal/issues/55320'
+  behavior: 无 crash——loss/梯度层面 NaN 传播（x==0 是常见值非病态输入）；与前向死守卫族（1.53 `in1==nan` 恒假、1.117 eq-NaN 死 where）同「**守卫谓词操作数/形式错误**」谱系的新形态：守卫存在、形式正确（`<` 比较）、但**测错了操作数**。
+  trigger_surface: Tenstorrent WH/BH + `ttnn.xlogy` + x==0 且 y≤0（软件 API 可触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：分类与独立判断一致（算子/内核/tt-metal，ckernel_sfpu_binary.h；数值结果、训练信号；NaN 属 数值异常）。各事实均可在原文中找到。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

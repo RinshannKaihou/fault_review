@@ -1,0 +1,57 @@
+id: INF-0973
+legacy_ids:
+- '10.57'
+slug: vllm_qwen3_xml_parser_whitespace_separator_before_first_tool_call_content_delta
+aliases: []
+title: vLLM qwen3_xml parser 把空白分隔符发成 content
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: qwen3_xml 流式 tool parser
+  behavior: 增量 parser 的通道状态机把非标签文本一律归 content 通道，thinking 结束标签与首个 tool call 开标签之间的空白分隔符落在过渡间隙被误发布。
+effect:
+  objects:
+  - 输出内容
+  detail: Qwen3 流式输出 thinking 块 + 纯空白分隔符 + 首个 XML tool call 时，客户端收到只含 "\n\n" 的幽灵 content 事件，污染以 content 事件驱动 UI/落库的下游（见于 vllm-ascend 镜像）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM（含 vllm-ascend 镜像）+ qwen3_xml legacy parser + thinking 模型流式 tool call（other_stack：parser 代码路径；输出模式即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: subsystem 缺「输出解析（tool/reasoning parser）」：parser 既非分词/模板也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55633
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0958
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（legacy `qwen3_xml` streaming tool parser（vllm-ascend v0.23.0 镜像内 parser）：Qwen3 模型流式输出 thinking 块 + **whitespace-only 分隔符** + 首个 XML tool call 时，parser 把分隔符作为**普通 content delta** 发布（客户端收到只含 `"\n\n"` 的 Markdown/SSE content 事件）——模型的语义是 thinking→tool 过渡，输出流却多出一个 content 通道事件；parser 边界/流式状态机在「thinking 结束 → tool call 开始」的空白窗口上缺过渡态处理，非 NPU 推理问题） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 通道边界假设族） · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '增量 parser 的通道状态机把非标签文本一律归 content 通道；thinking 块的结束标签与首个 tool call 起始标签之间的空白分隔符落在「已无 thinking、未入 tool」的间隙里被误发布。与 #49412（同 parser 相关旧 issue）同域。对把 content 事件驱动 UI/落库的集成方，幽灵 content 事件污染下游。'
+  source: 'vLLM #55633（2026-09-07 open，bug+tool-calling label，含 Ascend 容器环境说明与 thinking→tool 过渡复现路径）。https://github.com/vllm-project/vllm/issues/55633'
+  behavior: 无 crash——**输出流多出幽灵 content 事件**（功能性损坏轻于 10.42 的 tool call 丢失，但同族：parser 对通道边界的假设与模型实际输出分布不符）。10.42 之后 parser 边界假设族在 whitespace 过渡窗口域的新成员。
+  trigger_surface: vLLM（含 vllm-ascend 镜像）+ qwen3_xml legacy parser + thinking 模型流式 tool call（other_stack：parser 代码路径；输出模式即触发）
+  discovery: 2026-09-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

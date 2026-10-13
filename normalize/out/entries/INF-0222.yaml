@@ -1,0 +1,57 @@
+id: INF-0222
+legacy_ids:
+- '1.223'
+slug: flashinfer_trtllm_gen_sm103a_context_fmha_tmem_consumer_dependency_timing_perturbation
+aliases: []
+title: flashinfer sm103a FMHA cubin 对指令时序扰动不鲁棒
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: sm103a context FMHA cubin
+  behavior: persistent context FMHA 经 TMEM 回读 softmax 行 max 统计，消费者指令对该回读存在未声明的时序依赖，指令调度变化时读到陈旧统计。
+effect:
+  objects:
+  - 数值结果
+  detail: B300/sm_103a 上 trtllm_ragged_attention_deepseek 的热路径 LDTM 或其前 BRA 指令被插桩/延迟时，输出约 99% 元素错（max abs diff 1e5–3.3e6），无 CUDA error、无 inf；无扰动时位级确定，标准 CI 不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: flashinfer trtllm-gen ragged prefill（DeepSeek 类 H256 separate-Qkv causal varlen）+ B300/sm_103a + 指令级时序扰动（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5252
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_sm120_fp8_scaled_mm_xid13
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（flashinfer 0.6.18.post1 `trtllm_ragged_attention_deepseek` 的 `fmhaSm103aKernel_QkvBfloat16OBfloat16H256SeparateQkvCausalVarSeqQ128Kv128PersistentContext`（B300/sm_103a 预编译 cubin）在**指令级时序扰动**下静默返回错误输出：对热路径两条 SASS 指令之一施加任意延迟（含零延迟插桩钩子）——`LDTM.x2 R10, tmem[UR4]`（前一行 max 统计回读，pc 0x64b0）或其前两条的 `@P0 BRA`（pc 0x6480）——输出 **~99% 错误**（max abs diff 1e5–3.3e6 vs 位相同干净参考），10/10 迭代。内核自身位级确定（200/200）且与 fp32 参考吻合（max diff 0.0123）——缺陷是 **tensor-memory 读回的消费者侧依赖**未对指令调度鲁棒） · Cov: `var:vllm_sm120_fp8_scaled_mm_xid13`（6.210 时序扰动暴露的硬件内核缺陷族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: persistent context FMHA 的 softmax 统计（行 max）经 tensor-memory（TMEM）回读，消费者指令对该回读存在未声明的时序依赖——指令调度重排（profiler/插桩/编译器差异）即读到陈旧统计，softmax 归一化整体错误；无 CUDA error、无 inf。
+  source: 'flashinfer #5252（2026-09-15 open，needs-triage，含 cubin sha256、launch record、pc 级双扰动点对照与 200 次位级确定基线）。https://github.com/flashinfer-ai/flashinfer/issues/5252'
+  behavior: 无 crash、无非有限值、无 CUDA error——输出量级貌似正常但 ~99% 元素错；生产中任何改变指令调度的因素（竞争内核/驱动调度/profiling）都可能踩中，位级确定基线使其在标准 CI 下不可见。6.210（SM120 fp8 scaled MM Xid13）之后时序扰动族新成员：本条在 **TMEM 统计回读消费者依赖**维度、sm103a 预编译 cubin 载体。
+  trigger_surface: flashinfer trtllm-gen ragged prefill（DeepSeek 类 H256 separate-Qkv causal varlen）+ B300/sm_103a + 指令级时序扰动（hw_specific）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：LDTM/BRA 扰动点、~99% 错、max abs diff 1e5–3.3e6、无 CUDA error 无 inf、200/200 位级确定，均有原文依据。分类 算子/内核/flashinfer、数值结果、静默错误 与独立判断一致。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

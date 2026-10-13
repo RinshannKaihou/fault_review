@@ -1,0 +1,59 @@
+id: TRN-0201
+legacy_ids:
+- RL-RWD.08
+slug: unscored_rollout_defaults_to_zero_reward
+aliases: []
+title: trl OpenReward 未打分 rollout 与真实 0 分同值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: OpenReward env.reward 默认值
+  behavior: environment.py 把 self.reward 初始化为 0.0，仅在打分工具返回非 null 时覆写，默认 reward 函数无条件返回 env.reward，未打分哨兵与合法 0 分坍缩成同一值
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: '放弃、撞 max_tool_calling_iterations 或工具调用全抛异常的 rollout 被当真实 0 分参与 advantage，unscorable_mask 剔除失效，产生方向性梯度偏置，无 crash；PR #7467 合并后自定义 reward 函数仍受影响'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7364
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/6430
+  kind: github_pr
+- url: https://github.com/huggingface/trl/pull/7371
+  kind: github_pr
+- url: https://github.com/huggingface/trl/pull/7467
+  kind: github_pr
+- url: https://github.com/huggingface/trl/pull/7541
+  kind: github_pr
+relations: []
+original:
+  category: RL-RWD
+  section: RL-RWD
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'trl OpenReward 环境 `environment.py:192` 把 `self.reward` 初始化为 `0.0`、只在 `_call_ors_tool`（L266-296）拿到非 null reward 时覆写；默认 reward 函数 `_outcome_only_reward_func`（`_spec.py:69-75`）无条件返回 `env.reward`。从未调过打分工具的 rollout（放弃 / 撞 `max_tool_calling_iterations` / 全部工具调用抛异常）与「真被打 0 分」的 rollout **bit 级同值**——sentinel 与合法测量坍缩成同一个数。修复形状已有先例：PR #6430 的 `has_reward` 标志（仅工具返回非 null 时置位、`reset()` 复位、未打分返回 `None` 使 `unscorable_mask` 正确剔除）曾被维护者正面评审为 "a clean, well-reasoned fix for a real reward-hacking vector"，后因无关测试覆盖问题被关未合；`environment.py`/`_spec.py` 此后无 commit，缺陷在当前 HEAD 仍活。'
+  source: 'trl #7364（2026-09-24；逐函数源替换 repro 三例对照：A 未打分 vs B 真错 vs C 真对——A/B 下游全同；附 PR #6430 兴衰史）。https://github.com/huggingface/trl/issues/7364 ；trl #6430（先行修复、正评后被关）。https://github.com/huggingface/trl/pull/6430 ；修复在途（2026-09-28 补）：`[OpenReward] Return None for unrewarded rollouts (fixes #7364)` 连开三 PR #7369（closed）/#7370（open）/#7371（closed 2026-09-24 04:29 UTC）——修复方向即条目所述「未打分返回 None 使下游剔除」，社区仍在以多 PR 形式迭代、尚未见维护者 merge 裁决。https://github.com/huggingface/trl/pull/7371 ；2026-10-10 补：**PR #7467 已于 2026-10-06 merge**（默认 reward 函数经 reward 历史判 None、`env.reward` 保持 float 兼容），但残留面仍在——自定义 reward 函数读 `env.reward` 仍把未打分当 0.0，清尾 PR #7541（`env.reward` 初始化为 `None`、未打分算术改 TypeError）截至 2026-10-10 open。https://github.com/huggingface/trl/pull/7467 ；https://github.com/huggingface/trl/pull/7541'
+  behavior: 无 crash——组内中心化后「未测」与「测了且零分」同为 0.0：genuinely-failed 样本无法与 never-scored 区分，`unscorable_mask` 剔除逻辑失效；放弃/超限 rollout 被当作真实负信号参与 advantage，按 0 分中心化的组统计把「评分覆盖缺口」转成方向性梯度偏置（放弃行为可能被错误奖励或惩罚，取决于组内其余得分）。与 RL-RWD.05（prefilled tag 使 reward 恒 0 的死区）行为效应同型「合法 0 分与未测坍缩」，差异在这边是**环境侧哨兵值**而非 tokenizer/模板错位；与 RL-RWD.07（verifier 误差组内相关）互补：那边是测量的噪声结构、这边是测量的**缺席**被编码为测量值。
+  discovery: 2026-09-24 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

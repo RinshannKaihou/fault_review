@@ -1,0 +1,51 @@
+id: INF-0781
+legacy_ids:
+- '7.108'
+slug: flashinfer_b12x_w4a16_mxfp4_e8m0_scale_bias_bf16_subnormal_weights
+aliases: []
+title: b12x W4A16 MXFP4 低 scale 字节致权重下溢
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: flashinfer
+    component: b12x W4A16 MXFP4 反量化补偿
+  behavior: FP4 unpack（v*2^-126）、E8M0 解码（2^(e-120)）与 bf16x2 MMA 使每个非零权重恒乘 2^-119，再于 epilogue 以 2^119 补偿；该补偿只在 121≤e≤247 窗口内正确。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: scale 字节 <121 时 MMA 权重落入 BF16 subnormal，<114 时 FP4 0.5 被刷零；真实 MXFP4 checkpoint 字节多在 100–130，低 scale 行专家贡献静默消失；无 NaN/Inf，聚合 cos 仍达 0.99999；SM120 复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: flashinfer b12x W4A16 + BF16 激活 + MXFP4 + scale 字节 <121（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6316
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（b12x W4A16 实验路径 BF16 激活 × MXFP4（`fp4_e8m0_k32`）：FP4 unpack（`v*2^-126`）× E8M0 解码（`2^(e-120)`）× MMA（`mul.bf16x2`）使每个非零权重恒乘 `2^-119`、epilogue 以 `2^119` 全局补偿——**E8M0 scale 字节 <121 时 MMA 权重落 BF16 subnormal**（乘积入 FP32-subnormal 失精度或消失）、**<114 时 FP4 0.5 被刷为零**（110 时除 ±6 外全部归零）；真实 MXFP4 checkpoint 的 scale 字节分布 ~100–130 正中陷阱。无 NaN/Inf、聚合 cos 可保持 0.99999——现有测试与精度门不可见。MiMo 等模型受影响；RTX 5080/RTX PRO 6000 SM120 + vLLM 服务路径复现） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 逐步数值表把真实权重映射到 `true_weight * 2^-119`；补偿常数只在 121≤e≤247（中心 ~2^57，无真实 checkpoint 使用）窗口内正确。
+  source: 'flashinfer #6316（2026-10-11 open，逐步指令级数值表 + 真实 checkpoint 字节分布）。https://github.com/flashinfer-ai/flashinfer/issues/6316'
+  behavior: 无 crash——低 scale 字节行的专家贡献静默消失（部分或全部），精度门不可见。
+  trigger_surface: flashinfer b12x W4A16 + BF16 激活 + MXFP4 + scale 字节 <121（hw_specific）
+  discovery: 2026-10-12 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

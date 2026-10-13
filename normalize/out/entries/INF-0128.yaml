@@ -1,0 +1,55 @@
+id: INF-0128
+legacy_ids:
+- '1.129'
+slug: ttmetal_mul_reduce_scalar_zero_flag_state_leak
+aliases: []
+title: mul_reduce_scalar 继承泄漏的 zero-flag 状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: LLK mul_reduce_scalar 初始化
+  behavior: mul_reduce_scalar 初始化未调用 _configure_default_zero_flag_state_ 复位，前序 copy_init() 设的 Zero_Flag PRESERVE 状态泄漏进 GAPOOL/MVMUL。
+effect:
+  objects:
+  - 数值结果
+  detail: copy 型 sum_reduce_scalar 后接 mul_reduce_scalar 时，denormal 输入的标量归约在硅上静默偏离语义（应 flush 为零的乘积累积出非零残差）；真硅无任何信号，仅 TTSim 以 not modeled 拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Wormhole/Blackwell + copy-based `sum_reduce_scalar` 后接 `mul_reduce_scalar` 的内核序列（软件 API 组合即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/pull/54970
+  kind: github_pr
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（experimental `mul_reduce_scalar` 的 FPU 归约初始化不恢复格式默认 zero-flag 状态——前序 `copy_init()` 配置的 `ALU_ACC_CTRL_Zero_Flag_disabled_src`（PRESERVE，保留 SrcB denormal）泄漏进 GAPOOL/MVMUL，硅上改变 denormal 语义；TTSim 以 `UnsupportedFunctionality ... not modeled` 拒绝该泄漏状态） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'LLK 算子间的隐藏架构控制位（ALU_ACC_CTRL_Zero_Flag）是跨算子持久状态：`copy_init()` 为保留 denormal 输入配置 PRESERVE 模式后，`_llk_math_mul_reduce_scalar_init_()` 不像标准 reduce / block_max_row 路径那样调 `_configure_default_zero_flag_state_()` 恢复格式默认——归约在继承的 keep 语义下执行。修复（PR #54970）在 WH/BH 标量归约初始化路径补恢复调用，并新增定向 BF16-denormal 回归测试（最大有限 BF16 输入 × 最小 BF16 subnormal scaler，compute-default 应 flush scaler 产出精确零；该测试对修复前源码复现 TTSim 报错）。'
+  source: 'tt-metal PR #54970（2026-08-31 open，fix #5305，含硅上语义差异与 TTSim 拒绝证据）。https://github.com/tenstorrent/tt-metal/pull/54970 · 关联 issue：#5305'
+  behavior: 无 crash——denormal 输入的标量归约结果**静默偏离语义**（应 flush 为零的乘积累积出非零残差）；真硅无任何信号，仅 TTSim 以 not-modeled 拒绝。属「**LLK 算子间隐藏架构状态位跨算子泄漏**」新子签名：与 1.122（Quasar softplus 修复未跨 arch 传播）同"修复未覆盖全部路径"模式，本条泄漏的是架构控制位而非近似式 dtype 限定符。
+  trigger_surface: tt-metal Wormhole/Blackwell + copy-based `sum_reduce_scalar` 后接 `mul_reduce_scalar` 的内核序列（软件 API 组合即触发）
+  discovery: 2026-08-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：分类与独立判断一致（算子/内核/tt-metal，LLK 初始化；数值结果；静默错误）。各事实均可在原文和 meta 中找到。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

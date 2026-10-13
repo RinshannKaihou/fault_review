@@ -1,0 +1,56 @@
+id: INF-0373
+legacy_ids:
+- '5.26'
+slug: sglang_gptoss_dp_attention_double_reduction_allreduce_scatterv
+aliases: []
+title: SGLang GPT-OSS DP attention 双重归约致准确率塌零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: sglang
+    component: GptOssSparseMoeBlock 归约
+  behavior: forward_normal 先做 TP all-reduce 使各 rank 持完整 expert 和，DP-attention 后处理又对同一 TP 组 reduce_scatterv 再求和，结果约为 TP 倍。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: GPT-OSS-120B MXFP4 8 卡开 dp-attention 时激活整体放大 4 倍（TP4），输出充满重复 Harmony channel marker、空答案、打满 8192 token，GSM8K 124/128→0/128、MMLU 110/128→4/128，HTTP 层正常。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GPT-OSS + `--enable-dp-attention` + `--moe-a2a-backend none` + TP==DP==EP（关闭 DP attention 即规避）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37187
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0371
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（`moe-a2a-backend none` + `TP==attention DP==EP` 时 GPT-OSS `GptOssSparseMoeBlock.forward_normal()` 先做 TP all-reduce（每 rank 得完整 expert 和 s），DP-attention 后处理再对同一 TP 组 `reduce_scatterv`（再次求和）→ 输出近似 **TP×s（TP4 即 ×4）**——GSM8K 124/128→0/128、MMLU 110/128→4/128） · Cov: `var:sglang_mhc_communicator_missing_dp_reduce_scatterv_pair` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 'MoE A2A 关闭且 TP 数 = attention DP 数 = EP 数时，每个 TP rank 各自产出 expert partial `m_i`；forward_normal 的 TP all-reduce 使每 rank 持完整 `s = Σm_i`，随后 DP-attention postprocessing 的 `reduce_scatterv` 对 TP 复制的 s 再求和，得 `≈TP·s`。双重归约把激活整体放大 4 倍（TP4），下游生成崩溃为重复 Harmony channel marker 与 runaway。修复（PR #37199）去除重复归约。系统性排除确认非 chunk size / MoE runner 后端 / CUDA graph / overlap scheduler / radix cache / hybrid SWA KV pool 所致。'
+  source: 'SGLang #37187（2026-08-30 open，GPT-OSS-120B MXFP4、8×GPU、含 128 题 GSM8K/MMLU A/B 矩阵）+ 修复 PR #37199。https://github.com/sgl-project/sglang/issues/37187'
+  behavior: 无 crash——**准确率塌零型静默输出损坏**（GSM8K 0/128、响应充满重复 channel marker、空答案、打到 8192-token 上限），HTTP 层完全正常。5.24（MHC communicator 双重归约缺陷对）签名的第 3 实例：本条在 GPT-OSS 官方 forward 路径、以准确率塌零（而非 tool-call schema 退化）显形——「all-reduce 与 reduce-scatter 语义叠加」是 DP-attention 栈的系统性陷阱。
+  trigger_surface: SGLang + GPT-OSS + `--enable-dp-attention` + `--moe-a2a-backend none` + TP==DP==EP（关闭 DP attention 即规避）
+  discovery: 2026-08-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility
+    - detail

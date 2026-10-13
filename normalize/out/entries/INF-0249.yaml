@@ -1,0 +1,52 @@
+id: INF-0249
+legacy_ids:
+- '1.250'
+slug: ttmetal_typecast_uint32_float32_double_rounding_bit31_one_ulp
+aliases: []
+title: typecast uint32→float32 双重舍入致 1 ULP 偏差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU typecast uint32→fp32
+  behavior: bit 31 置位的输入先把低 31 位 SFPCAST 成 fp32（第一次 RNE），再加 2^31（第二次 RNE），第二次舍入在第一次制造的伪 tie 上可落到远侧。
+effect:
+  objects:
+  - 数值结果
+  detail: '[2^31, 2^32) 全域 16.47% 输入返回距正确舍入值 1 ULP 的邻值（如 3221225663 得 3221225472，torch 为 3221225728）；输入 <2^31 精确，Wormhole/Blackhole 同病。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.typecast` uint32→float32 + 输入 ≥2^31（hw_specific：Wormhole/Blackhole 同病；<2^31 干净）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57643
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0189
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.typecast(x_uint32, float32)` 对 **bit 31 置位**的输入把低 31 位先 cast 成 fp32（第一次 RNE）、再加 2^31（第二次 RNE）——**两次舍入 ≠ 一次**：[2^31, 2^32) 全域 2,147,483,648 个输入中 **353,697,792 个（16.47%）** 返回距 torch 正确舍入值 1 ULP 的邻值（上/下各半、和在求和中不消）。判决例 v=3221225663：ttnn 3221225472（|Δ|=191，超半 ULP——**不是另一个合法舍入**）、torch 3221225728（|Δ|=65）。golden 是 `x.to(torch.float32)` 且单测以 `assert_equal` **位精确**比较——该 dtype 对的现有测试必已绕开上半域。机理：lo ≥ 2^24 时第一次 cast 舍到 128 的倍数、加 2^31 后间距 256 的第二次 RNE 在第一舍入制造的伪 tie 上向偶破平可落到远侧；`SFPLOADMACRO` 默认路径同构（SFPCAST + SFPMAD 双舍入）） · Cov: `var:ttmetal_typecast_float_int32_positive_overflow_saturates_int32_min`（1.190 typecast 整数域舍入/溢出族——本条在高半 uint32 舍入维度） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`ckernel_sfpu_typecast.h`（BH L443-L449 / WH L459-L465 双副本）的 `SFPCAST(lo)` + `SFPADDI(0x4f00)` 序列；输入 <2^31 跳过加法只舍入一次故精确。来源为无设备的逐指令 replay + 全域 2^31 穷举（脚本在 issue 内），Repo Assist 机器人已在 main 上确认根因；修复方向 sticky-halve 单轮舍入（报告者拟走 bounty 流程）。'
+  source: 'tt-metal #57643（2026-09-24 open，Bad Outputs，含逐位区间错值计数表、worked example、双 arch 代码行与穷举脚本；Repo Assist 根因确认评论）。https://github.com/tenstorrent/tt-metal/issues/57643'
+  behavior: 无 crash——uint32 大值转 fp32 恒 1 ULP 静默偏差；影响任何以 typecast 进浮点域的计数/id/哈希管线，误差上/下对称分布使其在聚合中不消。
+  trigger_surface: tt-metal + `ttnn.typecast` uint32→float32 + 输入 ≥2^31（hw_specific：Wormhole/Blackhole 同病；<2^31 干净）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

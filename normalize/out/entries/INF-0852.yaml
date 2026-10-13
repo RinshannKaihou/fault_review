@@ -1,0 +1,52 @@
+id: INF-0852
+legacy_ids:
+- '8.68'
+slug: vllm_dsv4_sparse_indexer_missing_hadamard_rotation_quant_misalignment
+aliases: []
+title: DSV4 indexer 量化 kernel 漏 Hadamard 旋转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: DSV4 indexer Q/K 量化内核
+  behavior: DSV4 indexer 的 Q fp8/mxfp4 与 compressor-insert 融合 kernel 未施加参考实现在 RoPE 后、量化前的 Hadamard 旋转；K 侧存了 rotate 参数但 forward 不读
+effect:
+  objects:
+  - KV状态
+  detail: 无报错；因旋转对 Q、K 同时施加，QK 点积数学上保持，检索质量可能基本正常，但 indexer 缓存内容与参考实现/SGLang 逐位不一致，跨栈 KV 互换或混用不同版本节点时语义错位
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + DSV4 sparse indexer（fp8/mxfp4）+ 需要与参考/SGLang 缓存互操作的场景（模型×互操作触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55459
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（DSV4 fused sparse-indexer Q/K 量化 kernel 跳过参考实现 RoPE 后、量化前施加的 Sylvester Hadamard 旋转：K 侧 compressor 存了 rotate 参数但 forward 从不读（**显式遗漏**），Q 侧 fp8/mxfp4 fused kernel 同样未旋转——四个 kernel 全部未旋） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: DeepSeek-V4 参考实现（inference/model.py 的 rotate_activation，SGLang 镜像）在 indexer 上施加缩放 head_dim^−0.5 的正交 Hadamard 旋转后再量化；vLLM 的 Q fp8/Q mxfp4/两个 head=128 compressor-insert kernel 都没做。旋转对 Q、K 同时施加故 QK 点积数学上保持（调试期难以发现），但**缓存内容逐位偏离参考实现**。修复以 matrix-free fp32 butterfly（7 级、每级单 add/sub）无条件施加，并借机把 RoPE even/odd 统一为 tl.fma。
+  source: 'vLLM PR #55459（2026-09-05，含与参考实现/SGLang 的对齐说明与 bit 稳定性设计）。https://github.com/vllm-project/vllm/pull/55459'
+  behavior: 无 crash——索引器缓存与参考实现**逐位分歧**（QK 点积保持故检索质量可能基本正常），跨栈 KV 互换（vLLM↔SGLang↔参考）与分布式部署混用不同版本节点时语义错位。「参数存在但从不读取」与 6.164（envs 声明/运行时默认分裂）同"死配置"模式；本条的价值在**静默的跨实现缓存不兼容**——最难发现的正确性类别（无任何输出异常信号）。
+  trigger_surface: vLLM + DSV4 sparse indexer（fp8/mxfp4）+ 需要与参考/SGLang 缓存互操作的场景（模型×互操作触发）
+  discovery: |-
+    2026-09-05 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

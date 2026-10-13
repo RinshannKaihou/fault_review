@@ -1,0 +1,62 @@
+id: INF-0217
+legacy_ids:
+- '1.218'
+slug: vllm_hadacore_transform_tail_warp_cp_async_wait_negative_switch_cross_launch_stale_smem
+aliases: []
+title: vLLM hadacore 漏发 cp.async 等待致读残留 smem
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: hadacore_transform 尾 warp
+  behavior: 尾部 warp 以 switch(k+diff_num_chunks) 选择等待组数，rows>8192 且 rows%8∈{1..4} 时下标为 −1、无对应 case，不发 wait 即读 shared memory。
+effect:
+  objects:
+  - 数值结果
+  - KV状态
+  - 输出内容
+  detail: int4_per_token_head KV 或 compressed-tensors transform 且头数非 8 倍数时，Q 路径出 NaN logprob（请求 logprobs 则 HTTP 400，否则静默错 token），5 次 3 种输出；K/V 路径坏值持久驻留 cache。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM ≥#42339 + `--kv-cache-dtype int4_per_token_head`（Q 与 K/V 写双路径）或 compressed-tensors `transform` 模块 + 头数非 8 倍数模型 + rows>8192 且 rows%8∈1..4（yes；A100/H100/4090 实测）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57014
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（vLLM `hadacore_transform` CUDA 内核（csrc/libtorch_stable/quantization/hadamard/hadacore/hadamard_transform_cuda.cu，#42339 引入）尾部 warp 的 masked wait 循环以 `switch (k + diff_num_chunks)` 选择 `cp.async.wait_group` 等待组数：当行数 >8192 且 `rows % 8 ∈ {1,2,3,4}` 时最后一个 warp 的 `real_num_chunks = 1`、`diff_num_chunks = −1`，`k = 0` 使下标为 **−1**——无对应 case、**不发任何 wait**，该 warp 在异步拷贝落地前就从 shared memory 读数。读到的是该 SM 共享内存里**上一个内核留下的残留**：报告者用精确 butterfly 逆变换恢复出损坏行内容——117/188 行整行等于前一次 `hadacore_transform` launch 的输入张量、19 行是 16 字节（cp.async 段）粒度的新旧混合。Qwen2.5-0.5B int4_per_token_head KV 实测：Q 行 `rows%8∈2,4` 时 token 0 或 token 1023 logprob NaN、5 次运行 3 种输出；K/V 写路径单独可复现且**损坏持久驻留 cache**（4097/4101-token prompt 5/5 运行全位置 NaN logprob，后续前缀命中继续读坏块）） · Cov: `NEW`（`cp.async` wait-group 负下标越 case + 跨 launch 共享内存残留数据泄漏子签名） · 触发 `yes` · 置信度 `verified`'
+  mechanism: '`cp.async` 的等待组数由运行期算术（`k + diff`）生成并经 switch 分派，负值静默落空而非断言；warp 随后消费未同步的 smem——值取决于前一同名/异名内核的 smem 遗留内容（数据泄漏面），错误行集合随竞态时序逐 run 变化（≥1000 blocks 时高发）。曝光面由头数整除性决定：query 头数非 8 倍数走 Q 路径中毒（Qwen2.5-0.5B/1.5B/7B：14/12/28 头）、KV 头数非 8 倍数走 cache 写路径持久中毒（0.5B/1.5B/3B：2 头；7B：4 头）；int8_per_token_head 与 bf16 cache 无 Hadamard 旋转不中招。'
+  source: 'vLLM #57014（2026-09-15 open，bug label，含内核级秒级复现脚本（gist）、行规则矩阵（8193/20004/65540 跨度）、残差逆变换取证与头数曝光推导；sm_89/sm_90/sm_80 三代复现、main 分支 2026-09-14 核对）。https://github.com/vllm-project/vllm/issues/57014'
+  behavior: '无 crash——依赖 `logprobs` 的请求 HTTP 400（"Out of range float values are not JSON compliant: nan"）、不请求 logprobs 则**静默返回错 token**；K/V 路径损坏进 cache 后每步及任何前缀命中都读坏块；首次观测形态为并发负载下的零星 400（batch token 数决定余数）。1.121（sdpa_decode mask seed store 无 drain 竞态）与 1.9（barrier 竞态族）之后异步拷贝同步维度新成员：本条错误数据源是**跨内核生命周期的 smem 残留**且由负下标分支落空触发。'
+  trigger_surface: vLLM ≥#42339 + `--kv-cache-dtype int4_per_token_head`（Q 与 K/V 写双路径）或 compressed-tensors `transform` 模块 + 头数非 8 倍数模型 + rows>8192 且 rows%8∈1..4（yes；A100/H100/4090 实测）
+  discovery: |-
+    2026-09-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 visibility=数值异常（维持）：K/V 路径 5/5 运行全位置 NaN logprob、Q 路径 NaN logprob 并导致 HTTP 400，NaN 是稳定的外显信号；“5 次运行 3 种输出”只是 Q 路径附带的竞态不确定性。subsystem 量化 符合 rule 1（仅 int4_per_token_head KV 量化 / compressed-tensors transform 路径）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

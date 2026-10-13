@@ -1,0 +1,52 @@
+id: INF-0617
+legacy_ids:
+- '6.224'
+slug: trtllm_pyexecutor_multimodal_metadata_failure_kills_all_ranks
+aliases: []
+title: TRT-LLM 多模态 metadata 失败逃逸事件循环杀死全部 rank
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: tensorrt-llm
+    component: PyExecutor 错误分类与事件循环
+  behavior: PyExecutor 错误分类未把 multimodal metadata/encoder 构建失败归为请求级错误，异常逃逸进 executor 事件循环，按默认语义对全部 rank 致命。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 单个 multimodal 请求 metadata 构建失败（如 hybrid-Mamba 缺 vocab_size，或 disable_mm_encoder 部署收到 image_url）时全部 rank 被 hard-kill、容器 exit 137；任何客户端可远程触发，重试会连杀 pod。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM PyTorch executor + multimodal 请求（缺 encoder 的纯文本部署或 metadata 构建失败）（other_stack：TRT-LLM）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/18971
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0585
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（TRT-LLM PyTorch backend 无法为请求构建 multimodal metadata 时，异常**逃逸进 executor 事件循环**——每个 rank 被 hard-kill（`Executor loop crashed on this rank; hard-killing all 2 ranks in 10 s` → MPI_ABORT → container exit 137），整服务器为一个请求陪葬（大型 hybrid 模型完整引擎启动约 6 分钟）。两个已报告实例：(1) hybrid-Mamba KV cache manager 构造时缺 `vocab_size`，`gen_multimodal_cache_key_tokens()` 抛 binding TypeError（#18970 修复根因但 raise 仍致命）；(2) `disable_mm_encoder: true` 的纯文本部署收到 `image_url` 请求抛 "Raw multimodal inputs require a local multimodal encoder"——**任何能到达端点的客户端都能用一条 well-formed-but-unsupported 请求杀死服务器**） · Cov: `var:sglang_single_malformed_mm_request_engine_suicide_retry_cluster_takedown`（6.192 单请求引擎自杀族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: PyExecutor 错误分类（`tensorrt_llm/_torch/pyexecutor/error_classification.py`）未把 multimodal metadata/encoder 失败归类为请求级错误——事件循环内未捕获异常的默认语义是全 rank 致命。正确行为应为该请求 4xx、其余继续服务。
+  source: 'TRT-LLM #18971（2026-09-09 open，自 #18849 建议 3 拆出，含两实例 traceback、修复方向与 pod 连杀时间线）。https://github.com/NVIDIA/TensorRT-LLM/issues/18971'
+  behavior: hard crash（全 rank 死亡 + 容器 exit 137）× **客户端可远程触发**：原报告两分钟内 session-affinity 路由后的两个 pod 相继死亡（第一个死后客户端重试打到第二个）。6.192（SGLang 畸形 mm 请求 SIGQUIT 连杀 5 节点）之后"单请求引擎自杀"族 TRT-LLM 对应条目：两栈在错误分类缺失上同构。
+  trigger_surface: TRT-LLM PyTorch executor + multimodal 请求（缺 encoder 的纯文本部署或 metadata 构建失败）（other_stack：TRT-LLM）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

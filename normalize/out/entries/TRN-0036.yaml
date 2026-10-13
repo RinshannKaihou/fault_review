@@ -1,0 +1,62 @@
+id: TRN-0036
+legacy_ids:
+- PAR.08
+slug: autotp_compile_drops_tp_collectives
+aliases: []
+title: AutoTP 编译 pass 不进检查点子图，漏插 TP collective
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: deepspeed
+    component: AutoTP 图 pass 子图遍历
+  behavior: AutoTP 关掉 TP 层的模块级 collective 交由图 pass 补插，但该 pass 只遍历顶层图，不进入 activation checkpointing 提升出的子图，row-parallel 输出保持部分和。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 开梯度检查点 + autotp pass 时前向与梯度静默错误、exit 0，fullgraph=True 也无 graph break 或警告，插入可能只是部分的；2×H200 实测 HF Llama 0/14 collective 插入。禁用 dynamo 时同样无 collective。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8357
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed AutoTP compile pass 先给每个注入的 `TensorParallel_Layer` 关掉模块级 collective（`defer_collectives_to_compiler=True`），承诺由图 pass 补 graph 级替换；但 `pass_insert_tp_collectives` 只走 `gm.graph.nodes` 顶层，**不下降进** activation checkpointing 被 Dynamo 提升出的子 `GraphModule`——检查点区域内既没有模块级也没有图级 collective，row-parallel matmul 输出保持 partial sum。`fullgraph=True` 不保护：高阶 op 本身就是全图捕获，无 graph break 也无警告。此前的双层防护均不存在：①「关掉的集合」与「插入的集合」是否一致无人校验；②`TORCH_COMPILE_DISABLE=1` / dynamo 禁用时 deferred 层**永久 eager 执行且 collective 已关**。
+  source: 'DeepSpeed #8357（2×H200 实测：MLP+ckpt forward 2.7e-01 / worst grad 9.2e-01；HF Llama + `gradient_checkpointing_enable()` 3.1e-02 / 2.6e-01，**0/14** collective 插入，全部 exit 0；HF 默认 `use_reentrant=False` 恰是入子图的变体，故「开梯度检查点」即中招）；修复 #8355（`iter_graphs` 递归遍历 + 覆盖校验 fail-closed + deferred 层 eager 执行断言，把「静默错值」默认改成「大声失败」）。https://github.com/deepspeedai/DeepSpeed/issues/8357'
+  behavior: '`model.gradient_checkpointing_enable()` + `"passes":["autotp"]` 组合下静默错前向、错梯度、exit 0；插入还可能是**部分**的（检查点块外的层仍有 collective），图检查起来像被 instrument 过。与 PAR.02（链路层 allreduce 错值）不同层：这是**编译改写覆盖缺口**，单卡 reference 对比才能抓。'
+  discovery: 2026-08-31 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 由 编译器 改为 并行切分：出错的 pass_insert_tp_collectives 是 DeepSpeed AutoTP 专属的 TP collective 插入逻辑，不是 Triton/Inductor 等通用代码生成 pass；按 rule 功能域优先，只有不专属于任何功能特性的通用缺陷才归 编译器。activation checkpointing 是触发条件。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 并行切分
+        to: 编译器
+        status: unanimous

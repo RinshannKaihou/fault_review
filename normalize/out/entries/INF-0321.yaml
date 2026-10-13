@@ -1,0 +1,52 @@
+id: INF-0321
+legacy_ids:
+- '4.5'
+slug: cudnn_algo_nondeterminism
+aliases: []
+title: cudnn.benchmark 自动调优选不同算法致跨 run 结果不一
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: cuDNN benchmark 算法自动选择
+  behavior: cudnn.benchmark=True 时 auto-tuner 依 input shape/batch 选择不同的 convolution/GEMM 算法，同一机器后续运行仍可能选中不同算法
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 同一 model+input 跨 run/跨 batch 输出低位数字变化，tie 处偶尔翻转 token；单次 pass 看似正常，只在 run-to-run 方差中显形，单次采样评测会误标为 clean
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: softmax 32 vs online softmax 实现对照或 patch
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/pytorch/blob/master/docs/source/notes/randomness.rst
+  kind: other
+relations: []
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 当 `cudnn.benchmark=True` 时，auto-tuner 会依据 input shape / batch 选择 DIFFERENT 的 convolution/GEMM 算法，而且在同一台机器上的后续运行中仍可能选中不同算法。于是同样的 model + input 在跨 run / 跨 batch 时给出不同结果。
+  source: PyTorch Reproducibility docs, https://github.com/pytorch/pytorch/blob/master/docs/source/notes/randomness.rst 。
+  behavior: 输出在低位数字上出现 run-to-run / batch-to-batch 变化；在打平的 tie 上偶尔翻转 token。关键区别：重跑时 NON-REPRODUCIBLE —— 这正是它与 data-dependent mercurial core（后者对同一输入 IS REPRODUCIBLE）的鉴别点。
+  trigger_surface: softmax 32 vs online softmax 实现对照或 patch
+  signature: 单次 pass 是 on-manifold 的，签名只以 run-to-run variance 形式存在，需要 trajectory / 多次 pass 上的 statistical 检测器；单帧 geometric 必然漏检。它是一类 variance-class 的 infra 故障，而单次采样的评测套件会把它误标为 clean。概念上被 4.1 涵盖，但操作上不同：4.1 的自变量是 reduction order，本条是 kernel selection。与 4.1 一起构成本项目噪声底的两个来源：凡是低于此地板的"签名"都不可采信；凡是要检测这一层，就必须放弃单帧假设、改用可复现性 oracle。
+  repro: yes。通过改变 matmul 的算法路径 / padding 来扰动归约顺序（例如对同一层在不同 pass 里走不同的分块实现），再对同一 token 的隐状态做跨 pass 方差统计；与 4.1 的注入共用同一套 reproducibility 观测。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

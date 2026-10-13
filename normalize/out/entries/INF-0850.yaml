@@ -1,0 +1,58 @@
+id: INF-0850
+legacy_ids:
+- '8.66'
+slug: vllm_hybrid_block_alignment_semantic_vs_packed_mla_width
+aliases: []
+title: hybrid 对齐按语义 head size 定 MLA 页大小漏算打包位宽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: hybrid 块对齐 MLA 页大小计算
+  behavior: hybrid block 对齐器按语义 head size 计算 MLA 物理页大小，未计入 FP8/NVFP4 下的 packed 存储位宽，与注意力侧对物理页大小的推导不一致
+effect:
+  objects:
+  - KV状态
+  detail: vLLM 运行 hybrid MLA+Mamba 模型且 KV 为 FP8/NVFP4 时，注意力块与 Mamba padding 的物理页尺寸错配；原文推断显形为静默错位读写或硬件 fault（取决于越界落点），未给出具体观测
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid MLA+Mamba + FP8/NVFP4 KV（架构×dtype 组合触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55449
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0840
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（hybrid block 对齐以**语义 head size** 定 MLA 页大小，漏掉 FP8/NVFP4 的 packed 存储位宽——注意力块与 Mamba padding 的物理页尺寸错配；修复共享 MLA attention 与 Platform 的位宽查表） · Cov: `var:vllm_rocm_glm53flash_kpool_block_size_advertising_mismatch_self_overwrite`（8.56 打包位宽错配族） · 触发 `config` · 置信度 `documented`'
+  mechanism: 'MLA 的 KV 存储在 FP8/NVFP4 下按打包宽度物化（不同于语义 head_dim）；hybrid 对齐器取语义尺寸计算物理页大小，Mamba padding 与注意力块从此不同域。与 8.56（kpool 页粒度 32-state vs 对齐块 1152）同族：**两个子系统各自推导"物理页大小"而不共享定义**——本条错位轴是 dtype 打包宽度而非 indexer 页粒度（PR #55449，替代 #55435 对应修复；与 #55219 GLM 布局重构正交）。'
+  source: 'vLLM PR #55449（2026-09-05，含 hybrid_mla_block_alignment/glm5/mamba_hybrid 回归测试）。https://github.com/vllm-project/vllm/pull/55449'
+  behavior: 页尺寸错配在 hybrid 池中的显形谱同 8.56/8.64：静默错位读写或硬件 fault（取决于越界落点）。8.56 家族第三成员（indexer 页粒度 / 本条 dtype 打包宽度 / 8.64 MTP crash 显形）——"物理页大小定义不统一"是 hybrid 架构的系统性工程债。
+  trigger_surface: vLLM + hybrid MLA+Mamba + FP8/NVFP4 KV（架构×dtype 组合触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: 裁定 visibility：取 静默错误。原文 behavior 给出的显形谱是“静默错位读写或硬件 fault（取决于越界落点）”，本条 PR 未报告 crash 观测，且 8.64 已单独收录 crash 显形，本条按首要的静默错位读写记。审计：title/component/behavior/detail 均有原文依据，detail 已注明“未给出具体观测”；KV缓存（修复改 hybrid 对齐的物理页大小推导，FP8/NVFP4 只是触发条件，rule 6）、KV状态 与独立判断一致；长度合规，无问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

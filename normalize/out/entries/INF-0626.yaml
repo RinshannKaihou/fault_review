@@ -1,0 +1,58 @@
+id: INF-0626
+legacy_ids:
+- '6.233'
+slug: vllm_dspark_cuda_graph_padded_rows_routed_by_dsv4_topk_ima
+aliases: []
+title: vLLM graph padding 行进入 dsv4_topk 路由致 IMA
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: dsv4_topk Triton 快速路由路径
+  behavior: CUDA graph 固定形状产生的 padding 行未把 is_padding 传进 MoE router，dsv4_topk 快速路径把 padding 行当真实 token 路由，产出的非法 expert id 被下游消费。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: DeepSeek-V4.1-Flash + DSpark 推测解码 + FULL_DECODE_ONLY CUDA graph，max_num_seqs>256 高并发时出现异步 CUDA IMA，worker 与 EngineCore 死亡；8×H20 TP8/EP8 复现。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + DeepSeek-V4.1-Flash + DSpark + FULL_DECODE_ONLY CUDA graph + max_num_seqs>256 高并发（partial）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56389
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM DeepSeek-V4.1-Flash + DSpark 推测解码 + FULL_DECODE_ONLY CUDA graph：**padded graph 行流入 DSV4 MoE 路由**——`dsv4_topk` Triton 快速路径把 padding 行当真实 token 路由（产出非法 expert id/越界路由），后续异步 CUDA illegal memory access → worker/EngineCore 死亡。8×H20 TP8/EP8 生产复现（max_num_seqs>256 高并发触发，256 稳定）；第二用户 1024 并发独立复现并定位根因。两个本地补丁均 1024/1024 两轮全过：(a) padded 行发零权重 + −1 expert sentinel（PR #53577 方向）、(b) draft 模型改走 generic MoE router 绕开快速路径（target 不变）） · Cov: `NEW`（CUDA-graph padding 行跨入 MoE 路由子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: graph 捕获的固定 batch 形状产生 padding 行，`is_padding` 信息未传播进 MoE router 前向上下文；dsv4_topk 快速路径对全部行无差别执行路由计算，padding 行的路由输出（垃圾 expert id）被下游当作真实路由消费。
+  source: 'vLLM #56389（2026-09-11 open，deepseek+DSv4+DSv4.1 label，含生产 traceback、并发阈值边界与两个补丁的 1024 并发验证；修复方向 PR #53577）。https://github.com/vllm-project/vllm/issues/56389'
+  behavior: 异步 CUDA IMA → worker 崩溃 → EngineCore 失败（crash 形态），触发面为高并发 + spec 解码 + CUDA graph 的组合；pad 行 sentinel 化或绕开快速路径即消除。6.196（spec custom_mask cat 无界增长）之后"spec × graph padding 语义"族新成员：本条在 padding 行进入 MoE 路由维度——graph padding 的"幽灵 token"显式跨入 router。
+  trigger_surface: vLLM + DeepSeek-V4.1-Flash + DSpark + FULL_DECODE_ONLY CUDA graph + max_num_seqs>256 高并发（partial）
+  discovery: |-
+    2026-09-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 数值结果
+        status: panel7

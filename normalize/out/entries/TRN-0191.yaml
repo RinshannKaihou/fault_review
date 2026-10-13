@@ -1,0 +1,53 @@
+id: TRN-0191
+legacy_ids:
+- SFT.14
+slug: padding_free_ld_prefix_uses_physical_segment_length
+aliases: []
+title: ms-swift padding-free LD-DPO 按物理段长取共享前缀
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: ms-swift
+    component: padding-free LD-DPO 前缀长度
+  behavior: padding-free LD-DPO 用 logits_to_keep 产出的物理 packed 段长确定共享 completion 前缀长度，而非有效 completion token 计数，prompt/masked 位可挤进该前缀。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: label-discount 权重落在错误 token 集上：实测 ld_alpha=0 时 chosen 分数计入 3 个而非 2 个 response token（多出的是 prompt 位），训出的偏好边界偏移；有无 logits_to_keep 均错位，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10072
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0185
+original:
+  category: SFT
+  section: SFT
+  meta: 'stage: `sft` · Cov: `var:dpo_len_norm_denominator_unscored_token` · 置信度 `verified`'
+  mechanism: ms-swift padding-free LD-DPO 用**物理 packed 段长**（`logits_to_keep` 产出的段切分）确定共享 completion 前缀长度——prompt / masked 位可以挤进该前缀、改变有效 response token 的权重。实测 4 chosen + 2 rejected response token、`logits_to_keep` 产出段长 `[4, 3]`：`ld_alpha=0` 时 chosen 分数计入 **3 个 response token 而非 2 个**（多出的一个是 prompt 位）；不带 `logits_to_keep` 同样错位。修复 = 共享长度改用既有 **effective completion token 计数**、reduce 前用 `loss_mask` 过滤 logprobs，使 padding-free 与 padded 路径权重对齐。
+  source: 'ms-swift PR #10072（2026-09-09 closed；新增 padded/padding-free × logits_to_keep 开关的参数化回归 + 修正后的既有集成测试**修复前全挂**；修后 `test_rlhf_loss.py` 12 passed / 32 subtests；离线 CPU FP32 参照 loss/全参数梯度/单步 SGD 更新对照 + H800 FP32/BF16 trainer 路径核对）。https://github.com/modelscope/ms-swift/pull/10072'
+  behavior: 无 crash——LD-DPO 的 label-discount 权重系统性落在错误 token 集上：prompt/masked 位被当 completion 折扣、真实 response 位权重错移，训出的偏好边界偏移。与 SFT.08（`dpo_len_norm_denominator_unscored_token`——长度归一化分子分母掩码错位）同族同库：**DPO 前缀/掩码的 token 集合与 loss 权重集合不一致**；「物理段 vs 有效 token」的语义错换与 LOSS.08/CKPT.23 一脉：padding-free/packing 几何下的计数契约失守。
+  discovery: 2026-09-13 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

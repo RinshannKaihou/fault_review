@@ -1,0 +1,60 @@
+id: INF-0764
+legacy_ids:
+- '7.92'
+slug: sgl_deep_gemm_transform_sf_layout_non_owning_alias_scale_caching_allocator_reuse
+aliases: []
+title: sgl-deep-gemm scale 变换返回非 owning 别名致被覆写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sgl-deep-gemm
+    component: transform_sf 布局变换
+  behavior: transform_sf_into_required_layout 可返回别名输入 scale 的视图，却不保留原分配 owner（无引用、record_stream 或延迟释放），输入释放后 allocator 可复用该页。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  detail: 'SM90（H20-3e）上直接调用该 API 变换权重 scale 并释放输入后，FP8 block scale 被无关分配内容覆写，后续 GEMM 输出错误但有限，无 crash；依赖分配时序，间歇复现。SGLang 包装已在 #32188 修复，直接调用库的下游不受保护。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: sgl-deep-gemm ≤0.2.0 + SM90 + 直接调用 `transform_sf_into_required_layout` + 输入 scale 提前释放（partial：调用模式 + 分配时序）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39684
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1152
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（sgl-deep-gemm 0.1.7/0.2.0（PyPI wheel）SM90：`deep_gemm.transform_sf_into_required_layout` 可返回**别名输入 scale 的张量而不保留原分配的 owner**——删除输入后 PyTorch caching allocator 可在其 storage 仍然存活时复用该页，输出随后变成**无关分配的内容**。SGLang 侧 `get_mn_major_tma_aligned_tensor` 包装已在 #32188 修复 Bug 1（保留 ownership），但直接调用库 API 做**权重 scale** 变换的下游用户不受保护（#32097 已指出的库级影响面）；复现不 import SGLang/vLLM，H20-3e 实测） · Cov: `var:vllm_weight_cache_daemon_shared_ipc_refcount_slot_premature_free`（12.36 分配生命周期 vs 复用竞态族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 变换返回视图而非拥有存储的拷贝，且未对输入保活（无 owner 引用/record_stream/延迟释放）——Python 侧删除输入即触发 allocator 归还，后续任意分配可覆写仍被引用的 scale 页；失败形态取决于后续分配时序（use-after-free 的数值面）。
+  source: 'SGLang #39684（2026-09-16 open，含 0.1.7/0.2.0 双版本 wheel 复现、#32188/#32097 谱系与"不 import SGLang 即可复现"的独立定位）。https://github.com/sgl-project/sglang/issues/39684'
+  behavior: 无 crash——FP8 block scale 被静默替换为无关内存内容，量化权重在后续 GEMM 中以错误 scale 解码，输出错误但有限；时序依赖使复现呈间歇性。12.36（weight cache daemon IPC refcount 过早释放）之后分配生命周期族新成员（量化域）：本条在**库 API 非 owning alias**维度、影响直接调用库的下游。
+  trigger_surface: sgl-deep-gemm ≤0.2.0 + SM90 + 直接调用 `transform_sf_into_required_layout` + 输入 scale 提前释放（partial：调用模式 + 分配时序）
+  discovery: |-
+    2026-09-16 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 模型权重
+        to: 数值结果
+        status: unanimous

@@ -1,0 +1,56 @@
+id: TRN-0239
+legacy_ids:
+- RL-RO.17
+slug: vllm_encoder_cache_survives_weight_sync
+aliases: []
+title: trl 权重同步后未清 vLLM 多模态 encoder 缓存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: sync_weights 缓存重置
+  behavior: sync_weights 权重同步后只调 reset_prefix_cache() 清 KV 前缀缓存，未清 vLLM 对 vision encoder 输出（image embedding）的 per-image 缓存。
+effect:
+  objects:
+  - 输出分布
+  - 隐状态
+  detail: 训练含 vision encoder 的多模态 RL 中，同一图像复现时命中旧权重算出的视觉 embedding，rollout 分布落后训练策略，IS/KL 在视觉条件上系统性失准，误差随同步周期与图像复现率增长；扰动 encoder 权重后 logprob 不变可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-14'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7198
+  kind: github_issue
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: trl `VLLMGeneration.sync_weights` 权重同步后只调 `reset_prefix_cache()` 清 KV prefix cache；但 vLLM 对**多模态模型的 vision encoder 输出**（vision tower + projector 的 image embedding）另有一层 per-image cache——训练含 vision encoder 时，同图复现会命中**旧权重算出的视觉 embedding**，rollout 从陈旧视觉表征采样。issue 提供最小验证：扰动 vision encoder 权重后 logprob 不变（cache 命中），调 `reset_encoder_cache()` 才恢复。训练侧 policy 对新权重前向、rollout 侧前缀却冻结在同步前——同权重两个 logprob 的 TIM 模式在多模态路径的实例。
+  source: 'trl #7198（logprob 不变式 repro：扰动 encoder 权重 → logprobs 逐 token 不动、`reset_encoder_cache()` 后恢复；引用 vllm_generation.py L513-L517）。https://github.com/huggingface/trl/issues/7198'
+  behavior: 无 crash、无 NaN；多模态 RL（如 GRPO 多模态变体）里图像复现样本的 rollout 分布落后训练策略——IS/比率校正、KL 估计在视觉条件上系统性失准，且误差随 weight sync 周期与图像复现率增长。与 RL-RO.12（Mooncake buffer 旧版本滚入下一同步）同族：**同步契约漏了一类缓存/在途状态**；差异在这边是**多模态派生激活缓存**（vLLM 内部、engine 层不可见），不是权重版本本身——`sync_weights` 语义完整性缺陷与 RL-RO.08（adapter 漏传）同型。
+  discovery: 2026-09-14 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出分布
+        status: panel7

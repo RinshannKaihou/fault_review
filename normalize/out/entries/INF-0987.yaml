@@ -1,0 +1,52 @@
+id: INF-0987
+legacy_ids:
+- '10.71'
+slug: vllm_anthropic_deferred_tools_tool_addition_block_400_silent_client_retry
+aliases: []
+title: vLLM /v1/messages 拒收 tool_addition 致静默重试
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: Anthropic 内容块类型枚举
+  behavior: Anthropic 兼容 schema 的 content block 类型枚举未跟上 deferred tools 协议扩展，缺 tool_addition，Pydantic 校验拒绝含该块的请求。
+effect:
+  objects:
+  - 性能/资源
+  detail: Claude Code 开启 ENABLE_TOOL_SEARCH 时每会话首请求返回 400 + 约 20KB 错误体，客户端吞掉后带全量 schema 重发成功；每会话多一次往返，仅服务端日志可见（实测 29×200/3×400）。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM `/v1/messages` + Claude Code（ENABLE_TOOL_SEARCH=true）deferred tools 首请求（other_stack：客户端协议触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57324
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: sglang_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_loss
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `/v1/messages` Anthropic 兼容端点：Claude Code `ENABLE_TOOL_SEARCH=true` 的**deferred tools** 协议下，会话首请求只发工具名（无 `input_schema`）且 `messages[]` 含 `tool_addition` content blocks——`AnthropicContentBlock.type` 枚举不接受 `tool_addition`，Pydantic 校验拒绝 → **400 Bad Request + ~20KB 多错误体**；客户端吞掉 400 并带全量 schema 重发，会话表面正常。日志指纹：`POST /v1/messages?beta=true 400`（20214 字节）后紧跟同连接 `200 OK`；一下午 29×200 / 3×400，每次 400 精确落在宣布 deferred tools 的 3 个会话首请求（与客户端 transcript `total_deferred_tools: 148` 同量级、按 ~123 字节/工具外推 ~163 条）。与 #46790（Anthropic server tools 无 schema 被 `AnthropicTool.input_schema` 必填拒绝）同一校验面不同触发；报告者当日更正根因（非 input_schema 而是消息块类型）） · Cov: `var:sglang_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_loss`（10.42 适配层静默失效族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: Anthropic 兼容 schema 的 content block 类型枚举未跟上 deferred tools 协议扩展（`tool_addition` 块类型缺失），校验 fail-loud 发生在**客户端会自动吞掉并重试**的位置——净效应是把"协议不支持"从显式错误降级为每会话一次的静默往返税。
+  source: 'vLLM #57324（2026-09-17 open，tool-calling，含生产 29×200/3×400 统计、20214 字节错误体与线性外推、curl 最小复现与根因更正说明（#issuecomment-5715036268））。https://github.com/vllm-project/vllm/issues/57324'
+  behavior: 无 crash、最终会话成功——每会话启动静默损失一次 400 往返 + ~20KB 错误体（延迟 +19.7ms 量级），命令行无任何可见异常；仅代理/服务端日志可见。10.42（Kimi-K3 parser 静默丢失）之后适配层静默失效族新成员：本条在 **schema 枚举滞后 × 客户端静默重试**维度、单次影响轻微但每会话必发。
+  trigger_surface: vLLM `/v1/messages` + Claude Code（ENABLE_TOOL_SEARCH=true）deferred tools 首请求（other_stack：客户端协议触发）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

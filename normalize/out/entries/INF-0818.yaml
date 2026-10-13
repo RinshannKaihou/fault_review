@@ -1,0 +1,62 @@
+id: INF-0818
+legacy_ids:
+- '8.34'
+slug: sglang_lfm2vl_per_image_cache_hit_wrong_length_scheduler_crash
+aliases: []
+title: SGLang 多模态缓存命中嵌入长度错误致 scheduler 崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: MultiModalStaticCache 缓存
+  behavior: per-image cache hit 返回错误长度嵌入（7,126 而非 7,135），set() 不覆盖已存在 hash 致 poisoned 条目持续；HIP 上 LFM2-VL 未注册为 capable model。
+effect:
+  objects:
+  - 输入编码
+  - 可用性/进度
+  - 性能/资源
+  detail: H100 C=32 混合前缀 batch 下间歇落入 _adjust_embedding_length 致命分支致 scheduler 崩溃；该 image 每个后续 batch 重新 encode；HIP 上 vision encoder 重复调用 771 次。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；LFM2-VL + chunked multimodal prefill + 高并发 + per-image cache
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33751
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（per-image cache hit 返回错误长度嵌入→scheduler 致命 insufficient-embedding 分支崩溃） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: SGLang 多模态 prefill 中 per-image cache hit 可返回**错误长度嵌入**——H100 C=32 压力下，混合前缀 batch 间歇性获得 **7,126** 个缓存 encoder token（应为 **7,135**），流入 `_adjust_embedding_length` 的致命 insufficient-embedding 分支→scheduler 崩溃。`MultiModalStaticCache.set()` 从不覆盖已存在 hash，因此 poisoned entry 持续存在，该 image 在每个后续 batch 上重新 encode。同时 HIP 上 LFM2-VL 未注册为 capable model→per-request encoder path 重复调用 vision encoder 771 次。
+  source: 'SGLang #33751（2026-08-05 PR）。组件 chunked multimodal prefill / `MultiModalStaticCache` / `_adjust_embedding_length`。https://github.com/sgl-project/sglang/pull/33751'
+  behavior: crash（scheduler insufficient-embedding）或性能退化（HIP 上重复 encode）。属「多模态 cache hit 长度不验证→poisoned entry 持续→scheduler 崩溃」**新子签名**——多模态缓存条目的完整性验证缺失。
+  trigger_surface: SGLang；LFM2-VL + chunked multimodal prefill + 高并发 + per-image cache
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：kind/subsystem（多模态输入预处理与缓存 → 调度/服务）/stack/effect/visibility 与独立判断一致；title、component、behavior、detail 中 7,126/7,135、H100 C=32、771 次、set() 不覆盖已存在 hash、HIP 未注册 capable model 均有原文依据；behavior 只写原因、detail 只写影响，长度合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 输入编码
+        status: panel7

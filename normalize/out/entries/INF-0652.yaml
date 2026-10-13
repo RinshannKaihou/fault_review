@@ -1,0 +1,54 @@
+id: INF-0652
+legacy_ids:
+- '6.259'
+slug: vllm_dflash2_prefix_cache_hit_permanent_acceptance_zero_hybrid_mamba_state_boundary_misregistration
+aliases: []
+title: vLLM DFlash2 前缀命中后 mamba 状态索引错位致接受率永久为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: mamba state 索引播种
+  behavior: running mamba state 索引用已降为 DFlash2 SW 组 64 的 cache_config.block_size 而非 mamba block size 播种，前缀命中时恢复错误 recurrent state。
+effect:
+  objects:
+  - KV状态
+  - 性能/资源
+  - 可用性/进度
+  detail: v0.30.0 + hybrid GDN + DFlash2 + 前缀缓存：首个前缀命中后 acceptance 塌到 0% 且永不恢复，drafter 照常出 draft 白付 verify 成本；x86 上长命中直接 IMA 杀引擎；v0.29.0 正常。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM v0.30.0（≤#55601 合并）+ Qwen3.5/hybrid GDN + DFlash2 draft + `--enable-prefix-caching` + 前缀命中（config：组合即触发，v0.29.0 免疫）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58894
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0597
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM v0.30.0 DFlash2 speculative + Qwen3.5 家族 hybrid GDN + `--enable-prefix-caching`：**首个前缀命中瞬间 acceptance 从 ~20–90% 塌到精确 0.0% 且永不恢复**（此后整个 server 生命期 drafter 照常 ~28-29 tok/s 出 draft、`Mean acceptance length` 恒 1.00、`Accepted throughput` 0.00——即持续付全额 verify 成本换零接受 token）；两次独立容器重启复现（fresh compile/KV cache），v0.29.0 同模型同配置正常（跨版本回归）。根因经社区三路收窄：(a) x86 RTX 6000 Ada + Qwen3.8-27B-FP8 + DFlash2 k=5 fp8 KV 上同场景首个 12,928-token 命中直接 **IMA 杀引擎**，twu3202 定位与 6.204/#55600 同因——running mamba state index 以 `(num_computed_tokens-1)//cache_config.block_size` 播种而 `block_size` 已被降到 DFlash2 SW 组的 64 而非 mamba block size：长命中越 block-table 行宽 fault、**短命中行宽内恢复错 recurrent state**（恰解释 0% 形态）；打上 #55601 后 12,928-token 命中正常完成且 acceptance 保持 33–46%；(b) he-yufeng 读 main cache 路径确认启动警告（`_warn_if_unannotated_eagle_mamba` 对 DFlash2 draft 无匹配规则、KVCacheCoordinator 保守 flag 全组）为真但仅卫生问题；(c) 报告者 09-27 确认 #55601 在 Orin 上亦恢复正常（"thinks a lot faster now"）） · Cov: `var:vllm_hybrid_mamba_state_idx_engine_lowered_block_size_oob`（6.204 双 block-size 域混淆族——本条在 spec acceptance 塌方显形维度：6.204 收录时的 Xid/静默错 state 双形态之外第三显形"draft 全拒"，且给出 #55601 修复跨硬件双验证） · 触发 `config` · 置信度 `documented`'
+  mechanism: '6.204 的 mamba state 索引播种缺陷经 prefix 命中路径显形为 spec verify 全拒——恢复的 recurrent state 与 drafter 重算状态不对应，draft token 恒被拒；修复 PR #55601（改用 `cache_config.mamba_block_size` 播种）当前 **open 未合并**（本轮 core REST 核实 state=open/merged=False，3 条评论），v0.30.0 发布带病。'
+  source: 'vLLM #58894（2026-09-27 open，Jetson AGX Orin SM8.7 v0.30.0，含双重启日志对照、命中瞬间 metrics 转换摘录、7+ 分钟 0% 持续观察；twu3202/he-yufeng/报告者三方评论收窄）。https://github.com/vllm-project/vllm/issues/58894'
+  behavior: '无 crash（Orin 形态）——**spec decoding 静默失效为纯开销**：throughput 掉到 ~35 tok/s 级、acceptance 永久 0%；x86 形态则 fail-loud IMA。6.204 之后该族显形谱系补全：**同一 mamba state 边界错配在同一版本内既可崩引擎也可无声废掉 drafter**——acceptance 指标是唯一线索，与 12.35（量化 drafter 0% 接受）共享"accept-len 恒 1"观测面但根因完全不同（缓存状态错位 vs 权重量化）。 回访（2026-10-09）：修复 PR #55601 已 merged（10-07，core REST 核实 merged=true）——未确认含修复的发布版本，条目判定不变。'
+  trigger_surface: vLLM v0.30.0（≤#55601 合并）+ Qwen3.5/hybrid GDN + DFlash2 draft + `--enable-prefix-caching` + 前缀命中（config：组合即触发，v0.29.0 免疫）
+  discovery: 2026-09-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

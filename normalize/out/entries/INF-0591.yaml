@@ -1,0 +1,50 @@
+id: INF-0591
+legacy_ids:
+- '6.198'
+slug: sglang_hicache_host_mem_guard_double_charge_rank_desync
+aliases: []
+title: SGLang HiCache host 池守卫跨 rank 重复计扣
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HiCache host 内存预算守卫
+  behavior: host 池预算把 psutil available 按 rank 数均分，但各 TP rank 读取时刻不同且无同步，后到者在已扣除先到者池的余量上仍除以全部 rank 数；sidecar 池守卫同病。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 'TP>1 时物理上放得下的 host 池被 ValueError: Not enough host memory 拒绝，同配置同主机间歇启动失败，取决于 rank 到达顺序；tp8/1772 GiB 主机 --hicache-size 176 实测复现。'
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang + HiCache host 池 + TP>1（含 sidecar 池时双倍触发；拓扑触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38156
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（HiCache host 池 sizing 守卫把 `psutil available` 按并存 rank 数均分，但各 TP rank 到达守卫的时刻不同且互不同步——后到者把先到者已 pin 的池重复计扣，物理上放得下的池被 `ValueError: Not enough host memory` 拒绝） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`host_memory_budget_bytes()` = `(available − 10 GiB) // ranks_per_host()`。该切分只对"任何 rank 分配前读取"成立；pin 大池耗时秒级且 rank 间无同步，第 k 个到达的 rank 看到 `available − k×pool` 仍除以全部 rank 数——先到者的池被计扣两次。带 sidecar 池（DSA indexer、MiniMax index-K、mamba）时第二个守卫重复同病。tp8/1772 GiB 主机 `--hicache-size 176` 实测间歇启动失败。'
+  source: 'SGLang #38156（2026-09-05 open，含逐 rank 时间线与算术推导；修复 PR #38157 把读取移到 TP 组级一次性同步后切分）。https://github.com/sgl-project/sglang/issues/38156'
+  behavior: 启动失败（fail-loud）但**间歇性**——同配置同主机有时过有时不过，取决于 rank 到达顺序；运维上表现为"随机容量缩减"。与 6.136（KV budget 高估启动拒绝）同为容量预算计算域，本条是**多进程读取-切分竞态**：「分布式中把非原子共享资源的本地快照当全局账本」新子签名。
+  trigger_surface: SGLang + HiCache host 池 + TP>1（含 sidecar 池时双倍触发；拓扑触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

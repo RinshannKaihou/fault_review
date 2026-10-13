@@ -1,0 +1,51 @@
+id: TRN-0256
+legacy_ids:
+- OBS.07
+slug: eval_replays_training_captured_graph
+aliases: []
+title: Megatron 验证在 eval 下重放训练态 CUDA graph
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: megatron-lm
+    component: CUDA graph 在 eval 下的重放判定
+  behavior: 训练态捕获的 CUDA graph 冻结了分支走向与 buffer 写；eval+no_grad 的普通验证仍重放该 graph 而未回退 eager，MoE router token-count 累积等 buffer 写被带入验证前向。
+effect:
+  objects:
+  - 指标/日志
+  detail: 无 crash、无 NaN；val loss/metrics 混入训练态副作用，据此做早停、lr 决策或回滚判断时信号源本身是错的。显式推理捕获与 ckpt-forward replay 不在此列。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6992
+  kind: github_pr
+relations: []
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `pretrain/sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 训练进程为加速捕获的 CUDA graph 里**冻结了 capture 时刻的执行语义**：Python 分支走向、buffer 突变都在内。普通验证（`model.eval()` + `torch.no_grad()`）本应切到 eval 语义，却仍**重放训练态（grad 模式开启）捕获的 graph**——capture 期执行的 MoE router token-count 累积这类 buffer 写被原样重放进验证前向，eval 指标混入训练态副作用。修复 = eval/no_grad 下回退 eager 执行；显式推理捕获与 ckpt-forward replay 保持原行为。
+  source: 'Megatron-LM PR #6992。https://github.com/NVIDIA/Megatron-LM/pull/6992'
+  behavior: 无 crash、无 NaN；val loss/metrics 被 replay 的训练态 buffer 污染——用被污染的验证曲线做早停/lr 决策/回滚判断，信号源本身就是错的。与 ACT.03（replay 图与训练图分叉）互为镜像：那边训练路径 replay 错范围、这边验证路径 replay 错模式；与 OBS.06（诊断路径错值）同层：训练健康，**观测层拿的是另一个计算的输出**。与 RL-RO.09（fused view 冻结在捕获时刻）共享「capture 冻结旧语义」机制，但冻结的是控制流/buffer 而非权重。
+  discovery: 2026-09-04 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

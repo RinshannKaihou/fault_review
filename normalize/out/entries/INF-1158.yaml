@@ -1,0 +1,55 @@
+id: INF-1158
+legacy_ids:
+- '12.42'
+slug: sglang_lora_adapter_use_rslora_flag_ignored_alpha_over_r_served_as_scaling
+aliases: []
+title: SGLang 忽略 use_rslora，rsLoRA 缩放小 √r 倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: sglang
+    component: LoRAAdapter scaling 计算
+  behavior: LoRAAdapter 初始化只读 lora_alpha 与 r、不读 use_rslora，恒以 lora_alpha/r 计算 scaling，而非 rsLoRA 的 lora_alpha/√r。
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  detail: use_rslora=true 的 adapter 无错加载、服务正常，但更新被静默削弱 √r 倍（r=64/alpha=128 时 PEFT 为 16.0、SGLang 为 2.0），部署后表现接近基线；r 越大削弱越重。CPU 纯 Python 即可复现。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + `--enable-lora` + `use_rslora=true` 的 PEFT adapter（other_stack：adapter 配置解析即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40835
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1148
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（SGLang `LoRAAdapter` 无视 PEFT adapter config 的 `use_rslora` 标志，恒以 `lora_alpha/r` 计算 scaling（`python/sglang/srt/lora/lora.py`）——rsLoRA adapter 的更新被静默削弱 **√r 倍**（r=16 时 4×、r=64 时 8×）：r=64/alpha=128 时 PEFT scaling=16.0、SGLang scaling=2.0。adapter 无错加载、服务正常，微调效果悄然打折。CPU 纯 Python 最小复现（真实 PEFT save/load 往返 + LoRAAdapter 构造，无需 GPU）） · Cov: `var:vllm_rslora_moe_pack_recompute_alpha_rank_drops_sqrt_r`（12.32 rsLoRA √r 丢失族——跨栈第二实现：vLLM MoE 打包路径重算 vs SGLang 加载器恒错公式） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: rsLoRA 的 scaling 公式是 `lora_alpha/√r`（PEFT 语义），SGLang 的 `LoRAAdapter` 初始化只读 alpha 与 r、从不读 `use_rslora`——同一 adapter 在训练框架（正确 16.0）与推理服务（错误 2.0）间产生 √r 倍效果差；与 12.32（vLLM pack_moe 重算丢 √r）构成**同型缺陷跨栈姊妹对**：一个在打包重算时丢、一个在加载解析时从未有。
+  source: 'SGLang #40835（2026-09-23 open，含 PEFT vs SGLang scaling 对照脚本（use_rslora=True: 16.0 vs 2.0）、CPU 复现、main `525f140` 验证）。https://github.com/sgl-project/sglang/issues/40835'
+  behavior: 无 crash——**rsLoRA 微调效果静默削弱 √r 倍**：部署后模型表现"回退到几乎基线"，无任何错误/警告；用户归因于微调质量而非服务栈。r 越大削弱越重（高容量 adapter 受害最深）。
+  trigger_surface: SGLang + `--enable-lora` + `use_rslora=true` 的 PEFT adapter（other_stack：adapter 配置解析即触发）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

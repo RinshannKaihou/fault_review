@@ -1,0 +1,55 @@
+id: INF-0394
+legacy_ids:
+- '6.1'
+slug: vllm_apc_dirty_block_hash
+aliases: []
+title: vLLM APC 非满尾块 hash 失真致复用脏 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: APC 前缀缓存非满尾块 hash
+  behavior: APC 以 token ID 的 hash 作为 KV block 的 key，但非满尾块的 hash 未反映真实内容，hash 到 token 的映射出错，使后续请求命中并复用过期/脏 KV。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 开启 enable_prefix_caching 时，greedy（temp=0）补全在多次运行之间、以及与关闭缓存的服务之间结果不同，评测分数下降，不崩溃；TinyLlama 上可复现。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: enable_prefix_caching=True/False + 构造 APC 脏块场景（原判定因无 APC 而受限）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2506.09713
+  kind: arxiv
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`ambiguous`（relational） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: APC（automatic prefix caching）用 token IDs 的 hash 作为 KV block 的 key；对于 NON-FULL 的尾块，其 hash 未能反映真实内容，导致后续请求复用了 STALE/DIRTY 的 KV —— 该 block 的 hash-to-tokens 映射本身是错的。本条为 MERGED 条目，合并的子故障为：prefix-cache non-full-block dirty hash（前缀缓存非满块脏 hash，与主机制同源）。
+  source: 'vLLM #5543（在 TinyLlama 上可复现）。修复 PR #5188, #5364。综述 arXiv:2506.09713 (RE.x)。'
+  behavior: greedy（temp=0）补全在多次运行之间、以及与关闭缓存的服务之间结果不同；评测分数下降。不崩溃。
+  trigger_surface: enable_prefix_caching=True/False + 构造 APC 脏块场景（原判定因无 APC 而受限）
+  signature: 混合型 —— forward 算出的逐 token 隐状态本身是 on-manifold 的（它确实是从某个 KV cache 忠实重算出来的），但 attention 读到的 KV 对该序列而言在**关系上**是错的。纯 geometric/空间度量可能 MISS。需要 RELATIONAL/statistical 度量才能捕获：逐位置的 KV-state retrieval error 对比重算参考，或一个可复现性 oracle；最便宜的捕获方式是 cheap 族的行为级 reproducibility 检查（recompute-oracle；前提：记录 batch 组成的 bitwise 重算或 batch-invariant kernels）。
+  repro: 可部分注入 —— 在单点对 KV cache 做 mutation（与 8.85 `kv_corrupt` 的 swap 模式重叠）：用钩子把某一位置的 K/V 替换为另一序列/另一位置的 K/V，模拟「读到脏块」的关系性错误；但真正的 non-full-block hash 语义需 vLLM APC 栈才能还原。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

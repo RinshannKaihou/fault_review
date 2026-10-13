@@ -1,0 +1,55 @@
+id: TRN-0025
+legacy_ids:
+- NUM.16
+slug: invalid_group_norm_sentinel_squared_to_healthy
+aliases: []
+title: DeepSpeed 无效组范数哨兵 −1 被平方成 1.0，溢出被当健康放行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: 组范数 −1 哨兵与平方组合
+  behavior: DeepSpeed 把 inf/NaN 组范数编码为 −1 哨兵，但 combine_grad_norm_groups 等组合路径把哨兵与 vector_norm 一起平方，(−1)²=1.0，溢出组与范数 1.0 的健康组不可区分。
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  detail: 无 crash；含 inf/NaN 梯度的组本应跳步并降 scale，却拿到有限范数：clip 放行 unclipped step、overflow 检查不触发、loss scaler 照常推进，坏梯度进入权重。涉及 ZeRO-3、SuperOffload、ZenFlow、FP16/BF16。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8638
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0013
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `shared` · Cov: `var:loss_scaler_swallows_overflow` · 置信度 `documented`'
+  mechanism: 'DeepSpeed 把 inf/NaN 组范数编码为 `-1` 哨兵，但 `combine_grad_norm_groups` 等组合路径把哨兵与 `vector_norm` 一起**平方**——`(−1)² = 1.0`，溢出组在裁剪/优化器眼里与「范数 1.0 的健康组」不可区分：clip 系数按有限范数计算放行 unclipped step、overflow 检查不触发、loss scaler 照常推进。修复（PR #8638）= 非有限或负的组范数一律按 `inf` 处理：跳过 optimizer step、逐步重置 overflow、推进 loss scaler（覆盖 ZeRO-3 / SuperOffload / ZenFlow / FP16 fused+unfused / BF16）；直接调用 `unscale_and_clip_grads` 的调用方把哨兵映射为 `inf`，保持零梯度而非 clip_coef=1 的语义。'
+  source: 'DeepSpeed PR #8638（2026-09-23；CPU 哨兵/clip/overflow 单测 + 2×H200 既有 `TestZeROBFloat16Stage3InvalidNormRecovery`；从 ZeRO-2 oversized-gradient / stream-lifetime 工作拆出）。https://github.com/deepspeedai/DeepSpeed/pull/8638'
+  behavior: 无 crash——含 inf/NaN 梯度的组本应触发 skip step + 降 scale，哨兵平方后反而拿到合法有限范数、照常执行 unclipped 优化步：**坏梯度以「健康」姿态进权重**。与 NUM.04（scaler 吞溢出）同族「溢出处理路径把故障洗成正常」，断点在**哨兵编码进入非线性组合**：那边是跳步逻辑吞、这边是数值编码本身被算术毁掉；与 OBS.13（fp32 ZeRO-0 范数算出即被丢弃）互补：那边监控读不到、这边监控读到假健康值；与 OPT.04（clip 重缩放吃尖峰）同打击 clip 决策，那边范数是真的、这边是平方出来的假值。
+  discovery: 2026-09-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

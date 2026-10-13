@@ -1,0 +1,55 @@
+id: INF-0724
+legacy_ids:
+- '7.51'
+slug: vllm_turboquant_fp16_zero_point_overflow_poisoned_cache
+aliases: []
+title: TurboQuant KV 的 fp16 zero-point 溢出注入 ∞
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: triton_turboquant_store
+  behavior: triton_turboquant_store 不论输入 dtype 一律用 fp16 存 value scale 与 zero-point；bf16 输入含 |min|>65504 的 outlier 时 zero-point 溢出。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: --kv-cache-dtype turboquant_* 且 bf16 KV 值含 attention-sink 级 outlier 时，store→decode 重建值为 ∞，被投毒的 cache line 进入 attention，输出质量不可预测退化；无 crash，probe 级可复现。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + `--kv-cache-dtype turboquant_*` + bf16 KV 值含 |min|>65504 outlier（attention-sink 行为强的模型）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53334
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（TurboQuant KV 的 value 路径 per-vector scale/zero-point 恒存 fp16——bf16 输入含 |min|>65504 的 attention-sink 级 outlier 时 zero-point 溢出，重建值返回 ∞：被投毒的 cache line 而非优雅降级） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`triton_turboquant_store` 把 per-vector value scale 与 zero-point **无论输入 dtype 一律存 fp16**（`sc_f16`/`zr_f16`）。bf16 输入含 attention-sink 量级 outlier（|min| > 65504，超出 fp16 max）时 zero-point 溢出，store→decode 往返的重建值返回 **∞**——一条被投毒的 cache line，而非截断/饱和的优雅降级。model-free 单 key decode 往返（隔离 value 路径）已在 probe 级验证。同 issue 另报：hybrid 模型（GDN+full attention）在 init 即 `ValueError: Unknown TurboQuant cache dtype: ''auto''`（fail-loud 但报错误导——state 层解析为 auto 而后端无 mixed-layer 路径）。'
+  source: 'vLLM #53334（2026-08-21 open，GB10/sm121 对生产 NVFP4-KV recipe 的评测，附公开 probe 代码与原始结果）。https://github.com/vllm-project/vllm/issues/53334'
+  behavior: 无 crash。outlier 命中组的 KV 解包为 ∞ 并进入 attention——**单条 cache line 投毒**式静默损坏，输出质量不可预测退化；probe 级确定性复现。属「**KV 量化元数据 dtype 上限 × outlier 超界 → ∞ 注入 cache**」新子签名：量化参数自身的存储精度（fp16 元数据）成为正确性瓶颈，与 11.34（TurboQuant×MTP 重复坍塌）同 KV 量化家族不同机制层（本条在 store 元数据溢出、非 verify 交互）。
+  trigger_surface: vLLM + `--kv-cache-dtype turboquant_*` + bf16 KV 值含 |min|>65504 outlier（attention-sink 行为强的模型）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

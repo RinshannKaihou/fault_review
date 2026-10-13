@@ -1,0 +1,55 @@
+id: INF-0482
+legacy_ids:
+- '6.89'
+slug: sglang_moe_expert_id_namespace_runner_backend_mismatch_silent_oob
+aliases: []
+title: SGLang MoE 误判 runner 致 expert ID 越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: sglang
+    component: Dispatcher topk_ids 重映射
+  behavior: Dispatcher 按配置的 runner backend 决定是否把 topk_ids 映射到 rank 本地范围；ROCm 上 auto 且 AITER 可用时误判为保留全局 ID，实际 Triton runner 随之越界写
+effect:
+  objects:
+  - 可用性/进度
+  detail: ROCm 上 EP>1 的 compressed-tensors W4A16 MoE（如 Kimi-K2.5 EP8）warmup 时每个 rank 出现 GPU Memory access fault；--moe-runner-backend triton 可规避。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang；ROCm + `--moe-runner-backend auto`（AITER 可用）+ EP>1 compressed-tensors W4A16 MoE
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34701
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（MoE dispatcher 用配置 backend 而非实际 runner backend 判断 → EP>1 时 expert ID 范围错误 → silent OOB write） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`StandardDispatcher` 从 `get_moe_runner_backend()` 决定是否 remap `topk_ids` 到 rank-local expert range——仅 AITER runner 保持 global expert IDs。但配置的 backend 不一定是该层实际拿到的 runner backend。compressed-tensors W4A16 总是构建 Triton runner，但 ROCm 上配置 `auto` + AITER 可用时 dispatcher 误判 "AITER runner, keep global IDs"，实际运行 Triton kernels（sized `num_experts / ep_size`）。Kimi-K2.5 EP8 时 expert 383 索引 48-entry buffer——**silent out-of-bounds write** in `moe_align_block_size`。'
+  source: 'SGLang #34701（2026-08-13 open PR）。ROCm，Kimi-K2.5 EP8。https://github.com/sgl-project/sglang/pull/34701'
+  behavior: 'warmup 时每个 rank GPU fault（`Memory access fault ... Reason: Unknown`）。`--moe-runner-backend triton` 可规避。属「dispatcher 判断 backend 与实际 runner backend 不匹配」**新子签名**——非 Kimi-特定，任何 EP>1 compressed-tensors MoE on ROCm 均触发。'
+  trigger_surface: SGLang；ROCm + `--moe-runner-backend auto`（AITER 可用）+ EP>1 compressed-tensors W4A16 MoE
+  discovery: 2026-08-13 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：分类与独立判断一致（MoE路由/sglang，dispatcher 的专家 ID remap 属“专家分派”；可用性/进度；warmup 时 GPU Memory access fault→报错）。各事实（AITER 保留全局 ID、ROCm auto、Kimi-K2.5 EP8、--moe-runner-backend triton 规避）均有原文依据，形式无问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,63 @@
+id: INF-0415
+legacy_ids:
+- '6.22'
+slug: vllm_topk_per_row_nan_uninit_smem_index
+aliases: []
+title: top_k_per_row 内核对 NaN 行输出未初始化 index
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: sampler.cu topKPerRowJob
+  behavior: extractBinIdx 把正 NaN 分到 +inf 之上，NaN 主导行的阈值 bin 落在 NaN bin；插入排序的 NaN 比较全为 false，其余 smemOutput 槽保留未初始化 smem 并被当作 index 输出。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: NaN 主导的行（非 NaN 候选少于 top_k 时还会未初始化读取 smemThresholdBinIdx）输出垃圾 index，下游 gather 触发设备端 assert 或非法内存访问；为 6.17 同一故障链的内核级根因。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 特性路径：需对应模型/版本 pin + 场景构造
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50201
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0410
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（NaN 驱动的未初始化 smem 作 index） · Cov: `var:vllm_dsv4_sm12x_nan_mqa_topk_illegal_access` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 这是 6.17 `vllm_dsv4_sm12x_nan_mqa_topk_illegal_access` 的**内核根因分析 + 加固 PR**。`top_k_per_row_prefill`（及 decode/split 变体共享的 `topKPerRowJob`）的根因：`extractBinIdx` 把正 NaN 位模式分箱到 +inf 之上，故 NaN 主导的行把直方图阈值 bin 落在 NaN bin；插入排序最终遍历的 NaN 比较全为 false，于是每个阈值 bin 元素都写 slot 0，剩余 `smemOutput` slot 保留**未初始化的动态 shared memory**，最终无条件存储循环把这些当作 index 输出。当非 NaN 候选少于 `top_k` 时 `smemThresholdBinIdx` 还被未初始化读取。修复：`isNaNLogit()` 位模式测试（`--use_fast_math` 下鲁棒）+ 填充逻辑。内核 `+42/−1`，测试 `+209`。
+  source: 'vLLM #50201（2026-07-29 open PR），对应 6.17 的 #49896。组件 `csrc/libtorch_stable/sampler.cu`。https://github.com/vllm-project/vllm/pull/50201'
+  behavior: NaN 主导行 → 未初始化 smem 作 index → 下游 gather 触发设备端 assert / 非法内存访问。与 6.17 同一故障链，本条提供内核级根因（直方图 NaN 分箱 + 插入排序 NaN 比较 false）。作为 6.17 的内核加固变体编目。
+  trigger_surface: vLLM 特性路径：需对应模型/版本 pin + 场景构造
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 算子/内核：原文 Cov 关联 6.17 vllm_dsv4_sm12x_nan_mqa_topk，该 top_k_per_row 服务于 MQA/稀疏注意力索引 top-k 而非 sampler 采样，属通用 top-k kernel 缺陷（直方图 NaN 分箱 + 插入排序 NaN 比较）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 解码/采样
+        status: unanimous

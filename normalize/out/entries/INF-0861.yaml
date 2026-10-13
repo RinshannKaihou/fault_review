@@ -1,0 +1,57 @@
+id: INF-0861
+legacy_ids:
+- '8.77'
+slug: vllm_flashinfer_sm90_sparse_mla_tp_ep_mtp_ima_h20
+aliases: []
+title: H20 上 GLM-5.3-Flash TP+EP+MTP 运行期非法显存访问
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: 待定（IMA 浮出于 sparse MLA）
+  behavior: 根因未定位：某个更早的 kernel 发生非法显存访问，异步报错在 FlashInfer SM90 sparse MLA 后端构建 attention metadata 的 _kv_lens_host 同步点浮出
+effect:
+  objects:
+  - 可用性/进度
+  detail: 8×H20 上 vLLM nightly 服务 GLM-5.3-Flash（TP+EP、MTP k=5），65,536 in/out × batch 32 负载下普通 chat 请求中途 Worker 死于 CUDA illegal memory access，服务崩溃
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM nightly + GLM-5.3-Flash + H20/SM90 + TP+EP + MTP spec + 长上下文高并发（hw_specific：平台 × 拓扑 × spec 组合 + 负载触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55626
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0848
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（GLM-5.3-Flash 8×H20（SM90）+ vLLM nightly 260904 + TP+EP（`--enable-expert-parallel` TP2/EP2 worker）+ MTP spec（k=5）：服务中 Worker_TP2_EP2 死于 `torch.AcceleratorError: CUDA illegal memory access`——栈顶在 FlashInfer SM90 sparse MLA 后端构建 attention metadata 时的 `flashinfer_mla_sparse_sm90.py:348 _kv_lens_host` 的 `positions[:num_rows].cpu()` 同步点（异步报错，真实 faulting kernel 在更早的流上）；负载 65,536 in/out × batch 32，普通 chat 请求中途崩） · Cov: `var:vllm_rocm_glm53flash_kpool_mtp_decode_memory_access_fault`（8.64 GLM-5.3-Flash sparse MLA × MTP 显存访问故障族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 报告者自查排除三个近邻：#55221（同后端文件但为 fp8 KV dtype 被 plan() 拒绝 + workspace 尺寸，无运行期 IMA）、#55280（GLM-5.3-Flash hybrid block_size=1152 → 32-entry paged-MQA GPU fault，仅 ROCm/gfx942）、#53142（mamba align precopy IMA，prefix-cache resume 场景）——本条在 CUDA/H20 + TP+EP + MTP 组合下独立复现面；同步点栈顶是 IMA 的浮出面而非根因点。
+  source: 'vLLM #55626（2026-09-07 open，bug+rocm+glm label，含完整 worker 栈、serving config、负载参数与近邻 issue 排除分析；报告者主动提出 CUDA_LAUNCH_BLOCKING/消融 bisection）。https://github.com/vllm-project/vllm/issues/55626'
+  behavior: 运行期 worker 死亡（fail-loud IMA）——生产服务中途崩。8.64（ROCm kpool MTP decode memory access fault）之后 GLM-5.3-Flash sparse-MLA × MTP 显存访问故障族在 **CUDA SM90** 平台的第一例（8.64 为 ROCm），并新增 EP 维度；「异步 IMA 在 metadata 构建同步点浮出」与 6.131/#53142 的浮出模式同构。
+  trigger_surface: vLLM nightly + GLM-5.3-Flash + H20/SM90 + TP+EP + MTP spec + 长上下文高并发（hw_specific：平台 × 拓扑 × spec 组合 + 负载触发）
+  discovery: 2026-09-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 待定
+        to: 算子/内核
+        status: unanimous

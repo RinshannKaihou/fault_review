@@ -1,0 +1,57 @@
+id: INF-0855
+legacy_ids:
+- '8.71'
+slug: vllm_rocm_aiter_mla_kv_dtype_global_cache_config_vs_group_spec
+aliases: []
+title: AITER MLA 误用全局 KV dtype 致 graph 捕获崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: AITER MLA 元数据 KV dtype
+  behavior: AiterMLAMetadataBuilder 从全局 cache_dtype 推导 KV dtype 而非组级 spec，bf16 draft 组被当作 fp8，据此定元数据尺寸、选 fp8 kernel 读 bf16 缓冲
+effect:
+  objects:
+  - 可用性/进度
+  detail: MI355X 上 Kimi-K3 + MTP draft（auto dtype）+ --kv-cache-dtype fp8 + TP8 时，8 个 rank 在 cudagraph capture 期同步 memory access fault 崩溃；eager 走 Gluon 路径不显形
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm + AITER MLA + spec draft（auto dtype）+ `--kv-cache-dtype fp8` + cudagraph（hw_specific；配置组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55591
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0854
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（`AiterMLAMetadataBuilder` 从全局 `cache_config.cache_dtype` 推导 KV dtype，但 cache dtype 是**每 KV 组**属性——spec draft 模型可跑 `kv_cache_dtype:"auto"`（bf16 cache）于 `--kv-cache-dtype fp8` 启动的服务：builder 把该组归一化为 "fp8"、据此用 `get_mla_metadata_info_v1` 定 persistent work metadata 尺寸并选 fp8 asm decode kernel——按错误元素大小读实际 bf16 的缓冲 → GPU memory access fault；eager 下同组走 Gluon 路径掩盖，**仅 cudagraph capture 显形**） · Cov: `var:vllm_flashinfer_cudagraph_support_target_heads_over_draft_kv_heads`（8.70 全局 config 污染组级判定族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 组级属性（`kv_cache_spec.dtype`）存在但 builder 读全局配置。修复在该组 spec dtype 为浮点（未量化）时遵从组自身 dtype——归一化字符串、`q_dtype`/`kv_dtype`、metadata 尺寸全部描述内核实际要读的缓冲；真 fp8 组不受影响（spec dtype 非 float）。MI355X gfx950 + Kimi-K3 + DSpark MTP draft + TP8 实测：修复前 8 rank 全部在 PIECEWISE capture 同步崩溃，修复后 FULL+PIEWISE 100%。
+  source: 'vLLM PR #55591（2026-09-06，bug/rocm label）。https://github.com/vllm-project/vllm/pull/55591'
+  behavior: cudagraph capture 期 memory access fault（fail-loud 但 eager 正常——"开 graph 才崩"的诊断迷宫）。与 8.70 同日同族：「组级语义从全局 config 推导」在 FlashInfer（头数）与 AITER（dtype）两个后端各显形一次；KV 组粒度配置（spec 解耦）是这两条共同的结构性教训。
+  trigger_surface: vLLM ROCm + AITER MLA + spec draft（auto dtype）+ `--kv-cache-dtype fp8` + cudagraph（hw_specific；配置组合触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem：取 KV缓存。按 rule 6，spec draft 与 cudagraph 只是触发条件；出错的代码是 AiterMLAMetadataBuilder 从全局 cache_config.cache_dtype 推导 KV dtype，而原文写明“cache dtype 是每 KV 组属性”，修复改为遵从组自身 kv_cache_spec.dtype，属 KV 存储格式的组级管理。独立判断曾取 量化（fp8 kernel 选择），但真 fp8 组不受影响、错的是 bf16 组的 dtype 归属，KV缓存 更贴切。其余字段一致，维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

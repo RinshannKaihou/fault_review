@@ -1,0 +1,59 @@
+id: INF-1171
+legacy_ids:
+- '13.3'
+slug: bug_final_norm_missing
+aliases: []
+title: lm_head 前的最终归一化层被省略
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: 通用
+    component: 最终 norm（model.norm）
+  behavior: 去掉 lm_head 之前的最后一个 RMSNorm/LayerNorm，残差流未经归一化直接进入（通常 tied 的）lm_head 做点积。
+effect:
+  objects:
+  - 输出分布
+  - 隐状态
+  detail: logits 极大且彼此不一致、softmax 饱和，生成重复/退化，偶尔接近垃圾输出，分布呈低熵尖峰；最终隐藏态范数爆炸、kurtosis 尖峰，更早层不受影响，只看中间层的度量会全部漏检。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 实现 patch/错误配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2507.02559
+  kind: arxiv
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`model_on` · Cov: `NEW`（完整**省略** `model.norm`；`bug_rmsnorm_eps` 只扰动 epsilon） · 触发 `yes` · 置信度 `documented`'
+  mechanism: 去掉 lm_head 之前的最后一个 RMSNorm/LayerNorm，使残差流不受约束地进入（通常是 tied 的）lm_head 做点积，产生非常大、彼此不一致的 logits，从而让 softmax 饱和。
+  source: arXiv:2507.02559（"Transformers Don't Need LayerNorm at Inference Times"）。HF forum。
+  behavior: 重复 / 退化式生成，偶尔接近垃圾输出；分布呈现低熵尖峰。
+  trigger_surface: 实现 patch/错误配置
+  signature: 在**最终**隐藏态上有强 off-manifold 信号：范数分布爆炸、kurtosis 尖峰。作用在最后一层隐藏态上的廉价 statistical / spectral 度量即可捕获；更早的层完全不受影响，因此任何只看中间层的 geometric / trajectory 度量会全部漏检。
+  repro: 在 `model.model.norm` 上挂一个 forward hook，直接返回它**自己的输入**，从而完全绕过归一化 —— 比扰动 `variance_epsilon` 更简单，且不需要权重克隆/还原，退出时只需摘掉 hook。**核验注（在小模型 checkpoint 上实测，非假设；增益方向依 checkpoint 而异，迁移前需复测）**：源目录称此故障让残差流"无界"、产生**更大**的 logits/隐藏态范数，这一方向性判断隐含假设学习到的 RMSNorm 增益 `norm.weight` ≤ 1（即 norm 是限幅器）。而该 checkpoint 的 `norm.weight` 均值约 7.1（最大约 16.8）—— 这里的 RMSNorm 是**放大器** —— 所以健康的 post-norm 最终隐藏态**大于**本故障暴露出的 raw pre-norm 残差（实测同一条 prompt：last-token norm 健康 277.9 vs 故障 54.5；logits norm 健康 1511 vs 故障 375）。在本模型上绕过 norm 使最终隐藏态与 logits 变**小**而非变大。源目录中与增益方向无关、仍然成立的核心主张是：最终隐藏态/logits 分布发生了大幅 off-manifold 偏移（而非塌缩到接近零）—— 这正是 `test_bug_final_norm_missing_larger_not_zeroed` 实际检查的内容。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出分布
+        status: panel7
+    uncertain:
+    - detail

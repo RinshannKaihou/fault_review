@@ -1,0 +1,51 @@
+id: INF-0416
+legacy_ids:
+- '6.23'
+slug: sglang_hicache_storage_key_missing_kv_dtype
+aliases: []
+title: SGLang HiCache 存储键缺 KV dtype 致跨运行复用错格式缓存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HiCacheStorageConfig 存储键
+  behavior: HiCache 持久化存储键只含模型名与 TP/PP/CP 几何，不含 KV cache dtype；根因是 HiCacheStorageConfig 本身没有 dtype 字段，任何后端都无法把 dtype 纳入键。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 同一模型先后以不同 --kv-cache-dtype（如先 bf16 再 fp8_e4m3）运行时键相同，第二次运行静默复用字节格式错误的缓存条目，attention 读到格式错误的 KV，输出退化；无 crash、无 NaN、无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: SGLang 主路径；概念可迁 vLLM，但原文复现需 SGLang
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-02'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/33268
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`ambiguous`（relational / 跨运行缓存键碰撞） · Cov: `NEW` · 触发 `other_stack`⚠ · 置信度 `verified`'
+  mechanism: SGLang HiCache 的持久化存储键（storage key）包含模型名、TP/PP/CP 几何，但**不含 KV cache dtype**。根因在上一层：`HiCacheStorageConfig` 本身没有 dtype 字段，故任何后端都无法把它纳入键。后果：两次相同模型、不同 `--kv-cache-dtype`（如先 bf16 再 fp8_e4m3）的运行产生**相同 key**，第二次运行**静默复用**字节格式错误的缓存条目。这是关系性错误：forward 重算出的逐 token 隐状态本身 on-manifold，但 attention 读到的 KV 对该序列而言格式错误。
+  source: 'SGLang #33268（2026-08-02 open）。组件 `hicache_storage.py:378-386`（`config_suffix`）+ `HiCacheStorageConfig`。https://github.com/sgl-project/sglang/issues/33268'
+  behavior: 无 crash、无 NaN、无报错。不同 dtype 的跨运行缓存键碰撞 → 第二次运行静默复用错误字节格式的 KV → 输出退化为基于错误 dtype 解码的 KV。属"持久缓存键未含 dtype → 跨运行格式碰撞"新子签名，是服务栈缓存正确性 bug，与 6.1 `vllm_apc_dirty_block_hash`（KV block hash 不反映真实内容）同族（缓存键不忠实反映 KV 语义）。
+  trigger_surface: SGLang 主路径；概念可迁 vLLM，但原文复现需 SGLang
+  discovery: 2026-08-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

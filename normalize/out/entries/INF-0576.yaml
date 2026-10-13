@@ -1,0 +1,56 @@
+id: INF-0576
+legacy_ids:
+- '6.183'
+slug: sglang_prefill_breakable_cuda_graph_weakref_break_inputs_cross_bucket_alias
+aliases: []
+title: SGLang BCG 弱引用 break 输入致跨 bucket 内存复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: sglang
+    component: breakable graph 输入弱引用
+  behavior: breakable CUDA graph 以弱引用保存 graph-break inputs，误以为共享 mempool 的 use_count 能保活存储，实际只保活 pool 对象，blocks 被分给后捕获的 bucket。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: SGLang CUDA 默认 prefill 路径多 bucket 捕获后，replay 早 bucket 读写另一 bucket 拥有的内存：依分配布局表现为 temp=0 下静默输出错误 token，或 CUDA illegal memory access 崩溃；非确定，默认配置即触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang CUDA 默认 prefill 路径（breakable backend）+ 多 bucket 捕获 + graph break（默认配置即触发，无需特殊 flag；复现需多尺寸 bucket 时序）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-02'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37606
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（prefill breakable CUDA graph（BCG）把 graph-break inputs 存为**弱引用**（`captured_args = tuple(_weak_ref_if_tensor(a)…)`），注释假设共享 mempool 的 `use_count` 钉住存储——它只钉住 **pool 对象**而非 blocks；Python 引用释放后分配器把 blocks 重新雕刻给**后捕获的 bucket**（捕获序从大到小，later capture 恒存在），replay 早 bucket 即读到**另一 bucket 拥有的内存**：按布局或为静默错 greedy 输出、或为 CUDA illegal memory access——**默认路径全员命中**：`default_prefill_backend()` 在 CUDA 返回 breakable，统一注意力 graph break 把每层 q/k/v/output 送过 eager 边界） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'CUDA graph 共享 mempool 的引用计数语义误用：`use_count` 保活 pool 句柄不保活 block 分配；`weak_ref_tensors` 让 Python 侧唯一强引用消失后 free-list 回收该地址，最大→最小的捕获序保证后续 bucket 捕获必然复用同池同尺寸块。双向污染（replay A 时 A 的 graph 又覆写 B 的 buffer）。弱引用优化引入于 #22218，分配器复用风险当时已在 review thread 指出；#30584 只修了同类 eager-output bridge（`captured_output`），break inputs 侧留存。修复 PR **#37448**（恢复强引用 + 回归测试 `test_break_inputs_survive_later_capture_into_shared_pool`）；issue #37606 以 ~80 行 model-free 复现器（捕获 A→replay→弃强引用→捕获 B→读 bridge 污染）端到端验证修复。'
+  source: 'SGLang #37606（2026-09-02 open，e2e 验证报告 + model-free 复现器 + 中文完整调查 write-up 链接）。https://github.com/sgl-project/sglang/issues/37606 · 修复：PR #37448（2026-09-01）· 缺陷引入：PR #22218 · 部分先例修复：PR #30584'
+  behavior: 双形态——静默错 greedy 输出（temp=0 输出错 token，无任何信号）或 CUDA IMA crash，取决于分配布局；非确定、跨 bucket 时序触发。属「**graph 桥接张量生命周期假设错误**」新子签名：CUDA graph 内存池语义（pool 保活 ≠ block 保活）在弱引用优化下的系统性误解，同类缺陷已两次独立出现（input 侧/输出侧），提示该模式可能存在于其他用 shared pool + 弱引用的栈（vLLM piecewise graph 路径值得审计）。
+  trigger_surface: SGLang CUDA 默认 prefill 路径（breakable backend）+ 多 bucket 捕获 + graph break（默认配置即触发，无需特殊 flag；复现需多尺寸 bucket 时序）
+  discovery: 2026-09-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 数值结果
+        to: 输出内容
+        status: panel7

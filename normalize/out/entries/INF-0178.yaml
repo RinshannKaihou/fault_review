@@ -1,0 +1,52 @@
+id: INF-0178
+legacy_ids:
+- '1.179'
+slug: ttmetal_transpose_wh_height_to_width_shard_silent_all_zero
+aliases: []
+title: ttnn.transpose 高度分片转宽度分片时静默输出全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: transpose WH sharded 路由
+  behavior: 输入 ROW_MAJOR+HEIGHT_SHARDED、输出 WIDTH_SHARDED 时，shard 形状转换路径把每核块数 num_hw_blocks_per_core 算成 0，生成空的数据搬运计划而非报错。
+effect:
+  objects:
+  - 数值结果
+  detail: transpose(x,-2,-1) 及经其路由的 permute(0,1,3,2) 静默输出全零，PCC 为 0.01/0.0097/−0.0003（DRAM 输出为 1.0）；无 error 无 fatal，显式 memory_config=DRAM 即正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + transpose/permute + RM + HEIGHT_SHARDED→WIDTH_SHARDED（hw_specific；布局组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55582
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: ttmetal_all_broadcast_accessor_cross_address_space
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.transpose(x,-2,-1)`（及经其路由的 `permute(0,1,3,2)`）在输入 ROW_MAJOR + HEIGHT_SHARDED、输出继承/指定 WIDTH_SHARDED 时静默输出全零（PCC 0.01/0.0097/−0.0003 vs DRAM 输出 1.0）——`num_hw_blocks_per_core=0`，无 error 无 fatal；显式 `memory_config=DRAM` 即正确） · Cov: `var:ttmetal_all_broadcast_accessor_cross_address_space`（1.104 sharding 寻址族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 'TM Layout/Sharding 审计（#25529 §4.1）发现；#51214 静态审计清单未覆盖。shard 形状转换（H→W）路径上每核块数被算成 0——数据搬运计划为空而非报错。修复 PR #55591 收紧 WH sharded 路由。'
+  source: 'tt-metal #55582（2026-09-06 open，bug/op_cat: TM，含 wormhole_b0 三核数对照复现脚本）。https://github.com/tenstorrent/tt-metal/issues/55582'
+  behavior: 无 crash——输出张量静默全错（全零），PCC≈0。1.104（all_broadcast 跨存储空间寻址）之后 sharding 布局域第二例；「非法布局组合产出空计划而非拒绝」与 8.52（页大小声明失配内核静默跳过）同签名——**故障域在布局协商层，显形在数值层**。
+  trigger_surface: tt-metal + transpose/permute + RM + HEIGHT_SHARDED→WIDTH_SHARDED（hw_specific；布局组合触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

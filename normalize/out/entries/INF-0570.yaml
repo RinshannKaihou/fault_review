@@ -1,0 +1,50 @@
+id: INF-0570
+legacy_ids:
+- '6.177'
+slug: xpu_inductor_decode_pieces_spec_decode_livelock_32k
+aliases: []
+title: XPU inductor decode 分段与 MTP 在长上下文活锁
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: inductor 编译的 decode 分段
+  behavior: inductor piecewise（FULL_DECODE_ONLY）编译的 decode 分段对缓冲复用/同步的假定，与 MTP 多 draft token 的形状冲突，首个 decode chunk 即互锁。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Intel XPU（2×Arc Pro B70）+ MTP + ≥32k 上下文冷 prefill 并发时双卡计算/拷贝引擎 100%、host 停在 device sync，ttft 飙至约 200s 后无响应、吞吐归零，利用率指标显示健康；禁用编译或 spec 即规避。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Intel XPU + inductor piecewise 编译 decode + MTP spec decode + ≥32k 上下文冷 prefill 并发（config/负载组合触发；禁用编译或 spec 即规避）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54796
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（inductor 编译的 decode 分段（`FULL_DECODE_ONLY` piecewise）× 推测解码（MTP）在 ≥32k 上下文双双 livelock：两 GPU Compute Engine + Copy Engine 双 100%、HBM ~80 GB/s 本地空转、PCIe ~33 MB/s、host ranks 停在下一次 device sync——引擎停止服务；同电池下 whole-step XPU graph capture + eager 内核（`TORCH_COMPILE_DISABLE=1`）完全干净：缺陷在 **inductor 编译区 × spec decode 交互**，非 graph capture 本身） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 6 并发 ~65k 冷 prefill（不同前缀）触发；判别矩阵逐项 boot：compile+capture+spec=WEDGE、eager capture+spec=干净、compile 无 capture 亦病—— indicted 组合是"编译后的 decode piece 复用缓冲/同步假定"与 MTP 多 draft token 的形状冲突，首个 decode chunk 即互锁。与前述 XPU wedge（#54698→1.136）不同：本条明确排除纯 capture 路径（eager capture 干净），且需 ≥32k 上下文与冷 prefill 并发。诊断用 fail-safe gate 默认禁用该姿态（`VLLM_XPU_ALLOW_UNSAFE_SPEC_TP_GRAPH=1` 恢复复现）。
+  source: 'vLLM #54796（2026-09-01 open，2×Arc Pro B70、Qwen3.8-27B fp8 GDN+MTP k=3/4、turboquant_4bit_nc、block 512，含完整判别矩阵）。https://github.com/vllm-project/vllm/issues/54796'
+  behavior: 无 crash——双卡伪满载 livelock（ttft 飙至 ~200s 后无响应），利用率指标全部"健康"，唯一可见症状是吞吐归零。属「**编译优化区 × 推测解码组合的活性故障**」新子签名：inductor 对 decode piece 的内联/缓冲复用假定在 spec decode 变长 draft 下死锁；监控面需吞吐/时延而非利用率。
+  trigger_surface: Intel XPU + inductor piecewise 编译 decode + MTP spec decode + ≥32k 上下文冷 prefill 并发（config/负载组合触发；禁用编译或 spec 即规避）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

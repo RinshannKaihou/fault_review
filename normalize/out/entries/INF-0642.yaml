@@ -1,0 +1,53 @@
+id: INF-0642
+legacy_ids:
+- '6.249'
+slug: sglang_embedding_overlength_request_missing_abort_enqueued_blocks_to_timeout
+aliases: []
+title: SGLang 超长 embedding 请求漏调 abort 致客户端挂起至超时
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: embedding 请求长度校验分支
+  behavior: handle_embedding_request 的 validate_input_length 错误分支只构造错误消息，漏调 req.set_finish_with_abort，请求以全长度入队且没有 finish reason。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: 超过 max-total-tokens 的 /v1/embeddings 请求收不到预期的 HTTP 400，客户端挂起直到超时，同时占用全长度调度资源；无 crash、无错误响应。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang embedding 服务 + 超 `max-total-tokens` 的 `/v1/embeddings` 请求（输入触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-20'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40459
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0585
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang `handle_embedding_request` 的 `validate_input_length` 错误分支（`scheduler.py:3516-3523`）**漏调 `req.set_finish_with_abort(error_msg)`**——对照：`handle_generate_request`（:3044-3052）与同函数其余三个错误分支全部正确调用。结果：超长 embedding 请求**以全长度入队且无 finish reason**，预期的 HTTP 400 永不送达，客户端**挂起直到超时**，同时请求占用全长度调度资源。re-file 自 #21168（其时序原报告中的 illegal-memory-access 说法已被证伪——纯挂起无 crash）；原修复 PR #21169 与原 issue 均被不活跃机器人自动关闭，缺陷自 #21168 起存续于 main（`6880a479`）） · Cov: `var:sglang_single_malformed_mm_request_engine_suicide_retry_cluster_takedown`（6.192 错误输入处理路径失效族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 错误分支只构造了错误消息没走终止协议——请求对象进入调度队列后既不失败也不完成，生命周期悬空；generate 与 embedding 两条 handler 的错误路径各自演化，后者漏掉 abort 调用。机器人关单使缺陷两次逃过修复窗口（#21168/#21169 2025 年即报）。
+  source: 'SGLang #40459（2026-09-20 open，re-file #21168；含 scheduler.py 行级对照、gte-Qwen2-1.5B 复现命令、与 generate 路径及同函数其余分支的四路对照）。https://github.com/sgl-project/sglang/issues/40459'
+  behavior: 无 crash、无错误响应——客户端视角请求**无声挂死**至超时；服务端视角超长请求白白占用全长度调度容量。6.192（畸形请求杀引擎）之后错误输入处理族新成员、方向相反：6.192 是异常粒度**过大**（请求级错误→引擎级自杀），本条是异常**从不发出**（错误已检出→无人接收）——同族两极说明错误路径完备性需按"每分支×每 handler"矩阵审计。
+  trigger_surface: SGLang embedding 服务 + 超 `max-total-tokens` 的 `/v1/embeddings` 请求（输入触发）
+  discovery: 2026-09-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

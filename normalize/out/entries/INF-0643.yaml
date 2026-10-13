@@ -1,0 +1,50 @@
+id: INF-0643
+legacy_ids:
+- '6.250'
+slug: vllm_engine_resolved_prefix_match_unit_not_propagated_to_workers_mamba_checkpoint_dropped
+aliases: []
+title: vLLM 匹配单位未下发致 mamba 前缀 checkpoint 丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: mamba checkpoint 位置换算
+  behavior: EngineCore 把前缀匹配单位解析为各组 block size 的 GCD（16）却不传给 worker；worker 回退用本地 block_size（1600）算 checkpoint 位置，floor 到 0 被判无效而丢弃。
+effect:
+  objects:
+  - 性能/资源
+  detail: 混合 KV 组模型（attention 16 + mamba 1600，如 Qwen3.6-27B）在默认 prefix_match_unit=None 下，mamba 前缀 checkpoint 全部失效、命中退化为重算；无错误无日志，仅命中率异常低，弹性 EP 新建 worker 同样受影响。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V1 + enable_prefix_caching + 混合 KV 组（attention+mamba align）+ `prefix_match_unit=None` 默认派生（config：in-tree 几何即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58020
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM `EngineCore` 从调度器视角把 prefix-cache match unit 解析为各 prefix-cacheable 组 block size 的 **GCD**（混合组 attention 16 + mamba align 1600 → `hash_block_size=16`）**但只用于调度器侧、不向 worker 传播**——worker 侧消费者自行回退：`mamba/checkpoint.py:86` 的 `hash_block_size = prefix_match_unit or block_size`（用户显式请求 or worker 本地 `kv_cache_spec.block_size`）。`prefix_match_unit=None`（默认派生模式）下 mamba worker 用 1600 计算 checkpoint 位置而调度器按 16 散列/注册前缀边界——粗粒度单位算出的 checkpoint 位置 floor 到 0、被判无效、builder 发出 `checkpoint=None`，**checkpoint 无错误丢弃**。弹性 EP 扩容/重启新建 worker 同样只能从本地配置派生、无法采纳在役引擎已选定的几何。对照：兄弟属性 `KVCacheConfig.kv_cache_layout` 已有引擎解析→worker 采纳的完整管道。in-tree 几何即触发：`test_mamba_align_chunk_split.py` 镜像 Qwen3.6-27B（attention 16 / mamba 1600）） · Cov: `NEW`（配置权威双源——解析值传播断链子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: 同一配置项（prefix-cache 哈希粒度）存在两个权威源——引擎解析值（几何感知、GCD）与 worker 本地派生值（组内 block size）；`KVCacheConfig` 只携带布局不携带解析后的 match unit，使"引擎已决定"的事实无法到达 worker。调度器与 worker 对同一请求前缀的哈希边界因此不一致，mamba checkpoint 的位置换算落在无效域。6.207（SGL_ 前缀重写晚于 deprecation registry 的时序错）之后配置一致性族新成员：本条在**引擎↔worker 传播断链**维度。
+  source: 'vLLM #58020（2026-09-21 open，main `382970ee6`，含 resolve_kv_cache_block_sizes 可运行反例（双 spec 打印 worker derives 1600 vs engine resolved 16）、mamba/checkpoint.py:86 代码、kv_cache_layout 对照管道、弹性扩容影响分析）。https://github.com/vllm-project/vllm/issues/58020'
+  behavior: 无 crash、无 error、无日志——混合 KV 组模型的 mamba 前缀 checkpoint **静默全量失效**：本应命中的前缀缓存/状态复用退化为重算（TTTT/吞吐退化），功能上"正确但慢"；弹性扩容 worker 与主引擎几何分歧还可能造成更深的哈希不一致。监控上唯一的信号是 mamba 混合模型的 prefix cache 命中率异常低。
+  trigger_surface: vLLM V1 + enable_prefix_caching + 混合 KV 组（attention+mamba align）+ `prefix_match_unit=None` 默认派生（config：in-tree 几何即触发）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

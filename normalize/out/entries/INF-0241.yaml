@@ -1,0 +1,51 @@
+id: INF-0241
+legacy_ids:
+- '1.242'
+slug: ttmetal_unary_sfpu_sfpstore_truncates_instead_of_rne_square_vs_mul_diverge
+aliases: []
+title: unary SFPU 存 bf16 截断而非 RNE
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: LLK unary SFPU 内核 bf16 存储
+  behavior: square、rad2deg 等七个 unary SFPU 内核 fp32 计算后不做软件 RNE，直接依赖 SFPSTORE 窄化存 bf16，截断低 16 位（round-toward-zero）。
+effect:
+  objects:
+  - 数值结果
+  detail: ttnn.square(x) 与 ttnn.mul(x,x) 在 440/1024 元素不一致；七个内核的 inexact 结果单向偏零至多 1 bf16 ULP，rad2deg(-4.5) 得 -256.0（应 -258.0）；小样本或宽容差门禁恒过。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + Wormhole B0/Blackhole/Quasar + 七个 unary op 的 inexact 输入（hw_specific：默认路径即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-22'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57408
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal LLK unary SFPU 内核（Wormhole B0/Blackhole/Quasar）计算于 fp32、存 DEST 为 bf16 时 `SFPSTORE` **截断低 16 位（round-toward-zero）**，而 binary 内核与 golden/FPU 均 IEEE RNE：`ttnn.square(x)` 与 `ttnn.mul(x,x)` 同一乘积 **440/1024 元素不一致**（`square(0.921875)=0.84765625` vs `mul=0.8515625`，真值 0.849853515625）；`square`/`rad2deg`/`deg2rad`/`softsign`/`hardsigmoid`/`prelu`/`leaky_relu` 七内核 1024 随机输入中**每个 inexact 结果单向偏向零至多 1 bf16 ULP（0.39%）、无一反向**；`rad2deg(-4.5)=-256.0`（应 -258.0，0.71% 误差）） · Cov: `NEW`（unary/binary 同函数入口舍入模式分裂子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 多数 unary 内核在 store 前软件内做 `float32_to_bf16_rne`，遗留少数只依赖 SFPSTORE 硬件窄化——硬件行为是截断而非 RNE；同一数学函数（平方、度弧转换）因入口（unary vs binary）绑定到不同内核族而产生系统性偏差，且偏差方向恒定（单向偏零）使误差在深层网络中可积累而非抵消。
+  source: 'tt-metal #57408（2026-09-22 open，Bad Outputs，含 square/mul 逐元素对照、七内核 1024 输入单向偏差统计、rad2deg 一行复现、`mul_binary_tile` vs `calculate_square` 源码对照）。https://github.com/tenstorrent/tt-metal/issues/57408'
+  behavior: 无 crash——**有符号一致性偏差的静默数值误差**（≤1 bf16 ULP/操作 0.39%，rad2deg 类常量乘达 0.71%）；与 golden（torch RNE）对账在大样本上暴露恒向偏差，小样本/宽容差门禁恒过；对误差方向敏感的量（损失、归一化因子）深层累积。
+  trigger_surface: tt-metal + Wormhole B0/Blackhole/Quasar + 七个 unary op 的 inexact 输入（hw_specific：默认路径即触发）
+  discovery: 2026-09-22 每日扫描。
+  2026-09-23 回访补充: '维护者已合并 #57421（仅修 `calculate_square`），issue 随之 closed/completed；但报告者复核实测指出**其余五处存储点仍在截断**（`calculate_binop_with_scalar`（rad2deg/deg2rad/`*_unary_tile` 族）、softsign、hardsigmoid（经 calculate_activation）、prelu）——`ttnn.rad2deg(-4.5)` 仍返 -256.0；报告者持有覆盖六内核 + 方向感知回归测试的全量补丁（七案例 main 全败/补丁全过、ttsim census square/rad2deg/deg2rad/softsign/prelu 1024/1024、hardsigmoid 797/797 bit-exact），剩余站点是否在 #57172 跟踪待确认。条目机制判定不变，修复状态为**部分修复**。见 https://github.com/tenstorrent/tt-metal/issues/57408#issuecomment-5842 及后续评论。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

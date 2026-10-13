@@ -1,0 +1,61 @@
+id: INF-0844
+legacy_ids:
+- '8.60'
+slug: ttmetal_gemma4_wh_length_gated_deterministic_garbled_100k
+aliases: []
+title: tt-metal Wormhole 上 Gemma4 特定编码长度确定性输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: Gemma4 prefill 前向（具体算子待定）
+  behavior: Wormhole 上 Gemma4 共享 prefill 前向在特定长度窗口损坏；与 serving 层和 prefill chunk 配置无关，原文推测为 WH 特定的分块/寻址边界（如 tile 对齐或 index 回绕），根因未定位
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: Wormhole T3K 上 Gemma4 12B/31B 在特定编码长度（如 100,793、109,857、127,574）确定性输出 garbled 长文，长度非单调（相邻长度干净）；Blackhole 同长度正常，metal demo 与 vLLM serving 输出字节一致，无报错
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Wormhole T3K + Gemma4 12B/31B + 编码长度命中特定窗口（≥100k；硬件 + 精确长度触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55102
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（Wormhole T3K 上 Gemma4（12B & 31B）在**特定编码长度**（31B：100,793 / 109,857 / 127,574；12B：~120k/127,574）**确定性**产出 garbled/退化长文输出（''s la''s 循环、''I had''t been…''、token salad），同长度 Blackhole（emulated-LB Galaxy 8 点 100,462–130,816）全干净；**非单调**（100,462 clean → 100,793 corrupt → 104,954 clean → 109,857 corrupt）——无单一长度阈值） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: metal demo 与 vLLM serving 在 109,854 产生 **byte-identical** garble → 损坏在共享模型前向（prefill），非服务层状态；`GEMMA4_PREFILL_CHUNK_SIZE` 8192→4096 输出不变 → 非 per-Q-chunk 配置（"absolute-position family"）；per-exact-input 确定性（重复/跨路径 byte-equal）、build-stable。长度点位的非单调性 + WH-only 排除全局数值下溢类单调退化，指向 WH 特定长度窗口的分块/寻址边界（如 NOC/dram tile 对齐或 index 回绕）损坏。greedy ×2 byte-equality per point。
+  source: 'tt-metal #55102（2026-09-01 open，T3K 12B/31B 逐点 map + BH 对照 + 路径/分块不变式证据链，分支 arg/gemma4_coherence_fix @ c5e8d23845f）。https://github.com/tenstorrent/tt-metal/issues/55102'
+  behavior: 无 crash——确定性 garbled 长文（可复现、跨 serving 路径一致），特定 prompt 长度命中即整段输出损坏；非单调窗口使"多测几个长度"的抽检恰好漏检。属「**arch 特定长度门控前向损坏**」新子签名：与 6.158（DCP index-K cache OOB）不同——本条在无 cache 的 metal demo 同样复现（纯前向）；与 8.52/8.54（长度平滑退化）相反——本条是长度窗口悬崖且确定性。**注意 1.135：该 repo 的 KV PCC 门从未运行，此类 KV/前向损坏无验证面拦截。**
+  trigger_surface: tt-metal Wormhole T3K + Gemma4 12B/31B + 编码长度命中特定窗口（≥100k；硬件 + 精确长度触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem：取 算子/内核。原文 mechanism 把损坏定位到共享模型前向（prefill），排除服务层与 per-Q-chunk 配置，并指向“WH 特定长度窗口的分块/寻址边界（如 NOC/dram tile 对齐或 index 回绕）”，这属于词表 算子/内核 中的 layout/sharding/padding/搬运算子；原文没有任何指向调度、program cache 或 driver 的证据，故不取 运行时/执行。保留意见：根因未定位，component 已注明“具体算子待定”。visibility 独立判断曾考虑 质量退化，但原文强调无 crash、确定性且非单调窗口使抽检漏检，静默错误 也成立，维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出内容
+        status: unanimous

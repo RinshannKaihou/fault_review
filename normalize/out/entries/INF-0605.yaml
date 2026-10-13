@@ -1,0 +1,53 @@
+id: INF-0605
+legacy_ids:
+- '6.212'
+slug: vllm_hybrid_gdn_align_boundary_checkpoint_nan_prefix_hit
+aliases: []
+title: vLLM GDN 块边界 checkpoint 损坏致 NaN 输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: GDN align 块边界 checkpoint
+  behavior: 前一个 prefill 恰在 N*816+r（r 为 4–10 的偶数）处结束时写下的块边界 GDN 状态 checkpoint 是坏的，后续请求前缀命中后从该边界恢复；具体根因待定。
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: Qwen3.5/3.8 hybrid GDN + prefix caching（align）下，后续请求从首个未缓存步起全词表 NaN logits，持续采样“!”至 max_tokens；坏块再入缓存使重试确定性失败；vllm:corrupted_requests_total 递增。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM v0.28.0 + Qwen3.5/3.8 hybrid GDN + prefix caching（align 默认）+ prompt 长度 mod 816 ∈ {4,6,8,10}（config 默认开 + 长度概率触发；cache_salt / 前部 padding 即愈）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55766
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（Qwen3.5/3.8 hybrid GDN（27B，48 GDN + 16 full）v0.28.0 + prefix caching：mamba cache mode `align` 下引擎把 attention block size 设为 816（对齐 mamba 页）——**前一个 prefill 恰在 N*816+r（r∈{6,8} 必现，{4,10} 半概率，r≤3 / r≥12 / 奇数 r 全干净）处结束时写下的块边界 GDN checkpoint 是坏的**；后续请求前缀命中到 N*816 后从该边界恢复，**首个未缓存步起全词表 NaN logits**，采样 token id 0（"!"）直到 max_tokens（事故例：32,768 个 "!" 持续 11 分钟）；坏 NaN 块自身被再缓存 → 同请求重试确定性失败直到前缀缓存翻滚；`vllm:corrupted_requests_total` 递增） · Cov: `NEW`（hybrid mamba 块边界 checkpoint 正确性随 prompt 长度模页宽分裂子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: 'align 模式只在前缀缓存开启时可用（`all` 对该模型不可用且**静默回落** align）。decode 产生的边界 checkpoint 从不被前缀缓存（运行块在 `cache_blocks` 前已释放），故只有 prefill chunk 末端的 checkpoint 参与命中——触发面精确为 prompt 长度 mod 816。消融：per-request `cache_salt`（禁命中）干净、**前部**垫 12 token（整前缀移位无命中）干净、**尾部**垫 12 token（命中不变）仍 NaN、B 需在恢复边界后再 prefill 至少一个完整块才显形——损坏在恢复侧消费该 checkpoint 时被读出。ngram spec 疑似上游参与但失败步 batch 无 draft。与 #53912（"!!!!" 输出）、#39273（GDN state 腐蚀 × ngram）同域但触发签名（模 816 偶数窗口）独立。'
+  source: 'vLLM #55766（2026-09-07 open，含 content-free 双请求 30 秒复现、5 组载体隔离对照表、失败步引擎诊断行与 client 侧 workaround）。https://github.com/vllm-project/vllm/issues/55766'
+  behavior: 无 crash——**确定性 NaN 输出 + 毒缓存自锁**（命中即坏、重试同坏、坏块再入缓存）。agent 工具循环每次追加数百 token = 每轮重抽 prompt 长度 mod 816，实测出现空回复与 32k-token "!" 流。6.131（mamba align precopy 用错 block_size 播种 OOB）之后 hybrid mamba align 族新成员：6.131 是索引播种错、本条是**边界 checkpoint 本身的数值正确性**随块内偏移分裂——前缀缓存 × 线性注意力状态快照的交互面此前未编目。
+  trigger_surface: vLLM v0.28.0 + Qwen3.5/3.8 hybrid GDN + prefix caching（align 默认）+ prompt 长度 mod 816 ∈ {4,6,8,10}（config 默认开 + 长度概率触发；cache_salt / 前部 padding 即愈）
+  discovery: 2026-09-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    issue_unfixed:
+    - behavior

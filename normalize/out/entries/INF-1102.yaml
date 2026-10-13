@@ -1,0 +1,52 @@
+id: INF-1102
+legacy_ids:
+- '11.79'
+slug: vllm_dflash_drafter_kv_group_unidentified_mamba_prefix_reuse_silently_disabled
+aliases: []
+title: vLLM dflash KV 组未识别致 hybrid 前缀缓存失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: drafter KV cache 组识别规则
+  behavior: KV 组识别规则只对 method=mtp 生效，dflash drafter 复用 target 层架构、spec 规则也认不出；回退把所有组（含 Mamba/GDN）当 draft 组，Mamba 组满足不了放宽的 lookup 窗口。
+effect:
+  objects:
+  - 性能/资源
+  detail: dflash 推测 + hybrid 模型 + --enable-prefix-caching 时，字面前缀子请求不复用（36.4s≈全冷 prefill），只有完全相同文本重发才复用；输出正确，启动警告每次打印但易被当作正常日志。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + dflash/DSpark speculative + hybrid（Mamba/GDN）模型 + `--enable-prefix-caching`（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57032
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_spec_decode_prefix_cache_hybrid_silent_disable
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`ambiguous`（vLLM `method="dflash"` 时 drafter 的 KV cache group 永不被识别：组识别规则 `_uses_trailing_mtp_layers()`（#55390 泛化的位置回退）门控于 `spec_config.method == "mtp"`，而 **dflash drafter 复用 target 的 decoder-layer 架构**——注意力 spec 与 target 不可区分，spec 驱动规则找不到它 → 消费者把**每个组（含 Mamba/GDN 组）都当 draft 组**处理，Mamba 组无法满足被放宽的 lookup 窗口，这些层的前缀缓存复用被静默禁用。实测：Qwen3.8-27B AWQ + DFlash2-W4A16 draft（k=7）+ `--mamba-cache-mode align --enable-prefix-caching`，**字面前缀**子请求不复用（36.4s ≈ 全冷 prefill）、完全相同文本重发才复用；启动警告每次打印但复用确实丢失） · Cov: `var:vllm_spec_decode_prefix_cache_hybrid_silent_disable`（6.171 spec 解码静默禁用 hybrid 前缀缓存族） · 触发 `config` · 置信度 `verified`'
+  mechanism: KV 组身份识别规则按方法名（mtp）白名单化，dflash 的"drafter 即 target 架构"特性使位置启发与 spec 启发双双失效；回退语义（全部视为 draft 组）对 Mamba 组是错误假设，禁用是其副作用而非显式决策。
+  source: 'vLLM #57032（2026-09-15 open，AI-authored（已披露）、CMP 170HX 集群实测，含警告原文、字面前缀 vs 相同文本复用行为对照与 #55390 规则门控定位）。https://github.com/vllm-project/vllm/issues/57032'
+  behavior: 无 crash、输出正确——纯性能面退化：hybrid 模型前缀缓存命中率塌方（Mamba 组永不复用），长 agent 会话 TTFT 显著劣化；有警告但语义是"将被禁用"而非"已识别错误"，易被当作正常日志。6.171（spec decode 静默禁用 hybrid prefix cache）之后该族新成员：本条在 **dflash 方法组识别规则缺口**维度。
+  trigger_surface: vLLM + dflash/DSpark speculative + hybrid（Mamba/GDN）模型 + `--enable-prefix-caching`（config）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: TRN-0237
+legacy_ids:
+- RL-RO.15
+slug: fsdp2_to_empty_unties_tied_embeddings
+aliases: []
+title: verl FSDP2 加载 to_empty() 断开 tied 权重绑定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: verl
+    component: FSDP2 全量 state dict 加载
+  behavior: fsdp2_load_full_state_dict 用 to_empty() 物化非零 rank 参数，为每个参数分配全新存储，tied lm_head 与 embedding 的别名就此断开，之后未重新 tie。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: 无 crash、无指标异常，loss 照降；tied 模型走 FSDP2 meta init 加载后，非零 rank 静默按 untied 训练，embedding 只收 input 侧梯度（实测 grad norm 0.3548→0.2271）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/7835
+  kind: github_pr
+- url: https://github.com/verl-project/verl/issues/7834
+  kind: github_issue
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'verl `fsdp2_load_full_state_dict` 用 `to_empty()` 物化非零 rank 参数——`to_empty()` 给每个参数**全新存储**，tied `lm_head` 对 embedding 的别名就此断开：**无任何失败**（rank 0 的 state dict 里 `lm_head.weight` 是别名、数值仍正确），但 embedding 从此**只收 input 侧那一半梯度**，broadcast ranks 安静地按「untied」训练。该隐藏缺陷正是一个旧 guard 存在的原因：verl 对 `tie_word_embeddings` 模型跳过 FSDP2 meta init（连带引发 host RAM 随 rank 数爆炸，#7834），此前 #5746 提议只删 guard、35 小时后自撤。修复 = meta init 无条件保留 + `to_empty()` 后**重新 tie**。'
+  source: 'verl PR #7835（2026-09-10；「(1) without (2) would have silently untied every model this path is meant to help」；61GB tied MoE 8-rank 1437GB/1511GB host RAM OOM 的关联 issue #7834）。https://github.com/verl-project/verl/pull/7835 ；verl #7834（2026-09-13 补：关联 issue 正文补全——Part 2 实测 untied 路径 `embed_tokens.grad norm` 0.3548→0.2271，`set_model_state_dict` 数值仍对、模型照跑、loss 照降；触发面为大且 tied 的 ckpt，North-Mini-Code-1.0 一例）。https://github.com/verl-project/verl/issues/7834'
+  behavior: '无 crash、无指标异常——tied 模型在 FSDP2 权重加载后**静默 untied 训练**：input embedding 与 output head 梯度各走各的，训出的模型与「tied」语义下的预期不可比；ckpt 里 `lm_head.weight` 是否还被当别名处理决定下游加载是否继续错。与 CKPT.10（ZeRO-3 分片后惰性初始化读空 shard）同族：**参数物化时机的别名/绑定契约断裂**；与 OPT.05（优化器遗忘参数）互补：那边参数没进组、这边参数进了组但绑定关系没了；「修复一半比不修更糟」的陷阱面与 verl #7805（R2 replay 半修复回归）同型。'
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

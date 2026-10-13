@@ -1,0 +1,55 @@
+id: INF-0354
+legacy_ids:
+- '5.7'
+slug: sglang_eplb_rank_specific_logical_physical_map_corruption
+aliases: []
+title: SGLang EPLB 逐 rank 逻辑→物理映射不一致致精度静默下降
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: sglang
+    component: EPLB 逻辑→物理 expert 映射
+  behavior: 无 a2a backend 时各 EP rank 对相同 token 跑 MoE 后求和，映射须各 rank 一致；但 _compute_logical_to_all_physical_map 把候选折叠为离本 rank 最近的副本。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 默认 --moe-a2a-backend none 开 EPLB 且有冗余 expert 时（如 tp2/ep2、48 个冗余 expert），各 rank 求和了错误 expert 的输出，GSM8K 由约 0.63 跌至 0.42，无报错、无 NaN、无警告。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/32962
+  kind: github_pr
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`ambiguous`（受 EP 拓扑门控） · Cov: `NEW` · 触发 `no` · 置信度 `verified`'
+  mechanism: SGLang EPLB（expert-level load balancing）在 `--moe-a2a-backend none`（默认）路径上运行时，一旦有冗余 expert 需要放置就**静默破坏输出**。无 a2a backend 时每个 EP rank 在**相同** token 上跑 MoE 且只拥有一片物理 expert，partial 输出被求和，故逻辑→物理映射必须在每个 rank 上完全相同。但 `_compute_logical_to_all_physical_map` 把每个逻辑 expert 的候选列表折叠为**离当前 rank 最近的副本**——按构造就是 per-rank 的；每个 dispatch 算法读取该折叠后的列表，导致各 rank 的逻辑→物理选取不一致 → 求和了错误 expert 的输出。GSM8K 从 ~0.63 跌到 0.42，无任何报错/警告。
+  source: 'SGLang #32962（2026-07-30 closed）。环境：`lmsys/sglang-ci-dsv3-test`，`--tp 2 --ep-size 2 --enable-eplb --ep-num-redundant-experts 48`。https://github.com/sgl-project/sglang/pull/32962'
+  behavior: 无 crash、无 NaN。冗余 expert 存在时逻辑→物理映射 per-rank 不一致 → 求和错误 expert → 静默精度崩溃（GSM8K 0.63→0.42）。属"EP rank 间逻辑→物理映射不一致"新子签名，与 5.5 `ep_checkpoint_shard_mismatch` 同族（EP expert-id 错位）但机制不同（运行时 EPLB 映射 vs checkpoint 重分片）。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility
+    - detail

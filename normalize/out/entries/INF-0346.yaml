@@ -1,0 +1,52 @@
+id: INF-0346
+legacy_ids:
+- '4.30'
+slug: vllm_batch_invariant_cold_model_info_cache_leaves_attention_unwrapped_in_graphs
+aliases: []
+title: vLLM 批不变模式冷缓存下 attention 未包裹即被捕获进图
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: breakable cudagraph 装饰器时序
+  behavior: '@eager_break_during_capture 在 import 时求值，早于 breakable cudagraph 使能；冷 model-info cache 下 attention op 未包裹即被捕获进图，fork 后继承。'
+effect:
+  objects:
+  - 输出内容
+  detail: attention 以捕获期 FlashAttention 参数回放，默认调度下 16-token prefill 输出错 token（max_num_seqs=16 时 2–16 token 均错），无警告；进程内与默认多进程 LLM 引擎中招，vllm CLI（spawn）免疫。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + VLLM_BATCH_INVARIANT=1 + 冷 model-info cache + 进程内/多进程 LLM（config）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59940
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0333
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（`VLLM_BATCH_INVARIANT=1` 时 `VllmConfig.__post_init__` 自动启用 breakable cudagraph，但冷 model-info cache 下 `attention.py` 先被 import、`@eager_break_during_capture` 在使能前解析——attention op 未包裹即被捕获进 CUDA graph，以捕获期 FlashAttention 参数回放：默认调度下 16-token prefill 错（`max_num_seqs=16` 时 2–16 token prefill 错、24/32/33+ 正确；错例含 prefix-cache 重算尾与 chunked-prefill 尾）；进程内引擎与**默认多进程 LLM 引擎**（fork 自已 import 的进程）均中招，`vllm` CLI（spawn）免疫。#53293 只修了 Ray worker 的同类 import 顺序） · Cov: `var:vllm_batch_invariant_matmul_self_test_violated_and_tf32_leak`（4.17 batch-invariant flag 失效族——本条在 **import 顺序决定 flag 是否生效**维度） · 触发 `config` · 置信度 `documented`'
+  mechanism: decorator 在模块 import 时求值，配置使能晚于 import；fork 继承未包裹函数。
+  source: 'vLLM #59940（2026-10-04 open，公开 API 最小复现+影响面矩阵）。https://github.com/vllm-project/vllm/issues/59940'
+  behavior: 无 crash——短 prefill 在 BI 模式下静默错 token，无警告。
+  trigger_surface: vLLM + VLLM_BATCH_INVARIANT=1 + 冷 model-info cache + 进程内/多进程 LLM（config）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

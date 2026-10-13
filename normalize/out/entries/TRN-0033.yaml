@@ -1,0 +1,60 @@
+id: TRN-0033
+legacy_ids:
+- PAR.05
+slug: fsdp_degenerate_dp_group_grad_doubling
+aliases: []
+title: Megatron-FSDP 退化 DP 组归约使梯度按 2^N 放大
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: 退化 DP 组的每 microbatch 归约
+  behavior: optim_grads_params 下每 microbatch reduce 对退化为单 rank 的 DP 组（EP=DP 时的 expert-DP 组或 DP=1）也归约，累加 g_k 变成乘 2 再累加，buf_N≈2^N·g。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: N≤约64 时方向正确但巨幅的梯度被 clip 归一，训练看似正常而 expert 更新已错；N=128 时 grad norm=inf，clip 把所有梯度乘约 0，run 以零梯度训练且 skipped iterations=0。关 clip 甚至表面收敛。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/6660
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron-FSDP（`data_parallel_sharding_strategy='optim_grads_params'`）下每-microbatch reduce 路径对**退化为单 rank 的 DP 组**（EP=DP 时 expert-DP 组、或 DP=1 时全部参数）也执行归约：本应「累加 g_k」变成「乘 2 再累加」，`buf_N ≈ 2^N·g`。梯度方向不变、幅值按 2^N 指数放大。
+  source: 'Megatron-LM #6660（2 GPU EP=2 复现；逐 microbatch 读 grad buffer 实测 absmax 严格 ×2.0；定位 `megatron_fsdp.py:668-678` 的 `grad_reduce_every_bprop` 触发）。https://github.com/NVIDIA/Megatron-LM/issues/6660'
+  behavior: 双重静默：N≤~64 时无溢出，方向正确但巨幅的梯度被 clip 归一，训练「看起来正常」而 expert 更新已错；N=128 时 fp32 L2 范数平方溢出 → `grad norm=inf` → clip 把**所有**梯度乘 ~0，run 以零梯度「训练」且 `number of skipped iterations = 0`。关 clip 甚至表面收敛（2·buf+g 保方向，Adam 逐元素归一）。与 PAR.01（hook 计数错开火时机）不同：这是**退化 DP 组 × 每-microbatch reduce** 的算术级放大。观测面（clip 如何洗掉它）见 OPT.04。
+  discovery: 2026-08-20 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed:
+  - cause.behavior
+  note: 审计：分类维持 并行切分/megatron-lm、梯度+训练轨迹、静默错误；补回 expert-DP 组退化的 EP=DP 条件。
+  audit_issues:
+  - field: cause.behavior
+    type: 忠实性
+    detail: 原文 expert-DP 组退化为单 rank 的条件是 EP=DP，原写漏掉该条件
+  audit:
+    round: gateway-audit-2026-10-12

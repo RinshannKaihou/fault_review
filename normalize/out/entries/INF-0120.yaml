@@ -1,0 +1,60 @@
+id: INF-0120
+legacy_ids:
+- '1.121'
+slug: ttmetal_sdpa_decode_mask_seed_scalar_store_noc_drain_race
+aliases: []
+title: sdpa_decode 非零 mask 种子 store 与 NoC 回读竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: sdpa_decode fill_tile 屏障
+  behavior: fill_tile 对非零值以每 tile 512 次标量 volatile store 构建 mask 种子后，copy_tile 立即经 NoC 回读同地址，其间无任何屏障；零值路径有 barrier，非零路径没有。
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: 'causal/sliding-window/block-padding mask 的非零种子路径 decode 每次可达：512 次/tile 标量 store 拖慢构建；竞态窗口内 mask 可能回读到 stale 值，致 attention mask 错误。上游 #50373 曾命中同构竞态。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal sdpa_decode + 非零 mask seed 路径（causal/sliding-window/block-padding；软件调度依赖）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54708
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0009
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（sdpa_decode 非零 mask seed tile 经 512 次/tile 标量 volatile store 构建后，`copy_tile` 立即 NoC 回读同地址、其间无 blocking read-back——RISC 核与 NoC 为独立 L1 client 无程序序保证；零路径有 `write_zeros_l1_barrier`，标量路径无任何屏障：上游 #50373 已命中、PR #50374 已修的同构竞态在 decode 侧种子路径的复现） · Cov: `var:kernel_sync_semantic_silent_error` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`dataflow_common.hpp:27-44` `fill_tile` 把 `val==0` 走 `async_write_zeros`（#45450 起带 barrier），非零值走逐字 store 循环；四个 seed 点（:278/:282/:335/:341/:390）均从 `writer_decode_all.cpp` 每次调用可达（causal / sliding-window / block-padding mask）。种子复制改写（含 drain）在 P300 七个 decode shape 上 wall clock 中性（15–60µs/call）。'
+  source: 'tt-metal #54708（2026-08-28 open，标注 correctness-adjacent；prefill 侧孪生为 #54696）。https://github.com/tenstorrent/tt-metal/issues/54708'
+  behavior: 主显形为 perf（一次性构建被 512 次标量 store 拖慢）；竞态窗口可使 mask 回读到 stale 值 → attention mask 错误。与 1.9（kernel 同步语义静默丢错）同族，本条在 dataflow 种子构建路径且已有上游修复先例可对照。
+  trigger_surface: tt-metal sdpa_decode + 非零 mask seed 路径（causal/sliding-window/block-padding；软件调度依赖）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - effect.objects
+  - effect.visibility
+  note: visibility 改 静默错误，effect.objects 改为 数值结果 在前：缺陷本身是非零种子路径缺屏障导致 copy_tile 可回读 stale 值（meta 归 kernel_sync_semantic_silent_error 变体，且已有上游同构竞态命中先例）；词表 性能退化 要求“输出正确”，竞态命中时 attention mask 错误，不满足。原文“主显形为 perf”保留为第二个 effect 对象 性能/资源。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

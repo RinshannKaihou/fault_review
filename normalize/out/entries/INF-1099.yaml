@@ -1,0 +1,50 @@
+id: INF-1099
+legacy_ids:
+- '11.76'
+slug: vllm_extract_hidden_states_proposer_first_column_feedback_multi_token
+aliases: []
+title: vLLM extract_hidden_states 提议器只读首列致重复
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: extract_hidden_states 提议器
+  behavior: prepare_next_token_ids_padded() 只读 sampled_token_ids 第 0 列，假设每迭代仅 1 个有效 token；spec 步提交两个 token 时返回的有效计数与续接 token 均错。
+effect:
+  objects:
+  - 输出内容
+  detail: extract_hidden_states 推测解码 + async scheduling 下，生成文本出现可复现的数字与标点重复，后续 draft 对位错行；改用 eagle_prepare_next_token_padded_kernel 后恢复健康基线 token。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + `extract_hidden_states` speculative + async scheduling + num_speculative_tokens≥1（partial）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56417
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（vLLM `extract_hidden_states` 推测解码的 `ExtractHiddenStatesProposer.prepare_next_token_ids_padded()` **只读 `sampled_token_ids` 的第 0 列**，而 `num_speculative_tokens=1` 时一个 decode 迭代可产出两个有效采样 token：非丢弃行 `[15,18]` 的 helper 返回 `valid_count=1, next_token_id=15`，应为 `2/18`——两个 token 都已进入提交给 scheduler 的有效输出，helper 报告的进度与续接 token 均与已提交输出分叉。async scheduling 下可复现的**数字与标点重复**；本地改用 `eagle_prepare_next_token_padded_kernel` 后三个文档样本精确恢复健康基线 token ID（含四请求序列）。NuExtract3 4B 多模态、TP1 复现） · Cov: `NEW`（多 token 反馈取列错误子签名） · 触发 `partial` · 置信度 `documented`'
+  mechanism: proposer 的反馈准备假设每迭代 1 个有效 token，未处理 spec 步多 token 提交的列语义；EAGLE 同类 kernel 已正确处理、未复用。
+  source: 'vLLM #56417（2026-09-11 open，bug label，含 helper 级对照（actual vs expected）、完整 spec 配置与本地修复验证）。https://github.com/vllm-project/vllm/issues/56417'
+  behavior: 无 crash——生成文本中可复现的重复字/标点；进度计数错还会使后续 draft 对位错行。11.51（prompt_logprobs 被 drafter graph buffer 覆写）之后 proposer 反馈处理族新成员：本条在多 token 列选择维度。
+  trigger_surface: vLLM + `extract_hidden_states` speculative + async scheduling + num_speculative_tokens≥1（partial）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

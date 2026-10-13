@@ -1,0 +1,50 @@
+id: INF-0359
+legacy_ids:
+- '5.12'
+slug: vllm_pp_decode_full_cudagraph_captures_gloo_recv_object_silent_hang
+aliases: []
+title: vLLM FULL graph 捕获 PP gloo recv 致静默挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: FULL decode CUDA graph 捕获
+  behavior: 自动启用 breakable cudagraph 时捕获的 full-decode graph 含 PP 边界的 host 端 gloo recv_object，重放时无 host 参与，该 recv 永远得不到服务。
+effect:
+  objects:
+  - 可用性/进度
+  detail: PP>1 多节点且模型无 @support_torch_compile 时 graph 捕获成功，首个 decode 请求即静默挂起，约 300s 后 RPC sample_tokens 超时；--enforce-eager 或关闭 breakable cudagraph 可工作。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；PP>1 多节点 + 无 `@support_torch_compile` 的模型（如 hybrid MoE）→ auto FULL decode graph
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-12'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51887
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（PP>1 多节点 decode FULL CUDA graph 捕获 host 端 gloo recv_object→重放时无法服务→静默挂起） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`VLLM_USE_BREAKABLE_CUDAGRAPH=1` 自动启用时（无 `@support_torch_compile` 的模型，`splitting_ops` 为空），vLLM 捕获 **full-decode** CUDA graph。在 PP>1 多节点上，decode forward 含 PP stage 边界的 gloo `recv_object`（host 端 Python 跨节点对象传输）。被捕获的 graph 重放时**无 host 参与**，graph 内的 `recv_object` 永远无法被服务→每个 PP stage 永久阻塞。失败模式与 #46253（TP 互补）不同：捕获**成功**（无非法内存访问），然后第一个 decode 请求静默挂起。PIECEWISE cudagraph 因模型无 `@support_torch_compile`（无 FX graph 可分割）不可用，`FULL_AND_PIECEWISE` 降级为 FULL decode。`--enforce-eager` 或 `VLLM_USE_BREAKABLE_CUDAGRAPH=0` 可工作。'
+  source: 'vLLM #51887（2026-08-12 closed）。ROCm MI300A gfx942，6 节点 TP=8 PP=3，hybrid MoE（KimiK3）。https://github.com/vllm-project/vllm/issues/51887 · 关联 #46253（TP 互补）'
+  behavior: 捕获成功，然后第一个 decode 请求**静默挂起**（~300s 后 `RPC call to sample_tokens timed out`，`VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS`）。属「FULL CUDA graph 捕获 host 端 collective→重放时无 host 线程服务」**新子签名**——graph capture 与 PP host-side 通信的交互盲区。
+  trigger_surface: vLLM；PP>1 多节点 + 无 `@support_torch_compile` 的模型（如 hybrid MoE）→ auto FULL decode graph
+  discovery: 2026-08-12 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

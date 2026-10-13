@@ -1,0 +1,50 @@
+id: INF-0594
+legacy_ids:
+- '6.201'
+slug: sglang_dp_attention_running_batch_pinned_max_minus_one
+aliases: []
+title: SGLang DP attention 下运行请求数恒为上限减一
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: 调度器准入判断
+  behavior: chunked prefill 与 DP attention 组合下，调度器准入判断保留一个永不释放的 slot，每 DP rank 实际运行数恒比上限少 1（准入 off-by-one）；具体机制原文未详述。
+effect:
+  objects:
+  - 性能/资源
+  detail: 'GLM-5-FP8、DP=8、--max-running-requests 128 时 8 个 rank 的 #running-req 恒为 15（上限 16）且队列 ≥1；输出无误，集群容量损失约 1/D（约 6% 吞吐）并增加排队。'
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + DP attention + chunked prefill + 高负载（拓扑×负载触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38118
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DP attention 下 steady-state running requests 恒钉在 `max_running_requests − 1`（每 DP rank 一个 slot 永久闲置）：GLM-5-FP8、`--enable-dp-attention --data-parallel-size 8 --max-running-requests 128` 时 8 个 rank 全部 `#running-req: 15` 且队列 ≥1——准入 off-by-one） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: chunked prefill 与 DP attention 组合下，调度器的准入判断保留了一个永不释放的保留 slot（具体机制见 issue 的时间线分析）；每 rank 上限 `128//8=16`，实际恒 15。MTP 之外的吞吐型缺陷：无输出错误，纯容量损失。
+  source: 'SGLang #38118（2026-09-05 open，8 rank 同时钉 15 的服务端指标截图，main 复现）。https://github.com/sgl-project/sglang/issues/38118'
+  behavior: 无 crash、无错误输出——集群容量静默损失 1/D（DP=8 即约 6% 吞吐）+ 队列等待；唯一可见信号是 `#running-req` 指标的恒定 off-by-one。属「**调度不变式 off-by-one**」新子签名：正确性无损但 SLO/容量规划系统性偏差。
+  trigger_surface: SGLang + DP attention + chunked prefill + 高负载（拓扑×负载触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

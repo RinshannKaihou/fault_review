@@ -1,0 +1,50 @@
+id: INF-0057
+legacy_ids:
+- '1.57'
+slug: ttmetal_silu_ignores_approximation_mode_flag
+aliases: []
+title: tt-metal silu 静默忽略 math_approx_mode 近似模式
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: calculate_silu 近似模式参数
+  behavior: silu_tile 把 APPROX 传给 silu_tile_init 却不传给 calculate_silu，后者是 llk_sfpu 唯一不声明 APPROXIMATION_MODE 的激活函数，silu_init 也丢弃该参数。
+effect:
+  objects:
+  - 性能/资源
+  detail: 调用方设置 math_approx_mode=true 时 silu 仍走精确 sigmoid（精确 exp + reciprocal 迭代）而非近似路径，flag 静默不生效，无 crash、无 NaN；期望更快的近似模式实际得到更慢的精确模式。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: tt-metal；`silu_tile` + `math_approx_mode` 设置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/pull/52735
+  kind: github_pr
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`ambiguous`（calculate_silu 不声明 APPROXIMATION_MODE，调用者的 `math_approx_mode=true` 被静默忽略→仍用精确 sigmoid 而非近似路径） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`silu_tile` 传 `APPROX` 给 `silu_tile_init` 但不传给 `calculate_silu`——`compute_kernel_api.h` 中两个相邻函数签名不一致，`silu_init<APPROXIMATION_MODE>` 丢弃其收到的参数。`calculate_silu` 是 `llk_sfpu/` 中唯一不声明 `APPROXIMATION_MODE` 的激活函数（gelu/tanh/sigmoid 都有）。调用者设置 `math_approx_mode=true` 时仍获得精确 sigmoid（`_sfpu_exp_fp32_accurate_` + `sfpu_reciprocal_iter<2>`），flag 被静默忽略。近似路径应为 `_sfpu_sigmoid_<false>`（exp_21f，~1 ULP on bf16 + 单次 reciprocal iteration）。'
+  source: 'tt-metal #52735（2026-08-10 open）。组件 `llk_api/llk_sfpu/` `calculate_silu` / `silu_tile`。https://github.com/tenstorrent/tt-metal/pull/52735'
+  behavior: 无 crash、无 NaN。配置 flag 静默不生效——用户期望近似模式（更快）但得到精确模式（更慢），或反之。属「内核配置 flag 未传递/静默忽略」签名——与 1.x SFPU 数值原语缺陷同族但本条是 flag 路由缺失。
+  trigger_surface: tt-metal；`silu_tile` + `math_approx_mode` 设置
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

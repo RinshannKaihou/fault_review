@@ -1,0 +1,59 @@
+id: INF-1140
+legacy_ids:
+- '12.24'
+slug: sglang_qwen35_mtp_weights_compressed_tensors_ignore_list_silent_drop
+aliases: []
+title: SGLang Qwen3.5 MTP 漏量化分支致推测解码失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: _mtp_quant_config 分支
+  behavior: _mtp_quant_config() 只有 quark 分支；compressed-tensors checkpoint 把 MTP linears 逐条列入 ignore，落入无 scale/无权重路径，draft 权重被静默丢弃。
+effect:
+  objects:
+  - 模型权重
+  - 性能/资源
+  detail: SGLang + Qwen3.5-family + compressed-tensors checkpoint 开 MTP 推测解码时，输出等同无推测，accept len 恒 1.000、零方差，吞吐塌 8 倍（30.7 vs 248 tok/s），无任何警告。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Qwen3.5-family + compressed-tensors checkpoint + MTP speculative decoding（checkpoint 格式即可触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35797
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（compressed-tensors checkpoint（AutoRound/llm-compressor）把 MTP linears 逐条列入 `quantization_config.ignore`，`_mtp_quant_config()` 无 compressed_tensors 分支（#23113 只加了 quark）→ **MTP 权重静默丢弃**：accept len 恒 1.000、跨一切 prompt/seed/depth 零方差，吞吐坍塌 8 倍（30.7 vs 248 tok/s），无任何警告） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: Qwen3.5-family 的 MTP 投影层在 compressed-tensors checkpoint 中按该格式的惯例被**逐层列举**进 ignore（mtp.fc、mtp.layers.0.self_attn.q_proj 等，模型侧与 quant_config 侧各一份）；`python/sglang/srt/models/qwen3_5_mtp.py` 的 `_mtp_quant_config()` 只认 quark 分支（#23113），compressed_tensors 落到无 scale/无权重的路径——MTP draft 模型权重被静默丢弃，drafter 永远零贡献（accept len == 1.0 精确恒定是零接受的指纹），全量 draft 成本照付（深度 8 时吞吐为正常推测路径的 1/8）。
+  source: 'SGLang #35797（2026-08-21 open，#23113 的 compressed-tensors 对应物，含 ignore 清单与 accept len/吞吐对照）。https://github.com/sgl-project/sglang/issues/35797'
+  behavior: '**无 crash、无输出损坏——推测解码静默完全失效**：输出质量等于无推测（draft 被丢），但吞吐塌 8 倍且无诊断信号；accept len 恒 1.000 零方差是唯一可观测指纹。属「**per-format ignore 清单 × 单格式分支缺失的加载器静默丢弃**」新子签名：与 12.22（交错权重流双重 finalize）同加载域，但本条损坏的是可选组件（MTP head）的整块存在性。'
+  trigger_surface: SGLang + Qwen3.5-family + compressed-tensors checkpoint + MTP speculative decoding（checkpoint 格式即可触发）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - effect.objects
+  note: uncertain 字段 cause.subsystem（量化 vs 解码/采样）：维持 量化。修复要改的是 _mtp_quant_config() 缺失的 compressed_tensors 分支，也就是量化配置选择；推测解码按 rule 6 是触发条件。effect.objects 由 [性能/资源] 改为 [模型权重, 性能/资源]：原文“MTP draft 模型权重被静默丢弃”是最直接变错的东西，吞吐塌 8 倍是其后果（rule 5：第一项写最直接变错的东西）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

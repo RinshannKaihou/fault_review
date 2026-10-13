@@ -1,0 +1,51 @@
+id: INF-0770
+legacy_ids:
+- '7.97'
+slug: sglang_deepseek_chunked_prefix_lse_base2_merged_as_natural_log_silent_overweight_cached_prefix
+aliases: []
+title: SGLang MLA 分块前缀按自然对数合并 base-2 LSE 致前缀过权
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: merge_state_v2 LSE 底数转换
+  behavior: trtllm_mla 等 ragged attention 内核产出 base-2 的 per-chunk LSE，merge_state_v2 及其 Triton fallback 按自然对数公式合并，中间缺少底数转换。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: DeepSeek MLA 每次 prefix-cache 命中走 chunk-and-merge 时，缓存前缀注意力按 2^(0.4427·Δ) 被过权、新 token 权重被压，输出偏向历史上下文；Blackwell 默认后端即触发，无报错无日志，前缀越长越严重。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + DeepSeek MLA + `trtllm_mha`/chunked-prefix 路径 + prefix-cache 命中（other_stack：Blackwell 默认即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40903
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（SGLang DeepSeek MLA chunked-prefix prefill 路径：ragged attention 内核产出的 per-chunk log-sum-exp 是 **base-2**，而 `merge_state_v2`（及 Triton fallback）以**自然对数**公式合并（`out_se = tl.exp(p_lse)+tl.exp(s_lse)`）——中间无任何转换：**每次 prefix-cache 命中**的长缓存前缀以 2^(0.4427·Δ) 相对权重被系统性**过权**，新 token 权重相应被压。静默（无错误无警告、输出貌似正常）；Blackwell 上 `trtllm_mla` 是 `DeepseekV3ForCausalLM` sm100 自动选择后端且每个带非空前缀的 extend 都走 chunk-and-merge 路径——**默认配置即触发**；0.5.15.post1/0.5.19 运行时复现 + main 源码核实（grep 无 log2/1.4427/LOG2E 转换）） · Cov: `NEW`（分块注意力 LSE 底数契约分裂子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '不同注意力内核族的 LSE 约定（log2 vs ln）没有被 merge 层显式规范化——`merge_state_v2` 的公式按 ln 写死，`trtllm_mla` 后端按 log2 产出；vLLM 使用同一批内核但**按后端各自转换**（对照实现），SGLang 缺该转换。前缀越长 Δ 越大、过权越严重（指数级），长前缀命中场景（agent 多轮、RAG 长上下文）受害最深。修复 #40927。'
+  source: 'SGLang #40903（2026-09-23 open，含前向/合并双层代码定位、Triton fallback 公式引用、grep 证据、0.5.15.post1/0.5.19 运行时复现与 main `2d25767` 验证）。https://github.com/sgl-project/sglang/issues/40903'
+  behavior: 无 crash、无 NaN——**每次前缀命中静默精度损失**：缓存前缀注意力权重指数级过权，输出分布系统性偏向历史上下文；Blackwell 默认路径全量受影响，无任何日志信号；perplexity 级评测可能仅轻微退化（长文本稀释），结构化/事实性任务（依赖新 token 的精确权重）受害更大。
+  trigger_surface: SGLang + DeepSeek MLA + `trtllm_mha`/chunked-prefix 路径 + prefix-cache 命中（other_stack：Blackwell 默认即触发）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

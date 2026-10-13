@@ -1,0 +1,64 @@
+id: INF-0334
+legacy_ids:
+- '4.18'
+slug: sglang_h3_ref2va_profiling_graph_switch_nondeterminism
+aliases: []
+title: SGLang Ref2VA 音频编码器 JIT 图切换致跨调用非确定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: sglang
+    component: 音频编码器 scripted snake 激活
+  behavior: MiniMax-H3 音频编码器的 snake 激活经 TorchScript 脚本化，profiling 后执行图由初始图切换为融合 TensorExprGroup 图，浮点求值顺序改变；默认 warmup 用图像参考，未预热该路径。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: 同一服务器同种子同请求首次与后续输出不同（视频 SSIM 0.73–0.83、音频 PCM 最大差 0.185、MP4 字节不同）；参考音频 conditioning 的微小扰动经联合音视频去噪逐步放大，在参考音频请求首次执行时出现。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + MiniMax-H3 Ref2VA + 参考音频请求 + 首次执行（other_stack：SGLang diffusion 路径；warmup 覆盖缺口触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: effect_object 缺「生成媒体内容」（diffusion 生成的视频/音频），输出内容 只覆盖 token/文本/结构化输出，暂用 输出内容
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38225
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0328
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`ambiguous`（MiniMax-H3 `ref2va` 的 audio encoder scripted `snake` 激活首次执行用初始执行图、profiling 后切换到融合 `TensorExprGroup` 图——不同浮点舍入扰动参考音频 conditioning，联合音视频去噪放大差异：同一服务器上相同请求首次/后续输出不同（视频 SSIM 0.73-0.83、audio PCM max diff 0.185、完整 MP4 字节不同）；默认 Ref2VA 合成 warmup 用图像参考、不热该音频编码路径） · Cov: `var:sglang_vlm_greedy_cross_build_near_tie_flip_worker_nondeterminism`（4.12 非确定性族） · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: TorchScript profiling 触发的执行图替换（初始 eager 图 → 融合 TensorExprGroup）改变浮点求值顺序；diffusion 管线对 conditioning 的微小扰动逐去噪步放大到可见输出差异。修复移除编码器激活的 profiling TorchScript（公式不变），并加 fresh-process CUDA 回归测试（防先前测试掩盖冷调用差异）。
+  source: 'SGLang PR #38225（2026-09-06，含 2×H200 首次/后续逐字节对照与分阶段 dump 定位到参考音频编码）。https://github.com/sgl-project/sglang/pull/38225'
+  behavior: 无 crash——同种子同请求**跨调用非确定**（首次 vs 后续输出不同）；修复后 SSIM/latent/PCM 逐位一致。「profiling 边界前后数值分歧」是 4.12（跨 build near-tie 翻转）的请求内时序版：非确定性窗口从 build 边界移到首个请求边界；对以首响评为准的 A/B 测试与缓存复用判定都是污染源。
+  trigger_surface: SGLang + MiniMax-H3 Ref2VA + 参考音频请求 + 首次执行（other_stack：SGLang diffusion 路径；warmup 覆盖缺口触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 编译器
+        status: panel7
+      effect:
+        from: 数值结果
+        to: 输出内容
+        status: panel7
+    uncertain:
+    - detail

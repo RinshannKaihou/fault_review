@@ -1,0 +1,57 @@
+id: TRN-0108
+legacy_ids:
+- OPT.08
+slug: fused_gated_fc1_single_matrix_orthogonalization
+aliases: []
+title: Muon 把融合 gate/up fc1 当单一矩阵正交化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: Muon NS 对融合 linear_fc1 处理
+  behavior: Muon/NorMuon 做 Newton-Schulz 正交化时把 gated MLP 融合的 linear_fc1（[gate; up] 物理拼接）当单一矩阵处理，两个独立投影被联合正交化，耦合本应独立的更新。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: SwiGLU/GEGLU 模型用 Muon 训练时无 crash、无 NaN，照常收敛但每步更新几何被污染；同类的 DeepSpeed AutoTP 对 shard 做 NS 使 update 随 TP 度变化（Llama tp=2 相对差 3.9e-01）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6688
+  kind: github_pr
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7085
+  kind: github_pr
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8437
+  kind: github_issue
+- url: https://github.com/pytorch/torchtitan/issues/4692
+  kind: github_issue
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'gated MLP（SwiGLU/GEGLU）的 `linear_fc1.weight` 是**两个逻辑矩阵的物理拼接**（`[gate_weight; up_weight]`，TP 下 partition_stride=2）。Muon/NorMuon 家族对参数做 Newton-Schulz 正交化时把融合矩阵当**单一矩阵**处理：gate 与 up 两个独立投影被当成一个几何对象联合正交化——耦合了本应独立的更新、用了错误的矩阵几何。修复 = 按 TP-local 切成 gate/up 两半各自 NS 后拼回（GTP-remat 参数需先 gather 去 padding 再切）；参数形状与 ckpt 格式不变。torchtitan 侧同期在演进 per-head NS（DeepSpeed #8384），说明 Muon 更新几何是当前活跃故障面。'
+  source: 'Megatron-LM PR #6688（修复：检测 2D `linear_fc1` + `gated_linear_unit` 时挂 TP-local split metadata，gate/up 各自 NS 后拼回；TensorParallelAdaptiveMuon 同步处理）+ 追踪 issue #7077（closed as duplicate of #6688）。https://github.com/NVIDIA/Megatron-LM/pull/6688 ；dev 分支端口 PR #7085（2026-09-06 补：`--muon-split-qkv-per-head` 把 per-head NS 推广到 QKV 融合权重——TP>num_query_groups 时梯度跨 TP 维重组后按**逻辑布局**逐 head NS 再还原各 rank 本地 shard，并用 `QKVLayout` 注解把 split 从名字匹配泛化到 MLA/DSv4 hybrid 投影；`muon_tp_mode=distributed` 对不完整 query-group 的投影一次性警告后回退非 TP NS——「Muon 更新矩阵几何」仍是活跃故障面）。https://github.com/NVIDIA/Megatron-LM/pull/7085 ；DeepSpeed #8437（2026-09-07 补）：AutoTP 列并行 shard 上跑整矩阵 NS——正交化依赖**全部行**，shard 是行的真子集，shard 的正交化 ≠ 全矩阵正交化的对应行块（Llama tp=2 实测：梯度一致到 7e-7，update 相对差 **3.9e-01**、cosine 0.936）——同一参数的 Muon 更新随 TP 度变化，TP 度从并行几何变成隐形超参；#8420（Kimi-K3 KDA / GLM-5.2 DSA indexer 的头几何不在 tagger 读取的字段里、留在 full-matrix 路径——当前保守正确，跟踪在案）。https://github.com/deepspeedai/DeepSpeed/issues/8437 ；2026-09-20 补：torchtitan #4692（RFC，2026-09-13）给出**全量融合矩阵 × 逻辑矩阵清单**并确认 upstream main 的 K3 调试配方仍用 AdamW（无 per-head Muon 路径，#4272 P0.5）：`w13` 行交错存储 `[2F,D]`（#4676 改叠放 `[2,F,D]`）、routed `w1_EFD`/`w3_EFD` 两张 `[E,F,D]`、`wkv_b` 按 head 连续块交错 K/V、`wkv_a` latent+rope 行拼接、`wq_b` 每 head nope+rope、KDA `q/k/v_proj` 等 `[H*d,*]`——Kimi 生产侧对 MLA 各投影逐逻辑矩阵独立 NS + aspect-ratio lr（kexue.fm/archives/11126）。「融合权重必须拆逻辑矩阵再 NS」是跨栈共识，本条机制面的 RFC 级枚举。https://github.com/pytorch/torchtitan/issues/4692'
+  behavior: 无 crash、无 NaN——Muon 更新量级/方向系统性错，训练照常收敛但每步优化几何被污染；与 OPT.01（矩未 resume）同为优化器数学契约破坏，本条是**更新算子的矩阵语义**而非状态丢失。#8437 面叠加：换 TP 度重跑或对比实验时 Muon 更新悄然不同（与 NUM.07 的「调优器把不同树钉进各 rank」同属并行度外溢进优化语义）。
+  discovery: 2026-09-05 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

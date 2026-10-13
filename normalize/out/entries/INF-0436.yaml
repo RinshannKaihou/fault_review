@@ -1,0 +1,51 @@
+id: INF-0436
+legacy_ids:
+- '6.43'
+slug: vllm_free_blocks_lifo_to_fifo_reversal
+aliases: []
+title: vLLM 关闭前缀缓存时 free_blocks 由 LIFO 变 FIFO
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: free_blocks 释放入队顺序
+  behavior: '#48017 的条件含 enable_caching，caching 关闭时释放块走 append_n（FIFO）而非 prepend_n（LIFO），块重用由热块复用变为循环整个 block-id 空间。'
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: 以 --no-enable-prefix-caching 运行时块重用顺序反转，TPU v7e 上确定性触发 E0200 RuntimeUnexpectedCoreHalt（SparseCore UserFatal）；该行为与 PR 描述“纯 no-op”及代码注释矛盾。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；prefix caching 禁用（`--no-enable-prefix-caching`）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51482
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（prefix caching 关闭时 free_blocks 意外将 LIFO 翻转为 FIFO，块重用顺序反转） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '#48017 自称"纯 no-op"跳过 LRU hash-split，但实际条件 `block.block_hash is None and self.enable_caching` 在 prefix caching 禁用时把所有释放块走 `append_n`（FIFO）而非 `prepend_n`（LIFO）。分配从队头 pop→从"立即重用小块热集"变为"循环整个 block-id 空间"——与 PR 描述和代码注释（"reusing recently used blocks"）矛盾。修复：caching 关闭时跳过分区、`prepend_n`。'
+  source: 'vLLM PR #51482（2026-08-08 open）。https://github.com/vllm-project/vllm/pull/51482'
+  behavior: TPU v7e 确定性触发 `E0200 RuntimeUnexpectedCoreHalt`（SparseCore UserFatal）。属「缓存块池释放顺序静默翻转」签名——block-id 重用模式改变导致 cache-locality 退化或硬件交互。
+  trigger_surface: vLLM；prefix caching 禁用（`--no-enable-prefix-caching`）
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

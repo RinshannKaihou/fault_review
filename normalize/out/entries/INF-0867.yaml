@@ -1,0 +1,56 @@
+id: INF-0867
+legacy_ids:
+- '8.83'
+slug: vllm_glm53flash_rocm_indexer_block_table_granularity_mismatch_kpool_generic_slotmap
+aliases: []
+title: GLM-5.3-Flash 块表粒度错配与 slot 映射越组
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 块大小推导、KpoolTail 映射
+  behavior: prepare_kernel_block_sizes 不遵守 storage_block_size，块表存 manager 块 ID 而非物理页 ID；KpoolTailSpec 未排除于通用 slot mapping，循环块被按位置映射
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 可用性/进度
+  detail: MI308X TP8 上 160K 长 prompt 请求正常完成但末段检索静默失效（表宽外写零 scale、表宽内错页读）；chunked prefill 下越行读出野物理 ID，触发 GPU memory access fault / EngineDeadError
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + GLM-5.3-Flash + ROCm gfx942 + 长上下文 index_kpool / chunked prefill KpoolTail（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56380
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0857
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（vLLM GLM-5.3-Flash on ROCm gfx942：indexer cache 用 128-token 存储页（32 pooled entries）而 block table 用 640-token manager 块——`allocate_kv_cache` 遵守 `MLAAttentionSpec.storage_block_size`、`prepare_kernel_block_sizes` 不遵守，把 manager block ID 留在需要物理页 ID 的位置。`max_model_len=262144` 时 410 列表按 pool-page 消费者解读只能寻址 `410*32*4=52480` token 位：**表宽外** gather 掩掉 block-ID 读并写零 scale（长 prompt 尾部召回静默退化——请求完成但末段检索失效）、**表宽内** manager ID 可指错物理页（非固定 token 偏移的错页读）。第二独立缺陷：`KpoolTailSpec`（每请求一个循环块）未被排除于通用 `_compute_slot_mappings_kernel`——`position//4` 打在 32 列行上、chunked prefill 列索引数千、越行读毒化 block id → wild physical id → GPU memory access fault / EngineDeadError。修复：PR #56381（表改存储页粒度，262144 下表 (1,2050)、manager 块 b 扩 5 页）+ PR #56469（`uses_generic_slot_mapping()` 分类排除）） · Cov: `var:vllm_glm53flash_kpool_topk_buffer_2048_index_width_overflow`（8.73 GLM-5.3-Flash indexer 寻址族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 两组件的粒度契约（存储页 vs manager 块）在内核 block size 推导处断裂；kpool-tail 组的循环块语义与通用位置索引映射不兼容，builder 专属映射被通用内核覆盖。
+  source: 'vLLM #56380（2026-09-11 open，rocm+glm label，含 cache/block_table shape 实测、52480 寻址上限推导与 HIP_LAUNCH_BLOCKING 栈定位）；修复 PR #56381、#56469。https://github.com/vllm-project/vllm/issues/56380'
+  behavior: 形态 1 无 crash——**长上下文尾部检索静默失效**（零 scale 掩蔽 + 错页读混合），请求正常完成、near-end 召回退化（8×MI308X TP8 160K prompt 复现）；形态 2 GPU memory fault crash。8.73（kpool top-k 2048 宽溢出）之后 GLM-5.3-Flash indexer 族新成员：本条在块粒度映射 + 通用内核越组两个维度。
+  trigger_surface: vLLM + GLM-5.3-Flash + ROCm gfx942 + 长上下文 index_kpool / chunked prefill KpoolTail（hw_specific）
+  discovery: |-
+    2026-09-11 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

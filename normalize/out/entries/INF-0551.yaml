@@ -1,0 +1,62 @@
+id: INF-0551
+legacy_ids:
+- '6.158'
+slug: sglang_dcp_index_k_cache_oob_write_crash_and_residual_quality_degradation
+aliases: []
+title: SGLang DCP 下 index-K cache 越界写崩溃及残留质量退化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: DSA index-K cache 分配尺寸
+  behavior: DSA index-K cache 按 rank-local 尺寸分配，读写却用 DCP 虚拟位置（大 dcp_size 倍），累计分配越过 max_total_num_tokens 后越界写；尺寸修复后仍有无 crash 的静默质量退化。
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: GLM-5.3-Flash（DSA）+ --dcp-size 8：触发点确定、受害内核随机的 crash（6 种签名）；修复尺寸后温度 0 输出仍退化：CoT 膨胀 4–9×且自相矛盾、翻译丢实体、超 token 预算返回空内容；仅去掉 DCP flag 即恢复。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.3-Flash/DSA 模型 + `--dcp-size >1`（config 即可触发；累积分配量决定 crash 时点）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36886
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（GLM-5.3-Flash（DSA）+ `--dcp-size 8`：DSA index-K cache 按 per-rank 尺寸分配（`index_buf_size = size`）却用 allocator 的 DCP-virtual locs 写读（该路径无任何 `%dcp`/`//dcp` 换算，与主 c-KV 内核不同）——累计分配越过 `max_total_num_tokens` 后越界写损坏相邻 buffer，随机受害内核 crash（观察到 6 种不同签名）、触发点确定；**修复尺寸后输出质量仍退化**：CoT 膨胀 4–9×、细节 garble，仅移除 DCP flag 即恢复） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '双层缺陷。(1) **OOB crash**：index-K cache 以 rank-local 尺寸分配，但读写使用 allocator 的 DCP 虚拟位置空间（比 per-rank 空间大 dcp_size 倍），累计分配跨过 `max_total_num_tokens` 即越界写——与 #33348 修复过的 draft pool 同类（该修复未覆盖 index-K 路径）；修复 = 把 index-K 按虚拟 loc 空间分配。(2) **残留质量退化**：crash 修复后 DCP 仍使输出退化——温度 0 下 `9.11 vs 9.9` 比较 CoT 膨胀到 2836 字符且解释自相矛盾（无 DCP 时 778 字符且干净）、翻译丢"公园"实体、水池问题 reasoning 膨胀到 5447 字符超出 2000-token 预算返回空内容；同节点同权重仅移除 `--dcp-size 8 --dcp-comm-backend ag_rs` 即恢复。'
+  source: 'SGLang #36886（2026-08-28 open，H100，含三例温度 0 对照输出与已验证修复 diff）。https://github.com/sgl-project/sglang/issues/36886'
+  behavior: 第一阶段**随机内核 crash**（6 种签名、确定性触发点——越界写的受害对象取决于分配布局）；第二阶段（尺寸修复后）**无 crash 的静默质量退化**：CoT 长度膨胀 4–9×、事实细节丢失、预算超限返回空。属「**虚拟地址空间与分配尺寸失配 OOB + 修复后残留语义退化**」复合新子签名：crash 只是表层，语义层缺陷独立存在。
+  trigger_surface: SGLang + GLM-5.3-Flash/DSA 模型 + `--dcp-size >1`（config 即可触发；累积分配量决定 crash 时点）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 输出内容
+        status: unanimous
+      visibility:
+        from: 报错
+        to: 质量退化
+        status: unanimous
+    rewritten:
+    - behavior

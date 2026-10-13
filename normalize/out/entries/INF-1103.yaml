@@ -1,0 +1,55 @@
+id: INF-1103
+legacy_ids:
+- '11.80'
+slug: vllm_v2_encoder_multi_budget_graphs_shared_pool_zero_init_nan_embeddings
+aliases: []
+title: vLLM encoder CUDA graph 共享池致大图 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: encoder CUDA graph 共享池
+  behavior: 九档 token 预算的 encoder CUDA graph 共享同一 graph pool，varlen attention 输出缓冲未零初始化，各档图对其填充范围假设不一致，replay 大预算图时读到残留或未写区域。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 开启 cudagraph_mm_encoder 时，1280×720 大图（1196 视觉 token、预算 2048）产出 NaN embedding 与错误回答，224×224 小图正常；只捕获单档、每档独立 pool 或零初始化输出均正确。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + V2 encoder CUDA graphs（多预算共享池）+ 多模态大图（≥2k 视觉 token 档位）（yes：默认九档配置即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57136
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1074
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`ambiguous`（vLLM V2 E-only encoder CUDA graphs（`cudagraph_mm_encoder=True`）+ 默认九档 token 预算 [64…16384] **共享同一 graph pool** 时，大图（1280×720 → 1196 视觉 token，replay 预算 2048）产出 **NaN embeddings** 与错误回答（双 H20 节点观测）；224×224 小图（64 token）正确。诊断矩阵：普通 eager 正确 / 相同 padded buffer 的 eager 正确 / **只捕获预算 2048 一档正确** / 九档共享池 → 大图 NaN / 九档每档独立 pool handle 正确 / 共享池 + **零初始化 varlen attention 输出正确**——根因是共享池捕获路径留下未初始化的 varlen 输出缓冲，多档图对同一 buffer 的容量假设不一致） · Cov: `var:vllm_prompt_logprobs_drafter_graph_buffer_reuse_corruption`（11.51 图缓冲复用损坏族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 多个 capture 预算共享池时 varlen attention 输出缓冲未零初始化且各档图对其填充范围假设不同——replay 大预算图时部分行读到的残留/未写区域进入 vision encoder 下游演算为 NaN；单档捕获或独立 pool 时缓冲生命周期不交叠故正确。
+  source: 'vLLM #57136（2026-09-16 open，于 #56922 验证中观测，含六条件诊断矩阵与双节点复现记录）。https://github.com/vllm-project/vllm/issues/57136'
+  behavior: 无 crash——大图 embeddings NaN、生成错误回答；小图正常使缺陷呈尺寸门控；零初始化即修复确认"脏缓冲读"形态。11.51（drafter graph buffer 复用覆写）之后图缓冲生命周期族新成员：本条在 **encoder 侧多预算共享池 × varlen 输出未初始化**维度。
+  trigger_surface: vLLM + V2 encoder CUDA graphs（多预算共享池）+ 多模态大图（≥2k 视觉 token 档位）（yes：默认九档配置即触发）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

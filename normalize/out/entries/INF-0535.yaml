@@ -1,0 +1,59 @@
+id: INF-0535
+legacy_ids:
+- '6.142'
+slug: sglang_dsa_triton_prefill_autotune_nan_config_rocm
+aliases: []
+title: Triton 3.7.0 gfx950 编出 NaN 内核致 DSA 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: Triton 3.7.0 gfx950 代码生成
+  behavior: Triton 3.7.0 在 gfx950 上把 DSA sparse-MLA prefill 的 BLOCK_N=128、num_warps=1、num_stages=2 config 编成 NaN/inf 内核，SGLang 未排除。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: SGLANG_DSA_TRITON_PREFILL=1 时 autotune 可在某 shape 首次 prefill 选中坏 config 并缓存，prefill 输出 NaN/inf，decode 全程 garbage tokens，重启前同 shape 持续出错；CUDA 不受影响。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang + ROCm gfx950 + Triton 3.7.0 + DSA Triton prefill（CUDA 不受影响）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/35274
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0414
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（ROCm gfx950 + Triton 3.7.0：DSA sparse-MLA prefill autotune 可选中产生 NaN/inf 的编译产物，损坏 prefill 输出并传导 decode garbage tokens；坏选择按 shape 缓存定型） · Cov: `var:vllm_rocm_kimi_k3_kda_mixed_batch_nan_autotune_race` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'ROCm（gfx950）+ Triton 3.7.0 下，DSA sparse-MLA prefill 内核（`SGLANG_DSA_TRITON_PREFILL=1`）的 autotune 在 `(BLOCK_N, num_warps, num_stages)` 空间可选中 `(BLOCK_N=128, num_warps=1, num_stages=2)`——该 config 经 Triton 3.7.0 编译出的内核在该路径上**产生 NaN/inf**，损坏 prefill 输出并使后续 decode 输出 garbage tokens。无排除时 autotune 可能在某 shape 的首次 prefill 上选中坏内核并**把坏选择缓存**。属 Triton 3.7.0 + gfx950 编译问题；修复（PR #35274）为防御性排除——HIP 平台永不让该 config 进入候选（CUDA config 空间不变）。与 6.21（KDA autotune num_stages=4 数据竞争）同族——**autotune 选中产生垃圾值的 config**——但本条机制是编译器发射 NaN 内核而非 kernel 内数据竞争。'
+  source: 'SGLang PR #35274（2026-08-19 open，4×MI355X，ROCm 7.2.0，GLM-5.2-MXFP4，TP4；修复前 prefill NaN/inf + decode garbage，修复后 10 基准点全过）。https://github.com/sgl-project/sglang/pull/35274'
+  behavior: 无 crash。NaN/inf 从 prefill 静默污染至 decode 全程 garbage tokens——**坏 config 经 autotune 缓存后按 shape 持久化**，重启前每次命中同 shape 都坏。属已知「autotune 坏 config」族（6.21）新实例：编译器版本 × 后端组合发射错误内核，防御面只能是黑名单。
+  trigger_surface: SGLang + ROCm gfx950 + Triton 3.7.0 + DSA Triton prefill（CUDA 不受影响）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: 'subsystem 维持 编译器、stack 维持 triton：原文明言“属 Triton 3.7.0 + gfx950 编译问题”“编译器发射 NaN 内核”，SGLang PR #35274 只是防御性排除。审计：config 值、SGLANG_DSA_TRITON_PREFILL=1、按 shape 缓存坏选择、CUDA 不受影响均有原文依据；NaN/inf 显式→数值异常 合理，形式无问题。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

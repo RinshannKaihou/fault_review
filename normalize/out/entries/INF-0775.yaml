@@ -1,0 +1,53 @@
+id: INF-0775
+legacy_ids:
+- '7.102'
+slug: vllm_marlin_int8_activation_negative_group_scales_read_as_uint16
+aliases: []
+title: Marlin int8 激活路径把负 group scale 读成大正数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: Marlin int8 激活 scale 处理
+  behavior: marlin_act_int8_process_scales 用 s.max() 而非 abs().max() 归一化并存为 int16，内核按 uint16 重解释读取，负 scale 的符号位变成幅值。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: VLLM_MARLIN_INPUT_DTYPE=int8 且 num_groups>1 时，含负 scale 的 checkpoint（如 AutoRound 对称 int4，约半数组为负）反量化权重误差达典型幅度的 170×；模型照常加载运行，输出质量塌缩而服务无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + VLLM_MARLIN_INPUT_DTYPE=int8 + num_groups>1 + 含负 scale checkpoint（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59403
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0735
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（Marlin **int8-activation** 路径（`VLLM_MARLIN_INPUT_DTYPE=int8`）：`marlin_act_int8_process_scales` 用 `s.max()`（非 `abs().max()`）归一化并落 `int16`，CUDA 内核以 `reinterpret_cast<uint16_t*>` 读——**任一负 group scale 被读成大正数**（4096 组 50.8% 负：kernel 视图 [1,65535] vs 真值 [−4086,4096]，例 −0.0225→+1.3，倍数 min 15/median 95.8/max 65535；反量化权重误差达典型幅度的 170×）。对称 int4 导出（AutoRound 对称模式约半数组为负）整体半数组垃圾——仍加载、仍运行、仍"benchmark 正常"。CPU 数值演示+双侧源码定位（marlin_utils.py:544 / marlin_template.h:1129），精确修法（abs().max()+有符号读）误差 1.91e-05） · Cov: `var:sglang_gptq_marlin_moe_bf16_scale_dtype_and_tp_descact_w2_sharding_nan`（7.62 Marlin scale 位型族——本条在 **激活 scale 的符号位重解释**维度） · 触发 `config` · 置信度 `verified`'
+  mechanism: int16 位型经 uint16 读出后符号位变幅值；归一化未取绝对值使负值必然存在。
+  source: 'vLLM #59403（2026-09-30 open，CPU 数值闭合演示+源码行号+三修法对照）。https://github.com/vllm-project/vllm/issues/59403'
+  behavior: 无 crash——约半数 group 的激活缩放静默错百倍，输出质量静默塌缩而服务面全绿。
+  trigger_surface: vLLM + VLLM_MARLIN_INPUT_DTYPE=int8 + num_groups>1 + 含负 scale checkpoint（config）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

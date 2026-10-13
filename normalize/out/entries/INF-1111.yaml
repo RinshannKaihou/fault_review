@@ -1,0 +1,50 @@
+id: INF-1111
+legacy_ids:
+- '11.88'
+slug: sglang_spec_v2_workers_diverge_forward_batch_generation_signature_pp_proxy_tensors_typeerror
+aliases: []
+title: SGLang 四个 spec-v2 worker 签名缺参致 TypeError
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: spec-v2 worker 接口签名
+  behavior: 非 overlap 推测路径调度器恒传 pp_proxy_tensors，但 BaseSpecWorker 未声明 forward_batch_generation 抽象方法锚定签名，dspark 等四个 v2 worker 签名缺该参数。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 经上述四个 worker 服务的模型在首个非 overlap 步抛 TypeError（unexpected keyword argument 'pp_proxy_tensors'），对应 spec 后端整体不可用；属 fail-loud，非静默错值。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + spec-v2 + dspark/multi_layer_eagle/frozen_kv_mtp/uno worker + 非 overlap 调度路径（other_stack）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40155
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（SGLang 非 overlap speculative 路径调度器**恒传** `pp_proxy_tensors`（`scheduler.py:4514/:4527`），而 spec-v2 worker 族签名已分歧：eagle/dflash/ngram worker ✅ 有该参数，**dspark_worker_v2（#39262 已报）、multi_layer_eagle_worker_v2（PR #29189 内联修）、frozen_kv_mtp_worker_v2、uno_worker_v2 四者 ❌ 缺失**——经此四 worker 服务的模型在首个非 overlap 步即 `TypeError: forward_batch_generation() got an unexpected keyword argument ''pp_proxy_tensors''`。根因是**接口契约零强制**：`BaseSpecWorker`（`base_spec_worker.py:154`）是 ABC 却不声明 `forward_batch_generation`，各 worker 自行演化签名、三个静默掉队） · Cov: `NEW`（ABC 接口契约缺失致实现族静默分歧子签名；与 12.40（量化格式推断跳过 reorder——按 checkpoint 特征猜结构）同属"结构契约靠约定不靠类型"域，但本条是**调度器↔worker 接口签名**层面） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 调度器经 duck-typing 调用 worker，无 Protocol/abstract 方法锚定签名；PP 代理张量参数加入时只有部分 worker 同步。报告者附七 worker 签名审计表与逐文件定位；修复为补 `pp_proxy_tensors=None` 透传 + `BaseSpecWorker` 声明抽象方法（下次分歧在 import/lint 期失败）。
+  source: 'SGLang #40155（2026-09-19 open，含七 worker 审计矩阵、#39262/#29189/#39885 谱系与修复提案）。https://github.com/sgl-project/sglang/issues/40155'
+  behavior: 'fail-loud TypeError（首请求即崩）——非静默错值，不占静默故障谱系；收录价值在**结构模式**：ABC 不声明被调度器调用的方法使四个 spec 后端整体不可用且逐个独立炸，接口漂移在类型检查盲区累积。dspark 实例已在 #39262、multi_layer_eagle 已在 PR #29189 修复、frozen_kv_mtp/uno 两处为未报告新点位。'
+  trigger_surface: SGLang + spec-v2 + dspark/multi_layer_eagle/frozen_kv_mtp/uno worker + 非 overlap 调度路径（other_stack）
+  discovery: 2026-09-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

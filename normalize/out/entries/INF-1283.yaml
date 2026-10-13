@@ -1,0 +1,64 @@
+id: INF-1283
+legacy_ids:
+- K8.6
+slug: specdec_tree_rejected_branch_kv_leak
+aliases: []
+title: 树注意力推测解码未裁剪被拒分支 KV 致幽灵位置泄漏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: 树注意力被拒分支 KV 裁剪记账
+  behavior: Medusa/EAGLE 树注意力为每个候选分支写入 KV，只有一条根到叶路径存活；retrieve_indices/tree_indices 记账差一或跳过裁剪，使被拒分支的 KV 留在 cache 中。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 后续 query 会注意到不属于任何被接受 token 的幽灵位置，输出静默偏移且泄漏随步数累积；cache 长度与占用看起来合法。仅在树注意力推测解码下触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2401.10774
+  kind: arxiv
+relations: []
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: Medusa/EAGLE 的树注意力对所有候选树节点做一次前向，为**每个分支**写入 KV；只有一条根到叶路径存活，因此 cache 必须裁剪回树前状态并重放被接受的 token。`retrieve_indices`/`tree_indices` 记账中的差一（或干脆跳过裁剪）会把被拒分支的 KV 留在 cache 中，泄漏到后续步骤。
+  source: Medusa arXiv:2401.10774（参考实现 FasterDecoding/Medusa）。
+  behavior: 后续 query 会注意到从不属于任何被接受 token 的"幽灵"位置，输出静默偏移；泄漏随步数累积。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: infra_off——虚假 KV 把后续位置的隐藏态推离流形（spectral 能量尖峰 + trajectory 曲率不连续）。可捕获：spectral 与 trajectory 族；注意力质量被分流到近重复的幽灵位置，attention-map 类 cheap 探针亦可见。会漏检：只看 cache 长度/占用的结构性检查（长度看起来合法）。
+  repro: 不跑 draft model 时，用「一次性追加」模拟被泄漏的被拒分支条目：prefill 后一次性向**每一层**追加 `n_spurious` 行，每行 = 最后一行真实 K/V + 按该行 RMS 的 `noise_scale` 缩放的种子化高斯噪声（"貌似合理但错误"的 draft：不属于任何被接受 token 的近流形 K/V）。跨层长度必须一致（mask 长度要求），CPU generator 由 `spec.seed` 播种以保证确定性。副作用签名：注意力质量被分流到近重复的幽灵位置，且下一个解码 token 的 `position_ids = T + n_spurious`（位置平移）。钩子挂在最后一个 decoder layer（该处所有层的 prefill 行都已写入）。
+  locus: control-flow
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：事实（Medusa/EAGLE 树注意力、每分支写 KV、retrieve_indices/tree_indices 差一或跳过裁剪、幽灵位置、随步数累积、长度看起来合法）均有原文依据；分类与独立判断一致（解码/采样/通用——错在推测解码树的裁剪记账，KV 是受害对象；KV状态、输出内容；静默错误）；形式与长度合规。未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: KV缓存
+        status: panel7

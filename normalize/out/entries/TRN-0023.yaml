@@ -1,0 +1,56 @@
+id: TRN-0023
+legacy_ids:
+- NUM.14
+slug: qdora_magnitude_vector_downcast_silent_noop
+aliases: []
+title: trl QLoRA 路径把 QDoRA magnitude 降为 BF16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: trl
+    component: SFTTrainer QLoRA 参数下转型
+  behavior: SFTTrainer 的 QLoRA 路径在 setup 时统一下转型参数，把 DoRA/QDoRA 的 lora_magnitude_vector 从 FP32 降到 BF16，其每步更新量小于 BF16 精度，被舍入吞掉。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: 无 crash、无 warning：参数保持 trainable、optimizer 正常 step，但 magnitude 全程逐位不变，只剩方向分量更新；loss 可能照常下降，质量偏差延迟可见，只能显式 diff 前后值发现。DoRA（FP32）对照正常更新。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7268
+  kind: github_issue
+relations: []
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: trl `SFTTrainer` 的 QLoRA 低精度训练路径在 trainer setup 时把参数**统一下转型**，连带把 DoRA/QDoRA 的 `lora_magnitude_vector` 从 FP32 降到 BF16——该向量的每步优化器更新量小于 BF16 可表示精度，`param += update` 被舍入吞掉：**参数保持 trainable、optimizer 正常 step、存储值永不变化**。Colab 三臂对照：DoRA（magnitude 保持 FP32）正常更新；QDoRA（被降到 BF16）训练全程 magnitude 逐位不变；QDoRA + trainer init 后把 magnitude cast 回 FP32 → 更新恢复。DoRA/QDoRA 参考实现均用 FP32 持有该向量但未成文契约。TRL 1.13.0 + PEFT 0.20.0 + bitsandbytes 0.50.2。
+  source: 'trl #7268（2026-09-18；Colab repro + 三臂对照表）。https://github.com/huggingface/trl/issues/7268 ；2026-09-18 arcusbuilds 认领修复（评论区）。'
+  behavior: 无 crash、无 warning——magnitude vector 静默冻结，DoRA 的方向/幅度解耦更新只剩方向分量，loss 可能照常下降（Base+A·B 仍在更新），质量偏差延迟可见；「trainable 参数零变化」这一事实只能靠显式 diff 前后值发现。与 NUM.09（混精 cast 扫过量化参数）/NUM.08（BF16 计数间距 256）同族「dtype 边界的更新量小于表示精度」，差异在这边是 **optimizer 更新被舍入完全吞掉**（不是偏差是 no-op）；与 OPT.06（有效更新缩小 32768 倍训练停滞）症状面同为「名义在训、实际不更新」，那边是 scale 除错、这边是精度不够；「setup 期统一下转型打到特殊参数」与 NUM.09 的 Float16Module 打法同型。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 量化：下转型发生在 trl SFTTrainer 的 QLoRA 低精度训练专属 setup 路径（rule 功能域优先）；不是权重加载/保存/转换，故不归 权重/检查点。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

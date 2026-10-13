@@ -1,0 +1,53 @@
+id: INF-1206
+legacy_ids:
+- '13.38'
+slug: transformers_gemma4_audio_eager_bool_logical_not_on_additive_float_mask_uniform_attention
+aliases: []
+title: transformers Gemma4 音频塔 eager 掩码极性反转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: transformers
+    component: Gemma4AudioAttention 掩码
+  behavior: eager 路径按 bool 约定以 masked_fill(mask.logical_not()) 施加掩码，但拿到的是加性 float 掩码，logical_not 使极性整体反转；4D→5D 分块掩码转换也按 bool 书写。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: Gemma4 音频塔使用 eager attention 时，允许位被填无效 logits、禁止位反而可 attend，全允许掩码下注意力退化为与内容无关的均匀平均，音频理解静默塌方；无 crash，sdpa 路径正确，换 attention 实现结果大变是唯一线索。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: transformers + Gemma4 audio tower + eager attention（config；CPU 可复现）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48818
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0869
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（transformers `Gemma4AudioAttention`（eager 路径）手工计算 softcapped/blocked rel-pos 注意力后以 `masked_fill(attention_mask.logical_not(), invalid_logits_value)` 施加掩码——该写法假设 **bool 掩码**（True=允许）；但 `Gemma4AudioModel.forward` 的 `create_bidirectional_mask` 对 eager 返回**加性 float 掩码**（0.0=允许、finfo.min=禁止）、对 sdpa 返回 bool。eager 下 `logical_not()` 语义反转：每个**允许**位（0.0→True）被填 invalid logits、每个禁止位反而可attend；全允许掩码（上下文覆盖整序列）时**所有位置**都被填 → 注意力退化为（近）均匀平均、与内容无关。`_convert_4d_mask_to_blocked_5d` 也按 bool 写（`F.pad(..., value=False)` 对 float 填 0.0=float 语义的允许）。sdpa（bool）正确——eager vs sdpa 输出大幅分歧） · Cov: `var:sglang_torch_native_backend_noncausal_sliding_window_mask_hardcoded_causal`（8.86 掩码语义约定翻转族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 同一 forward 内两条路径（eager/sdpa）消费不同掩码约定（additive float vs bool），而 eager 的施加代码按单一约定（bool）书写——`logical_not` 把 float 0.0（允许）翻成 True 再填充，掩码极性整体反转；CPU fp32 无权重最小复现。
+  source: 'transformers #48818（2026-09-15 open，含极性反转逐行推导、全允许掩码退化证明、`_convert_4d_mask_to_blocked_5d` 布尔假设分析与 CPU 复现脚本）。https://github.com/huggingface/transformers/issues/48818'
+  behavior: 无 crash——eager 路径音频塔注意力退化为均匀平均（内容无关），音频理解能力静默塌方；sdpa 正确使"换 attention 实现结果大变"成为唯一线索。8.86（非因果滑窗被硬编码因果掩码静默反转）之后掩码语义族新成员（13.27/8.60 Gemma4 族的音频塔 locus）：本条是 **bool vs additive 约定 × eager/sdpa 分裂**。
+  trigger_surface: transformers + Gemma4 audio tower + eager attention（config；CPU 可复现）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

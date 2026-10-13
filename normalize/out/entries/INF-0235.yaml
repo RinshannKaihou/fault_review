@@ -1,0 +1,50 @@
+id: INF-0235
+legacy_ids:
+- '1.236'
+slug: quasar_trisc3_mailbox_read_before_write_lands_stale_value
+aliases: []
+title: Quasar TRISC3 mailbox 读早于写，取到陈旧值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tt-metal
+    component: Quasar mailbox 读写同步
+  behavior: mailbox_write 与对侧 mailbox_read 之间缺生产者-消费者同步，Quasar 新增 IsolateSfpu 线程（TRISC3）的读窗口落在 Unpack 侧写入生效之前，读到上一轮或初始值。
+effect:
+  objects:
+  - 数值结果
+  detail: DataflowBufferReadTileValue 单测返回 incorrect results，DPRINT 显示各线程寄存器值错位；DataflowBuffer tile 寻址走该路径时会读取错误 tile，无 NaN 或崩溃特征。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Quasar 硬件 + DataflowBuffer mailbox 跨线程路径（hw_specific：bring-up 平台）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-20'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57066
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（Quasar TRISC3（Isolate SFPU 线程）mailbox 读取返回 **incorrect results**：`DataflowBufferReadTileValue` 单测中 `mailbox_read(ThreadId::UnpackThreadId)` 拿到陈旧/错位值——DPRINT 取证显示 TRISC3 各线程 `r0..r3` 与 `tile1_addr` 寄存器组合不一致（TRISC0 出现 `0xabcd1234` 出现在 r2、其余线程在 r3），报告者观察"trisc3 似乎看到的是对的值、但**读取时机不对**"——读侧早于 Unpack 侧 `mailbox_write` 落地，消费者取到上一轮/初始值。复现：`--build-tests --debug` + `TT_METAL_DPRINT_CORES=all ./build/test/tt_metal/unit_tests_api --gtest_filter=*DataflowBufferReadTileValue`，分支 `abhullar/dfb-mailbox`） · Cov: `NEW`（Quasar 跨线程 mailbox 读写时序竞态子签名） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: mailbox_write（Unpack→Math/Pack/IsolateSfpu 三路写地址/值）与对侧 mailbox_read 之间缺生产者-消费者同步原语；Quasar 新增的 IsolateSfpu 线程路径上读窗口落在写生效前。寄存器指纹错位（同值出现在不同寄存器槽）是典型的"读到上一轮投递"叠加竞态。
+  source: 'tt-metal #57066（2026-09-18 open，含 mailbox API 全文、四线程 DPRINT 寄存器指纹对照、复现分支与命令）。https://github.com/tenstorrent/tt-metal/issues/57066'
+  behavior: bring-up 阶段表现为单元测试 incorrect results（fail-visible 于测试、但机制是静默取陈旧值）；一旦 DataflowBuffer tile 寻址走上该路径，错误地址将读取错误 tile——错值无 NaN/无崩溃特征。1.201（copy_via_memmove 双重叠加 base）、1.204（p_unpacr flavour 携带 BH 编码）之后 Quasar 平台第三处独立缺陷位点：本条在**跨线程控制原语时序**维度，与 1.9/1.121/1.230 异步管线竞态族同构（读早于写在途完成）。
+  trigger_surface: Quasar 硬件 + DataflowBuffer mailbox 跨线程路径（hw_specific：bring-up 平台）
+  discovery: 2026-09-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: INF-1033
+legacy_ids:
+- '11.9'
+slug: trtllm_samplingparams_nan_top_p_min_p_temperature
+aliases: []
+title: TRT-LLM SamplingParams 校验放行 NaN 采样参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tensorrt-llm
+    component: SamplingParams._validate
+  behavior: _validate 对 top_p、min_p、temperature 只用 <0、>1 正向范围检查，NaN 的比较结果均为 False，NaN 值因此通过校验进入采样逻辑。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 请求传入 NaN 的 top_p/min_p/temperature 时不被拒绝，采样行为未定义，可静默产生异常 token 分布，不必然 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/17158
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（NaN 采样参数未被校验） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 'TRT-LLM 的 `SamplingParams._validate()`（`tensorrt_llm/sampling_params.py:375-382`）用正向范围检查约束 `top_p`、`min_p`、`temperature`：`if self.top_p is not None and (self.top_p < 0 or self.top_p > 1): raise ...`。但这些检查**不拒绝 NaN**——在 Python 中 `nan < 0` 和 `nan > 1` 均为 `False`，故 NaN 值通过校验进入采样逻辑，产生未定义/垃圾采样行为。修复 PR #17159 在校验中显式拒绝 NaN。'
+  source: 'TRT-LLM #17158（2026-08-01 open，label Decoding/Sampling），修复 #17159。组件 `tensorrt_llm/sampling_params.py`。https://github.com/NVIDIA/TensorRT-LLM/issues/17158'
+  behavior: 无 crash 必然性。NaN 的 top_p/min_p/temperature 通过校验 → 采样行为未定义，可静默产生异常 token 分布。属「正向范围检查不拒 NaN」新子签名，是经典 NaN-vs-比较语义陷阱在采样参数校验中的体现。与 6.4 `vllm_apply_temperature_inf_nan`（温度 inf/nan）同族但不同栈（参数校验 vs 前向应用）。
+  trigger_surface: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

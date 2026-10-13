@@ -1,0 +1,66 @@
+id: INF-0609
+legacy_ids:
+- '6.216'
+slug: vllm_hybrid_mamba_mtp_drafter_backend_reorder_threshold_min_corruption
+aliases: []
+title: vLLM Mamba2+MTP 重排阈值取 min 致状态槽损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: reorder 阈值跨组 min 聚合
+  behavior: runner 对各注意力组 reorder_batch_threshold 取 min，drafter 后端报 1 压低 Mamba2 所需的 4，draft-decode 行被切入 prefill 内核，推测状态槽未写入。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: Nemotron-3.5-Lightning 等 hybrid Mamba2 + MTP 在混合 prefill/decode 负载下 0.2–1% 请求（定向触发最高 7%）从约第 5 个 token 起输出 word salad 或特殊 token 空循环直至结束；无 crash、无日志。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid Mamba2 模型 + MTP 推测解码 + 混合 prefill/decode 负载（partial：架构 × spec 组合；调度时序决定命中）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55894
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0605
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid Mamba2 + MTP 推测解码（NVIDIA-Nemotron-3.5-Lightning-30B-A3B）：drafter 注意力后端独立自动选择（`llm_base_proposer.py`「Never inherit the attention backend from base」）落到 FlashInfer、其 `reorder_batch_threshold` 上报 1；runner 取**全部注意力组的 min** 得 1，而 Mamba2 builder 自身阈值 1+k=4——4-token draft-decode 行与 chunked 长 prefill 的延续块同区且不被排序到前部，`Mamba2AttentionMetadataBuilder.split_decodes_and_prefills` 在自身阈值 4 处按**位置**切分：首个 prefill 行之后全是 prefill，decode 行被送进 `causal_conv1d_fn`/`mamba_chunk_scan_combined_varlen`（只读写 state slot 0、从不碰 k 个推测槽）——请求首解码步的推测槽从未写入，下一步 `selective_state_update` 读 `num_accepted-1` 槽得到垃圾 recurrent state；混合负载 0.2–1% 请求损坏、定向触发最高 7%） · Cov: `var:vllm_hybrid_gdn_align_boundary_checkpoint_nan_prefix_hit`（6.212 混合架构状态槽损坏族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`calculate_reorder_batch_threshold` 的 docstring 假设低阈值「只有性能代价（后端把 decode 当 prefill 跑）」——该假设对 token-KV 注意力成立，对**带 per-draft recurrent state 的后端**是正确性 bug：Mamba prefill 内核与 decode 内核的状态槽语义不同。跨组件配置聚合（min over builders）使 drafter 的独立选择压垮 target 的正确性阈值。'
+  source: 'vLLM #55894（2026-09-08 open，含 in-process probe 根因验证、阈值推导与触发率统计）。https://github.com/vllm-project/vllm/issues/55894'
+  behavior: 无 crash——被击中请求从约第 5 个 token 起**word salad 或特殊 token 空循环直至生命期结束**（静默全输出损坏）；混合负载下低发生率（0.2–1%）+ 无任何日志，极易被归因为模型质量问题。
+  trigger_surface: vLLM + hybrid Mamba2 模型 + MTP 推测解码 + 混合 prefill/decode 负载（partial：架构 × spec 组合；调度时序决定命中）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: 裁定：维持 解码/采样。依据 rule 1：缺陷只在 MTP 推测解码路径出现——drafter 独立选择注意力后端（“Never inherit the attention backend from base”）报 reorder 阈值 1，经 min 聚合压低 Mamba2 所需的 1+k=4；不开推测解码时不存在该冲突。min 聚合虽是 runner 通用代码，但原文指出它的错误假设只在“带 per-draft recurrent state 的后端”上成为正确性 bug。审计：title/component/behavior/detail 的数字（1、4、0.2–1%、7%、约第 5 个 token）与原文一致，分类与形式无问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: KV缓存
+        status: panel7
+    uncertain:
+    - visibility

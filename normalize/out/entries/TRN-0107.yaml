@@ -1,0 +1,51 @@
+id: TRN-0107
+legacy_ids:
+- OPT.07
+slug: zerograd_set_to_none_unbinds_graph_bound_grads
+aliases: []
+title: CUDA graph 下 zero_grad 解绑 MFSDP 梯度，权重冻结
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: zero_grad 的 set_to_none
+  behavior: MFSDP v2 只在 Python 侧把 .grad 绑到 main_grad，CUDA graph replay 不重放该绑定；zero_grad() 默认 set_to_none=True 解绑后 .grad 恒为 None。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: MFSDP v2 + CUDA graph 时优化器跳过每个参数，权重冻结且 grad norm 恒为 0.0；无 crash、无 NaN、无报错，grad norm 0.0 易被当作正常的小梯度。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7075
+  kind: github_pr
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron MFSDP v2 的 `install_sharded_grads()` 在 backward 期间**从 Python 侧**把 `.grad` 绑到 persistent main_grad 视图；CUDA graph replay 只重放 GPU kernel，**不重放 Python 绑定动作**。`zero_grad()` 的默认 `set_to_none=True` 解除绑定后，replay 的 step 里 `.grad` 恒为 None——优化器跳过**每个参数**，run 静默停止训练且 **grad norm 恒 0.0**。修复绕不开「别解绑」：graph 模式下强制 `set_to_none=False` 原地清零，保住绑定。另一层坑：`ChainedOptimizer` 恒以位置参数转发自己的 True 默认值，caller 意图不可达，assert 会在每个 graphed step 上误触——只能 override 不能断言。此前该组合被 `MFSDP v2 不支持 CUDA graphs` 的 fail-fast 挡住（防御即掩盖：门控撤掉后 bug 立即暴露）。
+  source: 'Megatron-LM PR #7075（修复 + `hybrid_llama3_proxy_mfsdp_v2_cuda_graph` golden-value 测试（1×8 GPU，bit-exact determinism check 通过），Closes #6152）。https://github.com/NVIDIA/Megatron-LM/pull/7075'
+  behavior: 无 crash、无 NaN、无报错——grad norm 0.0 被当作「正常小的梯度」，训练看似推进实则权重冻结。与 OBS.07（eval 重放训练态 graph）同根（replay 只执行被捕获的 kernel，Python 语义不随行），但破坏的是**梯度绑定生命周期**而非 eval 语义；与 NUM.10（bf16 静默 skip 全部 step）同症状面（指标健康、参数不动），机制独立。
+  discovery: 2026-09-05 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: INF-0872
+legacy_ids:
+- '8.88'
+slug: flashinfer_ragged_prefill_plan_noncontiguous_indptr_stride_ignored_wrong_attention
+aliases: []
+title: flashinfer plan() 忽略非连续 indptr 的 stride
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: Ragged prefill plan()
+  behavior: plan() 对 indptr 做 host 拷贝或透传设备指针时按 data_ptr 线性读取 numel 个元素，忽略 stride/storage_offset，也不拒绝或归一化非连续张量
+effect:
+  objects:
+  - 数值结果
+  detail: 调用方传非连续 indptr view（如 indptr_full[::2]）时序列边界错位，部分 token 的 attention 在错误范围内计算，输出部分错误且无报错；连续拷贝结果正确，cuDNN 开关两态均复现；现有框架传连续缓冲，生产面窄
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: flashinfer BatchPrefillWithRaggedKVCacheWrapper + 非连续 indptr view（partial：需调用方传非连续张量）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5260
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（flashinfer `BatchPrefillWithRaggedKVCacheWrapper.plan()` **接受非连续 GPU indptr 张量**（如 `indptr_full[::2]` stride-2 view）并产出不完整/错误的 attention 输出，而不拒绝或归一化——plan() 以隐式 contiguity 假设消费 indptr（host 拷贝/设备指针）；同样 indptr 的连续拷贝结果正确。main（24c30bdd）与 #5245 head 复现，cuDNN override 开关两态均中招（与后端选择无关）。现框架都传连续 indptr，属 #5245 独立审查中的发现、低紧急度） · Cov: `NEW`（plan 路径非连续视图 stride 忽略子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: plan() 对 indptr 做 host 侧拷贝/透传设备指针时按 data_ptr 线性读取 `numel` 元素，忽略 stride/storage_offset——非连续 view 的相邻存储元素被当作边界表，序列切分整体错位；与 5.39（vLLM sparse NCCL 同类隐式 contiguity 假设）构成跨栈同机制对。
+  source: 'flashinfer #5260（2026-09-16 open，needs-triage，含 stride-2 复现、双后端开关对照与 #5245 审查溯源）。https://github.com/flashinfer-ai/flashinfer/issues/5260'
+  behavior: 无 crash、无报错——varlen 边界错位使部分 token 的 attention 在错误范围内计算，输出部分错误；下游框架目前传连续缓冲故生产面窄，但任何直接使用 wrapper 的自定义调用方静默中招。与 5.39 形成"隐式 contiguity 假设"跨栈族（vLLM NCCL 封装 / flashinfer plan()）。
+  trigger_surface: flashinfer BatchPrefillWithRaggedKVCacheWrapper + 非连续 indptr view（partial：需调用方传非连续张量）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

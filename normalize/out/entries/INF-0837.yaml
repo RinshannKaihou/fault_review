@@ -1,0 +1,62 @@
+id: INF-0837
+legacy_ids:
+- '8.53'
+slug: vllm_nvfp4_kv_cache_hnd_layout_probe_inversion
+aliases: []
+title: vLLM NVFP4 KV 写内核 HND 布局误判致 cache 静默损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NVFP4 KV-cache 写内核
+  behavior: 写内核假设逻辑视图，从 key_cache.size(1) 取 block_size、以硬编码 stride(2)>stride(1) 探测布局；收到 HND 物理形状时把 num_heads 误读为 block_size 并反转布局判定。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: FlashInfer 等 HND 物理形状调用方使用 NVFP4 KV cache 且 num_heads%4==0 时，唯一下游整除检查碰巧通过，cache 静默损坏、decode 输出垃圾文本，无 crash 无告警；内核单测仍全绿。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + NVFP4 KV cache + HND 物理形状调用方（FlashInfer 后端）+ num_heads%4==0 的常见头数
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53681
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（NVFP4 KV-cache 写内核从 `key_cache.size(1)` 读 block_size、用硬编码 stride 序探测物理布局——运行时 HND 物理形状 `[num_blocks, num_heads, block_size, dim]` 使 num_heads 被误读为 block_size、布局探测反转，`num_heads%4==0` 时唯一下游整除检查碰巧通过，cache 静默损坏、decode 输出垃圾） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'NVFP4 KV-cache 写内核假设逻辑视图 `[num_blocks, block_size, num_heads, dim]`：`block_size` 取自 `key_cache.size(1)`、布局探测用硬编码 `stride(2) > stride(1)` 判断——两假设只在内核单测传入的逻辑视图上成立。运行时 HND 调用方（如 FlashInfer 后端）传物理形状 `[num_blocks, num_heads, block_size, dim]`：内核把 `num_heads` 误读为 `block_size` 并**反转布局判定**；所有常见头数满足 `num_heads % 4 == 0`，唯一下游整除检查通过——损坏的 cache 写入无声落地。修复（PR #53681，fixes #49012）在内核入口用 `key` 的 `num_heads` 消歧 head/block 维，形状歧义时（`size(1)==size(2)`）保持逻辑视图解释。「内核入口形状契约 × 单测视图窄化」签名。'
+  source: 'vLLM PR #53681（2026-08-25 open，"[Bugfix][Kernel] NVFP4 KV cache: fix block_size/layout detection for physically shaped HND caches"，fixes #49012）。https://github.com/vllm-project/vllm/pull/53681'
+  behavior: 无 crash、无告警——NVFP4 KV cache **静默损坏**，decode 输出垃圾文本；与 7.52（KV scale 静默丢弃）同框架不同 locus（本条在写内核的形状契约，非量化元数据管线）。单测视图与运行时物理视图的分歧使常规内核测试全绿。
+  trigger_surface: vLLM + NVFP4 KV cache + HND 物理形状调用方（FlashInfer 后端）+ num_heads%4==0 的常见头数
+  discovery: 2026-08-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: uncertain 字段 cause.subsystem 量化 vs KV缓存：原文明确“本条在写内核的形状契约，非量化元数据管线”，缺陷是 KV cache 物理布局（HND）下 block_size 读取与布局探测错误，修复在内核入口消歧 head/block 维，属 KV 存储布局逻辑；NVFP4 只是触发该写内核的条件。改为 KV缓存。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

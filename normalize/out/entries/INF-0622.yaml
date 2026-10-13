@@ -1,0 +1,53 @@
+id: INF-0622
+legacy_ids:
+- '6.229'
+slug: vllm_mamba_state_blocks_unzeroed_reallocation_cross_tenant_poisoning
+aliases: []
+title: vLLM mamba/KDA 状态块分配不清零致跨租户毒化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mamba/KDA 状态块分配零化
+  behavior: BlockPool 分配的 mamba/KDA 状态块不清零，零化机制的类型守卫只覆盖 AttentionSpec：MambaManager 绕过新块记录，KVBlockZeroer 跳过非 attention 层且不解 tuple 绑定。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: abort 中断长 prefill（约 40–240k）后立即重试，1–2/36 概率以上一租户半写状态起步，输出无界多语言垃圾直至引擎重启；请求正常完成还会污染后续缓存提交。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid mamba/KDA 模型 + 状态槽先读后写（abort-retry、竞争调度）（partial）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/56524
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM mamba/KDA 状态块由 `BlockPool.get_new_blocks` 分配**不清零**，而 attention-only 的零化队列对其三重盲区：`SingleTypeKVCacheManager.__init__` 只为 `AttentionSpec` 记录 `_record_new_block_ids`；`MambaManager.allocate_new_blocks`（align 模式）直取 `block_pool.get_new_blocks()` 绕过基类记录；`KVBlockZeroer` 跳过非 AttentionSpec 层且不解 tuple 绑定——KDA 层绑的是 `(conv_state, recurrent_state, *recoverssm_records)` **元组**，两守卫都排除之。任何未被当前租户写入就读的 mamba 状态槽继承**上一租户的任意字节**。生产 Kimi-K3（8×B300，V2 runner，async 调度）实测：abort 中断 ~40–240k prefill 后立即重试，1–2/36 概率以被释放的半写状态块起步、输出无界多语言垃圾直至引擎重启；补丁后 0/72） · Cov: `NEW`（非 attention 状态块零化机制结构性排除子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`needs_kv_cache_zeroing` 标志对 mamba 模型为 True（#35219 注释自述"状态先读后写"），但零化基础设施的三处类型守卫使该标志对 mamba 组从未生效；KDA 的 tuple kv_cache 绑定再叠加一层排除。'
+  source: 'vLLM PR #56524（2026-09-11 open，含三重盲区源码分析、storm4.py 复现器、生产 8×B300 Kimi-K3 验证矩阵 0/72）。https://github.com/vllm-project/vllm/pull/56524'
+  behavior: 无 crash——**跨请求 state 毒化**：重试请求从上一租户任意字节起步，输出无界多语言词沙拉/原始控制 token，且因请求正常完成而**污染后续缓存提交**（与 6.230 姊妹条）。6.145（Mamba 全命中 N−1 截断）之后 mamba 状态族新形态：本条在分配零化维度、类型守卫结构性排除。
+  trigger_surface: vLLM + hybrid mamba/KDA 模型 + 状态槽先读后写（abort-retry、竞争调度）（partial）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

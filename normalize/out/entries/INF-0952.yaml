@@ -1,0 +1,52 @@
+id: INF-0952
+legacy_ids:
+- '10.36'
+slug: vllm_bad_words_empty_tokenization_index_crash
+aliases: []
+title: vLLM bad_words 编码为空时 IndexError 返回 500
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: bad_words 分词更新逻辑
+  behavior: update_from_tokenizer 假设非空字符串至少编码出一个 token；分词器把含非空白控制字符的 bad_words 条目编码为空列表时，处理空格前缀形式仍对空列表索引，抛 IndexError。
+effect:
+  objects:
+  - 可用性/进度
+  detail: SmolVLM 类分词器 + 含非空白控制字符的 bad_words 条目（fuzzing 可稳定触发）时，请求以 HTTP 500 + traceback 失败，而非结构化的 4xx invalid-request 响应。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 结构化输出 + `bad_words` + SmolVLM 类分词器 + 非空白控制字符条目（fuzzing 可稳定触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53433
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（bad_words 条目经特定分词器可编码为空 token 列表——update_from_tokenizer 处理空格前缀形式时索引空列表 IndexError → HTTP 500 内部错误而非结构化 4xx） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '某些分词器（实测 SmolVLM）把含非空白控制字符的 `bad_words` 条目的必填非前缀形式编码为**空 token 列表**；`update_from_tokenizer` 随后处理可选空格前缀形式时对该空列表索引——`IndexError` 以 HTTP 500 暴露（AMD CI 的 Schemathesis 模糊测试捕获）。下游代码假设「任何非空字符串至少编码出一个 token」，而分词器的合法输出空间包含空序列。修复（PR #53433）对空必填编码抛 `VLLMValidationError`（结构化 invalid-request 响应）、跳过空可选前缀编码。'
+  source: 'vLLM PR #53433（2026-08-23 open，"[Bugfix] Reject empty bad-word tokenizations"，含 GPU-free 回归测试）。https://github.com/vllm-project/vllm/pull/53433'
+  behavior: crash-型（HTTP 500 + traceback）而非静默损坏——但属 API 契约破坏（应 4xx 处 5xx）。「**空 tokenization 边界值未校验**」新子签名：分词器把不可分词输入映射为空序列，是分词器/模板域「tokenizer 输出空间的边界成员未被告消费者假设排除」的典型实例（与 10.x 空/单 token 边界族相邻，locus 在结构化输出约束管线的输入校验）。
+  trigger_surface: vLLM 结构化输出 + `bad_words` + SmolVLM 类分词器 + 非空白控制字符条目（fuzzing 可稳定触发）
+  discovery: |-
+    2026-08-23 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: INF-1184
+legacy_ids:
+- '13.16'
+slug: hf_qwen35moe_data_dependent_dispatch_breaks_checkpoint_repro
+aliases: []
+title: Qwen3.5-MoE 数据依赖 expert 循环致重算图分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: transformers
+    component: Qwen3_5MoeExperts 专家循环
+  behavior: Qwen3_5MoeExperts.forward 用 for 循环遍历 expert_hit，迭代次数依赖 router top-k；hidden_states 在前向与重算间稍有差异即令重算图分叉，违反 checkpoint 重算契约。
+effect:
+  objects:
+  - 梯度
+  - 可用性/进度
+  detail: LoRA 微调 Qwen3_5Moe 系模型并启用 gradient_checkpointing_enable() 时，抛 CheckpointError，或产生静默 NaN 梯度，取决于运行条件。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: HuggingFace transformers 可在本环境直接复现
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-02'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/47467
+  kind: github_issue
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（数据依赖控制流破坏 checkpoint 重算契约） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: '`Qwen3_5MoeExperts.forward` 用**数据依赖控制流**——一个 Python `for` 循环遍历 `expert_hit`（本轮收到至少一个 routed token 的 expert 集合），其迭代次数依赖 router 对 incoming `hidden_states` 的 top-k 选择。`torch.utils.checkpoint` 的正确性契约要求 checkpointed 函数在反向重算时重现**完全一致**的计算图（相同 saved tensors）。若 `hidden_states` 在前向与重算间哪怕有微小差异，数据依赖分支就会不同 → 重算图与前向图分叉。配合 `gradient_checkpointing_enable()` 时产生 `torch.utils.checkpoint.CheckpointError`，或**静默 NaN 梯度**（取决于运行条件）。'
+  source: 'HF transformers #47467（2026-07-22 open）。环境：LoRA fine-tuning `Qwen3_5MoeForCausalLM`/`Qwen3_5MoeForConditionalGeneration` + `gradient_checkpointing_enable()`。组件 `transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py`。https://github.com/huggingface/transformers/issues/47467'
+  behavior: CheckperrError（硬失败）或静默 NaN 梯度（取决于条件）。数据依赖 expert dispatch 使前向与重算的计算图分叉 → 梯度静默 NaN。属「数据依赖控制流破坏 checkpoint 重算契约 → 静默 NaN 梯度」新子签名，是模型图/架构层的训练正确性 bug（虽属训练场景，但其根因是 MoE dispatch 的数据依赖控制流，与推理正确性的 dispatch 机制相关）。
+  trigger_surface: HuggingFace transformers 可在本环境直接复现
+  discovery: 2026-08-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

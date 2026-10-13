@@ -1,0 +1,52 @@
+id: INF-0577
+legacy_ids:
+- '6.184'
+slug: vllm_kv_offload_block_not_found_multi_day_uptime_assert_engine_dead
+aliases: []
+title: vLLM KV offload 数天后查不到 block 致引擎死亡
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: offload prepare_load 查找
+  behavior: CPU 侧 KV offload 的 prepare_load 按 block key 查 cache 并断言存在；长期运行中某 key 条目被逐出/未写入/生命周期错配（原文未定位根因），查找落空。
+effect:
+  objects:
+  - 可用性/进度
+  detail: TP8+DP3、DSV4-Pro 1M 上下文、OffloadingConnector 的生产环境运行数天后 assert block is not None 失败，EngineDeadError 使整个 DP rank 服务死亡、在途请求全失败；短测不可见。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + OffloadingConnector + 多天 uptime + 大规模 DP/TP 拓扑（生产负载触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54914
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0550
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（KV offload `prepare_load` 在**数天 uptime 后**于 CPU 侧 cache 查不到 block key——`assert block is not None` 失败 → EngineDeadError，整个 DP rank 的服务死亡；24×H100 TP8+DP3、DSV4-Pro 1M 上下文、fp8 KV + dspark k=7 + OffloadingConnector 512 GiB CPU 生产的长期运行故障，非启动期） · Cov: `var:vllm_kv_offload_finished_request_unwritten_final_slot_cross_request_poisoning`（6.157 offload 契约漂移族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`vllm/v1/kv_offload/cpu/manager.py:138` 的 `prepare_load` 以 block key（二进制 hash）查 CPU cache 断言存在——多天运行中某 key 的条目被逐出/未写入/生命周期错配（issue 未给出根因定位，long-lived 进程的状态漂移面）。与 6.157（完成请求末槽未写→跨请求投毒）同 offload 供需契约族，本条显形为**迟到 crash**（fail-loud 但数天潜伏）。'
+  source: 'vLLM #54914（2026-09-02 之前数日 open，3×8 H100 生产环境、完整部署命令与栈）。https://github.com/vllm-project/vllm/issues/54914'
+  behavior: EngineDeadError——服务数天后死亡（在途请求全失败）；uptime 依赖使其在 CI/短测不可见，是"长期运行才显形"的 offload 状态机裂缝。
+  trigger_surface: vLLM + OffloadingConnector + 多天 uptime + 大规模 DP/TP 拓扑（生产负载触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

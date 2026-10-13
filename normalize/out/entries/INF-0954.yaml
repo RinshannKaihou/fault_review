@@ -1,0 +1,60 @@
+id: INF-0954
+legacy_ids:
+- '10.38'
+slug: vllm_dsv4_flash_tool_choice_auto_deep_effort_empty_drop
+aliases: []
+title: vLLM DSV4-Flash 深推理档+auto 工具静默空响应
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: deepseek_v4 推理/工具解析边界
+  behavior: 深推理档拉长推理段后，推理→动作的解码边界处理与 tool-calling 语法未对齐：模型在推理中选定工具后流即终止，未产出可提取的 tool call 或 content；具体代码位置原文未定位。
+effect:
+  objects:
+  - 输出内容
+  detail: deepseek_v4 推理/工具 parser + tool_choice=auto + reasoning_effort xhigh/max 时高概率返回 finish_reason=stop、空 content、无 tool_calls；两条件缺一则不高频，live 流量可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + DeepSeek-V4-Flash + `--reasoning-parser/--tool-call-parser deepseek_v4` + tool_choice=auto + reasoning_effort xhigh/max（api 参数即可触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-26'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser）：暂归 调度/服务 的 API/前端，但 parser 缺陷与请求调度、批处理无关，单列便于聚类
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53831
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（DeepSeek-V4-Flash `tool_choice=auto` × 深推理档（`xhigh`/`max`）高概率返回 `finish_reason=stop` + 空 `content` + 无 `tool_calls`——模型完成"选哪个工具"的推理后不再输出任何动作；两变量（reasoning-effort 档位 × tool_choice）独立可分离，区别于 #41132/#51914 的 DSML 泄漏与 thinking 泄漏族） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`--enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4` 组合下，深推理档把推理段拉长后，推理→动作的解码边界处理对 tool-calling 语法未对齐：模型在 reasoning 中明确选定工具，随后流终止——`content` 为 null/空白、无 tool_calls 提取、finish_reason=stop。报告者以双变量矩阵分离证实：仅深档 × 仅 tool_choice=auto 同时成立才高频失败；与 #51914（DSML markup 泄漏进 content）不同（本条 content 为空而非格式破损），与 #41132（json_object + thinking 泄漏，已修复）不同路径。DSpark 推测解码作为未排除变量在场景中启用。B200 ×2、live 流量复现。'
+  source: 'vLLM #53831（2026-08-26 closed，含双变量分离与 live 流量证据；明确排除既有两条族系的归并）。https://github.com/vllm-project/vllm/issues/53831'
+  behavior: '**无 crash、静默丢工具调用**——agent 收到"正常完成"的空响应，无从得知调用被吞（客户端视角模型选择不调用任何工具）；高频（深档下）且在 live 流量可复现。与 10.35（Gemma4 bare opener FSM 死态）同为 tool call 静默丢失但机制不同：本条是**推理档位 × 工具语法的解码边界**而非 FSM 状态枚举不全。属「推理深度门控的 tool-call 终止边界」新子签名。'
+  trigger_surface: vLLM + DeepSeek-V4-Flash + `--reasoning-parser/--tool-call-parser deepseek_v4` + tool_choice=auto + reasoning_effort xhigh/max（api 参数即可触发）
+  discovery: 2026-08-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 调度/服务：症状是“无 tool_calls 提取”且 content 为空，触发必须同时启用 --reasoning-parser/--tool-call-parser deepseek_v4，失效点最可能在 parser 的推理→工具调用分界，与 INF-0943 的 parser 归属一致。保留意见：原文只说“推理→动作的解码边界处理对 tool-calling 语法未对齐”，未定位代码，且 DSpark 推测解码未排除，若后续定位到解码路径应改 解码/采样。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

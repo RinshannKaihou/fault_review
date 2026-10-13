@@ -1,0 +1,54 @@
+id: INF-0013
+legacy_ids:
+- '1.13'
+slug: sglang_cutedsl_2cta_cluster_barrier_missing
+aliases: []
+title: SGLang 2-CTA GEMM 退出前缺 cluster 同步致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: cutedsl_bf16_gemm 2-CTA
+  behavior: 2-CTA cluster GEMM kernel 只在入口做 cluster 同步，退出前没有 cluster barrier，而跨 CTA 的 peer 读取持续到 kernel 末尾。
+effect:
+  objects:
+  - 可用性/进度
+  detail: CTA 0 退出后 CTA 1 仍向其 SMEM 发 barrier/TMA 事件，报 CUDBG_EXCEPTION_CLUSTER_BLOCK_NOT_PRESENT，decode 进程崩溃，崩溃前无静默错误输出；见于 Kimi-K3 服务（TP8、PD 分离、B300）。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-07-30'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/32907
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0009
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（崩溃型） · Cov: `var:kernel_sync_semantic_silent_error` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'SGLang `cutedsl_bf16_gemm` 2-CTA TGV kernel（tactic 18: 2-CTA cluster, 12-stage, PDL）的 cluster 同步**只在 kernel 入口存在**（`cluster_arrive_relaxed` + `cluster_wait`），**退出前无 cluster barrier**，而跨 CTA traffic 持续到 kernel 末尾（peer-redi 读取）。结果：CTA 0 退出后，CTA 1 仍向 CTA 0 的 SMEM 发 barrier/TMA event → `CUDBG_EXCEPTION_CLUSTER_BLOCK_NOT_PRESENT`。触发于 Kimi-K3 服务（TP8, PD-disaggregated decode, B300/SM103, CUDA-graph + PDL）的 shared-expert down projection `[8,768]@[7168,768]^T`。'
+  source: 'SGLang #32907（2026-07-30 open）。组件 `python/sglang/kernels/ops/gemm/cutedsl_bf16_gemm.py`。https://github.com/sgl-project/sglang/issues/32907'
+  behavior: 2-CTA cluster GEMM kernel 退出竞态 → decode 进程崩溃（`CUDBG_EXCEPTION_CLUSTER_BLOCK_NOT_PRESENT`）。属"kernel cluster 同步退出竞态"。
+  trigger_surface: SGLang 专用
+  signature: infra_off / 崩溃型。与 1.9 kernel_sync_semantic 同族——cluster barrier 缺失。崩溃前无静默错误输出窗口。
+  repro: 不可软件复现——需要 SM103 + 2-CTA cluster + CUDA-graph + PDL。
+  discovery: 2026-07-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: INF-0931
+legacy_ids:
+- '10.15'
+slug: vllm_deepseek_v4_tokenizer_vocab_size_overcount_crashes_guided_decoding
+aliases: []
+title: DSV4 tokenizer __len__ 双重计数致约束解码崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: deepseek_v4/v32 __len__
+  behavior: __len__ 返回 vocab_size 加 added vocab 数，部分 added token id 已在 base vocab 内而被双重计数（transformers 5.x 下该写法已 stale），v32 同样。
+effect:
+  objects:
+  - 可用性/进度
+  detail: DeepSeek-V4/V3.2 tokenizer 配合 guided decoding（guidance backend）时触发；启动时 vocab_size 不匹配崩溃，如 V4-Flash-0731 算得 129283，真实为 129280。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；DeepSeek-V4/V3.2 tokenizer + guided decoding（guidance backend）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51727
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（DeepseekV4Tokenizer.__len__ 双重计数 added tokens→vocab_size mismatch 崩溃 guided decoding） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`DeepseekV4Tokenizer.__len__` 返回 `tokenizer.vocab_size + len(get_added_vocab())`（`vllm/tokenizers/deepseek_v4.py:81-82`）。对 DeepSeek-V4-Flash-0731：128000 + 1283 = 129283，但 1283 个 added tokens 中 3 个 id < 128000（已在 base vocab 中），真实 count 为 129280 = `config.vocab_size`。override 双重计数（stale pattern 来自早期 HF fast tokenizer `len()` 不含 added tokens 的时代——transformers 5.x TokenizersBackend 下 `len()` 已包含 added tokens，override 既冗余又错误）。`deepseek_v32.py:69` 有相同 stale pattern。导致 guided decoding 的 vocab_size 不匹配崩溃（#50924、#51467）。'
+  source: 'vLLM #51727（2026-08-10 closed）。修复 #50924 #51467。组件 `vllm/tokenizers/deepseek_v4.py:81-82` / `deepseek_v32.py:69`。https://github.com/vllm-project/vllm/pull/51727'
+  behavior: crash（guided decoding 启动时 vocab_size mismatch）。属「tokenizer `__len__` override 在 transformers 版本升级后变 stale→双重计数」**新子签名**——版本兼容性遗留代码导致的 vocab 不一致。
+  trigger_surface: vLLM；DeepSeek-V4/V3.2 tokenizer + guided decoding（guidance backend）
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: INF-0562
+legacy_ids:
+- '6.169'
+slug: sglang_lmcache_storage_keys_drop_cache_salt_tenant_isolation
+aliases: []
+title: SGLang LMCache 存储键丢弃 cache_salt 致跨租户共享
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: LMCache 集成 lookup/store 键
+  behavior: LMCache 集成的 LOOKUP 与 STORE 路径都不转发 cache_salt：调 lookup_kv 时未传入作用域内的 salt，StoreMetadata 也无 salt 字段，外部键仅由 token 决定。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  detail: 启用 --enable-lmcache 且多租户以 cache_salt 隔离时，不同租户同前缀请求共享外部缓存前缀：第二账户同前缀请求 1,198 ms 对比重算基线 3,340 ms，形成跨租户计时侧信道；命中本身无任何异常信号。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang + LMCache（`--enable-lmcache`）+ 多租户 cache_salt（外部存储启用即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37160
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1301
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang 的 LMCache 集成在 LOOKUP/STORE 两条路径都不转发 `cache_salt`——`lmc_radix_cache.py` 调 `lookup_kv(token_ids, req.rid)` 时 salt 在作用域内却不传入、`StoreMetadata` 结构体无 salt 字段——**外部存储键是 token-only**，不同租户（不同 salt）同 prompt 得到相同键并共享缓存前缀） · Cov: `var:lmcache_cache_salt_isolation_missing` · 触发 `config` · 置信度 `verified`'
+  mechanism: SGLang 自身 radix tree 尊重 per-request salt（文档化契约明言外部 L3 键在契约之外），但 SGLang 文档又推荐多租户用 `cache_salt` 做隔离——推荐与契约冲突处即缺陷。LMCache wire key `IPCCacheServerKey` 本有 `cache_salt` 字段且 vLLM 集成会填充，仅 SGLang 路径丢弃（LMCache 侧 issue：LMCache/LMCache#4825）。端到端实测：第二账户同前缀请求 1,198 ms vs 3,340 ms 重算基线——跨租户计时/计算侧信道。
+  source: 'SGLang #37160（2026-08-29 open，SGLang 0.5.18 + LMCache 0.5.4，含代码行定位与计时证据）。https://github.com/sgl-project/sglang/issues/37160'
+  behavior: 无 crash——**跨租户 KV 共享**：机密性（他人 prompt 的 KV 被自己命中）+ 计时侧信道双重暴露；`lookup` 命中本身无任何异常信号。属 K9.10 `lmcache_cache_salt_isolation_missing` 家族第三实例：6.148（ExampleConnector 从 prompt bytes 重派生键）之后，本条是**结构体缺字段 + 转发遗漏**变体——salt 在作用域内现成存在、仅未跨 handoff 边界传递。
+  trigger_surface: SGLang + LMCache（`--enable-lmcache`）+ 多租户 cache_salt（外部存储启用即触发）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

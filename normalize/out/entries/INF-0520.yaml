@@ -1,0 +1,51 @@
+id: INF-0520
+legacy_ids:
+- '6.127'
+slug: vllm_mooncake_null_block_kv_key_publication_silent_divergence
+aliases: []
+title: vLLM Mooncake 为 NULL 状态块发布缓存键致输出静默分歧
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake Store 保存路径键发布
+  behavior: Mooncake Store 保存路径把 NULL_BLOCK_ID=0 的空 recurrent-state 块解析为地址并照常发布 Store 键，不拒绝空块，为无有效 GDN/Mamba 状态的边界也发布键。
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: hybrid Mamba/GDN + align 模式 + prefix caching 时，消费端成功加载全零状态并跳过重算，与冷启动基线静默分歧；无 Put/Get 错误、无 crash，部分情形 token 不变但 logprob 显著漂移，传输完整性校验全过。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + MooncakeStoreConnector + hybrid Mamba/GDN + `--mamba-cache-mode align` + prefix caching（config 级组合）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53084
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（MooncakeStoreConnector 为 `NULL_BLOCK_ID` 的空 recurrent-state 边界照常发布外部缓存键——消费端"成功"加载全零状态并跳过重算，输出静默分歧） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`MambaSpec(mamba_cache_mode="align")` 下 vLLM 有意让部分逻辑状态边界不物化 recurrent-state block（此类条目 block id 为 `NULL_BLOCK_ID=0`）。Mooncake Store 保存路径把该 null block id 解析为地址并照常发布 Store 键，不拒绝空块：生产者为无有效 GDN/Mamba/ShortConv 状态的边界（如 token 2112/2960）发布键 → 查询端看到键存在即报更长前缀可复用 → 消费端成功加载（全零字节，字节级插桩证实 Mooncake 传输本身无错、无效全零字节在生产端即存在）→ 跳过重算 → 与冷启动基线静默分歧。'
+  source: 'vLLM #53084（2026-08-19 open，bug label，TP2 RTX3090，vLLM main 0.27.2rc1.dev + mooncake-transfer-engine 0.3.12）。https://github.com/vllm-project/vllm/issues/53084'
+  behavior: 无 Put/Get 错误、无 crash；部分情形生成 token 甚至不变而 **logprob 显著漂移**——输出级监控漏检、需概率级对拍才能发现。分布式 KV（K§5 cross-node-transfer）的「无效键发布」新子签名：错误在元数据（键）层而非数据（字节）层，传输完整性校验全部通过。
+  trigger_surface: vLLM + MooncakeStoreConnector + hybrid Mamba/GDN + `--mamba-cache-mode align` + prefix caching（config 级组合）
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

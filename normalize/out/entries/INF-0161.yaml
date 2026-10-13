@@ -1,0 +1,54 @@
+id: INF-0161
+legacy_ids:
+- '1.162'
+slug: ttmetal_logsigmoid_large_positive_bf16_exp_double_negation_inf
+aliases: []
+title: ttnn.log_sigmoid 大正 bf16 输入双重取负发散至 −inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU logsigmoid 大正分支
+  behavior: ckernel_sfpu_logsigmoid.h 大正输入分支对已取负的 x 再次取负后求 exp，实际算出 exp(+x) 而非 exp(−x)，符号处理双重否定。
+effect:
+  objects:
+  - 数值结果
+  detail: bf16 输入 x>~172 时结果平滑发散：x=176 得 −0.977、x=256 得 −5.7e34、x≥~266 得 −inf，正确值应约为 0；x≤170 与 golden 吻合。无 crash 无警告，出现在 1.102 修复之后。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Wormhole + `ttnn.log_sigmoid` + bf16 输入 x > ~172（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55457
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0101
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.log_sigmoid` 对**大正 bf16 输入**（x > ~172）平滑发散并最终返回 **−inf**，而非正确的 ~0：`ckernel_sfpu_logsigmoid.h` 大正分支对已取负的 x **再次取负**后求 exp，等价于 `exp(+|x|)` 指数增长——x=176 时 −0.977、x=256 时 −5.7e34、x≥~266 时 −inf；x ≤ 170 与 golden 吻合（~0.004 噪声内）） · Cov: `var:ttmetal_logsigmoid_sfpu_missing_branch_range_splits`（1.102 logsigmoid 区间分裂族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`v_if(x < -4.0f)` 结构中 `result = -exp_neg_x` 的 `exp_neg_x` 对原始大正 x 求的是 `exp(+x)` 而非 `exp(−x)`——符号处理双重否定；正确实现下 `exp(−x)` 下溢到 ~0、结果趋 0。1.102 修复（PR #54078 单恒等式替换）之后**再次出现**，说明修复未覆盖该分支或引入回归；bf16 直接可达（bf16 值域到 ~3.39e38）。'
+  source: 'tt-metal #55457（2026-09-04 open，Wormhole B0，逐 x 数值表 170→266 全谱）。https://github.com/tenstorrent/tt-metal/issues/55457'
+  behavior: 无 crash、无警告——大正输入的 logsigmoid **静默发散到 −inf**（有限值域内先表现为平滑增长的错误）；下游任何以 logsigmoid 为损失/门控的通路在正尾部完全失真。1.102 的三重缺陷谱（负分支缺失/正尾单项级数/中段偏移）之上新增**方向反转**形态：不是精度差而是符号错导致的指数爆炸。
+  trigger_surface: tt-metal Wormhole + `ttnn.log_sigmoid` + bf16 输入 x > ~172（hw_specific）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: INF-0441
+legacy_ids:
+- '6.48'
+slug: vllm_kimi_k3_stateless_first_chunk_reads_stale_kda
+aliases: []
+title: vLLM KDA 单 token 首块误判 decode 读陈旧状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: kda_metadata 的 decode 分类
+  behavior: 非 spec 分支用 decode_threshold=1，单 token 首 chunk 被当 decode，直接读 conv/recurrent state；无状态 slot 掩码只在 prefill 路径，Mamba 块重分配不清零。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: Kimi-K3 KDA、非 spec、batch 全为单 token 首 chunk 行时触发；无 crash、无 NaN，请求静默继承前一拥有者回收块的 KDA state，输出语义错乱但表面正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；Kimi-K3 KDA + 非 spec + 单 token 首 chunk 行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51483
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（无状态首 chunk 被分类为 decode → 读取回收块残留的陈旧 KDA state） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 非 spec 分支用 `split_decodes_and_prefills(decode_threshold=1)`，全 batch 单 token 行时 `num_prefills=0`，走纯 decode 路径无条件读 `conv_state[slot]`/`recurrent_state[slot]`。但该首 chunk 请求无 KDA state——`gather_initial_states`（唯一掩码无状态 slot 的逻辑）仅在 prefill 路径。Mamba 块重分配时不清零（`zero-on-allocate` 仅限 attention specs）→请求静默继承前一拥有者回收块的 KDA state。
+  source: 'vLLM PR #51483（2026-08-08 open）。组件 `kda_metadata.py`。与 #51039 相关。https://github.com/vllm-project/vllm/pull/51483'
+  behavior: 无 crash、无 NaN。请求用陈旧 recurrent state 生成→输出语义错乱但表面正常。属「单 token 首块被误分类为 decode→读未清零回收 state」签名——与 6.47（stale zero-accept）同 SSM state 族，但根因在分类逻辑。
+  trigger_surface: vLLM；Kimi-K3 KDA + 非 spec + 单 token 首 chunk 行
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

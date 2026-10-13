@@ -1,0 +1,51 @@
+id: TRN-0038
+legacy_ids:
+- PAR.10
+slug: traced_all_to_all_zero_backward
+aliases: []
+title: compile 下 Ulysses all-to-all 断依赖致零梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: Ulysses SP all-to-all 交换
+  behavior: Ulysses SP 交换以写出参、不返回值的 all_to_all_single 填充 empty_like 输出；torch.compile inline 后无法建模该依赖，导数为零，手写 backward 不运行。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: 仅在开 torch.compile 时触发：forward 数值完全正确，无 crash、loss 有限、无警告；q/k/v 投影零梯度，一步更新后参数逐位不变、optimizer moments 为 0，attention 静默停止学习，输出投影/MLP/残差流照常更新。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8491
+  kind: github_pr
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed Ulysses SP 的序列/头交换曾是 `torch.autograd.Function`：forward 分配 `torch.empty_like(input)` 并用 `all_to_all_single`（**写入输出参数**、不返回值）填充。torch.compile 不把 autograd function 当黑盒——inline 展开后 tracer 无法把「empty 张量 + 非产出型 collective 变异」建模为数据依赖：图中交换输出对交换输入的依赖消失，**自动微分出的导数恰为零**，手写 backward（转置交换）永不运行。执行时 collective 仍在搬字节，所以 forward 数值完全正确。修复 = 换 `_dim_zero_all_to_all` 调 `torch.distributed.nn.functional.all_to_all_single`（返回值的可微 collective），依赖进图、生成 backward 即转置交换。
+  source: 'DeepSpeed PR #8491（2026-09-11；「编译后的 Ulysses job 对 q/k/v 投影零梯度：一步更新后张量与 optimizer moments=0 bit 一致，输出投影/MLP/残差流照常更新」）。https://github.com/deepspeedai/DeepSpeed/pull/8491'
+  behavior: 无 crash、loss 有限、无警告——attention 的 q/k/v **静默停止学习**，残差其余部分正常前进；若不开 compile 同代码正确，归因极易指向超参/数据。与 PAR.08（编译 pass 漏插 collective）同是「torch.compile × 集合通信」改写缺口：那边 forward 错值（partial sum 不归约），这边 forward 正确、**backward 断流**；与 KER.06（compile 冻结 float kwarg）同族——tracer 对副作用型原语（collective 写出参）的建模缺口，受害面是梯度而非配置。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

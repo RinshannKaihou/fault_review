@@ -1,0 +1,52 @@
+id: INF-0728
+legacy_ids:
+- '7.55'
+slug: sglang_modelslim_fused_gdn_scheme_fallback_int8_as_bf16_garbage
+aliases: []
+title: SGLang ModelSlim 回退把 int8 权重当 bf16 致输出垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: ModelSlim fused 层回退路径
+  behavior: ModelSlim 不识别 fused GDN 线性层的 scheme，回退“不量化”时把 int8 权重原样拷进 bf16 参数（位型重解释）；vision 塔被强制 bf16 后，NPU 量化 matmul 收到 3-D 输入。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  - 可用性/进度
+  detail: Ascend NPU 上加载 ModelSlim W8A8 的 fused GDN 混合模型：48 层报 Unsupported scheme 警告后，语言路径输出全为垃圾且无报错；vision 路径的 3-D matmul 直接 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + ModelSlim W8A8 + fused GDN hybrid 模型 + NPU（other_stack；位型重解释机制本身栈无关）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-26'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36423
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（ModelSlim W8A8 checkpoint 的 fused GDN 层（in_proj_qkvz/in_proj_ba）scheme 未被识别 → 警告后"回退不量化"，但回退实现把 checkpoint 的 **int8 权重原样拷进 bf16 参数**（int8 位型被当 bf16 解释）——语言路径输出全垃圾；vision 塔被强制不量化后 NPU 量化 matmul 对 3-D vision 输入 crash） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`quant_model_description.json` 正确标记 fused-GDN 与 vision 塔为 W8A8_DYNAMIC，但 SGLang 的 ModelSlim 实现不支持 fused 线性层命名（`Unsupported Linear modelslim scheme: ['''']` × 48 层）——回退路径声称"不量化"，实际把 int8 存储的权重张量直接拷贝进新建 bf16 参数（位型重解释，数值完全错误）；vision encoder 被强制 bf16 后，NPU 量化 matmul 又收到 3-D vision 输入而 crash。三个独立失败（fused 层位型损坏、vision 强制回退、3-D matmul 崩溃）叠加在同一加载路径上。'
+  source: 'SGLang #36423（2026-08-26 open，Ascend NPU CANN 9.0、release/v0.5.18；含 440 个 scale/offset 对的 checkpoint 验证）。https://github.com/sgl-project/sglang/issues/36423'
+  behavior: '**静默输出全垃圾**（语言路径，48 层权重位型重解释）+ crash（vision 路径 3-D matmul）。属「**回退承诺与回退实现脱钩**」新子签名：回退语义应是"以原精度运行"，实现却是"以错精度运行"——警告文本（48 条）与实际损坏（位型级）完全不对应，比无警告更具误导性。'
+  trigger_surface: SGLang + ModelSlim W8A8 + fused GDN hybrid 模型 + NPU（other_stack；位型重解释机制本身栈无关）
+  discovery: 2026-08-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,52 @@
+id: INF-0255
+legacy_ids:
+- '1.256'
+slug: ttmetal_moreh_norm_no_max_rescale_subnormal_pow_flush_zero
+aliases: []
+title: ttnn.moreh_norm 无重缩放致小幅向量范数被清零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.moreh_norm 复合归约链
+  behavior: 按朴素 (Σ|x|^p)^(1/p) 直接形成 |x|^p，无 max|x| 重缩放；|x|<1 且 p 较大时中间量落入 fp32 subnormal 域，被 Tensix DAZ/FTZ 清零。
+effect:
+  objects:
+  - 数值结果
+  detail: 小幅度向量的范数静默返回精确 0，同 dtype 的 torch.linalg.vector_norm 返回正常有限值（如 p=2、[1e-20,3e-20]；p=16、[0.002,0.003]）；以范数做归一化/裁剪/相似度的管线分母为 0 或触发除零分支。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.moreh_norm` + |x|<1 且 p 足够大使 |x|^p 入 subnormal（hw_specific：DAZ/FTZ 平台语义）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57869
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0182
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.moreh_norm`（向量 p-范数）按朴素 `(Σ|x|^p)^(1/p)` 直接形成 `|x|^p`、无 max 元素重缩放：|x|<1 时中间量随 p 收缩、落入 fp32 subnormal 域被 **Tensix DAZ/FTZ 清零**，全零和使范数返回**精确 0**——同 dtype 的 `torch.linalg.vector_norm` 返回普通有限正规数。实测（numpy fp32 + Tensix subnormal-flush 模型 vs torch fp32）：p=2、[1e-20,3e-20] → torch 3.1623e-20、ttnn **0**；p=16、[0.002,0.003] → torch 3.0003e-03、ttnn **0**。`moreh_norm.cpp` L56-58 组合链 `moreh_abs_pow → moreh_sum → moreh_abs_pow(1/p)` 无任何重缩放） · Cov: `var:ttmetal_reciprocal_bh_additive_newton_term_subnormal_flush`（1.183 subnormal flush 域丢失族——本条在 moreh 归约复合链的 `|x|^p` 中间量维度；issue 自证与 #51861 hypot、#52614 var_hw/std_hw square-before-scale 同类且均不覆盖本条） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 小幅度向量（如已缩放的 embedding/归一化前激活）在 p≥2 的范数计算中中间量全面 flush；修复模式为按 max|x| 重缩放（同 hypot/var_hw 修复先例）。来源为源码定位 + host 模型对照（无设备）。
+  source: 'tt-metal #57869（2026-09-25 open，Bad Outputs/silent wrong results，含 p×输入幅度判决表、复合链代码行与同类缺陷谱系）。https://github.com/tenstorrent/tt-metal/issues/57869'
+  behavior: 无 crash——小幅度向量的范数**静默归零**（不是精度损失而是值消失）；以范数做归一化/裁剪/相似度的管线分母为 0 或触发除零分支。1.183 之后 subnormal flush 族在**前向范数算子**维度的首例（1.183 在逐元素 reciprocal）。
+  trigger_surface: tt-metal + `ttnn.moreh_norm` + |x|<1 且 p 足够大使 |x|^p 入 subnormal（hw_specific：DAZ/FTZ 平台语义）
+  discovery: 2026-09-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

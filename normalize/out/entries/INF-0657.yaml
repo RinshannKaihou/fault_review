@@ -1,0 +1,50 @@
+id: INF-0657
+legacy_ids:
+- '6.264'
+slug: vllm_v2_runner_preemption_updates_overwrite_pages_before_connector_callback
+aliases: []
+title: vLLM V2 runner 抢占回调前更新请求致页被覆写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: execute_model 回调顺序
+  behavior: execute_model() 先执行 update_requests()（可清零新块或做 COW 拷贝）再调 connector 的 handle_preemptions()，覆写已提交，回调内等待也保护不了旧页。
+effect:
+  objects:
+  - KV状态
+  detail: 抢占/驱逐时，KV connector 异步 save 仍在读取的旧物理页可被覆写，形成潜在静默 KV 损坏窗口；CPU mock 确定性复现，尚无观测到的输出损坏。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM V2 runner + KV connector 异步 save + 抢占/驱逐（partial）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59409
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM V2 runner `execute_model()` 在 `ActiveKVConnector.pre_forward()` 调用 `handle_preemptions()` **之前**已执行 `update_requests()`——后者可清零新分配 KV 块或做 COW 块拷贝；异步 save 仍在读旧物理页时，connector 在回调内等待也无法保护旧内容（覆写已提交）。确定性 CPU 复现（mock backend + page-reuse sentinel，无需 GPU）：恢复修复 commit 后 4 failed/1 passed，主树全绿——回调顺序违约是可复现的结构性数据损坏窗口，非已观测的输出损坏） · Cov: `NEW`（KVConnector 回调顺序契约违约子签名） · 触发 `partial` · 置信度 `documented`'
+  mechanism: 期望顺序 `handle_preemptions → request-state 更新/清零/COW → metadata/forward`，实际前两步互换。
+  source: 'vLLM #59409（2026-09-30 open，含 mock 复现与修复 commit 链接）。https://github.com/vllm-project/vllm/issues/59409'
+  behavior: 异步 save（offload/transfer）读取中的页可被覆写——潜在静默 KV 损坏窗口；零 token step 同样需要回调先于更新。
+  trigger_surface: vLLM V2 runner + KV connector 异步 save + 抢占/驱逐（partial）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

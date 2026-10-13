@@ -1,0 +1,50 @@
+id: INF-0225
+legacy_ids:
+- '1.226'
+slug: ttmetal_concat_block_sharded_width_cursor_advances_by_shard_capacity
+aliases: []
+title: ttnn block-sharded concat 宽度游标按容量推进致错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ConcatBlockSharded 宽度游标
+  behavior: 宽度分支以 input_shard_w*shard_grid_w（分配容量）推进每个输入的列游标，而非张量真实宽度；末宽度 shard 含 padding 时 padding 列被当作数据列逐输入累积错位。
+effect:
+  objects:
+  - 数值结果
+  detail: block-sharded concat dim=-1 且 W 不能被 grid 列数整除（并满足 L1 行对齐）时，首输入之后每个输入晚一列落位，间隙为陈旧 L1 数据、尾部被丢弃，约 50% 元素错，形状正确无 crash；整除形状全部通过。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal/ttnn + block-sharded concat dim=-1 + `W % grid_cols != 0` 且满足 L1 行对齐（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56827
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn `ConcatBlockShardedProgramFactory` 宽度分支（`concat_block_sharded_program_factory.cpp:206`）以 `input_shard_w[inp_id] * shard_grid_w`（**分配容量**）推进每输入列游标 `cum_w += inp_total_w`，而非张量真实宽度：block shard 允许末宽度 shard 部分是 padding——`W=11` 跨 3 grid 列时 `shard_w=div_up(11,3)=4`、容量 12 比张量多一列，游标推进 12 而非 11 → 首输入之后每个输入晚一列落位、间隙填 L1 陈旧数据、尾部越出输出末尾被丢弃。Wormhole 硬件实测 `(1,1,64,11)` 双输入 uint32：输出行 0 为 `[0..10, 1163(陈旧L1), 1000..1009]`（期望 `...10, 1000..1010`）——**704/1408（50%）元素错**；所有 ragged 配置必错（W=11/15/23/31/47 全部 50%）、精确配置全过；与 height 路径等价 bug 由 #56603 修复、本条为 width 路径。ragged 须与 L1 行对齐检查（`input_shard_w*elem_size%16==0`）共存，W<64 内仅 31 种触发形状） · Cov: `NEW`（shard 容量 vs 真实宽度游标错位子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: block-sharding 的"容量 ≥ 真实宽度"不变量未被 concat 游标消费——游标以分配粒度（容量）而非语义粒度（宽度）前进，padding 列被当作数据列累积错位，逐输入放大。
+  source: 'tt-metal #56827（2026-09-17 open，bug + op_cat: TM，审查 #56603 时发现，含 Wormhole 硬件确认输出 dump、6 配置通过/失败表、最小复现与四路径 scope 表（width-sharded/height-sharded factory 不受影响））。https://github.com/tenstorrent/tt-metal/issues/56827'
+  behavior: 无 crash——形状正确、写全在界内、**静默错误数据**（间隙为 stale L1、末输入尾元素丢失）；精确整除形状全过使缺陷在常规测试形状下不可见，ragged+对齐双重门控使其在生产中低频但必错。
+  trigger_surface: tt-metal/ttnn + block-sharded concat dim=-1 + `W % grid_cols != 0` 且满足 L1 行对齐（hw_specific）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

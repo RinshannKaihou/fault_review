@@ -1,0 +1,62 @@
+id: INF-0998
+legacy_ids:
+- '10.82'
+slug: vllm_qwen_tool_call_ordinary_token_delimiter_spelling_bypasses_parser_streaming
+aliases: []
+title: vLLM Qwen parser 漏识普通 token 拼写的分隔符
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: Qwen parser 分隔符识别
+  behavior: 文本 grammar 允许用普通词表 token 序列拼出 </think>、<tool_call>、</tool_call>，而 Qwen parser 只按专属 token ID 识别边界，不认这些普通 token 拼写。
+effect:
+  objects:
+  - 输出内容
+  detail: 流式 + thinking + tool_choice=auto 下模型按 grammar 用普通 token 拼出分隔符时，整个合法调用留在 reasoning 字段、tool_calls 为空；解码文本逐字正常，仅 token-ID 级检查可发现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + Qwen3 系 + 流式 + thinking + tool_choice=auto + 文本 grammar 未禁普通 token 拼出标记（config：grammar 设计依赖）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-22'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser 对生成文本的后处理）一类；本条按结构化输出功能域取 解码/采样。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58105
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM 流式 + thinking + `tool_choice="auto"` 下，**文本 grammar 允许普通词表 token 序列拼出 `</think>`/`<tool_call>`/`</tool_call>` 字符串**时（如 `</think>` 的普通 token `[27,14,26003,29]` vs 专属 ID 248069），Qwen parser 不识别这些普通 token 边界——**整个合法调用留在 reasoning 内、无任何结构化 tool call 发出**；仅把三处分隔符替换为专属 token ID（**解码文本逐字不变**）即恢复结构化调用；双 parser 实现均复现、v0.23.0 H100 HTTP 服务端实测复现。EBNF 字符串约束 ≠ parser 专属 token ID 约束的边界契约缺口） · Cov: `NEW`（语法字符串匹配 vs parser 专属 token ID 匹配契约缺口子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: 结构化输出 grammar 在字符串域施加约束（允许/禁止子串），而 reasoning parser 在 token-ID 域识别边界（只认专属 ID）——同一分隔符的两种 token 表示（专属 ID vs 普通字符拼出）在语法层等价、在 parser 层不等价；模型按 grammar 合法路径用普通 token 拼出标记时 parser 全盲。与 10.47/11.84（约束栈失效谱系）同域新方向：**约束存在且被遵守、消费端仍不识别**。
+  source: 'vLLM #58105（2026-09-22 open，含三处分隔符的专属 ID vs 普通 ID 对照表、token 级因果控制实验（仅替换分隔符即恢复）、合成 parser 复现（无需权重）与 v0.23.0 H100 服务端复现、与 #39056/#56658/#45413 界分）。https://github.com/vllm-project/vllm/issues/58105'
+  behavior: 无 crash、无错误——**结构化 tool call 静默丢失**：调用文本完整出现在 reasoning 字段、`tool_calls` 为空；agent 框架等待调用即挂起或误判模型未请求工具；解码文本完全正常使文本级 diff/评估不可见，仅 token-ID 级检查可发现。
+  trigger_surface: vLLM + Qwen3 系 + 流式 + thinking + tool_choice=auto + 文本 grammar 未禁普通 token 拼出标记（config：grammar 设计依赖）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  - vocab_gap
+  note: 改 解码/采样：rules“功能域优先”——故障只出现在结构化输出（文本 grammar）+ tool call 解析路径上；原文 meta 定性为“EBNF 字符串约束 ≠ parser 专属 token ID 约束的边界契约缺口”，mechanism 称与约束栈失效谱系（10.47/11.84）同域，词表 解码/采样 明列“结构化输出”；与 INF-1019、INF-1040 同类条目归属一致。修复可能在 grammar 或 parser 任一侧，但两侧同属结构化输出功能域，单项即可。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 输出解析
+        status: unanimous

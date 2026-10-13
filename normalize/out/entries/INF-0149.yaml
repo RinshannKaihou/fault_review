@@ -1,0 +1,52 @@
+id: INF-0149
+legacy_ids:
+- '1.150'
+slug: ttmetal_rms_norm_rank0_epsilon_dropped_sign_normalize
+aliases: []
+title: rms_norm rank-0 分支丢弃 epsilon，退化为 x/|x|
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: rmsnorm.cpp rank-0 分支
+  behavior: rank-0 分支以 divide(input, abs(input)) 实现，epsilon 从未被读取（只转发给 rank≥1 路径），计算 x/|x| 而非 x/sqrt(x²+eps)；测试只覆盖 rank≥1。
+effect:
+  objects:
+  - 数值结果
+  detail: rank-0 输入 x=0 时返回 NaN，|x|<sqrt(eps) 的值返回恰为 ±1（golden 为 0 与 1 之间的小数），与注册 golden 及 torch rms_norm 分歧；无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent WH/BH + `ttnn.rms_norm` rank-0 输入（软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55347
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.rms_norm` 显式 rank-0 分支计算 `x/|x|`：epsilon 从未被读取（只转发给 rank≥1 的 layer_norm）——x=0 返回 NaN、一切 |x|<sqrt(eps) 返回恰 ±1（golden 为 0 与 1 之间的小数）；注册 golden `x*rsqrt(mean(x²)+eps)` 与 `torch.nn.functional.rms_norm` 一致，op 与 golden 分歧） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`rmsnorm.cpp` 的 `if (rank == 0) [[unlikely]]` 分支以 `divide(input, abs(input))` 组合实现并应用 weight/bias——标量 RMSNorm 的正确定义是 `x/sqrt(x²+eps)`，退化成符号归一化；测试只覆盖 rank≥1（rank-0 分支无小输入/零输入用例）。'
+  source: 'tt-metal #55347（2026-09-03 closed，源级分析 + host replay 复现脚本）。https://github.com/tenstorrent/tt-metal/issues/55347'
+  behavior: 无 crash——小值域静默饱和到 ±1、零点 NaN；rank-0 是 API 完整性边角但 rms_norm 是 LLM 核心算子（任何误用标量输入的图即时命中）。与 1.133（rms_norm 2D grid L1 过分配）同算子不同缺陷；「参数在分支间被静默丢弃」与 1.144/1.139 的 epilogue/守卫丢参数族同模式——**参数被验证/声明但某分支不消费**。
+  trigger_surface: Tenstorrent WH/BH + `ttnn.rms_norm` rank-0 输入（软件 API 可触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

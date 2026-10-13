@@ -1,0 +1,54 @@
+id: INF-0674
+legacy_ids:
+- '7.1'
+slug: massive_activation_quantize_sink
+aliases: []
+title: 量化/裁剪破坏 massive activation 承载的 sink
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: per-tensor RTN 激活量化/裁剪
+  behavior: massive activation 在固定 feature dim 达中位数 1000x 以上，充当隐式 attention bias；per-tensor RTN 量化时其抬高 scale 压扁普通激活，裁剪则抹掉该 bias。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: sink 被彻底破坏时 perplexity 爆炸、输出灾难性乱码（仅置零 4 个 massive activation 即可触发）；仅被削弱时 attention pattern 轻微漂移，输出读起来仍正常。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: 量化后端/位数/KV quant 配置
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2402.17762
+  kind: arxiv
+relations:
+- kind: var
+  target: INF-0765
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`model_on` · Cov: `var:7.88` · 触发 `config` · 置信度 `verified`'
+  mechanism: 极少数激活值（数百万个激活中不足 10 个）在**固定的 feature dim** 上、出现在起始 token / 分隔符 token 处，量级达到中位数的 1000x–100000x，事实上充当模型的隐式 attention bias。Per-tensor RTN 量化时，这些极值把量化 scale 抬高，从而把绝大多数普通激活压到零附近；反过来若对其做 clipping，则等于抹掉这个隐式 bias。源文档给出的判据是：仅把其中 4 个 massive activation 置零，perplexity 就会爆炸。本条为 MERGED 条目，合并的子故障为：attention-sink clipping（量化/裁剪把承载 attention sink 的极值通道削平）。
+  source: Sun, Chen, Kolter, Liu, "Massive Activations in LLMs", COLM 2024, https://arxiv.org/abs/2402.17762 。
+  behavior: sink 被彻底破坏时 perplexity 爆炸、输出灾难性 gibberish；仅被削弱（未完全裁掉）时表现为 attention pattern 的轻微漂移，输出仍读起来正常。
+  trigger_surface: 量化后端/位数/KV quant 配置
+  signature: 族判定为 **model_on**——被破坏的是模型自身合法的 on-manifold 结构，故障是"浓度的丢失"而不是"外加尖峰"，这一点与 sdc_spike_massive 正好相反。签名 STRONG 且廉价：statistical 族的 kurtosis / extreme-value 统计会在固定 (token, channel) 对上出现异常，per-token max-norm 由 1–2 个通道主导；attention-map 上表现为 entropy 向 sink token 塌缩。cheap 族只需在单个中层做一次 per-channel max-magnitude 探针即可捕获。反过来，为"新增离群尖峰"设计的 geometric 族 per-channel Mahalanobis 检测器会漏检，因为幅度是被削小而非放大。
+  repro: '用 forward hook 在某个 Linear/block 输出上做 fake-quant，并在其中新增一个"裁剪 massive 通道"模式（对固定 (token, channel) 的极值做 clamp），即源文档标注的 "new mode: clip massive channels during fake-quant"。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

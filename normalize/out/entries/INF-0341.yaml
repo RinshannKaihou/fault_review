@@ -1,0 +1,55 @@
+id: INF-0341
+legacy_ids:
+- '4.25'
+slug: vllm_hybrid_single_token_prompt_full_cudagraph_nondeterministic_garbled
+aliases: []
+title: vLLM 混合 Mamba 单 token prompt 全图模式下非确定乱答
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 全图 CUDA graph 单 token 捕获
+  behavior: full CUDA graph 捕获 prefill 长度 1 的形状时，把 Mamba conv/recurrent 状态初始化或 attention padding 按错误布局固化进图；逐段执行语义正确，损坏特定于全图捕获的跨段融合。
+effect:
+  objects:
+  - 输出内容
+  detail: granite-4.0-h、Falcon-H1 恰好 1 token 的 prompt 在 temperature 0 下重复 6 次得 4–6 种 completion，多数与 prompt 无关；2–6 token 全稳定，enforce-eager 或 PIECEWISE 下 0/40 失败。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + Mamba-hybrid（granite-4.0-h/Falcon-H1）+ 默认 full CUDA graph + 无 BOS 分词器的单 token prompt（config：`--enforce-eager`/`PIECEWISE` 即绕开）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57720
+  kind: github_issue
+relations: []
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（vLLM 默认配置（仅设 `max_model_len`）下 Mamba-hybrid 模型（granite-4.0-h-tiny、Falcon-H1-Tiny-90M）**恰好 1 token 的 prompt 在 temperature 0 也不确定且多数答案乱答**：granite 9/9 个单 token prompt（Hello/Hi/Yes/No/Paris/Water/Once/The/2）6 次重复各得 4–6 个不同 completion、多数与 prompt 无关（`''Hello''`→`'' < 0){ return false; }''` 等 C 片段）；**2–6 token prompt 17/17 全稳定**。Falcon-H1 6/6 同形且边界在 token 数不在词（`Paris` 对该分词器是 2 token 故稳定）——锁定 1-token prefill 形状。消除实验：`--enforce-eager` **0/40** 失败、`cudagraph_mode:PIECEWISE` **0/40** 失败、`--mamba-cache-mode align` 无效、关闭 prefix caching 仍失败——缺陷在 **full CUDA graph 捕获内**的 Mamba/attention 内核在 1-token 形状的执行（捕获时固化了错误的状态布局或 padding 假设）） · Cov: `NEW`（图捕获形状边界 × 混合架构单 token 子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: full-graph 捕获对 prefill 长度 1 的形状把 Mamba conv/recurrent 状态初始化或 attention padding 按错误布局固化进图；granite 分词器无 BOS 使 1-token prompt 成为真实 prefill 形状而非构造。piecewise 图与 eager 正确说明逐段执行语义无损——损坏特定于全图捕获的跨段融合。
+  source: 'vLLM #57720（2026-09-19 open，含双模型族对照、token 边界验证、HTTP 与离线双路径、五消除臂矩阵与可复现脚本 gist）。https://github.com/vllm-project/vllm/issues/57720'
+  behavior: 无 crash、无 NaN——greedy 输出既**不确定**又**乱答**（两个独立失效叠加：非确定 + 内容错误）；1-token 交互（补全单字、分类单 token 探针、字符级工作负载）全数不可信。8.60（tt-metal Gemma4 WH 长度门控 garble）、8.89（dummy capture 毒化）之后图/形状门控族在 **NVIDIA full CUDA graph × 1-token prefill** 维度的显形；非确定族（4.12/4.23/4.24）中首条以"乱答"为主要症状者——非确定是载体、内容错误是载荷。
+  trigger_surface: vLLM + Mamba-hybrid（granite-4.0-h/Falcon-H1）+ 默认 full CUDA graph + 无 BOS 分词器的单 token prompt（config：`--enforce-eager`/`PIECEWISE` 即绕开）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 不可复现。依据：原文核心观测是“temperature 0 也不确定”——同一 prompt 6 次重复得 4–6 个不同 completion，正合 不可复现 定义（同一输入多次运行结果不一致）；乱答多为与 prompt 无关的 C 片段，并非“看似合理”，不符合 静默错误 定义。内容错误由 effect.objects=输出内容 体现。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

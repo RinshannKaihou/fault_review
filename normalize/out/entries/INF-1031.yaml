@@ -1,0 +1,54 @@
+id: INF-1031
+legacy_ids:
+- '11.7'
+slug: sglang_nan_logits_uniform_random_sample_200
+aliases: []
+title: SGLang 全 NaN logits 经 sanitize 后变均匀随机采样
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: NaN logits sanitize 路径
+  behavior: 启用 SGLANG_SANITIZE_NAN_LOGITS 后，整行 NaN logits 被 nan_to_num_(nan=-1e30) 映射为同一常量，softmax 后成全词表均匀分布，采样器抽取纯随机 token。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  - KV状态
+  detail: 整行 logits 为 NaN（如 Kimi-K3 瞬态 NaN）时以 HTTP 200 流式返回多语言 BPE 拼盘，P(EOS)≈1/163,840 几乎不终止直到 max_tokens；NaN 步写入的 KV 使该请求后续步骤全被污染。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: SGLang 专用
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/33187
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（NaN logits → 均匀随机采样） · Cov: `NEW` · 触发 `other_stack`⚠ · 置信度 `verified`'
+  mechanism: '这是 #32968（Kimi-K3 瞬态 NaN logits）的后续。为阻止设备端 assert 崩溃而启用 `SGLANG_SANITIZE_NAN_LOGITS=1`（#28829）后，暴露了一个**比崩溃更糟**的失败模式：当**整行 logits 为 NaN** 时，`nan_to_num_(nan=-1e30)` 把每个 lane 映射到同一值；softmax 在常量行上等价于对整个词表（K3 为 163,840 lane）的**均匀分布**，于是采样器抽取**纯随机 token**。后果：(1) 输出是多语言 BPE 拼盘（CJK/拉丁/西里尔/代码碎片混合），以**正常的 200 响应**流式返回客户端——服务层与真实输出不可区分；(2) P(EOS) ≈ 1/163,840 每步，生成几乎永不终止（直到 max_tokens）；(3) 被 NaN 化步骤的 KV 写入请求的 KV cache，故**该请求的每个后续步骤也被污染**——剩余响应全是垃圾。'
+  source: 'SGLang #33187（2026-08-01 open，design）。修复 #33206（abort 全 NaN logits 请求）。https://github.com/sgl-project/sglang/issues/33187'
+  behavior: 无 crash、无错误信号——全 NaN logits 行经 sanitize 后变为均匀随机采样，以 HTTP 200 流式返回垃圾 token 拼盘，且 KV cache 被污染使后续步骤全废。属「NaN logits 防护反而制造均匀随机采样」新子签名，是 post-forward 结构性盲点中尤其危险的一类（健康响应外壳包裹纯随机输出）。
+  trigger_surface: SGLang 专用
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

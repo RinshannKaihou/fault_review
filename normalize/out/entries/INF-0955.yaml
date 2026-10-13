@@ -1,0 +1,51 @@
+id: INF-0955
+legacy_ids:
+- '10.39'
+slug: vllm_deepseek_vl_ocr_bare_assert_input_corruption_python_o
+aliases: []
+title: vLLM deepseek_vl2/ocr 裸 assert 校验输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: deepseek_vl2/ocr 处理器校验
+  behavior: deepseek_vl2/ocr 处理器用裸 assert 校验 image token 数等于图片数；这是 zip(text_splits, images) 对齐的唯一防线，且 AssertionError 不被识别为输入错误。
+effect:
+  objects:
+  - 输入编码
+  - 可用性/进度
+  detail: 图像计数失配输入时：默认模式 AssertionError 落入 else 分支返回 HTTP 500（应为 400）；python -O 启动时 assert 被剥除，文本段被静默丢弃或复制、图文错位，模型照常生成。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + deepseek-ocr/deepseek_vl2 系处理器 + 图像计数失配输入（默认模式即触发；-O 模式需 python -O 启动）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-26'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53850
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（deepseek_vl2/deepseek_ocr 多模态处理器用裸 `assert` 校验用户输入：默认模式下 AssertionError → HTTP 500（应 400）；`python -O` 剥除 assert 后图像计数失配静默通过——`zip(text_splits, images)` 错配使文本段被丢弃/复制、图文错位，token 序列无声损坏） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`vllm/transformers_utils/processors/deepseek_vl2.py`（:206/:313）与 `deepseek_ocr.py`（:253/:314）以裸 assert 校验 `prompt/images` 非空与 `conversation.count(image_token) == len(images)`。两级后果：(1) AssertionError 非 ValueError/VLLMError，`create_error_response` 落入 else 分支返回 HTTP 500（用户输入错误被报为服务器错误）；(2) `python -O` 下 assert 被整体剥除——image-token 计数检查是 `zip(text_splits, images)` + `text_splits[-1]` 尾段处理的**唯一防线**，N+1 段 split 与 N 图错配时文本段静默丢弃/复制、图文对齐破坏。与已修复的 DeepSeek V3.2（#32884）、V4（#53747）encoder 同类缺陷在多模态处理器中的残留。'
+  source: 'vLLM #53850（2026-08-26 closed，含复现脚本与两文件四处行号）。https://github.com/vllm-project/vllm/issues/53850'
+  behavior: 双态——默认模式 crash 型但状态码错（500 应 400，误导客户端重试与告警归因）；`-O` 模式**静默输入损坏**（token 序列错位，模型看到图文错乱的输入仍照常生成）。属「**裸 assert 作为输入校验防线**」新子签名：同一缺陷在两种运行模式下分别表现为错误分类的 crash 与无声损坏。
+  trigger_surface: vLLM + deepseek-ocr/deepseek_vl2 系处理器 + 图像计数失配输入（默认模式即触发；-O 模式需 python -O 启动）
+  discovery: 2026-08-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,58 @@
+id: TRN-0128
+legacy_ids:
+- ACT.07
+slug: offload_reload_missing_stream_ordering_edge
+aliases: []
+title: 激活 offload inline reload 缺流排序读到陈旧数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: megatron-lm
+    component: tensor_pop inline reload
+  behavior: ChunkOffloadHandler.reload() 的 H2D 拷贝与 D2H 的 _offload_event 无排序边；tensor_pop 的 inline reload 未补此边，可在 D2H 写 buffer 时读取。
+effect:
+  objects:
+  - 梯度
+  - 隐状态
+  detail: 无报错、loss 照降，warmup 迭代及 backward 跑赢 prefetch 时重载的激活是新旧内容混合，梯度静默算在陈旧激活上；B300 上 20 次试验 19 次损坏，现有测试丢弃 warmup 迭代而漏检。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7398
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7399
+  kind: github_pr
+relations: []
+original:
+  category: ACT
+  section: ACT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'Megatron 细粒度激活 offload 的 `ChunkOffloadHandler.reload()` 把 H2D 拷贝排进 caller 当前流，对 `d2h_stream` 上记录的 `_offload_event` **没有任何排序边**。`bulk_reload_group`（prefetch 路径）自己补这条边；`tensor_pop` 的 **inline reload 没有**——backward 先于 prefetch 到达某 offloaded group 时，H2D 可能在 D2H 仍在写 pinned staging buffer 时就读它，重载进 GPU 的 saved activation 是**陈旧 buffer 内容**（CPU tensor pool 回收复用使污染内容确定化）。与特性自身文档承诺直接矛盾（user-guide L180：「compute stream waits for the transfer to complete」——inline 路径不等）。B300 上 20 trial × 2 臂：无边树 19/20 损坏（wrong 3.2M–67M/67M 元素，uniq 值 [-7.0, 1.0] 混合 = 新旧内容掺杂）；加排序边 0/20。warmup 迭代**全部** reload 走无序 inline 路径（24/24），steady 态才由 prefetch 覆盖；现有测试 `test_gpt_fine_grained_activation_offloading_*` 恰好把 warmup 迭代结构性丢弃后才断言梯度——`tests/` 无一读 `_offload_event`。修复 PR #7399。'
+  source: 'Megatron-LM #7398（2026-09-16；mcore `79097b457`，torch 2.11.0+cu130，B300/A40 单卡单进程；确定性机制演示：stall d2h_stream + SENTINEL 预污染 → `tensor_pop` 返回污染值；缺陷自 #1913 引入即有）。https://github.com/NVIDIA/Megatron-LM/issues/7398 ；修复 PR #7399（2026-09-16 已提；Connor-XY 指派 lhb8125 评审，并要求复查 warmup vs steady、当轮未 offload 的 group、reset 行为——修复待 maintainer review）。https://github.com/NVIDIA/Megatron-LM/pull/7399'
+  behavior: 无 raise、loss 曲线照降——warmup 迭代（及任何 backward 跑赢 prefetch 的时刻）的梯度**静默算在陈旧激活上**；「每块激活 = 新旧值混合」意味着错误幅度连续可变、无全有全无信号。与 ACT.05/ACT.06 同族「重算/重载状态 ≠ 原前向」：那边错在参数表/dataflow 建模，这边错在**流同步契约**（文档承诺 vs inline 路径实现）；与 KER.09（掩码越界静默写）同为 B300 新硬件面上被旧假设掩盖的流/坐标契约破裂。
+  discovery: 2026-09-17 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 梯度
+        status: unanimous

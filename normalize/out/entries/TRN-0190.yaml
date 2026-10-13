@@ -1,0 +1,60 @@
+id: TRN-0190
+legacy_ids:
+- SFT.13
+slug: per_message_tokenization_drops_think_block
+aliases: []
+title: verl 多轮 SFT 逐消息渲染模板丢失 think 块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: verl
+    component: 逐消息 apply_chat_template
+  behavior: MultiTurnSFTDataset 逐条消息 apply_chat_template 再拼接，而 Qwen3 模板渲染 reasoning_content 依赖完整前缀，含 tool_call 的轮次丢失 <think> 块。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: Qwen3 多轮 SFT 在 ignore_input_ids_mismatch=True 压掉检查时照常训完，loss mask 按错位序列监督；训后模型把最终答案写进 reasoning 通道，vLLM 返回 content=None。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7807
+  kind: github_issue
+- url: https://github.com/verl-project/verl/pull/7844
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0178
+original:
+  category: SFT
+  section: SFT
+  meta: 'stage: `sft` · Cov: `var:chat_template_train_serve_mismatch` · 置信度 `documented`'
+  mechanism: verl `MultiTurnSFTDataset._process_single_message()` 对**每条消息单独**调 `apply_chat_template([message])` 再拼接 input_ids——但 Qwen3 系模板对 `reasoning_content` 的渲染依赖完整前缀上下文：对含 reasoning + tool_call 的 assistant 轮，逐消息渲染丢掉 `<think>reasoning</think>` 块，全对话渲染则保留，即 `apply_chat_template([msg]) != apply_chat_template(conv[:i+1])`。训练序列里 reasoning/final-answer 边界因此错位，loss mask 按错位序列监督。自带的 `sanity_check()` 本会 `AssertionError` 拦下该不一致，但 `ignore_input_ids_mismatch=True` 一键压掉检查后训练照常进行。
+  source: 'verl #7807（Qwen3 多轮 SFT，`enable_thinking=True`，user→assistant(reasoning+tool_call)→tool_response×2→final；逐消息 vs 全对话模板渲染 diff 实证）。https://github.com/verl-project/verl/issues/7807 ；verl PR #7844（2026-09-12 补：SGLang 侧同族 token 恒等性破坏——多模态 hash pad（radix-cache 身份用的 OOV id）在 0.5.14 的 prompt-logprob 元数据里被 clip 成 0，蒸馏 teacher 在视觉位看到错 token 而 logprob 值仍按位对齐；修复 = tokenize 后在 request 上记录视觉 offset、提取时恢复 canonical id，一致位不 alias 保持 fail-closed）。https://github.com/verl-project/verl/pull/7844'
+  behavior: 静默面无 crash：训练正常跑完，训后模型把最终答案写进 reasoning 通道（vLLM 返回 `content=None, reasoning="…导航已开始…"`），推理侧表现为「答案藏进思考、正式回复为空」。与 SFT.01（train/serve 模板不一致）同族——都在 tokenization 层把训练分布推离模板语义；与 SFT.12（拆分重复计权）互补：那边权重错、这边内容错；「压掉 sanity check 继续训」的逃逸阀与 RL-KL.04 修复方向（fail-fast 化）正相反，构成检查可被一键绕过的实例。
+  discovery: 2026-09-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

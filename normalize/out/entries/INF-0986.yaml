@@ -1,0 +1,58 @@
+id: INF-0986
+legacy_ids:
+- '10.70'
+slug: sglang_anthropic_messages_streaming_thinking_block_missing_signature_sdk_cold_concurrent_crash
+aliases: []
+title: SGLang Anthropic 流式 thinking 缺签名致 SDK 崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: /v1/messages thinking 签名
+  behavior: Anthropic 适配层对无原生签名的后端流式发出不带 signature 的 thinking block，captured_thinking_signature 被初始化却从未赋值，缺 fallback signature。
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: Anthropic SDK 冷进程并发流初始化时 content_block 保持 raw dict，accumulator 抛 AttributeError，整条流失败；新进程首批双请求同时到达触发，同进程重试持续失败、串行重放不复现。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + `/v1/messages` streaming + 开源推理后端（无原生 thinking signature）+ Anthropic SDK 冷进程并发首请求（other_stack）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39752
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1154
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（SGLang `/v1/messages` Anthropic 适配层：对无原生 Anthropic 加密 thinking signature 的开源推理后端（Qwen 等 OpenAI 兼容），流式发出**无任何 `signature`** 的 thinking block——`content_block_start` 的 `ThinkingBlock(thinking="")` 不带 signature、块关闭时也无 `signature_delta`；代码中 `captured_thinking_signature` 被初始化、条件性发出、重置，但**从未被赋值**。Anthropic SDK（0.87.0 + pydantic 2.13.4）冷进程并发流初始化时嵌套 `content_block` 可保持 raw dict，accumulator 在 `anthropic/lib/streaming/_messages.py:461` 抛 `AttributeError: ''dict'' object has no attribute ''model_dump''`。生产触发：新进程首批两请求（主 agent 轮 + 自动标题生成）同时到达；同进程重试持续失败（parser cache 已错误初始化）、串行重放不复现（首请求已预热 type adapter）。64 线程 barrier 复现：`Counter({''dict'': 62, ''ThinkingBlock'': 2})`；加非空 signature 后 64/64 ThinkingBlock） · Cov: `var:sglang_anthropic_streaming_multi_tool_arguments_merged_single_block`（12.38 Anthropic 适配层流式缺陷族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 适配层假设"流式路径已处理 signature"的注释不成立于无签名后端——ThinkingBlock 构造缺 fallback signature，使 SDK 侧 pydantic 判别联合在冷并发下走 raw dict 分支；签名缺失去掉了类型水合的确定性。
+  source: 'SGLang #39752（2026-09-16 open，含 64 线程最小 parser 复现与 Counter 统计、生产触发场景（冷进程双请求并发）、`captured_thinking_signature` 生命周期分析与 #29242 fallback 修复建议）。https://github.com/sgl-project/sglang/issues/39752'
+  behavior: 客户端侧 crash（Anthropic SDK AttributeError）而非服务端——流初始化期冷并发窗口内整条流失败；同进程重试持续失败（缓存中毒）、串行不复现的组合使常规测试全绿。12.38（Anthropic 流式多 tool 参数并入单块）之后 Anthropic 适配层族新成员：本条在 **thinking block 签名缺失 × SDK 冷并发**维度、故障显形在客户端 SDK。
+  trigger_surface: SGLang + `/v1/messages` streaming + 开源推理后端（无原生 thinking signature）+ Anthropic SDK 冷进程并发首请求（other_stack）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 输出内容
+        status: panel7

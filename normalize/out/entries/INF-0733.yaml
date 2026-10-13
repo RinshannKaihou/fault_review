@@ -1,0 +1,51 @@
+id: INF-0733
+legacy_ids:
+- '7.60'
+slug: vllm_nvfp4_moe_weight_only_uninitialized_input_scale_zeroes_all_experts
+aliases: []
+title: vLLM NVFP4 MoE 未初始化 input_scale 使专家输出归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: ModelOptNvFp4FusedMoE
+  behavior: 接受无 input_scale 的 weight-only NVFP4 检查点，w13_input_scale 由 torch.empty 注册且从不填充，加载后不校验即折进反量化 alpha 与激活 scale（实测为 0.0）。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: weight-only modelopt NVFP4 MoE 检查点配 flashinfer_cutlass backend 时，专家输出恒零，每个 prompt 返回单 token 重复，无错误、无 NaN、无警告；marlin backend 正确；跨硬件复现，易误归因为 GB10。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + weight-only modelopt NVFP4 MoE checkpoint + flashinfer_cutlass MoE backend（checkpoint 格式即触发，跨硬件）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54189
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（`ModelOptNvFp4FusedMoE` 接受 weight-only NVFP4 checkpoint（`"input_activations": null`、无 `input_scale` tensor），把 `torch.empty` 未初始化的 `w13_input_scale` 直接折进反量化 alpha——实测值为 **0.0**，`g1_alphas = weight_scale_2 × input_scale` 对每个 expert 归零：整个 MoE 输出恒零，模型退化为单 token 重复，无错误无警告；NVFP4 linear 方法对同 checkpoint 显式拒绝，MoE 无 guard 无 W4A16 等价路径） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`create_weights` 以 `torch.empty(global_sf_num_experts, dtype=float32)` 注册 `w13_input_scale`，weight-only checkpoint 永不填充；`process_weights_after_loading` 无校验直接送入 kernel 格式转换，同时成为反量化 alpha（`g1_alphas`）与激活全局 scale（`a1_gscale = 1.0/input_scale`）。GB10/DGX Spark 上的同症状报告曾结论为"FLASHINFER_CUTLASS MoE 在 GB10 静默 garbage、用 marlin"——但独立 harness 直驱 `flashinfer.fused_moe.cutlass_fused_moe` 显示 kernel 本身正确（fp32 参考 cos=0.9969），marlin 只是反量化后跑普通 bf16 GEMM 不消费 activation scale 而绕开该路径：**触发面是 checkpoint 而非 GPU**。SGLang 有动态派生 activation scale 的 weight-only 路径故能正确服务同一 checkpoint。'
+  source: 'vLLM #54189（2026-08-28 open，含 torch.empty→0.0 实测、GB10 归因证伪与 marlin/flashinfer_cutlass A/B）。https://github.com/vllm-project/vllm/issues/54189'
+  behavior: '**无 crash、无 NaN、无警告**——每个 prompt 返回单 token 重复到 limit（MoE 贡献恒零、只剩 attention + shared expert）；`--moe-backend marlin` 即正确，同权重同引擎。属「**未初始化 scale 参数静默折叠归零整类专家**」新子签名：与 12.25（transformers 侧同格式丢 `weight_global_scale`——错误常数缩放）互为栈两侧的同族，硬件误归因是其典型陷阱。'
+  trigger_surface: vLLM + weight-only modelopt NVFP4 MoE checkpoint + flashinfer_cutlass MoE backend（checkpoint 格式即触发，跨硬件）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

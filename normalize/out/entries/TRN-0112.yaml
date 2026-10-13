@@ -1,0 +1,51 @@
+id: TRN-0112
+legacy_ids:
+- OPT.12
+slug: scheduler_override_rewrites_group_lr_bounds
+aliases: []
+title: Megatron 覆盖 scheduler 时把全局 LR 界写进每个参数组
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: ckpt 加载后参数组 LR 界赋值
+  behavior: --override-opt-param-scheduler 加载 ckpt 后的赋值段把全局 args.max_lr/min_lr 直接写进每个参数组的 LR 界，覆盖显式配置的 per-group max_lr/min_lr。
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  detail: 带参数组 LR 分界的训练（MoE 冻结层、LoRA 高 LR 组等）resume 即静默换界，如 max_lr=5.0 的组按 1.0 训，warmup/decay 边界错位、分组语义被抹平；无 crash、无警告、无日志。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7173
+  kind: github_issue
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `--override-opt-param-scheduler` 的本义是「用运行时实参覆盖 ckpt 里的旧 scheduler 状态」，但 `checkpointing.py` 加载后的赋值段（L3044-L3054）把**全局** `args.max_lr/min_lr` 直接写进**每个参数组**的 LR bounds：显式配置 per-group `max_lr=5.0 / min_lr=0.5` 的组被全局 `1.0/0.1` 覆写。带参数组 LR 分界的训练（MoE 冻结层、LoRA 高 LR 组、per-layer LR decay 关闭后分组）resume 即静默换界——`max_lr=5.0` 的组按 1.0 训，warmup/decay 边界全部错位，无任何日志。修复思路（issue 给出）：加载前捕获运行时组界、加载后恢复；上游测试只断言全局界，组界断言缺失。
+  source: 'Megatron-LM #7173（8×H800 实测：仅加测试断言 upstream 红 `assert 1.0 == 5.0`，加修复后全绿；真实 legacy torch ckpt 写读复现）。https://github.com/NVIDIA/Megatron-LM/issues/7173'
+  behavior: 无 crash、无警告；resume 后各参数组按错误 LR 界训练，分组语义（哪些层快、哪些层慢、哪些冻结）在加载瞬间被全局值抹平——分组收益静默消失或方向反转。与 OPT.01（矩没 resume）同症状面（resume 后前几百 step 行为异常但可归因于 warmup）；与 CKPT.13（sampler 把全局 RNG 当自己的存）同族：**resume 契约把全局状态错当组级状态**。
+  discovery: 2026-09-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

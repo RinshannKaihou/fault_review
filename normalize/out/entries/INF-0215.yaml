@@ -1,0 +1,52 @@
+id: INF-0215
+legacy_ids:
+- '1.216'
+slug: ttmetal_pow_partial_fma_arg_reduction_cancellation_near_base_one
+aliases: []
+title: ttnn fp32 pow 部分融合 FMA 约化在底数近 1 时相消失精
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: pow log2 约化（binary/unary）
+  behavior: log2 约化写成 z = m*recip − recip，按真 FMA 无限精度假设视为与 (m−1)*recip 等价，但 SFPMAD 仅部分融合（积只多 4 位），底数近 1 时相消只剩约 4 位有效位。
+effect:
+  objects:
+  - 数值结果
+  detail: 底数近 1.0 且指数大时 pow 静默错值，误差随指数放大：指数 1000 时 250 ULP，3e6 时相对误差 4.37%，远超文档 3 ULP 界；无 crash、无 NaN，binary 与 unary 两内核均受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal（WH/BH 双架构内核）+ fp32 pow + 底数近 1.0 × 大指数（hw_specific；数值触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-14'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56518
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn fp32 `pow`（binary 与 unary 两内核）的 log2 约化以 `z = m*recip − recip` 构造（注释称是 `(m−1)*recip` 的"单指令等价"改写），但 SFPMAD 仅**部分融合**——乘积只带 4 extra bits 而非真 FMA 的无限精度积；底数近 1.0 时 m*recip≈recip 相消约 24 位，4 extra bits 成为唯一幸存有效位 → 约化变量失去大部分精度且被指数 pow 放大：指数 1000 时 250 ULP、3e6 时 **4.37% 相对误差**（718,530 ULP），文档 3 ULP 界差五个数量级。而注释声称等价的减法形式按 **Sterbenz 引理**在 [0.5,2] 约化域内**精确无舍入**（86481 采样 m 零不精确案例；PR #49649 相关）） · Cov: `NEW`（部分融合 FMA 的"融合度幻觉"：按无限精度假设改写约化式子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 硬件 FMA 变体的融合位数是 ISA 契约（SFPMAD 部分融合、积仅 4 extra bits），开发者按教科书 FMA 无限精度假设做"等价变换"；相消场景下等价性断裂，误差再经 pow×log2 链条放大。
+  source: 'tt-metal #56518（2026-09-14 open，community label，含 binary/unary 双路径 × 四档指数的 ULP/相对误差表、Sterbenz 域验证与 ckernel_sfpu_binary_pow.h:199 / ckernel_sfpu_unary_power.h:260 定位）。https://github.com/tenstorrent/tt-metal/issues/56518'
+  behavior: 无 crash、无 NaN——近 1 底数的大指数幂静默错值（相对误差随指数放大至百分点级）；对以 pow 构造缩放/衰减因子的路径是慢性精度损失。1.118（KDA 倍增求逆灾难性相消）之后"数学内核相消"族新成员：本条根因在**硬件融合指令精度假设**维度。
+  trigger_surface: tt-metal（WH/BH 双架构内核）+ fp32 pow + 底数近 1.0 × 大指数（hw_specific；数值触发）
+  discovery: |-
+    2026-09-14 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: INF-0181
+legacy_ids:
+- '1.182'
+slug: ttmetal_softplus_fp32_magic_round_constant_domain_overflow
+aliases: []
+title: ttnn.softplus fp32 大负输入返回 inf/NaN/巨值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: softplus_exp_negative 尾部
+  behavior: 把 z=-a*INV_LN2 未钳位传给 _sfpu_round_to_nearest_int32_，magic 常量 c231 只在 |z|≤2^22 有效；z<-c231 时整数减法回绕产生任意位模式，指数重构上溢。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: float32 下 beta*x 低于约 −8.72e6 时返回 +inf、NaN 或高达 3.28e38 的有限值（精确值应为 0）；beta=1 时约 840 万个 bit pattern 受影响，范围随 1/beta 缩放；作为激活毒化下游前向，Wormhole 同样受影响。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal SFPU `softplus`（float32）+ 大负输入（hw_specific；量级即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55798
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.softplus` float32 对 `beta*x` 低于 ≈−8.72e6 返回 **+inf、NaN 及高达 3.28e38 的有限值**，而精确值早已下溢为精确 0——`softplus(−1e7)`=+inf、`softplus(−8.78182e6)`=0.715743；beta=1 下约 **840 万个 fp32 bit pattern**（−[2^23,2^24) 整个 binade + −[2^24,2^25) 的 4%）受影响，带宽随 1/beta 缩放；Wormhole 副本字节相同） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`softplus_exp_negative` 尾部把 `z = -a*INV_LN2` **未钳位**传给 `_sfpu_round_to_nearest_int32_`——Hacker''s-Delight magic 常量 `c231=0x4B400000`（2^23+2^22）只在 `|z|<=2^22`（z+c231 停在 c231 自己的 binade 内）有效；`z < -c231` 后 `as<vInt>(tmp)-as<vInt>(c231)` 的整数减法回绕产生任意位模式，指数重构上溢。与 1.114（exp2 指数重构上溢 guard 缺失回绕）同族、不同算子与触发常量。'
+  source: 'tt-metal #55798（2026-09-08 open，bug label，含 bit-pattern 受影响面统计与 `ckernel_sfpu_softplus.h`/`ckernel_sfpu_exp.h` 行号）。https://github.com/tenstorrent/tt-metal/issues/55798'
+  behavior: 无 crash——大负输入 softplus **静默返回 inf/NaN/巨值**（显性错值而非精度损失），作为激活直接毒化下游前向。1.114 之后「SFPU 指数/舍入重构域外回绕」族在 softplus 的新实例，受影响 bit-pattern 面为该族已知最大（8.4M）。
+  trigger_surface: tt-metal SFPU `softplus`（float32）+ 大负输入（hw_specific；量级即触发）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

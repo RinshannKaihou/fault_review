@@ -1,0 +1,50 @@
+id: INF-0533
+legacy_ids:
+- '6.140'
+slug: vllm_kv_offload_sub_block_ptr_padded_page_oob
+aliases: []
+title: vLLM KV offload 裸指针假设无 padding 布局致启动崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: offload 子块指针推导与 mask
+  behavior: compute_sub_block_ptrs 由 data_ptr()+stride 推导裸地址，假设无 padding 行布局；swap kernel 的 mask 只对 declared size、不对 allocation 边界。
+effect:
+  objects:
+  - 可用性/进度
+  detail: DeepSeek-V4 MLA 页 padding 到 576B（fp8_ds_mla）或 584B 时，启用 OffloadingConnector + fs_python tier 即在启动期以 CUDA error 杀死 worker；错误表面与布局假设根因相距很远。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + OffloadingConnector + fs_python tier + 页带 padding 的 MLA cache（DeepSeek-V4 fp8_ds_mla）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53271
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（compute_sub_block_ptrs 假设平坦无 padding 行布局——DeepSeek-V4 MLA 页 padding 到 576B/584B 时派生裸设备地址走出 buffer；swap kernel mask 只对 declared size 不对 allocation，启动期杀死 worker） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`vllm/v1/kv_offload/cpu/gpu_worker.py` 的 `compute_sub_block_ptrs()` 从 `data_ptr()`、`stride(0)`、`shape[1]` 推导裸设备地址（`base_ptr + block_ids * row_stride + sub_offsets`），该算术**假设平坦、无 padding 的行布局**。DeepSeek-V4 的 MLA 页 padding 到 576B（`fp8_ds_mla`）或 584B 时，页面带对齐 padding 的 cache 产出的地址**走出 buffer**。这些地址被交给 swap kernel，后者以 `tl.pointer_type(tl.int64)` 解引用；`mask` 只对 **declared size** 边界、不对 **allocation** 边界，指针本身无任何校验。启用 `OffloadingConnector` + `fs_python` tier 即在启动期杀死 worker（CUDA error）。'
+  source: 'vLLM PR #53271（2026-08-21 open，[Bugfix][KV offload] Validate computed device pointers before copy）。https://github.com/vllm-project/vllm/pull/53271'
+  behavior: 启动期 crash（CUDA error，worker 死亡）——fail-loud 但错误表面与根因（布局假设）相距很远。属「**派生裸指针的布局假设 × mask 边界错位**」新子签名：从 `data_ptr()+stride` 算术派生的指针继承了隐式布局契约，padding 布局使 mask（对 size）与 allocation（对 buffer）两套边界脱钩——与 6.x AITER 类 OOB 同族但发生在 KV offload swap 路径。
+  trigger_surface: vLLM + OffloadingConnector + fs_python tier + 页带 padding 的 MLA cache（DeepSeek-V4 fp8_ds_mla）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

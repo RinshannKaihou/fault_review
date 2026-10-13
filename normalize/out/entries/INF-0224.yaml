@@ -1,0 +1,54 @@
+id: INF-0224
+legacy_ids:
+- '1.225'
+slug: ttmetal_scatter_rank5_independent_fold_row_misplacement_and_skip
+aliases: []
+title: ttnn.scatter rank>4 独立折叠致行错位写入与漏写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: scatter ND→4D 折叠与 reader
+  behavior: rank>4 时 input/index/src 各自按自身 extents 折叠到 4D，reader kernel 用 input 折叠坐标按 index strides 解析 index stick，两侧折叠不一致时解析到错误行。
+effect:
+  objects:
+  - 数值结果
+  detail: index/src 内部 leading dim 小于 input 时，源行写进错误位置、原目标行被跳过，Blackhole 实测 199–2407 元素不符，无 crash 无 assert；bf16 reduction scatter 同样中招，现有 rank-5 测试未覆盖。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal/ttnn + `ttnn.scatter` + rank>4 + index/src 内部 leading dim 不等（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56876
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0223
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn `scatter` 与 1.224 同根因：`pre_scatter_transform_tensor()` → `transform_to_4d_tensor()` 对 input/index/src 各自 `squeeze_from_ND_to_4D` 折叠；reader kernel（`reader_scatter.cpp`，`reader_bf16_reduction_scatter.cpp` 重复同构）以 input 折叠坐标经 `in_bounds()` 测试后用 `to_id(coord, index_strides)` 解析 index stick——仅当两张量折叠一致时有效。input `(2,3,4,5,6)` 折叠为 `(6,4,5,6)`、index `(2,2,4,5,6)` 折叠为 `(4,4,5,6)`：input stick `coord0==2`（原 `(a0=0,a1=2)`，index a1 extent=2 无对应行、torch 应保持不动）却通过 `in_bounds({2,..},{4,4,5})` 并解析到 index 行 `(1,0)`——**源行写进错误位置且原目标行被跳过**。Blackhole 实测 5 组形状 dim∈{-1,2,0} mismatch 199–2407 元素、全部静默；rank-4 与同形对照 0 错） · Cov: `var:ttmetal_gather_rank5_independent_fold_operand_extents_divergence`（1.224 独立折叠族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 与 1.224 相同的坐标系发散，scatter 侧后果更结构性——写路径错位产生"错位写入 + 目标行漏写"双重损坏（gather 只读错）；bfloat16 reduction scatter factory 同样中招。
+  source: 'tt-metal #56876（2026-09-17 open，master ticket item 3，含折叠对照表、6 行失败矩阵、修复建议与完整测试计划（rank 5/6/8 × dim 四值 × ROW_MAJOR/TILE × bf16/fp32 × source>index × reduction factory））。https://github.com/tenstorrent/tt-metal/issues/56876'
+  behavior: 无 crash、无 assert——scatter 结果部分行写错位置、部分应写行未写（对 torch.scatter 的元素级 mismatch），静默错误数据；op 自带测试套件的 rank-5 用例全用相同 leading dims、`test_scatter_spec` 只断言 shape/dtype，该路径零覆盖。
+  trigger_surface: tt-metal/ttnn + `ttnn.scatter` + rank>4 + index/src 内部 leading dim 不等（hw_specific）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - detail

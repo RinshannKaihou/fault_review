@@ -1,0 +1,58 @@
+id: TRN-0163
+legacy_ids:
+- MOE.14
+slug: aux_loss_coef_noop_without_router_logit_flag
+aliases: []
+title: trl SFTTrainer 靠可选字段判定 MoE，aux loss 静默失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: trl
+    component: SFTTrainer 的 MoE 判定谓词
+  behavior: SFTTrainer 以 text_config 是否声明 output_router_logits 判定 MoE 并启用 aux loss，但该字段是可选声明，未声明的 MoE 架构被判为非 MoE，aux 系数不生效。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: 无 crash、无警告，loss 曲线正常；transformers main 上 64 个 MoE config 有 30 个未声明（含 DeepSeek-V2/V3、GLM4-MoE、Qwen3-VL-MoE 等），这些架构的 SFT 负载均衡项从未生效，专家利用分布无约束漂移。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7222
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0056
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `sft` · Cov: `var:dead_or_shadowed_arg_silent_noop` · 置信度 `documented`'
+  mechanism: trl `SFTTrainer` 用 `getattr(text_config, "output_router_logits", None) is not None` 推断是否 MoE 并启用 aux loss——但该字段是**可选声明**：transformers main 上 64 个 MoE config 有 30 个不声明（DeepSeek-V2/V3/V3.2、GLM4-MoE、GLM4V-MoE、Qwen3-VL-MoE、Mistral4、dots1、Kimi-Linear、Step3p7 全部在内），对这些架构 `router_aux_loss_coef` 是**静默 no-op**：无 aux loss 项、无警告。同库 `compute_flops_per_token` 已用 `num_experts_per_tok` 作权威 MoE 标记，检测路径间自身不一致。
+  source: 'trl #7222（2026-09-16；双 tiny 模型 repro：Qwen3Moe 记 aux_loss=True、DeepseekV3 False；config 声明面清点 34 declare / 30 not）。https://github.com/huggingface/trl/issues/7222'
+  behavior: 无 crash、无 warning——近半 MoE 架构的 SFT run 负载均衡项从未生效，专家利用分布不受约束地漂移，训练 loss 曲线完全正常；与 SFT.07（LoRA target_modules 静默欠匹配）同库同型「配置声明了、检测谓词漏一类目标」，差异在这边打击 aux loss（路由层）而非 PEFT 挂载面；「is_moe 推断依赖可选 config 字段」与 CKPT.07 死配置族共享病根但方向相反：CKPT.07 是 key 无人消费、这边是**消费了但布尔谓词对一半架构恒 False**；维护者 qgallouedec 已表态内部处理（不收外部 PR），拟用 `num_experts` 类权威标记 + 未应用时告警。
+  discovery: 2026-09-23 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: MoE路由
+        status: panel7

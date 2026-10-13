@@ -1,0 +1,54 @@
+id: INF-0387
+legacy_ids:
+- '5.40'
+slug: vllm_flashinfer_autotune_config_cache_rank0_only_dump_multi_rank_launch_deadlock
+aliases: []
+title: FlashInfer autotune 缓存仅 rank0 落盘致启动死锁
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: JIT autotuner 配置缓存
+  behavior: autotune 配置缓存只为 rank 0 dump：rank0 命中缓存跳过调优、退出调优同步的 all-reduce，其余 rank 未命中进入调优并等待该 all-reduce，成员资格约定不一致。
+effect:
+  objects:
+  - 可用性/进度
+  detail: '多 rank 引擎（如 8×H100 TP8 或 TP7+EP7 MoE、NVFP4）存有 rank0 缓存时启动无限挂起：worker 全存活但零推进，无超时无报错；仅 TP0 打印 Config cache hit，其余停在 Tuning ...gemm1: 0%。'
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM + FlashInfer JIT autotune + TP/EP >1 + 存量 rank0 autotune 缓存（other_stack：flashinfer 侧缓存语义）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57423
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_flashinfer_trtllm_moe_dp_ep_launch_wedge
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（vLLM FlashInfer JIT autotuner 保存 `autotune_config.json` 时**只为 rank 0 dump 缓存**：多 rank 引擎（8×H100 TP7+EP7 / TP8 MoE，NVFP4 量化）启动时 rank0 从 `/tmp/cache/vllm/flashinfer_autotune_cache/...` config hit 跳过调优，其余 7 个 rank cache miss 进入调优流程并**阻塞在 autotuning 同步所用的 all-reduce 上**——rank0 已不再参与该集合通信，引擎启动无限挂起。日志特征：仅 `Worker_TP0` 打印 `Config cache hit ... (source=config file)`、其余 rank 停在 `Tuning trtllm::fused_moe::gemm1: 0%`；8 worker 全部存活但零推进，无 timeout 无 error） · Cov: `var:vllm_flashinfer_trtllm_moe_dp_ep_launch_wedge`（5.28 多 rank 启动挂起族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 调优缓存持久化路径假设单 rank 语义（rank0 dump 即代表全体），而调优执行路径假设全员参与（all-reduce 同步）；两路径对"谁读缓存/谁调优"的成员资格约定不一致——缓存命中使 rank0 提前退出集合通信、其余 rank 永久等待。
+  source: 'vLLM #57423（2026-09-17 open，bug/quantization，含 8 worker 逐行日志对照（rank0 hit vs 7×miss+0% 卡死）、/tmp 缓存路径与版本（flashinfer 0.6.18.post1）、16384 token × 22 bucket 的 warmup 配置）。https://github.com/vllm-project/vllm/issues/57423'
+  behavior: 无 crash、无 error 日志——引擎启动无限挂起（liveness 全绿但零吞吐），k8s 无重启信号使故障表现为"服务永不上线"；仅 rank0 打印 cache hit 是唯一日志指纹。5.28（FlashInfer TRTLLM MoE DP/EP 启动 wedge）与 5.33（DSPARK draft 池 tp_size 失配 OOM）之后多 rank 启动族新成员：本条在**调优缓存成员资格不一致**维度。
+  trigger_surface: vLLM + FlashInfer JIT autotune + TP/EP >1 + 存量 rank0 autotune 缓存（other_stack：flashinfer 侧缓存语义）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

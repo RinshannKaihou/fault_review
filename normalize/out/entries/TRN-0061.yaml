@@ -1,0 +1,56 @@
+id: TRN-0061
+legacy_ids:
+- CKPT.12
+slug: fsdp_merger_concatenates_replicated_buffers
+aliases: []
+title: verl FSDP merger 把复制 buffer 拼成 N 倍大小
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: verl
+    component: FSDPModelMerger 复制条目合并
+  behavior: FSDP ckpt 中复制条目（persistent buffer、未 wrap 参数）以普通 tensor 存储，merger 对无 placement 条目走 torch.cat(dim=0)，把 N 份相同拷贝拼接而非取其一。
+effect:
+  objects:
+  - 模型权重
+  detail: merged ckpt 形状错误（8-rank Gemma4 中 layer_scalar [1]→[8]、std_scale [1152]→[9216]），加载通常 shape mismatch 报错；形状碰巧兼容时静默改写 buffer 数值排布。多模态/复合模型重灾区。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/7612
+  kind: github_pr
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `sft/rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: FSDP 分片 ckpt 中**复制**条目（persistent buffer 与未被 wrap 的参数）以普通 tensor 而非 `DTensor` 存储——每个 rank 各存一份完整拷贝。verl `FSDPModelMerger._load_and_merge_state_dicts` 对无 placement 信息的条目落入 `torch.cat(..., dim=0)` 通用分支，把 N 份相同拷贝**拼接**成 world_size 倍大小的 tensor（`_merge_by_placement` 明知 replicate 应取 `tensors[0]` 去重，此分支漏用该规则）。多模态/复合模型重灾区：8-rank Gemma4 ckpt 中 `layer_scalar [1]→[8]`、vision tower `std_scale/std_bias [1152]→[9216]`，实测非 DTensor 条目集合恰等于模型 persistent buffer 全集（32 项同名）。
+  source: 'verl #7612（CPU 单测在 main 上 `assert torch.Size([4]) == torch.Size([1])` 失败、修复后通过；真实 ckpt 逐条验证）。https://github.com/verl-project/verl/pull/7612'
+  behavior: merged ckpt 形状错误 → 加载侧通常 shape mismatch 报错；但**形状碰巧兼容时**（如 `[1]→[8]` 类标量 buffer 沿新维度复制、或下游 reshape 吞掉多余维度）会静默把 buffer 数值排布改写。与 CKPT.01（专家 reshard 排列错位）同族的 merge 侧错位，但根因是**复制条目被当分片条目拼接**，非 id 排列。
+  discovery: 2026-08-31 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 报错
+        to: 静默错误
+        status: panel7

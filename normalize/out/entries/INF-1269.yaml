@@ -1,0 +1,56 @@
+id: INF-1269
+legacy_ids:
+- K6.4
+slug: adakv_uniform_headbudget_misalloc
+aliases: []
+title: Ada-KV：逐头均匀 KV 预算致弥散头被饿死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: KV 驱逐的逐头预算分配
+  behavior: 驱逐方法把一层的预算在各注意力头间均匀切分，忽略各头注意力集中度的差异，使稀疏头被过度服务、弥散头被饿死。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 原文按机制推断：同等总预算下注意力输出偏离全注意力，损失主要落在弥散头上，表现为静默的长上下文质量下降而非崩溃。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2407.11550
+  kind: arxiv
+relations: []
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`model_on` · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 驱逐方法通常把一层的预算在各注意力头间均匀切分，忽略了各头注意力集中度不同；Ada-KV 把驱逐损失形式化为驱逐前后注意力输出之间的 L1 距离，并证明均匀分配次优（稀疏头被过度服务，弥散头被饿死）。可复现的故障 = 强制均匀的 per-head 预算。
+  source: Ada-KV arXiv:2407.11550（NeurIPS'25）。
+  behavior: 源文档未单列该字段；由机制可得——同等总预算下注意力输出偏离全注意力，弥散头承担绝大部分损失，表现为静默的长上下文质量下降而非崩溃。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: model_on——每头保留的 KV 仍是合法子集。可捕获：**per-head** 注意力输出相对全注意力的 L1/L2 偏离（geometric 族按头分解后可见），在弥散头上最大；这是一条与 token 选择型驱逐故障正交的**每头预算**轴。会漏检：所有把 head 维聚合掉的指标（整层范数、整层 effective-rank）——头间偏离会互相抵消。
+  repro: prefill 时一次性、对每个 KV head h **独立**按该头逐位置 key L2 范数排序，保留 top `B = max(1, floor(budget_fraction * T))` 个位置**外加**始终保留位置 0（attention sink），其余该头的 K/V 就地置零；跨头统一的 B 即故障本身。诚实近似：真实 Ada-KV/SnapKV 类策略按累积注意力分数排序，而该 hook 点拿不到注意力权重，故用逐位置 key L2 范数作为 per-head 重要性代理（保留了被测性质：per-head 排序 + 统一 per-head 截断）；驱逐同样用就地置零建模（等长，故单层改动对 decode 安全）；只通过 decode 路径可见。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - behavior

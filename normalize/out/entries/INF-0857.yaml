@@ -1,0 +1,57 @@
+id: INF-0857
+legacy_ids:
+- '8.73'
+slug: vllm_glm53flash_kpool_topk_buffer_2048_index_width_overflow
+aliases: []
+title: kpool top-k 宽 2176 超 SM120 内核 2048
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: GLM-5.3 有效 index_topk
+  behavior: kpool indexer 把 top-k buffer 加池尾并 pad 到 128 倍数（2048→2176），而 SM120 sparse-MLA 内核按恰好 2048 宽实例化，模型侧未相应收缩 index_topk
+effect:
+  objects:
+  - 可用性/进度
+  - KV状态
+  detail: 'SM120/GB10 上用 stock config 的 GLM-5.3-Flash，带 #53969 有效宽度检查时启动即被拒（要求 2048、实得 2176），需手改 config.json；无检查时内核静默收到超宽 page table，存在越界/错位风险'
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + GLM-5.3-Flash（stock index_topk=2048/kpool=4）+ SM120/GB10 sparse-MLA（模型×平台组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55563
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0840
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（GLM-5.3-Flash 出厂 `index_topk=2048, index_kpool=4`——kpool indexer 把 top-k buffer 按恒选池尾（kpool−1）加宽并 pad 到 128 倍数，到达 sparse-MLA kernel 的 buffer 宽 2176，而 SM120 sparse 后端及其内核按**恰好 2048** 的 index 宽度实例化——带 #53969 的有效宽度检查时 stock config 启动即拒（`requires an effective topk buffer width of 2048; got 2176`）；无检查时内核收到 2176 宽 page table） · Cov: `var:vllm_rocm_glm53flash_kpool_block_size_advertising_mismatch_self_overwrite`（8.56 kpool 声明失配族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: kpool 加宽（+池尾+对齐）与后端固定 index 宽度（SM120 sparse 实例化 2048）两个常量域未对齐。修复在模型 init 时当 `index_topk + tail` 溢出 2048 宽 index 就取有效 `index_topk = 2048 − tail`（GLM-5.3-Flash 为 2045，select_k=511 pools，与社区手改 2044 等价）写回 config 并 log 一次；SM120 后端验证改查拟合宽度。2×DGX Spark 实测：未改 config 的 GLM-5.3-Flash-NVFP4 启动健康（763,494 token KV @131K），算术门 3/3 精确。
+  source: 'vLLM PR #55563（2026-09-06，bug/nvidia/glm label，与 #53906/#53969/#55277 关联）。https://github.com/vllm-project/vllm/pull/55563'
+  behavior: 修复前两个形态——启动拒绝（fail-loud，但要求用户手改 config.json 绕过）或无检查时**内核静默收超宽 page table**（越界/错位风险）。8.56（ROCm kpool 块大小声明失配自我覆写）之后 kpool 常量域族第二例：kpool 维度（宽/块）与后端实例化宽度的一致性是 sparse-MLA 移植到新平台的固定摩擦点。
+  trigger_surface: vLLM + GLM-5.3-Flash（stock index_topk=2048/kpool=4）+ SM120/GB10 sparse-MLA（模型×平台组合触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect
+    - visibility

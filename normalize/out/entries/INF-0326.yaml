@@ -1,0 +1,53 @@
+id: INF-0326
+legacy_ids:
+- '4.10'
+slug: sglang_dsa_topk_v2_tie_overflow_arbitrary_subset
+aliases: []
+title: SGLang DSA top-k v2 tie bin 溢出静默丢弃真实候选
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: DSA top-k v2 内核 tie 收集
+  behavior: 粗 bin 元素超过 kMaxNumTie=2048 时 collect pass 按 atomicAdd 到达序保留前 2048 个、静默丢弃其余，exact tie-break 只在该任意子集上运行；count_eq 已知溢出却未利用
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 无 crash、无错误标志；sparse attention 读错 KV 位置，长上下文检索质量静默退化（GLM-5.2-FP8、~1M 上下文实测 42 行中 2–3 行不符），需与 torch.topk fp32 multiset 对拍才能发现
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；DSA sparse attention + >2048 元素同粗 bin 的 indexer score 行（~1M ctx 负载）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35257
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0322
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（DSA top-k v2 tie bin 溢出按 atomicAdd 到达序保留任意 2048 子集、exact tie-break 在截断子集上运行 → 静默返回非真 top-k） · Cov: `var:vllm_persistent_topk_silent_candidate_drop_narrow_range` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: fused DSA top-k v2 内核（`topk_impl.cuh` L595/L618）中，落入阈值粗 bin 的元素超过 `kMaxNumTie=2048` 时，collect pass 用 `atomicAdd` 到达序（调度依赖、与值无关）保留前 2048 个，溢出元素**静默丢弃**（`tie_count = min(equal_count, kMaxNumTie)` 在截断子集上选择）；后续 exact tie-break 只作用于该任意子集。同 bin 元素仅共享 fp16 高位、**并非 fp32 相等**——被丢候选可真大于被保留者。`count_eq` 已持有真实 bin 总数（溢出可免费检测）但未被利用。与 4.6 persistent_topk 同族（粗 bin 溢出静默丢真值），locus 在 tie-break 子集截断而非直方图选值。
+  source: 'SGLang #35257（2026-08-17 open，follow-up of #30512/#30645；GLM-5.2-FP8 8×B200 官方 v0.5.17，~1M-token 上下文实测 42 个真实 indexer score 行中 2–3 行与 torch.topk fp32 multiset 不符）。https://github.com/sgl-project/sglang/issues/35257'
+  behavior: '无 crash、无错误标志。sparse attention 读错 KV 位置 → 长上下文检索质量静默退化，与 `torch.topk` fp32 multiset 对拍才能发现。与 #30645 讨论的 ReLU 退化 exact-tie（任意子集可接受）不同——本条是真实值损失。'
+  trigger_surface: SGLang；DSA sparse attention + >2048 元素同粗 bin 的 indexer score 行（~1M ctx 负载）
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

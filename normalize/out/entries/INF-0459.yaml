@@ -1,0 +1,51 @@
+id: INF-0459
+legacy_ids:
+- '6.66'
+slug: sglang_cp_roundrobin_single_row_inflated_pitch_memory_fault
+aliases: []
+title: SGLang CP 单行 shard 保留膨胀 pitch 致访存越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: sglang
+    component: CP round-robin 切分函数
+  behavior: CP round-robin 切分对 view 切片调 .contiguous()；chunk 恰为 cp_size token 时 shard 仅 1 行，被判为连续不拷贝，保留 cp_size 倍膨胀的 row pitch。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: DSV4 CP prefill 且 chunk 恰为 cp_size token 时触发；下游按 stride(0) 取 pitch 的 aiter mhc_pre 越界寻址，报 Memory access fault by GPU；越界地址恰好已映射时可能静默损坏。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；DSV4 CP prefill + chunk 恰 cp_size token
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34142
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（CP round-robin shard 单行时 row pitch 被 cp_size 倍膨胀→下游 kernel 据膨胀 pitch 越界寻址→DSV4 prefill memory fault） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`dsa_cp_round_robin_split_data` 末行 `input_.view(-1, cp_size, *shape[1:])[:, cp_rank].contiguous()`。当 prefill chunk 恰 `cp_size` token 时每 rank shard 仅 1 行→size-1 外维 `is_contiguous()` 恒 True→`.contiguous()` 为 no-op→shard 保留 `cp_size` 倍膨胀的 row pitch（`cp_size*row_numel` 而非 `row_numel`）。下游用 `stride(0)` 作 pitch 的 kernel 将 shard 视为 `cp_size` 倍大。DSV4（hc_mult=4, hidden=7168, cp=8）pitch 229376 vs 28672；aiter `mhc_pre` 据此 size buffer descriptor 越界寻址→`Memory access fault by GPU node-N`（8 GPU 8 不同地址）。'
+  source: 'SGLang PR #34142（2026-08-09 open）。组件 `dsa_cp_round_robin_split_data`。https://github.com/sgl-project/sglang/pull/34142'
+  behavior: crash（memory access fault）；若越界地址恰好映射则静默损坏（同族 int32/stride 类 bug）。属「`.contiguous()` 对 size-1 维为 no-op 保留膨胀 stride」签名——view+contiguous 交互新子签名。
+  trigger_surface: SGLang；DSV4 CP prefill + chunk 恰 cp_size token
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

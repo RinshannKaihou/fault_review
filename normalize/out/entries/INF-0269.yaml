@@ -1,0 +1,52 @@
+id: INF-0269
+legacy_ids:
+- '1.270'
+slug: ttmetal_div_fp32_signed_zero_divisor_special_value_arms_wrong
+aliases: []
+title: ttnn.divide fp32 有符号零除数臂对特殊值返回错误结果
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU 二元 div 零除数臂
+  behavior: 零除数臂中 in1==0 与 in0==0 两个比较都编译为 SFPSETCC int32 判零，只匹配 +0 位型：NaN/−0 被除数不被识别，除以 −0 时整个臂不进入，改走 in0*(1/−0)。
+effect:
+  objects:
+  - 数值结果
+  detail: 除以 +0 时 NaN 被除数返回 ±inf、−0 被除数返回 −inf（均应 NaN）；除以 −0 时 subnormal 被除数返回 NaN（应 ∓inf）。全位型扫描 33,554,429 对错误，广播与 Python 标量除数同错，NaN 传播在除零点断裂。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + ttnn.divide fp32 + 除数为 ±0（NaN/−0/subnormal 被除数命中）（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58272
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0153
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal `ttnn.divide` fp32 的**零除数臂**对 NaN/−0/subnormal 被除数错误：臂体 `v_if(in1==0){ v_if(in0==0){NaN} v_else{copysign(inf,in0)} }` 的两个比较都编译为 SFPSETCC mode 6（int32 判零、只匹配 +0 位型）——除以 +0 时 NaN 被除数返回 ±inf（应 NaN，全部 16,777,214 个 NaN 位型错）、−0 被除数返回 −inf（应 NaN）；除以 −0 时该臂整体不进、走 `in0*(1/−0)=in0*−inf`，subnormal 被除数被乘法读为零得 `0*inf=NaN`（应 ∓inf，两符号 subnormal 段共 16,777,214 个全错）——2×2^32 全位型对 IEEE 754 扫描：**33,554,429 / 2^33 对错误**（P300 与 N300 同计数），行/列/标量广播、Python 标量除数、广播被除数同错） · Cov: `var:1.154`（div 特殊值（零/次正规操作数）分支不完整族——1.154 是 subnormal 分母 NaN，本条在**有符号零除数的双臂**：NaN 传播被断（NaN/0 → ±inf）与 subnormal×±inf → NaN 两方向） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: SFPU 二元 div 的零除数臂用整数判零比较实现浮点相等，NaN/−0 位型不被识别；报告者附 2×2^32 全扫描三类错误计数表（双架构一致）与臂体代码。
+  source: 'tt-metal #58272（2026-09-29 open，含全位型 IEEE 对照扫描、三错误类计数与 `ckernel_sfpu_binary.h` 定位）。https://github.com/tenstorrent/tt-metal/issues/58272'
+  behavior: 无 crash——**NaN 传播链在除零点断裂**（NaN/0 给 ±inf 而非 NaN）与 subnormal 商错为 NaN：静默错误值，量级为除零域全域 0.4% 位型对；对依赖 NaN 污染快速失败的下层算子是隐匿点。
+  trigger_surface: tt-metal + ttnn.divide fp32 + 除数为 ±0（NaN/−0/subnormal 被除数命中）（hw_specific）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

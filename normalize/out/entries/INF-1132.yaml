@@ -1,0 +1,51 @@
+id: INF-1132
+legacy_ids:
+- '12.16'
+slug: trtllm_group_greedy_sample_state_stale_across_iterations
+aliases: []
+title: TRT-LLM group greedy 采样决策跨迭代不复位致采样语义串扰
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tensorrt-llm
+    component: group greedy 采样决策状态
+  behavior: 上一迭代同步的 group_all_greedy_sample 决策在推导当前 batch 的 greedy flag 前不清空，过期决策被后续 CUDA-graph lookup 与 sampling-buffer 填充持续复用。
+effect:
+  objects:
+  - 输出分布
+  - 跨请求/跨样本数据
+  detail: DSpark rejection sampling + attention DP + LM-head TP 下，GEN engine 用无采样参数的 CONTEXT_INIT 请求 warm-up 后，温度/rejection sampling 语义在迭代间串扰，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM；DSpark rejection sampling + attention DP + LM-head TP + group greedy 同步
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-14'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/17710
+  kind: github_pr
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（group greedy 决策跨迭代不复位 → 上一迭代的采样模式泄漏进当前 batch） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'TRT-LLM rejection sampling（DSpark）+ attention DP + LM-head TP 组合下，上一迭代同步的 `group_all_greedy_sample` 决策在推导当前 batch 的 local greedy/non-greedy flag 前不清空：GEN engine warm-up 用无采样参数的合成 `CONTEXT_INIT` 请求后，过期的 group 决策被后续 CUDA-graph lookup 与 sampling-buffer 填充持续复用。修复（PR #17710）每迭代刷新 group greedy 状态。与 #17671（non-greedy CUDA-graph capture override 生命周期）为姊妹缺陷。'
+  source: 'TRT-LLM PR #17710（2026-08-14 open，Hecate 复现）。DSpark one-engine + rejection sampling + attention DP + LM-head TP。https://github.com/NVIDIA/TensorRT-LLM/pull/17710'
+  behavior: 无 crash。**过期的 greedy/non-greedy 组决策静默作用于错误 batch**——采样语义（温度/rejection sampling）在迭代间串扰。属「跨迭代采样决策状态泄漏」**新子签名**——CUDA-graph 复用路径下 per-iteration 状态生命周期缺失。
+  trigger_surface: TRT-LLM；DSpark rejection sampling + attention DP + LM-head TP + group greedy 同步
+  discovery: 2026-08-14 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

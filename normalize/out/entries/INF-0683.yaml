@@ -1,0 +1,53 @@
+id: INF-0683
+legacy_ids:
+- '7.10'
+slug: sglang_fp8_reciprocal_mul_glm52_regression
+aliases: []
+title: SGLang FP8 倒数乘法替代除法致 GLM-5.2 decode 回归
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: per-token group FP8 量化
+  behavior: 'PR #30924 把 FP32-scale 乘子由直接除法（x / scale）改为显式倒数乘法（x * (1/scale)），在 Hopper 上引入小的 FP8 舍入差异，作用于 per-token group 量化路径。'
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Hopper 上 GLM-5.2 decode 输出质量回归，DeepSeek-V3.2 MTP accept length 从 3.459 降到 2.462；无 crash、无 NaN，输出仍连贯。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 主路径；概念可迁 vLLM，但原文复现需 SGLang
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-07-29'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/32616
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`ambiguous`（架构 + 数据门控：仅在 GLM-5.2 等 FP8 舍入敏感路径上出现） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 'SGLang PR #30924 把 FP32-scale 乘子从**直接除法**改成**显式倒数乘法**（`x / scale` → `x * (1/scale)`），在 Hopper 上引入了**小 FP8 舍入差异**。FP8 的倒数计算精度低于直接除法，导致 per-token group 量化路径上 GLM-5.2 decode 出现回归；同时 DeepSeek-V3.2 MTP 的 L3 accept length 从 3.459 掉到 2.462。PR #32616 恢复除法行为后 bitwise 与旧 v2 kernel 一致。这是典型的"算法等价但数值不等价"量化精度 bug——FP8 的倒数运算引入了额外的舍入误差。'
+  source: 'SGLang PR #32616（2026-07-28）。https://github.com/sgl-project/sglang/pull/32616 。回归 PR #30924。'
+  behavior: GLM-5.2 decode 回归（输出质量下降），DeepSeek-V3.2 MTP accept length 从 3.459 降到 2.462（推测解码效率下降 28.8%）。无 crash、无 NaN，输出仍连贯但质量退化。
+  trigger_surface: SGLang 主路径；概念可迁 vLLM，但原文复现需 SGLang
+  signature: ambiguous / 受 FP8 路径 + 模型架构门控。签名是 FP8 倒数乘法引入的 per-token 舍入差异，幅度极小（FP8 ULP 级别），落在 4.1 `fp_reduction_order_nondeterminism` 噪声底附近。可被 statistical 族的逐 token 分位偏移检测（如果差分有参考）；单帧 geometric 漏检。本条对编目第 7 类（量化）的补充价值在于：它展示了**算法等价的代码重构（除法→倒数乘法）在 FP8 下可以改变输出**。
+  repro: 不可软件复现——需要 Hopper FP8 量化路径 + GLM-5.2 模型。fp32 下可近似：对一个 Linear 的 FP32 输出分别用 `x/scale` 和 `x*(1/scale)` 计算并比较差异，但 fp32 下两者差异远小于噪声底。
+  discovery: 2026-07-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

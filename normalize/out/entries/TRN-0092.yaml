@@ -1,0 +1,63 @@
+id: TRN-0092
+legacy_ids:
+- DATA.10
+slug: secondary_eos_mask_misclassifies_terminated
+aliases: []
+title: GRPOTrainer 只认主 EOS id，多 EOS 模型边界错判
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: GRPOTrainer EOS 边界判定
+  behavior: GRPOTrainer 判定 completion 边界只认 tokenizer.eos_token_id 单值，忽略 generation_config 里的次级 EOS id，EOS mask、截断率指标等四个消费点均错位。
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  - 指标/日志
+  detail: 多 EOS 模型（Phi-3.5、Gemma-3、Qwen3）以次级 EOS 结束时：终止后 token 留在 loss；正常终止被记为截断（clipped_ratio≈0.97）；开 mask_truncated_completions 时几乎全部样本被掩掉，RL 零学习信号且无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/pull/7039
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0178
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `rl` · Cov: `var:chat_template_train_serve_mismatch` · 置信度 `documented`'
+  mechanism: 模型在 `generation_config.eos_token_id` 里声明**多个** EOS id（Phi-3.5 `[32007, 32001, 32000]`、Gemma-3 `[1, 106]`、Qwen3 `[151645, 151643]`），助手回合实际以**次级** id 结束（`<|end|>` / `<end_of_turn>`）。生成侧（transformers 与 vLLM `generation_config="auto"`）对全表 EOS 停止——正确；trainer 侧 GRPO `GRPOTrainer` 的 completion 边界却只认 `tokenizer.eos_token_id` 单个值，四个消费点全错位：EOS mask 只在主 id 后切（次级 EOS 之后的 padding/续采样 token **留在 loss**）、`clipped_ratio`/`mean_terminated_length` 把正常终止记为截断、`mask_truncated_completions=True` 时这些 completion 被整条掩掉、tool-suffix 前缀修剪找错 id。修复 = 收集 `tokenizer.eos_token_id + generation_config 全表` 进 `self.eos_token_ids` 并统一用于四个位点。
+  source: 'trl PR #7039（Phi-3.5 实测 `clipped_ratio≈0.97`@step1（max_completion_length=2048）而几乎所有 completion 实际终止于 `<|end|>`；修复后 <0.1、`mean_terminated_length` 非零；Gemma-3-4B-it GRPO vLLM colocate + transformers 双路径验证；含回归测试）。https://github.com/huggingface/trl/pull/7039'
+  behavior: 多 EOS 模型上三种静默面同时发生：loss 学到「终止之后的垃圾 token」、截断率指标失真（把好数据看成没学完）、`mask_truncated_completions` 开启时**几乎全部样本被掩掉 → RL 零学习信号**而 run 无报错。与 SFT.01（模板训服不一致）同根因族——控制 token 语义在训练/生成两侧定义不同；与 RL-RWD.05（预填 `<think>` 死区）互补：那边 reward 侧锚定失败，这边 completion 边界判定失败。
+  discovery: 2026-09-04 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  - effect.objects
+  note: subsystem 由 数据管线 改为 RL训练回路。依据 rules 功能域优先 + “修复要改哪里”：修复是在 GRPOTrainer 内收集 self.eos_token_ids 并用于四个位点，四个消费点（EOS mask、clipped_ratio/mean_terminated_length、mask_truncated_completions、tool-suffix 修剪）都在 GRPO trainer 的 rollout→训练路径上，超出数据管线的 loss mask 构造范围；数据集/packing 层无缺陷。effect.objects 增补 训练信号：原文“几乎全部样本被掩掉 → RL 零学习信号”。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

@@ -1,0 +1,53 @@
+id: INF-0428
+legacy_ids:
+- '6.35'
+slug: sglang_dsv4_spec_draft_gt4_silent_compress_ring_underwrite
+aliases: []
+title: SGLang DSV4 draft>4 压缩 ring 欠写致 KV 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: c_plan.cuh 压缩 ring pad
+  behavior: compress write-plan 按乐观 seq_len 构建，提交 token 须靠 pad 留在 ring 中，c_plan.cuh 却把 pad 硬编码为 kMaxMTPDraftTokens=4，host 路径缺 pad。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: speculative_num_draft_tokens > 4 时部分已提交 token 不被持久化，后续压缩窗口从陈旧 ring slot 计算；无 illegal access、无 NaN、无 assert，仅表现为安静的精度回归。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用；DSV4 + 推测解码 + `speculative_num_draft_tokens > 4` + compress state
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33872
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（推测解码 draft>4 时 compress ring under-write → 静默 KV 损坏） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: DSV4 speculative verify batch 的 compress write-plan（`plan_w` from `plan_compress_prefill`）从**乐观** `seq_len = prefix_len + num_draft_tokens` 构建，但验证后序列尾回滚到 `prefix_len + accept_len`。每个最终提交的 token 必须仍驻留在 compress-state ring 中（无论 accept length 如何），否则后续压缩窗口读到陈旧 ring slot。`c_plan.cuh` 硬编码 write pad 为 `kMaxMTPDraftTokens = 4`：`constexpr int32_t kMaxMTPDraftTokens = 4; const auto mtp_pad = std::min(ring_size - compress_ratio, kMaxMTPDraftTokens);`。故 `speculative_num_draft_tokens > 4` 时 plan **under-writes** ring：`seq_len - 4` 到 `seq_len - num_draft_tokens` 之间的 token 永不持久化。host 路径还完全缺失 pad。**完全静默——无 illegal access、无 NaN、无 assert**，压缩状态从陈旧 slot 计算，仅表现为安静精度回归。
+  source: 'SGLang PR #33872（2026-08-06 open）。组件 `python/sglang/kernels/jit/csrc/deepseek_v4/c_plan.cuh`。https://github.com/sgl-project/sglang/pull/33872'
+  behavior: 无 crash、无 NaN、无 assert。`speculative_num_draft_tokens > 4` 时压缩状态从陈旧 slot 计算，表现为安静精度回归。属「推测解码 draft token 数与压缩状态 ring pad 硬编码不匹配 → 静默 KV 损坏」新子签名——推测解码与压缩状态交互的新签名。
+  trigger_surface: SGLang 专用；DSV4 + 推测解码 + `speculative_num_draft_tokens > 4` + compress state
+  discovery: 2026-08-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

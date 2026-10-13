@@ -1,0 +1,55 @@
+id: INF-1128
+legacy_ids:
+- '12.12'
+slug: vllm_lora_single_tensor_lora_a_not_normalized_packed_index_error
+aliases: []
+title: vLLM set_lora 未展开单 lora_a 致 packed 层报错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: packed LoRA 层 set_lora
+  behavior: MergedColumnParallelLinearWithLoRA.set_lora 只 normalize lora_b；单个 2-D lora_a 未展开直接透传，lora_a[i] 取到 1-D 行而非第 i 个 slice 矩阵。
+effect:
+  objects:
+  - 可用性/进度
+  detail: LoRA serving 中 set_lora 收到单 tensor lora_a 且目标为 packed 层（fused QKV/gate_up）时：fully_sharded_loras=True 抛 IndexError，False 时拷贝期 shape mismatch。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；LoRA serving + 单 tensor `lora_a` + packed layer（fused QKV / gate_up）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51423
+  kind: github_pr
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（MergedColumnParallelLinearWithLoRA.set_lora 只 normalize lora_b，单 2-D lora_a 直接 pass through→packed layer 上 IndexError） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`MergedColumnParallelLinearWithLoRA.set_lora()` 声明 `lora_a: torch.Tensor | list[torch.Tensor]` 但只 normalize `lora_b`。单 2-D `lora_a`（shape `[rank, input_size]`）直接 pass through unexpanded，故 `lora_a[i]` 返回 1-D **row** 而非第 i slice 的矩阵 → `IndexError` on packed layer（fused QKV = 3 slices、gate_up = 2 slices）。影响 `fully_sharded_loras=True`（`MergedQKVParallelLinearWithShardedLoRA.slice_lora_a`：`too many indices for tensor of dimension 1`）和 `fully_sharded_loras=False`（`set_lora` copy-time shape mismatch）。'
+  source: 'vLLM #51423（2026-08-07 open）。修复 #51409。组件 `MergedColumnParallelLinearWithLoRA.set_lora`。https://github.com/vllm-project/vllm/pull/51423'
+  behavior: crash（IndexError on packed layer when `set_lora` 收到单 tensor lora_a）。属「LoRA adapter 加载时 normalize 逻辑只覆盖一半参数」**新子签名**——packed LoRA layer 的 tensor shape normalization 缺失。
+  trigger_surface: vLLM；LoRA serving + 单 tensor `lora_a` + packed layer（fused QKV / gate_up）
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：component、behavior、detail 都有原文依据（只 normalize lora_b；lora_a[i] 取到 1-D 行；fully_sharded_loras=True 时 IndexError、False 时拷贝期 shape mismatch）；adapter 权重写入归 权重/检查点。本条是纯 crash 条目，visibility 报错 符合原文，未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,56 @@
+id: INF-0624
+legacy_ids:
+- '6.231'
+slug: vllm_dsv41_dbo_microbatch_shared_sparse_index_buffer_overwrite
+aliases: []
+title: vLLM DSV4.1 DBO 微批共享稀疏索引 buffer 被覆写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: DSV4.1 稀疏索引模型级 buffer
+  behavior: top-k token 索引与候选块需跨层存活，被分配为模型级单份 buffer，未按 DBO 微批切分；微批 1 的 source 层可在微批 0 的 consumer 层读取前覆写同一 buffer。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: DeepSeek-V4.1 开 DBO 微批时，微批 0 的 sparse attention 消费微批 1 的索引而选错 KV 块，输出静默损坏；GB200 四 EP rank 负控制均复现 top-k 覆写，#56400 报告的 NaN 疑与此路径有关。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + DeepSeek-V4.1 + DBO microbatching + sparse indexer（partial）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/56476
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DeepSeek-V4.1 的 top-k token 索引与候选块跨多个 decoder 层持有，为**模型级单份 buffer**；DBO（microbatch）下微批 1 的 source 层可在微批 0 的 consumer 层读取前**覆写同一 buffer**。GB200 负控制实验：把两微批的持久 index 存储别名回 slot 0，四 EP rank 全部复现微批 0 的 top-k 覆写（179830–179834/1024 行失配，layer 3 消费前记录）；修复 PR #56476 为每微批分配独立 index 存储（+20 MiB @ 2048 token）并按活跃微批选 view。与 #56440（输入位置/Engram 历史修复）互补——#56440 明确未修 sparse-index 存储） · Cov: `NEW`（跨层持久模型级 buffer 与微批执行交错覆写子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: index 状态必须跨层存活故为模型所有（非瞬态 scratch），但单份分配未随 DBO 微批执行模型切分；微批交错使"写入-读取"跨微批乱序。
+  source: 'vLLM PR #56476（2026-09-11 open，含 GB200 四 rank 负控制复现、aliasing 回归与 DBO 集成验证）。https://github.com/vllm-project/vllm/pull/56476'
+  behavior: '无 crash——微批 0 的 sparse attention 消费微批 1 的索引 → attention 选错 KV 块、输出静默损坏（关联 #56400 报告的 NaN 疑似此路径）。6.204（hybrid mamba 引擎降 block_size 后播种 OOB）之后"hybrid 模型跨层状态 × 执行模型"族新成员：本条在 DBO 微批交错维度。'
+  trigger_surface: vLLM + DeepSeek-V4.1 + DBO microbatching + sparse indexer（partial）
+  discovery: |-
+    2026-09-11 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

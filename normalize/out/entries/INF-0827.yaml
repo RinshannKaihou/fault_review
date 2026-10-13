@@ -1,0 +1,64 @@
+id: INF-0827
+legacy_ids:
+- '8.47'
+slug: trtllm_sm120_e4m3_headsize256_kernel_gap_fallback
+aliases: []
+title: TRT-LLM sm_120 e4m3 缺 head 256 内核致静默回退
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tensorrt-llm
+    component: fmha_v2 sm_120 e4m3 内核枚举
+  behavior: fmha_v2/setup.py 的 sm_120 e4m3→bf16 内核枚举缺 head_size 256，head_dim=256 + FP8 KV 无 fused paged-context FMHA，静默回退 unfused。
+effect:
+  objects:
+  - 性能/资源
+  detail: RTX 5090（sm_120）上 GQA head_dim 256 模型（如 Qwen3.6-35B-A3B）+ FP8 KV 时无报错，回退路径请求约 626GB workspace，KV block 复用失效，表现为 prefix caching 不工作，且无指向根因的诊断。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM；sm_120 + GQA head_dim 256 + FP8 KV context FMHA
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/17911
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（sm_120 e4m3 kernel 枚举缺 head_size 256 → fused FP8-KV context FMHA 静默缺失，回退路径要 ~626GB workspace——表现为"prefix caching 不工作"零诊断） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`cpp/kernels/fmha_v2/setup.py` 按 `head_sizes=[64,128,192,576]` 枚举生成 sm_120 e4m3→bf16 内核，256 缺席。GQA `head_dim==256` 模型（Qwen3.6-35B-A3B + FP8 KV）在 sm_120 无 fused paged-context FMHA 可用，运行时**静默回退** unfused dense context 路径——构建期 kernel 生成矩阵的形状空洞以运行时病浮出：回退路径请求 ~626GB workspace（96GB 卡不可用），KV block 复用失效。枚举补上 256 后 prefix 复用 probe 达 4096/4181 blocks cached。'
+  source: 'TensorRT-LLM #17911（2026-08-17 open，RTX 5090 sm_120，1.3.0rc23）。https://github.com/NVIDIA/TensorRT-LLM/issues/17911'
+  behavior: 无 crash、无错误。表现为「这台 GPU 上 prefix caching 不工作」+ 巨量 workspace 请求，无任何指向根因（kernel 枚举缺形状）的诊断。属「按硬件枚举生成的 kernel 矩阵形状空洞 × 静默回退」**新子签名**。
+  trigger_surface: TRT-LLM；sm_120 + GQA head_dim 256 + FP8 KV context FMHA
+  discovery: |-
+    2026-08-18 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 量化 vs 算子/内核：按 rule 1，缺失的是 sm_120 e4m3（FP8 KV）专属的 context FMHA 内核，缺陷只出现在 FP8-KV 量化路径（词表 量化 含量化 kernel），定为 量化。我独立判断曾选 算子/内核，比较后按 rule 1 采纳 量化。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: 算子/内核
+        status: panel7
+    uncertain:
+    - effect

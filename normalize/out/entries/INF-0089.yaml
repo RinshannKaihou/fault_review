@@ -1,0 +1,50 @@
+id: INF-0089
+legacy_ids:
+- '1.90'
+slug: ttmetal_program_cache_hit_cb_region_l1_overlap_silent
+aliases: []
+title: program cache 命中不重验 CB 区域，静默覆写 L1 张量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tt-metal
+    component: program cache 命中路径 CB 校验
+  behavior: 静态 CB 区域只在 program cache miss 时经 validate_circular_buffer_region() 校验；cache-hit 路径只 patch buffer 地址、不重验，L1 分配也不触发缓存失效。
+effect:
+  objects:
+  - 数值结果
+  detail: 两次运行间 L1 占用增长越过缓存的 CB 区域（如新分配大 L1 tensor）后重跑同一 op，CB 静默覆写 resident tensor；无 crash、无诊断，只断言 op 自身输出的测试会空洞通过。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal；program cache 命中 + 两次运行间 L1 布局变化（大 L1 tensor 分配）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53537
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（program cache 命中路径从不重验 CB 区域与实时 L1 占用的交叠 → 静默覆写 resident tensor） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: TT-Metal 程序的静态 circular buffer（CB）只在 program-cache **miss**（`compile_and_allocate()` / `ConfigureDeviceWithProgram`）时经 `validate_circular_buffer_region()` 放置并校验一次；ttnn cache-**hit** 路径（`handle_mesh_adapter_cache_hit` → `WorkloadFactory::apply_descriptor`）只 patch buffer 地址、不重验。若两次运行之间 L1 占用向下增长越过缓存 CB 区域末端（如新分配大 interleaved-L1 tensor），CB 与 resident buffer 重叠——miss 路径会抛的检查在 hit 路径不运行。除分配/清空 program cache 外，L1 buffer 分配从不触发缓存失效。
+  source: 'tt-metal #53537（2026-08-18 open）。`tt_metal/impl/program/program.cpp:2662`、`ttnn/api/ttnn/device_operation.hpp:254`。https://github.com/tenstorrent/tt-metal/issues/53537'
+  behavior: 无 crash、无诊断。复现四步：先跑 CB 高位 op（miss，校验通过）→ 分配大 L1 tensor 填已知数据 → 重跑同一 op（hit，不抛）→ 读回发现 tensor 被 CB 覆写。只断言 op 自身输出会**空洞通过**（被覆写的不是输出内存）。属「缓存复用跳过首次分配时的布局校验」**新子签名**——校验只在冷路径执行的布局类静默损坏。
+  trigger_surface: Tenstorrent TT-Metal；program cache 命中 + 两次运行间 L1 布局变化（大 L1 tensor 分配）
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

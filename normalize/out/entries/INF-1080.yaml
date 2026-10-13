@@ -1,0 +1,50 @@
+id: INF-1080
+legacy_ids:
+- '11.57'
+slug: vllm_stale_draft_handoff_grammar_bitmask_fail_open
+aliases: []
+title: vLLM draft 回传丢失致 grammar mask 全放开
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: draft 回传槽与 bitmask 构建
+  behavior: async scheduler 装入 [-1]*K 占位，回填经无请求身份、每步覆写的单槽 DraftTokensHandler，竞态下占位残留；mask 构建把 -1 行写成全允许，而验证侧用 GPU 副本的真实 drafts
+effect:
+  objects:
+  - 输出内容
+  detail: spec + async 调度 + 结构化输出下，最多 num_speculative_tokens 个 token 不受约束：碰巧合法则静默带毒继续，不合法则下游 FSM 报错终止受害请求；main 上潜伏，PP 能力 drafter 落地即触发
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM V1 + spec decode + async scheduling + structured output（+ pipeline parallel 当前为潜伏条件）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54437
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（spec decode + async scheduling 下 worker→scheduler 的 draft-token hand-off **无身份、单槽每步覆写**（`DraftTokensHandler` 持一个被每个 `execute_model` 覆写的槽）——drafts 丢失后 `-1` 占位存活进 `StructuredOutputManager.grammar_bitmask`，在**真实采样位置**写入 `_full_mask`（全词表允许）；worker 从自己 GPU 驻留副本验证真实 drafts，acceptance 可直走进无约束行——**约束 mask 的失败方向是 open**） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: async_scheduler 为下一步 draft 安装 `[-1]*K` 占位（`request.spec_token_ids = self._spec_token_placeholders`），回填经无请求身份的单槽 handler——竞态下占位不被真实值替换。mask 构建把 `-1` 行当合法采样行写入全允许；验证侧与 mask 侧数据源分歧（GPU 副本 vs scheduler 回填）使 acceptance 走进这些行、发出最多 `num_speculative_tokens` 个无 grammar 约束的 token。main @ 87b9b5b 上**潜伏**（latent）：pipeline-parallel-capable drafter 落地即活。
+  source: 'vLLM #54437（2026-08-29 open，含完整调用链行号与两类下游形态）。https://github.com/vllm-project/vllm/issues/54437'
+  behavior: '双形态均不指向根因——token 碰巧 grammar 合法：请求**静默带毒继续生成**（poisoned context）；不合法：报错出现在下游 FSM（`backend_xgrammar.py: Failed to advance FSM` / `scheduler.py: grammar rejected tokens … Terminating request`）——错误在受害者不在肇事者。属「**校验面失败方向为 fail-open 的结构化输出损坏**」新子签名：与 10.40（legacy guided_json 静默丢弃约束返回 200）同「约束静默失效」域，本条失败方向是**全放开**且由 spec-decode 竞态触发；「mask 失败时应写入全禁止而非全允许」是该子签名的通用修复原则。'
+  trigger_surface: vLLM V1 + spec decode + async scheduling + structured output（+ pipeline parallel 当前为潜伏条件）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

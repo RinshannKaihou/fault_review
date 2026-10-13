@@ -1,0 +1,55 @@
+id: INF-0905
+legacy_ids:
+- '9.22'
+slug: sglang_tokenspeed_mla_nope_layer_rope_assumption_crash
+aliases: []
+title: SGLang tokenspeed MLA 对 NoPE 层假设 RoPE 存在
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: sglang
+    component: tokenspeed_mla 后端 RoPE 假设
+  behavior: 解包 wrapper 后 Kimi Linear 的 NoPE MLA 层直落 TokenspeedMLABackend，其 prepare_prefill_qkv hook 未对 rotary_emb 为 None 设守卫。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Kimi Linear + tokenspeed_mla 后端 + DCP + fp8_e4m3 下每个 TP rank 在 prefill 时 AttributeError 崩溃；B200 上三个 CI job 全部失败。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Kimi Linear + tokenspeed_mla 后端 + DCP + fp8_e4m3（模型×后端×dtype 组合触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38158
+  kind: github_pr
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（Kimi Linear 的 **NoPE MLA 层**（`skip_rope=True`、`rotary_emb is None`）在 #35770 让 `resolve_attn_backend()` 解包 `HybridLinearAttnBackend.full_attn_backend` 后，从走 wrapper 的 BF16 回退路径（有 `rotary_emb is not None` 守卫）变为直落 `TokenspeedMLABackend`——其 `prepare_prefill_qkv` hook 假设 RoPE 存在，`layer.rotary_emb.cos_sin_cache` 对 NoneType 取属性，DCP + fp8_e4m3 下**每 TP rank prefill crash**） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '解包优化改变了注意力后端解析的返回类型：原先 NoPE 层解析到 wrapper（无该 hook、静默走 BF16 路径），现在解析到内层 `TokenspeedMLABackend`（有 hook、无 None 守卫）。三个 CI job（`test_kimi_linear_dcp4/dcp_dspark4/unified_radix_cache_kl_dcp`）在 B200 全数失败；根因诊断 #38152，本 PR #38158 为其替代实现。'
+  source: 'SGLang PR #38158（2026-09-05；引入于 #35770，根因诊断 #38152）。https://github.com/sgl-project/sglang/pull/38158'
+  behavior: prefill 期 AttributeError crash（fail-loud）——「重构改变解析结果类型，暴露下游对可空依赖的假设」：RoPE 在 MLA 中是**每层可空**的（NoPE 层），hook 层缺失守卫即崩。与 9.18（嵌套 rope_parameters 误解析）同为 RoPE 配置结构域，本条是 None 语义穿透层间接口。
+  trigger_surface: SGLang + Kimi Linear + tokenspeed_mla 后端 + DCP + fp8_e4m3（模型×后端×dtype 组合触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 位置编码
+        status: panel7

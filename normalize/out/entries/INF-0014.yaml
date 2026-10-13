@@ -1,0 +1,56 @@
+id: INF-0014
+legacy_ids:
+- '1.14'
+slug: ttmetal_sfpswap_nan_propagation_drop
+aliases: []
+title: ttnn max/min/clamp 由 SFPSWAP 实现致静默吞掉 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: max/min/clamp/hardtanh
+  behavior: 这些 op 各由 1–2 条裸 SFPSWAP 比较交换指令实现，两个输出始终是输入的置换，无法让 max 与 min 在含 NaN 输入上同时返回 NaN。
+effect:
+  objects:
+  - 数值结果
+  detail: NaN 输入下 maximum/minimum/clamp/hardtanh 静默返回有限值而非 NaN，违反 IEEE 754/PyTorch NaN 传播约定；NaN 被吞掉后下游继续用错误值计算，单帧检测器难以与正确值区分。无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal，非 NVIDIA 环境
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-31'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/51470
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（NaN 语义静默破坏） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: Tenstorrent `ttnn.maximum`、`ttnn.minimum`、`ttnn.clamp`、`ttnn.hardtanh` 各由 1–2 条裸 `SFPSWAP` 指令实现。`SFPSWAP` 是 compare-and-exchange，其两个输出寄存器始终持有一对输入的**置换**。但 PyTorch 语义要求 `torch.maximum(NaN, x)` **和** `torch.minimum(NaN, x)` **都**返回 NaN——而一个置换永远不可能让 max 和 min 同时把 NaN 放到输出侧。因此这些 op 在含 NaN 的输入上**静默丢弃 NaN**，返回有限值，违反 IEEE 754 / PyTorch NaN 传播约定。
+  source: 'tt-metal #51470（2026-07-29 open）。https://github.com/tenstorrent/tt-metal/issues/51470'
+  behavior: 无 crash。`maximum`/`minimum`/`clamp`/`hardtanh` 在 NaN 输入下静默返回有限值而非 NaN——NaN 被吞掉，下游计算继续用错误值。与 1.10 `bf16_nan_canonicalization_silent_inf` 同属\"dtype/原语 NaN 语义静默改变\"签名族。
+  trigger_surface: Tenstorrent TT-Metal，非 NVIDIA 环境
+  signature: infra_off / NaN 泄漏。NaN 不再传播意味着错误不再以 NaN 的形式浮现，反而被掩盖为看似合理的有限输出——单帧检测器难以区分\"被吞 NaN 后的值\"与\"正确值\"。
+  discovery: 2026-07-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：title/component/behavior/detail 的事实均可在原文 mechanism/behavior/signature 中找到；算子/内核（修复改 op 的 SFPSWAP 实现）、数值结果、静默错误均符合词表；behavior 只写原因、detail 只写影响，长度合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

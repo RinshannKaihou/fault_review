@@ -1,0 +1,54 @@
+id: INF-0989
+legacy_ids:
+- '10.73'
+slug: vllm_reasoning_parser_completions_structured_output_bitmask_never_applied_unconstrained
+aliases: []
+title: vLLM reasoning-parser 下 completions 约束失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: 结构化输出 reasoning_ended 门控
+  behavior: bitmask 以 reasoning_ended 门控，初值取 is_reasoning_end(prompt_token_ids)；裸 completion prompt 无 think 标记，门控恒假，bitmask 从不施加。
+effect:
+  objects:
+  - 输出内容
+  detail: 配置 --reasoning-parser 后 /v1/completions 的 json/regex/choice 及 guided_json 请求返回 200 但完全无约束，零警告；去掉该参数或 prompt 后缀 think 块即受约束，chat 端点不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `--reasoning-parser` + `/v1/completions` + 任一结构化输出参数（config：服务端开关 + 普通 API 请求即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57726
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0956
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM 配置 `--reasoning-parser` 后，`/v1/completions` 上的结构化输出请求（`structured_outputs.json`/`.regex`/`.choice` 及 legacy `guided_json`）得到**完全无约束**的补全：200 返回、零警告——schema `additionalProperties:false` 被违反且对象不闭合（`{"name":"John Doe","age":30,"city":"New York","email":...` 直到 length 截断）；choice 约束返回自由文本、regex 返回日期后续接推理文本。同请求同模型去掉 `--reasoning-parser` 即受约束；prompt 手工后缀 `<think>\n\n</think>\n\n` 也受约束；`/v1/chat/completions` 不受影响（模板 think 块使 reasoning_ended 初值正确）。根因：`structured_output/__init__.py` 的 `should_fill_bitmask`/`should_advance` 以 `reasoning_ended` 门控 bitmask，其初值取 `reasoner.is_reasoning_end(request.prompt_token_ids)`——裸 completion prompt 既无 `<think>` 也无 `</think>`，门控恒 False、bitmask 从不施加，除非模型碰巧自己吐出 `</think>`。main 今日同款逻辑） · Cov: `var:vllm_legacy_guided_json_silently_dropped_unconstrained_200`（10.40 约束静默失效族） · 触发 `config` · 置信度 `verified`'
+  mechanism: reasoning 感知 grammar 门控对"无 reasoning 标记的 prompt"缺省进入"仍在推理中"态——裸 completions prompt 是该门控的盲区：is_reasoning_end 无标记可判、初值 False 后仅靠模型 emit `</think>` 翻转，bitmask 在整个生成期保持未施加。
+  source: 'vLLM #57726（2026-09-19 open，含四约束类型×两服务器形态对照表、`<think>` 后缀修复验证、`__init__.py` 行级引用与 chat 端点不受影响的边界确认）。https://github.com/vllm-project/vllm/issues/57726'
+  behavior: 无 crash、无警告——**约束静默完全不生效**：依赖结构化输出的下游解析器拿到违约 JSON/自由文本；温度低时模型"碰巧合规"使间歇性暴露，温度高或弱模型时彻底放飞。10.40（legacy guided_json 静默丢弃 200）、10.47（xgrammar 约束子集丢弃）、10.64（xgrammar allOf 不强制）之后约束静默失效族新成员：本条在**reasoning 门控 × completions 端点交叉盲区**维度——整族已横跨 4 个独立机制。
+  trigger_surface: vLLM + `--reasoning-parser` + `/v1/completions` + 任一结构化输出参数（config：服务端开关 + 普通 API 请求即触发）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - behavior

@@ -1,0 +1,50 @@
+id: INF-0237
+legacy_ids:
+- '1.238'
+slug: ttmetal_nonzero_rowmajor_sharded_reader_bank_major_page_id_double_mapping
+aliases: []
+title: nonzero ROW_MAJOR sharded reader 页索引双重映射
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: nonzero sharded reader
+  behavior: reader 构造 bank-major 设备页索引交给要求逻辑 row-major 页索引的 TensorAccessor，后者再次做页→shard→bank 映射，shard 定向被计入两次。
+effect:
+  objects:
+  - 数值结果
+  detail: WIDTH/BLOCK sharded 输入且每 shard 多于一页行时读错页，nonzero 报告来自错误行/列的坐标；访问均在界内，无 assert；grid_w==1 或每 bank 一页时不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `nonzero` + ROW_MAJOR + WIDTH/BLOCK sharded + 每 shard >1 页行（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57163
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`nonzero` 的 ROW_MAJOR sharded reader 构造 **bank-major 设备页索引**喂给要求**逻辑 row-major 张量页索引**的 `TensorAccessor`：`page_id = bank * pages_per_bank + bank_page_idx` 把 shard 定向（core 行列序）编码进页 id，而 `TensorAccessor::get_bank_and_offset` 自身已按 `dspec().tensor_shape()`（页为单位）分解 page id 并完成页坐标→shard→bank 的物理映射——**双重映射**。两公式仅在 `grid_w==1` 或 `pages_per_bank==1` 时重合；WIDTH/BLOCK-sharded 输入且每 shard 多于一页行时内核读错页、`nonzero` 报告来自错误行/列的坐标。所有访问都在界内，无 assert。同 kernel 的 TILE 分支用逻辑平坦页 id；canonical 兄弟 helper `noc_async_read_sharded` 亦用逻辑 id（`src_id * pages_per_row + offset/page_size`）。`[1,1,4,8]` bf16、2×2 grid、shard `[2,4]` 反例：`r=0,core_col=1` 得 `page_id=2`，`TensorAccessor` 按 `(4,2)` 页形状分解落到错误页） · Cov: `NEW`（shard 定向双重映射——坐标系约定错位子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 数据通路内核在把页 id 交给 accesssor 前预先做了一次 shard→bank 物理 mapping，而 accessor 的契约是接收逻辑张量页 id 并自己完成物理映射——两层各自假设对方不做映射，shard 定向信息被计入两次。1.196（slice 的 bounding box vs corerange 序分歧）、1.224/1.225（gather/scatter 独立坐标系折叠）之后分片坐标系族新成员：本条在**物理映射双重施加**维度。
+  source: 'tt-metal #57163（2026-09-21 open，master ticket #51214 item 8；含内核代码对照（ROW_MAJOR vs TILE 分支 vs canonical helper）、手工几何反例逐步推导）；#57164 为同文重复报告（已 closed）。https://github.com/tenstorrent/tt-metal/issues/57163'
+  behavior: 无 crash、无 NaN、无 assert——`nonzero` 输出坐标**静默指向错误行/列**（读的是错页的数据但坐标按请求形状生成，界内使一切校验通过）。下游 sparse 索引/scatter 类消费者将把值写到错误位置。
+  trigger_surface: tt-metal + `nonzero` + ROW_MAJOR + WIDTH/BLOCK sharded + 每 shard >1 页行（hw_specific）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

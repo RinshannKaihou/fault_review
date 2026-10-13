@@ -1,0 +1,54 @@
+id: INF-0757
+legacy_ids:
+- '7.84'
+slug: vllm_sm100_fp8_gemm_standard_blockwise_ignore_leading_strides
+aliases: []
+title: sm100 CUTLASS FP8 GEMM 忽略 leading stride
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: sm100 CUTLASS FP8 GEMM 调用
+  behavior: sm100 CUTLASS FP8 GEMM 的 standard 与 blockwise 调用路径按逻辑 shape 推导步进，未用张量实际 leading stride；sm90 修复未覆盖 sm100，sm120 调用点仍在补丁外。
+effect:
+  objects:
+  - 数值结果
+  detail: 带 padding 的 leading dimension 视图（如 (8,256)、stride (384,1) 的 blockwise a）被按 row stride 256 寻址而读错行，FP8 GEMM 输出静默错值，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + sm100 + CUTLASS FP8 standard/blockwise GEMM + padded leading dims / 非 packed 存储（yes）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/56480
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0748
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（vLLM sm100 CUTLASS FP8 GEMM 的 standard 与 blockwise 两条调用路径**按逻辑形状而非实际 stride 寻址**：对齐的带 padding leading dimension tensor view（如 `(8,256)` stride `(384,1)` 的 blockwise a view）被当作 row stride 256 寻址——读错行、输出错误。修复 PR #56480 改用 `a.stride(0)`/`b.stride(1)`/`out.stride(0)`（`swap_ab` 转置输出布局时 leading stride 归 component 1），无拷贝、块 scale 布局不变。与 #55537（sm90 common/standard）、#56248 vLLM（sm90 blockwise）同根因不同代际——三条修复互不覆盖，sm120 调用点仍在此补丁范围外） · Cov: `var:vllm_cutlass_c3x_scaled_mm_packed_stride_reconstruction_ignores_leading_strides`（7.75 leading-stride 忽略族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 调用方从逻辑 shape 推导步进而未查询 tensor 实际 stride；padded 独立存储与 packed 存储在该假设下分叉。
+  source: 'vLLM PR #56480（2026-09-11 open，partially addresses #55534；含 16 个 sm100 回归用例设计、exact-reference 对照与 guard 列检查）。https://github.com/vllm-project/vllm/pull/56480'
+  behavior: 无 crash——padded leading dimension 的 FP8 GEMM **静默错值**（寻址错行）。7.75（CUTLASS C3x packed stride 重建丢 leading strides）之后同族 sm100 维度实例：same bug class、third-arch 修复接力，说明该缺陷按 arch 逐个修而未从根上统一。
+  trigger_surface: vLLM + sm100 + CUTLASS FP8 standard/blockwise GEMM + padded leading dims / 非 packed 存储（yes）
+  discovery: |-
+    2026-09-11 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

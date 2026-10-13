@@ -1,0 +1,55 @@
+id: INF-0655
+legacy_ids:
+- '6.262'
+slug: vllm_dspark_lookahead_underallocation_overwrites_target_kv_cross_request
+aliases: []
+title: vLLM DSpark 预留少一槽致 drafter 覆写他请求 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: DSpark lookahead 预留
+  behavior: sample_from_anchor=false 时 DSpark drafter 用 N+1 个 query 位置，num_lookahead_tokens 只预留 N 槽；越界 slot 经 block table 尾部读到陈旧块号。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 如 137 token prompt + 7 draft + 16-token 块时调度分配 144 槽而 drafter 写位置 144，覆写另一请求的 target KV，受害请求生成重复畸形输出；GPU instrumentation 确认覆写，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + DSpark speculative（`sample_from_anchor=false` checkpoint）+ 调度预留 N < drafter 写窗 N+1（partial：需 spec + 特定 anchor 模式 checkpoint）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59104
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM DSpark drafter 在 `sample_from_anchor=false` checkpoint 下使用 **N+1 个 query 位置**（bonus token + N 个 draft token），而 `VllmConfig.num_lookahead_tokens` 只预留 **N**：137 prompt token + 7 draft + 16-token KV 块时调度器分配 144 槽（位置 0–143），drafter 写位置 **144**——该位置 lookup 可从 block table 未用尾部读到**陈旧 block ID 并覆写另一请求的 target KV cache**，生成期实际观察到重复畸形输出；报告者附 synthetic CUDA reproducer（直接执行 draft slot 写路径）+ 免权重免 prompt 的分配边界测试（覆盖双 anchor 模式与默认、N=1/7、块 16/32、跨两块 prompt 长度），红/绿两 commit 验证（测试 commit 1 failed / 修复 commit 1 passed），KV 覆写另经 GPU instrumentation 确认） · Cov: `NEW`（spec lookahead 预留量与 drafter 写窗不一致子签名；与 11.77/11.82（DSpark/dFlash drafter 布局/接受率族）同 spec-decode 资源契约域——本条在 **调度预留 vs 内核写窗的越界写**维度：越界目标是他请求的 target KV） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 'drafter query 窗口（N+1）与调度器预留（N）差一；越界 slot 映射经未初始化的 block table 尾部解析到陈旧块号。修复 PR #59105（`test_dspark_lookahead_covers_query_window`）。'
+  source: 'vLLM #59104（2026-09-28 23:36 UTC 创建（昨日扫描 commit 后）、含 synthetic CUDA repro、分配边界测试红绿对照与 #59105 修复 PR）。https://github.com/vllm-project/vllm/issues/59104'
+  behavior: '无 crash——**drafter 越界写覆盖其他请求的 target KV**：受害请求输出重复畸形（生成期实际观察）；与 6.163（高压跨请求上下文污染）同后果但成因是预留量算错而非缓存键碰撞。 回访（2026-10-09）：issue #59104 已 closed/completed（10-05），修复 PR #59105 同刻 merged——合并不等于已发布版本含修复，判定与置信度不变。'
+  trigger_surface: vLLM + DSpark speculative（`sample_from_anchor=false` checkpoint）+ 调度预留 N < drafter 写窗 N+1（partial：需 spec + 特定 anchor 模式 checkpoint）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

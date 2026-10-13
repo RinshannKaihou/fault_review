@@ -1,0 +1,60 @@
+id: INF-0493
+legacy_ids:
+- '6.100'
+slug: flashinfer_gemm_workspace_resize_graph_captured_uaf
+aliases: []
+title: FlashInfer workspace 扩容搬址致 graph 用后释放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: flashinfer
+    component: gemm_base 共享 workspace 扩容
+  behavior: cuDNN GEMM 路径在执行计划需更大空间时对共享 32 MiB workspace 调 resize_()，buffer 搬到新地址，已入队 launch 与此前捕获的 CUDA graph 仍解引用旧地址。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: graph 捕获中途 workspace 增长时触发（SM120 NVFP4/FP8 实测）：旧地址被 allocator 复用，GEMM 先静默读到陈旧内容，sustained 负载下数分钟内 SIGSEGV/GPU coredump 或 wedge。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM/FlashInfer；cuDNN GEMM + CUDA graph + 共享 workspace 增长（SM120 NVFP4/FP8 混合精度为实测触发配置）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52553
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（共享 GEMM workspace 运行时 resize_ 搬迁地址 → 已捕获 graph replay 解引用旧指针 = use-after-free） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 'FlashInfer `gemm/gemm_base.py` 的每条 cuDNN GEMM execute 路径在执行计划要求更大空间时对共享 32 MiB workspace 调 `tensor.resize_()`——`resize_()` 释放旧 storage 并把 buffer 搬到新地址；已入队的 launch 与**此前捕获的 CUDA graph** 仍解引用旧地址，caching allocator 立即将旧地址复用给无关张量。仪表化证据（SM120 NVFP4 服务）：一个 cuDNN FP8 plan 比 32 MiB 多要 256 字节、增长发生在 9 张 piecewise graph 已捕获 8 张的中途；服务数分钟后死亡，GPU coredump 显示 `cudnn_generated_fort_native_*` fault 在「两个 int32 拼成的指针」（`0x27000013FF`）上。修复：上游 flashinfer#4553 + vLLM 侧 PR #52553 在 kernel warmup 阶段（任何捕获之前）把 workspace 预扩容到高水位。此根因同时解释 #52540（SM120 ModelOpt NVFP4 持续负载 crash/wedge，2× RTX PRO 6000 Blackwell）与 #34948 的部分报告。'
+  source: 'vLLM PR #52553（2026-08-16 open）+ 症状 issue #52540（SM120 NVFP4）/ #34948。上游 flashinfer-ai/flashinfer#4553。https://github.com/vllm-project/vllm/pull/52553'
+  behavior: sustained 负载下数分钟内 crash（SIGSEGV / GPU coredump）或 wedge；此前为静默错误计算（stale workspace 内容参与 GEMM）。属「运行时 buffer 搬迁 × graph 捕获指针冻结」**新子签名**——与 6.98（Inductor alias view 冻结零）同族（graph 捕获期地址契约被打破），但破坏源是库内 `resize_()` 而非编译器视图优化。
+  trigger_surface: vLLM/FlashInfer；cuDNN GEMM + CUDA graph + 共享 workspace 增长（SM120 NVFP4/FP8 混合精度为实测触发配置）
+  discovery: 2026-08-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 运行时/执行
+        status: unanimous
+      effect:
+        from: 数值结果
+        to: 可用性/进度
+        status: unanimous

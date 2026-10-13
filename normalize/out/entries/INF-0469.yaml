@@ -1,0 +1,58 @@
+id: INF-0469
+legacy_ids:
+- '6.76'
+slug: vllm_mooncake_store_token_len_block_hashes_race_permanent_gap
+aliases: []
+title: vLLM Mooncake store 在 MTP+异步调度下崩溃或留永久间隙
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake 存储 token 记账
+  behavior: scheduler 在 block_hashes 扩展前乐观推进 token 数，process_tokens 未处理越界；clamp 后 _record_saved 仍记 clamp 前计数，resume offset 越过实际保存范围
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: Mooncake KV store + MTP 推测解码 + async scheduling 下：未 clamp 时 process_tokens 断言崩溃；clamp 后被跳过的 token 永不重试，外部 store 留下永久小间隙，影响 cache 命中率，生成正确性不受影响。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；Mooncake KV store + MTP 推测解码 + async scheduling
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51820
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（MTP+async scheduling 下 scheduler 乐观推进 token count 超 block_hashes 范围→clamp 修复崩溃但留下永久持久化间隙） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 推测解码（MTP）+ async scheduling 下，scheduler 在 `block_hashes` 扩展到匹配前乐观推进 token count→`ChunkedTokenDatabase.process_tokens` assertion 崩溃。clamp `token_len` 到 `block_hashes` 实际覆盖范围修复崩溃，但 `_record_saved` 记录**预 clamp 的乐观 token count** 而非实际保存的→worker resume offset 越过 clamped 范围，跳过的 token **永不重试**，外部 Mooncake store 留下小间隙（生成正确性不受影响）。
+  source: 'vLLM #51820（2026-08-11 PR）。组件 `ChunkedTokenDatabase` / `KVCacheStoreSendingThread._record_saved`。https://github.com/vllm-project/vllm/pull/51820'
+  behavior: crash（未 clamp 时）或 cache-hit-rate 影响（clamp 后持久化间隙永久存在）。属「scheduler 乐观推进与异步 bookkeeping 的竞态→崩溃或静默数据间隙」**新子签名**——推测解码 + 异步调度的生命周期竞态。
+  trigger_surface: vLLM；Mooncake KV store + MTP 推测解码 + async scheduling
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: KV状态
+        status: panel7
+    uncertain:
+    - visibility

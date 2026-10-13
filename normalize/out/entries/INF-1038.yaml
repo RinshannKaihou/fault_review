@@ -1,0 +1,55 @@
+id: INF-1038
+legacy_ids:
+- '11.14'
+slug: vllm_gemma4_tool_parser_empty_tool_calls_concurrent_silent_loss
+aliases: []
+title: vLLM Gemma4 tool parser 并发返回空 tool_calls
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: Gemma4 tool-call parser
+  behavior: 非流式 chat completions 下 Gemma4 tool parser 在并发负载时间歇丢失解析出的调用，却仍置 finish_reason=tool_calls，原始文本也不回填 content；具体根因原文未给出。
+effect:
+  objects:
+  - 输出内容
+  detail: 并发 agentic 负载下间歇返回 finish_reason="tool_calls" 但 tool_calls 为空数组、content 为空或短回显；约 2 天 5 次，每次打断 agent 回合（gemma-4-31B W4A16，TP8）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；gemma4 tool parser + 非流式 + 并发负载
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-03'
+remarks: 希望增加 subsystem「输出解析」：tool-call/reasoning parser 等把模型输出解析为结构化响应的服务层后处理，既非请求调度也非分词/模板，暂归 调度/服务
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/50889
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（tool parser 并发下空 tool_calls + finish_reason 谎称 tool_calls） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 非流式 `/v1/chat/completions` + Gemma4 tool-call parser，在并发 agentic 负载下**间歇**返回：`finish_reason == "tool_calls"` 但 `message.tool_calls == []`（空数组——非 null、非缺失），`content` 为空或短散文回显。即引擎**信号**说模型发起了 tool move，但解析出的调用丢失、原始文本也不 surfaced——模型的这一步被静默吞掉，agentic 客户端既无可执行的调用也无原文可重解析。低频：数千请求的连续 agentic 流量中约 2 天 5 次，但每次都打断消费 agent 的回合。
+  source: 'vLLM #50889（2026-08-03 open，vLLM 0.26.0，`google/gemma-4-31B-it-qat-w4a16-ct`（compressed-tensors W4A16，26B QAT 同款亦复现），TP8，10–40 tools/请求，10k–100k token prompt）。https://github.com/vllm-project/vllm/issues/50889'
+  behavior: 无 crash、无 NaN。`finish_reason=tool_calls` + 空 `tool_calls` 数组 + 空 content——协议层自相矛盾且模型输出静默丢失。属「tool parser 并发下空 tool_calls + finish_reason 谎称 tool_calls」新子签名。post-forward 结构性盲点。
+  trigger_surface: vLLM 主路径；gemma4 tool parser + 非流式 + 并发负载
+  discovery: 2026-08-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

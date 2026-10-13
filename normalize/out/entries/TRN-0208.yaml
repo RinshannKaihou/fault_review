@@ -1,0 +1,51 @@
+id: TRN-0208
+legacy_ids:
+- RL-ADV.06
+slug: replay_buffer_shape_contract_degenerates
+aliases: []
+title: trl GRPO replay buffer 形状契约错配致内容错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: GRPOWithReplayBuffer 形状契约
+  behavior: 调用路径传 1-D (B,) 张量，update_with_replay_buffer 假设 (num_groups, num_generations) 2-D，组筛选与优先级退化成整批标量
+effect:
+  objects:
+  - 训练信号
+  - 训练样本流
+  detail: 每批只有组 0 进 buffer，存单样本 advantage 冒充整组；替换仅在整批零方差时触发，其余行沿用他人 advantage；run 无报错继续训练，单测用手搓 2-D 张量故 CI 全绿
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-23'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/6804
+  kind: github_issue
+relations: []
+original:
+  category: RL-ADV
+  section: RL-ADV
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: trl 实验 trainer `GRPOWithReplayBufferTrainer` 的真实调用路径与 replay 模块的**形状契约**脱节：`_generate_and_score_completions` 传 1-D `(B,)` per-sample 张量，`update_with_replay_buffer` 及其 helper 全部假设 `(num_groups, num_generations)` 2-D。`(B,)` 输入下 `group_std_rewards.max(dim=0).values > 0` 退化成整 batch 一个 0-dim 标量 bool；`nonzero()[0]` 只返回 `[0]`，**每批只有「组 0」进 buffer**，存的还是单样本 advantage 冒充整组；替换触发条件变成「整批零方差」，触发时换掉全部 `num_generations` 行 token 却只覆写一个样本的 advantage，其余行带着别人的零方差 advantage 续命；buffer 优先级 `(abs·std).sum(-1)` 也成整批标量。单测直接用手搓 2-D 张量调 `update_with_replay_buffer()`，CI 全绿。
+  source: 'trl #6804（代码审计 + 张量行为逐条验证：`torch.tensor([0.5,0.5,0.0,0.0]).max(dim=0).values>0` → 标量 True）。https://github.com/huggingface/trl/issues/6804'
+  behavior: replay 功能「开着」但内容与优先级无意义；run 无报错继续训，replay 样本的 advantage 标签错位。与 RL-KL.04 同为实验 trainer 复制粘贴漂移家族，但漂移点在**数据结构契约**而非 loss 项：形状对不上时张量语义静默换义。
+  discovery: 2026-08-23 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

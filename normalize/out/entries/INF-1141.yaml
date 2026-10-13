@@ -1,0 +1,51 @@
+id: INF-1141
+legacy_ids:
+- '12.25'
+slug: transformers_nvfp4_moe_decompress_missing_weight_global_scale
+aliases: []
+title: transformers NVFP4 MoE 反量化漏全局 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: transformers
+    component: update_weight_conversions
+  behavior: update_weight_conversions 收集 tensor 时只取 packed/scale/shape，漏掉 checkpoint 存储的 weight_global_scale，专家反量化时不带全局缩放。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 加载按专家分块存储的 compressed-tensors NVFP4 MoE checkpoint 时无异常、missing_keys 为空，每个专家被错误常数缩放，下游推理基于错误权重进行；CPU 可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: transformers + per-expert 存储的 compressed-tensors NVFP4 MoE checkpoint + DecompressExperts 反量化路径（checkpoint 格式即触发，CPU 可复现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48371
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（transformers 加载 routed experts 按专家分块存储的 compressed-tensors checkpoint 时，NVFP4（`tensor_group`）scheme 的 `DecompressExperts.convert` 反量化**不带 per-tensor `weight_global_scale`**——每个专家被错误常数缩放，无异常、fused 参数被填满使 `missing_keys` 恒空：加载层静默产出错误缩放的专家权重） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`update_weight_conversions` 收集 tensor 时只取 packed/scale/shape，丢掉 checkpoint 实际存储的 `weight_global_scale`；三个量级不同的测试专家（×3/×6/×9 随机缩放）各自 global scale 不同，反量化后与 fp32 参考的错误缩放逐专家可见。standalone 复现只需 `compressed_tensors` + `transformers`（CPU、无 checkpoint 下载），直接驱动 `DecompressExperts.convert` 对照"今天收集的 tensor 集"与"checkpoint 实际存储的 tensor 集"即可暴露缺失。'
+  source: 'transformers #48371（2026-08-27 open，5.16.0.dev0 + compressed_tensors 0.18.0，含 standalone 复现脚本）。https://github.com/huggingface/transformers/issues/48371'
+  behavior: '**无 crash、无异常、missing_keys 为空**——专家权重被静默错误缩放，下游一切推理基于错误权重进行；无任何加载期告警信号。属「**按格式收集 tensor 集合不完备 = 反量化丢全局缩放**」新子签名：与 7.60（vLLM 侧同格式 weight-only checkpoint 未初始化 activation scale 归零专家）构成 NVFP4 加载域"scale 元数据链断裂"的栈两侧实例（彼条在推理栈、本条在加载库），共同教训是 fp4 类多级缩放格式对 scale 张量完备性校验的系统性缺失。'
+  trigger_surface: transformers + per-expert 存储的 compressed-tensors NVFP4 MoE checkpoint + DecompressExperts 反量化路径（checkpoint 格式即触发，CPU 可复现）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

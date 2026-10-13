@@ -1,0 +1,59 @@
+id: INF-1096
+legacy_ids:
+- '11.73'
+slug: qwen4exp_dflash_dspark_drafter_serving_five_blockers
+aliases: []
+title: Qwen4Exp 无法服务 DFlash/DSpark drafter
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: Qwen4Exp 层扩展删除捕获通路
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: V1/V2 model runner 输入准备
+  - subsystem: 模型定义
+    stack: sglang
+    component: qwen4_exp decoder 层捕获通路
+  behavior: Qwen4Exp 删掉 layer_communicator，父类捕获收集点消失、aux hidden states 槽被占；V1 runner 不供 PLE inputs，V2 解引用 None 的 MTP getter
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: 'vLLM V1 启动报 RuntimeError: PLE inputs were not prepared（无 drafter 亦然），V2 报 TypeError；SGLang 侧 aux_hidden_states 恒空、drafter 无法挂载；DFlash/DSpark 在该模型上不可用'
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM/SGLang + Qwen3.8-Flash-Next (qwen4_exp) + DeepSpec DFlash/DSpark drafter（config：模型 × drafter 组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: subsystem 缺“模型执行器（model runner 输入准备、hidden state 收集）”类值；V1/V2 runner 的 PLE 输入与 MTP getter 缺陷暂归 运行时/执行
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56088
+  kind: github_issue
+- url: https://github.com/sgl-project/sglang/issues/38589
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（`Qwen4ExpForConditionalGeneration`（Qwen3.8-Flash-Next）无法在 vLLM 服务 DeepSpec 训练的 DFlash/DSpark drafter——5 个独立阻断点：(1) V1 runner 从不供 PLE inputs（`query_start_loc`/`ngram_context` 仅由 V2 runner 的 `prepare_inputs` 产出），`VLLM_USE_V2_MODEL_RUNNER=0` 下该目标**有无 drafter 都无法启动**（`RuntimeError: PLE inputs were not prepared`，profile_run 即死）；(2) V2 runner dereference `None` 的 MTP hidden-state getter（`TypeError: ''NoneType'' object is not subscriptable`）；(3) `set_dflash_layers_to_capture` 继承并"看似成功"但捕获从不被收集；(4) `Qwen4ExpLayerExtensionMixin._init_qwen4_exp_layer_extensions` **delattr 掉** `layer_communicator`——父类收集捕获的 `prepare_attn_and_capture_last_layer_outputs` 调用点被移除；(5) aux hidden states 返回槽已被 hyper-connection 流占用。SGLang 侧同目标同病：`layer_communicator` 被删、decoder layer 把 `captured_last_layer_outputs` 吞进 `**kwargs` 不读、`aux_hidden_states` 恒空——与 glm5_next 修 #36708 前同类的 gap） · Cov: `NEW`（drafter 集成面多点缺失的架构集成缺口子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: Qwen4Exp 的 layer extension（hyper-connection、线性注意力）重写删除了父类（qwen3_5）的捕获/通信机制，但 DFlash/DSpark drafter 服务依赖的 `configure_aux_hidden_state_capture` 契约仍按父类语义调用——配置层"成功"、收集层已不存在。两栈（vLLM V1/V2 runner 与 SGLang model runner）各自独立地缺失同一契约的不同部分。报告者已在 2×DGX Spark（GB10 TP2+EP）打过补丁验证可服务。
+  source: 'vLLM #56088（2026-09-09 open，含五阻断点源码行定位、boot 实测与补丁意向）+ SGLang #38589（2026-09-09 open，SGLang 侧三点分析、main 与 pinned cookbook 镜像双验证）。https://github.com/vllm-project/vllm/issues/56088 · https://github.com/sgl-project/sglang/issues/38589'
+  behavior: '启动期 crash（V1: RuntimeError；V2: TypeError）或 drafter 完全无法挂载（aux states 恒空）——DFlash/DSPark 快速路径在该目标上不可用（性能特性缺失，非数值损坏）。11.59（DFlash target_layer_ids fallback count collision）之后 DFlash 集成域第二组：本条是**目标模型侧**的集成缺口而非 drafter 参数错配，且一跨两栈。'
+  trigger_surface: vLLM/SGLang + Qwen3.8-Flash-Next (qwen4_exp) + DeepSpec DFlash/DSpark drafter（config：模型 × drafter 组合即触发）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

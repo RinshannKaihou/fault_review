@@ -1,0 +1,51 @@
+id: INF-0933
+legacy_ids:
+- '10.17'
+slug: hf_cached_files_erofs_silent_stale_return
+aliases: []
+title: 只读文件系统上 EROFS 漏检致 HF 缓存静默返回旧文件
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: transformers
+    component: cached_files 错误恢复分支
+  behavior: 写失败 guard 只认 PermissionError（EACCES），只读挂载返回的 EROFS（errno 30）是普通 OSError，被漏检后落入 stale-cache 恢复分支。
+effect:
+  objects:
+  - 模型权重
+  - 输入编码
+  detail: HF Hub 缓存位于只读文件系统（mount -o ro，如 CI 预填缓存卷）时触发；无 crash，即使 Hub 有新版本也静默返回旧缓存文件，模型/分词器可能用旧版本且差异不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers；`cached_files` + 只读文件系统（CI 安全隔离的 pre-populated cache volume）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: subsystem 缺“模型文件获取/缓存”：Hub 下载与缓存回退属文件获取层，不是权重内容或格式转换，暂归 权重/检查点（加载）
+evidence:
+- url: https://github.com/huggingface/transformers/pull/47852
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（只读文件系统上 hf_hub_download 失败（EROFS errno 30）但 Python 不提升为 PermissionError→现有 guard 漏检→stale-cache recovery 静默返回旧文件） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: HF Hub cache 在只读文件系统（`mount -o ro`）上时，`hf_hub_download` 尝试写 snapshot pointer/blob 失败（EROFS errno 30）。Python 只把 EACCES（errno 13）提升为 `PermissionError` 子类，EROFS（errno 30）是普通 `OSError`，现有 `isinstance(e, PermissionError)` guard 捕获 EACCES 但漏检 EROFS→错误落入 stale-cache recovery 块，**静默返回旧缓存文件**——即使 Hub 有更新版本。区别：chmod/chown 时 FS 仍可写（DAC 检查返回 EACCES→PermissionError）；mount -o ro 时 VFS 层拒绝（返回 EROFS→plain OSError）。
+  source: 'transformers #47852（2026-08-09 PR）。根因 issue #47838。组件 `cached_files` / `hf_hub_download`。https://github.com/huggingface/transformers/pull/47852'
+  behavior: 无 crash。**静默使用过期缓存**——模型/分词器可能用旧版本，行为差异不可见。属「errno 分类不对称→错误恢复路径静默选择错误分支」**新子签名**——文件系统错误类型的 Python 语义不对称。
+  trigger_surface: transformers；`cached_files` + 只读文件系统（CI 安全隔离的 pre-populated cache volume）
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

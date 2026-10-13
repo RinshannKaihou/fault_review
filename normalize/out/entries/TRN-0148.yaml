@@ -1,0 +1,53 @@
+id: TRN-0148
+legacy_ids:
+- KER.17
+slug: fused_rope_inplace_alias_breaks_autograd
+aliases: []
+title: Megatron 就地 fused RoPE 别名绕过 autograd 记账
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: megatron-lm
+    component: DSv4 注意力的就地 fused RoPE
+  behavior: apply_rope_fusion=True 时 Q/KV 用就地 fused RoPE，KV 同时作 key 和 value（别名），kernel 直写内存绕过 autograd version 追踪，依赖记录与实际内存历史不一致。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: iter 1 无告警完成但梯度已错，坏权重使 iter 2 前向 NaN；关闭 apply_rope_fusion 可正常训练。单测 fused kernel 数值正确，仅完整 attention 图别名组合下显形；未过溢出阈时可能持续错梯度而不 NaN。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/5317
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7643
+  kind: github_pr
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'Megatron `DSv4HybridSelfAttention` 在 `apply_rope_fusion=True` 时对 Q 和 KV 使用**就地** fused RoPE wrapper——注意路径把旋转后的 KV 张量**同时用作 key 和 value**（别名），kernel 直接写 GPU 内存**绕过 autograd version 追踪**：训练图记录的依赖关系与实际内存历史不一致，iteration 1 的梯度已错（隔离单测里 `fused_mla_rope_inplace` 的 forward/backward 数值本身正确——故障只在完整 attention 图的别名组合下显形），权重被错梯度更新后 iteration 2 前向 NaN（`found NaN in local forward loss calculation`）。修复（PR #7643）= Q/KV 改用现成的 out-of-place wrapper `fused_mla_rope_out_of_place`（调用同一 fused kernel 前 clone，隔离 autograd 保留张量与 K/V 别名），保住 fused 实现的同时切断别名直写。'
+  source: 'Megatron-LM #5317（2026-06-12；8×H800 BF16 mock pretrain：`apply_rope_fusion=False` 干净训 70 iter（loss 5.8→0.03）、`=True` 恒于 **iteration 2 前向** NaN；iter 1 正常、grad norm ~18——报告者据「iter 1 错梯度毒化权重」定位；隔离单测证明单 kernel 数值正确、点名 in-place 直写绕过 version counter + core_attn_out 逆向 RoPE 二次 in-place）。https://github.com/NVIDIA/Megatron-LM/issues/5317 ；修复 PR #7643（2026-09-24；Fixes #5317）。https://github.com/NVIDIA/Megatron-LM/pull/7643'
+  behavior: 本例可见面是 NaN crash（delayed 一步：iter 1 无告警完成、iter 2 前向才炸——「iter 1 的静默错梯度已经进权重」，crash 时坏权重已写出）；**机制上更广的静默面**是别名 + 绕过 version counter 的组合在未过溢出阈的模型上可不 NaN 而持续产出错梯度。与 KER.13（chunked CE backward 就地覆写 saved logits）/KER.09（Triton 就地越界写）同病根「**kernel 就地写破坏 autograd 记账**」第 3 断点：KER.13 在 backward、KER.09 在掩码算术、这边在 **forward 别名 + version counter 绕过**；与 ACT.06（SAR 不重放 in-place 写）互为镜像：那边重算漏掉副作用、这边前向副作用对 autograd 不可见。同文件域 fused RoPE 家族（KER.09 yarn rope）再添一员。
+  discovery: 2026-09-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

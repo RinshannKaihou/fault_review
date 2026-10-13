@@ -1,0 +1,59 @@
+id: INF-0419
+legacy_ids:
+- '6.26'
+slug: vllm_kimi_k3_packed_kda_prefill_nan_cross_request_infection
+aliases: []
+title: Kimi-K3 packed KDA prefill NaN 跨请求永久感染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: kda.py packed prefill 分支
+  behavior: 疑似 kda.py:658：batch 含 prefill 时把全部请求（含 decode）打包进单次 prefill launch（共享 cu_seqlens），NaN 请求经共享 launch 与 state 写回感染其他请求。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出分布
+  - 输出内容
+  detail: vLLM 0.26.0 服务 Kimi-K3，约 240K 长上下文预填充后，所有后续请求每步返回 pad token（id=0）、不出 EOS 直到 max_tokens；感染随并发从 2 增至 8，持续 19 小时直至重启；带 logprobs 的请求会杀死 Rust frontend。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；Kimi-K3 + 长上下文 + KDA prefill（`VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` 绕过长度 guard）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51039
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（packed prefill kernel 跨序列 NaN 感染） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: vLLM 0.26.0 serving Kimi-K3，长上下文（~240K，远在模型 1M spec 内）预填充后，**所有后续请求**退化为每步返回单一重复退化 token（pad token id=0），永不出 EOS，每个请求跑到 `max_tokens`。已从生产系统证明 logits 为 NaN（`greedy_sample` 的 argmax over NaN → index 0；logprobs 请求杀死 Rust frontend，因为 rank `(logprobs >= sampled_logprob).sum(-1)` 只能在 sampled_logprob 为 NaN 时为 0——IEEE-754 下所有与 NaN 的比较为 false）。根因高度怀疑 `kda.py:658`：当一个 batch 含**哪怕一个 prefill** 时，该分支处理**全部请求**（含 decode），打包进单次 `_flashkda_prefill` / `chunk_kda_with_fused_gate` kernel launch（共享 `cu_seqlens`），为每个 sequence gather `initial_state`（`kda.py:692`）。一个 NaN 中毒的运行请求通过共享 kernel launch + `kda.py:732` 的 state cache writeback **永久感染**新请求——匹配观测到的 2→8 并发增长和 19 小时持续。排除了 stale KDA state-slot 复用、CUDA-graph padding 写入真实 state slot、batch-wide activation quant scale 跨 token amax 中毒等假设。
+  source: 'vLLM #51039（2026-08-04 open）。环境：vLLM 0.26.0-kimi-k3-nvidia，`max_model_len=256000`，`VLLM_USE_V2_MODEL_RUNNER=1`，`VLLM_ALLOW_LONG_MAX_MODEL_LEN=1`。https://github.com/vllm-project/vllm/issues/51039'
+  behavior: 无 crash（进程存活 19 小时）。长上下文预填充后 logits 变 NaN → 所有后续请求每步返回 pad token（index 0）→ 退化输出 + 永不终止。**感染性**：损坏在请求间传播且永久（2→8 并发增长），直到进程重启。属「packed prefill kernel 跨序列 NaN 感染 → 永久状态污染」新子签名——服务栈调度路径的跨请求正确性 bug。
+  trigger_surface: vLLM 主路径；Kimi-K3 + 长上下文 + KDA prefill（`VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` 绕过长度 guard）
+  discovery: 2026-08-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+        status: panel7
+    uncertain:
+    - effect

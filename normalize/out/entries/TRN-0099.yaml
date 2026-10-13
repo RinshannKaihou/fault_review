@@ -1,0 +1,52 @@
+id: TRN-0099
+legacy_ids:
+- DATA.17
+slug: preprocessed_map_cache_cross_version_reuse
+aliases: []
+title: ms-swift 预处理 cache 缺代码版本，升级后复用旧 schema
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: 预处理数据集 map cache 命名
+  behavior: 预处理 map cache 只以输入指纹命名，预处理代码版本不在 cache 身份中；datasets 对显式 cache_file_name 只查文件存在，语义跨版本变化时同一输入命中旧 cache。
+effect:
+  objects:
+  - 训练样本流
+  detail: 升级 ms-swift（如 v4.0.0→v4.4.0）后静默加载旧版本 cache，以旧 schema 训练（loss 列为 float64、缺 loss_scale），新版预处理修复对已缓存数据集失效；日志仅显示 Loading cached processed dataset，无警告。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10301
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0056
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `sft` · Cov: `var:dead_or_shadowed_arg_silent_noop` · 置信度 `verified`'
+  mechanism: 'ms-swift 预处理数据集 map cache 以 `{input_fingerprint}.arrow` 命名，而 datasets 对显式传入的 `cache_file_name` **只检查文件存在、不校验身份**——cache 身份只有输入指纹，**产出它的预处理代码版本不在身份里**。预处理 schema/语义跨版本变化时同一输入算出同一指纹：#9214 把 `messages[].loss` 从 float64 改 bool 并新增 `loss_scale`（v4.4.0），固定 datasets 版本下 v4.4.0 对同一输入算出与 v4.0.0 相同的指纹、**静默加载 v4.0.0 的旧 cache**（日志仅 `Loading cached processed dataset at ...`）、以旧 schema 训练。修复（PR #10301，2026-10-07 merge）= cache 命名追加 `cache_format_version`（`RowPreprocessor.cache_format_version=''v2''`，语义变更时 bump），旧格式文件留存但永不再读。报告者 CPU repro：仅 ms-swift 版本变化、其余固定，修复前复用旧 schema（float64、无 loss_scale）、修复后重算进新名字。'
+  source: 'ms-swift PR #10301（2026-09-28 开、2026-10-07 merge；refs #10286；CPU-only 复现 + 回归测试）。https://github.com/modelscope/ms-swift/pull/10301'
+  behavior: 无 crash、无 warning——升级 ms-swift 后训练读的是**上一个版本预处理语义**产出的数据（旧 loss 列型别、缺 loss_scale 等），新版本的修复/语义对已缓存数据集全部失效；fingerprint 机制给出的「安全复用」表象使问题对用户与开发者双向隐形。与 SFT.11（processor 不跟 model revision）同族「版本身份不闭包」：那边模板/processor revision 随 main 漂移、这边**预处理代码版本根本不在 cache key 里**；与 DATA.08（loss_mask 缓存引用污染破坏 bitwise resume）同域「缓存与真源失联」但方向相反：那边缓存内容被就地污染、这边缓存内容合法但来自过期语义。类似 `Template._version` 的 cache-busting 前例在仓库内已存在，说明该失败模式曾在别处发生过。
+  discovery: 2026-10-09 每日扫描（停机补扫）
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

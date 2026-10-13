@@ -1,0 +1,51 @@
+id: INF-0866
+legacy_ids:
+- '8.82'
+slug: flashinfer_sm120_sparse_mla_prefill_gt64q_topk_lane_unbounded_corruption
+aliases: []
+title: SM120 sparse-MLA prefill 超 64 query 输出损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: SM120 sparse-MLA prefill
+  behavior: sparse-MLA prefill 内核不对 indices/extra_indices 中位置 ≥ topk_length[i] 的 lane 设界，陈旧或垃圾索引被当作有效 KV block 参与注意力
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: SM120（RTX PRO 6000）上 DSv4 提示超过 64 query 走 prefill 内核时，temperature=0 输出垃圾/无关文本/重复 CJK 片段，18–62 token 正常；EP1+marlin MoE 下同请求两次输出不同；把越界 lane 掩成 −1 即恢复
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: flashinfer 0.6.18 + SM120 + sparse-MLA prefill + query>64（DSv4 dual-cache）（partial：arch × 内核路径）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5095
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（flashinfer SM120（4x RTX PRO 6000 Blackwell，无 NVLink）sparse-MLA **prefill** 路径（`_sparse_mla_sm120_paged_attention` → `sparse_mla_sm120_prefill.cu`，DSv4 dual-cache 形态）query 数 >64 即输出损坏——阈值正是 `_DECODE_MAX_TOKENS = 64` 的路由边界（decode 内核正确处理 ≤64）；65/69/122/160 token prompt 在 `temperature=0` 下输出垃圾/无关文本/重复 CJK 片段循环，18–62 token 正确。**调用方把 `indices`/`extra_indices` 中位置 `>= topk_length[i]` 的 lane 掩成 −1 即修复**（对应 #5075 "lanes beyond topk_len are not bounded"）；EP1+marlin MoE 下损坏**非确定**（同请求两次 temperature=0 不同输出），指向读未初始化/陈旧内存而非确定性布局错。短生成长提示（300+ decode token）始终正确——隔离出 prefill 内核） · Cov: `NEW`（prefill 内核 topk lane 无界读子签名；8.77 为 SM90 sparse-MLA 域对应条目） · 触发 `partial` · 置信度 `verified`'
+  mechanism: prefill 内核对超出 `topk_length` 的 indices lane 不设界——lane 中的陈旧/垃圾索引被当作有效 KV block 参与 attention；掩 −1（padding 哨兵）后跳过。排除项：EP1/EP4、flashinfer_mxfp4/marlin MoE runner、spec decoding 开关、Engram 表 RAM/NVMe 均不改行为；`SGLANG_SM120_FLASHMLA_BACKEND=triton`（SGLang Triton sparse-decode 内核全调用）完全正确。
+  source: 'flashinfer #5095（2026-09-10 open，含 prompt 长度×输出症状表、非确定性观察、排除矩阵与 -1 掩码 workaround；报告自述"no open issue for the *silent wrong output* form (as opposed to hangs)"）。https://github.com/flashinfer-ai/flashinfer/issues/5095'
+  behavior: 无 crash——**长度条件化静默损坏**：短提示正常使冒烟测试漏检，>64 query 的 prefill 输出垃圾。8.77（SM90 sparse-MLA TP+EP+MTP IMA）同族 SM1xx 对应：本条在 prefill 内核 + topk lane 无界维度，与 6.215（DSV4 mod-4 长度门控错 token）同款"长度阈值跨越才显形"模式。
+  trigger_surface: flashinfer 0.6.18 + SM120 + sparse-MLA prefill + query>64（DSv4 dual-cache）（partial：arch × 内核路径）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

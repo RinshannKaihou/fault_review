@@ -1,0 +1,55 @@
+id: TRN-0039
+legacy_ids:
+- PAR.11
+slug: gtp_expert_grad_overscaled_by_gtp_egtp
+aliases: []
+title: Megatron GTP 下 expert 梯度被放大 GTP/EGTP 倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: GTP 下 expert 梯度缩放因子
+  behavior: GTP 下 dense 参数经 gtp_remat 组 AVG 补回 DDP 的 1/DP 缩水，expert 参数只得到 EGTP 轴补偿，残留 GTP/EGTP 伪因子；expert 梯度 prescale 也用了缩小的 DP 组大小。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 无 NaN、无 crash；默认 EGTP=1 时每个 expert 更新放大 GTP 倍、方向不变，开全局 clip 时被归一掩盖，MoE 与 dense 学习率平衡被打破，只表现为收敛差距；A3B_30B GTP64 实测 grad-norm 偏 8.4×、params-norm 偏 8.7×。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7160
+  kind: github_pr
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7165
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0033
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `pretrain` · Cov: `var:fsdp_degenerate_dp_group_grad_doubling` · 置信度 `documented`'
+  mechanism: Megatron GTP（梯度张量并行，rank 从 DP 轴刻出）下 MoE expert 梯度带一个 `GTP/EGTP` 的伪因子：dense 参数能从 `_allreduce_replicated_grads_over_gtp_remat_group` 的 AVG 补回 DDP `1/DP` 缩水（DP 随 GTP 增大而缩小），expert 参数只见过 EGTP 轴规模的补偿——`GTP/EGTP` 因子永不消除，默认 `EGTP=1` 时每个 expert 更新被放大 `GTP` 倍。修复 = `_rescale_expert_grads_for_gtp_remat()` 在非 TP all-reduce 后乘 `EGTP/GTP`（标量乘而非 AVG：同一 gtp_remat 组内各 rank 持不同专家，无可对齐副本）。同族第二处：`expert_gradient_scaling_factor` 复用被 GTP 缩小的 `dp_cp_group.size()` 当 prescale（#7165，A3B_30B GTP64 EP64 256×GB300 实测 grad-norm 偏 8.4×、params-norm 8.7×，修复后双双落回 A/A 带内）。`calculate_per_token_loss` 路径免疫（gtp 轴 SUM-reduce、除数已计 gtp peer token）。
+  source: 'Megatron-LM PR #7160（2026-09-09，closed merged；「失败是静默的——无 error 无 NaN，只表现为收敛差距」）。https://github.com/NVIDIA/Megatron-LM/pull/7160 ；Megatron-LM PR #7165。https://github.com/NVIDIA/Megatron-LM/pull/7165'
+  behavior: 无 NaN、无 crash；expert 梯度恒放大 GTP 倍（或 prescale 错），方向不变——全局 clip 开启时被归一掩盖（连坐 OPT.04），MoE 与 dense 的学习率平衡被系统性打破，收敛 gap 无日志可查。与 PAR.05（退化 DP 组 2^N 翻倍）同型：并行轴重切后**梯度归一因子与实际副本数失配**，dense 路径自愈、expert 路径漏掉；与 OPT.05（expert 被优化器遗忘）互补：那边专家不动、这边专家被过度驱动。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

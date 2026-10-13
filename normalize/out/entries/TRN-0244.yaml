@@ -1,0 +1,58 @@
+id: TRN-0244
+legacy_ids:
+- RL-RO.22
+slug: fp8_moe_repack_blind_to_same_shape_rewrite
+aliases: []
+title: verl FP8 refit 对同形状 MoE 重排失明，权重按错误布局写入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: verl
+    component: FP8 refit MoE 重排检测
+  behavior: staging 检测用的 shape/dtype 与 is_shuffled 信号对同形同 dtype 的 MoE 重排（如 swap_w13_to_w31）失明，refit 把 canonical 布局权重写进重排后的 buffer。
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  detail: 修复前无 crash：每次 refit 后 rollout 侧 FP8 MoE 专家权重按错误布局解释，分布静默偏离训练侧；触发于 rollout.quantization=fp8 + Hopper + EP>1（自动选 FlashInfer CUTLASS MoE）。端到端影响未量化。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/7986
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0232
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:zero3_layout_mutation_not_persisted` · 置信度 `documented`'
+  mechanism: 'verl FP8 refit staging 周期（`vllm_fp8_utils.py`）用**两个信号**判断某 MoE 层是否需要 stage 后重处理：参数 live shape/dtype 与加载时 ckpt layout 的差异、ROCm AITER 的 `is_shuffled` 标记（#7470）。两个信号对「kernel prep 返回**同形状同 dtype 的新拷贝**」都失明：FlashInfer CUTLASS block-FP8 MoE prep 的 `swap_w13_to_w31`（gate/up 两半交换、shape 不变）与 TRT-LLM MXFP8 prep 的 W13→W31 + 行交错 + tile shuffle（经 #7519、未进 main）都属此类。这类层 `stage_fp8_params_for_loading` 返回空——refit 时权重同步把 **canonical（ckpt 布局）专家权重直接写进 repacked 后的 live buffer**，且 `process_weights_after_loading` 不被重跑：kernel 把新权重当作「已在自己布局里」来读。`main` 上的可达路径：`rollout.quantization=fp8`（block `[128,128]`）+ FlashInfer CUTLASS MoE backend——vLLM 0.24/0.29 在 **Hopper + `expert_parallel_size>1`** 时自动选择该组合；Blackwell 同配置选 TRT-LLM（block-FP8 prep 改 rank、被 shape 检查逮住）、Hopper TP-only 选 Triton（无 repack）。修复（PR #7986，2026-09-22 merge）= `replace_parameter_preserve_subclass` 在 rewrite 可见处记录 `_verl_fp8_repacked`、按记录名强制 staging；恒等替换（Triton/vLLM-CUTLASS 原样传回）不记录、shape 变化的 repack（DeepGEMM/Marlin/TRT-LLM block-FP8）仍走原检查。'
+  source: 'verl PR #7986（2026-09-22 open→当日 14:35 UTC merge 进 main；`_get_priority_backends` 在 vLLM 0.24/0.29 双 tag 源码核对；与 #7470（AITER `is_shuffled` restage——同类盲区、靠信任后端标记修了一个后端）同族）。https://github.com/verl-project/verl/pull/7986'
+  behavior: 'merge 前的 main 上无 crash——每次 refit 后 rollout 侧 FP8 MoE 专家权重被按**错误布局解释**：名形合法、数值是 canonical 布局写进 repacked 存储，rollout 分布静默偏离训练侧（TIM 的权重侧来源，非数值核差）。与 RL-RO.10（ZeRO-3 布局互转不持久化——rollout 用布局损坏权重）**同族「布局变换不在同步协议里」**：那边缺 `modifier_rank` 写回、这边检测信号对 same-shape rewrite 失明；与 RL-RO.17（vLLM encoder cache 漏清——旧权重 embedding 继续命中）互补：那边是 cache 生命周期、这边是权重布局契约；与 #7470 共享「后端自述标记 vs 通用检测」的修复哲学分歧。端到端 reward/logprob 影响未在 PR 中量化。'
+  discovery: 2026-09-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 'uncertain 字段 cause.subsystem 量化 vs RL训练回路：定为 量化。出错代码是 FP8 专用的 vllm_fp8_utils.py refit staging 检测，修复（PR #7986）在 replace_parameter_preserve_subclass 记录 _verl_fp8_repacked 强制 staging；非 FP8 rollout 的权重同步无此问题，按 rule 1/rule 6 归出错代码所在的 量化 功能域。维持原判。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

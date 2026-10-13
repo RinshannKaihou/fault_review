@@ -1,0 +1,53 @@
+id: INF-0849
+legacy_ids:
+- '8.65'
+slug: sglang_minimax_m3_w4a16_triton_sparse_all_null_tokens_serves_success
+aliases: []
+title: SGLang 量化 embedding 未加载致输出恒为 token 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: get_quant_method 嵌入分支
+  behavior: compressed-tensors get_quant_method 漏处理 VocabParallelEmbedding，embedding 按未量化注册 bf16 weight，packed 权重未加载，表保持 torch.empty
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: DGX Spark（sm_121、TP2）上服务 MiniMax-M3 W4A16 时加载、graph 捕获与 API 均正常，但每个生成 token 都是 id 0（NUL 字节），无错误无 NaN；同权重 vLLM 正确，加载期仅有 params_dict 警告
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang + MiniMax-M3 + W4A16 compressed-tensors + DGX Spark/sm_121 + Triton MiniMaxSparse（模型×量化×平台组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38143
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（MiniMax-M3 W4A16（compressed-tensors）文本服务在 2× DGX Spark（GB10/sm_121、TP2）上：加载、CUDA graph 捕获、正常 serving——但**每个生成 token 都是 id 0**（NUL 字节串 ×max_tokens），temp 0 全 prompt 复现，无错误无 NaN 断言无警告；同权重 vLLM 正确——Triton MiniMaxSparse 注意力路径 × compressed-tensors pack-quantized int4 的组合损坏） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 启动日志确认路径为 `main_attn=triton, msa_decode=False` + `disable_value_layers=[3..59]`（value-less sparse 层）——sm_121 上的 Triton MiniMaxSparse kernel 与 W4A16 g128 反量化路径之一产出全零 logits；报告者无法从外部区分是 sparse-attention kernel 还是 compressed-tensors 反量化损坏（issue 保持开放定位中）。
+  source: 'SGLang #38143（2026-09-05 open，v0.5.18，双端点 × 多 prompt × temp 0 全复现）。https://github.com/sgl-project/sglang/issues/38143 · 根因修正 PR #38224（2026-09-06：根因**非 Triton 注意力路径**——compressed-tensors 量化 embedding 被 `get_quant_method` 四分支（LinearBase/ParallelLMHead/RadixAttention/FusedMoE）落穿返回 None → 层装 `UnquantizedEmbeddingMethod` 默认并注册 bf16 weight 参数，checkpoint 的 `weight_packed/weight_scale/weight_shape` 三条 "not found in params_dict" 警告被无视 → 表按 `torch.empty` 零填充原样服务：hidden states 全零 → 每 logit 为零 → argmax 恒 id 0；修复显式回答 VocabParallelEmbedding 并 `NotImplementedError` 拒绝量化 embedding）'
+  behavior: '**最静默的输出损坏形态**：引擎健康、graph 捕获成功、API 返回 200——输出为恒 0 token id（NUL 字节流）。与 8.55（fast_topk 静默错选）、7.55（int8 位型拷进 bf16 全垃圾）同为"结构性全坏但服务成功"族；本条显形为**常量塌缩**（比 garbage 更不易被 perplexity 探针捕捉——取决于解码路径）。sm_121 新硬件 × 新稀疏注意力 × W4A16 三新组合叠加。'
+  trigger_surface: SGLang + MiniMax-M3 + W4A16 compressed-tensors + DGX Spark/sm_121 + Triton MiniMaxSparse（模型×量化×平台组合触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

@@ -1,0 +1,51 @@
+id: INF-0656
+legacy_ids:
+- '6.263'
+slug: vllm_nixlconnector_heterogeneous_tp_split_kv_slot_layout_silent_misread
+aliases: []
+title: vLLM NixlConnector 异构 TP 字节切分忽略页内布局致静默乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NixlConnector KV 块切分与握手
+  behavior: NixlConnector 按字节切分 KV block，假设块内为 head-first 布局；ROCM_AITER_FA shuffle、ROCM_ATTN、B12X 的 K/V 为双 slot 布局，握手也看不到页内字节排布。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: MI300X 实测 standard 页 prefill → shuffled 128-token 页 decoder 时握手与传输全通过，P→D 30/30 输出 gibberish（本地 30/30 正确）且无任何错误；异构 TP 字节切分形态仅读源码定位。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM PD disagg + NixlConnector + heterogeneous TP × {ROCM_AITER_FA shuffle / ROCM_ATTN / B12X}（Part 1 读源码）/ ROCm AITER shuffled 页 × standard prefill + gluon decoder（Part 2 MI300X 实测，#58860 落地后暴露）（hw_specific）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59110
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM `NixlConnector` 对 heterogeneous TP 按**字节**切分 KV block，这假设块内布局是 head-first `[H, N, 2*D]`；但 `ROCM_AITER_FA`（`VLLM_ROCM_SHUFFLE_KV_CACHE_LAYOUT=1`，#52849/#29887）、`ROCM_ATTN`、`B12X` 三后端把 K/V 发布为**两个独立 head slot** `[K of all heads | V of all heads]`——异构 TP 下每 rank 静默拿到错误数据（Part 1，读源码定位、≥3 GPU 未实测）；Part 2 已在 1×MI300X（vLLM 0.30.0，NixlConnector pull、ROCM_AITER_FA 双侧、prefix caching off）实测：standard 页 prefill → shuffled gluon 128-token 页 decoder（block-size 比 8）**handshake/传输全通过、30/30 全 gibberish 无任何错误**（需 #58860 修 block-size receive helper 后该路径存活——修复落地即静默损坏面；shuffled 16-token 页 prefill 走 dense-plane assert 启动失败、fail-loud 免疫；handshake 看不到页内字节排布使 AITER shuffled 页被当标准页） · Cov: `NEW`（PD 传输层页布局契约缺口子签名；与 6.243（NIXL base_addr 去重折叠混合层共享存储静默花屏）同 NixlConnector 数据面域——本条在 **页内布局（head-first vs 双 slot / shuffled）对字节切分的不可见性**维度） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '字节级切分把 slot 边界当作字节边界；K/V 双 slot 布局与 AITER shuffle 使同字节段跨 rank 语义错位。Part 2 MI300X 实测表含 6 配置（control 40/40、40/40、四失败/静默配置、+ #58860 后 0/30 静默 gibberish）。'
+  source: 'vLLM #59110（2026-09-29 open，含 main@24c9772d 读源码定位 + ztang2370 MI300X GPU 复现评论（30-40 prompts × 150 name:number 对、greedy、P→D vs Local 双臂））。https://github.com/vllm-project/vllm/issues/59110'
+  behavior: 无 crash（Part 2 实测路径）——**P→D 传输后解码输出全 gibberish 而服务无错**：答案只能来自被传输 KV 的测试里 P→D 0/30 vs Local 30/30；handshake 成功使其在监控面完全静默。
+  trigger_surface: vLLM PD disagg + NixlConnector + heterogeneous TP × {ROCM_AITER_FA shuffle / ROCM_ATTN / B12X}（Part 1 读源码）/ ROCm AITER shuffled 页 × standard prefill + gluon decoder（Part 2 MI300X 实测，#58860 落地后暴露）（hw_specific）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,52 @@
+id: INF-0974
+legacy_ids:
+- '10.58'
+slug: vllm_routed_experts_prompt_start_boundary_assert_engine_core_fatal
+aliases: []
+title: vLLM routed_experts 起点边界值致 EngineCore 崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: routed_experts 起点校验与断言
+  behavior: API 校验层放行 prompt_start 等于 prompt 长度，scheduler 却断言 prompt_start < num_prompt_tokens，合法域定义不一致；断言失败被当作 EngineCore fatal。
+effect:
+  objects:
+  - 可用性/进度
+  detail: --enable-return-routed-experts 下 prompt_start 等于 rendered prompt 长度（如 len 14、offset 14）时请求 HTTP 500，EngineCore 死亡，后续无关普通请求也持续 500；offset 13 正常。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + --enable-return-routed-experts + routed_experts_prompt_start == prompt_tokens 边界（config：flag × 边界值即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55750
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0585
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（`--enable-return-routed-experts` 下 OpenAI chat 请求的 `routed_experts_prompt_start` **等于** rendered prompt 长度（本例 len 14、offset 14；offset 13 正常）时：请求校验层放行该边界值，V1 scheduler `update_from_output` 的 `assert prompt_start < request.num_prompt_tokens` 触发 AssertionError → 被 EngineCore 当 fatal error → 触发请求 HTTP 500，且**后续普通请求也持续 500**（EngineCore 死亡跨越单请求生命周期）） · Cov: `var:sglang_single_malformed_mm_request_engine_suicide_retry_cluster_takedown`（6.192 单请求错误放大为服务不可用族） · 触发 `config` · 置信度 `verified`'
+  mechanism: API 层边界（允许 ==len，语义为"从末尾起无 prompt 路由信息"）与 scheduler 断言（严格 <len）不一致——校验器与断言各自持有对合法域的不同定义。LFM2.5-8B-A1B + L40S、v0.28.0 附完整 repro 脚本/traceback/server log 三件套。
+  source: 'vLLM #55750（2026-09-07 open，bug label，含 repro_openai.py、边界/近边界对照与服务后续请求 500 证据）。https://github.com/vllm-project/vllm/issues/55750'
+  behavior: 单请求边界值 → EngineCore fatal → **后续无关请求持续 500**（可用性放大）。6.192（畸形 mm 请求引擎自杀 ×重试巡回击穿 5 节点）之后「单请求杀死引擎并外溢」族在 API 校验边界域的新成员：本条触发面是**合法语义的边界值**（客户端无过错），比 6.192 的畸形请求更隐蔽。按「API 层 tokenizer/请求字段边界」归入第 10 类（服务接口域），机制 var 到 6.192 族。
+  trigger_surface: vLLM + --enable-return-routed-experts + routed_experts_prompt_start == prompt_tokens 边界（config：flag × 边界值即触发）
+  discovery: 2026-09-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

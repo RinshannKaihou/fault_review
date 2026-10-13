@@ -1,0 +1,55 @@
+id: INF-0476
+legacy_ids:
+- '6.83'
+slug: vllm_gdn_non_spec_state_indices_strided_view_non_contiguous
+aliases: []
+title: vLLM GDN 向 kernel 传非连续 state_indices
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: GDN metadata non-spec 分支
+  behavior: non-spec decode 分支把 strided 列视图 block_table_tensor[:, 0] 直接当 state_indices 传给要求连续 1-D 的 kernel；单元素时 .contiguous() 不纠正
+effect:
+  objects:
+  - 可用性/进度
+  detail: GDN 混合线性注意力模型在非 FULL cudagraph 路径的 non-spec decode（如单 decode batch）warmup/decode 时报错 state_indices must be contiguous and one-dimensional。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；GDN hybrid linear-attention + non-spec decode + 非 FULL cudagraph 路径
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52207
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（GDN non-spec decode 分支传 strided column view 给 recurrent decode kernel） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`GDNAttentionMetadataBuilder` 的 non-spec decode 分支设 `non_spec_state_indices_tensor = block_table_tensor[:, 0]`——strided column view（`stride(0)` 等于 block-table width，非 1）。recurrent decode kernel 要求 1-D stride-1 `state_indices`，但此 view 在除 FULL-cudagraph decode fast-path（复制到 preallocated contiguous buffer）外的所有路径被直接传入 kernel。对单 decode batch，view shape `(1,)` stride `(block_width,)`，`.contiguous()` 对 ≤1 element tensor 是 **no-op**（报告 contiguous），kernel 报错 `state_indices must be contiguous and one-dimensional`。'
+  source: 'vLLM #52207（2026-08-13 open PR）。https://github.com/vllm-project/vllm/pull/52207'
+  behavior: kernel warmup/decode 时报错 `state_indices must be contiguous and one-dimensional`。修复用 `clone(memory_format=torch.contiguous_format)` 保证 stride(0)==1。
+  trigger_surface: vLLM；GDN hybrid linear-attention + non-spec decode + 非 FULL cudagraph 路径
+  discovery: 2026-08-13 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+        status: unanimous

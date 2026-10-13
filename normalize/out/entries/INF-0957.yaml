@@ -1,0 +1,57 @@
+id: INF-0957
+legacy_ids:
+- '10.41'
+slug: vllm_whisper_chunk_decoder_early_eot_silent_audio_drop
+aliases: []
+title: vLLM Whisper chunk 内提前 EOT 后残余音频静默不转写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: transcriptions 逐 chunk 解码
+  behavior: /v1/audio/transcriptions 按 30s chunk 每块只 decode 一次；decoder 在 chunk 中途发出 EOT 后，该 chunk 剩余音频既不重试也不续解码，直接丢弃。
+effect:
+  objects:
+  - 输出内容
+  detail: decoder 提前 EOT 时转写尾部语音缺失：29.42s 单 chunk 丢 7.9s，58.85s 双 chunk 共丢约 1/3；duration 报全长、text 看似完整、无 warning，只能靠 segment end 与音频时长的差值发现，确定性复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + Whisper 系音频模型 + decoder 提前 EOT 的音频（自然语音常见；确定性可复现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53144
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（Whisper 转写中 decoder 在 chunk 内提前发出 end-of-transcript 时，chunk 残余音频**无人转写**——每个 audio chunk 恰好 decode 一次，EOT 后的尾部直接蒸发：29.42s 单 chunk 丢 7.9s、双 chunk 共丢约 1/3 语音；`duration` 报全长、`text` 读起来像完整句子，唯一痕迹是 last segment end 与音频长度的算术差） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`/v1/audio/transcriptions`（whisper-large-v3-turbo，v0.27.1，main 路径不变）按 30s chunk 解码，每 chunk 恰好一次 decode：decoder 在 chunk 中途发出 EOT token 后，chunk 剩余窗口既不重试也不续decode——被丢弃。测量：29.42s 连续语音（单 chunk、无切分）segments 终于 21.56s，7.9s 真实语音缺席；58.85s 双 chunk 各丢窗口尾部（8.46s + 7.37s）。三连运行确定性复现；已排除 token 上限（2000 tokens 不变）、容器/remux、词中截断（尾部补静音不变）；单独提交丢失区域可逐字转写回来。短于 30s 单 chunk 即复现排除 chunking 逻辑本身。'
+  source: 'vLLM #53144（2026-08-20 open，含双文件逐窗口测量表与排除实验）。https://github.com/vllm-project/vllm/issues/53144'
+  behavior: '**无 crash、无 warning、无缺失指示字段**——转写「看似完整」，丢的是无声无息的尾部语音（对字幕/会议记录/合规存档是数据丢失级故障）；检测只能靠 segment-end ≤ duration 的算术审计。属「**解码提前终止 × 逐 chunk 单次解码契约 = 静默截断**」新子签名：与 4.7（Whisper 前端 NaN 传播）同模型不同层（本条在服务端解码循环、非特征提取）。'
+  trigger_surface: vLLM + Whisper 系音频模型 + decoder 提前 EOT 的音频（自然语音常见；确定性可复现）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：title/component/behavior/detail 中的数字（29.42s 丢 7.9s、58.85s 双 chunk 约 1/3）、触发条件与组件均可在原文找到；分类与原文“本条在服务端解码循环”一致；behavior 只写原因、detail 只写影响，长度合规。无改动。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

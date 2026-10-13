@@ -1,0 +1,52 @@
+id: INF-0250
+legacy_ids:
+- '1.251'
+slug: ttmetal_fmod_remainder_exact_zero_loses_dividend_sign
+aliases: []
+title: fmod/remainder 精确零结果丢失被除数符号
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: fmod/remainder 零结果符号
+  behavior: fmod 的 a−trunc_div*b 对负被除数精确零得 +0.0，两个 fix-up 循环只处理非零结果，a==b 臂直接赋 0.0f；remainder 的符号校正显式跳过零结果。
+effect:
+  objects:
+  - 数值结果
+  detail: tensor-tensor 负被除数整除时返回 +0.0（torch 为 −0.0），如 fmod(-4.0, 2.0)；+0.0==−0.0 使现有测试与 PCC/容差门看不见，以 signbit 分支的下游（1/x、atan2）产生符号分歧。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.fmod`/`ttnn.remainder` tensor-tensor + 负被除数整除（hw_specific：默认 SFPU 路径即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57714
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0245
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tensor-tensor `ttnn.fmod`/`ttnn.remainder` 在**精确零结果**处恒返 **+0.0**，torch 按 C `fmod` 语义把零结果继承**被除数符号**（−0.0）：`fmod(-4.0, 2.0)` ttnn +0.0 vs torch −0.0、`remainder(-4.0, 2.0)` 同、`fmod(-0.0, 2.0)` 同。负零不罕见——任何整除的负被除数都产生。机理双路径：fmod 的 `result = a - trunc_div * b` 在 IEEE RNE 下对负被除数精确零得 +0.0，两个 fix-up 循环都只对非零幅值/符号动作（`result_abs >= b_abs`、`result < 0`、`result > 0` 在零处全 false），`a == b` 臂更直接字面赋 `0.0f`；remainder 的符号校正显式 `v_if(result != 0.0f)` 跳过零。**现有测试结构性看不见**：数值比较 `+0.0 == −0.0`，此前五轮 fmod/remainder 修复（#51661/#56384/#51441/#55502）全针对非零结果。bf16 输出同病（vFloat16b 转换保留零符号）） · Cov: `var:ttmetal_log_bf16_accurate_mode_signed_zero_exponent_before_normalisation_plus_inf`（1.246 ±0.0 位域语义族——本条在 fmod/remainder 精确零符号维度） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 来源为无设备的内核 IEEE replay（C++ 逐位复现内核输出、与 torch 恰好且仅在零符号处分歧）；修复每内核一句（零结果处 copysign(0, a)，含 `a == b` 臂），Wormhole/Blackhole 双副本。
+  source: 'tt-metal #57714（2026-09-24 open，Bad Outputs，含 fp32 全对照表、双 arch 代码行、历史修复谱系与测试盲区分析）。https://github.com/tenstorrent/tt-metal/issues/57714'
+  behavior: 无 crash——零符号丢失对以 signbit 分支的下游（`1/x` → ±inf、atan2、区间边界比较）产生符号级分歧；PCC/容差门恒绿。
+  trigger_surface: tt-metal + `ttnn.fmod`/`ttnn.remainder` tensor-tensor + 负被除数整除（hw_specific：默认 SFPU 路径即触发）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

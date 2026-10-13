@@ -1,0 +1,62 @@
+id: INF-0424
+legacy_ids:
+- '6.31'
+slug: vllm_dsv4_c128a_topk_stride_capture_vs_runtime_mismatch
+aliases: []
+title: vLLM DSv4 C128A stride 捕获与运行时不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: _build_c128a_metadata
+  behavior: _build_c128a_metadata 由 max_seq_len 派生行 stride；cudagraph 捕获按 max_model_len 烘焙最宽 stride，runtime 按当前 batch 实际值排列行。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: DeepSeek-V4-Flash 并发长上下文负载下，除 row 0 外各行 stride 不匹配，生成中途出现 <|begin_of_sentence|> burst 和多语言 token salad，每 batch 一个请求出错、从不是第一个；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；DeepSeek-V4-Flash + C128A decode + FULL cudagraph + 并发长上下文
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51318
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（cudagraph capture stride 与 runtime stride 不匹配 → 静默输出损坏） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: '`_build_c128a_metadata` 从 batch 的 `max_seq_len` 派生 persistent C128A decode buffer 的 row stride：`active_topk_width = min(max(next_pow2(cm.max_seq_len // 128), 128), c128a_max)`。但 decode 消费者在 FULL cudagraph 内运行，cudagraph capture 用 `max_seq_len = max_model_len`（1M-context 模型为 8192）构建 attention metadata → 捕获的 kernel 烘焙了最宽 stride，而 runtime 构建以当前 batch 的实际值（128–4096）重新排列行。Row 0 在任何 stride 下都对齐 offset 0 永远正确读取，**其余每一行** stride 不匹配。'
+  source: 'vLLM PR #51318（2026-08-06 open）。修复 #41834 线程报告的并发长上下文负载下 DeepSeek-V4-Flash 瞬态输出损坏。https://github.com/vllm-project/vllm/pull/51318'
+  behavior: '无 crash、无 NaN。并发长上下文负载下 DSv4-Flash 出现 mid-generation `<|begin_of_sentence|>` burst 和 multilingual token salad——每 batch 一个请求，从不是第一个。属「cudagraph capture-time vs runtime metadata stride 分歧 → 静默输出损坏」新子签名。与 6.x（如 #50749 Gemma-4 prefix caching 相关损坏）同族但机制是 C128A topk stride 而非 prefix caching。'
+  trigger_surface: vLLM 主路径；DeepSeek-V4-Flash + C128A decode + FULL cudagraph + 并发长上下文
+  discovery: 2026-08-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 运行时/执行
+        status: unanimous
+      effect:
+        from: 数值结果
+        to: 输出内容
+        status: unanimous
+    issue_unfixed:
+    - detail

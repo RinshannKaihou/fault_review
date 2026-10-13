@@ -1,0 +1,59 @@
+id: INF-1092
+legacy_ids:
+- '11.69'
+slug: sglang_chunked_prefill_radix_insert_race_dangling_kv_pages_qsa
+aliases: []
+title: SGLang 分块 prefill 与 retract 竞态致悬垂 KV 页
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: MambaRadixCache 分块插入与释放
+  behavior: cache_unfinished_req 在 chunked prefill 中途把各 chunk 的 KV 页插入 radix 树；retract/abort 时这些页被释放回分配器，radix 节点留下悬垂引用
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: QSA 压缩注意力模型 + prefix caching 在 retract/abort 压力下，页被重分配后命中该前缀的请求首个 decode 步即读垃圾，确定性输出 token 248319 循环、accept_len 恒 1；压缩寻址放大为跨请求污染；flush_cache 可暂愈
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang + QSA 压缩注意力模型 + chunked prefill + prefix caching + retract/abort 压力（partial：架构特定；decode OOM 回收压力触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38319
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0556
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（SGLang QSA 压缩注意力模型（Qwen3.8-Flash-Next）：chunked prefill 期间 `MambaRadixCache.cache_unfinished_req()` 把每个 chunk 的 KV 页**在 prefill 中途**插入 radix 树——radix 节点持有仍属 in-flight 请求的 KV 页引用；请求被 retract（decode OOM）或 abort 时 `release_kv_cache()` → `cache_finished_req(is_insert=False)` 把这些页释放回分配器，**radix 节点带悬垂引用存活**：页被重新分配给其它请求（或含未初始化数据）而树仍指向它们；后续请求前缀命中该损坏前缀 → **首个 decode 步即读到垃圾**，产出 impossible-token 循环（token `248319` = lm_head 未训练 padding 行），`num_correct_drafts=0 / accept_len=1` 证明 target 模型自身产出坏 token；QSA 压缩寻址 `full_slot // compress_ratio` 把单个释放页放大为跨请求压缩槽污染；`flush_cache` 可暂愈（驱逐损坏前缀）） · Cov: `var:sglang_kimi_k3_high_pressure_cross_request_context_corruption`（6.163 跨请求 KV 污染族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: '竞态窗口 = chunked prefill 的页插入 vs retract/abort 的页释放；损坏随机（取决于插入与回收时序）但一旦固化进 radix 前缀即确定性复现（forensic dump 显示同前缀重复请求命中**完全相同的损坏槽区间**）。修复 PR #38355 消除 mid-prefill 插入竞态（#38319 为原始 issue，含取证 dump）。KV §3（block-slot-alloc）/§4（cross-request）机制在 SGLang QSA 域的合流实例；按主机制（推测/解码路径消费损坏 KV → 采样层显形）归入第 11 类，与 6.163 互补（6.163 为高压污染现象、本条有完整根因链）。'
+  source: 'SGLang #38319 + 修复 PR #38355（2026-09-07，含根因分析、forensic 摘要与修复描述）。https://github.com/sgl-project/sglang/issues/38319'
+  behavior: 无 crash——**前缀命中即确定性垃圾输出**（impossible token 循环），spec draft 全拒（accept_len 恒 1）进一步佐证 KV 数据本身坏；flush_cache 前服务持续污染同前缀所有请求。6.163（跨请求上下文污染）之后该族首个带完整根因链（mid-prefill 插入 × retract 释放竞态）+ QSA 压缩放大器的成员。
+  trigger_surface: SGLang + QSA 压缩注意力模型 + chunked prefill + prefix caching + retract/abort 压力（partial：架构特定；decode OOM 回收压力触发）
+  discovery: 2026-09-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

@@ -1,0 +1,51 @@
+id: INF-0481
+legacy_ids:
+- '6.88'
+slug: sglang_mamba_state_donation_misalignment_dcp_logprob_divergence
+aliases: []
+title: SGLang DCP 下 Mamba 状态网格未加宽致 logits 偏离
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: Mamba radix cache 状态跟踪网格
+  behavior: DCP 把 tree page 加宽 dcp_size 倍，Mamba state 跟踪网格未加宽；donated state 可领先节点达 tree_page-1 token，匹配时仍视节点深度等于状态深度，中间 token 重复喂入
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: hybrid 线性注意力模型（Kimi-K3）以 --dcp-size>1 + extra_buffer 策略服务时，从缓存前缀 resume 的 logits 确定性偏离 fresh prefill：|dlogprob| 最大 6.9，157/1081 位置 >2，约 700 token 后衰减。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang；hybrid linear-attention（Kimi-K3 等）+ `--dcp-size > 1` + `--mamba-radix-cache-strategy extra_buffer` + cache resume
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34760
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DCP 加宽 tree page 但 Mamba state grid 未加宽 → resume logits 确定性偏离 fresh prefill） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: Hybrid linear-attention 模型（Kimi-K3, 69 KDA + 24 MLA）以 `--dcp-size > 1` + Mamba radix cache（`--mamba-radix-cache-strategy extra_buffer`）服务时，DCP 加宽 tree page 到 `allocator_page_size * dcp_size`，但 **Mamba state-tracking grid 未加宽**。radix key floor 到加宽 page 但 donated recurrent state 仍编码 `mamba_last_track_seqlen` tokens，state 可领先 node 达 `tree_page - 1` tokens（实测 384）。match 侧信任 node depth == state depth，warm hit 时中间 token 被第二次喂入 linear-attention layer（recurrent state double-counted）。无 DCP 时两 grid 重合，所以 bug 是 DCP-only。
+  source: 'SGLang #34760（2026-08-13 open PR）。8×B300，Kimi-K3。https://github.com/sgl-project/sglang/pull/34760'
+  behavior: 从 cached prefix resume 产生的 logits **确定性地偏离** fresh prefill（per-token |dlogprob| up to 6.9, 157/1081 位置 |dlp|>2），从 resume boundary 开始衰减 ~700 tokens。修复后 0/0 偏离。属「DCP tree-page widening 不对称导致 Mamba state 损坏」**新子签名**。
+  trigger_surface: SGLang；hybrid linear-attention（Kimi-K3 等）+ `--dcp-size > 1` + `--mamba-radix-cache-strategy extra_buffer` + cache resume
+  discovery: 2026-08-13 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

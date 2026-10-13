@@ -1,0 +1,57 @@
+id: INF-0381
+legacy_ids:
+- '5.34'
+slug: sglang_minicpm_lightning_attn_tp_partial_rms_norm_denominator
+aliases: []
+title: SGLang MiniCPM TP 下 RMS 归一化分母只算本 rank
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: sglang
+    component: Lightning attn 的 RMS 归一化
+  behavior: Lightning attention 层对全头组合输出做 RMS 归一化，TP 下各 rank 只持头子集，却用本 rank 子集计算归一化分母，未跨 TP rank 归约均方统计。
+effect:
+  objects:
+  - 隐状态
+  detail: TP>1 且各 rank 激活量级不同时输出偏离全宽归一化：TP2 MiniCPM-SALA NVFP4 激活对比 FP32 参考，prefill 最大绝对误差 2.3125、decode 1.1875，无 crash；TP=1 不受影响，小规模验证不显形。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + MiniCPM Lightning attention + TP>1（other_stack：SGLang；拓扑即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38230
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0373
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（MiniCPM Lightning attention 层对全头组合输出做 RMS 归一化，TP 下每 rank 只持头子集却用**自己子集**算归一化分母——各 rank 激活量级不同时结果偏离全宽归一化；修复跨 TP rank 归约 FP32 均方统计后再施加各自归一化权重） · Cov: `var:sglang_gptoss_dp_attention_double_reduction_allreduce_scatterv`（5.26 TP 归约域错配族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 归一化统计量的作用域（全头）与计算域（per-rank 分片）不一致。实测 TP2 MiniCPM-SALA NVFP4 激活 vs 全宽 FP32 参考：prefill max abs err 2.3125 / decode 1.1875 → 修复后 0.0039 / 0（容差 1/128 内）；TP=1 路径不变。真实 SGLang collective 双 5090 验证与 FP32/BF16 输入对照通过。
+  source: 'SGLang PR #38230（2026-09-06，含不等能量/零能量分片回归与真实 TP2 激活 dump 对照）。https://github.com/sgl-project/sglang/pull/38230'
+  behavior: 无 crash——TP>1 时 Lightning attention 输出静默偏离数学语义（误差可达量级 2.3）；TP=1 干净故小规模验证不显形。5.26（DP attention 双重归约）之后 TP 归约域族第二例：本条是**漏归约**（分母只算局部）而非双重归约——同一作用域错配的两个方向。
+  trigger_surface: SGLang + MiniCPM Lightning attention + TP>1（other_stack：SGLang；拓扑即触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 并行切分。依据：原文“归一化统计量的作用域（全头）与计算域（per-rank 分片）不一致”，修复是“跨 TP rank 归约 FP32 均方统计”，错的正是 TP 切分后的归约语义，TP=1 路径不变；Cov 归入 5.26 TP 归约域错配族。这不是 TP>1 仅作触发条件的情形，出错代码本身就是分片逻辑。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

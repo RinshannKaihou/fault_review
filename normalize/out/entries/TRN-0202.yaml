@@ -1,0 +1,51 @@
+id: TRN-0202
+legacy_ids:
+- RL-RWD.09
+slug: math_verifier_symmetric_unit_erasure
+aliases: []
+title: OpenRLHF 数学 grader 对称擦除单位，单位错判为正确
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: grade_answer 的 _normalize
+  behavior: _normalize 对 gold 与 prediction 各自独立执行同一单位擦除 re.sub 循环，再比较擦除后的字符串，从不检查两侧单位是否一致（继承自 prm800k grader）
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: 无 crash；5 hours 对 5 minutes、10 meters 对 10 miles 等均判 1.0，数值对单位错的样本获得与正样本同量级的正 advantage，单位正确性维度零梯度；shipped 示例 reward 脚本可达
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/issues/1364
+  kind: github_issue
+relations: []
+original:
+  category: RL-RWD
+  section: RL-RWD
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: OpenRLHF `math_utils.grade_answer` 的 `_normalize`（`openrlhf/utils/math_utils.py:220-238`）对 gold 与 prediction **各自独立**跑同一单位擦除循环（`degree/cm/meter/mile/second/…` 的 `re.sub`），随后在 `grade_answer_sympy`（`:377`）比较擦除后的字符串——从不检查两侧单位是否匹配。裸词单位路径：`5 hours` vs `5 minutes` 双方都被抹成 `5`，sympy 字符串相等判 True（mathd 路径判 False，但 `grade_answer` 两条都走）；MATH-style `\text{ minutes}` 路径：mathd 侧 `_remove_right_units` 同样把单位抹掉，`grade_answer('5\text{ minutes}', '5\text{ hours}')` 判 True。单位列表与 `re.sub` 循环继承自 `openai/prm800k` grader（L126-144，等值检查先于空答案检查同样是继承的），OpenRLHF 无测试覆盖 `grade_answer`。可达面：`grade_answer` 从 `openrlhf/utils/__init__.py` 导出、`examples/python/math_reward_func.py` 是三个 shipped 示例脚本的 `REWARD_FUNC_PATH`。
+  source: 'OpenRLHF #1364（2026-09-24；HEAD `dc2a7ad`、真实 pylatexenc 2.11 下逐例实测：`5 hours`/`5 minutes`→1.0、`10 meters`/`10 miles`→1.0、`60 miles per hour`/`60 feet per second`→1.0（归一化后同为 `60per`）、空 `\boxed{}` 对 `hours`→1.0 等 15 例全表）。https://github.com/OpenRLHF/OpenRLHF/issues/1364'
+  behavior: 无 crash——数学 RL 的 reward 信号把「数值对、单位错」与「全对」判成同值：组内中心化后此类错误样本拿到与正样本同量级正 advantage，单位正确性维度**零梯度**（学不到也无惩罚）；速率/时间量纲错换（miles/hour vs feet/second）与纯数字错一同被洗成正确。与 RL-RWD.07（verifier 误差组内相关）同族「**verifier 缺陷直接进 advantage**」，差异在这边是确定性的标签语义缺陷（对称抹除）而非随机误差结构；与 RL-RWD.08（未打分坍缩为 0 分）互补：那边测量缺席被编码、这边测量**错误**被编码为正确。示例脚本级影响（多少比例 rollout 携带单位）未实测。
+  discovery: 2026-09-25 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

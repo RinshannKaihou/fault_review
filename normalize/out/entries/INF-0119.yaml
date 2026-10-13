@@ -1,0 +1,52 @@
+id: INF-0119
+legacy_ids:
+- '1.120'
+slug: ttmetal_celu_exponent_wraparound_wrong_sign_finite_garbage
+aliases: []
+title: celu 的 expm1 单向 clamp 致指数回绕返回反号有限值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: celu 的 expm1_cw_clamped
+  behavior: expm1_cw_clamped 只 clamp 指数低侧（max(x, −87.0f)）无上侧限制，setexp 只写指数域低 8 位、溢出回绕而非饱和；负 alpha 经 host 预计算 1.0f/alpha 使内核有效参数无界。
+effect:
+  objects:
+  - 数值结果
+  detail: ttnn.celu 取负 alpha 时，golden 为 −inf 处返回符号相反的有限垃圾（+1.0 / −6.24e9），无 crash；assert_with_ulp 报告无界误差。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent + `ttnn.celu` + 负 alpha（软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54770
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0113
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`expm1_cw_clamped` 只 clamp 指数低侧（−87.0f）无上侧 min；`setexp` 只写指数域低 8 位、溢出回绕而非饱和——负 alpha 经 host 预计算 `1.0f/alpha` 使内核有效参数无界：golden −inf 处返回 **+1.0 / −6.24e9（符号相反的有限垃圾）**） · Cov: `var:ttmetal_exp2_fp32_missing_overflow_guard_exponent_wraparound` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`ckernel_sfpu_expm1_cw.h` L30 `sfpi::max(x, -87.0f)` 注释点名 setexp 回绕危害却只防一个方向；L53 `setexp(1.0f, as<vInt>(tmp) - kC231Bias)` 喂入无界指数。exponent 256 → &0xFF=0 → 0.0（真值 2^129）；271 → 1.93e-34。celu 是可达路径（`unary_op_utils.cpp` host 预计算 1/alpha）。'
+  source: 'tt-metal #54770（2026-08-28 open，含 exponent→setexp 回绕表与 alpha/x 对照）。https://github.com/tenstorrent/tt-metal/issues/54770'
+  behavior: 无 crash——期望值不可表示处返回反号有限值；`assert_with_ulp` 框架在此报告无界误差。与 1.114（exp2 上溢回绕）构成「**单向 clamp + setexp 截断**」构造模式第三例——代码库级模式，新 SFPU op 移植时系统性复发。
+  trigger_surface: Tenstorrent + `ttnn.celu` + 负 alpha（软件 API 可触发）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

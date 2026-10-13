@@ -1,0 +1,59 @@
+id: TRN-0121
+legacy_ids:
+- OPT.21
+slug: zero2_lowp_master_offload_scratch_stale_poisons_next_step
+aliases: []
+title: ZeRO-2 offload 残留 NaN 致后续有限 step 被跳过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: deepspeed
+    component: CPU offload 梯度恢复函数
+  behavior: _restore_cpu_offload_grad_to_gpu 只把本 rank 拥有的梯度分片拷进共享 scratch 张量，未清空非拥有区域，而 overflow 检查读整个恢复出的梯度，上一参数组溢出留下的 NaN 驻留其中。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: 一次真实溢出后，之后若干完全有限的 step 仍被判溢出而跳过，训练静默丢更新步、无 crash；ZeRO-2 CPU offload + BF16/FP16 master 权重 + 非托管梯度累积时触发，FP32 master 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-10'
+remarks: subsystem 重计算/卸载 描述只列激活/参数 offload，未明确覆盖 ZeRO 的梯度/优化器 CPU offload；建议在说明中补上梯度 offload
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8728
+  kind: github_pr
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'DeepSpeed ZeRO-2 CPU offload + BF16/FP16 master 权重 + 非托管梯度累积下，`_restore_cpu_offload_grad_to_gpu` 只把**本 rank 拥有的梯度分片**部分拷进共享 scratch 张量，但 overflow 检查读的是**整个恢复出的梯度**：上一个参数组溢出时留在**非拥有区域**的 NaN 驻留 scratch，下一个完全有限的 step 也被判溢出跳过。修复（PR #8728）= 部分拷贝前清空目的视图（FP32 master 全拷贝路径不受影响）。'
+  source: 'DeepSpeed PR #8728（2026-10-02；2×B300 真实 Engine 训练环 repro：两参数组（12/8 元素）+ DP=2，先造真 NaN step、再要求两个有限 step 更新两参数；master 上 BF16/FP16 low-precision 4 case 在 `finite step did not update large` 挂、FP32 对照过；修复后 4/4 过）。https://github.com/deepspeedai/DeepSpeed/pull/8728'
+  behavior: 无 crash——一次真实溢出**污染之后若干有限 step**：`local_overflow` 被陈旧 NaN 置位、有限 step 被跳过，训练在「溢出已过去」之后仍静默丢更新步。与 NUM.04/OBS.14（stage 0 混精溢出处理族）同打击「溢出状态记账」：那些是**本 step 的溢出被吞/错记**、这边是**溢出残留物把后续健康 step 误判为溢出**；与 NUM.16（哨兵平方洗白溢出）方向相反：那边坏 step 被放行、这边好 step 被误杀。截至 2026-10-10 open。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: 'subsystem 维持 重计算/卸载：rule1 功能域优先，缺陷只出现在 ZeRO-2 CPU offload 的 _restore_cpu_offload_grad_to_gpu 路径，修复（PR #8728）是在该函数部分拷贝前清空目的视图，溢出检查本身无误。另把 component 中截断后并不存在的函数名 _restore_cpu_offload_grad 改为描述性短语。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

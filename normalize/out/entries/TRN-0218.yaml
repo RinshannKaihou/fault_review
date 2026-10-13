@@ -1,0 +1,51 @@
+id: TRN-0218
+legacy_ids:
+- RL-KL.05
+slug: entropy_bonus_unscaled_logits_temperature_split
+aliases: []
+title: OpenRLHF entropy bonus 用未除温度的 logits 计算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: Actor.forward 熵计算时序
+  behavior: compute_entropy 在 logits 原地除以 rollout.temperature 之前调用，entropy 基于 softmax(logits)，而训练策略与 vLLM 采样器基于 softmax(logits/T)
+effect:
+  objects:
+  - 训练信号
+  - 指标/日志
+  detail: 无 crash；T≠1 时 entropy 项系统性错值（T=0.5 每 token 偏差达 1.03 nats），T<1 高估、T>1 低估，探索/坍缩平衡调不对，entropy_loss 曲线也在报错值
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1319
+  kind: github_pr
+relations: []
+original:
+  category: RL-KL
+  section: RL-KL
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: OpenRLHF `Actor.forward` 在 `log_probs_from_logits` 把 logits **原地**除以 `rollout.temperature` **之前**调用 `compute_entropy(output["logits"])`——entropy bonus（`entropy_coef`）与日志 `entropy_loss` 描述的是 `softmax(logits)`，而训练的策略与 vLLM 采样器都在 `softmax(logits/T)` 上。两套温度各算各的：T≠1.0 时 entropy 项系统性错值（tiny table model 实测 per-token 偏差 T=0.5 达 1.03 nats、T=1.5 达 0.44 nats），entropy 正则施加在**与实际策略不同的分布**上。修复 = fp32 cast 后先统一除 T，entropy 与 log-prob 用同一份 scaled logits（与 trl GRPOTrainer 行为对齐）。
+  source: 'OpenRLHF PR #1319（CPU 回归测试：新测试在 main 上 fail、修复后 pass；#857 的 in-place 优化保留）。https://github.com/OpenRLHF/OpenRLHF/pull/1319'
+  behavior: 无 crash；T<1 时 entropy 奖励被高估（真实策略熵本已低）、T>1 时被低估——探索/坍缩平衡调不对却查不出原因，`entropy_loss` 曲线本身也在报错分布的数。与 RL-KL.04（stale copy 丢配置）不同：代码路径都执行了，错在**同一前向里两个消费者用了不同温度的 logits**；与 RL-RO.01（TIM）互补：那边训练/rollout 两侧引擎不一致，这边单引擎内部时序把温度分裂成两份。
+  discovery: 2026-09-06 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

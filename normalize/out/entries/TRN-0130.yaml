@@ -1,0 +1,50 @@
+id: TRN-0130
+legacy_ids:
+- ACT.09
+slug: checkpointing_state_flag_not_restored_on_exception_nesting
+aliases: []
+title: Megatron IS_CHECKPOINTING 标志在异常与嵌套下未恢复
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: megatron-lm
+    component: IS_CHECKPOINTING 全局标志
+  behavior: CheckpointFunction 用进程级全局标志 IS_CHECKPOINTING 控制重算：抛异常时 unset 被跳过、标志残留 True；嵌套 checkpoint 的内层在外层仍运行时就清除标志。
+effect:
+  objects:
+  - 梯度
+  detail: 训练中捕获异常后继续（如 fault-tolerant 框架 catch-and-retry）时，后续 forward 错误地按 checkpointing 语义执行或反之，RNG/保存策略错位产生错梯度而不 crash；嵌套场景外层语义被内层提前剥夺。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7975
+  kind: github_pr
+relations: []
+original:
+  category: ACT
+  section: ACT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'Megatron `tensor_parallel.checkpoint`（`CheckpointFunction`）用**进程级全局标志** `IS_CHECKPOINTING` 控制重算行为，但该标志的清除不防两条路径：(1) `run_function` 或 autograd 抛异常时无条件 unset 被跳过、标志残留 `True`；(2) 嵌套 checkpoint 的内层 unset 在外层仍在跑时就执行。修复（PR #7975）= 小 context manager 在 forward/backward 两条路径的 `finally` 中保存/恢复外层状态（不改计算/RNG 协议、不加线程安全）。'
+  source: 'Megatron-LM PR #7975（2026-10-08；RTX 5090 + PyTorch 2.11.0+cu130 验证：同一组 5 个 CUDA 测试 base `76ab5004` 1 过 4 挂、修复后 5 过——覆盖前向/重算/backward 异常后的健康使用、嵌套 checkpoint 输出与梯度、RNG 保持）。https://github.com/NVIDIA/Megatron-LM/pull/7975'
+  behavior: 异常路径下标志残留使**后续本不该按 checkpointing 语义执行的 forward 走重算分支**（或反之），RNG/保存策略错位产生错梯度而不 crash；嵌套场景外层语义被内层提前剥夺。触发面以「训练中捕获异常后继续」的工作流为主（如 fault-tolerant 框架 catch-and-retry）。与 ACT.06（SAR 不重放 in-place 写）/ACT.08（recompute 不重入 fp8_autocast）同族「**重算状态机与环境上下文不同步**」第 3 断点：那边漏副作用/精度上下文、这边全局标志本身的生命周期失守。报告含完整验证；截至 2026-10-10 open（Draft）。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

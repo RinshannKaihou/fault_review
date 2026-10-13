@@ -1,0 +1,52 @@
+id: TRN-0127
+legacy_ids:
+- ACT.06
+slug: sar_recompute_skips_inplace_writes
+aliases: []
+title: torchtitan SAR 重算漏放 in-place 写入致梯度静默错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: torchtitan
+    component: GraphTrainer SAR 重算 pass
+  behavior: SAR pass 只沿 dataflow producer 边选重算点、不建模副作用写入：对 clone 后就地写的 functional 包装算子只重放 clone，不重放 in-place 写。
+effect:
+  objects:
+  - 梯度
+  detail: 无 crash、无 NaN、graph.lint() 通过，前向 loss 正确，但 backward 拿到变异前的值，梯度静默错误（复现中 6 变 4）；GraphTrainer+SAR 且重算涉及 in-place 包装算子（如 partial-RoPE）即触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/4688
+  kind: github_issue
+relations: []
+original:
+  category: ACT
+  section: ACT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: torchtitan GraphTrainer 的 `selective_activation_remat_pass`（SAR）沿 dataflow producer 边选重算点。对「functional 包装 + 内部 in-place kernel」的 `autograd.Function`（`y = x.clone(); op_(y); return y`，schema 正确、算子返回 void），写入没有任何 dataflow 输出——pass 只重放 `clone` 不重放写入，backward 拿到**变异前**的值。CPU 复现：`loss=(x+1)^2, x=2`，前向 loss=9 正确、梯度 6→**4**；`graph.lint()` 通过、执行无任何错误。已在 2026-09-15 main `f5c97dc0` 直接执行该 commit 的 pass 源码复核（pass 级，非完整训练运行）。起源是 functional partial-RoPE 包装 in-place kernel 的真实用例；报告者本地「重放缺失写」可把梯度恢复为 6，但通用修复还需处理 alias / 写序 / 其他写目标（支持范围待维护者定夺）。
+  source: 'torchtitan #4688（pass 级 CPU 复现脚本 + main 复核；`torch==2.14.0+cpu` aarch64）。https://github.com/pytorch/torchtitan/issues/4688'
+  behavior: 无 crash、无 NaN、lint 全过——前向数值正确、**梯度静默错值**；凡走 GraphTrainer + SAR 且重算激活涉及「clone 后就地写」型 functional 算子（fused/自定义 RoPE 等 in-place 包装）即中招。与 ACT.05（partitioned recompute 参数表错位）同族：**重算执行了但重算状态 ≠ 原前向**；差异在这边是 dataflow 分析不建模副作用写入、那边是序列化折叠 bug；与 ACT.03（replay 图与前向分叉）同症状面，这边给出了 pass 级最小因果链。
+  discovery: 2026-09-16 每日扫描
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

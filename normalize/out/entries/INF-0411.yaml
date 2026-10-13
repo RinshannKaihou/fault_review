@@ -1,0 +1,52 @@
+id: INF-0411
+legacy_ids:
+- '6.18'
+slug: vllm_uva_gpu_cc_silent_zero_token_input
+aliases: []
+title: CC 模式下 is_pinned 误判致 vLLM 静默喂入全零 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: cuda_view.cu UVA 视图回退路径
+  behavior: CC 模式下 is_pinned 对 pinned 内存返回 false，get_cuda_view_from_cpu_tensor 走 detached-buffer 回退，破坏 UVA buffer 的 live-alias 契约。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  - 可用性/进度
+  detail: CC 模式下每个请求向模型喂入全零 token 却返回 HTTP 200，服务层与正常输出不可区分；退化生成使 async scheduler 的 num_output_placeholders 下溢，单个长上下文请求即以 AssertionError 崩溃 EngineCore。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 版本缺陷：可 pin 历史版本复现，需场景
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50671
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（零拷贝别名契约破坏 → 静默零输入） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 在 **GPU Confidential Computing（CC）**模式下，`torch.Tensor.is_pinned()` 对真正 pinned 的内存返回 `false`——因为 CUDA 运行时把该指针归类为 "Managed" 而非 "Host"。这导致 `get_cuda_view_from_cpu_tensor` 走一条 detached-buffer 回退路径，**破坏了 V2 model runner UVA buffer 使用的 live-alias 契约**，造成两个后果：(1) **静默输入损坏**——每个请求向模型喂入全零 token，却返回 HTTP 200；(2) 远程 DoS——退化生成使 async scheduler 的 `num_output_placeholders` 计数下溢，单个长上下文请求即以 `AssertionError` 崩溃 EngineCore。修复：`cuda_view.cu` 无条件先试 `cudaHostGetDevicePointer`，只在失败时回退 alloc+copy；新增 `verify_uva_coherence()` 启动探针；async scheduler 的硬 assert 改为 clamp-and-stop。
+  source: 'vLLM #50671（2026-08-01 open PR）。https://github.com/vllm-project/vllm/pull/50671'
+  behavior: 无 crash（CC 模式下）、无 NaN——每个请求静默喂全零 token 生成、返回 HTTP 200，与正常输出在服务层不可区分。属"机密计算环境改变 CUDA 运行时语义 → 静默破坏 live-alias 契约"新子签名。与 6.15 `vllm_gb10_enginecore_silent_warmup_death` 同属环境特定的静默服务栈故障，但机制截然不同（is_pinned 误判 vs warmup 静默死亡）。
+  trigger_surface: vLLM 版本缺陷：可 pin 历史版本复现，需场景
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

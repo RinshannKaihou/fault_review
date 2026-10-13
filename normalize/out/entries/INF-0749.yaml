@@ -1,0 +1,55 @@
+id: INF-0749
+legacy_ids:
+- '7.76'
+slug: trtllm_nvfp4_gate_up_weight_scale2_max_reconcile_silent_accuracy_loss
+aliases: []
+title: TRT-LLM NVFP4 MoE 取 max 调和 scale 致精度损失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: tensorrt-llm
+    component: MoE 加载器 scale_2 调和
+  behavior: MoE 权重加载器对同一专家 w1/w3 不同的 weight_scale_2 一律取 max() 调和并 warn；为单 alpha 后端设计的策略被推广到全部后端，含原生支持双标量的 trtllm-gen。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: 加载 gate/up weight_scale_2 不等的 NVFP4 MoE checkpoint 后，较小 scale 一侧量化步长被缩错，产生静默精度损失；无 crash，仅有 warning。两半相等时行为不变。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM + NVFP4 MoE + gate/up weight_scale_2 不等的 checkpoint（other_stack：TRT-LLM；权重布局触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/18772
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0742
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（NVFP4 checkpoint 的同一专家 w1（gate）/w3（up）投影可存不同 `weight_scale_2`——TRT-LLM MoE 权重加载器一律以 `max()` 调和并 warn，较小 scale 一侧被静默缩错（精度损失）；trtllm-gen FC1 内核原生支持分离双全局标量（`output1_scale_gate_scalar`/`output1_scale_scalar`），本可精确复现该类 checkpoint） · Cov: `var:vllm_modelopt_nvfp4_moe_w13_mismatched_gscale_warn_then_use_anyway`（7.69 w13 scale 失配族） · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 加载器兼容性策略（单 alpha 后端如 Cutlass 需要调和）被推广到全部后端。修复引入 `supports_split_gate_up_weight_scale_2` 能力位（trtllm-gen 系 True），`_resolve_gate_up_weight_scale_2` helper 让分离后端拿到两个原值；`fc31_scale_c` 在 GEMM2 输入量化前按 up 半 alpha 重缩放 gated intermediate（EPLB 迁移专家同公式保证一致）。两半相等时行为不变。
+  source: 'TensorRT-LLM PR #18772（2026-09-06，含 CPU 单测覆盖三种 scale 组合与单 alpha 回退）。https://github.com/NVIDIA/TensorRT-LLM/pull/18772'
+  behavior: 无 crash——gate/up scale 不等的 checkpoint **静默精度损失**（调和到 max 使一侧量化步长错）。7.69（ModelOpt NVFP4 w13 gscale 失配 warn-then-use）同族同日第二栈：TRT-LLM 侧从"必须调和"进化为"按后端能力分流"，说明 NVFP4 双 scale checkpoint 的加载语义是跨栈工程化缺口。
+  trigger_surface: TRT-LLM + NVFP4 MoE + gate/up weight_scale_2 不等的 checkpoint（other_stack：TRT-LLM；权重布局触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

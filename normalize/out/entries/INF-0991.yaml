@@ -1,0 +1,59 @@
+id: INF-0991
+legacy_ids:
+- '10.75'
+slug: vllm_tool_arg_converters_unclosed_last_parameter_silent_drop_four_family
+aliases: []
+title: vLLM 四族 tool arg converter 静默丢弃未闭合末参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: qwen3_coder 等四族参数转换器
+  behavior: '尾部参数值提取只在 if partial: 分支执行，终态 partial=False 转换只认闭合标签；该结构复制在 qwen3_coder 等四个 converter 中，#57707 只修了 qwen3。'
+effect:
+  objects:
+  - 输出内容
+  detail: 模型省略末参数闭合标签直接闭函数时，非流式 arguments 少最后一个键（如丢 unit），流式 flush 产出比已流出更短的 JSON，客户端得到无效 JSON；BFCL live_simple 温度 0 可触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + qwen3_coder/minimax_m2/glm47_moe/deepseek_v4 任一 tool parser + 模型省略末参数闭合标签（partial：依赖模型输出形态，BFCL 温度 0 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-20'
+remarks: subsystem 缺「输出解析（tool/reasoning parser）」：parser 既非分词/模板也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57699
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/57827
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_loss
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM 四族 tool arg converter（`qwen3_coder`、`minimax_m2`、`glm47_moe`、`deepseek_v4`（v32/v41 继承））共享同一结构缺陷：参数值只在闭合标签（`</parameter>` / `<parameter=` / `</arg_value>`）或下一开标签处结束，**尾部值的提取只在 `if partial:` 分支运行**——模型省略末参数闭合标签直接闭函数（`</function>` / `</invoke>`）时，最终 `partial=False` 转换**静默丢掉末参数**。非流式：`arguments` 少最后一个键（`{"city":"Seattle"}` 丢了 `unit`）；流式：partial 转换已把值流出、`TOOL_CALL_END` 的 flush 产出**更短**的 JSON——客户端停在 `{"body": ` 之后再无下文（无效 JSON）。BFCL `live_simple` 温度 0 实测触发。SGLang 同名 detector 在 `</function>` 处正确保留该值。#57707 只修了 qwen3；minimax_m2/glm47_moe/deepseek_v4 三族截至 2026-09-20 仍在 main（deepseek_v4 的 partial 分支还用 `contextlib` 吞 JSON 失败）。截断区分难题：被 `max_tokens` 截断的调用不得把部分值升格为完整值（`rm -rf /tmp/build` 截断不得变 `rm -rf /`），而 `</function>` 从不进入参数文本使两类不可分辨） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_loss`（10.42 parser 通道假设族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 增量（partial=True）与终态（partial=False）两套提取规则不对称：前者有部分值兜底正则、后者只认完整闭合——"终态是增量的严格子集"的倒挂。同一 `if partial:` 结构被复制进四个 converter，单点修复（#57707）未覆盖复制体。
+  source: 'vLLM #57699（2026-09-19 open，qwen3_coder，含 BFCL 原文/转换对照、流式 vs 非流式分裂、SGLang 保留行为对照）+ #57827（2026-09-20 open，minimax_m2/glm47_moe/deepseek_v4 三族逐一源码定位，same class as #57699；#57826 为其 dup）。https://github.com/vllm-project/vllm/issues/57699 https://github.com/vllm-project/vllm/issues/57827'
+  behavior: 无 crash、无错误——tool call **静默缺参**：下游按缺失参数执行错误动作或校验失败；流式客户端拿到结构性损坏的 JSON（已发送内容多于最终状态）。10.42（通道终止符假设丢调用）、10.55（DSML 增量部分事务逃逸）、10.69（重复 parameter 标签覆写）之后 parser 族新成员：本条首次**以"修复未覆盖复制体"成族**——四个独立命名 parser 携带同一结构缺陷，且流式终态比过程输出更短是新的失效方向（部分结果→更少结果的倒挂）。
+  trigger_surface: vLLM + qwen3_coder/minimax_m2/glm47_moe/deepseek_v4 任一 tool parser + 模型省略末参数闭合标签（partial：依赖模型输出形态，BFCL 温度 0 可触发）
+  discovery: 2026-09-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

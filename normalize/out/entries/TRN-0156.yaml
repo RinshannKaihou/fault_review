@@ -1,0 +1,69 @@
+id: TRN-0156
+legacy_ids:
+- MOE.07
+slug: quantized_expert_layout_republish_breaks_sync
+aliases: []
+title: verl DSv4 RL 量化专家布局被 SGLang 重发布，破坏同步
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: verl
+    component: 训练→rollout 量化专家权重同步
+  behavior: SGLang 加载后做 CUTLASS interleave，把专家参数重发布为新 Parameter，丢失 weight_loader 等属性；rollout 端为 interleave 后布局，与训练端 packed 布局不一致。
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  detail: 每次训练→rollout 权重同步在 deepseek_v4.py 抛 AttributeError；若布局差异被静默容忍（如 sentinel 协议回退），rollout 将采样自按错误 interleave 解释的专家权重。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/7747
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0050
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `sft/rl` · Cov: `var:expert_reshard_id_permutation` · 置信度 `documented`'
+  mechanism: verl DeepSeek-V4 RL 栈里 Megatron 桥接的 routed experts 量化（MXFP4 ckpt → 训练侧 bf16）要求 rollout 端保持 ckpt 自带 packed 布局，但 SGLang `process_weights_after_loading` 在模型加载时跑一次 CUTLASS interleave、把四个专家参数 republish 为**全新 Parameter 对象**——`set_weight_attrs` 挂的 `weight_loader` 等属性全丢，后续每次训练→rollout 权重同步在 `deepseek_v4.py` 撞 AttributeError（fail-fast 面）。真正的静默面在**量化布局契约**：训练侧从 ckpt 直接训 packed MXFP4 专家、rollout 侧在 interleave 前后两种布局间同步，双方若任一侧静默容忍布局差异（如 sentinel 协议回退），权重被按错误 interleave 解释。修复方向 = 自定义 weight loader 在每次 sync 前 stage 恢复 ckpt 布局 buffer（interleave 是置换、字节守恒，可原地 reinterpret）。
+  source: 'verl PR #7747（H200/SM90 FlashInfer CUTLASS W4A16 验证；SGLang 侧 vLLM 对应实现 `vllm_fp4_utils.py` 已存在）。https://github.com/verl-project/verl/pull/7747'
+  behavior: fail-fast 面（AttributeError）之外，布局错配若被容忍则 rollout 采样自**错误解释的专家权重**——与 RL-RO.09（fused expert view 冻结在捕获时刻）同族：训练/rollout 两侧对同一份 MoE 权重的视图或布局语义不一致；与 CKPT.09/NUM.09 同链（量化表示在存取/初始化路径被破坏）。此处为 draft PR、机制以布局契约记录在案。
+  discovery: 2026-09-05 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.behavior
+  note: 'subsystem 维持 RL训练回路：缺陷在训练→rollout 权重同步，修复（verl PR #7747）是同步前 stage 恢复 ckpt 布局的自定义 weight loader，量化方案本身无错，MXFP4 布局只是触发条件（rule6）。behavior 原写“rollout 端 MXFP4 布局与训练端 packed 布局不一致”不准确（两侧都是 MXFP4，差别在 interleave 前后），已按原文改写并删去臆测的“同步前未恢复布局”。visibility 报错 维持：实测面是 AttributeError，静默面为“若被容忍”的条件性后果。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: RL训练回路
+        to: 量化
+        status: unanimous
+      visibility:
+        from: 报错
+        to: 静默错误
+        status: unanimous

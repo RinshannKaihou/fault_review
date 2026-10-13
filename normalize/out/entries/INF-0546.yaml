@@ -1,0 +1,51 @@
+id: INF-0546
+legacy_ids:
+- '6.153'
+slug: vllm_align_prefix_cache_retention_interval_default0_unlogged_dead_states
+aliases: []
+title: vLLM hybrid align 前缀缓存保留间隔默认 0 致命中静默失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MambaManager 保留间隔默认值与校验
+  behavior: hybrid align 模式下 retention_interval 默认 0，只保留 semantic checkpoints，其余 boundary state 照常写入但从不 hash；该默认无任何日志，校验只对无害设值报错。
+effect:
+  objects:
+  - 性能/资源
+  - 指标/日志
+  detail: hybrid GDN 模型启用 --enable-prefix-caching（align 模式）且用默认值时，prefix cache 大部分失效：存储在写、查找永空；Prefix cache hit rate 指标仍虚报非零，无报错无告警。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid（GDN/Mamba）+ `--enable-prefix-caching` + align mode + 默认 retention_interval（默认即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53595
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid 模型 align-mode prefix caching 下 `prefix_cache_retention_interval` 默认 0 = 只保留 semantic checkpoints——其余 boundary state 照常落盘但**永不 hash → 永不命中**；该默认值全树无任何日志，Prefix cache hit rate 指标还虚报非零，唯一相关告警是用户*设置过*该值时的弃用警告） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: vLLM 0.26.1rc1（GB10/sm_121a，Qwen3.8-27B-NVFP4 hybrid GDN，`--enable-prefix-caching` + MTP k=3）中 `prefix_cache_retention_interval` 默认 **0**——按其自身 docstring 意为「只保留 semantic checkpoints（最新 replay 边界 + 共享 prefix 交汇点）」。`MambaManager.reachable_block_mask` 据此完全跳过 segment 分支、只对 `reachable_boundaries` 置 True，其余 boundary state 被 filed 但从不 hash，**原理上不可能命中**。不对称性：相邻派生默认（align cache mode）会主动公告，`_validate_prefix_cache_retention_interval` 对无害 case（非 hybrid 设值）raise 详细 ValueError，而对被影响的 hybrid 默认 0 静默。已 closed（修复）。
+  source: 'vLLM #53595（2026-08-24 closed，kv-cache-manager label，含 docstring/validation 代码对照）。https://github.com/vllm-project/vllm/issues/53595'
+  behavior: '**无 crash、无错误**——prefix cache 功能静默大部分失效（存储在写、查找永空），hit rate 指标虚高掩盖真相；用户唯一能看到的线索是没有线索。属「**有害默认值 × 零可观测性**」新子签名：与 6.147（hybrid 状态注册 n-floor × 查找 n−1 错配）同为 hybrid align 缓存族但本条是默认配置层且验证逻辑反向不对称。'
+  trigger_surface: vLLM + hybrid（GDN/Mamba）+ `--enable-prefix-caching` + align mode + 默认 retention_interval（默认即触发）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

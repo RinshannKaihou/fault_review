@@ -1,0 +1,55 @@
+id: INF-0951
+legacy_ids:
+- '10.35'
+slug: vllm_gemma4_tool_parser_bare_opener_fsm_dead_state
+aliases: []
+title: vLLM Gemma 4 tool parser FSM 死态吞掉调用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: gemma4 tool parser FSM
+  behavior: FSM 只定义 TOOL_PREAMBLE→TOOL_NAME 的 "call:" 前缀转移，未覆盖模型实际发出的 bare 形式 <|tool_call>:name；TOOL_PREAMBLE 态无 content 出口，成为死态。
+effect:
+  objects:
+  - 输出内容
+  detail: Gemma 4 发出省略 call 的 bare tool call 时，FSM 滞留 TOOL_PREAMBLE 直到块结束，整个 tool call 被丢弃：既无提取也无 content，无错误日志，客户端无从得知调用被吞。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + Gemma 4 模型 + 模型发出 bare `<|tool_call>:name` 形式的 tool call
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-23'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser）：暂归 调度/服务 的 API/前端，但 parser 缺陷与请求调度、批处理无关，单列便于聚类
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53444
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（gemma-4 实际发出两种 tool-call 开启形式，parser FSM 只定义文档化的 "call:" 前缀转移——bare 形式滞留无出口的 TOOL_PREAMBLE 态直至块结束，整个 tool call 静默丢弃：无提取、无 content、无错误、无恢复路径） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`gemma-4-26b-a4b-it` 实测发出两种 tool-call 开启形式：文档化的 `<|tool_call>call:name{...}<tool_call|>` 与 bare 的 `<|tool_call>:name{...}<tool_call|>`（省略 `call`）。`gemma4_config()` 的 parser FSM 只定义从 `TOOL_PREAMBLE` 到 `TOOL_NAME` 的唯一 `CALL_PREFIX`（"call:"）转移——bare 形式永不匹配，FSM 滞留 `TOOL_PREAMBLE`（该态无 `content_events` 出口）从 `<|tool_call>` 一路到 `<tool_call|>`：**整个 tool call 静默丢失**。修复（PR #53444）补充 bare 形式转移。模型实际输出比文档多一种合法形式——按文档枚举的 FSM 与模型行为漂移。'
+  source: 'vLLM PR #53444（2026-08-23 open，fixes #53431）。https://github.com/vllm-project/vllm/pull/53444'
+  behavior: 无 crash、无错误日志。**tool call 静默丢失**——该轮既无 tool call 提取也无 content 输出，客户端无从得知调用被吞（与 10.x tool parser 流式丢标记族同后果）但机制不同：本条是 **FSM 死态**（无可达终止转移的状态 + 输出格式枚举不完备），非流式边界切分问题。属「**输出格式枚举不完备 × FSM 死态**」新子签名。
+  trigger_surface: vLLM + Gemma 4 模型 + 模型发出 bare `<|tool_call>:name` 形式的 tool call
+  discovery: 2026-08-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

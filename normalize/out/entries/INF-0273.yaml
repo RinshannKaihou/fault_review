@@ -1,0 +1,52 @@
+id: INF-0273
+legacy_ids:
+- '1.274'
+slug: trtllm_convert_type_returns_tensor_viewing_local_array_dangling
+aliases: []
+title: TRT-LLM convert_type 返回局部 frag 视图致悬垂读取
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tensorrt-llm
+    component: convert_type 设备 helper
+  behavior: util_convert_type 与 flash::convert_type 把转换结果存入函数局部 frag 后以 make_rmem_ptr(&frag) 返回其视图，返回即悬垂，读取为未定义行为。
+effect:
+  objects:
+  - 数值结果
+  detail: fused MoE epilogue 与 flash_fwd_mla splitkv combine 中：nvcc 构建读陈旧寄存器值、碰巧可用；clang -O3 构建下 SwiGLU 与其喂入的 MMA 被 DCE，内核写出未写入的寄存器垃圾。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: TRT-LLM fused MoE / flashMLA 内核 + 编译器选择（hw_specific）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/19943
+  kind: github_issue
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/20035
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（TRT-LLM 设备侧 helper `util_convert_type`（moe_cute_util.cuh）与 `flash::convert_type`（flashMLA utils.h）把转换结果存进**函数局部 `frag`** 后 `make_rmem_ptr(&frag)` 返回其视图——返回即悬垂，读取为 UB。nvcc 下读陈旧寄存器值"碰巧能用"；clang -O3 下消费链被 DCE：SwiGLU 与其喂入的 MMA 被整体删除、内核 store 没人写过的寄存器（bf16 32x128x64 SwiGLU 实例 SASS 计数 HMMA/LDSM/F2FP/FMUL nvcc 96/64/12/72 vs clang 64/40/0/48，单行修复后恢复 96/64/12/72）。两个活调用点：fused MoE epilogue 与 flash_fwd_mla splitkv combine） · Cov: `NEW`（返回局部视图的设备 helper 悬垂子签名；同文件 `convert_type_out` 按引用输出正确、注释自认该 hazard 未修） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 寄存器碎片生命周期超出函数作用域；编译器优化日程决定是"陈旧值"还是"空计算"。
+  source: 'TensorRT-LLM #19943（MoE 路径，含 SASS 三方对照）+ #20035（flashMLA 同缺陷，2026-10-07/09 open）。https://github.com/NVIDIA/TensorRT-LLM/issues/19943 、https://github.com/NVIDIA/TensorRT-LLM/issues/20035'
+  behavior: nvcc 构建下静默读陈旧值；clang 构建（如 flashinfer-jit 某些路径）下输出为未写寄存器垃圾。
+  trigger_surface: TRT-LLM fused MoE / flashMLA 内核 + 编译器选择（hw_specific）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

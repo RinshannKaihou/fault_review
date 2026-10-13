@@ -1,0 +1,55 @@
+id: INF-1113
+legacy_ids:
+- '11.90'
+slug: vllm_mrv2_lm_head_lora_request_level_mapping_misapplies_delta_to_wrong_logits_rows_spec
+aliases: []
+title: vLLM MRV2 lm_head LoRA 推测解码下按请求映射致错行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: MRV2 make_lora_inputs 映射
+  behavior: make_lora_inputs 的 LoRA 映射长度为 num_reqs，未按 cu_num_logits 把请求 id 重复到每请求 1+num_draft_tokens 个 logits 行，过短且对齐到前 num_reqs 行。
+effect:
+  objects:
+  - 输出分布
+  - 跨请求/跨样本数据
+  detail: MRV2 + 推测解码 + 针对 lm_head 的 LoRA 时，单请求批的 delta 只落在每步 row 0，混合批中 delta 打到其他请求的 logits；adapter 对本请求无效，行为随批内组成漂移；V1 runner 正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM v0.30.0/main + Model Runner V2 + `lm_head`-targeting LoRA + speculative decoding（MTP 等）（partial：需 MRV2 + spec + lm_head adapter）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-29'
+remarks: subsystem 缺“LoRA/适配器服务”：多 LoRA 的请求→adapter 映射既非加载（权重/检查点）也非计算 kernel（算子/内核），暂归 运行时/执行
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59161
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1144
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（vLLM Model Runner V2 的 `lm_head` LoRA 在 speculative decoding 下**映射按请求而非按 logits 行构建**：`LoRAState.make_lora_inputs` 生成 `prompt_lora_mapping = tuple(lora_ids)`（长度 = num_reqs），而 spec decode 的 logits 张量每请求有 `1 + num_draft_tokens` 行（`cu_num_logits`）——映射过短且对齐到前 num_reqs 行而非各请求的行区间：单请求批中 delta 只落在每步 row 0；混合批中 row i 的 mapping 落到**恰好拥有 logits row i 的那个请求**上（LoRA delta 打到别的请求的 logits）。V1 runner 以 `num_sampled_tokens` 重复映射处理同场景正确） · Cov: `var:12.28`（LoRA 引擎态/映射族——12.28 是 unload_lora_adapter 前端-only 泄漏、12.30 是 target-modules 过滤失配静默服务基模；本条在 **logits 行粒度映射 × spec 多行展开**维度：adapter 对本请求无效/跨请求泄漏两后果并存，V1/V2 行为分裂） · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`lora_utils.py` 的 `make_lora_inputs` 未按 `cu_num_logits` 重复 per-request id；V1 的 `gpu_input_batch_cache` 有正确模式可对照。PP2 × CUDA graphs on 配置实测（2×4090）。'
+  source: 'vLLM #59161（2026-09-29 open，v0.30.0 与 main@6cbbea87 复现、含根因代码段与 V1 对照）。https://github.com/vllm-project/vllm/issues/59161'
+  behavior: 无 crash——**lm_head LoRA 对自己的请求无效、delta 静默泄漏到相邻请求的 logits**：混合批下模型行为按"批内谁在场"漂移，受害与受益请求都无感知；A/B 评测该 adapter 时结论随机。
+  trigger_surface: vLLM v0.30.0/main + Model Runner V2 + `lm_head`-targeting LoRA + speculative decoding（MTP 等）（partial：需 MRV2 + spec + lm_head adapter）
+  discovery: |-
+    2026-09-29 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

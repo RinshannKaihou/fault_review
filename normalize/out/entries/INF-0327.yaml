@@ -1,0 +1,60 @@
+id: INF-0327
+legacy_ids:
+- '4.11'
+slug: vllm_moe_index_add_atomic_nondeterministic_reduction
+aliases: []
+title: vLLM MoE index_add_ 原子散射归约跨 run 非确定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: MoE 归约器 index_add_ 散射
+  behavior: TopKWeightAndReduceNaiveBatched.apply 用 output.index_add_ 把多专家贡献原子散射回源 token；top_k>1 时同一行被并发原子加，浮点累加顺序跨 run 不定
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 无 crash、无 NaN；temperature=0/固定 seed 下同一输入跨 run 输出非确定，BF16 低位差异在近 tie logits 处翻转 greedy token；单次采样评测会误标为 clean，需 run-to-run 对拍
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + MoE 模型 + top_k>1 + naive batched 归约路径（temperature=0 对拍可稳定暴露）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53430
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0317
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`ambiguous`（MoE top-k 散射用 CUDA `index_add_` 原子浮点加法——同一 token 多专家写入顺序跨 run 非确定，BF16 低位差异在近 tie logits 处足以翻转 greedy argmax，破坏 temperature=0 确定性） · Cov: `var:fp_reduction_order_nondeterminism` · 触发 `yes` · 置信度 `verified`'
+  mechanism: 'vLLM MoE batched 归约器 `TopKWeightAndReduceNaiveBatched.apply` 以 expert-major 顺序 gather 贡献后用 `output.index_add_(0, t_idx, gathered)` 散射回源 token；top_k>1（常态）时同一目标行被多个专家的原子加法并发写入，CUDA 原子加法顺序跨 run 非确定，而浮点加法不满足结合律——BF16 累积顺序差异产生低位比特分歧，可传播至**近 tie logits 处翻转 greedy argmax**。同日两个竞争修复（PR #53440 scatter-then-sum、#53442 BatchedTritonExperts 确定化）统一改为：写入零初始化 `[num_tokens, topk, hidden]` 缓冲的唯一 `[token, topk_slot]` 位置（无原子无竞争）+ 固定 top-k 顺序 FP32 累加的 `moe_sum` 内核（与 `TopKWeightAndReduceContiguous` 同路径）。是 4.1 噪声底家族在 MoE 归约路径上的具体实例（与 4.8 marlin expert 内 token 排序归约树、5.1 allreduce 拓扑重排同族，locus 在 scatter-add 原子顺序）。'
+  source: 'vLLM #53430（2026-08-23 open）；修复 PR #53440 / #53442（2026-08-23，RTX PRO 5000 SM120 验证）。https://github.com/vllm-project/vllm/issues/53430'
+  behavior: 无 crash、无 NaN。`temperature=0` / 固定 seed 下同一输入跨 run 输出**非确定**——near-tie 处 greedy token 翻转；单次采样评测会把它误标为 clean（variance-class 故障，需 run-to-run 对拍）。项目噪声底第 4 类的直接组成：低于此底的「签名」不可采信。
+  trigger_surface: vLLM + MoE 模型 + top_k>1 + naive batched 归约路径（temperature=0 对拍可稳定暴露）
+  discovery: 2026-08-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 算子/内核
+        status: panel7
+    uncertain:
+    - effect

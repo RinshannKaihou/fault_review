@@ -1,0 +1,55 @@
+id: INF-0742
+legacy_ids:
+- '7.69'
+slug: vllm_modelopt_nvfp4_moe_w13_mismatched_gscale_warn_then_use_anyway
+aliases: []
+title: NVFP4 MoE w13 仅用 gate 侧 scale 致 up 投影错缩放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: NVFP4 MoE w13 scale 融合
+  behavior: 融合 gate/up 为 w13 时无条件取 gate 侧 per-tensor global scale；allclose 检出 w1/w3 scale 不匹配后只 warning_once，仍用 gate scale 反量化 w13。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: gate/up scale 不匹配的 checkpoint（如社区再量化的 GLM-5.3-Flash-ABLITERATED-NVFP4，69.1% 对不匹配、比值最大 10）上 up 投影静默错值，43 层 MoE 全受影响、整体质量塌方；官方 checkpoint 0% 不匹配，自测不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + ModelOpt NVFP4 MoE checkpoint + gate/up global scale 不匹配（社区再量化 checkpoint 高发；config/权重组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54974
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（ModelOpt NVFP4 MoE 的 `process_weights_after_loading` 把 gate/up 融合为 w13 时**只保留 gate 侧 per-tensor global scale**：w1/w3 scale 不匹配时 `torch.allclose` 检测到、`logger.warning_once` 一次、然后**照样用 gate 的 scale 反量化整个 w13**——up 半边系统性错缩放；实测 `dealignai/GLM-5.3-Flash-ABLITERATED-NVFP4` 12,384 对中 **8,563 对（69.1%）不匹配**，ratio 中位 1.077 / p99 1.69 / max 10.0，全部 43 层 MoE 受影响） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`w13_weight_scale_2[:, 0].contiguous()` 无条件取 gate 侧——检测与使用分离（detect-warn-continue 反模式）：知道错了、说了、然后继续。第三方再量化 checkpoint（ABLITERATED 类）的 gate/up scale 本就常态不匹配，此路径使其 up 投影按最多 10× 错的 scale 反量化。'
+  source: 'vLLM #54974（2026-09-02 open，纯磁盘读 scale 标量的三 checkpoint 测量表）。https://github.com/vllm-project/vllm/issues/54974'
+  behavior: 无 crash——受影响 checkpoint 的 MoE up 投影**静默错值**（精度劣化程度随 scale 比率分布，69% 层受害的模型整体质量塌方且无任何运行时信号）；官方 checkpoint（RadixArk/mazinb Qwen3.8-Flash-Next）0% 不匹配故自测不可见。属「**不一致被检测后仍被消费**」新子签名：与 10.40（约束静默丢弃）同"知道并继续"，本条在量化权重装配路径且错误值有定量上界测量。
+  trigger_surface: vLLM + ModelOpt NVFP4 MoE checkpoint + gate/up global scale 不匹配（社区再量化 checkpoint 高发；config/权重组合触发）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

@@ -1,0 +1,50 @@
+id: INF-0553
+legacy_ids:
+- '6.160'
+slug: vllm_flashinfer_sm120_nvfp4_fp8kv_16token_ima
+aliases: []
+title: vLLM sm_120 FlashInfer×NVFP4×fp8 KV 非法访存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: FlashInfer 注意力后端（sm_120）
+  behavior: sm_120 上 FlashInfer 注意力后端与 ModelOpt NVFP4、fp8 KV cache 组合时发生非法访存；错误码漂移且首个 decode step 即触发，指向底层内存损坏而非确定性越界读，具体位置未定位。
+effect:
+  objects:
+  - 可用性/进度
+  detail: RTX PRO 6000 Blackwell 上 16-token 单请求首个 decode step 即 CUDA IMA（三次运行分别在 63/74/1 个请求后），traceback 止于异步同步点而非故障内核；换 TRITON_ATTN 后 413 请求 1h45m 零 crash。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 0.27.1 + sm_120 + FLASHINFER + ModelOpt NVFP4 + fp8 KV cache（config 组合；TRITON_ATTN 规避）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54225
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（sm_120（RTX PRO 6000 Blackwell）+ FLASHINFER attention backend + NVFP4（ModelOpt MIXED_PRECISION）+ `--kv-cache-dtype fp8`：CUDA illegal memory access，**16-token 请求第一个 decode step 即死**（三次独立运行分别 63/74/1 个请求后）；单 flag 换 `--attention-backend TRITON_ATTN` 后 413 请求 1h45m 零 crash；两次 crash 报不同 CUDA 错误码——内存损坏变面显形） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: FlashInfer（auto-selected default）× NVFP4 × fp8 KV 三元组在 sm_120 上触发非法访存；排除清单完整：无长上下文、无前缀复用、无并发、无推测解码、无结构化输出、无多模态（`scheduled_encoder_inputs={}`）、`kv_cache_usage=0.0142`。A/B 同容器同 flag 仅换 backend。错误码漂移（illegal memory access / operation not supported on global/shared address space）+ 极端触发点（首个 decode step）指向底层内存损坏而非确定性越界读。
+  source: 'vLLM #54225（2026-08-28 open，v0.27.1，Qwen3.6-35B-A3B，含三 run 对照表与 A/B 矩阵）。https://github.com/vllm-project/vllm/issues/54225'
+  behavior: crash（EngineDeadError）；traceback 终止于 async surface point（`async_copy_ready_event.synchronize`）而非 faulting kernel——表层栈误导。属「backend 选择 A/B 可隔离的崩溃域」已知形态的**极端小载荷可达**新实例：16-token 单请求即触发说明损坏窗口在最短路径上，非长尾状态累积。
+  trigger_surface: vLLM 0.27.1 + sm_120 + FLASHINFER + ModelOpt NVFP4 + fp8 KV cache（config 组合；TRITON_ATTN 规避）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

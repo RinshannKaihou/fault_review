@@ -1,0 +1,56 @@
+id: TRN-0062
+legacy_ids:
+- CKPT.13
+slug: wrong_rng_object_checkpointed
+aliases: []
+title: DeepSpeed curriculum sampler 存错 RNG，采样重放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: deepspeed
+    component: DeepSpeedDataSampler RNG
+  behavior: DeepSpeedDataSampler 用自有 np_rng 采样，state_dict()/load_state_dict() 却存取全局 np.random 状态；resume 时自有 RNG 被重新播种且从不恢复。
+effect:
+  objects:
+  - 训练样本流
+  - 训练轨迹
+  detail: 'resume 后 curriculum 难度调度与 cluster shuffle 从头重放，后半程重复前半程样本序，训练看似正常推进；恢复全局 RNG 还会牵动进程内其他使用 np.random 的组件。修复 PR #8460 未合入，#8787 独立重报同一失效。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8405
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8460
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0083
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `sft/pretrain` · Cov: `var:rank_shuffle_seed_desync` · 置信度 `verified`'
+  mechanism: 组件持有自己的 RNG（`np.random.default_rng(seed)`）供采样，`state_dict()`/`load_state_dict()` 却存取**另一个 RNG 对象**的状态——DeepSpeed curriculum `DeepSpeedDataSampler` 存的是全局 legacy `np.random.get_state()`。三个静默面：(1) 存下的值与该组件的消耗进度**无关**（采样 0 批与 1000 批存出同一状态）；(2) resume 时组件 RNG 被 `__init__` 重新播种、load 从不触碰它 → **采样流从头部重放**（同 cluster mix、同 shuffle 序列）；(3) 恢复全局 RNG 还会移动进程内**其他**消费 `np.random` 的组件。修复 = 存 `self.np_rng` 自身状态。
+  source: 'DeepSpeed #8405（最小复现：3 次采样前后 `np_rng_state` 不变；resume 后 draw 1 == 原始 draw 1 `[0, 3, 3, 2]`；代码审计发现，非训练 run 报告；修复 PR #8406）。https://github.com/deepspeedai/DeepSpeed/issues/8405 ；修复 PR #8460（2026-09-12 补：`state_dict` 改存 `self.np_rng.bit_generator.state`（sampler 实际抽取流）+ 兼容旧全局元组 ckpt 的 `_load_np_rng_state`——旧档无 sampler 流记录，明示降级为 fresh seed 而非加载失败）。https://github.com/deepspeedai/DeepSpeed/pull/8460'
+  behavior: resume 后 curriculum 难度调度/cluster shuffle 从头再来——后半程重复前半程见过的样本序，训练看似正常推进，数据课程语义已静默重置；全局 RNG 被牵连则任何依赖 numpy 全局流的组件同时漂移。与 DATA.01（rank 间 shuffle seed 失同步）对偶：那边是**同一时刻各 rank 看到不同序**，这边是**同一 rank 跨 resume 看到重复序**；与 CKPT.08（resume 静默跳 epoch）同为「恢复的状态不是运行时真正用的状态」。
+  discovery: '2026-09-04 每日扫描；2026-10-10 补源：DeepSpeed #8787（2026-10-09）从用户视角独立重报同一失效（resume 后 batches 改变、无错误无警告），修复 PR #8788（`state_dict` 存 `self.np_rng` 自身状态）截至 2026-10-10 open——确认 CKPT.13 修复 PR #8460 之后缺陷主干仍在（#8460 closed unmerged）。https://github.com/deepspeedai/DeepSpeed/issues/8787'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

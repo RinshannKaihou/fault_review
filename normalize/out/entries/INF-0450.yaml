@@ -1,0 +1,54 @@
+id: INF-0450
+legacy_ids:
+- '6.57'
+slug: sglang_sm120_page_split_int32_overflow_stray_write
+aliases: []
+title: SGLang page-split int32 偏移溢出致越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: _page_split_kernel 偏移计算
+  behavior: _page_split_kernel 的 page_idx 取自 tl.program_id(0)（int32），与 stride 的乘积按 int32 计算，page_idx≈57359 时回绕，偏移越出 buffer 约 2GiB。
+effect:
+  objects:
+  - KV状态
+  - 模型权重
+  - 可用性/进度
+  detail: SM120 大 KV 池（约 3.67M token/rank 以上）时触发；越界地址未映射则 illegal-memory-access 崩溃，已映射则静默 stray write 进相邻的权重/KV/scratch 分配，无错误信号。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang；SM120 + 大 KV 池（>~3.67M token/rank）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34027
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SM120 page-split kernel int32 offset 溢出→~2GiB 外越界或静默 stray write） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`_page_split_kernel` 的 `page_idx`/`sub` 源自 `tl.program_id(0)`（int32 默认）。`page_idx * src_stride0`（及 dst 等价）为 int32 积，byte stride 下在 page_idx≈57,359 回绕（dst 先），大 SM120 KV 池可达（~3.67M token/rank）。回绕的符号扩展 offset 落预期 buffer 外 ~2GiB：未映射→illegal-memory-access crash；映射→静默 stray write 进相邻 GPU 分配（权重/KV/scratch），无错误信号。'
+  source: 'SGLang PR #34027（2026-08-07 open）。修复 #34025。组件 `_page_split_kernel` Triton。https://github.com/sgl-project/sglang/pull/34027'
+  behavior: 取决于映射——crash（未映射）或静默 stray write（映射，损坏权重/KV）。属「Triton int32 索引积溢出」签名——与已编目 int32 溢出同族但新实例（page-split kernel）。
+  trigger_surface: SGLang；SM120 + 大 KV 池（>~3.67M token/rank）
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

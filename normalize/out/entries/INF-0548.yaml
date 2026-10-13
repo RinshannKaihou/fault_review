@@ -1,0 +1,51 @@
+id: INF-0548
+legacy_ids:
+- '6.155'
+slug: sglang_streaming_session_disconnect_silent_context_drop
+aliases: []
+title: SGLang streaming session 断开后多轮上下文静默丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: streaming session 断开回滚处理
+  behavior: 客户端在流式 turn 中途断开时，断开处理路径把 session 增量状态（含 turn 0 之后继承的 KV）整体丢弃，而不是回滚到最后完成的 turn，且不向客户端报告该 turn 已损坏。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 开启 streaming session 时 turn 1 在首个 SSE chunk 后断开并立即发 turn 2：HTTP 200 但 prompt_tokens=1、cached_tokens=0（期望 624），多轮上下文蒸发且无报错；再次触发可使 scheduler crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + `--enable-streaming-session` + 流中断开 + 立即后续请求（时序竞态，最小复现已给出）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36475
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（streaming session 的 SSE 流中途断开后紧接同 session 请求：HTTP 200 但 `prompt_tokens=1, cached_tokens=0, completion_tokens=1`——多轮上下文整体蒸发、无任何错误上报；后续请求可触发 scheduler crash） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`--enable-streaming-session` 下最小序列：turn 0 正常完成（512+48 token）→ turn 1 流式 `/generate` 在首个 SSE chunk 后客户端断开 → 立即发送 turn 2。期望回滚到最后完成的 turn（应见 624 prompt tokens），实际返回 `prompt_tokens=1, cached_tokens=0`——断开处理路径把 session 增量状态（含 turn 0 之后的继承 KV）整体丢弃而非回滚到已完成边界，且对损坏的 turn 不向客户端报错。SGLang 0.5.18、Qwen2.5-0.5B 最小复现。'
+  source: 'SGLang #36475（2026-08-26 open，含三步最小复现序列与 token 计数对照）。https://github.com/sgl-project/sglang/issues/36475'
+  behavior: '**无 crash（首轮）、静默上下文丢失**——session 语义在 disconnect 竞态下坍缩为单 token，客户端拿到 200 与近乎空的响应，无从得知多轮记忆已蒸发；第二次触发可 crash scheduler。属「**异常路径（disconnect）的状态回滚实现不完整**」新子签名：与 9.15（session M-RoPE partial slice crash）同 session 族但本条是静默数据丢失形态。'
+  trigger_surface: SGLang + `--enable-streaming-session` + 流中断开 + 立即后续请求（时序竞态，最小复现已给出）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

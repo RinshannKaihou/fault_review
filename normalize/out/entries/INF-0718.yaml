@@ -1,0 +1,50 @@
+id: INF-0718
+legacy_ids:
+- '7.45'
+slug: sglang_dspark_base_logits_packed_lmhead_matmul_mismatch
+aliases: []
+title: SGLang DSpark 直接乘打包 NVFP4 lm_head 致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: DSpark base-logits 计算
+  behavior: DSpark draft 直接用 torch.matmul 乘 lm_head.weight 算 base logits，绕过 quant_method.apply，假设权重为 dense 形状，未处理 NVFP4 打包后的物理形状。
+effect:
+  objects:
+  - 可用性/进度
+  detail: DSpark draft + ModelOpt NVFP4 打包 lm_head 目标模型时，CUDA graph capture 阶段抛形状 RuntimeError（245×5120 与 2560×248320 不可乘）；降低 mem-fraction 或 graph batch 无效。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang；DSpark + ModelOpt NVFP4 打包 lm_head target
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35354
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（DSpark base-logits 绕过 quant_method.apply 直接 matmul NVFP4 打包 lm_head 权重 → logical/physical 形状错配崩） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: DSpark draft proposal 用 `torch.matmul(hidden, lm_head.weight.T)` 直接计算 base logits，假设 lm_head 权重是 dense `[vocab, hidden]`（248320×5120）；但 NVFP4 权重按两 4-bit/字节打包，物理形状 `[248320, 2560]` → `245×5120 × 2560×248320` 不可乘（245=35×7，capture batch × block size）。标准 logits 路径经 `quant_method.apply()` 理解打包布局并调量化 GEMM；DSpark base-logits 路径绕过该抽象直接访问底层张量。降 mem-fraction/graph batch 无效——张量布局错配而非 CUDA graph 内存问题。
+  source: 'SGLang #35354（2026-08-18 open，DGX Spark GB10，radixark_qwen3.8-27b-nvfp4 target + dspark draft）。https://github.com/sgl-project/sglang/issues/35354'
+  behavior: crash（CUDA graph capture 期形状 RuntimeError，非静默）。属「推测解码旁路量化抽象层」新实例——与 7.44 同对象（量化 lm_head）不同根因（分发缺失 vs 抽象旁路）。
+  trigger_surface: SGLang；DSpark + ModelOpt NVFP4 打包 lm_head target
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

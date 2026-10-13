@@ -1,0 +1,59 @@
+id: INF-0239
+legacy_ids:
+- '1.240'
+slug: ttmetal_topk_column_split_residual_tensix_state_poisons_next_indexer_score_run
+aliases: []
+title: topk column split 遗留 Tensix 状态毒化下一内核
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: topk column split 内核
+  behavior: column split 内核修改的 Tensix 配置/累加器状态在程序结束后未复位，后续在同一核列上启动的无关内核继承该状态。
+effect:
+  objects:
+  - 数值结果
+  detail: Blackhole 上 indexer_score 紧接 topk 测试运行时 PCC 恒 0.5409，175 个错元素集中在每 core column 一个 8×8 块；单独运行、板复位后正确，中间插入 eltwise add 可恢复，结果依赖测试顺序。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 'tt-metal + Blackhole + #57077 树 + topk_large_indices column split 与 indexer_score 同核列先后运行（hw_specific）'
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57205
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0128
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`topk_large_indices` column split（#57077 树）**遗留 Tensix 状态**，毒化下一个 `indexer_score` 运行的首 tile：Blackhole p100a SDPA integration sweep 中 `test_indexer_score_accuracy[rank0-q_bf16-glm5]` 在 topk 测试文件之后跑 **PCC 恒 0.5409**（2/2、3/3 确定性复现），单独跑/板复位后/连续第二个 indexer 程序均过；main `54a826b1d93`、单 #56927 不复现。输出面分析（640×56320 score 平面）：175 个错元素全部落在每 core column 一个 8×8 块内——q 行 0-7 × keys 8-15（chunks 0,10,...,100）、grid 行 1-5；值非正确值的排列、沿行逐列近似翻倍（-170/-340/-752/-1496）——累加落错 tile 特征。**状态载体甄别**：两运行间插入 eltwise `ttnn.add`（每 core）即恢复、1.1MB/core 清零 height-sharded L1 tensor 不恢复——指向计算单元（Tensix）状态而非 L1 数据残留） · Cov: `var:ttmetal_mul_reduce_scalar_zero_flag_state_leak`（1.129 跨算子架构状态泄漏族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: column split 内核修改的 Tensix 配置/累加器状态在程序结束后未复位，后续无关内核（indexer_score）在同一核列上启动时继承了该状态——1.129（mul_reduce_scalar zero-flag 跨算子泄漏）假设的"架构状态位跨算子存续"在**功能输出面**的复现级证据；eltwise 可清而 L1 清零不可清把载体从数据残留排除。
+  source: 'tt-metal #57205（2026-09-21 open，含确定性测试序复现命令、175 元素坐标聚类分析、逐列值序列、eltwise-add vs L1-zero 甄别实验、#57077/#56927/main 三树对照）。https://github.com/tenstorrent/tt-metal/issues/57205'
+  behavior: 无 crash、无 NaN——indexer 注意力分数**静默错值**（PCC 0.54 集中于特定 8×8 tile 群），且**测试序依赖**：同一内核单独跑全对，只在特定前驱程序之后出错——CI 分组/排序变化即可掩埋或复现，生产管线中任何共享核列的调度序都是潜在触发面。glm5 系 indexer（DSA/sparse attention 前置）端到端受影响。
+  trigger_surface: 'tt-metal + Blackhole + #57077 树 + topk_large_indices column split 与 indexer_score 同核列先后运行（hw_specific）'
+  discovery: |-
+    2026-09-21 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 维持原判。缺陷是 topk_large_indices column split 内核修改的 Tensix 配置/累加器状态未复位（原文 mechanism），修复在该内核侧 → 算子/内核（词表含 SFPU/LLK 等 kernel 实现；Blackhole 只是触发条件，非 硬件）。虽依赖测试顺序，但给定顺序下 2/2、3/3 确定性复现，表现为 PCC 0.5409 的静默错值，visibility 取 静默错误。各字段事实均可在原文找到依据。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: TRN-0234
+legacy_ids:
+- RL-RO.12
+slug: stale_completion_rolls_into_next_weight_version
+aliases: []
+title: verl Mooncake 权重同步复用 buffer，接收端读到上一版本张量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: Mooncake 权重同步 slot 回收
+  behavior: send_weights() 只消费最后一个 bucket 的 slot，转发 rank 的下游 slot 从不消费、barrier 也不清 marker，跨版本复用 buffer 时旧 marker 在接收者读完前释放它。
+effect:
+  objects:
+  - 模型权重
+  - 训练信号
+  detail: 传输 READ/WRITE 全部返回 success，接收 rank 却读到上一版本张量（复现中应为 2.0、实读 2.125）；rollout 用部分陈旧权重采样，与正在训练的策略静默错位，TIM/IS 校正失准。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/7764
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0230
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:adapter_omitted_from_weight_sync` · 置信度 `documented`'
+  mechanism: verl Mooncake 传输引擎的权重同步在 buffer 复用跨 weight version 时，旧 completion marker 可在**下一个接收者读完新内容之前释放 buffer**：`send_weights()` 只消费最后一个 bucket 的 slot，中间转发 rank 的末尾下游 slot 从不被消费，update 间 barrier 也不清 marker——READ/WRITE 全部返回 success，接收 rank 读到的却是**上一版本的张量**（复现：rank 2 tensor 0 应为 2.0、实际读到 tensor 8 的 2.125）。修复 = 每次 update 返回前 drain 全部在途 completion slot（sender 与转发 rank 两侧）。
+  source: 'verl PR #7764（双主机 8×16MiB bucket 双版本原始代码 fail、H20 BF16 组件级验证；与 #6813「marker 存储位置」修复互补，本条修的是**消费时序**）。https://github.com/verl-project/verl/pull/7764'
+  behavior: 传输 API 全绿（success 返回值），训练侧用部分陈旧权重 rollout——采样分布与正在训练的 policy 静默错位，TIM/IS 校正全部失准。与 RL-RO.08（adapter 漏同步）同族：训练→rollout 权重同步契约不完整；本条错在**时序**（旧版本残留）而非**内容缺失**，且 failure 被 transfer 层的 success 语义掩盖。
+  discovery: 2026-09-06 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

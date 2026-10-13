@@ -1,0 +1,64 @@
+id: INF-0360
+legacy_ids:
+- '5.13'
+slug: hf_nemotron_h_multigpu_devicemap_silent_wrong_output
+aliases: []
+title: HF NemotronH 多卡 device_map 下静默近随机输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: hybrid scan cache 跨设备传递
+  - subsystem: 模型定义
+    stack: transformers
+    component: NemotronH 状态设备放置
+  behavior: use_cache=True 时 hybrid scan cache 跨设备传递 SSM 状态不一致；部分 device_map 切分边界切断了须留在同一设备的 Mamba/latent 状态。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: Nemotron-3.5-Lightning-30B 用 device_map="auto" 多卡时无 crash、无 warning，输出近随机（loss≈10）；use_cache=False 时也仅特定切分正确（2 卡对、3/4 卡错）。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers；NemotronH（hybrid Mamba-2 + MoE）+ `device_map="auto"` 多 GPU + `use_cache=True`
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/47942
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（NemotronH hybrid Mamba-2 + latent-MoE 在多 GPU device_map 下静默近随机输出） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: Nemotron-3.5-Lightning-30B（hybrid Mamba-2 + latent-MoE）在 `device_map="auto"` 多 GPU 分发下产生**近随机输出且无任何错误/警告**。三个独立缺陷复合：(1) `use_cache=True`（默认）在 device boundary 上损坏 hybrid scan cache——跨设备切分时 SSM/recurrent state 在 device 间传递不一致，loss ≈10（131k vocab 近随机），`use_cache=False` 给出正常 loss 2.6–3.0；(2) 即使 `use_cache=False`，正确性取决于 device map 的 split boundary 位置（2 GPU loss 2.66✅，3 GPU loss 10.23❌，4 GPU loss 9.51❌）——某些 boundary 切断了必须保持 device-local 的 Mamba/latent state；(3) 安装 mamba-ssm + causal-conv1d 后 fused Triton kernel 在 dispatch hooks 下 crash（device-context mismatch）。
+  source: 'transformers #47942（2026-08-13 open）。transformers 5.15.0/main，torch 2.11.0+cu130，4× NVIDIA 48GB。模型 `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16`。https://github.com/huggingface/transformers/issues/47942'
+  behavior: '**无 crash、无 warning，近随机输出**（token salad / loss ≈10）。仅 `use_cache=False` + 特定 boundary placement 时正确。fused kernel 路径 crash under dispatch hooks。属「hybrid scan cache 在 device boundary 上的静默损坏」**新子签名**——multi-GPU dispatch 与 hybrid recurrent state 的交互盲区。'
+  trigger_surface: transformers；NemotronH（hybrid Mamba-2 + MoE）+ `device_map="auto"` 多 GPU + `use_cache=True`
+  discovery: |-
+    2026-08-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: cause.objects[1] 由 并行切分 改为 模型定义，component 改为 NemotronH 状态设备放置（指 Mamba/latent 状态）。依据：原文“某些 boundary 切断了必须保持 device-local 的 Mamba/latent state”，只有该 hybrid 模型受影响；device_map 多 GPU 分发属触发条件（rule 6，同 TP>1），出错的是该模型对需保持同设备状态的处理（建模代码），原文没有指出通用切分逻辑有误。objects[0] KV缓存（hybrid scan cache，词表含 SSM 循环状态池）维持；两缺陷独立，需改两处，多项成立（rule 4）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

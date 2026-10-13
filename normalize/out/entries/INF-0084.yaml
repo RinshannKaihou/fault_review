@@ -1,0 +1,50 @@
+id: INF-0084
+legacy_ids:
+- '1.85'
+slug: ttmetal_embedding_pad_token_face_col_slot_mismatch
+aliases: []
+title: PADDED embedding pad token 槽位错位致预缓存失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: embedding reader 运行时参数
+  behavior: PADDED 下 TilizedIndices factory 把 col_offset % FACE_HEIGHT（face 列索引）当 pad token 填入 runtime-arg 槽 6，真实 pad_token 在槽 7 未读。
+effect:
+  objects:
+  - 性能/资源
+  detail: PADDED embedding 走 TilizedIndices factory 时，weights[pad_token] 预缓存缓存了错误的行，声明的优化路径静默不生效；输出因逐 token 比较兜底仍正确，无 crash。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal；PADDED embedding + TilizedIndices factory
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-17'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53432
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（PADDED embedding 把 face 列索引当 pad token 传入 reader（runtime-arg 槽位 6↔7 错位），缓存优化缓存错误行） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`EmbeddingsType::PADDED` 下 `EmbeddingsTilizedIndicesProgramFactory` 把 `col_offset % FACE_HEIGHT`（0-15 的 per-core face 列索引）作为 pad token 传给 reader（填 runtime-arg 槽 6），真实 `operation_attributes.pad_token` 留在槽 7 未读；该 op 另两个 reader 正确。由于 `prepare_local_cache` 仅在 `token == pad_token` 时替换为缓存行，输出本身不被破坏，但 PADDED 的 `weights[pad_token]` 预缓存优化缓存了**错误的行**——优化静默失效。'
+  source: 'tt-metal #53432（2026-08-17 open，op_cat: embedding；Metal 2.0 port #53424 期间发现）。https://github.com/tenstorrent/tt-metal/issues/53432'
+  behavior: 无 crash、无错误数值（正确性由逐 token 比较兜底）。语义效应是「参数槽位错位 → 声明的优化路径静默不生效」——性能/内存特征与文档承诺不符；且同类槽位错位模式若落在会改变数值的参数上即为静默损坏。属「runtime-arg 槽位错配 × 优化路径静默失效」**新子签名**。
+  trigger_surface: Tenstorrent TT-Metal；PADDED embedding + TilizedIndices factory
+  discovery: 2026-08-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

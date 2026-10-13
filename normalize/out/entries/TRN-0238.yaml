@@ -1,0 +1,63 @@
+id: TRN-0238
+legacy_ids:
+- RL-RO.16
+slug: response_prefix_role_flips_prompt_to_completion
+aliases: []
+title: ms-swift GRPO 的 response_prefix 被计入补全
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: ms-swift
+    component: 模板层 response_prefix
+  behavior: 生成侧把 prefix 拼进 prompt，vLLM 输出不含它；Template.decode() 又拼回 prefix 并整串编码为 response，prefix 的 labels 被置位、落入 completion_mask。
+effect:
+  objects:
+  - 训练信号
+  - 训练样本流
+  detail: 无报错；vLLM 对 N 个 token 算 log-prob，trainer 对 len(prefix)+N 个算，模型认为 prefix 不太可能时其主导序列 log-prob，本应≈1 的 ppl_ratio 爆炸，优势与 KL 均含非采样 token。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10106
+  kind: github_issue
+- url: https://github.com/modelscope/ms-swift/pull/10107
+  kind: github_pr
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'ms-swift GRPO 的 `response_prefix`（如 forcing `<think>`）在**生成侧**拼进 prompt——vLLM 从 prefix 之后开始采样，返回的 `generate_ids` **不含** prefix；`Template.decode()` 又把 prefix **拼回**解码文本，整串编码为 `{{RESPONSE}}` 供训练前向——prefix token 的 labels 被置位、落在 `completion_mask` 内。**策略被按它从未采样过的 token 计分**：vLLM 对 N 个 token 算 log-prob，trainer 对 `len(prefix)+N` 个算；模型若认为 prefix 不太可能，这几个 token 就主导序列 log-prob，本应 ≈1 的 `rollout_correction/ppl_ratio`（colocated 严格 on-policy 的健康指标）爆炸。缺陷在 `swift rlhf` 与 `megatron rlhf` 共享的模板层。修复 PR #10107 对齐训练侧 rollout response 前缀。'
+  source: 'ms-swift #10106（2026-09-10；`swift/template/base.py` 三处代码定位：生成拼 prompt L1449 / decode 拼回 L803 / 训练整串当 response L1423 + mask 由 labels 派生）。https://github.com/modelscope/ms-swift/issues/10106 ；修复 PR #10107。https://github.com/modelscope/ms-swift/pull/10107'
+  behavior: 无 crash、无 NaN；被污染的每条序列的 IS ratio/logprob 带系统性 prefix 偏置——rollout-train 一致性仪表（ppl_ratio）失真，优势与 KL 都在「部分非采样 token」上计算。与 RL-RO.11（decode/re-encode 破坏序列恒等）同族：**训练序列 ≠ 采样序列**；差异在这边不是 tokenize 非双射，而是 prefix 的 **角色归属**在两侧翻转（prompt vs completion）；与 SFT.12（拆分重复计权）同在「轮次/区段归属」层；与 RL-RO.05（router replay 死键）都属「rollout 侧语义在训练侧未被忠实重放」。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 分词/模板 vs RL训练回路：定为 分词/模板。原文「缺陷在 swift rlhf 与 megatron rlhf 共享的模板层」，代码定位 swift/template/base.py 三处（生成拼 prompt / decode 拼回 / 整串当 response），按 rule 6「subsystem 按出错的那段代码归属」，GRPO 只是触发路径。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 训练样本流
+        to: 训练信号
+        status: panel7

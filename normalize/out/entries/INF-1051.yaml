@@ -1,0 +1,50 @@
+id: INF-1051
+legacy_ids:
+- '11.27'
+slug: vllm_prompt_logprobs_zero_truthiness_bypass_guard_engine_crash
+aliases: []
+title: vLLM prompt_logprobs=0 绕过校验杀死 EngineCore
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: logprob 参数 truthiness 校验
+  behavior: 多处用 truthiness 而非 is not None 检查 logprob 参数，合法值 prompt_logprobs=0 绕过 kv-sharing-fast-prefill 不兼容 guard 与 stream 拒绝。
+effect:
+  objects:
+  - 可用性/进度
+  detail: prompt_logprobs=0 等 falsy 值配合 echo/stream/kv-sharing 配置时，GPUModelRunner 下游 is not None 检查命中 bare assert，整个 EngineCore 进程退出，所有在途与后续 client 均受影响。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；`prompt_logprobs=0` 或任何 falsy logprob 值 + echo/stream/kv-sharing 配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51846
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（prompt_logprobs=0 被 truthiness 检查当 falsy→绕过 guard→下游 is not None 检查命中 bare assert→杀死 EngineCore） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`prompt_logprobs=0` 是有效值（"返回 prompt token 自身 logprob"），但多处用 truthiness 而非 `is not None` 检查→0 静默滑过：(1) `ChatCompletionRequest.to_sampling_params` 为任何 echo 请求继承 `top_logprobs`（默认 0 而非 None），即使 client 未请求 logprob；(2) `AsyncLLM.add_request` 和 `check_logprobs` 用 truthy 检查→`prompt_logprobs=0` 绕过 `--kv-sharing-fast-prefill` 不兼容 guard 和 `stream=True` 拒绝；(3) `GPUModelRunner` 下游用 `is not None` 检查→命中 bare `assert`→**杀死整个 EngineCore 进程**（所有在途和未来 client，非仅违规请求）；(4) `LLMEngine.add_request` 同步路径无任何 guard。'
+  source: 'vLLM #51846（2026-08-11 PR）。组件 `ChatCompletionRequest` / `AsyncLLM` / `GPUModelRunner`。https://github.com/vllm-project/vllm/pull/51846'
+  behavior: crash（bare assert→EngineCore 进程死亡，影响所有 client）。属「truthiness vs is-not-None 检查不一致→0 值绕过 guard→下游 crash」**新子签名**——Python falsy 值检查的经典陷阱在生产路径上的体现。
+  trigger_surface: vLLM；`prompt_logprobs=0` 或任何 falsy logprob 值 + echo/stream/kv-sharing 配置
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

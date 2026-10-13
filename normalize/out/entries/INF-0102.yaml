@@ -1,0 +1,52 @@
+id: INF-0102
+legacy_ids:
+- '1.103'
+slug: ttmetal_remainder_sfpu_overshoot_correction_bypass
+aliases: []
+title: ttnn.remainder fp32 商估计校正不足，结果错一个除数倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU remainder 商校正逻辑
+  behavior: ckernel_sfpu_remainder.h 用倒数乘法估计商，截断后只做一次 −1 过冲校正；商估计偏差超过 1 时结果可为负，而迭代清理循环只在 v >= s 时运行，负误差被完全旁路。
+effect:
+  objects:
+  - 数值结果
+  detail: Wormhole/Blackhole 上 fp32 标量 remainder 在 |被除数/除数| ≳ 2^23 时结果错一个除数的整数倍，如 remainder(1.42606e7, 3.0) 得 1.0（应为 2.0）；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal（Wormhole + Blackhole）；fp32 标量 remainder，|被除数/除数| ≳ 2^23
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-23'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54048
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn.remainder 标量/一元 fp32 路径：近似商估计的舍入误差超过单次 −1 校正能力，且负向误差被 `v >= s` 符号门控的迭代循环旁路——|被除数/除数| ≳ 2^23 时结果错整整一个除数的整数倍，Wormhole/Blackhole 双平台同算法复现） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 'SFPU remainder 内核（`ckernel_sfpu_remainder.h`）用 host 预计算的乘法倒数估计商，截断后仅做一次 `-1` 过冲校正。当真商 magnitude 超过 ~2^23（≈8.4M，即被除数超过除数 ~8.4M 倍）时，倒数乘法的浮点舍入可使商估计偏差超过 1，单次校正不达标；结果可为负值，而迭代清理循环只在 `v >= s` 时运行——负误差被**完全旁路**，内核返回错误一个除数整数倍的结果。修复（PR #54098，$2500 bounty）把迭代清理移到符号逻辑之前并增加 `v < 0 → v += s` 回拉分支。Wormhole 与 Blackhole 上的算法文件逐字节相同（仅 `sfpi::` 限定差异）——跨代架构共享缺陷。'
+  source: 'tt-metal #54048（2026-08-22 open，Bounty $2500，IssueType: Bad Outputs；`ttnn.remainder(1.42606e7, 3.0) → 1.0`（正确 2.0）、`ttnn.remainder(5.70425e7, 3.0) → -1.0`（正确 2.0））；修复 PR #54098（2026-08-23 open，含 2^23 比值回归测试）。https://github.com/tenstorrent/tt-metal/issues/54048'
+  behavior: 无 crash、无 NaN。fp32 标量 remainder **静默错一个除数的整数倍**——模运算语义下结果仍落在合法值域 `[0, s)` 内，与正确结果同量级，数值对拍才能发现。属「**有限校正步数 × 近似商估计区间外失效**」新子签名——与 1.87（remainder/fmod 标量 int32 垃圾/NaN）同函数但机制不同（本条是 fp32 近似商的精度预算耗尽 + 负误差符号门控旁路，1.87 是 int32 输出垃圾模式），与 1.102（logsigmoid 分支缺失）同属「SFPU 数学函数静默错误值」族。
+  trigger_surface: Tenstorrent TT-Metal（Wormhole + Blackhole）；fp32 标量 remainder，|被除数/除数| ≳ 2^23
+  discovery: |-
+    2026-08-23 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

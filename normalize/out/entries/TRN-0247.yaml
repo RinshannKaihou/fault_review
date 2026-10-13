@@ -1,0 +1,53 @@
+id: TRN-0247
+legacy_ids:
+- RL-RO.25
+slug: resume_step_modulo_gating_skips_rollout_weight_sync
+aliases: []
+title: trl IWOPDTrainer resume 后取模门控跳过权重同步
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: IWOPDTrainer vLLM 同步门控
+  behavior: 同步门控写成 global_step % vllm_sync_frequency == 0 且 _last_vllm_sync_step=-1，构造或 resume 后不强制同步一次，resume 步数非倍数时同步被跳过直到下一个倍数步。
+effect:
+  objects:
+  - 模型权重
+  - 训练信号
+  detail: 无 crash，loss 与指标正常；resume 后到下一个倍数步前 rollout 都用陈旧权重生成，策略梯度对旧策略样本计算；触发于 jsd 目标 + use_vllm + vllm_sync_frequency>1，如 resumed_step=37、freq=5。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7544
+  kind: github_issue
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: trl `VLLMGeneration` 只在构造时从 `model.name_or_path` 加载一次权重，此后唯一更新通道是 `sync_weights()`。`IWOPDTrainer` 把同步门控写成 `self.state.global_step % self.vllm_sync_frequency == 0` 且 `_last_vllm_sync_step = -1`（`iw_opd_trainer.py:666` / `:872-873`）：resume 到的步数不是 `vllm_sync_frequency` 整数倍时，**同步被无限跳过**直到下一个倍数步，期间 rollout 全部用 resume 前的陈旧权重生成。同仓库 `GOLDTrainer` 的同型机制是对的（`_last_vllm_sync_step = -freq` + `step >= last_sync + freq`，构造/resume 后必同步一次）。触发面：`distillation_objective="jsd"` + `use_vllm=True` + `vllm_sync_frequency>1`（`iw_opd` 强制 freq=1 时两种公式恒等、不可达）。报告者由两条 trainer 的复制漂移审计发现（非生产 run），算术 repro 闭合：`resumed_step=37, freq=5` 时 GOLD 判 True、IWOPD 判 False。
+  source: 'trl #7544（2026-10-06；双 trainer 门控公式对照 + 算术 repro + 代码行号）。https://github.com/huggingface/trl/issues/7544'
+  behavior: 无 crash——resume 后到下一个倍数步之前，策略梯度对着**上一个 ckpt 的策略**采样出的 rollout 计算，off-policy 程度随 resume 点漂移且完全不可见（loss 正常、指标正常）。与 RL-RO.19（ms-swift IPC ACK 时序使 rollout 用半新半旧权重）同族「权重同步时序契约破坏」但机制正交：那边是**同一轮同步内的读撕裂**、这边是**同步事件本身被步数取模错门控**；与 CKPT.27（resume 判无 ckpt 从 step 0 重训）方向相反：那边 resume 效果全丢、这边 resume 的训练续上但 rollout 锚错版本。截至收录 open；sahil-mangla 2026-10-06 评论已有对齐 GOLD 模式的修复 + 回归测试待 PR。
+  discovery: 2026-10-09 每日扫描（停机补扫）
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

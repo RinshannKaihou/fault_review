@@ -1,0 +1,50 @@
+id: INF-0355
+legacy_ids:
+- '5.8'
+slug: sglang_multinode_tp_rank_divergence_nccl_deadlock
+aliases: []
+title: SGLang 多节点 TP rank 间 batch 分歧致 NCCL 死锁
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: scheduler 跨 rank batch 同步
+  behavior: 两个 scheduler rank 的 batch/step 循环分歧：一侧持续投递 logits all-gather，另一侧已退出循环停在 _broadcast_reqs_across_ranks，不会加入该 collective。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 2 节点 TP=2 跑 DeepSeek-V4-Flash + DSPARK 时间歇性挂死（分钟到小时级），NCCL proxy 被楔住、GPU stream 不完成，最终 scheduler watchdog 杀服务；关闭请求超时仍发生。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-02'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/33289
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（per-rank batch 分歧 → NCCL 死锁） · Cov: `NEW` · 触发 `no` · 置信度 `verified`'
+  mechanism: 'SGLang 跨 2 节点（TP=2）运行 DeepSeek-V4-Flash-0731 + DSPARK 时，两个 scheduler rank 陷入永久分裂：**Rank A（忙）** 在 NCCL host enqueue 路径自旋（`sched_yield` 于 `ncclLocalOpAppend`/`SaveProxy`）持续投递一个 **logits all-gather**，而 proxy 线程不再消费 ops；**Rank B（peer）** 空闲停泊在 `_broadcast_reqs_across_ranks`——它已退出 batch/step 循环，永远不会加入那个 collective。不匹配的 collective 楔住 NCCL proxy，GPU stream 永不完成，scheduler watchdog 最终触发并杀服务。即使禁用请求超时（`SGLANG_REQ_WAITING_TIMEOUT` 与 `SGLANG_REQ_RUNNING_TIMEOUT` 均关）仍发生，与 #27221 同族（per-rank batch 组成分歧 → 不匹配 collective → NCCL 死锁）。'
+  source: 'SGLang #33289（2026-08-02 open）。环境：DeepSeek-V4-Flash-0731，`--speculative-algorithm DSPARK`，2× DGX Spark（GB10），TP=2。https://github.com/sgl-project/sglang/issues/33289'
+  behavior: 间歇性服务挂死（分钟到小时级），scheduler watchdog 触发杀进程。属"per-rank batch 分歧 → 不匹配 collective → NCCL 死锁"新子签名，是分布式推理的活性（liveness）故障而非数值正确性，但表现为服务静默卡死。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  discovery: 2026-08-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

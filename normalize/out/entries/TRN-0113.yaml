@@ -1,0 +1,59 @@
+id: TRN-0113
+legacy_ids:
+- OPT.13
+slug: clip_averages_norms_across_disjoint_expert_owners
+aliases: []
+title: DeepSpeed FP32 梯度裁剪在 EP 下平均互不相交的专家范数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: clip_fp32_gradients 范数归约
+  behavior: FP32 梯度裁剪路径结尾把各 rank 局部范数在 DP 组上 all-reduce 取平均，假设各 rank 持有相同参数；AutoEP 下各 rank 拥有不同专家，局部范数对应互不相交的参数集。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: MoE + AutoEP 且裁剪生效时，clip_coef 取决于专家落在哪些 rank 而非梯度本身：sqrt(20) 与 sqrt(100) 平均得 7.24 而非 sqrt(120)=10.95，换布局 clip 系数差达 0.20；跨 EP 拓扑实验不可比，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8475
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8476
+  kind: github_pr
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8478
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0109
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `pretrain` · Cov: `var:clip_dispatch_ignores_fsdp_owner_grad_location` · 置信度 `verified`'
+  mechanism: 'DeepSpeed FP32 梯度裁剪路径（`clip_fp32_gradients`）结尾把 per-rank 范数在 DP 组上 all-reduce **取平均**——前提是每个 rank 持有相同参数。AutoEP 下各 rank 拥有**不同专家**，rank 局部范数描述互不相交的参数集：`sqrt(20)` 与 `sqrt(100)` 平均得 7.24 而非「每专家计一次」的 `sqrt(120)=10.95`——同一组唯一梯度、仅改变专家放置就能改变 `clip_coef` 达 0.20。修复（PR #8476/#8478）= 专家梯度不进复制范数、经精确的 `get_norm_with_moe_layers`（bf16/fp16 路径早已正确调用；fp32 内联的近似版警告注释所在的具名拷贝**零调用者**，警告从未到达出事地点）按各自 moe_ep_group 归约后 `(Σ norm_i^p)^(1/p)` 合并。上游 #8469（closed as dup of #8475）+ #8475 独立复现同一机制（owner-sharded vs replicated 布局 clip 系数差 0.2000005，修复后为 0，第二台主机复核）。'
+  source: 'DeepSpeed #8475（2026-09-10，2×CUDA rank / ZeRO-0 / L2 clip / mpu=None 布局对照实验）。https://github.com/deepspeedai/DeepSpeed/issues/8475 ；修复 PR #8476。https://github.com/deepspeedai/DeepSpeed/pull/8476 ；PR #8478（`sqrt(120)`=10.954 vs 平均 7.236、34% 差，2×H20 四专家独立复现；09-15 进展评论：#8478 内两缺陷已随 `338ed51` 修复——先在 2×H20 复现，且 #8469 发现的更深处场景「pipeline 并行下**完全不拥有任何专家参数**的 rank」改由单次 all-reduced flag + `_EXPERT_PARALLEL_GROUP` 组名解决，uneven 布局测试通过）。https://github.com/deepspeedai/DeepSpeed/pull/8478'
+  behavior: 无 crash；clip 活跃时每次更新的 `clip_coef` 取决于**专家落在哪些 rank**而非梯度本身——同一 MoE 模型换 EP 拓扑 = 换有效 clip 阈值，跨布局实验不可比；无 MoE 时行为不变（原代码路径）。与 OPT.09（clip 判据按优化器类型而非参数 owner）同根：**裁剪几何假设参数复制，EP 打破假设**；与 PAR.11（GTP/EGTP expert 梯度缩放错）互补：那边梯度本身错倍、这边梯度对但裁剪参考范数错。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

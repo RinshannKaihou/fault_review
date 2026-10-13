@@ -1,0 +1,61 @@
+id: TRN-0019
+legacy_ids:
+- NUM.10
+slug: bf16_static_scaler_silent_skip_all_steps
+aliases: []
+title: DeepSpeed bf16 下非有限梯度每步静默跳步，权重从不更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: ZeRO step 溢出跳步与静态 scaler
+  behavior: ZeRO-1/2 step() 检出非有限梯度时 zero_grad 并提前返回，无日志；bf16 拿到不打日志的静态 LossScaler，skipped_steps 仅在设了 steps_per_print 时上报，默认永不触发。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: bf16 + check_grad_overflow=True 的 RL run 每个 step 被静默跳过：step 正常返回、lr scheduler 照走、loss/reward 曲线合理，唯一症状是下游同步的权重逐字节相同；设为 False 时 Inf 梯度把 NaN 写进参数。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8415
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8461
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0013
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `rl/sft` · Cov: `var:loss_scaler_swallows_overflow` · 置信度 `documented`'
+  mechanism: ZeRO-1/2 `step()` 检出非有限梯度时 `zero_grad` + early return，**无任何日志**。fp16 下还有 loss scale 变化作间接信号；bf16 拿到的是静态 `LossScaler`（`CreateLossScaler` 只给 fp16+dynamic 返回会打日志的 `DynamicLossScaler`）——什么都不打。`engine.skipped_steps` 只经 `_report_progress` 暴露，gated on `steps_per_print`，**默认 None → 永不触发**。bf16 + `check_grad_overflow=True` 的 RL run 每个 optimizer step 都被静默跳过：`engine.step()` 正常返回、lr scheduler 照走、指标照发，权重从未更新。
+  source: 'DeepSpeed #8415（bf16 RL run 实例：唯一可见症状是下游同步的权重逐字节相同；loss/reward 曲线全程"合理"，reward 噪声掩盖冻结策略）+ 修复 PR #8417（log skipped step）。https://github.com/deepspeedai/DeepSpeed/issues/8415 ；DeepSpeed #8461（`bf16`+`grad_accum_dtype=fp32`+ZeRO stage 1 选中的 `BF16_Optimizer` 是第五种包装：参数组被换成 flat fp32 分片后 `MuonWithAuxAdam.step` 按 `dim()<2` 全走「ZeRO 已正交化」分支，而该包装**从不**调用 Muon——step 退化为带 momentum 的 SGD；#8442 的 refusal 正是从这条洞拆出）。https://github.com/deepspeedai/DeepSpeed/issues/8461'
+  behavior: run 表面完全健康、参数一步未动。与 NUM.04（scaler 吞溢出）同族观测面，差异：bf16 无 scale 变化连间接信号都没有；与 OPT.06（有效更新缩小 ~32768 倍）同为「训练在跑、参数没在学」——这条缩小、那条归零。同一开关的反向陷阱：`check_grad_overflow=False`（bf16 默认）时 Inf 梯度直接进优化器把 NaN 写进所有 trainable tensor，两个方向都不可见。
+  discovery: 2026-09-05 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '维持 优化器：出错代码是 ZeRO step() 非有限梯度跳步与静态 LossScaler（词表 优化器 含 loss scaling），#8461 的 BF16_Optimizer 不调用 Muon 同属优化器；日志缺失（PR #8417）是可见性问题，不是缺陷所在。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

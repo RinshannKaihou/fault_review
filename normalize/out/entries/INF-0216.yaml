@@ -1,0 +1,54 @@
+id: INF-0216
+legacy_ids:
+- '1.217'
+slug: ttmetal_where_logical_not_signed_zero_predicate_branch_flip
+aliases: []
+title: ttnn fp32 where/logical_not 把 −0.0 判为非零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: where/logical_not SFPU 判零
+  behavior: fp32 谓词按 INT32 位模式判零（SFPSETCC LREG_EQ0），未按 ISA 要求先把 −0.0 冲刷为 +0；#43831 对零比较算子的修复未覆盖 calculate_logical_not 所在头文件。
+effect:
+  objects:
+  - 数值结果
+  detail: 谓词含 −0.0 的 lane 静默选择 true 分支（IEEE、torch 与 golden 均选 false），logical_not(−0.0) 返回 0，掩蔽/选择逻辑翻转且无任何信号；仅 fp32 路径暴露，bf16 因 unpacker 预先冲刷 −0.0 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal（BH ttsim 验证；bf16 路径因 unpacker 预冲刷不暴露）+ where/logical_not + 谓词或输入含 −0.0（hw_specific；数值触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-14'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56522
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0108
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn fp32 `where` 谓词按 **INT32 位模式**判零（`SFPSETCC LREG_EQ0` 整数 ==0，谓词以 `INT32` load 模式读入），`−0.0`（0x80000000）被判非零选 **true 分支**——IEEE 754、torch 与 ttnn 自家 golden（`torch.ne(pred,0)` 归一化）均选 false；`ttnn.where` 把 float 谓词直传内核无归一化，用户可直接命中。同 ISA 契约下 `logical_not(−0.0)` 返 0（应为 1）——#43831 修复了六个零比较算子（#44085/#44244，按 |v| 分类）但 `calculate_logical_not` 独立头文件漏改。ISA 文档明文"软件应先把 −0.0 冲刷为 +0"（SFPSETCC 页，测试 harness 引用同一契约）；修复为一指令去符号位（位模式左移一位）。bf16 路径 unpacker 恰好先冲刷 −0.0 故仅 fp32 暴露） · Cov: `var:ttmetal_scalar_comp_kernels_lane_complement_nan_semantics_divergence`（1.109 ±0/NaN 比较语义族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 浮点判零下推为位模式整数判零，符号位残留使 −0.0 与 +0.0 语义分裂；ISA 把归一化责任交给软件而内核未履行；同一缺陷在历史修复批次之外的算子（logical_not）上残留——修复不跨头文件传播的又一实例。
+  source: 'tt-metal #56522（2026-09-14 open，community label，含 19 值谓词矩阵 kernel-vs-torch 对照与 ckernel_sfpu_where.h:29,37,54,80 定位）；同族 #56520（logical_not，0x80000000 唯一分歧值表 + #43831 修复覆盖面核验，同日 open）。https://github.com/tenstorrent/tt-metal/issues/56522 · 同族：#56520、#43831'
+  behavior: 无 crash——谓词含 −0.0 的 lane 静默选择**相反分支**（`0.0*−x`、负积下溢等普通浮点运算即产生 −0.0），掩蔽/选择逻辑整体翻转而无任何信号；logical_not 则把 −0.0 判为非零。1.109（比较器 NaN/±0 语义 dtype 分裂）之后"±0 符号位语义"族新成员：本条在三元选择/逻辑非维度、翻转的是**分支方向**而非数值。
+  trigger_surface: tt-metal（BH ttsim 验证；bf16 路径因 unpacker 预冲刷不暴露）+ where/logical_not + 谓词或输入含 −0.0（hw_specific；数值触发）
+  discovery: |-
+    2026-09-14 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

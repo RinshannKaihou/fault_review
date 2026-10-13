@@ -1,0 +1,55 @@
+id: TRN-0159
+legacy_ids:
+- MOE.10
+slug: colocate_reload_swallows_post_load_processing
+aliases: []
+title: ms-swift 重载吞掉 vLLM 后处理异常，rollout 用未处理权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: ms-swift
+    component: vLLM 权重重载的宽 except 处理
+  behavior: finish_vllm_weight_reload 用裸 except 包住 vLLM 权重后处理；Megatron colocate 路径传入 int 型 CUDA ordinal 而非 torch.device，后处理抛异常即被吞掉。
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  detail: 无 crash、无日志，训练照常推进；Megatron colocate 路径每次 weight reload 后，rollout 引擎在未做 packing、MoE fusion、量化 prep 的权重上采样，生成分布静默偏离训练策略。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10098
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0156
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `rl` · Cov: `var:quantized_expert_layout_republish_breaks_sync` · 置信度 `documented`'
+  mechanism: 'ms-swift `finish_vllm_weight_reload` 用裸 `except Exception: return` 包住 vLLM `process_weights_after_loading`——**吞掉一切失败**。Megatron colocate 路径这不是理论防御：Megatron `get_current_device()` 返回 **CUDA ordinal (int)**，而 vLLM 加载上下文要 `torch.device` 并读 `.type`——int 直接令处理在 try 块内抛异常，宽 handler 把它藏掉，于是**权重 packing、MoE fusion、量化 prep 在 colocate 路径从未真正跑过**，rollout 引擎带着未处理权重采样。修复 = 归一化 `target_device`（int/str → `torch.device`）+ 加 `strict` 旗标，Megatron colocate caller 传 `strict=True` 让真失败炸出来，其他 caller 保持非严格。'
+  source: 'ms-swift #10098、#10099；修复 PR #10113（与 CKPT.23 同 PR；colocate caller strict 化）。https://github.com/modelscope/ms-swift/issues/10098'
+  behavior: 无 crash、无日志——训练侧照常推进，rollout 引擎每次 weight reload 后都在**未 pack/未 fusion/未量化 prep 的权重**上采样，生成分布静默偏离训练策略。与 MOE.07（`process_weights_after_loading` republish 丢 `weight_loader` 属性、破坏 MXFP4 布局契约）**同函数不同断点**：那边是处理本身执行了但破坏下游契约、这边是处理**根本没执行**且被 except 掩盖；「宽 except 吞加载失败」的观测面与 OBS.04/OBS.09（校验/读取异常被吞后返回 success）同型——修复的共同方向是 strict 化。
+  discovery: 2026-09-13 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

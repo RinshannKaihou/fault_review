@@ -1,0 +1,50 @@
+id: INF-0949
+legacy_ids:
+- '10.33'
+slug: hf_convert_to_rgb_alpha_as_foreground
+aliases: []
+title: transformers convert_to_rgb 误把 alpha 当前景
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: transformers
+    component: convert_to_rgb 视频通道混合
+  behavior: video_utils.py 的 RGBA→RGB 混合行以 video[..., 3, :, :]（alpha 通道）作前景参与计算，正确应为 video[..., :3, :, :]（RGB 三通道）。
+effect:
+  objects:
+  - 输入编码
+  detail: 输入 RGBA（4 通道）视频帧时，输出张量形状错误（channels-last 得 2,2,1,1 而非 2,3,1,1）且像素值错误，随后送入视觉编码器；无报错无告警，管线内无法发现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: HF transformers 视频多模态管线；RGBA（4 通道）numpy/tensor 输入 + `convert_to_rgb`
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-21'
+remarks: effect object 缺「多模态输入（像素/音频特征）」：输入编码 只覆盖 token 序列与模板渲染，此处变错的是预处理后的像素张量，暂归 输入编码
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48051
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（transformers `video_utils.convert_to_rgb` 对 RGBA 输入在 alpha 混合行使用 alpha 通道（`[..., 3, :, :]`）而非 RGB 前三通道作前景——alpha 被当作像素数据参与混合） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`transformers/video_utils.py:789` 的 RGBA→RGB 混合行以前景 `video[..., 3, :, :]`（第 4 通道 = **alpha**）参与计算，正确应为 `video[..., :3, :, :]`（RGB 三通道）。结果输出 shape 错误（channels-last 输入 `2,2,1,1` 而非 `2,3,1,1`）且像素值错误——alpha 掩码图被直接当作前景颜色混合进输出。'
+  source: 'huggingface/transformers #48051（2026-08-18 closed，附最小 numpy 复现）。https://github.com/huggingface/transformers/issues/48051'
+  behavior: 无 crash、无告警。多模态视频预处理静默数据污染：RGBA 视频帧被转换为形状/数值均错误的张量后送入视觉编码器——输出降级但无法从管线报错发现。属「多模态预处理通道索引错误（alpha-as-foreground）」新子签名；与 10.32（多模态 placeholder 定位错误）同属多模态前处理静默错误族，但本条在**像素数据层**而非 token 序列层。
+  trigger_surface: HF transformers 视频多模态管线；RGBA（4 通道）numpy/tensor 输入 + `convert_to_rgb`
+  discovery: 2026-08-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

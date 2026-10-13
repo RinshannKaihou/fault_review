@@ -1,0 +1,58 @@
+id: INF-0944
+legacy_ids:
+- '10.28'
+slug: vllm_tool_strict_flag_leaked_into_chat_template
+aliases: []
+title: vLLM 把 tools 的 strict 字段渲染进模型可见模板
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: tools 透传进 chat template
+  behavior: 请求级 tools[].function.strict（服务端解码指令，仅用于决定是否挂 structural tags）被透传进 apply_chat_template，原样序列化进模型可见的 <tools> JSON 块。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: chat completions 带 tools 且给出任一 strict 值时触发；24-tool agent 负载下 strict:false 使模型把畸形 tool call 泄进 content（0/5 成功、4/5 泄漏），tool_calls 为空，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；/v1/chat/completions + tools + 任一 strict 值（含显式 false）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52741
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（OpenAI tools[].function.strict 服务端解码指令被原样渲染进 model-visible <tools> 块——模型对它有行为反应） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '请求级 `strict` flag（OpenAI 协议的服务端解码指令，vLLM 在 `structural_tag_registry.py::_any_tool_strict()` 用它决定是否挂 structural tags）被透传进 `apply_chat_template()` 并序列化进模型可见的 `<tools>` JSON 块（`..."required": ["city"], "strict": false}</tools>`；absent=411 tokens vs true/false=416）。24-tool agent 负载（~3.8KB system prompt、可选调用任务）下 `strict:false` 使模型把**畸形 tool call（无函数名、无 `<tool_call>` wrapper 的纯参数对象）泄进 content**（0/5 成功调用、4/5 泄漏，finish_reason=stop）而非发起真实调用；同 token 成本的中性填充字符串不触发——语义效应而非 prompt 长度噪声。'
+  source: 'vLLM #52741（2026-08-18 open，v0.24.0 Qwen3.6-27B-FP8 TP=2，5 trials/arm 对照）。https://github.com/vllm-project/vllm/issues/52741'
+  behavior: 无 crash、`tool_calls` 空——**静默的 agent 功能失效**（调用化为 content 文本）。属「服务端控制字段 × prompt 渲染边界穿透」**新子签名**：协议控制平面与数据平面（模型可见文本）的边界泄漏。
+  trigger_surface: vLLM；/v1/chat/completions + tools + 任一 strict 值（含显式 false）
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 分词/模板：缺陷只出现在 tools 渲染进 chat template 的路径（原文“被透传进 apply_chat_template() 并序列化进模型可见的 <tools> JSON 块”），rules“功能域优先”中 分词/模板 是列明的功能域，优先于泛化的 API/前端。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

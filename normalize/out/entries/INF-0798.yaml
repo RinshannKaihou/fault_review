@@ -1,0 +1,55 @@
+id: INF-0798
+legacy_ids:
+- '8.14'
+slug: vllm_dspark_swa_index_width_flashinfer_mla_sparse_crash
+aliases: []
+title: vLLM DSpark 与 FlashInfer SWA 索引宽度不符致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: DSV4 sparse MLA SWA 元数据
+  behavior: DSpark draft 按更宽的 noncausal_index_width 分配 decode_swa_indices，FlashInfer DSV4 sparse MLA 建索引元数据时仍按 window_size reshape。
+effect:
+  objects:
+  - 可用性/进度
+  detail: DeepSeek-V4-Pro-DSpark + FLASHINFER_MLA_SPARSE_DSV4 下抛 RuntimeError（如 shape '[7, 128]' invalid for input of size 1792），非静默。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；DeepSeek-V4-Pro-DSpark + `FLASHINFER_MLA_SPARSE_DSV4`
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51042
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（SWA 索引宽度在 draft 与 FlashInfer 间不一致 → reshape crash） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: vLLM DSpark non-causal draft batch 用 `noncausal_index_width`（比 `window_size` 宽）分配 `decode_swa_indices`，但 FlashInfer DSV4 sparse MLA 的 `_build_sparse_index_metadata` 仍 reshape / 传入 `self.window_size` → 维度不匹配。例：`shape '[7, 128]' invalid for input of size 1792`（1792 = 7×256，实际宽度应为 `noncausal_index_width=256` 而非 `window_size=128`）。修复：在 `DeepseekSparseSWAMetadata` 中新增 `decode_swa_width` 字段，在 SWA builder 中设为 `window_size` 或 `noncausal_index_width`，FlashInfer 与 ROCm ragged 路径均使用该字段。
+  source: 'vLLM PR #51042（2026-08-04 open）。组件：FlashInfer MLA sparse DSV4 + DSpark non-causal draft。https://github.com/vllm-project/vllm/pull/51042'
+  behavior: 'crash（RuntimeError: invalid reshape），非静默。DSpark non-causal draft + FlashInfer MLA sparse DSV4 下 SWA 索引宽度不一致 → reshape 维度不匹配。属「推测解码 draft 与注意力 backend 间索引宽度契约不一致 → crash」新子签名。'
+  trigger_surface: vLLM 主路径；DeepSeek-V4-Pro-DSpark + `FLASHINFER_MLA_SPARSE_DSV4`
+  discovery: 2026-08-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 算子/内核 vs 解码/采样：原文修复全部落在 attention backend（DeepseekSparseSWAMetadata 新增 decode_swa_width、SWA builder、FlashInfer 与 ROCm ragged 路径），按“修复要改哪里”定为 算子/内核；DSpark non-causal draft 是触发条件（rule 6）。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

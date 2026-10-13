@@ -1,0 +1,63 @@
+id: INF-0829
+legacy_ids:
+- '8.43'
+slug: vllm_ds32_sparse_mla_short_prefill_dense_dispatch_capability_mismatch
+aliases: []
+title: vLLM DSV3.2 短 prefill 能力协商错配致输出重复 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: DeepseekV32Attention
+  - subsystem: 算子/内核
+    stack: vllm
+    component: sparse MLA 元数据 dense 派发
+  behavior: 短 prefill 时 sparse-MLA 元数据按后端能力选 dense MHA、让 indexer 跳过 top-k，但 DeepseekV32Attention 只走 MQA，读到被清空的全 -1 top-k buffer。
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: DeepSeek-V3.2 架构（含 GLM-5.2-NVFP4 TP=4）在纯 prefill 序长 ≤ index_topk 且超过后端 decode 阈值时，无 crash，输出静默退化为重复 token。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；DeepSeek-V3.2 架构（含 GLM-5.2 注册路径）+ sparse MLA + 短 prefill（seq_len ≤ index_topk）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52512
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（后端能力声明 dense prefill、模型 wrapper 只实现 MQA → 消费清空的 all-(-1) top-k buffer，输出退化为重复 token） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '通用 sparse-MLA 元数据路径在 prefill 序长 ≤ `index_topk` 时可选 dense MHA、并允许 sparse indexer 跳过 top-k 打分；但 `DeepseekV32Attention` 只调 `forward_mqa`、不执行 dense-MHA 后端——MQA 于是消费被清空的 all-`-1` top-k buffer。纯 prefill 超过后端 decode 阈值时 GLM-5.2 输出退化为重复 token（静默）。修复（PR #52512）把 dense-prefill 能力从后端级下放到模型层：NVIDIA DeepSeek-V3.2 wrapper 声明 MQA-only，短 prefill 保持 top-k MQA、indexer 不再宣告 dense-MHA 跳过。与 #51395（仅 SM120 后端）、#52046（PCP 路径）、#49790（路由不修派发）均不重复。'
+  source: 'vLLM PR #52512（2026-08-16 open，bug/deepseek）。GLM-5.2-NVFP4 TP=4 复现。https://github.com/vllm-project/vllm/pull/52512'
+  behavior: 无 crash。短 prefill（≤ index_topk）后**输出静默退化为重复 token**——能力协商只查后端不查模型实现层的缝隙。属「能力协商的层级错配」**新子签名**。
+  trigger_surface: vLLM；DeepSeek-V3.2 架构（含 GLM-5.2 注册路径）+ sparse MLA + 短 prefill（seq_len ≤ index_topk）
+  discovery: 2026-08-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出内容
+        status: panel7
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

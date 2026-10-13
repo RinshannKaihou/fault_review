@@ -1,0 +1,50 @@
+id: INF-1107
+legacy_ids:
+- '11.84'
+slug: vllm_allowed_token_ids_bad_words_empty_intersection_silent_allowlist_break
+aliases: []
+title: vLLM allowlist+bad_words 空交集时采出非法 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: allowlist/bad_words 约束组合
+  behavior: allowlist 掩码与 bad_words 屏蔽按独立 pass 施加，交集为空时得到全 -inf logits 行；采样器对“无合法 token”无拒绝/报错路径，请求校验层也不检查两约束的一致性。
+effect:
+  objects:
+  - 输出内容
+  detail: Qwen3-0.6B 上 allow [264] 同时 ban 该 token，请求返回 HTTP 200 却生成 4 次不在 allowlist 的 token 0；两字段单独使用及非空交集对照均正常，温度 0 确定复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `allowed_token_ids` + `bad_words` 同时使用且两者交集为空（config：参数组合触发，依赖词表重合）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57986
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（vLLM 采样约束组合失效：`allowed_token_ids` + `bad_words` 各自有效、**组合使合法 next token 集为空时采样器静默破防**——Qwen3-0.6B 上 allow `[264]`（" a"）同时 ban `" a"`：vLLM 接受请求返回 HTTP 200，但生成 **token 0 四次（不在 allowlist）**。非空 `allowed_token_ids=[]` 请求；两字段各自单独使用均正常（allowlist-only 全 264、bad-words-only 正常避开 264）、非空交集对照组也正常，组合不被报为不支持。四路对照表复现（VLLM_USE_FLASHINFER_SAMPLER=0、enforce-eager，温度 0）） · Cov: `NEW`（多约束组合交集空时静默失效子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: 两条采样约束（allowlist mask、bad-words 屏蔽）按独立 pass 施加，交集为空时产生全 -inf logits 行；采样器对"约束后无合法 token"没有拒绝/报错路径，argmax/sampling 从全 -inf（或掩蔽残差）中取到越界默认值（token 0）。约束间一致性（allowlist ∩ banned = ∅）在请求校验层也未检查。
+  source: 'vLLM #57986（2026-09-21 open，含四路对照请求表（allow-only/ban-only/空交集/非空交集控制组）、repro 脚本附件、温度 0 max_tokens=4 确定性输出）。https://github.com/vllm-project/vllm/issues/57986'
+  behavior: 无 crash、无错误——**allowlist 语义静默失效**：成功响应（200）携带 allowlist 外的任意 token；依赖 allowlist 强制固定词表的应用（标签 ID 分类、路由选择、受限解码）会**把非法结果当有效结果接受**。与 10.47（xgrammar pattern+minLength 丢长度界——拒收方向）、10.73（结构化输出 bitmask 从不施加——不强制方向）构成约束栈三方向失效谱系：本条是**放飞方向**（约束存在但交集空时穿透），且位于采样器而非 grammar 层；post-forward 采样域，隐藏态监控原理上看不见。
+  trigger_surface: vLLM + `allowed_token_ids` + `bad_words` 同时使用且两者交集为空（config：参数组合触发，依赖词表重合）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

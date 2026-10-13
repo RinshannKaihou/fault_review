@@ -1,0 +1,51 @@
+id: INF-1043
+legacy_ids:
+- '11.19'
+slug: sglang_spec_decode_penalty_only_one_token_per_step
+aliases: []
+title: SGLang 推测解码下惩罚每步只累积一个 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: ScheduleBatch 惩罚累积
+  behavior: 推测解码每 step 提交 accept_len 个 token，但 cumulate_penalty_output_tokens 只把 output_ids[-1] 喂给 penalizer，其余 token 不进入惩罚状态且永不回填。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 平均接受长度为 L 时，frequency_penalty 有效强度约降为 1/L；min_new_tokens 按 step 计数使 EOS 被多屏蔽约 L 倍；presence/repetition_penalty 延迟激活。无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用；推测解码 + frequency/min_new_tokens/presence/repetition penalty
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33643
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（推测解码下惩罚只按 1 token/step 累积，应为 accept_len） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: decode step 在推测解码启用时提交 `accept_len` token，但 `ScheduleBatch.cumulate_penalty_output_tokens` 只喂 `req.output_ids[-1]` 给 penalizer——每 step 一个 token。剩余 accepted token 不进入惩罚状态且永不回填。设平均接受长度 `L`：(1) `frequency_penalty` 经 `scatter_add_` 累积，有效强度变 ~`nominal/L`；(2) `min_new_tokens` 按 decode step 而非 token 计数 → EOS 被 mask ~`L`× 更久（非弱化惩罚而是错误硬约束）；(3) `presence_penalty`/`repetition_penalty` 用幂等 `scatter_`，丢弃 token 只延迟激活而非永久丢失。
+  source: 'SGLang PR #33643（2026-08-05 open）。组件 `ScheduleBatch.cumulate_penalty_output_tokens`。https://github.com/sgl-project/sglang/pull/33643'
+  behavior: 无 crash、无 NaN。`frequency_penalty` 弱化 `L` 倍；`min_new_tokens` 错误延长 EOS 抑制；`presence/repetition_penalty` 延迟激活。属「推测解码 accept_len 与惩罚累积不匹配 → 采样行为静默错误」新子签名——post-forward 结构性盲点。
+  trigger_surface: SGLang 专用；推测解码 + frequency/min_new_tokens/presence/repetition penalty
+  discovery: 2026-08-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,54 @@
+id: INF-1146
+legacy_ids:
+- '12.30'
+slug: vllm_lora_target_modules_filter_mismatch_silent_base_model_serving
+aliases: []
+title: vLLM LoRA 校验与应用过滤器不一致致静默服务基模型
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: LoRA 加载校验与模块匹配
+  behavior: Worker 侧 _load_adapter 按未过滤的 supported_lora_modules 校验，manager 侧建模块时却按 target_modules 过滤，set_lora 作用于零层。
+effect:
+  objects:
+  - 输出内容
+  detail: --lora-target-modules qkv_proj 下加载 MLP-only adapter：校验通过、激活成功、/v1/models 列出，但请求 HTTP 200 返回与基模型逐字相同的输出，无错误无警告；不设该参数则正常生效。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `--enable-lora --lora-target-modules <list>` + adapter 权重不覆盖所列模块（config 组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55193
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1144
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（`--lora-target-modules qkv_proj` 下 MLP-only adapter（只有 `mlp.down_proj` 权重）**通过校验、成功激活、广告为 served model**——但 `set_lora` 被调用在零层上：对该 adapter 的每个请求 HTTP 200 返回**未修改的基模型输出**（与基模型逐字相同），无错误无警告；根因是校验与应用用不同过滤器：`WorkerLoRAManager._load_adapter` 对 `expected_lora_modules`（来自未过滤的 `supported_lora_modules`，不查 `lora_config.target_modules`）验证，`LoRAModelManager._match_target_modules` 创建模块时再加 `is_in_target_modules` 检查——两者脱节） · Cov: `var:vllm_unload_lora_adapter_frontend_only_engine_state_leak`（12.28 控制面与引擎 LoRA 状态不同步族） · 触发 `config` · 置信度 `verified`'
+  mechanism: validation 路径与 application 路径的模块过滤器不一致——adapter 通过了更宽松的 worker 侧校验（不看 target_modules 过滤），到 manager 侧 stricter 匹配时零层命中；`activate_adapter()` 报成功、`/v1/models` 列出该 adapter、serving 正常进行。fuzzer 发现。对照实验：无 `--lora-target-modules` 时同 adapter 正常应用（输出与基模型显著不同）。
+  source: 'vLLM #55193（2026-09-02 open，Qwen3-0.6B rank-8 PEFT 28 层 MLP-only adapter 双臂对照、fuzzer + LLM co-authored）。https://github.com/vllm-project/vllm/issues/55193'
+  behavior: 无 crash、HTTP 200——**静默服务基模型**：用户以为在用微调 adapter，实际拿到原始模型输出（A/B 对照中 B 与基模型输出逐字 identical）；对依赖 adapter 做任务定制的生产部署是正确性黑洞（无任何可观测信号区分"adapter 生效"与"零层命中"）。
+  trigger_surface: vLLM + `--enable-lora --lora-target-modules <list>` + adapter 权重不覆盖所列模块（config 组合即触发）
+  discovery: |-
+    2026-09-03 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

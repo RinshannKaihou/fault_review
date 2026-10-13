@@ -1,0 +1,53 @@
+id: INF-0806
+legacy_ids:
+- '8.22'
+slug: sglang_unified_memory_dspark_page_zero_int32_wrap_nan
+aliases: []
+title: SGLang 统一内存池+DSPARK：页未清零与 int32 回绕致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: 统一内存池页分配与 CuTe slot 索引
+  behavior: 统一内存池分配页时未正确清零 recurrent state slot；CuTe kernel 的 slot-stride 索引用 int32，大 batch 下回绕导致读取错误 state。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 开启 --enable-unified-memory 并使用 DSPARK chain 推测解码时产出 NaN，最终 crash 或静默 NaN 传播；Kimi-K3（TP8）与 Kimi-Linear-48B 端到端验证。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；`--enable-unified-memory` + DSPARK chain 推测解码
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: subsystem 取最接近的 KV缓存、effect 取 KV状态：缺陷在 recurrent state 池的分配与索引，不严格属于 KV；希望 KV缓存/KV状态 释义扩展为“KV/循环状态”，或新增对应值。
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33974
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（统一内存 + DSPARK：page hand-out 清零 + CuTe int32 slot-stride 回绕→NaN） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 统一内存池上接 DSPARK 推测解码的两个 NaN/损坏根因——(1) page hand-out 清零（分配页时未正确清零 recurrent state slot）；(2) CuTe int32 slot-stride 回绕（slot stride 索引用 int32，大 batch 下回绕致错误 state 读取）。两者均产出 NaN。修复把 DENSE write-loc fill 扩展到 `is_target_verify()` 并用 kernel 真实契约替换 blanket contiguity assert。
+  source: 'SGLang PR #33974（2026-08-07 open）。Kimi-K3（TP8, 2x4 GB300）、Kimi-Linear-48B（TP1 x8 B300）端到端验证。https://github.com/sgl-project/sglang/pull/33974'
+  behavior: NaN（最终 crash 或静默 NaN 传播）。属「统一内存池 + 推测解码的 recurrent state 分配/索引」签名——与已编目 SGLang 统一内存族同族，新根因（page 清零 + int32 wrap）。
+  trigger_surface: SGLang；`--enable-unified-memory` + DSPARK chain 推测解码
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

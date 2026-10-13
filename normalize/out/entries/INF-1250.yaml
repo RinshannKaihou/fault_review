@@ -1,0 +1,56 @@
+id: INF-1250
+legacy_ids:
+- K4.3
+slug: cacheblend_chunkboundary_crossattn_miss
+aliases: []
+title: CacheBlend 式 RAG chunk KV 全量复用缺失跨块交叉注意力
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: 非前缀 RAG chunk KV 复用
+  behavior: 各 RAG chunk 的 KV 独立预计算后拼接复用，非前缀 chunk 的 K/V 从未编码对前序 chunk 的 cross-attention；跳过 CacheBlend 选择性重算时缺失全部 chunk 间交叉项
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 多 chunk RAG 回答相对完整预填充参考质量下降，错误集中在需要跨 chunk 整合信息的问题上；对 batch 结构不敏感
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: 非 vLLM 一等实现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2405.16444
+  kind: arxiv
+relations: []
+original:
+  category: KV4
+  section: KV §4 cross-request（跨请求，缓存键 / 汏染）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: 每个被检索到的 RAG chunk 的 KV 是各自独立预计算、事后再拼接的；由于每个 chunk 在预填充时看不到其他 chunk，缓存下来的「非前缀 chunk」的 K/V 从未编码过对前序 chunk 的 cross-attention → 复用这些 KV 的前向缺失全部 chunk 间交叉项。可复现的故障形态 = 论文里的 "Full KV reuse" 基线，即跳过 CacheBlend 的选择性重算（selective recompute）。
+  source: CacheBlend arXiv:2405.16444（EuroSys'25 Best Paper）。
+  behavior: 源文档未给出独立的「行为效应」条目；按机制，多 chunk RAG 回答相对完整预填充参考出现质量下降，错误集中在需要跨 chunk 整合的问题上。
+  trigger_surface: 非 vLLM 一等实现
+  signature: off-manifold（infra_off），但在空间上高度局部化：chunk 边界附近以及 query token 位置的 post-attention 状态相对完整预填充参考偏离。捕获者：trajectory（逐位置轨迹偏离在边界/query 位置尖峰）、geometric（本应非零的跨块 attention mass 接近零——是「缺失」而非「扰动」）。漏检者：任何对位置取平均的 statistical / spectral 指标——绝大多数位置的状态是完全健康的，全局矩被健康位置稀释；也漏检 cheap 的 batch-invariance 轴（该故障对 batch 结构不敏感）。
+  repro: 两遍捕获-拼接。先把 prompt 切成 chunk，逐个单独前向并抓取各自的 K/V；再做一次全长前向，用单个 `self_attn` pre-hook 把非前缀 chunk 的 cached K/V 整段替换为「孤立预填充」版本。检测参考是同一 prompt 的完整预填充轨迹。
+  locus: '`cross-request`'
+  priority: '`medium`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

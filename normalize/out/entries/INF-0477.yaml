@@ -1,0 +1,50 @@
+id: INF-0477
+legacy_ids:
+- '6.84'
+slug: vllm_kimi_k3_kda_recurrent_kernel_full_cudagraph_capture_fault
+aliases: []
+title: vLLM KDA 算子被 FULL cudagraph 内联致 GPU 故障
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: FULL 模式 eager-break 快路径
+  behavior: eager_break_during_capture 的 FULL 快路径把被装饰调用内联进 graph，使非 capture-safe 的 KDA recurrent kernel 被捕获进 FULL graph
+effect:
+  objects:
+  - 可用性/进度
+  detail: Kimi-K3 在 FULL_AND_PIECEWISE 下跑 FULL uniform-decode batch（如 spec-decode verify）时，capture/replay 出现 GPU Memory access fault；target-only cudagraph 正常。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；Kimi-K3 KDA + FULL cudagraph + spec-decode verify path
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52205
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（KDA recurrent kernel 被 FULL cudagraph fast-path inline 后 GPU memory access fault） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: Kimi-K3 KDA op（`KimiK3DeltaAttention._forward`）装饰 `@eager_break_during_capture`——recurrent kernel（`fused_recurrent_kda`/`chunk_kda_with_fused_gate`/`causal_conv1d_update`）非 cudagraph-capture-safe。但 `eager_break_during_capture` 的 FULL runtime-mode fast-path 将被装饰的调用 **inline 到 graph 中**。当 FULL uniform-decode batch 运行 KDA（如 `FULL_AND_PIECEWISE` 下 spec-decode verify 路径），recurrent kernel 被捕获到 FULL graph，GPU fault during capture/replay。target-only cudagraph（query_len=1 decode, no spec）正常——graph 本身 sound，fault 专属于 KDA 被 FULL mode inline。
+  source: 'vLLM #52205（2026-08-13 open PR）。Kimi-K3 TP8 MI355X（gfx950），`--moe-backend aiter`，DSpark GQA draft。https://github.com/vllm-project/vllm/pull/52205'
+  behavior: '`Memory access fault by GPU node-N ... Reason: Unknown` during FULL cudagraph capture/replay。修复：给 `eager_break_during_capture` 加 opt-in `always_break=True`，KDA op 在 FULL mode 也 break to eager。'
+  trigger_surface: vLLM；Kimi-K3 KDA + FULL cudagraph + spec-decode verify path
+  discovery: 2026-08-13 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

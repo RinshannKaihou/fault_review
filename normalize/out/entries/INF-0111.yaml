@@ -1,0 +1,50 @@
+id: INF-0111
+legacy_ids:
+- '1.112'
+slug: ttmetal_prefill_reference_bf16_rope_table_pcc_position_decay
+aliases: []
+title: prefill 验证参考用 bf16 RoPE 表致 PCC 随位置衰减
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: tt-metal
+    component: deepseek_v3_d_p 参考 RoPE 表
+  behavior: prefill PCC 验证的 torch 参考从 bf16 实例化的参考模型读取 RoPE 表，inv_freq 成为 bf16 buffer（0.75 vs 真值 0.7498942），低位在后续 .float() 前已丢失。
+effect:
+  objects:
+  - 测试判定
+  detail: 长序列 PCC 检查中 KVPE cache 的 PCC 随位置线性衰减（0.9976@1024 → 0.9462@5120），设备实现可能正确却被判失败、像设备 rope kernel bug；q/k 共享错表使 attention 输出 PCC 仍约 0.99，掩盖来源。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal DeepSeek 家族 prefill 验证管线 + 长序列 PCC 检查（CI 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54516
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（prefill PCC 验证的 torch 参考从 bf16 实例化模型取 RoPE 表——inv_freq 成为 bf16 buffer（0.75 vs 真值 0.7498942），后置 `.float()` 无法恢复已丢的低位；相位误差随位置**线性增长**，KVPE PCC 0.9976@1024 → 0.9462@5120，读起来像设备 rope kernel bug 但不是） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: DeepSeek 家族 prefill 参考路径（`models/demos/deepseek_v3_d_p`）从已实例化参考模型读 rotary 表；参考以 bfloat16 实例化，`inv_freq` 因此是 bf16 buffer——每维 ~4.4e-4 频率残差，相位误差随位置线性放大。误差只打在 KVPE cache 的 rotary 半边；q/k 共享同一错表，q·k 中误差相消故 attention 输出 PCC 仍 ~0.99——掩盖了缺陷来源。「以 fp32 求值」不解决问题：低位在 upcast 前已丢。Mistral Small 4 119B prefill bring-up（#53688）中发现，影响一切 MLA 变体的长上下文验证。
+  source: 'tt-metal #54516（2026-08-27 open，含 1024/5120 token PCC 实测与 q/k 相消分析）。https://github.com/tenstorrent/tt-metal/issues/54516'
+  behavior: 无 crash——**验证参考自身精度缺陷**导致的假阴性：设备实现可能正确而 PCC 随长度衰减，把工程引入错误方向（追查不存在的设备 bug）。属「**参考实现的 dtype 精度随位置累积**」新子签名：与 1.105（验证容差假阳性）同为验证器侧缺陷但本条在参考数据源、且误差随序列长度系统性增长。
+  trigger_surface: tt-metal DeepSeek 家族 prefill 验证管线 + 长序列 PCC 检查（CI 可触发）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

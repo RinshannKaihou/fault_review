@@ -1,0 +1,61 @@
+id: TRN-0164
+legacy_ids:
+- MOE.15
+slug: sft_aux_loss_scaled_by_worldsize_and_gas
+aliases: []
+title: trl SFT 的 MoE aux loss 被卡数与累积步双重放大
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: trl
+    component: SFTTrainer 的 aux loss 缩放
+  behavior: compute_loss 把微批级 aux loss 并入 token 归一的 CE 后再乘 num_processes：aux 项未除以卡数；用 num_items_in_batch 时又不除以累积步，跨微批被求和。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 无 crash；aux 项放大 num_processes × gas 倍，router 更新实测 1 GPU 为 4.94、2 GPU 为 9.88、2 GPU+gas2 为 19.76，修复后均为 4.94；aux 系数效果随并行配置漂移。DPO/KTO 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/pull/7570
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0044
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `sft` · Cov: `var:ddp_normalization_shrinks_aux_loss_grad_dp_factor` · 置信度 `verified`'
+  mechanism: 'trl `SFTTrainer.compute_loss` 把 MoE aux loss 折进按 `num_items_in_batch`（token 归一）的 CE loss 后**再乘 `num_processes`**：aux 项是 per-micro-batch 均值——(1) DDP 把 CE 平均回去但 aux 项从未除以 world size → 放大 `num_processes` 倍；(2) 用 `num_items_in_batch` 时 `Trainer` 不再除以梯度累积步 → aux 项又被跨 micro-batch **求和**。合计放大 `num_processes × gas` 倍（2 GPU + gas 2 = 4×）。修复（PR #7570，2026-10-08 merge）= aux 项在世界尺寸缩放**之后**加入并除以累积步（GRPO/RLOO/AsyncGRPO 本就如此；DPO/KTO 无 `num_items_in_batch` 不受影响）。'
+  source: 'trl PR #7570 / issue #7569（2026-10-05；4× 单例 router-update 实测表：1 GPU batch4 = 4.94 (1×)、2 GPU batch2 = 9.88 (2×)、2 GPU batch1+gas2 = 19.76 (4×)，修复后均 4.94；回归测试 `test_aux_loss_does_not_scale_with_gradient_accumulation` 主线挂修复过；2×B300）。https://github.com/huggingface/trl/pull/7570'
+  behavior: 无 crash——多卡 SFT 的 MoE 负载均衡项按 world size 与累积步**双重放大**：router 收到的 aux 梯度强度随并行配置漂移（8 卡 gas 4 = 32×），`router_aux_loss_coef` 的语义跨配置不可比，路由被过度推向均衡、可能伤专家特化。与 PAR.16（Megatron global_aux_loss 梯度经 DDP AVG 缩小 DP×）为**同失效面的两个方向**：那边缩小、这边放大，同根「aux loss 与 DDP/world-size 归一约定脱钩」；与 MOE.14（aux coef 静默 no-op）同为 trl SFT MoE aux 链路的配置-执行断裂。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+        status: panel7
+    uncertain:
+    - subsystem
+    - effect

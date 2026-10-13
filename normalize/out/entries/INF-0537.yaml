@@ -1,0 +1,54 @@
+id: INF-0537
+legacy_ids:
+- '6.144'
+slug: vllm_mamba_align_state_materialization_lookup_cap_mismatch
+aliases: []
+title: vLLM align 模式 Mamba 前缀缓存物化点与查找上限错配致零复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: align 模式状态物化与查找上限
+  behavior: align 模式状态仅在 chunk 末物化，而查找上限为 num_tokens−1，唯一深位状态常越界；推测解码 back-off 按 16-token block 设计，align block 却为 544–2128。
+effect:
+  objects:
+  - 性能/资源
+  detail: sibling 共享 4278 token 中 2000 时复用为 0，精确块对齐的逐字节重复请求也零命中；eagle/mtp 等推测家族每次额外放弃一整块前缀，GB10 实测 warm prefill 慢约 9×；无错误、无日志，只有命中率计数器能暴露。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid GDN/Mamba 模型 + align cache mode（含/不含推测解码）+ 部分共享或精确块对齐的前缀
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53479
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（align-mode Mamba 前缀缓存：状态只在 chunk 末物化且查找上限为 num_tokens−1——安静 prefill 的唯一深位状态恰好越过上限，sibling 部分共享与精确块对齐的完全重复均得零复用；eagle 回退按 16-token block 设计而 align block 为 544–2128，整个推测家族额外放弃一整块前缀） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`_mamba_block_aligned_split`（#52897 引入）两个耦合缺陷：(1) **状态物化稀疏**——align-mode 状态只在 chunk 末物化，一个安静的 prefill 只产生一个位于 prompt 深处的 chunk 末状态，共享少于该位置的 sibling 得到零复用（实测：共享 4278 token 中 2000 → **0**）；而**精确块对齐**的 prompt 其唯一状态恰好位于 `num_tokens`，超过查找上限 `num_tokens - 1`——**逐字节相同的重复请求也零命中**。(2) **投测回退过宽**——`last_cache_position -= block_size` 的 one-block back-off 为 16-token attention block 时代设计；align block 为 544–2128 token，`eagle/eagle3/mtp/dflash/dspark` 整个推测解码家族每次放弃一整个可复用块（GB10 生产实测：对齐 prompt 损失一半可复用前缀 + 一次额外冷 pass，warm prefill 慢 ~9×）。修复（PR #53479）让每个无内部 prefill checkpoint 的 chunk 停在下一个块边界物化状态，并删除不再必要的 back-off。'
+  source: 'vLLM PR #53479（2026-08-23 open，fixes #52897；CPU scheduler+manager harness 逐格量化测量）。https://github.com/vllm-project/vllm/pull/53479'
+  behavior: 无 crash、无错误、无日志——纯性能静默失效（正确性不受影响），与 6.126（priority 调度器下 align 快照结构性零命中）同族同症状但**根因在物化策略本身**而非调度器交互：物化点选择与查找上限是两份独立决策，无机制校验其相容性。属「**状态物化粒度 × 查找上限错配**」新子签名——缓存活性故障，只有效果计数器（命中率）能暴露。
+  trigger_surface: vLLM + hybrid GDN/Mamba 模型 + align cache mode（含/不含推测解码）+ 部分共享或精确块对齐的前缀
+  discovery: |-
+    2026-08-23 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - behavior

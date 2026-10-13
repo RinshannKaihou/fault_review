@@ -1,0 +1,59 @@
+id: INF-0824
+legacy_ids:
+- '8.40'
+slug: ttm_sdpa_fw_no_mask_deadlock_softmax_scale_mismatch_masked_nan
+aliases: []
+title: tt-train SDPA 无 mask 挂死、scale 不一致与反向 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: sdpa_fw/sdpa_bw kernel
+  behavior: sdpa_fw 的 None mask 分支无条件 apply/pop 一个 host 从不创建的 mask CB，validation 却放行；fw/bw softmax scale 不一致；sdpa_bw 对全掩码行分母为 0。
+effect:
+  objects:
+  - 可用性/进度
+  - 梯度
+  - 数值结果
+  detail: ring-attention 以 sdpa_fw(..., None) 调用时前向死锁或产出 garbage；Wormhole 上 fw/bw scale 不一致造成训练静默数值漂移；fully-masked 行（score 全 -inf）反向产生 NaN。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal；tt-train sdpa_fw `AttentionMaskType::None`（ring-attention）/ WH fw-bw scale / fully-masked rows
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53207
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（sdpa_fw no-mask 分支引用从未配置的 CB + fw/bw scale 不一致 + 全掩码行 NaN） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: tt-train `sdpa_fw_compute_kernel.cpp:194-224` 的 `#else`（`mask_type == None`）分支无条件调用 `apply_mask_on_reg(cb_attn_mask)` 与 `cb_pop_front(cb_attn_mask)`，但 host 侧对 None 从不创建该 CB（program_factory.cpp:401 以 `mask_type != None` 守卫）、reader 从不读 mask tile——`cb_wait_front` 等待一个永不 push 的 CB → **死锁或 garbage**；validation 却接受 None（bw kernel 有正确的 scale-only `#else`，fw 没有）。同 issue 另报 Wormhole 上 sdpa 前向/反向 **softmax scale 不一致**、`sdpa_bw` 在 fully-masked rows 上产生 **NaN**（all -inf scores → softmax 分母 0）且验证覆盖有缺口。环形注意力（ring-attention）路径恰好以 `sdpa_fw(..., None)` 调用。
+  source: 'tt-metal #53207（2026-08-15 open，systematic audit of fused metal kernels）。https://github.com/tenstorrent/tt-metal/issues/53207'
+  behavior: 三种形态：no-mask 前向**挂死**（hang）；fw/bw 训练不一致的静默数值漂移；全掩码行反向 **NaN**。属「fused SDPA kernel 分支未实现但 validation 放行」**新子签名**——接口枚举值接受了从未落地的代码路径。
+  trigger_surface: tt-metal；tt-train sdpa_fw `AttentionMaskType::None`（ring-attention）/ WH fw-bw scale / fully-masked rows
+  discovery: |-
+    2026-08-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：算子/内核 / tt-metal（缺陷在 sdpa_fw/sdpa_bw compute kernel）、可用性/进度+梯度+数值结果、挂起 与独立判断一致；死锁/garbage、Wormhole fw/bw scale 不一致、全掩码行 NaN、ring-attention 以 None 调用均有原文依据；形式与长度合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

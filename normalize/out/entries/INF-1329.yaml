@@ -1,0 +1,54 @@
+id: INF-1329
+legacy_ids:
+- K10.18
+slug: sepllm_separator_set_tokenizer_mismatch_segment_drop
+aliases: []
+title: SepLLM 分隔符集与 tokenizer 不匹配致整段 KV 丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: SepLLM 分隔符保留式 KV 压缩
+  behavior: SepLLM 只保留各段尾部分隔符 token 的 KV；分隔符 id 列表取自错误 tokenizer 或输入分隔符稀疏时，某段没有任何被保留的分隔符，窗口溢出时整段被丢弃且不留摘要。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 模型表现得像 prompt 中段从未出现，代码、中文、base64 等分隔符稀疏输入上尤易触发；cache 长度坍缩到预算以下，中段注意力质量约为 0，存活 KV 范数不变。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2412.12094
+  kind: arxiv
+relations: []
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: SepLLM 把每个段落凝缩为其尾部的**分隔符** token；若复用了错误 tokenizer 的分隔符 id 列表，或输入本身分隔符稀疏（代码 / CJK / base64），某个段落就会没有任何被保留的分隔符。窗口溢出时该段落被整体丢弃且不留摘要——不是被压缩，而是彻底消失。
+  source: arXiv:2412.12094（ICML'25）。
+  behavior: 模型表现得像 prompt 中间那一段从未出现过，在分隔符稀疏的输入（代码、中文、base64）上尤其容易触发。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: 受输入分隔符密度与 tokenizer 匹配度门控，属 ambiguous。签名是**覆盖空洞**：`past_key_values` 长度远远坍缩到预算之下，序列中段注意力质量约 0，而存活 KV 的范数完全不变——**是缺失，而非扰动**。这使 geometric/spectral 这类"流形距离"度量系统性漏检（残存状态本身健康、在流形上），必须靠 statistical（注意力质量分布、cache 长度）与 cheap 族的结构性监控（缓存长度 vs 预期长度）来看见。
+  repro: 不运行 SepLLM 的压缩，而是 prefill 后一次性从**每一层**移除连续位置区间 `[floor(seg_start_frac*T), floor(seg_end_frac*T))`（必须跨层一致：解码 mask 只从第 0 层的长度构造一次）。签名包含覆盖空洞 / cache 长度坍缩，外加随之而来的位置移动（下一个解码 token 的 position_ids 变为**收缩后**的长度，所有存活的区间之后位置相对查询也被重新索引）。钩子挂在最后一个 decoder 层（此时所有层都已写入 prefill 行）。
+  locus: eviction-compression
+  priority: high
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

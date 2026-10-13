@@ -1,0 +1,53 @@
+id: INF-0116
+legacy_ids:
+- '1.117'
+slug: ttmetal_xlogy_bw_eq_nan_dead_where_clauses
+aliases: []
+title: xlogy_bw 用 eq 比较 NaN，NaN 守卫成死代码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.xlogy_bw NaN 守卫
+  behavior: xlogy_bw 以 where(eq(x, nan), nan, grad) 守卫两条梯度，而 IEEE 下 NaN≠NaN 使 eq 恒为 0，NaN 分支永不选中，4/19 个 dispatch 成为死代码。
+effect:
+  objects:
+  - 梯度
+  - 性能/资源
+  detail: 含 NaN 输入时 xlogy backward 梯度失去 NaN 传播语义，结果由其余 15 个 dispatch 决定；死 dispatch 白耗周期（P300 fp32 每次调用 27M core-cycles 花在入队）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent + `ttnn.xlogy_bw` + 含 NaN 输入（软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53872
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0053
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（xlogy backward 的两个 NaN 守卫 `where(eq(x, nan), nan, ...)` 因 IEEE NaN≠NaN 恒不选中——四个 dispatch 对结果无影响（死代码）；1.53 前向死守卫在 backward 的复刻） · Cov: `var:ttmetal_xlogy_dead_nan_guard` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`binary_backward.cpp:283` 的 `xlogy_bw` 对两条梯度各以 `ttnn::where(ttnn::eq(input_a, nan), nan, grad)` 守卫；`eq(x, nan)` 对一切输入（含 NaN 自身）为 0——实测 `eq(x, nan) -> [0,0,0,0,0,0,0,0]` 而 `isnan(x) -> [1,0,...]`——两个 where 永不选中 NaN 分支，4/19 dispatch 无法影响结果（性能层：P300 fp32 每调用 27M core-cycles 全花在入队上）。语义层正确写法应为 `isnan`。与 1.53（前向 `in1 == nan` 恒假守卫）同一模式在 backward 的重现。'
+  source: 'tt-metal #53872（2026-08-21 open，含 eq-vs-isnan 实测与 dispatch/cycle 计数）。https://github.com/tenstorrent/tt-metal/issues/53872'
+  behavior: 无 crash——NaN 输入下 backward 梯度失去 NaN 传播语义（守卫失效但结果由其余 15 个 dispatch 决定）；死 dispatch 白耗周期。1.53（xlogy(x,NaN) 返回 ~89 而非 NaN）的同族 backward 变体：**「用 == 比较 NaN」这一 API 误用在同一 op 的前向/ backward 双处独立出现**，提示代码库级模式。
+  trigger_surface: Tenstorrent + `ttnn.xlogy_bw` + 含 NaN 输入（软件 API 可触发）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

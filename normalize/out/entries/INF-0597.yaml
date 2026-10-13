@@ -1,0 +1,53 @@
+id: INF-0597
+legacy_ids:
+- '6.204'
+slug: vllm_hybrid_mamba_state_idx_engine_lowered_block_size_oob
+aliases: []
+title: vLLM mamba 状态列以降级 block_size 播种
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: add_request mamba 状态列播种
+  behavior: add_request 用 cache_config.block_size 播种 mamba 状态列，而该值已被引擎降为最小可缓存组 block size、远小于 mamba_block_size，以错误单位索引 block table。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: hybrid mamba（如 GLM-5.3-Flash）+ prefix caching + 小 block 可缓存 attention 组时：长前缀（≥8 mamba 块）越界致 Xid 31 IMA；短前缀静默恢复无关 block 的 recurrent state，毒化后续生成。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid mamba（GLM-5.3-Flash 等）+ prefix caching + 含小 block 可缓存 attention 组（drafter SW）（模型+缓存组合触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55600
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0524
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（`MambaHybridModelState.add_request` 以 `cache_config.block_size` 播种 mamba 状态列，但 `EngineCore._initialize_kv_caches` 此时已把 `cache_config.block_size` 重赋为 **min(可前缀缓存组 block size)**——hybrid 模型带小 block attention 组（DFlash2/EAGLE 式 drafter SW 组 block 64/1024）时该最小值远低于 `mamba_block_size`（GLM-5.3-Flash 为 7168），种子以错误单位索引 mamba block table：超过行宽处 `precopy_mamba_align_fused_kernel` 读 `block_table[src_col]` 越界 → Xid 31 illegal memory access；行宽内则**静默恢复无关 block 的 recurrent state**） · Cov: `var:vllm_mamba_align_precopy_state_idx_wrong_block_size_ima`（6.131 双 block-size 域混淆族） · 触发 `config` · 置信度 `documented`'
+  mechanism: '6.131 的引擎内生效版：非用户 CLI 覆盖引入分歧，而是引擎自身的 `_initialize_kv_caches`（core.py ~L298-305，其注释已警告小 block 组"会把全局 block_size 拖到真实分配器 block size 之下并使 mamba desync"）先降 block_size、后到的 add_request 用它播种。`_copy_mamba_state_block` 载入 `block_table_base + src_col` 无行宽检查。修复 PR #55601 改用 `cache_config.mamba_block_size` 播种（与 `MambaSpec.block_size`/preprocess 内核/block-table 宽度一致）；DGX Spark 实测 57,344 token（8 满 mamba 块）前缀命中从 HTTP 500/Xid 31 修复为 50,176 token 缓存续传，3 小时 133/133 请求零故障。'
+  source: 'vLLM #55600（2026-09-06 open，GLM-5.3-Flash KDA+sparse MLA，含三处代码定位与行宽推导）；修复 PR #55601（同日，mrv2 label）。https://github.com/vllm-project/vllm/issues/55600'
+  behavior: 双显形——长缓存前缀（≥8 mamba 块）Xid 31 crash（fail-loud）；短前缀**静默从无关 block 恢复 KDA/mamba state**（off-manifold 状态毒化后续生成）。6.131 之后双 block-size 域族第二例：用户显式覆盖与引擎自动降级是同一混淆的两个入口，说明 `cache_config.block_size` 作为跨域共享可变量本身就是缺陷面。
+  trigger_surface: vLLM + hybrid mamba（GLM-5.3-Flash 等）+ prefix caching + 含小 block 可缓存 attention 组（drafter SW）（模型+缓存组合触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

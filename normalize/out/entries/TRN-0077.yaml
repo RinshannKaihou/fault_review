@@ -1,0 +1,55 @@
+id: TRN-0077
+legacy_ids:
+- CKPT.28
+slug: swiglu_interleave_layout_unconverted_on_load
+aliases: []
+title: Megatron-LM 加载不做 SwiGLU 交织转换，通道错配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: megatron-lm
+    component: 原生 ckpt 加载 SwiGLU 交织转换
+  behavior: --moe-mlp-glu-interleave-size 32 让激活侧按交织解释 FC1 的 gate/up，但原生加载 contiguous ckpt 时不做对应的权重重排。
+effect:
+  objects:
+  - 模型权重
+  - 训练信号
+  detail: 无 crash、无 warning，SwiGLU 配对错误通道，训练照常推进；MXFP8+CuTeDSL 配置下 initial LM loss 约 2.2，正确路径约 0.2，报告者确认为布局错配而非 FP8 舍入。Megatron-Bridge 加载时显式转换，不受影响。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7576
+  kind: github_issue
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `pretrain/sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'Megatron-LM `--moe-mlp-glu-interleave-size 32` 改变激活侧对 FC1 输出的解释（gate/up 按 32 通道交织），但**不重排 ckpt 权重**——原生 Megatron-LM 加载 contiguous SwiGLU ckpt（`[all gate | all up]`）时不做 `[gate 0:32 | up 0:32 | gate 32:64 | ...]` 的 interleave 转换，SwiGLU 配对错误通道；grouped-weight load hook 只 stack/split 专家张量、不做该置换。Megatron-Bridge 已在 load 时显式 interleave / save 时 de-interleave（Megatron-Bridge #2841），原生路径（含 main）缺这步。'
+  source: 'Megatron-LM #7576（2026-09-22；Qwen3.5-35B-A3B text SFT、16×GB200、TP1/PP1/CP8/EP16、DCP、seqlen 131072；三配置对照 + Bridge 同 MXFP8/CuTeDSL/GroupedTensor 配置正常训练的反证——排除 single-weight / FP8 param gather 因素；launcher 已设 interleave flag）。https://github.com/NVIDIA/Megatron-LM/issues/7576'
+  behavior: 无 crash、无 warning——initial LM loss ~0.2（BF16+GroupedTensor 正确路径）→ ~2.2（MXFP8+CuTeDSL 两配置同样中招），训练正常推进但激活-权重通道系统错配（报告者明确：layout mismatch 而非 FP8 rounding）。与 CKPT.09（MXFP8 round-trip 丢 requant scale）同族「ckpt 边界的布局/量化契约断裂」，差异在这边 **BF16 同样中招的纯置换缺失**、不经量化放大；与 MOE.07 / RL-RO.09（量化专家布局 republish 破坏训推同步契约）共享「容器/引擎对权重布局假设不一致」病根——这边打击静态 load、那边打击在线 sync；「flag 改变解释约定但转换不在其职责内」的契约空洞与 CKPT.06（config 默认吞 CLI override）同型。
+  discovery: 2026-09-23 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

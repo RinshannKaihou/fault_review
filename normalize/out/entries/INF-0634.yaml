@@ -1,0 +1,52 @@
+id: INF-0634
+legacy_ids:
+- '6.241'
+slug: vllm_mamba_block_size_explicit_conv_ssm_forward_strided_slice_oob_engine_death
+aliases: []
+title: vLLM 显式 mamba-block-size 对齐切片为空致引擎死亡
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MambaMixer2 块对齐状态切片
+  behavior: conv_ssm_forward 在显式 mamba block size 下修正 first_aligned_chunk 的对齐换算在 chunk 边界算出越界起点，varlen_states 步长切片退化为零长度，与索引形状不匹配。
+effect:
+  objects:
+  - 可用性/进度
+  detail: hybrid Mamba2 模型（granite-4.0-h-tiny、Falcon-H1-Tiny）开显式 --mamba-block-size 与前缀缓存，8 并发长 prompt 首次调度即杀死 EngineCore，此后所有请求 HTTP 500 EngineDeadError。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid Mamba2 模型 + 显式 `--mamba-block-size` + prefix caching + 并发长 prompt（config：开关组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57266
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_hybrid_mamba_engine_block_size_post_division_seeding_oob
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM 0.27.1 `MambaMixer2.conv_ssm_forward`（`mamba_mixer2.py:963`）在显式 `--mamba-block-size`（如 32）+ 前缀缓存下：块对齐回退索引用 `num_computed_tokens_p_cpu` 计算的 `num_unaligned_computed_tokens` 去修正 `first_aligned_chunk`，随后 `varlen_states[first_aligned_chunk : +n_blocks_to_fill*chunk_stride : chunk_stride]` 切出**零长度** `[0,48,64,128]` 张量赋给 `[N,48,64,128]` 索引结果——`RuntimeError: shape mismatch ... cannot be broadcast`。异常在 EngineCore 内抛出、引擎死亡：8 并发长 prompt（~2500–3900 token）首次调度即杀引擎，此后**所有请求（含单 token "hello"）HTTP 500 `EngineDeadError`**——共享服务器全体租户受害。双厂商双架构复现（granite-4.0-h-tiny `[0,48,64,128]`、Falcon-H1-Tiny `[0,24,32,128]`，后者 dense 90M 排除 MoE/规模），N 取值 1/2/4/6） · Cov: `var:vllm_hybrid_mamba_engine_block_size_post_division_seeding_oob`（6.204 Mamba 状态块算术族） · 触发 `config` · 置信度 `verified`'
+  mechanism: 显式 block size 下 CPU 侧 token 计数与状态块索引的对齐换算在 chunk 边界处算出负/越界起点，切片退化为空集——空值张量与索引形状不匹配在赋值点 explode；缺陷位于共享 `MambaMixer2`，与具体模型无关。
+  source: 'vLLM #57266（2026-09-17 open，bug/quantization/kv-cache-manager，含双模型失败形状表、mamba_mixer2.py 源码级定位（first_aligned_chunk 计算块）、8 并发请求首次调度杀引擎的复现配置）。https://github.com/vllm-project/vllm/issues/57266'
+  behavior: crash（EngineCore 内 RuntimeError → 引擎死亡）且**爆炸半径为全租户**：EngineDeadError 使后续一切请求 500；单请求级表现为长 prompt 并发首轮即触发。6.204（hybrid mamba 引擎降 block_size 后播种 OOB）与 6.229（mamba 状态块分配不清零跨租户毒化）之后 Mamba 状态管理族新成员：本条在**显式 block size × 对齐回退切片**维度、fail 点是 shape mismatch 而非静默。
+  trigger_surface: vLLM + hybrid Mamba2 模型 + 显式 `--mamba-block-size` + prefix caching + 并发长 prompt（config：开关组合触发）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

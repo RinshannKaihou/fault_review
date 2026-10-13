@@ -1,0 +1,55 @@
+id: TRN-0115
+legacy_ids:
+- OPT.15
+slug: muon_scale_counts_alignment_padding_rows
+aliases: []
+title: Megatron Muon 谱缩放把 GTP 对齐填充行计入形状
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: Muon 谱缩放因子形状
+  behavior: GTP 行数不能等分时先补零行再切，Muon 谱缩放因子却按填充后的本地形状计算，把 padding 行计入逻辑行数，而非用 local_rows×gtp_size−pad_length。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: GTP 行数不对齐的矩阵 Muon 更新带 layout 相关缩放偏差（TP4×GTP2 [32,8]→逻辑 [20,8] 时 5.657 vs 4.472，约 27%）；无 crash、无 NaN，不同 GTP 度下有效更新幅度不同，跨并行度实验不可比。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7236
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0110
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `pretrain` · Cov: `var:muon_update_applied_per_microbatch` · 置信度 `verified`'
+  mechanism: Megatron GTP 沿 dim0 分片权重，行数不能等分对齐时**先补零行再切**（如 126 行 GTP8 补到 128 行；62 行补到 128 时部分 rank 全是 padding；TP×GTP 组合先切 TP 再逐片补齐）。这些零行是存储/通信需要的，但 Muon 的谱缩放因子按**填充后的本地形状**计算——把 padding 行计入逻辑形状：Newton–Schulz 仍用 padded 张量做 collective（正确），scale 却该用 `logical_rows = local_rows × gtp_size − pad_length`。实测谱缩放错值例：GTP2 `[8,4]`→逻辑 `[6,4]`：2.828→2.449；TP4×GTP2 `[32,8]`→`[20,8]`：5.657→4.472（~27% 偏差）。
+  source: 'Megatron-LM PR #7236（2026-09-11；三种 TP×GTP 布局的 spectral scale 对照 + 单测/功能测试）。https://github.com/NVIDIA/Megatron-LM/pull/7236'
+  behavior: 无 crash、无 NaN——凡 GTP 行数不对齐的矩阵，Muon 更新带一个 layout 相关的缩放偏差；同一模型在不同 GTP 度下有效更新幅度不同（跨并行度实验不可比）。与 OPT.10（每 micro-batch 重复 NS）/OPT.11（stage0 不跑 NS）/OPT.08（门控 fc1 联合正交化）同为 **Muon 契约破坏**家族新面：算法执行了、缩放的**形状语义**错——「通信填充不是逻辑参数」的契约在优化器层失守；与 PAR.11（GTP/EGTP）同属 GTP 引入的静默缩放面，那边打击梯度归约、这边打击更新缩放。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

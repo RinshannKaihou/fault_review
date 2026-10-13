@@ -1,0 +1,51 @@
+id: INF-0863
+legacy_ids:
+- '8.79'
+slug: flashinfer_recurrent_kda_cute_dsl_negative_ssm_index_wraparound_overwrites_pool_tail
+aliases: []
+title: FlashInfer recurrent_kda 负索引回绕覆写状态池尾槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: flashinfer
+    component: recurrent_kda dense 路径索引
+  behavior: cute-dsl 后端 dense T=1 路径在 Python 层用普通索引 gather/scatter 循环状态池，未跳过 ssm_state_indices 中表示 padding 的负条目，-1 回绕到池末槽并被写回
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: B200 上 ssm_state_indices=[-1,3]、5-slot 池时池末 slot 4 出现 delta 77.0/61.2 的意外写入；占用池尾槽的活请求后续 decode 状态被静默覆写，无报错；cake 后端与 cu_seqlens 路径均正常
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: flashinfer recurrent_kda decode + backend="cute-dsl" + dense T=1（无 cu_seqlens）+ 含 −1 padding 的 ssm_state_indices（partial：backend × 路径组合）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5042
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（flashinfer `recurrent_kda` decode 的 dense `T=1` 路径（无 `cu_seqlens`）+ `backend="cute-dsl"`：Python 层 gather/scatter 用普通索引访问 recurrent state pool，`ssm_state_indices` 的**负条目（文档化的 CUDA-graph padding 信号）wrap-around 而非跳过**——`-1` gather 最后一个 pool slot 为活跃行、再把 kernel 结果 copy back 覆写它：pool 末尾的任何活 cache slot 被静默覆写。B200 (CC 10.0)、2 序列 32 heads 实测：`ssm_state_indices=[-1,3]` 对 5-slot pool，cute-dsl dense 路径 slot 4 出现 delta 77.0/61.2（UNEXPECTED_WRITES=[4]）而 cake 后端与两个 backend 的 cu_seqlens（kernel 级 ssi + null_min）路径均不写——**只有 Python 层 dense 路径坏，每个 kernel 级路径都正确**） · Cov: `NEW`（Python 编排层负索引语义违反 kernel 契车子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`flashinfer/kda_kernels/recurrent_kda.py:2190` `state = initial_state[ssm_state_indices].contiguous()` 与 `:2561-2562` `initial_state[copy_back_indices] = state` 两条语句均不检查索引符号；文档化契约（`kda_decode.py:647-649` "0 is a valid slot; only negative slots are padding" + vLLM drop-in 保留 slot 0 为 null）只在 kernel 级路径（`null_min=0`）实现。'
+  source: 'flashinfer #5042（2026-09-09 open，含 per-slot max|delta| 对照矩阵：dense/cu_seqlens × cute-dsl/cake 四臂）。https://github.com/flashinfer-ai/flashinfer/issues/5042'
+  behavior: 无 crash——pool 尾槽的**活 recurrent state 被静默覆写**（受影响请求后续 decode 状态损坏）。6.165（SGLang KDA Triton backend 把 padding −1 重映射到可分配尾槽）的镜像条目：同为「padding 哨兵负索引落到活槽」，但方向相反——6.165 是重映射目标错、本条是 Python 负索引 wrap；且本条在 flashinfer 后端层。
+  trigger_surface: flashinfer recurrent_kda decode + backend="cute-dsl" + dense T=1（无 cu_seqlens）+ 含 −1 padding 的 ssm_state_indices（partial：backend × 路径组合）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

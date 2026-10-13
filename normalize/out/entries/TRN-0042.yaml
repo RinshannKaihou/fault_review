@@ -1,0 +1,56 @@
+id: TRN-0042
+legacy_ids:
+- PAR.14
+slug: explicit_pg_collection_group_fallback
+aliases: []
+title: Megatron 显式进程组多路径静默回落全局 MPU 组
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: MTP 重算/MoE/LLaVA/CP 进程组选择
+  behavior: 传入非全局的显式进程组集合时，MTP 重算、MoE padding_mask scatter、CrossAttention、LLaVA embedding 仍用全局组；attention 还把 cp 组覆写回 build-time 组。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 隐状态
+  detail: 无 crash/NaN：重算激活、SP all-gather、eval 分片拿到别的 replica 数据（4-rank 下 MTP 重算得 [0,1,12,13] 而非 [0,1,2,3]）；eval 首 batch 吻合、batch 2/3 误差 0.51/0.29，首 batch 掩盖问题。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron-Core 传入与全局 MPU 组不同的显式 `ProcessGroupCollection`（Bridge decentralized-PG / 训推不同并行度评估真实使用）时，五条路径静默回落到**全局 MPU 组**执行集体通信：① MTP full-recompute 的 TE checkpoint 路径与非 TE `tensor_parallel/random.py` split/gather 都取 `get_tensor_model_parallel_group()` 而非 `self.tp_group`（#7403 只修了相邻的 MTP 输入投影）；② GPT MoE `padding_mask` scatter 漏传 `group=`（gpt_model.py:369，同函数上方 hidden-state scatter 传了）；③ `CrossAttention` 的 `linear_q/linear_kv` 构造不传 `tp_group/pg_collection`（stock T5 decoder spec 可达）；④ `LLaVAModel` embedding scatter 无 group；⑤ attention forward 把 `pg_collection.cp` **覆写回 build-time CP 组**且变异调用方共享的 collection（df4996f9f 引入）。后果都是「同形状、混数据」：4-rank repro 中 MTP 重算恢复 `[0,1,12,13]` 而非 `[0,1,2,3]`；LLaVA 样本 A 变 `[0,1,0,1]`；eval batch 2/3 输出误差 0.51/0.29 而 batch 1 吻合 1.2e-7——首 batch 掩盖。
+  source: 'Megatron-LM #7452（ezyang 2026-09-17；Astra + spmd_types 对 `7a9e59de7` 的审计，findings 4/5/6/7/13，每条附 CPU/Gloo 2–4 rank 自包含 repro 与 checker 拒绝见证）。https://github.com/NVIDIA/Megatron-LM/issues/7452'
+  behavior: 无 crash、无 NaN——重算激活 / SP all-gather / eval 分片拿到**别的 replica 的数据**，错误随 batch 与路径组合静默滚动。与 DATA.09（caller mask 被库内默认值顶掉）同打击「调用方运行时上下文被全局默认覆盖」；与 PAR.06（`fsdp_size=1` mesh 混淆）同族「显式进程组语义与全局 MPU 状态分叉」，这边断在**集体通信的组选择**；⑤的 eval-CP 回退与 OBS.07（eval 混入训练态）表现面相邻但机制独立。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 跨请求/跨样本数据
+        status: panel7

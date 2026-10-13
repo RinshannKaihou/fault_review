@@ -1,0 +1,56 @@
+id: INF-0721
+legacy_ids:
+- '7.48'
+slug: vllm_int4_per_token_head_kv_quant_kernel_roundtrip_wrong
+aliases: []
+title: vLLM int4 per-token-head KV 写入内核往返错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: int4 KV 量化写入 Triton 内核
+  behavior: int4 per-token-head KV 写入内核的 nibble 打包/解包往返偏差远超容差；int8/fp8 分支正常，部分参数组合逐运行 pass/fail 翻转，提示位操作含未定义或竞态成分。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 单测确定性复现：head_size=64、num_kv_heads=1、num_tokens=42 时 54.7% 元素错配；head_size=128 或 num_kv_heads=4 时 pass/fail 翻转。线上启用该模式则写入 cache 的值即错，输出静默退化。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；`kv_quant_mode=INT4_PER_TOKEN_HEAD` + 该 Triton 内核（`pytest tests/quantization/test_per_token_kv_cache.py -k "int4-0-16-64-1-42"` 确定性复现）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53086
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（int4 per-token-head KV cache 写入内核 dequant 往返错误：确定性 54.7% 元素错配、最大绝对误差 6× 容差，且存在同代码逐运行 pass/fail 翻转的 flaky 形态） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '`triton_reshape_and_cache_flash_per_token_head_quant`（vllm.v1.attention.ops.triton_reshape_and_cache_flash）在 `kv_quant_mode=INT4_PER_TOKEN_HEAD` 分支（quant_min=-8.0/quant_max=7.0）的 dequant 往返（unpack nibbles → zero-point → scale → 逆 RHT）与 bf16 参考偏差远超断言容差（atol=rtol=0.5）：确定性失败 `[int4-0-16-64-1-42]`（head_size=64/num_kv_heads=1/num_tokens=42）每次 35/64（54.7%）元素错配、最大绝对差 3.05 @ (0,38)、最大相对差 3651 @ (0,52)；head_size=128 与 num_kv_heads=4 组合呈**同代码逐运行 pass/fail 翻转**（50.0%/58.2% 错配）。全部 int8/fp8 参数化与其余 int4 组合稳定通过——缺陷限于 int4 打包路径，flaky 形态提示位操作含未定义/竞态成分。'
+  source: 'vLLM #53086（2026-08-19 open，quantization label，H200，pytest 确定性复现命令）。https://github.com/vllm-project/vllm/issues/53086'
+  behavior: 单测层可见即拦截；若线上启用 int4 per-token-head KV 则**写进 cache 的值即错** → 注意力读取损坏 KV → 输出静默退化，无 crash、无 NaN。
+  trigger_surface: vLLM；`kv_quant_mode=INT4_PER_TOKEN_HEAD` + 该 Triton 内核（`pytest tests/quantization/test_per_token_kv_cache.py -k "int4-0-16-64-1-42"` 确定性复现）
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 为 量化 vs KV缓存：缺陷位于 int4 打包/解包与 dequant 往返（原文“缺陷限于 int4 打包路径”，int8/fp8 正常），属词表 量化 的“低位格式、量化 kernel”，维持 量化；与 INF-0705 同口径。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: INF-0011
+legacy_ids:
+- '1.11'
+slug: sfpu_exp_overflow_guard_missing
+aliases: []
+title: Quasar SFPU exp 丢失上下溢守卫返回静默垃圾值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: _sfpu_exp_fp32_accurate_
+  behavior: 把 2^i 直接写入 IEEE-754 指数字段，仅在 i+127∈[1,254] 时合法；Quasar 移植时丢掉了 Blackhole 原有的上溢→inf、下溢→0 两端守卫，越界时 i+127 溢出到符号位并被位移截断。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 指数越界时 exp 返回静默垃圾且常为负值，如 exp(-88.5)→-inf、exp(-100)→-4.3e33；exp 位于 softmax、GELU、SiLU 门控路径，负值会产生反号激活，可能翻转专家路由或注意力分布。无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal，非 NVIDIA 环境
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-30'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/51543
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off` · Cov: `NEW`（新子签名：SFPU 超越函数范围保护缺失） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: Tenstorrent Quasar `_sfpu_exp_fp32_accurate_` 用 `i = round(a/ln2)` 算 `exp(a) = 2^i · exp(f)`，并把 `2^i` 直接写入 IEEE-754 指数字段 `sfpi::as<sfpi::vFloat>((i + 127) << 23)`。这仅在 `i + 127 ∈ [1,254]` 时合法。越界时 `i + 127` 溢出到符号位并被 32 位位移截断为 9 位，结果是静默垃圾——且**经常为负值**：`exp(-88.5) → -inf`、`exp(-100) → -4.3e33`。Blackhole（移植来源）默认两端都守卫（overflow→inf，underflow→0），Quasar 把两个守卫都丢了。属于"**SFPU 超越函数范围保护缺失**"签名。
+  source: 'tt-metal #51543（2026-07-29 open，#51220 的 sub-issue item 3）、修复 PR #51544。https://github.com/tenstorrent/tt-metal/issues/51543'
+  behavior: exp 是 softmax、GELU、GLU/SiLU 门控的核心，这些在 LLM 每层都有。负值 exp 结果会让门控/softmax 产生反向符号的激活，可能静默翻转专家路由或注意力分布。无 crash、无 NaN，结果数字合理但符号/量级错误。
+  trigger_surface: Tenstorrent TT-Metal，非 NVIDIA 环境
+  signature: infra_off 的新子签名——"SFPU 超越函数范围保护缺失"。与 1.8/1.9 同属"硬件数学库静默错误值"族，但本条根因在**超越函数的指数域溢出保护缺失**而非比较/同步语义。若 exp 在 LLM 的 softmax/门控路径上，错误的负值激活会以"系统性符号反转/量级偏移"进入下游，可能表现为 statistical 族的 bulk-shift 或 trajectory 的 cos-drift。
+  repro: 不可软件复现——需要 Tenstorrent Quasar SFPU 硬件。可用软件层面近似：在 forward hook 中对 exp 输出在特定输入范围内施加负值/错误符号扰动，但这模拟的是效果而非硬件根因。
+  discovery: 2026-07-30 每日扫描，标注为新签名。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

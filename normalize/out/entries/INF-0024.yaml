@@ -1,0 +1,50 @@
+id: INF-0024
+legacy_ids:
+- '1.24'
+slug: ttmetal_tilize_pack_reconfig_missing_wrong_dtype_output
+aliases: []
+title: ttnn.tilize 缺 pack 格式重配置致输出字节流格式错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: retile kernel、pad reader
+  behavior: retile compute kernel 进入 tilize 前未调用 pack_reconfig_data_format 切换 packer 格式；padding reader 把任意偏移 L1 地址强转 uint32_t* 整字写入。
+effect:
+  objects:
+  - 数值结果
+  detail: tilize 同时改 tile 形状和 dtype（如 BFLOAT16→BFLOAT8_B）时，每个 tile 以输入格式打包，输出张量损坏；未填充行宽非 4 字节倍数（如 bf16 width=31）时静默丢尾部字节并覆盖最后的真实输入字节。无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal，非 NVIDIA 环境
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-03'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/pull/51903
+  kind: github_pr
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tilize 缺 pack 格式重配置 → 错误 dtype 字节流输出） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: retile compute kernel 进入 tilize 阶段前**未调用 `pack_reconfig_data_format`** 把 packer 目标格式从 `mid_cb`（输入格式）切换到 `out_cb`（输出格式）。当 `ttnn.tilize` 同时改变 tile 形状和 dtype（如 `BFLOAT16 → BFLOAT8_B`）时，每个打包进 `out_cb` 的 tile 都以**输入数据格式**发出 → 输出张量损坏。同一 PR 还修复 padding reader（`reader_unary_pad_dims_split_rows.cpp`）的未对齐列填充存储：把任意偏移 L1 地址强转 `uint32_t*` 写整字，当未填充行宽非 4 字节倍数（如 bf16 width=31 → 62 字节/行）时，整数除法循环少跑（**静默丢尾部字节**）且未对齐 32 位写覆盖最后的真实输入字节。
+  source: 'tt-metal PR #51903（2026-08-03 open，修复 #51215 的 findings 1 & 4；#51215 在 2026-08-02 扫描中曾列备选未合并，本 PR 给出具体根因后正式编目）。https://github.com/tenstorrent/tt-metal/pull/51903'
+  behavior: 无 crash、无 NaN。tilize 改变 dtype 时输出张量内容为错误格式的字节流；padding 路径静默丢尾字节/覆盖输入。属「tilize 缺 pack 格式重配置 → 错误 dtype 字节流输出」新子签名，是内核数据搬运层的静默正确性 bug。
+  trigger_surface: Tenstorrent TT-Metal，非 NVIDIA 环境
+  discovery: 2026-08-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

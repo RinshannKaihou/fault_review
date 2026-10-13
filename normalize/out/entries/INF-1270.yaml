@@ -1,0 +1,59 @@
+id: INF-1270
+legacy_ids:
+- K6.5
+slug: duoattention_retrieval_head_misclassified_streaming
+aliases: []
+title: DuoAttention 误判 retrieval 头为 streaming 头
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: DuoAttention 逐头类型门控
+  behavior: DuoAttention 的 per-head 门控把需要完整 KV 的 retrieval head 误分类为只保留 sink+近期窗口的 streaming head，裁掉其中段上下文 KV，摧毁该头的长程检索。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 原文按机制推断：长上下文中段信息的检索静默失败，该头无法把中段证据带入输出；上下文短于 sink+近期窗口时无可见影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2410.10819
+  kind: arxiv
+relations: []
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`model_on` · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: DuoAttention 用一个 per-head 门控把注意力头分为 retrieval head（需要完整 KV）与 streaming head（只需 sink + 近期窗口）；把 retrieval head 误分类为 streaming，会裁掉它的中段上下文 KV，摧毁该头的长程检索——一种头类型的预算错误分配。
+  source: DuoAttention arXiv:2410.10819。
+  behavior: 源文档未单列该字段；由机制可得——长上下文中段信息的检索静默失败（该头无法把中段证据带入输出），短上下文下无可见影响。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: model_on——被裁剪头的注意力质量折叠到 sink+recent，per-head 注意力熵坍缩，其 per-head 输出偏离全注意力，而**同层的兄弟头保持干净**。可捕获：per-head attention-output L2 偏离 + per-head 注意力熵（在 retrieval head 上），属于 geometric/spectral 的按头分解版本。会漏检：层级聚合指标与全局幅值探针；签名受上下文长度门控（上下文短于 sink+recent 窗口时无中段可裁）。
+  repro: prefill 时一次性、在层 L 上**仅对** `heads` 列出的 KV head，把前 `k_sink` + 后 `n_recent` 之外的 K/V 置零（把 streaming 模式套到错误的头上）。诚实近似：`heads` 是 KV-head 索引，本模型把 14 个 query head 分组到 2 个 KV head 上，因此裁掉一个 KV head 相当于一次性 stream 掉 7 个 query head——比 DuoAttention 的 per-query-head 门控更粗；驱逐用就地置零建模；只通过 decode 路径可见。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

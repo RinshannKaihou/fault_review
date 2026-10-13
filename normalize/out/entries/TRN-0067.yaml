@@ -1,0 +1,56 @@
+id: TRN-0067
+legacy_ids:
+- CKPT.18
+slug: resume_rebuilt_sampler_loses_epoch_seed
+aliases: []
+title: ms-swift resume 丢失 epoch 种子致样本重复与遗漏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: _patch_skip_first_batches
+  behavior: _patch_skip_first_batches 重建的 BatchSamplerShard 其 curr_seed 重置为 base_seed 且从未 set_epoch()，恢复后按 epoch-0 排列跳前 N 批。
+effect:
+  objects:
+  - 训练样本流
+  - 训练轨迹
+  detail: epoch≥1 内 resume 才暴露：resume“成功”、loss 正常甚至更低，已训样本重复计权、该 epoch 尾部样本从未见过；实测恢复后 86 步 per-step loss 与原 pass 的 Pearson 为 −0.23，模拟 81% 样本重复、15% 语料未训练。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10050
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0062
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `sft/pretrain` · Cov: `var:wrong_rng_object_checkpointed` · 置信度 `documented`'
+  mechanism: 'resume 路径重建 dataloader 时丢失 **epoch 维度**的采样种子。HF Trainer resume 顺序是先 `epoch_dataloader.set_epoch(epoch)` 再 `skip_first_batches(N)`；ms-swift 的 `_patch_skip_first_batches` 把后者替换成 `get_train_dataloader(skip_batches=...)`——新建 `BatchSamplerShard` 的 `curr_seed` 重置回 `base_seed`（= `data_seed`），没有任何代码对它调 `set_epoch()`：恢复的 dataloader 迭代的是 **epoch-0 排列**再跳前 N 批，而不是进行中 epoch 的排列。epoch 0 内 resume 时 `data_seed+0==data_seed` 天然无差，epoch≥1 才暴露。同库 #9685/#9902 已为其他路径修过同类 `set_epoch` 传播语义，patched 路径绕开了两个修复。'
+  source: 'ms-swift #10050（真实 run：Qwen3-8B 全参 SFT、zero3、4 epochs、两次 crash 后 resume——恢复后 86 步与原 pass 同权重同全局步的 per-step loss Pearson = **−0.23**、均值 0.1637→0.0791（重训已见样本）；模拟 81% 样本重复、15% 语料在该 epoch 从未训练；第二次数值 64%/24%）。https://github.com/modelscope/ms-swift/issues/10050'
+  behavior: resume「成功」、loss 正常下降（更低——重复样本再次拟合）；已训样本重复计权、该 epoch 尾部样本从未见过。与 CKPT.13（存错 RNG 对象→采样流从头重放）同族：那边 state_dict 存了与消耗进度无关的状态，这边**重建路径根本不传播 epoch**；与 CKPT.08（resume 静默跳 epoch）同为恢复的数据流语义不完整。
+  discovery: 2026-09-07 每日扫描
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

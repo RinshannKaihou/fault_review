@@ -1,0 +1,53 @@
+id: TRN-0082
+legacy_ids:
+- CKPT.33
+slug: explicit_ckpt_step_overridden_by_release_or_newer_nonpersistent
+aliases: []
+title: Megatron 显式 --ckpt-step 被自动发现逻辑覆盖
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: megatron-lm
+    component: checkpointing ckpt 选择逻辑
+  behavior: 显式 ckpt 选择有三处被覆写：真值检查吞掉 ckpt_step=0；tracker 为 release 时只改 iteration 不重置 release；non-persistent iteration ≥ 请求值时优先加载它。
+effect:
+  objects:
+  - 模型权重
+  - 指标/日志
+  detail: rollback 与按步评估静默加载错误 ckpt，无 crash 无警告：tracker=100 时请求 0 实选 iter_0000100，tracker 为 release 时请求 100 实选 release；数据进度与模型状态错配，评估指标归因到错误步。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-12'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/8110
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0056
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `shared` · Cov: `var:dead_or_shadowed_arg_silent_noop` · 置信度 `verified`'
+  mechanism: Megatron 显式 ckpt 选择 `--ckpt-step` 在三条路径上被静默覆写（`megatron/training/checkpointing.py`）：① `get_load_checkpoint_path_by_args` L353 与 `_load_base_checkpoint` L2224 都用 `getattr(args, 'ckpt_step', None)` 真值检查——**`--ckpt-step 0` 被吞**；② tracker `latest_checkpointed_iteration.txt` 含 `release` 时 `read_metadata` 返回 `(iteration, release=True)`，数字覆写只改 `iteration`、**不重置 `release`**，`get_checkpoint_name` 仍选 `release/` 目录；③ `_load_base_checkpoint` L2229 起 non-persistent iteration ≥ 显式请求值时优先加载 non-persistent ckpt——比请求值**更新**的非持久 ckpt 抢占显式选择的持久 ckpt。修复 = 真值检查改 `is not None`、显式请求时强制 `release=False`、显式请求优先于 non-persistent 发现。
+  source: 'Megatron-LM #8110（2026-10-10；CPU mock repro：tracker=100/请求 0 → 实选 `iter_0000100`、tracker=release/请求 100 → 实选 `release`；逐行引用 main@`4603a836`。本扫描对 raw main 源码 L353-354/L2224-2225/L2229-2236 逐行核验一致）。https://github.com/NVIDIA/Megatron-LM/issues/8110'
+  behavior: 无 crash、无警告——**故意 rollback 与按步评估加载了错误的 ckpt**：数据进度与模型状态错配（recovery workflow 的静默前提被破坏）、评估指标归因到错误步。与 CKPT.32（trl CLI resume 参数不转发）行为面同型「显式续训/回滚请求静默失效」，但断点在**选择器覆写**而非参数不透传；与 CKPT.31（FP32 重建分支 tag 不透传加载 later 版本）共享「自动发现机制压过显式请求」家族。任务影响未实测（mock repro 因果闭合）。
+  discovery: 2026-10-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

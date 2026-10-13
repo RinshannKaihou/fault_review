@@ -1,0 +1,57 @@
+id: INF-1097
+legacy_ids:
+- '11.74'
+slug: vllm_ngram_spec_decode_qwen3_tool_parser_argument_corruption
+aliases: []
+title: vLLM ngram 推测下 qwen3 tool parser 损坏工具参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: Qwen3EngineToolParser
+  behavior: ngram 推测解码的 draft/verify/回退边界与增量 tool parser 的流式解析窗口错位：回退重放时 parser 的部分事务状态与重放 token 流不一致，参数字段被跨事务重组。
+effect:
+  objects:
+  - 输出内容
+  detail: 同时启用 ngram 推测解码、qwen3_coder 类 tool parser 与 qwen3 reasoning parser 时，tool call 参数为空、键值折叠、函数名损坏或泄漏 XML 标签；模型推理已正确决定参数，关闭 ngram 即恢复。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + ngram speculative decoding + qwen3_coder/qwen3_xml/mimo tool parser + Qwen3.x（partial：spec × parser 组合）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-09'
+remarks: subsystem 缺“工具调用/推理输出解析器”：tool parser 属生成后的输出解析，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56077
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1052
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（`--speculative-config method:ngram` + `--tool-call-parser qwen3_coder`（`qwen3_xml`/`mimo` 别名同解析到 `Qwen3EngineToolParser`）+ `--reasoning-parser qwen3`：tool calls 频繁返回**空或损坏的参数**——`arguments == "{}"`（参数静默丢弃）、键值折叠（`{"command=ls": ""}`——参数值被折进 JSON 键）、函数名损坏（`"runshell command=\"ls\""`）、裸 XML 标签泄漏进参数串（`</command>`）。**非模型能力问题**：12/12 采样失败中模型的 reasoning trace 都已正确决定参数（`ls`/`pwd`/`git status`/`ps aux`）——parser 丢弃/损坏模型已正确产出的参数。Qwen3.8-27B/Qwen3.6-27B(-FP8)、v0.28.0 H100 单卡复现） · Cov: `var:trtllm_spec_decode_interior_control_token_rejection_silent_toolcall_drop`（11.28 推测解码 × tool-call 结构静默损坏族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: ngram 推测解码的 draft/verify/回退边界与增量 tool parser 的流式解析窗口交互：spec 回退重放时 parser 的部分事务状态与重放 token 流错位（与 11.28 的 acceptance 拆块、10.55 的 DSML 部分事务逃逸同域——spec × parser 边界），参数字段被跨事务重组。关闭 ngram spec 即恢复正常。
+  source: 'vLLM #56077（2026-09-09 open，含 12/12 reasoning-trace 对照证据、完整启动命令与症状四分类）。https://github.com/vllm-project/vllm/issues/56077'
+  behavior: 无 crash——**工具参数静默损坏**（空/折叠/名字坏/标签泄漏），agent loop 收到不可用 tool call；模型已正确决策，损坏纯在解析层。11.28（TRT-LLM spec acceptance 拆开控制块致空 tool_calls）之后 spec × parser 族第二例：本条在 vLLM ngram × qwen3 增量 parser、显形为参数破坏而非整体丢失。
+  trigger_surface: vLLM + ngram speculative decoding + qwen3_coder/qwen3_xml/mimo tool parser + Qwen3.x（partial：spec × parser 组合）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

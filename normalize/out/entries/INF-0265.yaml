@@ -1,0 +1,50 @@
+id: INF-0265
+legacy_ids:
+- '1.266'
+slug: ttmetal_datamovement_fp32_to_bf16_cast_truncates_rtz_vs_typecast_rne_split
+aliases: []
+title: 数据搬运 op 的 fp32→bf16 转换截断而非 RNE
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: 数据搬运 op 的 datacopy 路径
+  behavior: clone/copy/to_memory_config/重分片等数据搬运 op 带 dtype= 的 fp32→bf16 转换在 datacopy 路径直接截断尾数（向零舍入），不做 RNE。
+effect:
+  objects:
+  - 数值结果
+  detail: 约 50% 元素比 RNE 参照偏小一档，最大误差 1 ulp、平均带号误差 −0.5 ulp，Wormhole 与 Blackhole 一致；同一张量经 ttnn.typecast 或 from_torch 得 RNE 结果，不同入口数值不一致。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + 数据搬运 op 带 dtype= 的 fp32→bf16 设备侧转换（hw_specific；typecast/from_torch 路径免疫）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58371
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal 设备侧数据搬运 op 的 `dtype=` fp32→bf16 转换走**截断（round-toward-zero）**：`ttnn.clone(dtype=)`/`copy`/`to_memory_config(dtype=)`/`interleaved_to_sharded`/`sharded_to_interleaved`（`interleaved_to_sharded_partial` 共码路径同）五族对同一 fp32 张量产出**偏向零**的 bf16——1,048,576 随机值（符号随机、指数 2^-20..2^20、23 位尾数全随机）实测 **50.04% 元素偏离 RNE 参照、100% 等于截断、最大误差 1.0 ulp、平均带号误差 −0.5 ulp**，Wormhole 与 Blackhole（ttsim v1.10.11）完全一致；对照组 `ttnn.typecast` 与 host 侧 `ttnn.from_torch`（#19881 起）均为 round-to-nearest-even、与 `torch.Tensor.to(torch.bfloat16)` 一致——**同一张量经不同 op 入口得到不同 bf16 值**，且数据搬运结果带系统性向零偏置） · Cov: `NEW`（转换结果按代码入口分裂的舍入规则子签名；与 1.241（host/device packer 双入口 42.5% 分歧）、1.260（typecast 内部双舍入 tie away-from-zero）同"同一转换多入口数值分歧"域，但本条在**数据搬运 vs 显式转换的舍入模式（RTZ vs RNE）分裂**维度且带符号偏置） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 数据搬运 kernel 的 datacopy 路径直接截断尾数而不舍入；报告者附六 op × RNE 偏离率/RTZ 相等率/最大误差/平均带号误差对照表（双架构各跑 1M 值）。
+  source: 'tt-metal #58371（2026-09-29 open，含 1,048,576 值测量表、Wormhole/Blackhole 双架构一致性、typecast/from_torch 双对照组）。https://github.com/tenstorrent/tt-metal/issues/58371'
+  behavior: 无 crash——经由 clone/copy/重分片完成的权重或激活 dtype 转换**静默带 −0.5 ulp 平均偏置**（半数元素偏小一档）；同一数值因转换入口不同而不一致，使"typecast 校准后再经搬运路径重转"的管线自相矛盾。
+  trigger_surface: tt-metal + 数据搬运 op 带 dtype= 的 fp32→bf16 设备侧转换（hw_specific；typecast/from_torch 路径免疫）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

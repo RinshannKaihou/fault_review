@@ -1,0 +1,52 @@
+id: INF-0065
+legacy_ids:
+- '1.65'
+slug: ttmetal_pow_bf16_highside_overflow_wraps_to_nan
+aliases: []
+title: ttnn.pow bf16 路径高端溢出回绕为 NaN 而非 +inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.pow bf16 路径高端 guard
+  behavior: bf16/非 fp32 dest 的 pow 路径只对 z=y*log2(x) 做低端 clamp（z<-127），缺少 fp32 路径已有的高端 guard，z≥128 时 biased exponent 重建回绕而非饱和。
+effect:
+  objects:
+  - 数值结果
+  detail: 应为 +inf 的大结果返回 NaN，如 pow(2.0,128.0)、10.0**39.0、1000.0**15.0，无 crash；NaN 可在下游传播。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal；ttnn.pow + bf16 dest 路径 + 大指数（z>=128）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-12'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/pull/52707
+  kind: github_pr
+relations:
+- kind: var
+  target_raw: ttmetal_pow_relative_error_linear_growth
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（bf16 pow 路径 z>=128 时指数回绕为 NaN 而非饱和到 +inf） · Cov: `var:ttmetal_pow_relative_error_linear_growth` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 'bf16/non-fp32-dest pow 路径（`_sfpu_unary_power_21f_`/`_sfpu_binary_power_21f_`）只在低端 clamp `z = y*log2(x)`（`z < -127`），高端 `z >= 128` 时 biased-exponent 重建**回绕而非饱和**，导致有限的大结果返回 NaN。`ttnn.pow(2.0, 128.0)` → NaN（应 +inf）；`10.0**39.0` → NaN；`1000.0**15.0` → NaN。fp32 路径已有高端 guard（`v_if(out_exp >= 255) { y = infinity; }`），bf16 路径缺失。**与 #52675（1.59，已编目）互补**：#52675 是同一路径的**精度**问题（误差随指数线性增长 ~0.2%*|y|），本条是**溢出→NaN**问题——同一 kernel 的两个独立缺陷。'
+  source: 'tt-metal #52707（2026-08-11 closed/merged PR）。https://github.com/tenstorrent/tt-metal/pull/52707 · 补充来源：#52675（1.59）'
+  behavior: 无 crash。大指数 pow 返回 NaN（应 +inf），NaN 可在下游传播。属「SFPU pow 路径缺少高端饱和 guard」**新子签名（与 1.59 同族不同缺陷）**。
+  trigger_surface: tt-metal；ttnn.pow + bf16 dest 路径 + 大指数（z>=128）
+  discovery: 2026-08-12 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

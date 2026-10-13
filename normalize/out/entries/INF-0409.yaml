@@ -1,0 +1,60 @@
+id: INF-0409
+legacy_ids:
+- '6.16'
+slug: sglang_deepep_uninitialized_rows_fp8_gemm_nan
+aliases: []
+title: SGLang DeepEP 下 FP8 linear 输入含未初始化行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: sglang
+    component: DeepEP 路径的 FP8 linear 输入行
+  behavior: 使用 --moe-a2a-backend deepep 时，进入 block-FP8 linear 的部分行持有未初始化内存，各 GEMM 后端照常在这些行上计算。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: Hopper 默认 deep_gemm 把垃圾饱和成有限值，静默产生错误结果、长期未被发现；换 flashinfer 后端则溢出为 NaN，开启 SGLANG_ENABLE_ASYNC_ASSERT 扫描 next_token_logits 时 scheduler 在启动期死亡。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-31'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/33106
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（未初始化内存 → NaN） · Cov: `NEW` · 触发 `no` · 置信度 `documented`'
+  mechanism: 使用 `--moe-a2a-backend deepep` 时，进入 block-FP8 linear 的某些行持有**未初始化内存**。每个 GEMM 后端都在这些行上计算，差异仅在结果：Hopper 默认的 `deep_gemm` 把垃圾饱和成有限值，故从未被发现；而 `flashinfer` 把它溢出到 NaN。`SGLANG_ENABLE_ASYNC_ASSERT` 会扫描整份 `next_token_logits`（含这些行），导致 scheduler 在启动期死亡。
+  source: 'SGLang #33106（2026-07-31 open）。https://github.com/sgl-project/sglang/issues/33106'
+  behavior: '`deep_gemm` 路径下未初始化行被静默饱和为有限值——**隐蔽错误输出**；`flashinfer` 路径下溢出为 NaN 并可致 scheduler 启动失败。属\"未初始化内存被不同后端差异化掩盖\"服务栈正确性 bug。'
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: 第 6 类（服务栈）。默认后端掩盖了错误，使故障表现为静默退化而非 crash——单进程路径不可复现 DeepEP 分发路径。
+  discovery: 2026-07-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 MoE路由 + 静默错误：未初始化行只出现在 --moe-a2a-backend deepep 分派路径，按 rule 功能域优先归 MoE路由；FP8 GEMM 只是消费者（原文“每个 GEMM 后端都在这些行上计算”）。默认 deep_gemm 路径静默饱和，原文 signature“默认后端掩盖了错误，使故障表现为静默退化而非 crash”。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

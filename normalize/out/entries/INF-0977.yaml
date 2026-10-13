@@ -1,0 +1,62 @@
+id: INF-0977
+legacy_ids:
+- '10.61'
+slug: vllm_beam_search_ignores_skip_special_tokens_control_tokens_exposed
+aliases: []
+title: vLLM beam search 不应用 skip_special_tokens
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: beam search 输出文本组装
+  behavior: beam search 输出组装（online 与 offline 共用）直接 decode 全部 token id，未把 skip_special_tokens 传给 detokenizer；常规采样路径链路完整。
+effect:
+  objects:
+  - 输出内容
+  detail: use_beam_search=true 且模型生成控制 token（如 Voxtral Realtime 转录的 [STREAMING_PAD]/[STREAMING_WORD]）时，返回文本暴露数百个内部 special token；同请求常规采样输出干净。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + use_beam_search=true + 生成 special/control token 的模型（Voxtral Realtime 等）（yes）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56209
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0968
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM online/offline **Beam Search** 构造最终解码文本时不理会 `skip_special_tokens`：Voxtral-Mini-4B-Realtime 转录（模型故意生成 `[STREAMING_PAD]`/`[STREAMING_WORD]` 等时间对齐控制 token）下，常规采样正确过滤这些 special token，Beam Search 返回给用户的文本**暴露数百个内部控制 token**（`[STREAMING_PAD][STREAMING_PAD]…` 连串）；生成的 token ID 本身合法，缺陷限于最终 detokenization 步骤——beam search 的文本组装路径没有应用 skip_special_tokens 过滤） · Cov: `var:vllm_include_stop_str_in_output_ignored_for_stop_token_ids`（10.52 special-token/stop 过滤失效族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: beam search 输出组装（online `beam_search` 与 offline 路径共用）直接 decode 全部 token id，未把 `skip_special_tokens` 传递给 detokenizer；常规采样路径的 `decode(..., skip_special_tokens=...)` 链路完整。
+  source: 'vLLM #56209（2026-09-10 open，含同请求两模式 curl 对照：常规采样干净文本 vs beam search 控制token串）。https://github.com/vllm-project/vllm/issues/56209'
+  behavior: 无 crash——beam search 输出被内部 special token 污染（数百个），对依赖转录文本的下游直接不可用。10.52（include_stop_str 对 stop token ids 失效）之后"detokenization 参数被路径忽略"族新成员：本条在 beam search 专属输出组装维度。
+  trigger_surface: vLLM + use_beam_search=true + 生成 special/control token 的模型（Voxtral Realtime 等）（yes）
+  discovery: |-
+    2026-09-10 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: 维持 解码/采样：缺陷只在 beam search 专属输出组装路径（原文“beam search 输出组装……未把 skip_special_tokens 传递给 detokenizer；常规采样路径的 decode 链路完整”），修复是该路径补传参数，按 rules“功能域优先”归 beam search 所在的 解码/采样。审计：各字段均有原文依据，形式合规。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

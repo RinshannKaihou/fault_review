@@ -1,0 +1,50 @@
+id: INF-0638
+legacy_ids:
+- '6.245'
+slug: vllm_prompt_embeds_any_penalty_scatter_gather_oob_assert_engine_death_all_tenants
+aliases: []
+title: vLLM prompt_embeds 带 penalty 越界致引擎永久死亡
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: penalty 应用（token ids 索引）
+  behavior: penalty 应用假设请求必有 token ids 并以其为 scatter/gather 索引源；prompt_embeds 请求的 ids 通道为空或未初始化，导致索引越界触发 device-side assert。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 开 --enable-prompt-embeds 时，带任一 penalty 的 embeds 请求批首轮即 EngineDeadError，引擎永不恢复，在途与后续请求全部 HTTP 500 须重启；16 并发混合长度 10/10 必死，普通请求即可对全体租户 DoS。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `--enable-prompt-embeds` + 任一 penalty > 0 的 embeds 请求（config：服务端开关 + 客户端普通参数即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57719
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM `--enable-prompt-embeds` 下，携带**任一 penalty**（repetition/presence/frequency）的 `prompt_embeds` 请求批触发 penalty 采样路径的 `scatter gather kernel index out of bounds` CUDA device-side assert：penalty 应用假设请求必有 token ids，prompt_embeds 请求无 ids → 索引越界 → `EngineDeadError`——**引擎死亡且永不恢复**，所有在途与后续请求 HTTP 500，必须重启进程。16 并发混合长度（900/300）embeds 请求第一轮必死（10/10）；仅 repetition_penalty 单独存在也死；embeds+token 混合请求同样死。任何客户端用一个普通请求突发即可杀死整台服务器——对全体租户的 DoS） · Cov: `NEW`（penalty 路径对无 ids 请求的缺省假设子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: penalty 核算（`ScatterGatherKernel.cu` 路径）以请求 token ids 为索引源；prompt_embeds 请求的 ids 通道为空/未初始化，batch 内混合长度使越界在第一轮 scatter 即命中——device-side assert 是异步的，等到 host 侧 sync 时引擎状态已不可恢复。
+  source: 'vLLM #57719（2026-09-19 open，含五消除臂矩阵（单 penalty/混合/长度变体）、torch+safetensors 构造 embeds 的复现脚本 gist 与 10/10 死亡率记录）。https://github.com/vllm-project/vllm/issues/57719'
+  behavior: crash（EngineCore 设备侧 assert → EngineDeadError）且爆炸半径为**全租户**；触发门槛为"一个普通 API 请求"，无需畸形输入。6.192（单畸形 mm 请求引擎自杀×重试巡回击穿 5 节点）与 6.241（显式 block size 切片 OOB 杀引擎）之后引擎死亡族新成员：本条在**合法请求形状 × penalty 采样路径缺省假设**维度——fail 点是采样而非调度。
+  trigger_surface: vLLM + `--enable-prompt-embeds` + 任一 penalty > 0 的 embeds 请求（config：服务端开关 + 客户端普通参数即触发）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

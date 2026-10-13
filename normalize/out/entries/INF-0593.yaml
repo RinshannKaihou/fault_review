@@ -1,0 +1,50 @@
+id: INF-0593
+legacy_ids:
+- '6.200'
+slug: sglang_mamba_slot_headroom_overeviction_checkpoint_churn
+aliases: []
+title: SGLang mamba 槽按常量过量驱逐 checkpoint
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: alloc_req_slots 驱逐下界
+  behavior: alloc_req_slots 按每请求固定 headroom 常量（num_reqs×3）预留并驱逐 mamba checkpoint，而非按本 batch 实际取数（prefix 命中取 2、chunk 续传取 0）。
+effect:
+  objects:
+  - 性能/资源
+  detail: hybrid 模型 + 紧 mamba 池 + chunked prefill 下，盈余驱逐在少数 slot 间循环，最热 checkpoint 也保不住，前缀缓存命中率静默坍塌、TTFT 退化；无错误，仅 mamba 命中率指标偏低。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang + hybrid Mamba + 紧 mamba 池 + chunked prefill（config×负载触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38151
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（`alloc_req_slots` 按每请求固定头room常量（`num_reqs×3`）预留并驱逐 mamba checkpoint，而非本 batch 实际将取数——prefix 命中者实际取 2、chunk 续传者实际取 0，紧池下盈余驱逐在少数 slot 间循环，checkpoint 缓存被系统性洗掉） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 驱逐下界取自悲观常量而非 `HybridReqToTokenPool.alloc` 的真实需求（prefix COW 已持有 active slot 者取 ping-pong 2 个；chunked-prefill continuation 已持有全部、取 0）。`--max-mamba-cache-size 30`（6 请求、24 slot 稳定占用）下每个 chunk 都驱逐至多 3 个 checkpoint——最热 checkpoint 也保不住。
+  source: 'SGLang PR #38151（2026-09-05，含三种请求形态的实际取数分析）。https://github.com/sgl-project/sglang/pull/38151'
+  behavior: 无 crash——**prefix cache 命中率静默坍塌**：hybrid 模型的 mamba state checkpoint 不断被重建，TTFT 退化；指标上表现为 mamba 命中率低但无错误。与 6.153（retention 默认 0 无日志死状态）同为 mamba 池管理对前缀缓存的隐性破坏，本条在驱逐策略层：「预留量与实际需求的常量脱钩」。
+  trigger_surface: SGLang + hybrid Mamba + 紧 mamba 池 + chunked prefill（config×负载触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0932
+legacy_ids:
+- '10.16'
+slug: trtllm_harmony_silent_discard_malformed_toolcall_empty_200
+aliases: []
+title: Harmony adapter 静默丢弃格式错误的 tool call
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: tensorrt-llm
+    component: HarmonyAdapter 不完整消息剥离
+  behavior: _strip_incomplete_messages 在最后一个 <|start|> 后没有 <|message|> 时删除其后全部内容，格式错误（如缺 <|message|>）的 tool-call 消息被整条删除且不记任何日志。
+effect:
+  objects:
+  - 输出内容
+  detail: trtllm-serve + Harmony adapter（如 gpt-oss-120b + Eagle3）遇格式错误 tool-call 时触发；返回空 tool_calls、空 content、HTTP 200、finish_reason=stop，无日志，调用方无法与模型拒绝调用工具区分。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM；`trtllm-serve` + Harmony adapter + tool-call 模型（gpt-oss-120b 等）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: subsystem 缺“输出解析（reasoning/tool parser）”：解析器把生成文本切分为 content/reasoning/tool_calls，既非 detokenize 也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/17464
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（Harmony adapter 静默丢弃格式错误的 tool-call 消息→空 tool_calls + 空 content + HTTP 200 + 无日志，调用者无法区分此情况与模型拒绝调用工具） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`HarmonyAdapter._strip_incomplete_messages` 当无 `<|message|>` token 跟随最后一个 `<|start|>` 时，删除该 `<|start|>` 之后的所有内容。若 tool-call 消息格式错误（如缺 `<|message|>`），整条消息被静默删除。结果：返回空 `tool_calls` 数组 + 空 `content`，HTTP 200，`finish_reason: "stop"`，**日志无任何记录**。复现于 `gpt-oss-120b` + Eagle3 on `trtllm-serve`。此 PR 修复"静默"（使 adapter 在丢弃时记录/报错），不修复上游 corruption。'
+  source: 'TRT-LLM #17464（2026-08-10 open）。修复 GitHub #16377 / NVBug 6456085。组件 `HarmonyAdapter._strip_incomplete_messages`。https://github.com/NVIDIA/TensorRT-LLM/pull/17464'
+  behavior: 无 crash、无 NaN。tool-call 消息**静默丢失**——空 tool_calls + 空 content + HTTP 200 + 无日志，调用者无法区分此情况与模型正常拒绝调用工具。属「输出层消息解析静默丢弃→空响应但成功状态码」**新子签名**——服务层 tool-call 适配器的 silent data loss。
+  trigger_surface: TRT-LLM；`trtllm-serve` + Harmony adapter + tool-call 模型（gpt-oss-120b 等）
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

@@ -1,0 +1,53 @@
+id: INF-0417
+legacy_ids:
+- '6.24'
+slug: vllm_pd_nixlpush_failed_write_notification_undercount
+aliases: []
+title: vLLM PD push transfer 启动失败未通知致请求挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NIXL push connector 通知计数
+  behavior: push 模式下 decode 节点靠计数到达的 notification 确认收齐 KV，但 prefill 节点无法启动某个 transfer 时只记日志后继续，不通知 decode 节点，计数无法匹配。
+effect:
+  objects:
+  - 可用性/进度
+  - KV状态
+  detail: PD 分离 push 模式下任一 transfer 启动失败，decode 节点等待永远到不了的计数，请求挂到 lease 超时，期间持有覆盖半写缓存的 block；无 crash。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-02'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50754
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-1265
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（分离式 notification 计数失配） · Cov: `var:pd_disagg_transfer_inflight_page_release_overwrite` · 触发 `no` · 置信度 `verified`'
+  mechanism: vLLM PD（prefill-decode 分离）在 push 模式下，prefill 节点把 KV **直接写入 decode 节点的内存**。decode 节点通过**计数到达的 notification** 来确认已收齐数据。当 prefill 节点无法启动某个 transfer 时，它**只记日志后继续**，于是 decode 节点向一个永远到不了的数字计数 → 请求挂到 lease 超时，期间还持有覆盖半个已写缓存的 block。修复：引入新 NIXL 消息，prefill 节点在无法启动 transfer 时通知 decode 节点，使计数仍能匹配，decode 节点随后回退到既有 KV load failure 策略。
+  source: 'vLLM #50754（2026-08-02 open PR），修复 #48633 的 C2 行。组件：NIXL push connector。https://github.com/vllm-project/vllm/pull/50754'
+  behavior: 无 crash。decode 节点计数向不到的数字计数 → 请求挂到 lease 超时，期间持有覆盖半写缓存的 block。属"分离式 transfer notification 计数失配 → 请求挂死"新子签名，与 K5.9 `pd_disagg_transfer_inflight_page_release_overwrite`（分离式传输/页面生命周期）同族，机制为 notification 计数 vs 页面释放。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  discovery: 2026-08-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,52 @@
+id: INF-0384
+legacy_ids:
+- '5.37'
+slug: ttmetal_kv_chunk_address_table_proto_import_sorts_config_ids_by_name
+aliases: []
+title: tt-metal KV 地址表导入按名字重排致 KV 错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tt-metal
+    component: KvChunkAddressTable 导入/配对
+  behavior: from_proto_message 经名字键构造器按 std::map 字典序重排 config id，未保留序列化顺序；发送端按下标配对两端 config，只校验数量不校验名字。
+effect:
+  objects:
+  - KV状态
+  detail: 两端 config 命名排序不同（如 MiniMax-M3 prefill 用 "0".."8"、decode 用 k_h0..index_k）时 PD 迁移后每个 config 错位一格，decode 读错 head；无报错，loopback 自检全过，仅跨端 golden PCC 可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: tt-metal/tt-llm-engine PD 分离 + KvChunkAddressTable protobuf 导入 + 两端 config 命名序不一致（other_stack：Tenstorrent 栈；机制可迁移任何"按名排序重建 id"的跨端表迁移）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56263
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（tt-metal `KvChunkAddressTable` 的名字键构造器按 `std::map` key 序（字典序）分配 config id，`from_proto_message` 重建每个导入表都走它——跨端点 KV 迁移（PD 分离）的发送端把本地表 config `i` 配远端表 config `i`，只校验 `num_configs`/`num_slots` 相等，**真实跨端契约是"config 名字在两端排序相同"却无人检查**。MiniMax-M3 prefill 命名 `"0".."8"`、decode 命名 `k_h0..k_h3,v_h0..v_h3,index_k`：导入后 decode 序变为 `index_k,k_h0,…`，**每个 config 静默错位一格**（head h+1 坐 row h、`v_h0` 落 `k_h3`、`index_k` 落 `v_h3`）——无错误、两端 loopback 自洽全过（读写同表），仅跨端 golden PCC 抓到（tt-blaze #4014）。三个 builder 已各自独立绕路：gpt_oss_d_p 零填充名字、DFlash builder 选 K 先于 V 的名字、tt-blaze 零填充；纯十进制名超 10 个 config 必坏（`"10"` 排在 `"2"` 前）） · Cov: `NEW`（隐式名字排序契约子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: protobuf 序列化本已按 id 序列出 configs，导入端却经名字键构造器重排；`DcnSenderBackend::init` 的守卫只对数量不对名字。修复建议：(1) 发送端 `TT_FATAL` 校验 `remote.config_name(c)==local.config_name(c)`；(2) 导入保留序列化顺序。
+  source: 'tt-metal #56263（2026-09-11 open，bug label，含 MiniMax-M3 错位矩阵、三 builder 独立绕路证据与双修复方案）。https://github.com/tenstorrent/tt-metal/issues/56263'
+  behavior: 无 crash——PD 分离部署迁移的 KV 块**整体静默错位一格**（K/V/index 互换语义），decode 读错 head 的 KV；两端自检全绿。6.169（LMCache 外部键丢 cache_salt）与 6.180（prompt_cache_key 静默丢弃）之后"跨进程/跨端缓存键维度缺失"族新成员：本条缺的是**名字排序维度**、且错误被两端对称性掩盖。
+  trigger_surface: tt-metal/tt-llm-engine PD 分离 + KvChunkAddressTable protobuf 导入 + 两端 config 命名序不一致（other_stack：Tenstorrent 栈；机制可迁移任何"按名排序重建 id"的跨端表迁移）
+  discovery: |-
+    2026-09-11 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

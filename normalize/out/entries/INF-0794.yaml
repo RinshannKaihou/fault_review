@@ -1,0 +1,56 @@
+id: INF-0794
+legacy_ids:
+- '8.10'
+slug: trtllm_reuse_tree_block_silent_detach_no_removed_event
+aliases: []
+title: TRT-LLM 复用 trie 脱离 block 时不发 removed 事件
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tensorrt-llm
+    component: WindowBlockManager 事件
+  behavior: WindowBlockManager 两条路径把 block 脱离复用 trie 却不发 removed 事件；其一 blockInRadixTree() 用 getPrevBlock()!=nullptr 判断，测错了对象。
+effect:
+  objects:
+  - KV状态
+  - 性能/资源
+  detail: 无 crash、无 NaN；依赖 stored/removed 事件镜像 worker 复用树的外部消费者（如做前缀重叠路由的分布式 KV router）永久泄漏已脱离的 block hash，路由误差长期累积、渐进退化。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/16335
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（缓存事件契约破坏） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: TRT-LLM 的 KV 缓存事件流（`stored`/`removed` 事件）是外部消费者镜像 worker 复用树（reuse tree）的契约——例如做前缀重叠路由的分布式 KV router。但 `WindowBlockManager` 有两条路径从复用 trie **脱离 block 却不发出 `removed` 事件**：(1) `blockInRadixTree()` 用 `getPrevBlock() != nullptr` 作为"该 block 是否在复用 trie"的测试，但 `getPrevBlock()` 遍历 `mLookupNode → parentNode → ...`，测试的是错误的东西；(2) 另一条 detach 路径同样漏发事件。结果：镜像永久泄漏这些 hash。
+  source: 'TRT-LLM #16335（2026-07-13 open PR）。组件 `WindowBlockManager`。https://github.com/NVIDIA/TensorRT-LLM/pull/16335'
+  behavior: 无 crash、无 NaN。外部 KV 镜像/route 永久泄漏脱离的 block hash → 前缀重叠路由长期累积错误，表现渐进退化。属"缓存事件契约破坏——detach 不发 removed 事件"新子签名，是 KV 缓存正确性中一类跨系统契约层面的隐蔽故障。
+  trigger_surface: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 性能退化
+        to: 静默错误
+        status: panel7

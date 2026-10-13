@@ -1,0 +1,50 @@
+id: INF-0691
+legacy_ids:
+- '7.18'
+slug: sglang_autoround_gptq_moe_marlin_branch_inverted_silent_triton_fallback
+aliases: []
+title: auto-round MoE 委托缺 desc_act，静默回退 Triton
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: AutoRound→MoeWNA16 委托
+  behavior: 委托给 MoeWNA16Config 的 config 缺 desc_act 键，Marlin 资格检查视缺键为不合格，FusedMoE 专家一律落到 Triton wna16；use_marlin=False 分支还引用未定义变量。
+effect:
+  objects:
+  - 性能/资源
+  detail: 所有架构的 GPTQ-packed auto-round MoE checkpoint 均触发：无报错，各 rank 日志打 Using default MoE kernel config 而 dense 层走 Marlin，decode 性能静默退化。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用；vLLM 有同名 auto-round 路径概念但实现不同
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-03'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33414
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（量化 kernel 分派资格检查缺键 → 静默回退通用 runner） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`AutoRoundConfig.apply_gptq_quant_layer` 把 FusedMoE 层委托给 `MoeWNA16Config`，后者自行重跑 Marlin 资格检查（`GPTQMarlinConfig.is_gptq_marlin_compatible`）并在通过时选择 Marlin MoE 方法。两个缺陷使该委托永远到不了 Marlin：(1) **委托出的 config 缺 `desc_act` 键**，而资格检查把缺键视为不合格（`... or desc_act is None: return False`）→ 在**所有架构**上、对**所有** GPTQ-packed auto-round MoE checkpoint，experts 一律落到 Triton wna16 runner；(2) **`use_marlin=False` 分支构造了 `GPTQMarlinMoEMethod(quant_args_marlin)`——该变量只在 marlin 分支定义**，即 latent `NameError`：分裂之后根本没有可用的非 marlin 路径，也解释了为何两个分支都没有测试覆盖捕获到此问题。'
+  source: 'SGLang PR #33414（2026-08-03 open）。观测环境：DeepSeek-V4-Flash-0731 W4A16（auto-round、gptq packing、sym、group 128）on 8× A800。https://github.com/sgl-project/sglang/pull/33414'
+  behavior: 无 crash、无 NaN、无报错。每个 rank 日志打 `Using default MoE kernel config. Performance might be sub-optimal!`（Triton runner）而 dense 层打 Marlin bf16 hint——模型一半在 Marlin、一半不在；experts 是 decode 计算主体 → decode 性能静默退化，且数值路径与用户预期的 Marlin kernel 不符。属「量化 kernel 分派资格检查缺键 → 静默回退通用 runner」新子签名。
+  trigger_surface: SGLang 专用；vLLM 有同名 auto-round 路径概念但实现不同
+  discovery: 2026-08-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

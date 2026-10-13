@@ -1,0 +1,53 @@
+id: INF-0647
+legacy_ids:
+- '6.254'
+slug: vllm_mooncake_connector_min_collapsed_block_size_misread_as_physical_hybrid_pd_transfer_break
+aliases: []
+title: vLLM Mooncake 误把塌缩逻辑 block_size 当物理尺寸
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake connector 传输块尺寸
+  behavior: hybrid 模型 KV 初始化后 core.py 把 cache_config.block_size 塌缩为各 group 最小值，Mooncake connector 却把该逻辑值当作物理传输块尺寸，块 id 换算粒度错误。
+effect:
+  objects:
+  - 可用性/进度
+  - KV状态
+  detail: 混合 block size 模型 + Mooncake PD 分离：GPU 上 worker 初始化即 assert；Ascend 910B 上首次 P2P KV 传输 assert 杀死 decode 侧 EngineCore、API 返回 500；若绕过 assert，传输内容会按错误边界切分。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM + hybrid 模型（混合 KV group block size）+ Mooncake connector + PD 分离（other_stack；Ascend 报告、机制后端无关）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58362
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0604
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM hybrid 模型（混合 KV group 物理块尺寸）在 KV 初始化后 `core.py` 把 `cache_config.block_size` **塌缩为各 group 最小值**（如 Qwen3.6-35B-A3B：8×1024-token group + 1×128-token SWA draft group → 1024 塌为 128）并同步回 API server；**Mooncake connector 把该逻辑值读作物理传输块尺寸**——scheduler 侧 `self.block_size` 用于所有非 SW group，worker 侧 `assert self.block_size > kernel_block_size` 只覆盖 Eagle 方向（逻辑 256 > 物理 128）、min() 塌缩产生**反向案例**（逻辑 128 < 物理 1024）在 GPU 上 worker init 即 assert 死、在 Ascend 910B 上首次 P2P KV 传输 `AssertionError: remote_block_size(128) not divisible by kernel_size(1024)` **杀 decode 侧 EngineCore、API 返 500**；传输 metadata 的 block id 按物理 1024-token 块计数，128 逻辑值使每个 >128 的 group 的内核展开全部错位） · Cov: `var:vllm_mm_uuid_verbatim_cache_key_cross_item_staleness_engine_teardown`（6.211 逻辑/物理粒度双权威源族——本条在 connector 传输粒度维度） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`cache_config.block_size` 在引擎生命周期内被改写为"调度逻辑粒度"，而 Mooncake connector 假设它是"物理传输粒度"——两个语义共用一个字段；混合块尺寸模型上两语义必然分叉，块 id 换算（物理块计数）随系统性错位。'
+  source: 'vLLM #58362（2026-09-23 open，含 core.py 塌缩代码行、scheduler/worker 双侧读取点、Ascend 910B 复现（Qwen3.6-35B-A3B + dspark SWA draft + PD 分离）与 #42895/#55600/#53142 邻居界定）。https://github.com/vllm-project/vllm/issues/58362'
+  behavior: GPU 上 fail-loud（worker init assert）、Ascend 上**首次 P2P 传输杀 EngineCore**（请求级 500）——混合块尺寸 + Mooncake PD 部署在第一笔传输即断；块 id 错位意味着即使绕过 assert，传输内容也会按错误边界切分（静默面潜伏在 assert 被放宽的部署）。
+  trigger_surface: vLLM + hybrid 模型（混合 KV group block size）+ Mooncake connector + PD 分离（other_stack；Ascend 报告、机制后端无关）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,60 @@
+id: INF-0717
+legacy_ids:
+- '7.44'
+slug: sglang_compressed_tensors_lm_head_quant_dispatch_missing
+aliases: []
+title: SGLang CT 量化 lm_head 未分发，输出恒为 token 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: CT get_quant_method 层类型分发
+  behavior: get_quant_method 只分发 LinearBase/FusedMoE，lm_head 落回非量化 embedding 方法建普通 weight；检查点的 weight_packed 无人读，head 用未初始化内存。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 加载带量化 lm_head 的 compressed-tensors 检查点时，服务正常启动、无任何错误，每个请求都返回重复的 token 0（“!!!!!!”）；与硬件无关，任何设备可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；compressed-tensors 检查点 + 量化 lm_head
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35358
+  kind: github_issue
+- url: https://github.com/sgl-project/sglang/pull/35228
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（compressed-tensors 量化 lm_head：get_quant_method 不分发 ParallelLMHead → checkpoint 的 weight_packed 无人读、新建参数未初始化 → 每请求输出恒 token 0） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`CompressedTensorsConfig.get_quant_method` 只对 `LinearBase` 与 `FusedMoE` 分发，其余返回 `None`。`ParallelLMHead` 继承自 `VocabParallelEmbedding` 而非 `LinearBase` → 落回 `UnquantizedEmbeddingMethod`，创建普通 `weight` 参数，而 checkpoint 提供的是 `weight_packed`/`weight_scale`——无人读取；head 用**未初始化内存**做乘法。vLLM 源码有 `isinstance(layer, ParallelLMHead)` 分支（SGLang 文件标注 `# Adapted from vLLM`），adaptation 丢失该分支。非硬件相关，任何设备可复现。'
+  source: 'SGLang #35358（2026-08-18 open，v0.5.17/main）。https://github.com/sgl-project/sglang/issues/35358 。补充来源：同机制修复 PR #35228（2026-08-19 closed——为 `ParallelLMHead` 添加 `get_quant_method` 分支返回 linear scheme，修复 fp8 weight 被 value-cast 进 bf16 参数、`lm_head.weight_scale` 静默丢弃）。https://github.com/sgl-project/sglang/pull/35228'
+  behavior: '**完全静默**——服务正常启动、无错误，每个请求返回重复 token 0（`!!!!!!...`）。属「量化方法分发矩阵缺层 → 权重静默未初始化」**新子签名**：12.18（vLLM 侧同对象 metadata 未初始化）的 SGLang 权重载荷版。'
+  trigger_surface: SGLang；compressed-tensors 检查点 + 量化 lm_head
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：behavior/detail 与原文逐项一致（get_quant_method 只分发 LinearBase/FusedMoE、ParallelLMHead 落回 UnquantizedEmbeddingMethod、weight_packed 无人读、未初始化内存、每请求重复 token 0、任何设备可复现）；分类 量化/sglang、模型权重+输出内容、静默错误 与独立判断一致，无需修改。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

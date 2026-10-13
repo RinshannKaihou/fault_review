@@ -1,0 +1,55 @@
+id: TRN-0137
+legacy_ids:
+- KER.06
+slug: torch_compile_float_kwarg_stale_constant
+aliases: []
+title: torch.compile 固化 float 标量致 SwiGLU 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: torch.compile float 标量捕获
+  behavior: clamped_swiglu 经 torch.compile 后，float kwarg clamp_value 在 specialize_float=False 下被当作编译期常量，首个值固化进生成代码，传入新值仍执行旧 kernel。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 无 crash、无 NaN、无警告，SwiGLU 前向、反向输出系统性偏移、训练曲线照常；按层或按专家类型使用不同 clamp 值（如 Step-3.5-Flash、K-EXAONE-2.0）时，第二组层起全部用旧 clamp 值训练。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/6918
+  kind: github_issue
+- url: https://github.com/pytorch/pytorch/issues/194976
+  kind: github_issue
+- url: https://arxiv.org/abs/2606.19348
+  kind: arxiv
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: '`megatron.core.fusions.fused_bias_swiglu.clamped_swiglu(_back)` 经 `torch.compile` 包装后，Python float 标量 kwargs `clamp_value` 在 PyTorch 默认 `specialize_float=False` 配置下被当作编译期常量捕获。首个被观察到的值（如 0.5）固化进 Inductor 生成代码，之后传入 1.0 仍执行按 0.5 编译的 kernel——前向、AOTAutograd 生成的反向、显式编译的 `clamped_swiglu_back` 三处全部静默错值，无异常无警告。训练侧触发条件不是假设：StepFun Step-3.5-Flash / Step-3.7-Flash 的 `swiglu_limits`（routed=7）与 `swiglu_limits_shared`（shared=16）按层/按专家类型取不同 clamp，K-EXAONE-2.0-750B 也用 layer-indexed `swiglu_limits` 且只在深层开 clamp；Megatron Bridge `step35_provider.py` 已按层深拷贝 config 传入不同 `activation_func_clamp_value`——第二组层起全部用旧 clamp 值训练。'
+  source: 'Megatron-LM #6918（reproducer 直接 import 原函数、fresh process CPU/CUDA 双复现、不 reset dynamo 不改 specialize_float；维护者初步回复「clamp_value 被视为常量不算 bug」，社区补充 per-layer 真实用例）；上游 pytorch/pytorch#194976；DeepSeek-V4 technical report §4.2.3（SwiGLU Clamping 与 Anticipatory Routing 并列的两大训练稳定手段：clamping「有效消除 outlier、显著稳定训练且不损性能」，见 LOSS.06——生产级训练已把 per-layer clamp 当基础设施依赖，该依赖正落在被冻结的编译期常量上）。https://github.com/NVIDIA/Megatron-LM/issues/6918 · https://github.com/pytorch/pytorch/issues/194976 · https://arxiv.org/abs/2606.19348'
+  behavior: 无 crash、无 NaN、无警告；SwiGLU 前向/反向输出系统性偏移（reproducer 中 forward/autograd diff 非零），训练曲线照常。与 KER.03 同族（编译栈在合法配置下静默错值），但根因是标量捕获语义而非事件序。
+  discovery: 2026-08-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

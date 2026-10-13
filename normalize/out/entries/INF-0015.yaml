@@ -1,0 +1,56 @@
+id: INF-0015
+legacy_ids:
+- '1.15'
+slug: ttmetal_dram_sharded_dup_xcoord_buffer_corruption
+aliases: []
+title: TensorAccessor 只按 x 坐标选 bank 致 buffer 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tt-metal
+    component: TensorAccessor bank 映射
+  behavior: 对 DRAM buffer，get_noc_addr 只用 core 的 x 坐标作 bank id、忽略 y 坐标，host 侧也不做 DRAM 坐标虚拟化；shard grid 含重复 x 坐标时多个 core 映射到同一 bank。
+effect:
+  objects:
+  - 数值结果
+  detail: ND-sharded DRAM buffer 的 shard grid 含重复 x 坐标（如 CoreRange((0,0),(1,1)) 只有 2 个不同 x）时写入地址重叠，读回被覆盖的错误值，一旦触发整块 buffer 持续错乱。无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal，非 NVIDIA 环境
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-31'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/51503
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（静默数据损坏） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 对 DRAM buffer，`TensorAccessor::get_noc_addr` 用 core 的 **x 坐标单独**作为 bank id（`get_dram_bank_base_offset(bank_x)`），**忽略 y 坐标**——host 侧也刻意不做 DRAM 坐标虚拟化（\"since we need logical x coord == bank_id\"）。因此当一个 ND-sharded buffer 的 shard grid 含**重复 x 坐标**时（如 `CoreRange((0,0),(1,1))` 有 4 个 core 但只有 2 个不同的 x 值），core `(0,0)`/`(0,1)` 映射到同一 bank，数据被写到重叠地址，buffer 内容静默损坏。
+  source: 'tt-metal #51503（2026-07-29 open）。组件 `tt_metal/hw/inc/api/tensor/tensor_accessor.h`、`tt_metal/impl/buffers/tensor_accessor_args.cpp`。https://github.com/tenstorrent/tt-metal/issues/51503'
+  behavior: 无 crash。含重复 x 坐标的 sharded DRAM buffer 写入地址重叠，buffer 数据静默损坏——读回的是被覆盖后的错误值。属硬件地址映射层的静默数据损坏。
+  trigger_surface: Tenstorrent TT-Metal，非 NVIDIA 环境
+  signature: infra_off / 数据损坏。损坏取决于 shard grid 是否含重复 x 坐标（配置门控），一旦触发则整块 buffer 持续错乱。
+  discovery: 2026-07-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 运行时/执行。独立判断曾取 算子/内核，比较后改判同第一遍：原文给出的组件是 tt_metal/hw/inc/api/tensor/tensor_accessor.h 与 tt_metal/impl/buffers/tensor_accessor_args.cpp，缺陷是 DRAM buffer 的 bank 寻址（get_noc_addr 只用 x 作 bank id、host 刻意不做坐标虚拟化），属所有 op 共用的 buffer 地址层（词表 运行时/执行 含内存分配器），不是某个具体搬运算子；rule 1 下属通用缺陷。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

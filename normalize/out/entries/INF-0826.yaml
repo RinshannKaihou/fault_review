@@ -1,0 +1,52 @@
+id: INF-0826
+legacy_ids:
+- '8.46'
+slug: sglang_dsa_sparse_mla_griddim_z_zero_launch_silent
+aliases: []
+title: SGLang DSA sparse MLA gridDim.z 溢出致静默零发射
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: DSA sparse MLA kernel 启动
+  behavior: prefill=trtllm 路径把 token 摊平进 batch 维，numCtasZ 超过 gridDim.z 上限 65535 时发射 0 个 CTA，cuErrCheck 只打印不抛，该路径缺 65535 guard。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  - 指标/日志
+  detail: SM100 上单次 unchunked extend ≥65536 token 时 attention 输出保持未初始化 sentinel 原样返回并进入残差流，garbage 输出且无异常无告警；bench_one_batch 报出虚假地快的 prefill 基准数字。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；DSA sparse MLA（prefill=trtllm）+ 单次 unchunked extend >65535 token（SM100）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/34947
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（单次 extend >65535 token 时 trtllm-gen sparse MLA 的 gridDim.z 溢出 → 0 个 attention kernel 被发射，输出张量保持未初始化 sentinel 原样返回，零异常零告警） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'SM100 上 DSA `prefill=trtllm` 路径把 token 摊平进 batch 维，`fmhaKernels.cuh` 的 `int numCtasZ = params.mBatchSize` 超过 CUDA gridDim.z 上限 65535 时 **launch 0 个 CTA**（`cuErrCheck` 仅 fprintf 不抛）。onset 精确到 1 token：65535 正常、65536 全静默。证据链：sentinel 填充的 `out` tensor 原样返回（silent corruption 直接证明）+ profiler 证明 0/num_layers 个 attention kernel 运行。前作修复链全部未落地：flashinfer #3125 closed 无 fix commit、sglang #29453（同根因 DP 路径症状）closed 无代码修复、#29522 guard PR closed 未合并、flashinfer #3238（结构解：stop flattening tokens into batch dim，2026-06-24 合并）sglang 未采纳（`dsa_backend.py:3242` 仍 `view(batch,1,...)`）。sglang 在 RoPE `base.py:298` 与 `mamba_slot_fused.py:133` 已有同型 65535 guard，DSA 路径独缺；dp_size=1 的 plain ModelRunner 路径（bench_one_batch）无任何已提议 guard 覆盖。'
+  source: 'SGLang #34947（2026-08-14 open，B200 SM100，flashinfer 0.6.17；#34941 为同文 dup）。https://github.com/sgl-project/sglang/issues/34947'
+  behavior: '**完全静默的 garbage 输出**——无 Python 异常、无告警，uninitialized attention out 进入残差流。`bench_one_batch` 对 >65535 input-len 构造性命中并报出**虚假地快**的 prefill 基准数字（0 个 kernel 运行）。属「kernel 启动参数溢出的静默 zero-launch」**新子签名**——不是算错而是**根本没算**，对基于该 kernel 的基准与正确性检查同时失效。'
+  trigger_surface: SGLang；DSA sparse MLA（prefill=trtllm）+ 单次 unchunked extend >65535 token（SM100）
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

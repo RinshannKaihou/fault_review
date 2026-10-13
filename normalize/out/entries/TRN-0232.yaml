@@ -1,0 +1,57 @@
+id: TRN-0232
+legacy_ids:
+- RL-RO.10
+slug: zero3_layout_mutation_not_persisted
+aliases: []
+title: DeepSpeed Hybrid Engine 的 QKV 布局互转未持久化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: deepspeed
+    component: Hybrid Engine QKV 布局互转
+  behavior: Hybrid Engine 在 GatheredParameters 内就地改写 QKV 布局却未指定 modifier_rank，ZeRO-3 repartition 时修改不被持久化，交错 QKV 被推理层按连续布局解读。
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  detail: rollout 用布局损坏的权重采样，训练侧重算的 logprob 与真实采样分布脱节，无 crash、无警告，易被误判为 RL 训坏；Pythia-410M + ZeRO-3 复现中 QKV max_abs=20.5625，首个不匹配在 layer-0 attention。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8391
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8392
+  kind: github_pr
+- url: https://github.com/verl-project/verl/pull/7986
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0230
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:adapter_omitted_from_weight_sync` · 置信度 `documented`'
+  mechanism: DeepSpeed Hybrid Engine（ZeRO-3）在 rollout 前后做 QKV 布局互转：`HybridMegatronContainer.transform_for_inference()` / `transform_for_training()` 在 `GatheredParameters` 上下文内就地改写 gather 后的 QKV 参数，但**不指定 `modifier_rank`**——ZeRO-3 repartition 时无从广播修改后的全参数，布局转换不被持久化：GPT-NeoX head-interleaved QKV 存活进推理转换，再被 DeepSpeed 推理层按 all-Q/all-K/all-V 连续布局解读。修复 = 两个方向都传 `modifier_rank=0`，让就地转换在全参数态固化后再 repartition。
+  source: 'DeepSpeed #8391（Pythia-410M HE + ZeRO-3 on MI250：原生 HF 首 token `187`、注入 HE 转换前 `39318`；QKV `max_abs=20.5625`/`mean_abs=1.115`，首个不匹配在 layer-0 attention；修复后 `max_abs=0`、首 token 一致、20 步 `eval()↔train()` 布局往返稳定；附回归测试）。https://github.com/deepspeedai/DeepSpeed/issues/8391 ；修复 PR #8392（2026-09-04 补）。https://github.com/deepspeedai/DeepSpeed/pull/8392 ；机制在 verl MoE 栈的布局检测面（2026-09-28 补）：verl PR #7986 揭示同一「权重布局变换不在同步/加载协议里」的盲区可由**检测信号本身失明**触发——FP8 MoE kernel prep 做同形状同 dtype 的 repack（`swap_w13_to_w31` 等）时 shape/dtype 检查与 `is_shuffled` 标记全盲，rollout 侧被写进错误布局权重，见 RL-RO.22。https://github.com/verl-project/verl/pull/7986'
+  behavior: rollout 用**布局损坏的权重**采样，训练侧重算的 logprob 与真实采样分布脱节且无 crash、无警告；表象易被归因为「RL 训坏了」。与 RL-RO.08/09 同族（rollout↔train 权重静默脱钩），但根因是**参数 repartition 协议缺 `modifier_rank`**：不是同步载荷缺项、也不是别名冻结，而是合法就地转换在 ZeRO-3 分片协议下不被写回。与 CKPT.02（ZeRO 分片图与加载布局错位）同域，但发生在训练循环内的引擎切换而非 ckpt 加载。
+  discovery: 2026-09-03 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

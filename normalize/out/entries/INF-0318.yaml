@@ -1,0 +1,52 @@
+id: INF-0318
+legacy_ids:
+- '4.2'
+slug: tf32_matmul_truncation
+aliases: []
+title: Ampere+ 上 GEMM 默认走 TF32 静默截断尾数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: cuBLAS/cuDNN GEMM 默认 TF32
+  behavior: Ampere+ GPU 上 cuBLAS/cuDNN 的 GEMM 默认走 TF32 tensor core，只读取 mantissa 高 10 bit，无代码改动即静默截断出约 1e-3 相对误差
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: 每层引入小而系统性的舍入并跨层累积，偶尔顶翻低置信度 argmax，输出整体连贯；同一 matmul 在 V100 与 A100 上结果不同，单帧 geometric 检测基本无效，需对照 FP32 参考
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: TF32：torch.set_float32_matmul_precision("highest"|"high") 或 cudnn.allow_tf32；Ampere+ 默认即可能中招
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://docs.pytorch.org/docs/stable/notes/numerical_accuracy.html
+  kind: other
+relations: []
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`model_on`（按效果近似 on-manifold；按成因属 infra） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: MERGED 条目，合并两个子故障："TF32 mantissa truncation" 与 "tf32_matmul_precision_loss"。在 Ampere+ GPU 上，cuBLAS/cuDNN 的 GEMM 默认走 TF32 tensor core，只读取 mantissa 的高 10 bit，在 NO code change 的前提下静默截断出约 1e-3 的相对误差。同一个 matmul 在 V100 与 A100 上结果不同。（无 TF32 的平台默认不存在此故障，但可以用低精度 matmul 路径注入。）
+  source: PyTorch Numerical Accuracy docs, https://docs.pytorch.org/docs/stable/notes/numerical_accuracy.html 。Fasi et al., "Numerical Behavior of NVIDIA Tensor Cores" (PMC7959640) 。
+  behavior: 每层引入小而系统性的舍入（~1e-3），并跨层累积；偶尔把一个低置信度的 argmax 顶翻。输出整体保持连贯。
+  trigger_surface: TF32：torch.set_float32_matmul_precision("highest"|"high") 或 cudnn.allow_tf32；Ampere+ 默认即可能中招
+  signature: 偏 ON-manifold：它非常接近一次合法的精度降低，所以 geometric 离群分数 LOW —— 属于"看起来就像一个真模型"的情形。较好的抓手是 trajectory / reproducibility 度量（对照 FP32 参考）或量化式的 spectral 偏移；纯 geometric 单帧检测基本无效。infra by CAUSE、near-on-manifold by EFFECT，是"capability-like disguise"在数值轴上的对应物。与 quant_Nbit 有明确区别：作用对象是 matmul 而非权重，是 activation 上的乘性效应而非权重上的加性扰动。
+  repro: yes。用 forward hook 把 matmul 的操作数（激活与/或权重）舍入到 10 bit mantissa 再做乘加，即可在 fp32 下复现 ~1e-3 的相对截断；注意扰动幅值与运行时噪声底可能仅差一个量级，评测须与该地板一并报告。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

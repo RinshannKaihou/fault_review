@@ -1,0 +1,53 @@
+id: TRN-0174
+legacy_ids:
+- LOSS.10
+slug: cp_local_loss_means_averaged
+aliases: []
+title: Megatron CP 下默认 loss 按分片本地均值再平均致梯度方向偏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: megatron-lm
+    component: CP-local loss 均值归一
+  behavior: 默认 calculate_per_token_loss=False 时，每个 CP rank 把 masked loss 和除以本 rank 有效 token 数，DDP 再跨 DP×CP 平均梯度，得到均值的均值而非全局均值。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 各 CP 分片有效 token 数不等时触发（--eod-mask-loss、任意 loss masking），梯度方向而非仅尺度改变（repro 梯度与参照明显不同），优化目标系统性偏离全局均值；无 crash、无 NaN。开启 per-token loss 时不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7513
+  kind: github_pr
+relations: []
+original:
+  category: LOSS
+  section: LOSS
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `forward_step_calc_loss`（schedules.py:295）在 `calculate_per_token_loss=False`（默认）时把每个 CP rank 的 masked loss 和**除以自己的有效 token 数**——CP-local mean；`pretrain_gpt.py` 返回 CP-local sums/counts，DDP 随后跨 DP×CP 平均梯度。有效 token 数在 CP 分片间不等（`--eod-mask-loss`、任意 loss masking、Wan 真实数据路径 pad 到 `2*CP` 再 mask padding、CP=4/8 recipe）时，实际算的是 `(L0/n0 + L1/n1)/2` 而非 `(L0+L1)/(n0+n1)`：**mean-of-means**。8 token、CP counts 4/1、4 参数线性预测器 repro：observed 梯度 `[0.8369,-0.0900,0.2948,-0.1063]` vs 参照 `[0.5110,-0.1440,0.0577,-0.1701]`——**梯度方向改变**（不只是尺度）。修复 = 像 per-token 路径那样先跨 CP sum 有效计数再除。per-token loss 开启时不受影响。
+  source: 'Megatron-LM #7452（2026-09-17；finding 9）。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；修复 PR（2026-09-22 补）：#7513 by zupengwang（three-value loss callback 返回 CP-local sums/counts 时先跨 CP 汇总再归一）——挂 09-21 oncall tracking map。https://github.com/NVIDIA/Megatron-LM/pull/7513'
+  behavior: 无 crash、无 NaN——**梯度方向随 CP 分片的有效 token 分布畸变**：序列边界/eod 位置决定了哪个 CP 分片贡献多少权重，长跑下优化目标系统性偏离全局均值目标；普通 GPT + `--context-parallel-size 2 --eod-mask-loss` 即触发。与 LOSS.08（GKD mean-of-means 跨 micro-batch）/RL-ADV 家族的组内统计错值同病根「局部均值的均值 ≠ 全局均值」，这边打击**CP 轴**且是默认 loss 路径（per-token 关闭时）；与 KER.14（smoothing 尾局部化）同为「归约域在并行轴上缺一跳」，那边 TP 轴、这边 CP 轴。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

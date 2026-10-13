@@ -1,0 +1,62 @@
+id: INF-0762
+legacy_ids:
+- '7.90'
+slug: vllm_dsv2lite_online_fp8_triton_mla_cudagraph_batch3_nan_logits
+aliases: []
+title: DSV2-Lite 在线 FP8 在 graph ≥3 序列批出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: CUDA graph ≥3 序列 decode 批
+  behavior: 根因未定位到内核；隔离收敛到 CUDA graph replay 的 ≥3 序列 decode 批，inductor 无罪；批尺寸阈值指向 graph 批维 padding/分组假设与在线 fp8 路径的交互。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: RTX 4090（sm89）默认配置下 graph 批 decode ≥3 序列时每请求 NaN logits（请求 logprobs 时 HTTP 400，否则输出重复垃圾），1–2 序列正常，日志无输出；eager、关 cudagraph 或 max-num-seqs 2 可规避。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + DeepSeek-V2-Lite + `--quantization fp8`（在线）+ TRITON_MLA + sm89 + 并发 ≥3 的 decode graph 批（config；`--enforce-eager`/`cudagraph_mode:NONE`/`--max-num-seqs 2` 三种规避）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57017
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0553
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（vLLM 0.27.1（pip wheel）+ RTX 4090（sm89）+ `--quantization fp8` 在线 FP8 + DeepSeek-V2-Lite-Chat（TRITON_MLA 是 sm89 唯一 MLA 后端，TRITON Fp8 MoE + CutlassFP8ScaledMM 线性层）：**同一 CUDA-graph 批内 decode ≥3 个序列时批内每请求 NaN logits**（HTTP 400 "Out of range float values are not JSON compliant: nan"（请求 logprobs 时）/无 logprobs 时文本垃圾 `"should should should…"`）；1–2 序列正常。隔离矩阵：默认（compile+graph）K=3/5 全 NaN ×3/×5、`--enforce-eager` 全好、compile 开 + `cudagraph_mode:NONE` 全好、默认 + `--max-num-seqs 2` 全好（永不凑满 3）；KV 池大小与 `--num-gpu-blocks-override` 两个方向均无效、preemption 计数 0——故障收敛到 **CUDA-graph replay 的 ≥3 序列 decode 批**这一路径，inductor 单独无罪） · Cov: `var:vllm_flashinfer_sm120_nvfp4_fp8kv_16token_ima`（6.160 graph×量化×批几何交互族） · 触发 `config` · 置信度 `verified`'
+  mechanism: 未定位到内核（报告者以执行模式隔离收敛触发面）；在线 FP8 是该模型装入 24GB 卡的文档推荐路径（bf16 checkpoint 32GB），默认配置即在真实负载（≥3 并发）下全批损坏。批尺寸阈值（2→3）指向 graph 捕获的 batch 维 padding/分组假设与 fp8 量化路径的交互。
+  source: 'vLLM #57017（2026-09-15 open，含 standalone httpx 复现脚本（无需 repo）、K×执行模式完整隔离矩阵与 preemption 排除）。https://github.com/vllm-project/vllm/issues/57017'
+  behavior: 无 crash、引擎日志零输出——≥3 并发时**每请求** NaN（无 logprobs 则静默垃圾文本），1–2 并发完全正常使小规模 smoke 测试漏检；在线 FP8 的推荐配置即触发（config）。6.160（FlashInfer sm120 NVFP4+fp8KV 16-token graph IMA）之后"CUDA graph × 在线量化 × 批尺寸"族新成员：本条在 **TRITON_MLA + sm89 消费级卡**维度、全批损坏。
+  trigger_surface: vLLM + DeepSeek-V2-Lite + `--quantization fp8`（在线）+ TRITON_MLA + sm89 + 并发 ≥3 的 decode graph 批（config；`--enforce-eager`/`cudagraph_mode:NONE`/`--max-num-seqs 2` 三种规避）
+  discovery: |-
+    2026-09-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 为 运行时/执行 vs 量化：原文隔离矩阵（eager 好、compile+cudagraph_mode:NONE 好、max-num-seqs 2 好）把故障收敛到 CUDA-graph replay 的 ≥3 序列 decode 批；无非 FP8 对照，不能认定缺陷只在量化路径，rules 功能域优先前提不成立，在线 FP8 按“触发条件不是对象”处理，维持 运行时/执行。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

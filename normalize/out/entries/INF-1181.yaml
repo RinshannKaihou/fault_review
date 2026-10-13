@@ -1,0 +1,52 @@
+id: INF-1181
+legacy_ids:
+- '13.13'
+slug: sglang_gemma3_rmsnorm_highrank_skip_fused_mixed_dtype_nan
+aliases: []
+title: Gemma3RMSNorm 融合门控缺陷，dtype 不符时出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: Gemma3RMSNorm 融合分派
+  behavior: forward_cuda 仅对 2-D 输入分派融合 kernel，3-D 的 q_norm/k_norm 走 eager 路径；两条融合路径直接传 self.weight.data，不检查 dtype。
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: 权重 dtype 与融合 kernel 不匹配时返回 NaN 而非报错，NaN 静默传播到下游；gemma-3-1b 每次前向 157 次 norm 调用中有 52 次走未融合路径。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-31'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/32807
+  kind: github_issue
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（fused kernel 路径门控缺陷 + dtype 不检查） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: SGLang `Gemma3RMSNorm.forward_cuda` 仅对 **2-D 输入** dispatch 到 fused kernel；`q_norm`/`k_norm` 以 `[tokens, heads, head_dim]`（3-D）调用，走 eager 路径——`gemma-3-1b` 上**每前向 157 次 norm 调用中有 52 次**走未融合路径（性能 + 正确性风险）。更严重的是，两条 fused 路径都直接传 `self.weight.data` 而**不检查 dtype**，fused kernel 在权重 dtype 不匹配时**返回 NaN 而非报错**。
+  source: 'SGLang #32807（2026-07-29 open）。组件 `python/sglang/srt/layers/layernorm.py`。https://github.com/sgl-project/sglang/issues/32807'
+  behavior: 高维 q_norm/k_norm 跳过 fused kernel（性能退化）；当权重 dtype 与 fused kernel 不匹配时返回 **NaN** 而非抛错——NaN 静默传播到下游。属"norm 层 fused kernel 路径门控 + dtype 静默 NaN"模型图配置缺陷。
+  trigger_surface: SGLang 专用
+  signature: infra_off / NaN。dtype mismatch 触发 NaN 而非 crash，错误被掩盖为 NaN 污染。
+  discovery: 2026-07-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

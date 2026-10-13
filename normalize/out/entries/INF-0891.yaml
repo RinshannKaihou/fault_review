@@ -1,0 +1,51 @@
+id: INF-0891
+legacy_ids:
+- '9.8'
+slug: vllm_fused_qknorm_rope_divergent_warp_collective_partial_neox
+aliases: []
+title: fused_qk_norm_rope 部分旋转下 warp UB 损坏 Q/K
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: fused_qk_norm_rope 内核
+  behavior: partial-NeoX 路径只有 rotary lanes 进入 RoPE 段，段内却以 FINAL_MASK 调用 __shfl_xor_sync 等 warp collective，mask 包含不执行的 lane，属未定义行为
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: packed 多 head/warp 内核中，每个 warp chunk 首个 head 之后全部 head 的 Q/K 被静默损坏；H200 上 token_heads_per_warp=8 时还可出现 NaN；无 crash，仅 rotary_dim<head_dim 的 NeoX 模型触发
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；`rotary_dim < head_dim` 的 NeoX-style 模型 + fused QK-Norm+RoPE kernel
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50903
+  kind: github_pr
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（partial rotary 下 divergent warp collective UB → 后续 head Q/K 损坏） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: vLLM `fused_qk_norm_rope` 的 **partial-NeoX 路径**（`rotary_dim < head_dim`）：NeoX 分支中只有 rotary lanes 进入 RoPE 段，但分支内用**全 warp mask（FINAL_MASK）**调用 `__shfl_xor_sync` 等 warp collectives——partial RoPE 时 `rotary_lanes < warpSize`，FINAL_MASK 指向了**不执行该 collective 的 lane** → 未定义行为。`warpReduceSum` 本身无问题；packed（multi-head-per-warp）kernel 中无效的 RoPE collective 发生在**下一个 head 的 RMSNorm reduction 之前**，故 warp chunk 内**第一个之后的每个 head 的 Q/K 值都被损坏**；H200 上 `token_heads_per_warp=8` 时还可额外产生 NaN。单 head kernel 含同一潜在 UB，但没有后续 packed-head 迭代来暴露它。
+  source: 'vLLM PR #50903（2026-08-03 open，对 upstream/main @005fa01 验证）。https://github.com/vllm-project/vllm/pull/50903'
+  behavior: 无 crash。partial RoPE 配置下 Q/K 静默损坏（每 warp chunk 首 head 之后的全部 head），H200 特定配置下产生 NaN。属「partial rotary 下 divergent warp collective UB」新子签名——kernel 级 RoPE 正确性 bug，与配置类 RoPE 故障（9.1–9.7）机制不同但同域。
+  trigger_surface: vLLM 主路径；`rotary_dim < head_dim` 的 NeoX-style 模型 + fused QK-Norm+RoPE kernel
+  discovery: 2026-08-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

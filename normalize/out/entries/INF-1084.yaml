@@ -1,0 +1,53 @@
+id: INF-1084
+legacy_ids:
+- '11.61'
+slug: vllm_mrv2_mtp_thinking_token_budget_ignored_reasoning_runaway
+aliases: []
+title: vLLM V2 runner+MTP 下 thinking 预算被忽略
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: MTP 循环缺 thinking 预算检查
+  behavior: thinking budget 的截断逻辑只挂在标准 decode 路径；V2 runner 的 MTP 多 token draft/verify 循环绕开该 hook，逐 token 预算检查没有插入点
+effect:
+  objects:
+  - 输出内容
+  - 性能/资源
+  detail: V2 runner + MTP + thinking_token_budget：Qwen3.8-27B NVFP4 请求把 completion 配额全当推理烧完、不产出 </think> 或正文；去掉 spec 则预算生效；无 crash，成本与延迟放大到 max_tokens
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V2 runner + MTP 推测解码 + `thinking_token_budget`（config 组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54906
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（Model Runner V2 + MTP speculative decoding 下 `thinking_token_budget` **被忽略**：Qwen3.8-27B ModelOpt NVFP4 请求把全部 completion 配额当推理烧完、从不产出 `</think>` 或正文；同镜像同模型同请求仅去掉 `--speculative-config` 则预算生效（首个生成 token 即推理结束标记）——spec 路径丢失了非 spec 路径的预算约束） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: thinking budget 的截断逻辑（在 reasoning token 流上注入结束标记/硬停）存在于标准 decode 路径，MTP 的多 token draft/verify 循环绕开了该 hook——推测解码的"一次进多 token"使逐 token 预算检查没有插入点。V2 runner 与 spec 的组合未被 thinking-budget 语义覆盖。
+  source: 'vLLM #54906（2026-09-02 open，NVIDIA Thor、单变量对照实验（spec on/off））。https://github.com/vllm-project/vllm/issues/54906'
+  behavior: 无 crash——**预算静默失联**：每条 thinking 请求烧满 `max_tokens`（成本/延迟放大到上限），对按 token 计费的部署是直接经济损失；用户侧显形为"模型永远想不完"。与 11.61 前的 thinking 族（10.38 深推理档空响应）同为推理模式控制失效，本条在 spec 解码循环与预算检查的交叉点。
+  trigger_surface: vLLM V2 runner + MTP 推测解码 + `thinking_token_budget`（config 组合触发）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

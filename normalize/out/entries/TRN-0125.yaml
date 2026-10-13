@@ -1,0 +1,53 @@
+id: TRN-0125
+legacy_ids:
+- ACT.04
+slug: async_ckpt_worker_failure_strands_peers
+aliases: []
+title: Megatron 持久化 ckpt worker 异常导致全 rank 挂死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: megatron-lm
+    component: 持久化 ckpt worker 异常传播
+  behavior: persistent ckpt worker 子进程异常或硬退出时不发布 completion record，父进程只轮询 completion queue、不把 worker 错误转成分布式错误，失败状态也不清理。
+effect:
+  objects:
+  - 可用性/进度
+  - 模型权重
+  detail: 开启 --use-persistent-ckpt-worker 时单 rank worker 故障即把全部分布式 peer 挂死在 ckpt finalize，step 计数冻结；若 watchdog 重启 job 并 resume，可能静默接上写了一半的 ckpt。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/6970
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6971
+  kind: github_pr
+relations: []
+original:
+  category: ACT
+  section: ACT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `--use-persistent-ckpt-worker` 下，persistent checkpoint worker 子进程的异常（Python exception / preload 异常 / `os._exit` 硬退出）终止子进程而不发布 completion record——父进程无限轮询一个永不到达的 completion，**单 rank 故障把全部分布式 peer 挂死**在 ckpt finalize。父进程只轮询 completion queue，从不把 worker traceback/exit code 转成分布式错误；failed worker state 不清理，后续 worker 也起不来。
+  source: 'Megatron-LM #6970（2/6 rank 受控注入：async_fn 异常、preload 异常、`os._exit(17)` 三场景；本地修复验证三场景全 rank 传播成功）。https://github.com/NVIDIA/Megatron-LM/issues/6970 ；修复 PR #6971。https://github.com/NVIDIA/Megatron-LM/pull/6971'
+  behavior: 故障面是活性（hang 而非静默错值），但命中「坏 ckpt 窗口」的编排陷阱：若 worker 在写出部分 ckpt 后死、peer 被挂住、外部 watchdog 重启整个 job 并 resume 到**半成品 ckpt**，坏锚点被静默接上（与 CKPT.08/HW.05 的 resume 坏锚点风险面合流）。观察信号：job 卡在 ckpt finalize、step 计数冻结、completion queue 无消费。
+  discovery: 2026-09-05 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

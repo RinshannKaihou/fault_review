@@ -1,0 +1,52 @@
+id: INF-0248
+legacy_ids:
+- '1.249'
+slug: ttmetal_prod_fp32_srca_tf32_mantissa_dest_to_srca_roundtrip_10bit
+aliases: []
+title: ttnn.prod fp32 经 SrcA 截为 TF32，长乘积坍塌
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.prod SrcA 数据通路
+  behavior: 输入 tile 以 UnpackToSrc 进 SrcA 只保留 TF32 10 位尾数，运行积每步经 mul_reuse_dest_tiles<DEST_TO_SRCA> 再次穿过 SrcA，fp32 精度只覆盖 DEST 累加器。
+effect:
+  objects:
+  - 数值结果
+  detail: float32 输入下乘积按约 10 位尾数形成并向下偏置：4096 元素错 99%，72,192 值乘积返回 3.89e-31（真值 98.9），全张量 prod() 返 denormal；(1+2⁻¹⁰) 因子被乘成 1.0。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.prod` + float32 + 多于数十元素（hw_specific：默认路径即触发；bf16 更差但无精度声明）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57634
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0318
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.prod` 文档声明 FLOAT32 输入输出、program factory 亦开 32-bit DEST，但乘积实际按 **~10 bit 尾数**形成且带向下偏置：`exp(0.01·N(0,1))` 输入（每值 4% 内、乘积远在 fp32 域内）下 32 元素错 4.2%、4096 元素错 **99%**、**72,192 值乘积返回 3.89e-31（真值 98.9）**、全张量 `prod()` 返 denormal 1.4e-45。机理双点：(1) 输入 tile 以 `UnpackMode::UnpackToSrc` 进 **SrcA**（工厂注释自述"Legacy set no unpack_to_dest_mode"）——SrcA 持 TF32（10-bit 尾数），每因子到乘法时只剩 10 位；(2) 运行积留在 DEST 但每步经 `mul_reuse_dest_tiles<DEST_TO_SRCA>` 折叠——fp32 部分积**再次穿过 SrcA**（16-bit-high 路径）。判决性对照：`(1+2⁻¹⁰)` 因子整行被乘成 1.0（因子完全消失）、精确 bf16 输入精确（非算法错、纯舍入路径错）） · Cov: `var:tf32_matmul_truncation`（4.2 TF32 10-bit 尾数截断族——本条在 tt-metal SrcA unpack 维度，且与 DEST→SrcA 回读双机制复合；issue 亦自证即 #45222 对 std/var 描述的机制、#45319 在彼处已修） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: fp32 精度承诺只落在 DEST 累加器标志上，输入侧 unpack 与折返侧 DEST→SrcA 两条路径都不受该标志覆盖——"精度开关粒度小于数据通路粒度"的结构缺陷；误差按每因子 −1.0e-3 相对率对数累积（log(device/exact)/n 实测），4096 元素即到 99%。修复（报告者已在 BH 验证）：两处改 unpack_to_dest + 去 SrcA 折返，修后 72,192 元素相对误差 2.0e-5（torch fp32 为 1.6e-5）、耗时不变。
+  source: 'tt-metal #57634（2026-09-24 open，Bad Outputs，含 n=32..72192 误差表、(1+2⁻ᵏ) 消失因子判决表、双 factory 代码定位与已验证修复数据）。https://github.com/tenstorrent/tt-metal/issues/57634'
+  behavior: 无 crash——**长乘积静默坍塌为垃圾**（量级 1 的乘积返回 1e-31 甚至 denormal）；任何把 prod 当 fp32 语义用的管线（概率连乘、似然、归一化常数）结果系统性偏小且无警告。9.20（RoPE TF32 整数截断）之后 TF32 族在 **tt-metal 归约算子**维度的首例。
+  trigger_surface: tt-metal + `ttnn.prod` + float32 + 多于数十元素（hw_specific：默认路径即触发；bf16 更差但无精度声明）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

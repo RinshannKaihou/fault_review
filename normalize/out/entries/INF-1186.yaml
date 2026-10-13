@@ -1,0 +1,55 @@
+id: INF-1186
+legacy_ids:
+- '13.18'
+slug: vllm_fused_mtp_rmsnorm_branch_dtype_mismatch_compile_fail
+aliases: []
+title: fused MTP RMSNorm 分支 dtype 不一致致编译失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: fused_mtp_input_rmsnorm
+  behavior: kernel 的两个运行时分支对局部变量 x 推断出不同 dtype：masked tl.where 路径提升到 FP32，hnorm 路径保留输入 dtype（如 bf16）。
+effect:
+  objects:
+  - 可用性/进度
+  detail: DeepSeek V4 使用 fused MTP RMSNorm kernel 时，Triton 因控制流分支合并处局部变量类型不一致而编译失败，属显式崩溃、非静默。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；DeepSeek V4 + fused MTP RMSNorm kernel
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50987
+  kind: github_pr
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（fused kernel 分支 dtype 不一致 → Triton 编译失败） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: vLLM DeepSeek V4 的 fused MTP（multi-token prediction）RMSNorm kernel 的两个运行时分支给局部变量 `x` 推断出**不同 dtype**：masked `tl.where` 路径将 `x` 提升到 FP32（因 `tl.where` 的类型提升规则），而 hnorm 路径保留输入 dtype（如 bf16）。Triton 要求控制流分支合并时 local variable 类型一致 → **kernel 编译失败**（branch dtype mismatch）。修复：在两个路径的 load 后都显式 cast 到 FP32，与 `_rmsnorm_row` 已有的 FP32 算术路径对齐；输出仍在 store 时转回输出指针的 dtype，数值行为不变。
+  source: 'vLLM PR #50987（2026-08-04 closed）。组件：fused MTP RMSNorm kernel（`fused_mtp_input_rmsnorm`）。https://github.com/vllm-project/vllm/pull/50987'
+  behavior: crash（Triton kernel 编译失败），非静默。fused MTP RMSNorm 的分支 dtype 不一致 → 编译期类型检查失败。属「fused kernel 分支 dtype 推断不一致 → 编译失败」新子签名——fused kernel 的正确性/编译性 bug。
+  trigger_surface: vLLM 主路径；DeepSeek V4 + fused MTP RMSNorm kernel
+  discovery: 2026-08-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 算子/内核
+        status: unanimous

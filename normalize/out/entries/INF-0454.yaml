@@ -1,0 +1,61 @@
+id: INF-0454
+legacy_ids:
+- '6.61'
+slug: vllm_rocm_aiter_fused_moe_nan_logits_gfx942
+aliases: []
+title: vLLM AITER fused-MoE 第二步起 NaN logits
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: AITER fused-MoE 路径
+  behavior: AITER fused-MoE 路径在 decode 阶段算出 NaN，prefill 正常；组件隔离已排除 KV dtype 与 attention，具体代码缺陷原文未给出；main 已修复，v0.26.0 release 镜像仍存在。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: gfx942（8x MI325X、TP8）以 VLLM_ROCM_USE_AITER=1 服务 Qwen3.5-397B-A17B-FP8 时触发；首 token 正常，此后每步对 NaN logits 取 argmax 恒输出 token 0，请求 logprobs 返回 400。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm；gfx942 + AITER fused-MoE + FP8 MoE（Qwen3.5-397B-A17B-FP8）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: subsystem：缺少“MoE 专家计算/融合 MoE kernel”类值；MoE路由 只描述 router/分派/负载均衡，暂取最接近的 MoE路由。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51580
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（ROCm AITER fused-MoE 路径在 gfx942 上从第二步 decode 起产 NaN logits→argmax 恒 token 0） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`VLLM_ROCM_USE_AITER=1` 服务 Qwen3.5-397B-A17B-FP8（TP8, 8x MI325X gfx942）：第一个 token 正确（有限 logprob），此后每步 decode 输出 token id 0（argmax over NaN logits）。组件隔离（固定 prompt 精确 token-id probe）排除 KV dtype（fp8_e4m3 与 auto 均 NaN）与 attention（`VLLM_ROCM_USE_AITER_MHA=0` 仍 NaN），仅 `VLLM_ROCM_USE_AITER_MOE=0` 或 `AITER=0` 干净。缺陷在 AITER fused-MoE 路径。prefill 健康，NaN 自第二步 decode 起。已在 main 修复，v0.26.0 release 镜像仍存在。模型为 hybrid attention + Gated-DeltaNet MoE。logprobs 请求返回 400 `Out of range float values are not JSON compliant: nan`。'
+  source: 'vLLM #51580（2026-08-09 open）。组件 AITER fused-MoE。https://github.com/vllm-project/vllm/issues/51580'
+  behavior: 无 crash。从第二步 decode 起所有 token 恒为 0（NaN argmax）。属「ROCm 融合 MoE 内核 NaN」签名——release 镜像回归（main 已修）。
+  trigger_surface: vLLM ROCm；gfx942 + AITER fused-MoE + FP8 MoE（Qwen3.5-397B-A17B-FP8）
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 MoE路由：按 rule 功能域优先，原文组件隔离把缺陷定位在 AITER fused-MoE 路径（只在 MoE 路径出现，排除 KV dtype 与 attention），故不取通用 算子/内核；vocab_gap 已记录词表缺“MoE 专家计算”类值。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 算子/内核
+        status: panel7

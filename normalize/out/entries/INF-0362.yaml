@@ -1,0 +1,55 @@
+id: INF-0362
+legacy_ids:
+- '5.15'
+slug: sglang_kfd_peerdirect_multinic_reregistration_memory_accounting_corruption
+aliases: []
+title: KFD 多 NIC 注册致显存 free 虚增，SGLang 超配 OOM
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: rocm
+    component: amdgpu/KFD 驱动显存记账
+  behavior: 同一 GPU buffer 经 ibv_reg_mr 在多个 NIC 上注册为 RDMA MR 时，KFD 驱动每多一个 NIC 少计一份用量，hipMemGetInfo 的 free 虚增、used 可下溢。
+effect:
+  objects:
+  - 指标/日志
+  - 可用性/进度
+  detail: MI355X 上 8GB buffer 注册 4 个 NIC 后 free=325.58GB，超过物理总量 309GB；Mooncake 分离式部署中 SGLang 按该值确定 KV pool 大小，过度分配导致服务启动期 OOM crash。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang/ROCm；Mooncake（或任何多 NIC `ibv_reg_mr` 注册 GPU buffer 的路径）+ KFD 驱动
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: effect_object 缺“设备资源记账读数”：hipMemGetInfo 显存读数被驱动算错并被用于容量决策，暂取最接近的 指标/日志
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34641
+  kind: github_pr
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（多 NIC 重复注册同一 GPU buffer 使 KFD 显存记账欠计 → free 虚增至超过物理总量） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'ROCm/AMD 上同一 GPU buffer 经 `ibv_reg_mr`（PeerDirect/GPUDirect）在**多个 NIC** 上注册为 RDMA memory region 时，amdgpu/KFD 驱动每多一个 NIC 就把该 buffer 用量少计一份——`hipMemGetInfo` 报告的 free 显存按 `(nNIC-1)×buffer_size` 虚增，used 甚至 uint64 下溢。最小 HIP+ibverbs 复现（MI355X，8GB buffer）：4 NIC 后 free=325.58GB > 物理总量 309GB。分离式 serving 中 Mooncake 把 KV pool 注册到每块 HCA 是标准做法，SGLang 读取该被污染值做 KV pool sizing → 过度分配 → OOM。修复（PR #34641）对 free 显存加 cap 防御。'
+  source: 'SGLang PR #34641（2026-08-12 open）。MI355X，Mooncake 分离式部署。https://github.com/sgl-project/sglang/pull/34641'
+  behavior: 服务启动期 **OOM crash**；根因在驱动记账层，应用侧只见「free 显存比物理总量还大」的悖论读数。属「驱动级内存记账 × RDMA 多 NIC 注册」**新子签名**——硬件资源计量的静默损坏上溢到服务栈容量决策。
+  trigger_surface: SGLang/ROCm；Mooncake（或任何多 NIC `ibv_reg_mr` 注册 GPU buffer 的路径）+ KFD 驱动
+  discovery: |-
+    2026-08-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

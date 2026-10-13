@@ -1,0 +1,59 @@
+id: INF-0653
+legacy_ids:
+- '6.260'
+slug: sglang_dsa_kpool_fp8_indexer_corrupts_16k_niah_needle_digits
+aliases: []
+title: SGLang DSA fp8 k-pool indexer 16K 长上下文错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: DSA k-pool fp8 indexer
+  behavior: 未逐行定位；三引擎对照把缺陷收窄到 SGLang k-pool lightning indexer 实现（kernel 语义、key-scale 处理或池化 logits 上的 top-k 选择），needle 所在 key 被丢弃或损坏。
+effect:
+  objects:
+  - 输出内容
+  detail: GLM-5.3-Flash fp8 在 16K 上下文 RULER niah_single_2 准确率降至 55%（4K 100%、8K 95%），逐字引用正确 needle 句却输出错误数字；vLLM 与 transformers 同输入正确，--dtype bfloat16 仅部分缓解。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang v0.5.20+/main + GLM-5.3-Flash fp8 + DSA k-pool indexer + ≥16K 上下文（config；`--dtype bfloat16` 部分缓解、vLLM/transformers 同输入正确）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/41494
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang GLM-5.3-Flash（fp8 checkpoint）DSA **fp8 k-pool indexer** 在 16K 长上下文 RULER `niah_single_2` 上准确率塌到 **55%**（4K=100%、8K=95%，n=20 greedy）：模型**逐字引用正确的 needle 句子却输出错误数字**（`used-hound`：gold `2921859` → SGLang `7803`；`workable-chateau`：`5418934` → `5906`）——needle key 被 top-k 选择丢弃/损坏而非 token 预算截断（`finish_reason=stop` 且准确率对 max_tokens=64/512/8192/16384 平坦 45-55%）。三引擎同输入/同权重/同 indexer 参数（`index_kpool=4, index_topk=2048, index_n_heads=32, index_head_dim=128`）对照：**transformers（fp32 打分）✓、vLLM 0.30.1（deep_gemm fp8 sparse-MQA on fp8 K cache——与 SGLang 相同低精度方法）✓、SGLang ✗**——vLLM 用同款 fp8 deep_gemm 正确排除"fp8/sparse 选择固有缺陷"，指向 SGLang k-pool indexer 实现（kernel 语义/key-scale 处理/池化 logits 上的 top-k 选择）。`--dtype bfloat16` 仅部分恢复（救回 idx 6、idx 9 仍错 `5709`）——workaround 而非修复；v0.5.20 与 main `nightly-dev-20260927-425a1f8f` 均复现（未修） · Cov: `NEW`（SGLang DSA k-pool fp8 indexer 长上下文选择损坏子签名；与 8.83（GLM-5.3-Flash ROCm indexer block-table 粒度失配 + KpoolTail slotmap）、8.73（kpool top-k 2048 宽溢出）同 GLM kpool 寻址/选择族但本条在 **Hopper 主路径 + 池化 top-k 选择层**且双对照引擎定位；与 8.94（ROCm kpool 非整除转换跳过）跨硬件构成 kpool 选择损坏对偶） · 触发 `config` · 置信度 `documented`'
+  mechanism: 未逐行定位（0 评论、无 triage 响应）；报告者以三引擎对照把缺陷域收窄到 SGLang k-pool lightning-indexer 路径（fp8 key cache + fp8 打分 + top-2048 选择），fp8 方法本身被 vLLM 同法正确排除。环境：4×H200 TP4、CUDA graph on。
+  source: 'SGLang #41494（2026-09-28 open，含双失败案例表（可无文件核对 的 needle key/gold/output 四元组）、4K/8K/16K 聚合准确率、三引擎同参数对照、dtype workaround 半效记录与版本双复现）。https://github.com/sgl-project/sglang/issues/41494'
+  behavior: '无 crash——**16K 级长上下文抽取任务静默错值**（引用原句但数字错，模型自述"找不到 magic number"），8K 以下基本正常使阈值下测试全绿；NIAH 数字精度是该任务唯一直接观测面。 回访（2026-10-09）：issue #41494 已 closed/completed（10-05）——closed 不自动证明修复已发布，机制记录不变。'
+  trigger_surface: SGLang v0.5.20+/main + GLM-5.3-Flash fp8 + DSA k-pool indexer + ≥16K 上下文（config；`--dtype bfloat16` 部分缓解、vLLM/transformers 同输入正确）
+  discovery: 2026-09-28 每日扫描。
+  回访补记（2026-09-29）: 'SGLang #41494 出现首条机制定位评论（liaoruoxue，09-29）——**`kpool_topk_transform.cuh` 的 32 KB staging 区容纳 8192 候选索引，threshold bin 溢出时超额候选被静默丢弃**（无 clamp、无二次扫描），needle-bearing 精确边界项进不了 top-K；`index_kpool=4` 下溢出域约自 **16,388 history tokens** 起——与 4K=100%/8K=95%/16K=55% 的准确率悬崖精确吻合。评论者已在生产 serving 上运行 exact-key multi-round rescan 修复头文件（同 #37625 语义），A/B 显示 rescan 无性能代价（TTFT p95 3.637s vs 3.721s）。vLLM 对照解释补齐：其 selector 无 threshold-bin 快路径故正确。**条目机制由"未逐行定位"升级为"kernel 级定位（staging 截断）+ 第三方独立复现（8×RTX PRO 5000 Blackwell TP8）+ 修复已验证"**，判定与分类不变。'
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 算子/内核。原文三引擎对照：vLLM 用同款 deep_gemm fp8 sparse-MQA on fp8 K cache 正确，“排除 fp8/sparse 选择固有缺陷”，指向 SGLang k-pool indexer 实现（kernel 语义/key-scale 处理/top-k 选择）；量化方案本身被排除，缺陷在 sparse attention indexer kernel 实现，归 算子/内核（词表含 attention/SDPA kernel）。保留意见：若定位到 fp8 key-scale 处理再改 量化。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

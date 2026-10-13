@@ -1,0 +1,51 @@
+id: INF-0710
+legacy_ids:
+- '7.37'
+slug: hf_metalconfig_2d_kernel_3d_batched_input_corruption
+aliases: []
+title: MetalLinear 对 3D batched 输入只算首个样本
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: transformers
+    component: MetalLinear.forward 输入展平
+  behavior: MetalConfig 量化的 MetalLinear.forward 把 batched 生成的 3D 输入直接传给按 2D 语义计算的 affine_qmm_t kernel，只算第一个 batch 元素，其余输出未写入。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Apple Silicon MPS 上 batch_size>1 的 batched 生成时，第一个序列正确，后续序列输出乱码或一串感叹号；无 crash，逐样本测试发现不了。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: transformers；Apple Silicon MPS + MetalConfig 量化 + batch_size > 1 的 batched 生成
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/pull/47970
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（MPS 量化 kernel 假设 2D 输入 × batched 生成传 3D → 只算第一个 batch 元素） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 'Apple Silicon MPS 上 `MetalConfig` 量化的 `MetalLinear.forward` 在 batched 生成（`batch_size > 1`）时收到 3D 输入 `[batch, seq, in_features]` 并直接传给 `kernel.affine_qmm_t`；该 Metal kernel 按 2D `[shape[-2], K]` 语义计算——只算出第一个 batch 元素，其余 batch 元素未被写（保留未初始化/垃圾值）。修复（PR #47970）在 `input.ndim > 2` 时先 flatten 为 2D 再调 kernel、输出 reshape 回去。'
+  source: 'transformers PR #47970（2026-08-14 open，fixes #47331）。Apple Silicon MPS + MetalConfig 量化。https://github.com/huggingface/transformers/pull/47970'
+  behavior: 无 crash。batch>1 时**第一个序列正确、后续序列输出 garbage**（或解码为一串感叹号）——逐样本测试发现不了，只有批量推理暴露。属「专用后端 kernel 维度假设（2D）与通用生成路径（3D batched）错配」**新子签名**。
+  trigger_surface: transformers；Apple Silicon MPS + MetalConfig 量化 + batch_size > 1 的 batched 生成
+  discovery: 2026-08-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

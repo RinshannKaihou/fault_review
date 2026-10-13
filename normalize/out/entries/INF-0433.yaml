@@ -1,0 +1,56 @@
+id: INF-0433
+legacy_ids:
+- '6.40'
+slug: vllm_offloading_connector_chunk_boundary_silent_wrong_output
+aliases: []
+title: vLLM Mamba 卸载在 chunk 边界重取后静默输出错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: resolve_mamba_align_size
+  behavior: resolve_mamba_align_size 仅对 align 模式做命中窗口对齐，all 模式也按 block 存 recurrent 状态；精确边界 refetch 返回 N-1 token，恢复状态却含 token N。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: Nemotron-Nano-9B-v2 + mamba_cache_mode=all + OffloadingConnector CPU 卸载，prompt 恰为 Mamba chunk 整数倍时，refetch 输出与 cold 在第 5 个 token 分叉（1270 vs 1556），无异常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；hybrid attention+Mamba 模型 + OffloadingConnector + mamba_cache_mode=all + chunk 边界
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51094
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（OffloadingConnector 精确 chunk 边界 + mamba_cache_mode=all 静默错误输出） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`OffloadingConnector` 在 prompt 长度恰为 offloaded Mamba chunk 整数倍且 `mamba_cache_mode="all"` 时，CPU cache refetch 后静默产生不同输出。`resolve_mamba_align_size()` 仅对 `align` 模式启用 hit-window 对齐，但 `"all"` 模式也存 recurrent Mamba 状态于 token/block 位置；prefix lookup 上限 `num_tokens-1`（末 token 须重算 logits）。精确边界处 refetch 返回 `N-1` token 但恢复的 state 含 token N → token N 被应用两次，输出改变无异常。Nemotron-Nano-9B-v2（hybrid full-attention+Mamba）复现：cold vs refetch 首 token 序列在第 5 个 token（1270 vs 1556）开始分叉。'
+  source: 'vLLM #51094（2026-08-05 open）。v0.25.1 nightly + v0.26.0 + main 均含。Nemotron-Nano-9B-v2 + prefix caching + mamba_cache_mode=all + OffloadingConnector + CPU KV offload + eager + greedy。https://github.com/vllm-project/vllm/issues/51094'
+  behavior: 无 crash、无 NaN。refetch 后输出静默分叉——**完全静默**，仅 cross-run 对比才发现。属「hybrid attention+Mamba 的 CPU 卸载与 recurrent state 对齐」**新子签名**——`mamba_cache_mode` 的 `"all"` vs `"align"` 对齐逻辑覆盖不全。
+  trigger_surface: vLLM；hybrid attention+Mamba 模型 + OffloadingConnector + mamba_cache_mode=all + chunk 边界
+  discovery: 2026-08-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 静默错误：原文 token N 被应用两次，refetch 输出是确定性的错误结果（“输出改变无异常”），并非同输入多次运行随机不一致，故不取 不可复现。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

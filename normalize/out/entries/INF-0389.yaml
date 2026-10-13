@@ -1,0 +1,67 @@
+id: INF-0389
+legacy_ids:
+- '5.42'
+slug: sglang_minimax_m3_ascend_fuseep_route_missing_redundant_allreduce_shared_expert_misshard
+aliases: []
+title: SGLang MiniMax-M3 漏判 FuseEP 致 MoE 输出重复归约
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: sglang
+    component: MiniMaxM3MoE 分发与共享专家
+  behavior: MiniMaxM3MoE 漏判 is_ascend_fuseep()：FuseEP 已全局 gathered 的输出又做 TP all-reduce；shared expert 被 TP 切分而非复制；ep_size/top_k 未初始化。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: Ascend NPU 上 ascend_fuseep 后端且 tp>1 时，路由激活每层放大 tp_size 倍（TP8 即 ×8），叠加残缺的 shared expert 贡献；无 crash、无 NaN，服务看似正常但输出持续劣化，属性缺失还可能引发 KeyError。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang + MiniMax-M3 + Ascend NPU + ascend_fuseep + tp>1（config）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40735
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0373
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（SGLang `minimax_m3.py` 的 `MiniMaxM3MoE` 只检查 `is_deepep()`、漏 `is_ascend_fuseep()`：Ascend NPU `--moe-a2a-backend ascend_fuseep --tp>1` 下 (1) 走 `forward_normal()` → `FusedMoE.forward()` 内部检测 `_use_ascend_fuseep` 调 `forward_fuseep()`——输出**已全局 gathered**，随后又执行 `tensor_model_parallel_all_reduce` 把路由激活每层乘以 tp_size（TP8 即 ×8）；(2) shared expert 以 TP 切分而非复制（FuseEP 不做层级 all-reduce），未归约的部分和直接加进合并输出；(3) `ep_size`/`top_k` 属性未初始化） · Cov: `var:sglang_gptoss_dp_attention_double_reduction_allreduce_scatterv`（5.26 双重归约族） · 触发 `config` · 置信度 `documented`'
+  mechanism: MoE 后端分发谓词不完备（deepep-only 检查）使 FuseEP 全局合并输出被当作 TP 分片输出再归约一次——与 5.26（GPT-OSS DP attention 双重归约）同构：**"已是全局量"与"仍是局部量"的状态假设错位**；叠加 shared expert 切分语义与属性初始化两处伴随缺陷。
+  source: 'SGLang #40735（2026-09-22 open，含 `minimax_m3.py` 分发逻辑逐条分析、三重效应机制与期望行为描述）。https://github.com/sgl-project/sglang/issues/40735'
+  behavior: 无 crash、无 NaN——MoE 输出幅值确定性放大（TP8 ×8）+ shared expert 残缺贡献，模型输出持续劣化但"看起来在正常服务"；属性缺失还可能触发下游 KeyError/错误路由等次生故障。
+  trigger_surface: SGLang + MiniMax-M3 + Ascend NPU + ascend_fuseep + tp>1（config）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 MoE路由：按 rule 功能域优先，三处缺陷（漏判 is_ascend_fuseep 致重复 all-reduce、shared expert 误切分、ep_size/top_k 未初始化）都只出现在 MoE a2a 后端（ascend_fuseep 专家分派）路径上；minimax_m3.py 只是代码所在文件。visibility 取 质量退化，原文“模型输出持续劣化但看起来在正常服务”。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+        status: panel7
+    uncertain:
+    - subsystem
+    - visibility

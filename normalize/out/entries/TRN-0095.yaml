@@ -1,0 +1,58 @@
+id: TRN-0095
+legacy_ids:
+- DATA.13
+slug: wrapper_signature_probe_drops_packed_boundaries
+aliases: []
+title: verl 能力探测误判 wrapper，critic 丢 packed 边界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: verl
+    component: value 引擎 cu_seqlens 能力探测
+  behavior: 引擎按外层模块 forward 显式签名探测 cu_seqlens 支持；TRL value-head wrapper 只有 **kwargs，探测为 False，critic 输入被静默省略 cu_seqlens。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 隐状态
+  detail: Qwen3.5 线性注意力 critic + TRL value-head + FSDP 引擎，SP=1 即触发：同一 microbatch 内独立打包的样本在 critic 线性注意力状态上互相可见；无 crash，数值影响未测量。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-20'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7931
+  kind: github_issue
+relations: []
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'verl FSDP/FSDP2 value-model 引擎用 `"cu_seqlens" in signature(module.forward).parameters` 探测 packed 边界能力——只看**返回的外层模块**的显式签名。当 value head 走 TRL fallback（`AutoModelForCausalLMWithValueHead`）时，wrapper 的 forward 只有 `**kwargs`、无显式 `cu_seqlens` 参数（但会把 kwargs 透传给底座），探测返回 False → `use_remove_padding=True` 下 `prepare_model_inputs` 对 critic 静默省略 `cu_seqlens`/`cu_seqlens_cpu`；被 patch 的 Qwen3.5 linear-attention 分支只认显式 `cu_seqlens`、**不从 position_ids 重置恢复边界**，同一 microbatch 里独立打包的样本在 critic 的线性注意力状态上互相可见。SP=1 即中招（不需要 SP>1）；actor 路径 #6660 已修，TRL critic wrapper 是漏网实例。修复方向 = 对「已验证的透明 wrapper」解析能力或显式能力契约（把任意 `**kwargs` 当支持不安全）。source 级复现器（AST 抽取原始谓词/语句 + 记录 stub、纯标准库）：underlying=True / TRL wrapper=False、critic inputs 无边界键、显式供给时**同一** forward 体原样透传——已证边界参数缺失，数值影响未测（报告者明示不主张）。'
+  source: 'verl #7931（2026-09-19；Qwen3.5 + TRL v0.27.0 value-head critic + FSDP 引擎，commit `3efe38c75`；关联 #6660/#6780/#7471）。https://github.com/verl-project/verl/issues/7931 ；2026-09-20 补：维护者 wuxibin89 确认遗漏发生在 **veRL 的能力探测**（早于 TRL forward 被调用）、非 TRL 版本回归——bug 定位在 verl 侧，等修复方向（bump trl 依赖 vs 修探测逻辑）落定。'
+  behavior: 无 crash——critic 对 packed 样本的隔离静默失效（线性注意力态跨样本泄漏面由机制成立；真实 ckpt 的 value/PPO 更新差未测量）。与 DATA.02（attention 边界丢失）/ DATA.06（边界恢复推断错）同族不同位：这里边界在**引擎输入组装层被能力探测错判丢弃**；「按显式签名探测能力」的病根与 CKPT.19（类名白名单漏 norm）同型——结构探测遇上透明包装即静默降级。
+  discovery: 2026-09-20 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 数据管线
+        to: 运行时/执行
+        status: unanimous
+    uncertain:
+    - behavior

@@ -1,0 +1,59 @@
+id: INF-0127
+legacy_ids:
+- '1.128'
+slug: vllm_gdn_triton_fp32_ssm_readout_fp16_store_overflow_collapse
+aliases: []
+title: vLLM GDN 读出按 fp16 物化，溢出致重复 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: GDN Triton 内核读出输出 dtype
+  behavior: fused_sigmoid_gating_delta_rule_update 读出 o=state@q 以 fp32 累加，输出却按激活 dtype 分配（q.new_empty 继承 fp16）；chunk/prefill 内核同此模式。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: fp32 SSM cache 且走 Triton 路径（非 Blackwell）时，长对话状态增长使读出超 fp16 上限 65504、store 溢出为 inf，经 RMSNormGated 变 NaN，decode 坍缩为单 token 无限重复（“!!!!”）；短 prompt 正常。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + GDN/Qwen3-Next 类模型 + `--mamba-ssm-cache-dtype float32` + 非 Blackwell GPU（Triton 路径）+ 长上下文（状态增长阈值）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54308
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`fused_sigmoid_gating_delta_rule_update` 读出 `o = state @ q` 以 fp32 累加（`b_o` 为 tl.float32），但输出张量按激活 dtype 分配（`q.new_empty` 继承 fp16）——**fp32 SSM cache 的未归一化累加器**随上下文增长超 fp16 max 65504 → store 时溢出为 inf → `RMSNormGated` 的 inf/inf=NaN → decode 永久重复单 token） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 'GDN state 是非归一化累加器、仅在读出时由 RMSNormGated 归一化——fp32 state cache（`--mamba-ssm-cache-dtype float32`）下读出值随上下文无界增长；Triton decode-update kernel 在读出侧丢回激活精度即触发。Blackwell 的 fi/cutedsl 后端读出全 fp32 不触发——**仅 Triton 路径**（非 Blackwell GPU 的默认路径）。同 materialize-in-activation-dtype 模式也在 chunk/prefill 内核（chunk_o、chunk_delta_h、wy_fast）与 core_attn_out buffer。含最小 kernel repro（state×1e6：main 107 个非有限值、max=inf；修复后通过）；修复 PR #54146 一行（按 initial_state.dtype 条件分配）。'
+  source: 'vLLM #54308（2026-08-28 open，4×MI50 gfx906 ROCm，Qwen3-Next GDN，含 kernel repro 与回归测试）。https://github.com/vllm-project/vllm/issues/54308 · 修复：PR #54146'
+  behavior: 无 crash——长对话（状态充分增长后）decode **坍缩为单 token 无限重复**（`!!!!!!...`），greedy/低温度无关、短 prompt 正常；退化由 RMSNorm 的 inf/inf=NaN 进入采样。属「**累加器 dtype 与物化 dtype 在读出边界失配**」新子签名：与 6.154（SM121 cookbook 四缺陷的 \"!!!!\" garbage decode）表象同形但根因不同（本条是数值溢出路径、彼条是 arch guard 缺失）；与 1.106（SDPA bf16→fp32 回归）互为对偶（升精度回归 vs 降精度物化）。
+  trigger_surface: vLLM + GDN/Qwen3-Next 类模型 + `--mamba-ssm-cache-dtype float32` + 非 Blackwell GPU（Triton 路径）+ 长上下文（状态增长阈值）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+        status: panel7
+    uncertain:
+    - effect
+    - visibility

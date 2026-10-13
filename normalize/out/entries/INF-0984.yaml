@@ -1,0 +1,55 @@
+id: INF-0984
+legacy_ids:
+- '10.68'
+slug: vllm_qwen3_asr_audio_preprocessing_token_count_divergence_hf_native
+aliases: []
+title: vLLM Qwen3-ASR 音频预处理与 HF 原生 token 数不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: Qwen3-ASR 音频特征提取与padding
+  behavior: 硬编码 WhisperFeatureExtractor 而非 checkpoint 声明的 Qwen3ASRFeatureExtractor（缺最小长度 padding），并沿用 Omni 波形 padding 到 hop 倍数。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: 同一波形 vLLM 与 HF 原生 processor 音频 token 数不同：16001 样本 14 vs 13，321 样本 1 vs 7（丢 6 个）；短音频误差比例大，ASR 转写质量静默退化，与 HF 管线无法对拍。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + Qwen3-ASR（MULTIMODAL_REGISTRY processor）+ 音频输入（partial：模型专用路径）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56981
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: trtllm_tokenizer_alias_table_drift
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`ambiguous`（vLLM Qwen3-ASR 音频 processor 与 checkpoint 原生 HF processor 对同一波形产出**不同音频 token 数**：16001 样本 → vLLM 14 vs HF 13；321 样本 → vLLM 1 vs HF 7（vLLM 丢了 6 个 token）。两个预处理分歧：(1) 继承 Omni 的 waveform padding 到 hop 长度倍数（改变特征长度与 token 计数）；(2) 硬编码 `WhisperFeatureExtractor` 而非遵循 checkpoint 声明的 `Qwen3ASRFeatureExtractor`（含其 minimum-length padding）。48 个新用例中 34 个在未修改上游失败、修复后 48 全过（报告者持候选修复）） · Cov: `var:trtllm_tokenizer_alias_table_drift`（10.56 预处理实现与 checkpoint 原生路径分歧族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: vLLM 侧 processor 以通用特征提取器（Whisper）替代模型专用特征提取器（Qwen3ASR），叠加继承的波形 padding 策略——两处与原生实现的静默分歧共同改变音频→token 映射；短音频（321 样本）误差比例极大（1/7）。
+  source: 'vLLM #56981（2026-09-15 open，含无权重复现（三长度对照表 15999/16001/321）、双根因定位与 48 用例回归统计）。https://github.com/vllm-project/vllm/issues/56981'
+  behavior: 无 crash——音频内容被截断/错位编码（丢 token 即丢音频信息），ASR 转写质量静默退化；与 HF 原生管线的输出不可对拍（评测基准漂移）。10.56（TRT-LLM tokenizer 别名表漂移）之后"预处理路径分歧"族新成员：本条在**音频特征提取器**维度、token 数量级分歧可直接测量。
+  trigger_surface: vLLM + Qwen3-ASR（MULTIMODAL_REGISTRY processor）+ 音频输入（partial：模型专用路径）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

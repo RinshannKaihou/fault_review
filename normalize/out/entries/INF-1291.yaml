@@ -1,0 +1,63 @@
+id: INF-1291
+legacy_ids:
+- K8.14
+slug: sglang_kimiK3_dspark_longctx_pad_nan_storm
+aliases: []
+title: Kimi-K3 DSPARK 长上下文 NaN 致 [PAD] 风暴与崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: DSPARK prefill/draft 路径
+  behavior: '长上下文下 logits 被瞬态 NaN 污染，根因与 #32477 修复的写侧 bug 一致但修复未进入 kimi-k3 image；叠加 allowed_special="all" 且 pad 未被 stop/过滤。'
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  - 可用性/进度
+  detail: 约 90k–237k token 长上下文 + DSPARK 时突发：(A) 持续输出字面 [PAD] 直到 max_tokens 或断连（最坏单流 17,256 个）；(B) DSPARK 路径抛 CUDA assert，杀死全部 TP rank。短上下文测试不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-30'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/32968
+  kind: github_issue
+relations: []
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'Kimi-K3 服务（`kimi-k3` 分支）+ DSPARK 推测解码在长上下文（≈90k–237k token）下暴露两种相关故障模式，共享同一根因（**瞬态 NaN 污染 logits**，与 #32477 修复的写侧 bug 一致，但该修复**不在任何已发布的 kimi-k3 image 中**）：(A) **`[PAD]` token 风暴**——模型中途突然持续输出 pad token（id 163839）作为字面 `[PAD]` 文本，直到 max_tokens 或客户端断连（最坏单流 17,256 个 [PAD]、~2MB SSE、664s decode）；(B) **DSPARK CUDA assert 崩溃**——`probability tensor contains either inf, nan or element < 0`（TensorCompare.cu assert）从 DSPARK prefill/draft 路径抛出，杀死全部 TP rank。两者突发、与长上下文相关、短上下文测试不可见。叠加因素：`allowed_special="all"` 使 `[PAD]` 可复现，且 pad 未被 stop/过滤。'
+  source: 'SGLang #32968（2026-07-30 open，kimi-k3 branch f37baeb52，SGLang 0.5.16，torch 2.11.0+cu13）。https://github.com/sgl-project/sglang/issues/32968 。相关 #32477（写侧 NaN 修复）。'
+  behavior: (A) 持续 `[PAD]` 输出（静默错误输出，非崩溃）；(B) 全引擎 CUDA assert 崩溃（auto-recover after reload）。两者对长上下文 + 推测解码 + 特定 image 的组合门控。
+  trigger_surface: SGLang 专用
+  signature: infra_off / control-flow。NaN 污染 logits 在采样层（post-forward），隐藏态检测器原理上不可见——属结构性盲点。检测面在 logits 层 NaN 检查（cheap 族的 nan_inf_flag on logits）。
+  repro: 不可软件复现——需要 Kimi-K3 + DSPARK + 长上下文 + 特定未修复 image。
+  locus: '`control-flow`'
+  priority: '`high`（生产环境实际复现的静默错误 + 崩溃）'
+  discovery: 2026-07-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '维持 subsystem=解码/采样，不写 待定。原文虽未给出 #32477 写侧 bug 的位置，但两种模式均由 DSPARK 推测解码门控，崩溃从''DSPARK prefill/draft 路径''抛出，依据充分到可选定一个值。visibility 独立判断曾考虑 数值异常，复核后维持 静默错误：原文自述 (A) 为''静默错误输出，非崩溃''，NaN 位于内部 logits，外部看到的是 [PAD] 风暴；崩溃分支由 可用性/进度 覆盖。保留意见：NaN 根因位置待上游确认。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

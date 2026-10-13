@@ -1,0 +1,53 @@
+id: INF-0339
+legacy_ids:
+- '4.23'
+slug: vllm_hybrid_mamba2_prefix_cache_all_mode_chunked_prefill_cross_call_nondeterminism
+aliases: []
+title: vLLM 混合 Mamba2 all 缓存模式下分块 prefill 非确定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mamba 状态 checkpoint 写入/恢复
+  behavior: mamba_cache_mode=all 的状态 checkpoint 写入/恢复与跨 step 的 chunked prefill 分割交互存在未定序路径，疑为状态恢复读取序或 checkpoint 绑定序非确定。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: granite-4.0-h-tiny、Falcon-H1-Tiny 同序 8 prompt 四次 greedy generate 跨调用分叉（prompt 1 第 5 token 即 16 vs 24）；需 all 模式、跨步分块且 ≥3 并发序列，align/none/不分块均恒等。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid Mamba2 + prefix caching（cache_mode="all"）+ chunked prefill + ≥3 并发序列（config：开关组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57267
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: sglang_vlm_temp0_cross_build_near_tie_flip_worker_nondeterminism
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（vLLM 0.27.1 hybrid Mamba2+attention 模型（`ibm-granite/granite-4.0-h-tiny` 与 `tiiuae/Falcon-H1-Tiny-90M-Instruct` dense 双厂商复现，排除 MoE）+ 前缀缓存（`mamba_cache_mode="all"`）下，同一 `LLM` 对同序 8 prompt 的四次 `generate()`（greedy、同权重、逐次重置前缀缓存）**跨调用分叉**——prompt 1 在 token 5 即 16 vs 24。两条件合取触发：prefill 跨 scheduler step 分块 + cache_mode="all"；`align`/`none`/不分块（budget 32768）均逐调用恒等；`mamba_ssm_cache_dtype="float32"` 仍分叉（非舍入）。服务端 fuzz 1500 次迭代：默认配置 20 对**调度器逐步组成完全一致**（同批成员/同 token 计数/同 chunk 边界）的运行产出不同 token；align 模式 0/700、`--max-num-seqs 1` 0/1103、`=2` 0/470——需 ≥3 并发序列。比较的 1525 步中 attention backend/cascade 路径/shared-prefix 长度/split 数/`cu_seqlens`/layout/dtype 每层字段全一致——**同 kernel 同输入不同果**） · Cov: `var:sglang_vlm_temp0_cross_build_near_tie_flip_worker_nondeterminism`（4.12 批组成耦合非确定族） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`mamba_cache_mode="all"` 的状态 checkpoint 写入/恢复与 chunked prefill 的跨步分割交互存在未定序路径（每层调度字段全同仍分叉，指向状态恢复的读取序或 checkpoint 绑定序非确定，而非 kernel 选择差异）；chunk 边界一致时两条件合取仍非确定，说明分叉点在状态块粒度而非 token 粒度。'
+  source: 'vLLM #57267（2026-09-17 open，bug/kv-cache-manager，含 6 配置确定/非确定矩阵、20s 离线复现脚本、服务端 1500 迭代 fuzz 统计与 1525 步每层字段一致性对照）。https://github.com/vllm-project/vllm/issues/57267'
+  behavior: 无 crash、无 NaN——greedy 输出跨调用非确定（同批同序同权重 token 5 即翻转），批内 ≥3 序列 + 长提示分块即触发；对确定性审计/回归对拍/评测复现全部失效。4.12（SGLang VLM temp=0 跨构建 near-tie 翻转 + worker 级非确定）与 4.13（deterministic flag 对量化 hybrid 静默无效）之后批不变族新成员：本条在 **Mamba 状态缓存模式 × chunked prefill**维度、且给出调度器级完全一致的强对照证据。
+  trigger_surface: vLLM + hybrid Mamba2 + prefix caching（cache_mode="all"）+ chunked prefill + ≥3 并发序列（config：开关组合触发）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,58 @@
+id: INF-0745
+legacy_ids:
+- '7.72'
+slug: vllm_modelopt_mixed_precision_fp8_block_scales_mtp_experts_undispatched
+aliases: []
+title: ModelOpt 混合精度 FP8 块 scale 专家与 MTP 层加载失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: RoutedExperts 量化方法分派
+  - subsystem: 模型定义
+    stack: vllm
+    component: Qwen4Exp MTP 层索引命名
+  behavior: RoutedExperts if-chain 缺 FP8_BLOCK_SCALES，返回 None 使专家层建成非量化；MTP 层名按 num_hidden_layers+idx 构建，与量化配置的 mtp.layers.0 错位。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 加载 nvidia/Qwen3.8-Flash-Next-NVFP4（含 MTP）即报 AttributeError（缺 w2_weight_scale_inv）；两处都修才能加载，补丁后 MTP3 接受率 59.1%。缺陷 (a) 若无参数缺失报错路径，未量化专家层可能静默以 BF16 服务。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + ModelOpt MIXED_PRECISION + FP8_BLOCK_SCALES routed experts + MTP（模型×量化格式组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55496
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（ModelOpt `MIXED_PRECISION` checkpoint（nvidia/Qwen3.8-Flash-Next-NVFP4 + MTP）加载即失败——两个独立缺陷叠加：(a) `RoutedExperts` 分支硬编码 if-chain 不含 `FP8_BLOCK_SCALES` → 层被建成非量化 → `AttributeError: no parameter ''w2_weight_scale_inv''`；(b) MTP 层索引域错配（checkpoint 命名 `mtp.layers.0` vs 模型构建 `mtp.layers.48`）→ quant config 查找返回 None。两者都修才能加载） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`ModelOptMixedPrecisionConfig.get_quant_method` 的 `RoutedExperts` 分支只处理 FP8/NVFP4/W4A16_NVFP4/MXFP8 后 `return None`；而 `FP8_PB_WO`（同为 128×128 block FP8）在 `LINEAR_ALGOS`/`resolve()` 表**有**分发——同一算法 linear 有、routed experts 没有（if-chain 与表驱动两种注册机制并存的不对称）。缺陷 2：`Qwen4ExpMultiTokenPredictor` 以 `num_hidden_layers + idx` 构建层名，ModelOpt 配置用 `mtp.layers.0`——与 #53790（NemotronHMTP hf_to_vllm_mapper）同类：**quant 配置的 checkpoint 命名空间到不了 MTP draft**，错位轴是层索引而非前缀串。补丁双修后 MTP3 接受率 59.1%（原生支持对照 60.8%）证明 draft 正确加载。'
+  source: 'vLLM #55496（2026-09-05 open，双 DGX Spark TP2+EP，含双缺陷定位、main 仍在确认与补丁对照测量；修复 PR #55498 只修 (a)）。https://github.com/vllm-project/vllm/issues/55496'
+  behavior: 加载期 crash（AttributeError）——fail-loud；但缺陷 (a) 单独存在时若无 loader 报错路径（参数缺失才显形），未量化的专家层可静默以 BF16 服务——量化配置静默回退的另一种入口。与 7.69（w13 gscale 失配 warn-then-use）同 ModelOpt 配置解析域，本条是**注册机制不对称 + 命名空间不通**双缺陷。
+  trigger_surface: vLLM + ModelOpt MIXED_PRECISION + FP8_BLOCK_SCALES routed experts + MTP（模型×量化格式组合触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 为 objects[1] 模型定义 vs 量化（独立判断曾考虑 解码/采样）：缺陷 (b) 的出错代码是 Qwen4ExpMultiTokenPredictor 以 num_hidden_layers+idx 构建层名（原文缺陷 2），属建模代码；MTP/推测解码与量化配置查找都是触发场景，维持 模型定义。两处须同时修才能加载，多对象成立。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

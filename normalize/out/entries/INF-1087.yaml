@@ -1,0 +1,56 @@
+id: INF-1087
+legacy_ids:
+- '11.64'
+slug: vllm_mamba_spec_context_stale_batch_mapping_poisons_state
+aliases: []
+title: vLLM Mamba spec context 块表映射陈旧致状态毒化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mamba spec context 块表映射
+  behavior: MambaSpecDecodeGPUContext 只捕获一次 block table，align kernel 却按每步重收集的 batch 序取行；PP 下非末 rank 晚 pp_size 步后处理，读写别的请求的块
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: hybrid + PP≥2 + MTP + prefix caching + ≥3 并发：14–33% 请求退化为 prompt 无关的常量 token 1023 循环，acceptance 50%→26%；sm_80 静默，sm_121 表现为 illegal access 崩溃
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid 模型 + PP≥2 + MTP + prefix caching + ≥3 并发（拓扑×spec×负载三重触发；sm_80 静默/sm_121 crash）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55506
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（PP≥2 + MTP + prefix caching（hybrid，Qwen3.8-Flash-Next 复现，`max_num_seqs`≥3）下：`MambaSpecDecodeGPUContext` **一次性捕获**的 block table 指针被按**每步重收集的 batch 序**索引——PP 下非末 rank 的 postprocess 持有的是陈旧 batch 映射，用 batch row 走进别的请求的 block id：14–33% 请求退化为常量 token 循环（token 1023 = all-NaN logits 行的确定性采样输出，prompt 无关），spec acceptance 50%→26%；阈值恰为 2→3 并发 slot） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 'context 捕获（`initialize_from_forward_context` 幂等、只捕获一次）与 V2 runner 绑定的**逐步 gathered** `input_block_tables`（batch 序、每步重收集）生命周期错配：align copy kernel 以 `bt_row_idx = batch_idx` 解析行，异步调度 + PP 下非末 rank 的 postprocess 在 batch 收集之后 `pp_size` 步才运行——其 batch 映射已陈旧。错误读写使 recurrent state 被毒化且**永不恢复**（NaN logits → 采样器确定性吐 1023）；与 #54173 的 IMA 报告同根：sm_121 显形为 illegal access（响）、sm_80 越界读落在映射内（静默）。MTP 单独与 PP 单独均干净，组合才触发。'
+  source: 'vLLM PR #55506（2026-09-05，含触发阈值测量、NaN-token 1023 机制定位与 #54173 关联）。https://github.com/vllm-project/vllm/pull/55506'
+  behavior: 双显形谱——sm_121 crash / sm_80 **静默常量循环 + acceptance 塌陷**（无 crash、无 NaN 报警，NaN 只存在于 logits 内部被采样器吸收）。「**捕获一次的上下文 × 每步变化的序**」新子签名：生命周期错配在 spec 解码上下文层；与 6.194（courier 缺 record_stream）同为异步流状态失配，本条在 batch 元数据域。
+  trigger_surface: vLLM + hybrid 模型 + PP≥2 + MTP + prefix caching + ≥3 并发（拓扑×spec×负载三重触发；sm_80 静默/sm_121 crash）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: unanimous

@@ -1,0 +1,54 @@
+id: INF-0234
+legacy_ids:
+- '1.235'
+slug: ttmetal_streaming_sdpa_prefill_fp32_dest_rowsum_bf16_packing_rounding_compounds
+aliases: []
+title: streaming SDPA 行和仍为 bf16，长序列精度逐块劣化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: streaming SDPA 行和格式
+  behavior: 开 fp32_dest_acc_en 时只有 QK 分数保持 fp32，online-softmax 行和在融合 rescale 中与 bf16 输出累加器共享同一 pack 格式，bf16 舍入随 K chunk 逐块复合。
+effect:
+  objects:
+  - 数值结果
+  detail: causal、8 heads、d128 下 S=131072 流式 rmse 0.0097 vs legacy 0.0053（劣化 1.83×），S=8192 时与 legacy 相当；S≥~65k 长序列触发，开 fp32_dest_acc_en 的用户以为获得更高精度。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent + streaming SDPA prefill + `fp32_dest_acc_en` + S≥~65k 长序列（hw_specific）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-20'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57095
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0105
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal streaming SDPA prefill 内核开 `fp32_dest_acc_en` 时 QK 分数保持 fp32，但 online-softmax **行和（running row sum）仍 bf16**——融合 rescale `salad_correct_fused` 把行和与 bf16 输出累加器**共享同一 pack 格式**（二者必须一个 pack）；bf16 行和的舍入随 K chunk **逐块复合**。causal、8 heads、d128、q256/k128 下对 fp32 torch 参考的 rmse：S=8192 流式 0.0026 ≈ legacy 0.0025；S=131072 流式 **0.0097** vs legacy **0.0053**（劣化 1.83×，bfp8 档同形）。#56989 以 >512 K chunks 回退 legacy 内核止损；正解需 fp32 out_im+sum CB 并教融合 rescale 与 row drain 双侧 pack/unpack——**只改 factory 的 CB 格式返回 rmise inf**，内核侧必须同步改。L1 代价每累加器 tile 一块 fp32 tile（q128/d128 64KB、q512 256KB），factory 还需 fit check） · Cov: `var:ttmetal_sdpa_sum_df_bf16_to_fp32_precision_pcc_regression`（1.106 SDPA 中间格式精度失配族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`fp32_dest_acc_en` 的精度承诺只覆盖 QK 分数累加器，未覆盖 online-softmax 分母；行和被迫跟随输出累加器的 bf16 pack 以共存在融合 rescale 里——"精度开关粒度小于 pack 粒度"的复合结构缺陷：单 chunk 误差温和（≈legacy），误差随 chunk 数线性积累在 S≥65536 拉开差距。'
+  source: 'tt-metal #57095（2026-09-19 open，含 S∈{8192,65536,131072}×{bf16,bfp8}×{streaming,legacy} 八臂 rmse 表、#56989 止损策略与正解工程量评估）。https://github.com/tenstorrent/tt-metal/issues/57095'
+  behavior: 无 crash、无 NaN——长序列（S≥~65k）SDPA 输出精度静默劣化约 2×，且开 `fp32_dest_acc_en` 的用户**以为买了更高精度**（QK 侧确实 fp32，分母侧反而复合劣化）。1.106（sum_df 升 fp32 反而劣化 PCC）之后 SDPA 中间格式族新成员：本条在**精度 flag 承诺与 pack 格式耦合**维度——标志位语义被共享 pack 格式悄悄架空。
+  trigger_surface: Tenstorrent + streaming SDPA prefill + `fp32_dest_acc_en` + S≥~65k 长序列（hw_specific）
+  discovery: 2026-09-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

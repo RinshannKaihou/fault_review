@@ -1,0 +1,52 @@
+id: INF-0231
+legacy_ids:
+- '1.232'
+slug: ttmetal_disagg_prefill_kv_gate_literal_layer_bound_deep_layers_never_scored
+aliases: []
+title: disagg prefill KV PCC 门层数缺省 61，深层从未评分
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: tt-metal
+    component: prefill KV gate 层数缺省
+  behavior: KV gate 评分循环层数取环境变量 PREFILL_NUM_LAYERS，缺省为 Kimi-K2.7 深度的字面量 61 而非按模型配置解析；各模型 manifest 均未声明该变量，sc4 臂一律按 61 层定界。
+effect:
+  objects:
+  - 测试判定
+  detail: GLM-5.2（78 层）等深于 61 层且无 manifest pin 的模型，sc4 腿只评分 0..60 层、从不检查 61..77，深层 KV PCC 回归可全绿通过，缺失层也不报 missing。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + disaggregated prefill CI + 深于 61 层的模型 + 无 manifest pin（hw_specific：CI 门失效）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57088
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0104
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal disaggregated-prefill KV gate 以**字面量** `PREFILL_NUM_LAYERS=61`（Kimi-K2.7 的深度）定界评分循环：`prefill_producer.py` 的 `NUM_LAYERS = int(os.environ.get("PREFILL_NUM_LAYERS", 61))`——已核验 `kimi27`/`glm52`/`glm51`/`deepseek_v3`/`mistral4` 全部 manifest **均不声明**该变量，`run_multirank_pcc.sh` 仅在 sc1 臂且仅对设 `SC1_NUM_LAYERS` 的模型导出，**sc4 臂所有模型一律按 61 层运行**。KV gate 两次以该数为界（`expected_slabs = set(range(NUM_LAYERS))` 与 `for layer in range(NUM_LAYERS)`）：GLM-5.2（78 层）的 `prefill_runner_kv_pcc` sc4 腿只评分 0..60、**从未检查 61..77**——而深层恰是 KV PCC 最低处（GLM-5.2 公布的 per-rank 最低 0.8621@bar 0.85 正来自深端），17 个未评分层正是会决定最小值的层。缺失层**不报 missing**（循环从未到达）。Kimi-K3 仅因 manifest 显式 pin 而幸免；缺陷在通用默认值） · Cov: `var:ttmetal_comp_pcc_constant_fallback_fp32_tolerance_false_reject`（1.105 验证面失效族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 环境变量缺省值取自第一个适配模型的字面量深度而非 adapter/config 解析（`prefill_runner.py:77` 已有正确先例 `MODEL_CFG.NUM_LAYERS`）；评分范围与缺省值耦合使"验证通过"对新深度模型给出**系统性假阴性保证**——不是阈值太松而是覆盖面结构性缺失，且无任何缺失报告。
+  source: 'tt-metal #57088（2026-09-19 open，含 5 个 manifest 缺声明的逐一核验、GLM-5.2 78 层 vs 61 评分界的算术、公布 per-rank PCC 最低值来自深端的交叉引用、与 #54850 rebase 的发现经过）。https://github.com/tenstorrent/tt-metal/issues/57088 （**2026-09-26 回访**：issue 已 closed/completed（2026-09-20）；closed 事实本身不证明修复已发布或评分界已改为按模型深度解析，剩余状态待后续 PR 核实，判定与触发面不变。）'
+  behavior: 无 crash、无 NaN——多机 prefill KV 正确性回归的**CI 守门静默失明**：深层（最可能先坏的区域）回归可全绿通过；Kimi-K2.7 之外一切更深模型的 sc4 门等于不存在。1.135（KV cache PCC 门 parametrize 不可达从未运行）之后验证面失效族新成员：本条在**字面量默认深度 × 未声明环境变量**维度，失效是确定性的且自模型引入日起持续。
+  trigger_surface: tt-metal + disaggregated prefill CI + 深于 61 层的模型 + 无 manifest pin（hw_specific：CI 门失效）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

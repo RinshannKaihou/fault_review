@@ -1,0 +1,59 @@
+id: INF-0519
+legacy_ids:
+- '6.126'
+slug: vllm_align_prefix_cache_priority_sched_never_hit
+aliases: []
+title: vLLM align 模式前缀缓存在 priority 调度下命中率恒为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: priority 调度切分与 align 快照
+  behavior: align-mode Mamba 快照只在精确块边界缓存，要求非最终 prefill chunk 块对齐；SchedulingPolicy.PRIORITY 切分 token budget 时不保块对齐，快照从不落在精确边界。
+effect:
+  objects:
+  - 性能/资源
+  detail: Qwen3.8-27B hybrid GDN + MTP + prefix caching，仅换 --scheduling-policy priority 后 99.6 万查询 0 命中（FCFS 为 17.5%），第二请求无延迟收益；无报错、无日志，只有命中率计数器能暴露。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；hybrid GDN + align cache mode + `--scheduling-policy priority`（config 级 A/B）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52897
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid GDN align-mode prefix cache 在 priority 调度器下快照永不出现在精确块边界 → 命中率结构性 0，99.6 万查询 0 命中且无任何警告） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: vLLM 0.27.1 + GB10/DGX Spark + Qwen3.8-27B-NVFP4（hybrid：48 GDN 线性注意力 + 16 GQA 全注意力）+ MTP 推测 + prefix caching → Mamba cache mode `align`（attention block size 强制 1600）。#51113 修复后 align-mode Mamba 快照**只在精确块边界缓存**，要求调度器保持非最终 prefill chunk 块对齐（"只有 prefill 的最终 chunk 可以不对齐"）；但 `SchedulingPolicy.PRIORITY` 切分 token budget 时**不保块对齐** → 快照从不落在精确边界 → 命中率结构性为 0。生产 A/B：FCFS 引擎 998 万查询 17.5% 生命周期命中（agent 重负载窗口 42%）；仅换 `--scheduling-policy priority` 的引擎 99.6 万查询 **0 命中**，无任何警告/错误日志，第二请求无延迟收益（1.70s vs 1.56s）。
+  source: 'vLLM #52897（2026-08-19 open，含生产 A/B 计数器表与 1846-token 共享前缀受控复现）。https://github.com/vllm-project/vllm/issues/52897'
+  behavior: 无 crash、无错误、**无日志**。纯性能静默退化（正确性不受影响）——缓存完全失效但外部无信号，只有命中率计数器能暴露。属「缓存策略 × 调度器策略交互的结构性失效」**新子签名**：两个各自正确的组件（对齐约束修复 + priority 调度）组合后不变量被打破。
+  trigger_surface: vLLM；hybrid GDN + align cache mode + `--scheduling-policy priority`（config 级 A/B）
+  discovery: |-
+    2026-08-19 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: subsystem 维持 KV缓存：按 rule 功能域优先，块对齐约束只为 align 模式 Mamba 前缀缓存存在，失效只在该功能路径上出现（原文“两个各自正确的组件组合后不变量被打破”）；priority 调度本身在其他场景正确。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

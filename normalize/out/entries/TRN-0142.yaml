@@ -1,0 +1,50 @@
+id: TRN-0142
+legacy_ids:
+- KER.11
+slug: precision_override_never_reaches_fused_grouped_mlp
+aliases: []
+title: per-layer 精度覆盖到不了 fused grouped MLP
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: megatron-lm
+    component: op-fuser grouped-MLP 融合判定
+  behavior: grouped-MLP fused kernel 仅支持 FP8/NVFP4 且从全局 autocast 取 recipe，_with_fused_impl 不检查 fc1/fc2 是否 opt-out，per-layer 精度覆盖到不了。
+effect:
+  objects:
+  - 数值结果
+  detail: 经 --te-precision-config-file 把 grouped expert 层设为 bf16 时，纯 TE 路径下该层仍按全局 autocast 跑 FP8/NVFP4，无日志无报错；GTP 路径下 backward 报 AttributeError。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7212
+  kind: github_pr
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'Megatron op-fuser 的 grouped-MLP（fused MoE）kernel 是 **FP8/NVFP4-only** 且从**全局 autocast state** 取量化 recipe——用户经 `--te-precision-config-file` 对特定层做的 precision override **永远到不了**这些 kernel：配置声称 bf16（或其它非默认 recipe）的 grouped expert 层照样按全局 autocast 量化。纯 TE 路径下**静默**（层被量化、无任何提示）；GTP 路径下 backward 交给 kernel 一个未量化权重 → `AttributeError: ''_columnwise_data''` 才炸。修复 = `_with_fused_impl` 同时检查 fc1/fc2 的 `will_execute_quantized()`，任一 opt-out 即回退 unfused bf16 gmm。'
+  source: 'Megatron-LM PR #7212（2026-09-10，closed merged；修复前 casting+mxfp8-gmm-fusion trace vs 修复后 bf16 unfused gmm trace 截图对照）。https://github.com/NVIDIA/Megatron-LM/pull/7212'
+  behavior: 静默面（纯 TE）：per-layer precision 配置在该层**完全失效**——以为在 bf16 训练的 expert 层实际跑 FP8/NVFP4，数值行为与配置意图背离，无日志无报错。与 NUM.09（混精 cast 扫过量化参数）同族：**精度配置的作用域与实际量化决策点脱节**；差异在这边根因是 fused kernel 的 recipe 读取通道（全局 autocast）不感知 per-layer override；与 CKPT.14（量化 extra_state 加载即弃）互补：那边加载侧丢精度状态、这边执行侧读不到精度配置。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

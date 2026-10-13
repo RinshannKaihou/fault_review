@@ -1,0 +1,50 @@
+id: INF-0330
+legacy_ids:
+- '4.14'
+slug: vllm_batch_invariant_m_bucket_dynamo_constant_folding_collapse
+aliases: []
+title: vLLM batch-invariant 按 M 查表被 Dynamo 常量折叠
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: batch-invariant 调参查表
+  behavior: 按 (arch,N,K,M bucket) 选 Triton launch config 的查表在 Dynamo trace 期求值并烘焙为 constexpr，M 仍是运行时参数，每个 (N,K) 调用点只有一个静态 tile
+effect:
+  objects:
+  - 性能/资源
+  detail: VLLM_BATCH_INVARIANT=1 + torch.compile 下 decode M=8 与 prefill M=2048 无法各取表项，tile 配置系统性错配致性能退化、调参意图失效；无任何告警，tracing 也不报 graph break
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `VLLM_BATCH_INVARIANT=1` + `torch.compile`（config 组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54243
+  kind: github_issue
+relations: []
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`ambiguous`（`VLLM_BATCH_INVARIANT=1` 的 (arch, N, K, M bucket) 调参查表在 `torch.compile` 下被 Dynamo tracing **常量折叠烘焙为 constexpr 启动参数**，M 本身仍是运行时 i32——每个编译 (N,K) 调用点对整个编译区间只有一个静态 tile：decode M=8 与 prefill M=2048 无法各取表项；tracing 不报 graph break（"成功"恰因查找已被折叠）） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`_BATCH_INVARIANT_MATMUL_TUNED_CONFIGS` 按四元组选 Triton launch config；M 依赖的查表在 Dynamo trace 期求值、结果烘焙为生成内核的 constexpr，M 保持运行时 i32 参数。SM120 无表（repo 用 Ada 表替换仅绕过 arch gate，不动查找/内核/编译集成）即可复现。**通用反模式**：一切"按运行时 shape 查表选配置"的系统（调参表 / kernel 选择器 / tile picker）在 compile 路径下都可能整体失效且不可见——graph break 缺失反而是折叠已发生的证据。'
+  source: 'vLLM #54243（2026-08-28 open，0.28.0，含仅用上游表与内核的最小复现）。https://github.com/vllm-project/vllm/issues/54243'
+  behavior: 无 crash——batch-invariant 承诺下 tile 配置系统性错配（性能退化 / 确定性保证与调参意图脱钩），无任何告警。属「**编译期常量折叠吞掉运行时查表**」新子签名：与 4.13（确定性 flag 覆盖缺口）同为"确定性保证层失效"，本条机制在编译器交互层且对配置系统普遍成立。
+  trigger_surface: vLLM + `VLLM_BATCH_INVARIANT=1` + `torch.compile`（config 组合即触发）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

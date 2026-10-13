@@ -1,0 +1,55 @@
+id: TRN-0243
+legacy_ids:
+- RL-RO.21
+slug: group_prefix_dedup_discards_tool_continuations
+aliases: []
+title: trl GRPO server 模式组内去重使工具多轮续写共用首个成员历史
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: VLLMGeneration 组内去重
+  behavior: server 模式按 all_prompts[::num_generations] 做组内去重，默认组内前缀相同；工具调用第二轮起各成员历史互不相同，切片只保留首成员历史并以 n=num_generations 为全组采样后回填。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 训练信号
+  detail: 无 crash、无 warning；其他成员续写在首成员的工具结果条件下采样，却按各自历史计 reward 与 logprob，组内方差被压扁、advantage 失真；触发于 server 模式、num_generations>1、多轮工具且首轮分叉，v0.26.0 起各版受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7416
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7418
+  kind: github_pr
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: trl GRPO **server** 模式下 `VLLMGeneration.generate()` 以 `all_prompts[::num_generations]` 做组内去重——该切片只对「组内 N 条 prompt 是同一前缀的 N 份复制」合法。首轮生成成立（trainer 上游确以 `num_generations` 重复 prompt）；但工具调用第二轮起，`_tool_call_loop` 传入的 `prompt_completion_tool_ids` 组内各成员 = 各自的首轮 completion + 工具返回，**前缀互不相同**。步进切片只保留第一成员的历史 A，`n=num_generations` 让全组 continuation 全部从 A 的历史采样，再按切片回填给 B/C/D——B 的后续轨迹接在 A 的事实上生成。报告者附 CPU 级最小 repro（histories `[1,10,30]` / `[1,20,35]` → `completions == [[30],[30]]`，修后 `[[30],[35]]`）；本扫描对 trl `main`@HEAD 逐行核对：`grpo_trainer.py` `_generate_single_turn` 对工具轮次仍传 `num_generations=self.num_generations`，`vllm_generation.py:605` 的去重假设无组内前缀一致性 guard。colocate 路径 `n:1` 逐条采样不受影响。修复方向（报告者提议）= 组内前缀一致性检查，不一致时强制 `num_generations=1`。
+  source: 'trl #7416（2026-09-26 19:02 UTC；含 CPU mock-server repro 与修复前后输出；报告者基于 fork `88e12d5`）。https://github.com/huggingface/trl/issues/7416 ；维护者确认 + 修复归属（2026-09-27 补）：qgallouedec 确认并裁定——缺陷自 tool calling 进入 GRPO 的 #4300（2025-12-08 merge）起存在，**v0.26.0 起每个 release 受影响**；仅 `vllm_mode="server"` 中招（colocate 与 transformers generation 从未受影响）、且仅在首轮工具调用之后；全库排查：GRPO 是唯一受打击 trainer（GMPO 继承 GRPO 免费获得修复；DistillationTrainer 工具循环已用 `num_generations=1`、AsyncGRPO 每 rollout 单请求）；报告者 PR #7417 被关、改由维护者 #7418（从工具循环传 `num_generations=1`、贴仓库惯例）承接，#7416 于 09-27 closed completed，#7418 open 待 merge。https://github.com/huggingface/trl/pull/7418'
+  behavior: 无 crash、无 warning——被采样的 continuation 与被训练/打分的成员历史错位：B 的 token 在「A 的工具结果」条件下采样，却按 B 的真实历史计 reward 与 logprob，组内对比的「同条件 N 采样」语义崩塌（组内方差被 A 的确定性上下文压扁 → advantage 失真）、TIM/ratio 带系统性偏置。触发条件：`vllm_mode="server"` + `num_generations>1` + 工具/环境多轮（`tools=` 或 `environment_factory=`）+ 组内首轮轨迹分叉（含工具失败分支）。与 RL-RO.16（response_prefix 角色翻转）同属「rollout 侧构造的序列与训练侧记账对象错位」；差异在这边不是 token 归属翻转，而是**组去重把成员历史整条替换**；与 RL-RO.14（上下文压缩条件分叉）同向：训练条件 ≠ 生成条件，这边是前缀替换而非 eviction。
+  discovery: 2026-09-27 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

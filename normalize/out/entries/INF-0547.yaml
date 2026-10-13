@@ -1,0 +1,51 @@
+id: INF-0547
+legacy_ids:
+- '6.154'
+slug: sglang_sm121_cookbook_quad_silent_garbage_kv_holes_boot_crash
+aliases: []
+title: SGLang SM121 单卡缺 arch guard 致乱码与 NaN 洞
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: QSA decode 选择、KV 压缩内核
+  behavior: decode 选择器可导入即用 SM100-only 的 trtllm-gen kernel，缺 arch 检查；compact KV 抽取按原始列偏移写行，读侧按紧凑布局读；另有 TMA-O 与稀疏 prefill fp8 缺陷。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: cookbook 镜像在单卡 GB10（SM121）、fp4 + fp8 KV 下：首 token 后永久输出“!!!!”（NaN logits→token 0），/health 正常无报错；FA fallback 读到 NaN 洞致输出退化；TMA-O 启动 crash。TP2 不复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang cookbook 镜像 + GB10/SM121 单卡 tp=1 + modelopt_fp4 + fp8 KV（hw_specific；TP2 不复现）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36716
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（Qwen3.8-Flash-Next cookbook 镜像在单卡 GB10 Spark（SM121）tp=1 上四缺陷齐发：(1) trtllm-gen decode kernel 无 arch guard 静默 garbage（首 token 对 → 永久 "!!!!"）；(2) `_compact_kv` 不压缩——写原始列偏移而读侧按紧凑语义，FA fallback 留 NaN 洞；(3) TMA-O varlen boot crash；(4) sparse prefill fp8 `tl.dot`——TP2 参考配方不经过的单卡路径全部中弹） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`lmsysorg/sglang:qwen38flashnext` 镜像、`--quantization modelopt_fp4` + fp8 KV、单 DGX Spark：(1) `qwen_sparse_attn_backend.py` 的 decode resolver 只要 `trtllm_batch_decode_with_kv_cache` 可导入即选用，但 trtllm-gen attention kernel 是 SM100-only（同镜像的 MoE runner 已做 arch 检查回退，QSA decode 独缺）——SM121 上 kernel 照跑、静默损坏（NaN logits → token 0）；(2) `qwen_sparse_kv_extraction_compact_triton` 把有效行写在**原始列偏移**（`dst = pack_start + cols`）而 `cu_seqlens_k`/`valid_counts` 承诺紧凑布局——FA fallback 读到 NaN 洞；(3) TMA-O varlen 启动 crash；(4) sparse prefill fp8 `tl.dot` 路径缺陷。社区补丁集（Death-By-Tokens 仓库）含全部四处 anchored diffs。'
+  source: 'SGLang #36716（2026-08-27 open，含四缺陷机制与可用 patch 链接）。https://github.com/sgl-project/sglang/issues/36716'
+  behavior: 三种形态并存——**静默 garbage decode**（/health 绿、无错误、永久 "!!!!"）、NaN 洞（fallback 路径输出质量不可预测退化）、启动 crash（TMA-O）。属「**arch guard 在多条 kernel 选择路径间不一致**」新子签名：同一代码库同一代硬件上，一条路径有 SM100 检查、另一条没有——单卡部署（TP1）系统性暴露被 TP2 配方掩盖的路径。
+  trigger_surface: SGLang cookbook 镜像 + GB10/SM121 单卡 tp=1 + modelopt_fp4 + fp8 KV（hw_specific；TP2 不复现）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

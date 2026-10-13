@@ -1,0 +1,51 @@
+id: TRN-0241
+legacy_ids:
+- RL-RO.19
+slug: weight_sync_ack_precedes_tp_barrier_buffer_reuse
+aliases: []
+title: ms-swift IPC 权重同步过早 ACK，共享 buffer 被提前复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: ms-swift
+    component: Ray Megatron IPC 权重同步 ACK
+  behavior: 接收侧只做本进程 CUDA 同步，driver rank 在 TP barrier 前即发 ACK，发送端收到 ACK 就复用同一共享 buffer 写下一桶，慢 TP rank 可能仍在读上一桶。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 若坐实：rollout 引擎收到名形合法但值被部分覆写的权重，静默在新旧混合参数上采样，无同步异常；环境症状为 Ray + Megatron GRPO 首次 rollout 后输出损坏（MI308X/ROCm、TP=4/PP=2）。该 race 是否即根因尚未端到端验证。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-20'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10204
+  kind: github_issue
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: ms-swift Ray Megatron 原生 IPC 权重同步：接收侧每个 TP worker 从共享 bucket 拷出张量后 `cuda.synchronize()`（只等**本进程**拷贝）→ driver rank 即刻 socket ACK → **之后**才进 `tp_size>1` 的 TP barrier；发送端 `_flush()` 收到 ACK 就 reset offset 复用**同一块**共享 buffer 写下一桶。合法交错：driver rank 拷完桶 A 发 ACK → 发送端开始写桶 B → 慢的非 driver TP rank 还在读桶 A → barrier 事后完成、撤销不了覆写。发送端不是 TP barrier 参与方、本地 CUDA sync 跨不了进程——不变量「所有 TP rank 读完前不得复用 bucket」被 ACK 时序结构性破坏；张量名/形状合法、值损坏、无同步异常。环境症状：Ray + Megatron GRPO **首次 rollout 后输出损坏**（AMD MI308X/ROCm、Qwen3.6-27B、训练 TP=4/PP=2、rollout 4×vLLM TP=4）；报告者明确标注尚未证明该 race 即根因、修复未端到端验证。
+  source: 'ms-swift #10204（2026-09-19；收发两侧源码交错分析，upstream main `654e24f17` 同序）。https://github.com/modelscope/ms-swift/issues/10204'
+  behavior: '若坐实：无 error——rollout 引擎收到名形合法、值被部分覆写的权重，采样静默跑在混合新旧版本参数上；表象与 RL-RO.18（sleep/resume 损坏 rollout 权重）同型「首 rollout 后输出损坏」，打击面在**传输缓冲生命周期**（复用 vs 重建）。与 RL-RO.12（completion slot 不 drain、旧版本张量滚入下一版本）共享「生产者复用缓冲先于消费者读完」病根；「本地 sync 代替全局同步」的越界与 ACT.07（offload reload 缺排序边）同型。当前定位：机制成立 + 症状在案、因果与数值验证待修复落地。2026-09-20 补：修复 PR ms-swift #10207（`fix(rollout): acknowledge IPC buckets after all TP copies`——ACK 移到 TP barrier 之后）已于 2026-09-20 10:28 UTC merge（merge commit `d7e24a13df6b`），#10204 同刻 closed completed；条目维持 `documented`，等端到端验证报告后评估升 `verified`。'
+  discovery: 2026-09-20 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

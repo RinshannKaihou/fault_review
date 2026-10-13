@@ -1,0 +1,56 @@
+id: INF-1083
+legacy_ids:
+- '11.60'
+slug: vllm_speculative_kv_dtype_auto_flashinfer_startup_native_crash
+aliases: []
+title: vLLM draft KV dtype 透传 auto 致启动崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: draft KV dtype 归一化缺失
+  behavior: _create_draft_vllm_config 把未指定的 draft KV dtype 以 auto 下传，FlashInfer 后端 dtype 表无 auto 映射；第二级 native crash 原因未定位
+effect:
+  objects:
+  - 可用性/进度
+  detail: 'spec 配置设 kv_cache_dtype fp8 即报 ValueError: Unrecognized dtype: auto；显式设 target KV dtype 后，SM89 + hybrid GDN + DFlash2 在 attention init 无 traceback 崩溃'
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid GDN 目标模型 + draft-model 式 spec（dflash/eagle 类）+ speculative kv_cache_dtype fp8（config 组合即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54690
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_compressed_tensors_kv_scale_dropped
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（`--speculative-config {"kv_cache_dtype":"fp8"}` 的 **draft-only** KV dtype 以 raw `"auto"` 透传到 FlashInfer metadata builder → `ValueError: Unrecognized dtype: auto` 启动崩溃；显式设 target `--kv-cache-dtype bfloat16` 绕过后又在 SM89 attention init **原生崩溃**（无 Python traceback）——spec 配置的 KV dtype 语义未做 target/draft 分别的归一化：`LLMBaseProposer._create_draft_vllm_config` passthrough + `FlashInferBackend.get_dtype_for_flashinfer()` 无 auto 映射，main 上均未变） · Cov: `var:vllm_compressed_tensors_kv_scale_dropped`（7.52 KV dtype 语义路由族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: speculative-config 内的 `kv_cache_dtype` 意图是"给 drafter 的 KV 用 fp8"，但键名与顶层 `--kv-cache-dtype` 相同而解析域不同：draft config 构造把未指定/默认的 `"auto"` 原样下传，FlashInfer 后端的 dtype 表不认识 auto；显式归一后第二条路径（SM89 4×4090 + hybrid GDN + DFlash2 drafter）在 attention init 段 native crash——同一配置的两级失败。
+  source: 'vLLM #54690（2026-09-01 open，4×RTX 4090 SM89、Qwen3.5-family hybrid（full-attn+GDN）INT8-W8A16、method=dflash、两级失败与 main 代码核对）。https://github.com/vllm-project/vllm/issues/54690'
+  behavior: 启动崩溃（fail-loud，两级形态：Python ValueError → 无 traceback 的 native crash）——该 spec+hybrid 组合不可部署；无静默形态但第二级 native crash 难归因（无栈）。与 7.52（KV scale 丢弃）同"KV dtype/scale 配置语义在 spec 路径上无主路径同等的归一化"主题。
+  trigger_surface: vLLM + hybrid GDN 目标模型 + draft-model 式 spec（dflash/eagle 类）+ speculative kv_cache_dtype fp8（config 组合即触发）
+  discovery: |-
+    2026-09-01 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

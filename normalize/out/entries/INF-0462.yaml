@@ -1,0 +1,52 @@
+id: INF-0462
+legacy_ids:
+- '6.69'
+slug: vllm_eplb_e8m0_scale_nccl_unsupported_dtype_init_fail
+aliases: []
+title: vLLM EPLB 对 E8M0 scale 做 NCCL 通信致启动失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: EPLB set_eplb_state 注册
+  behavior: EPLB 按原 dtype 注册 MXFP4/MXFP8 expert 的 E8M0 scale，启动 profiling 时对其做 dummy all-gather，而 NCCL/Gloo/PyNCCL 都不支持该 dtype
+effect:
+  objects:
+  - 可用性/进度
+  detail: 启用 EPLB 且 expert 用 E8M0 scale 的多卡部署，启动 profiling 时抛 TypeError（NCCL process group 不支持 Float8_e8m0fnu），engine 初始化失败。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；EPLB + MXFP4/MXFP8 Marlin expert（E8M0 scale）+ 多卡
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51568
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（EPLB 对 E8M0 expert scale 用数值 dtype 注册，NCCL all-gather dummy 时 TypeError→engine init 失败） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 'MXFP4/MXFP8 Marlin expert 的 weight scale 为 `torch.float8_e8m0fnu`。EPLB `rearrange_expert_weights_inplace()` 启动 profiling 做 dummy device-group all-gather 预留通信 buffer，但 PyTorch NCCL 不支持 E8M0→`TypeError: Input tensor data type is not supported for NCCL process group: Float8_e8m0fnu`。runtime Torch NCCL、Gloo-staged、PyNCCL 传输均有同一底层 dtype 限制。修复在 `set_eplb_state` 注册边界将 E8M0 暴露为存储保留的 `uint8` view（`view(torch.uint8)` 非 `to()`——保持 shape/stride/storage offset/byte count/data pointer/underlying storage，EPLB 移动原始 scale 字节，推理 kernel 继续读原 E8M0 参数）。非 E8M0 expert tensor 原样返回。'
+  source: 'vLLM #51568（2026-08-09 open）。#51567。组件 EPLB `rearrange_expert_weights_inplace` / `set_eplb_state`。https://github.com/vllm-project/vllm/pull/51568'
+  behavior: engine init 失败（crash at startup）。属「量化 dtype 不受分布式通信后端支持」签名——E8M0 微缩放量化与 NCCL 兼容性新子签名。
+  trigger_surface: vLLM；EPLB + MXFP4/MXFP8 Marlin expert（E8M0 scale）+ 多卡
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

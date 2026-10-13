@@ -1,0 +1,52 @@
+id: INF-0247
+legacy_ids:
+- '1.248'
+slug: ttmetal_softmax_float32_default_approximate_exp_7_5pct_element_error
+aliases: []
+title: softmax 对 float32 默认近似 exp，误差达 7.5%
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: softmax 近似模式默认配置
+  behavior: softmax_init_compute_kernel_config 对所有输入 dtype 把近似模式硬编码为 true，float32 输入也走 bf16 级近似 exp 内核。
+effect:
+  objects:
+  - 数值结果
+  detail: Blackhole P150 fp32 下逐元素误差最大 7.45e-2、行和 0.96–0.97 不归一，全 ones 行每元素恒错 2.91e-2；numeric_stable、HiFi4+fp32_dest_acc_en 均不改变结果，math_approx_mode=False 可规避。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.softmax` + float32 输入 + 默认参数（hw_specific：默认路径即触发；`math_approx_mode=False` 显式规避）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57633
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0136
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.softmax` 对 **float32** 张量默认使用**近似 exp**：`softmax_init_compute_kernel_config` 把 `default_approx_mode = true` 硬编码给**每个输入 dtype**——同一行代码刚按 `is_fp32` 给了 fp32 Dest，紧接着却让 fp32 数值走 bf16 级近似内核。实测（Blackhole P150、fp32 TILE、dim=−1、float64 参考）：全 ones 行每元素恒错 **2.91e-2**（返回 0.9709/n、行和 0.9709——`exp_fast(0)=0.9785`/`exp_fast(1)/e=0.971` 的同款 −2.9%）；N(0,1) 4096 宽逐元素最大 **7.45e-2**、行和 0.9639–0.9999；4·N(0,1) logit 尺度最大 7.01e-2。`numeric_stable=True` 与 `HiFi4+fp32_dest_acc_en` **不改变任何一位**——不是累加问题；只有 `math_approx_mode=False` 改变它（残差 4.88e-2→4.88e-4，系 #53106 recip Newton 种子）。与 `ttnn.exp` 自身文档（`fast_and_approximate_mode ... Defaults to False`）**方向相反**，softmax docstring 无近似默认声明） · Cov: `var:ttmetal_bias_gelu_approximate_default_no_exact_escape`（1.137 融合算子默认近似无逃生族——本条在 softmax 默认维度，report 亦自证与 #55265/#52045 同形） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 每个 softmax program factory 按 `math_approx_mode` 发 `EXP_APPROX` compute define，`softmax_device_operation.cpp:386` 的 `init_device_compute_kernel_config(arch, cfg, fidelity, true, is_fp32, false)` 第 4 参把近似钉死为 true；近似 exp 在数值稳定路径的 `x−max ≤ 0` 域上自身相对误差最大 3.1e-2（中位 2.0e-2），分子分母部分相消后仍留逐元素百分位误差。修复（报告者已验证）：float32 输入时默认关近似（镜像同行的 fp32-Dest 策略），bf16 默认不动。
+  source: 'tt-metal #57633（2026-09-24 open，Bad Outputs，含 7 组形状×分布误差表、ones/随机/均匀/logit 四输入族、`ttnn.exp` 双模式对照、代码行定位与已验证修复）。https://github.com/tenstorrent/tt-metal/issues/57633'
+  behavior: 无 crash、无 NaN——softmax 概率逐元素至 7.5% 偏差且**行和不归一**（0.96–0.97），分布形状貌似合法；任何 fp32 softmax 消费者（归一化注意力权重、采样分布）静默携带百分位误差。1.137/1.138 之后"近似 API 契约违反"族第三例：本条在 softmax 默认路径、对显式请求 fp32 精度的用户生效。
+  trigger_surface: tt-metal + `ttnn.softmax` + float32 输入 + 默认参数（hw_specific：默认路径即触发；`math_approx_mode=False` 显式规避）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0671
+legacy_ids:
+- '6.278'
+slug: flashinfer_fmha_v2_prefill_leaves_counters_shared_workspace_poisons_xqa_decode
+aliases: []
+title: flashinfer fmha_v2 遗留计数器污染 XQA decode
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: fmha_v2/XQA 共享 workspace
+  behavior: fmha_v2 prefill 把 tile_id_counter 等计数器放在 workspace 开头，原子递增后留下非零值；XQA decode 却把同一 workspace 前 8 MB 当作须零初始化的 semaphore 区。
+effect:
+  objects:
+  - 数值结果
+  detail: SM90/SM120 上同一引擎共享 workspace 时，每次 prefill 后的首个 decode 静默产生错误注意力输出，无 crash；SGLang 已传 workspace[8MB:] 切片规避，vLLM 共享 workspace 的 trtllm 路径同样暴露。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: flashinfer trtllm fmha_v2 prefill + XQA decode 共享 workspace（SM90/SM120，partial）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6151
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SM90/SM120 `trtllm_fmha_v2_prefill` 把 tile_id_counter（ctas_per_head>1 时含 barrier/lock counters）放在 `workspace_buffer` 开头，launch 前 memset 清零但内核原子递增后**留下非零值**；`trtllm_batch_decode_with_kv_cache`（XQA）把同一 workspace 前 8 MB 当"必须零初始化"的 semaphore 区——**同引擎共享 workspace 时每次 prefill 后的首个 decode 静默产生错误注意力输出**。SGLang 已 workaround（给 fmha_v2 传 `workspace[8MB:]` 切片）；vLLM 侧共享 workspace 的 trtllm 路径同暴露） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 两个内核族对同一缓冲区的初始化契约相反（一个"离开时非零"、一个"进入时必须零"），共享 workspace 的服务引擎默认组合即触发。
+  source: 'flashinfer #6151（2026-10-06 open，`fmha_v2_run.cu`/`decode.py` 逐行定位 + H200 独立 repro）。https://github.com/flashinfer-ai/flashinfer/issues/6151'
+  behavior: 无 crash——prefill 后首个 decode 注意力输出静默错误。
+  trigger_surface: flashinfer trtllm fmha_v2 prefill + XQA decode 共享 workspace（SM90/SM120，partial）
+  discovery: 2026-10-12 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：原文核对（SM90/SM120、tile_id_counter 置于 workspace 开头、memset 后原子递增留非零、XQA 把前 8 MB 当须零初始化 semaphore 区、每次 prefill 后首个 decode 静默错、SGLang workspace[8MB:] 规避、vLLM 同暴露）均有依据。分类与独立判断一致：两个 flashinfer kernel 的初始化契约冲突，算子/内核/flashinfer；数值结果；静默错误。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

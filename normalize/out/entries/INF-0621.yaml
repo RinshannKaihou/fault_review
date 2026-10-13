@@ -1,0 +1,57 @@
+id: INF-0621
+legacy_ids:
+- '6.228'
+slug: vllm_mtp_pp_bcast_drafts_idx_mapping_missing_record_stream_ima
+aliases: []
+title: vLLM MTP+PP 广播缺 record_stream 致 IMA
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: broadcast_drafts 侧流读取
+  behavior: broadcast_drafts 在侧流上按 idx_mapping 索引 draft_tokens，但每步新分配的 idx_mapping 未 record_stream，allocator 可在读完成前把该 block 复用给下次分配。
+effect:
+  objects:
+  - 可用性/进度
+  detail: MTP 推测解码 + PP>1 在负载压力下（TP2 PP3 A100、16 并发流约 90s）gather 读到已复用内存，出现 illegal memory access 与 EngineDeadError；崩溃前窗口内 gather 可能读到部分陈旧的映射。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + MTP speculative + PP>1 + 负载压力（yes）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56470
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_mapped_layer_courier_missing_record_stream_storage_reuse
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM MTP 推测解码 PP>1 时 `broadcast_drafts`（`gpu/pp_utils.py`）在 `broadcast_stream` 侧流上下文中按 `input_batch.idx_mapping` 索引 `draft_tokens`——`idx_mapping` 是每步 `async_copy_to_gpu` 分配的 tensor，其 block 从未 `record_stream`：caching allocator 可在其读仍在途时把 block 复用给下一分配（如下一步 H2D payload），gather（`indexSelectSmallIndex`）消费已复用内存 → `EngineDeadError`/illegal memory access。接收侧 `receive()` 对同类 tensor 早有 record_stream、发送侧广播从未做。TP2 PP3 A100 + MTP、100K token 16 并发流负载 ~90s 必崩；`VLLM_PP_BCAST_RECORD_STREAM=1`（修复 commit bf33e54548）同负载 222 请求 708s 零错误） · Cov: `var:vllm_mapped_layer_courier_missing_record_stream_storage_reuse`（6.194 侧流消费缺 record_stream 族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: PyTorch caching allocator 的 stream 语义——跨 stream 消费未 record_stream 的分配可在读完成前被回收复用；受害者恰是 idx_mapping 本身（被 gather 消费时 block 已易主）。
+  source: 'vLLM #56470（2026-09-11 closed，speculative-decoding label，含 crash 签名、复现命令与 D1/D0 判别窗 A/B 实验）。https://github.com/vllm-project/vllm/issues/56470'
+  behavior: crash（EngineDeadError + IMA）——但损坏窗口内的静默面在于被复用 block 若被部分覆盖、gather 读到的是**部分陈旧部分新**的映射。6.194（mapped-layer courier 缺 record_stream）之后"侧流消费未记录流"族新成员：本条在 PP 广播发送侧维度。
+  trigger_surface: vLLM + MTP speculative + PP>1 + 负载压力（yes）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 运行时/执行
+        status: panel7

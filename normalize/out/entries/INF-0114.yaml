@@ -1,0 +1,50 @@
+id: INF-0114
+legacy_ids:
+- '1.115'
+slug: ttmetal_sqrt_rsqrt_negative_zero_domain_signbit_misclassification
+aliases: []
+title: SFPU sqrt/rsqrt 将 −0.0 误判为负域
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ckernel_sfpu_sqrt.h 负域判定
+  behavior: 以 v_if(x < 0.0f) 判负域置 NaN，比较把 −0.0 归入负数（IEEE 中 −0.0 属定义域）；fast_and_approximate_mode 去掉守卫后直接对 −0.0 位型跑 Newton 迭代。
+effect:
+  objects:
+  - 数值结果
+  detail: 输入 −0.0 时 fp32 sqrt→NaN、bf16 sqrt→inf、fp32 rsqrt→NaN（应 −inf）、bf16 rsqrt→+inf，快速近似模式返回 7e-20 级垃圾；P300/N300 一致，+0.0 正确；下游 RMSNorm 类计算被毒化。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent SFPU + sqrt/rsqrt + −0.0 输入（含符号翻转的下溢产物；软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53975
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（sqrt/rsqrt 非近似路径以 `x < 0.0f` 符号位测试分类——−0.0 与真负值同分支：fp32 返回 NaN（应 −0.0 / −inf）、bf16 返回 +inf；fast-approx 模式无守卫，直接对 −0.0 位型跑 Newton 迭代返回 7e-20 垃圾） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`ckernel_sfpu_sqrt.h`（Blackhole :79-81 / Wormhole B0 :78-84）以 `v_if (x < 0.0f)` 判负域置 NaN——IEEE-754 中 −0.0 在 sqrt/rsqrt 域内（sqrt(−0.0)=−0.0、rsqrt(−0.0)=−inf），但比较按符号位把 −0.0 归入负数。实测（P300/N300 一致）：fp32 sqrt → NaN、bf16 sqrt → inf、fp32 rsqrt → NaN（应 −inf）、bf16 rsqrt → +inf；`fast_and_approximate_mode=True` 剥除守卫后对 −0.0 位型跑 Newton 迭代返回 7.0116e-20 / 1.0517e-19。+0.0 全模式正确。'
+  source: 'tt-metal #53975（2026-08-21 open，tt-llk SFPU，含四 dtype × 四模式矩阵）。https://github.com/tenstorrent/tt-metal/issues/53975'
+  behavior: 无 crash——域内输入 −0.0 静默产生 NaN/inf/小 garbage（随模式不同）；下游 RMSNorm 类（rsqrt 核心）在含 −0.0 的方差输入上被毒化。属「**符号位比较把 −0.0 误分类为域外**」新子签名：与 1.108/1.116 同为负域/零域边界特判缺失族。
+  trigger_surface: Tenstorrent SFPU + sqrt/rsqrt + −0.0 输入（含符号翻转的下溢产物；软件 API 可触发）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

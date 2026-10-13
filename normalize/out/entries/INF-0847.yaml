@@ -1,0 +1,58 @@
+id: INF-0847
+legacy_ids:
+- '8.63'
+slug: vllm_encoder_attention_quantized_kv_request_time_reject
+aliases: []
+title: vLLM encoder 注意力配量化 KV 启动不校验、首个请求才报错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: encoder 注意力量化 KV 校验
+  behavior: encoder-only attention 对量化 KV 的能力检查只存在于请求处理路径，preflight 与引擎构建期没有该组合校验
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: embedding 模型（如 bge-large-en）配 --kv-cache-dtype fp8_e4m3 时服务正常启动、健康检查通过，首个 /v1/embeddings 请求才抛 NotImplementedError 返回 500；同类组合的错误在构建期、选择期或请求期随机显形
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + encoder/embedding 模型 + 量化 KV/mamba dtype/--calculate-kv-scales 组合（config 组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: subsystem 希望有“配置/能力校验”：启动期能力矩阵检查缺失不专属于量化代码，现有值中只能就近归 量化
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55048
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（embedding 模型（bge-large-en）+ `--kv-cache-dtype fp8_e4m3`：服务**成功启动**、首个 `/v1/embeddings` 请求才抛 `NotImplementedError: quantization is not supported for encoder attention`——不支持的能力组合在启动验证期被放过、到请求期才拒绝（fail-late-loud）） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: 'encoder-only attention 路径对量化 KV 的能力检查只存在于请求处理路径，preflight/引擎构建期无该组合校验。同日同型两伴随：#55046（Qwen3-Embedding + bf16 KV + mamba cache dtype 组合走到后端选择才 `ValueError: No valid attention backend found`）、#55049（`--calculate-kv-scales --enable-prefix-caching` 对 encoder 模型在引擎构建期 `AssertionError: HybridKVCacheCoordinator requires at least two attention groups`）——三例同一报告模式：**能力矩阵不在启动前检查**，错误显形位置（请求期/选择期/构建期）随机分布。'
+  source: 'vLLM #55048（2026-09-02 open，standalone 复现脚本）。https://github.com/vllm-project/vllm/issues/55048 · 伴随：#55046 · #55049 · #55046 修复 PR #55482（2026-09-05：encoder-only 后端选择以 `kv_cache_dtype="auto"` 进行，不再让全局 dtype 过滤无 KV 的后端）'
+  behavior: crash/500 于首个请求——无静默错误数据，但"启动成功"给出错误的能力信号（健康检查过、探针请求若无该路径则继续绿）；与 8.62（fp8 KV sparse MLA 启动期拒绝）构成同 dtype 协商域的时序光谱：启动期（好）→ 构建期 → 选择期 → 请求期（差）。
+  trigger_surface: vLLM + encoder/embedding 模型 + 量化 KV/mamba dtype/--calculate-kv-scales 组合（config 组合即触发）
+  discovery: |-
+    2026-09-03 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: KV缓存
+        status: unanimous

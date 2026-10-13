@@ -1,0 +1,58 @@
+id: INF-0162
+legacy_ids:
+- '1.163'
+slug: ttmetal_batch_norm_running_var_biased_missing_bessel
+aliases: []
+title: batch_norm 更新 running_var 未做 Bessel 校正
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: batch_norm running 统计更新
+  behavior: training 模式把有偏 batch 方差（分母 m）mean_NHW(square(centered)) 直接写入 running_var，从不施加 Bessel 校正 m/(m−1)，与 PyTorch/TF 参考实现不一致。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  detail: running_var 随 batch 大小系统性偏低 (m−1)/m（m=2 时达 50%），并经 momentum 累积；推理期用偏小方差归一化，输出分布系统性偏移，小 batch 训练再部署受害最深。无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.batch_norm(training=True)` + 提供 running_mean/running_var（tt-train 路径）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55438
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.batch_norm` training 模式用**有偏方差**（1/m）更新 `running_var`，从不施加 Bessel 校正 m/(m−1)——`mean_NHW(square(centered))` 直接喂 `running_statistics`，运行统计量随 batch 大小系统性偏低 (m−1)/m） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`batch_norm.cpp` 的 running 统计更新路径把计算 batch 方差（有偏，分母 m）的中间量直接当总体方差估计写入 running_var；PyTorch/TF 参考实现均用无偏估计更新。偏置随 m 增大而减小但永远存在，且通过 momentum 指数滑动累积进推理期使用的统计量。'
+  source: 'tt-metal #55438（2026-09-04 open，含源码逐行定位与公式对照）。https://github.com/tenstorrent/tt-metal/issues/55438'
+  behavior: 无 crash、无 NaN——**统计量静默偏低**：推理期 batch_norm 用偏小方差归一化，输出分布系统性偏移；误差量级 (m−1)/m（m=2 时达 50%）。属「**训练/推理统计协议与参考实现静默分歧**」新子签名：非即时数值错误而是**随训练累积的偏差**，用小 batch 训练再部署的模型受害最深。
+  trigger_surface: tt-metal + `ttnn.batch_norm(training=True)` + 提供 running_mean/running_var（tt-train 路径）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 模型权重
+        to: 数值结果
+        status: unanimous

@@ -1,0 +1,50 @@
+id: INF-0748
+legacy_ids:
+- '7.75'
+slug: vllm_cutlass_c3x_scaled_mm_packed_stride_reconstruction_ignores_leading_strides
+aliases: []
+title: cutlass_scaled_mm 丢弃 leading stride 静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: C3x caller stride 构造
+  behavior: op 入口接受任意 leading stride，但 cutlass_gemm_caller.cuh 用 make_cute_packed_stride 按 shape 重建 packed stride，丢弃实际 stride。
+effect:
+  objects:
+  - 数值结果
+  detail: A、B 或 output 任一为 sliced/padded 视图（如 1024×1024 上取 512×512）时 w8a8 int8 GEMM 约 8.1% 元素错（max abs err 3.04），全 packed 为 0；H800 上 0.28.0 wheel 与 main 均复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM/CUTLASS 3.x + cutlass_scaled_mm + 任何非紧凑 leading stride 的 A/B/output（张量布局即触发；CUDA 可稳定复现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55534
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（`torch.ops._C.cutlass_scaled_mm` 的 CUTLASS 3.x caller 对 A/B/output 张量的 padded leading dimension 静默出错：op 入口只要求最内维 stride==1（接受任意 leading stride），caller 却用 `cutlass::make_cute_packed_stride` 从 shape 重建**紧密 packed** strides、丢弃张量实际 leading strides——A-only/B-only/output-only padding 各产生 ~8.1% 错配元素（262,144 中 ~21,300，max abs err 3.04），全 packed 为 0；把实际 leading dims 传给 CUTLASS 即五案例全零） · Cov: `NEW`（leading-stride 丢弃子签名） · 触发 `yes` · 置信度 `verified`'
+  mechanism: API 契约（接受松散布局）与内部实现（假设紧凑布局）脱节：`cutlass_gemm_caller.cuh` 无条件构造 packed StrideA/B/C。最小复现：1024×1024 分配上取 512×512 视图（A stride (1024,1)、B stride (1,1024)）。官方 vLLM 0.28.0 wheel 与 main `a69e75b9` 均复现（H800 SM90、CUDA 13.0、torch 2.13.0+cu130）；既有上游测试 `test_cutlass_subset` 在发行 wheel 上同样失败。
+  source: 'vLLM #55534（2026-09-06 open，bug/nvidia/quantization label，含五行_stride 对照表、最小复现与 one-line 修复方向）。https://github.com/vllm-project/vllm/issues/55534'
+  behavior: 无 crash——w8a8 int8 量化 GEMM 在任何 sliced/padded 张量布局下**静默错值 ~8%**（量化服务中常见：view/切片馈入 scaled_mm 的路径全部中招）。新子签名「**入口接受、内层丢弃的布局参数**」：与 8.75（InfLLM-v2 pooling 逻辑宽 vs padded 宽）同构——一个在 CUDA caller、一个在 wrapper 行 stride，"逻辑 shape 重建 stride 覆盖真实 stride"是跨栈重复出现的模式。
+  trigger_surface: vLLM/CUTLASS 3.x + cutlass_scaled_mm + 任何非紧凑 leading stride 的 A/B/output（张量布局即触发；CUDA 可稳定复现）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

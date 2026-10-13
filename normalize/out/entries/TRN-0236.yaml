@@ -1,0 +1,56 @@
+id: TRN-0236
+legacy_ids:
+- RL-RO.14
+slug: rollout_context_compression_conditions_diverged_history
+aliases: []
+title: rollout 中上下文压缩使训练条件历史与生成时不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: 通用
+    component: 压缩上下文 rollout 的训练线性化
+  behavior: agent harness 在 rollout 中压缩上下文（evict 旧轮次）使训练对象成为树，现有线性化不保真：保留最右路径导致 time-travel leakage，depth-first 重放与生成时条件序不一致。
+effect:
+  objects:
+  - 训练样本流
+  - 训练轨迹
+  detail: 无 crash；agent RL 在训练条件不等于生成条件上更新，策略被优化去利用训练侧虚构的完整历史，部署侧（真实压缩）行为漂移；eviction 密度越高的长程 agent 任务偏差越大，与数值 TIM 叠加后更难归因。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2609.00865
+  kind: arxiv
+relations:
+- kind: var
+  target: TRN-0233
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:decode_reencode_drifts_trajectory` · 置信度 `documented`'
+  mechanism: 生产 agent harness（Claude Code / Qwen-Agent 类）在 rollout 中**压缩上下文**（evict 旧轮次），训练对象因此不是序列而是**树**——每次 eviction 都把有效历史分叉。现有线性化都不保真：保留最右路径 → time-travel leakage（被训的条件里有 rollout 时已不存在的历史）；depth-first 重放 → 与生成时条件序不一致的 train-inference mismatch。论文给出两个梯度等价的精确修正（LogitTree：分段 K-forward 遍历，需 K+1 次 backward；packed 4D attention mask：需自定义 kernel 与白盒 eviction 记录）+ 单 backward 的变分松弛 SDCC（eviction 处对压缩 student 与 stop-gradient teacher 在重建历史上最小化前向 KL）。
+  source: MemoryWalker, "Stop Training Agents on Contexts They Never Saw", arXiv:2609.00865（2026-09-01，窗口内）。https://arxiv.org/abs/2609.00865
+  behavior: 无 crash；agent RL 在「训练条件 ≠ 生成条件」上更新——策略被优化去利用训练侧虚构的完整历史，部署侧（真压缩）行为漂移，且与 RL-RO.01 的数值 TIM 叠加后更难归因。与 RL-RO.11（decode/re-encode 非双射破坏序列恒等性）同族的结构性 TIM：那边 token 序列被改写，这边**条件历史本身**在 rollout 与训练两侧是不同对象；eviction 密度越高（长程 agent 任务）偏差越大。
+  discovery: 2026-09-07 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

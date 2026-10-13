@@ -1,0 +1,59 @@
+id: INF-1193
+legacy_ids:
+- '13.25'
+slug: vllm_rocm_deepseek_v4_preshuffled_weight_inlined_as_plain_linear
+aliases: []
+title: 删除 override 点致 ROCm preshuffled 权重被误乘
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: _fused_wqa_wkv_gemm 覆盖点
+  behavior: 'commit #51430 删除 _fused_wqa_wkv_gemm 并在调用点内联 fused_wqa_wkv，绕过 ROCm override，加载时已 preshuffle 的权重被普通 linear 相乘。'
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: gfx950 上 amd/DeepSeek-V4-Flash-NVFP4 服务正常启动，但每个问题都回答不可解析的重复 token 流，GSM8K 为 0.0000（阈值 0.92）；CUDA 上完全不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm（gfx950）；DeepSeek-V4-Flash-NVFP4 + AITER preshuffled weight path
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51821
+  kind: github_pr
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（删除 _fused_wqa_wkv_gemm override point 后 ROCm preshuffled 权重被当普通 linear 乘→从第一层起全垃圾） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'gfx950 上 `amd/DeepSeek-V4-Flash-NVFP4` 的 GSM8K 准确率为 **0.0000**（阈值 0.92）。服务器正常启动然后每个问题都用不可解析的重复 token 流回答——失败在数值而非 harness。bisect 定位到 commit #51430「Narrow DeepSeek V4 eager CUDA graph region」，该 commit 删除 `DeepseekV4Attention._fused_wqa_wkv_gemm` 方法并在唯一调用点内联 `self.fused_wqa_wkv(hidden_states)[0]`。被删的方法正是 ROCm attention layer 实现的 **override point**——ROCm 上 `fused_wqa_wkv` 权重在加载时 **preshuffled**（in-place），block scale 保留在旁边，之后只能由 AITER 的 preshuffled-B GEMM 正确乘。内联后每个 attention layer 的 input projection 对 shuffled 权重跑**普通 linear**→从第一层起产出垃圾。ROCm override 的 fallback 调用不再存在的 `super()` 方法→`AttributeError`。**CUDA 上完全不可见**，ROCm override 读起来仍像连接的。'
+  source: 'vLLM #51821（2026-08-11 PR）。组件 `DeepseekV4Attention._fused_wqa_wkv_gemm` / ROCm AITER preshuffled-B GEMM。gfx950。https://github.com/vllm-project/vllm/pull/51821'
+  behavior: 无 crash。**从第一层起全垃圾输出**——GSM8K 0.0000，重复 token 流。属「删除 override point 后平台特定权重预处理被绕过→跨平台不可见的静默损坏」**新子签名**——平台特定优化路径的 override point 脆弱性。
+  trigger_surface: vLLM ROCm（gfx950）；DeepSeek-V4-Flash-NVFP4 + AITER preshuffled weight path
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7
+    uncertain:
+    - subsystem
+    - effect

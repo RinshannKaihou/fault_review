@@ -1,0 +1,64 @@
+id: INF-0858
+legacy_ids:
+- '8.74'
+slug: sglang_minicpm_fused_topk_causal_and_sync_selection_errors
+aliases: []
+title: MiniCPM fused top-k 选择器三处错致选错块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: MiniCPM fused top-k 选择器
+  behavior: fused top-k 选择器禁用了共享内存同步，跨 warp MMA 可能在共享 Q/K tile 写同步前读取；重叠压缩窗可给未来块打分、挤掉因果候选；先按块 ID 排序再截断候选缓冲会丢高分块
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: SGLang 服务 MiniCPM-SALA 长上下文时无报错，sparse attention 选中未来块（如 query 位 8895 选中块 139）、漏掉最近/forced 块，长上下文检索质量静默退化
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + MiniCPM-SALA（fused top-k sparse attention）+ chunked prefill/decode（other_stack：SGLang；模型即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38232
+  kind: github_pr
+relations:
+- kind: var
+  target_raw: sglang_fast_topk_threshold_bucket_overflow_silent_candidate_drop
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（MiniCPM fused top-k 选择器三缺陷叠加选错 sparse attention 块：(1) 跨 warp MMA 可在共享 Q/K tile 的写同步前读（编译器插入的 shared-memory 同步被禁）；(2) 重叠压缩窗可给**未来块**打分、挤掉 causal 候选（query 位 8895 于块 138 却选中块 139）；(3) 先按块 ID 排序再截断内核的幂次候选缓冲可丢高分布（首 decode query 丢最近块 161-192 等 forced 块）——修复：重启用共享内存同步、候选限当前块及更早、按分数序截断后排序保留 ID） · Cov: `var:sglang_fast_topk_threshold_bucket_overflow_silent_candidate_drop`（8.55 fast_topk 选择器族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 选择器内核的同步/causality/截断序三处各自独立错。验证含离线 IR 检查（生产 kernel lowered IR 的两个 producer/consumer barrier 修复前失败/修复后通过）+ 真实 MiniCPM-SALA NVFP4 服务捕获选择器输入输出后逐条 revert 重放（12288-token 请求，两处选择错误的精确前后对照）。
+  source: 'SGLang PR #38232（2026-09-06，含 sm_120 lowered IR 验证与服务捕获重放）。https://github.com/sgl-project/sglang/pull/38232'
+  behavior: 无 crash——sparse attention **注意了错误/未来的块、漏掉 recent/forced 块**：长上下文检索质量静默退化（causality 违反是质量域最危险的子类——答案可看似合理）。8.55（fast_topk 溢出丢候选）之后 top-k 选择器族第二例：同步、causality、截断序三种根因在同一 kernel 叠加，说明 fused 选择器是 sparse attention 正确性的集中薄弱点。
+  trigger_surface: SGLang + MiniCPM-SALA（fused top-k sparse attention）+ chunked prefill/decode（other_stack：SGLang；模型即触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed:
+  - cause.behavior
+  note: 审计：分类 算子/内核（修复改 fused top-k 选择器 kernel 的同步、候选范围与截断序）、数值结果+输出内容、静默错误（原文“答案可看似合理”）均合规；detail 事实可溯源。behavior 把原文“跨 warp MMA 可在共享 Q/K tile 的写同步前读”写成确定的“先读后写”，已改回“可能在写同步前读”。
+  audit_issues:
+  - field: cause.behavior
+    type: 忠实性
+    detail: 原文为“跨 warp MMA 可在共享 Q/K tile 的写同步前读”（可能性），第一遍写成确定的“先读后写”且漏了 Q/K tile
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

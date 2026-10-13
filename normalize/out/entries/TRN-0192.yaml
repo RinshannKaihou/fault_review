@@ -1,0 +1,53 @@
+id: TRN-0192
+legacy_ids:
+- SFT.15
+slug: explicit_loss_type_path_drops_token_weights
+aliases: []
+title: ms-swift 显式 CE loss_type 丢弃 token 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: ms-swift
+    component: CustomCrossEntropyLoss
+  behavior: Seq2SeqTrainer 把 token weights 传给 CustomCrossEntropyLoss，但回调重算 CE 时丢弃 weights，loss_scale 未在 reduce 前作用于 per-token loss。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 显式 --loss_type cross_entropy 时用户配置的 token 权重（如 last_round、工具位降权）不生效，按均匀权重训练，零权重 token 也计入 loss 与梯度；默认 trainer 路径正常。静默、无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10100
+  kind: github_pr
+relations:
+- kind: var
+  target_raw: loss_scale_reweights_rounds
+original:
+  category: SFT
+  section: SFT
+  meta: 'stage: `sft` · Cov: `var:loss_scale_reweights_rounds` · 置信度 `verified`'
+  mechanism: ms-swift `--loss_type cross_entropy`（显式选择）时 `Seq2SeqTrainer` 把对齐后的 token weights 传给 `CustomCrossEntropyLoss`，但回调在**重算** cross entropy 时丢弃 weights：非均匀权重在**默认 trainer 路径**会改变 objective、在显式选择该 loss 时却**毫无效果**——甚至零权重 token（本该被 mask 掉的位）照样计入 loss。修复 = 在 reduce 前把 `loss_scale` 应用到 per-token loss，保留 valid-token / `num_items_in_batch` 分母。
+  source: 'ms-swift PR #10100（2026-09-10 closed；8 组合回归：absent/unit/nonuniform/zero weights × local/explicit 归一，4 个加权用例修复前挂；离线 tiny Qwen3 经 `Seq2SeqTrainer._prepare_inputs`+`compute_loss` 与独立平移 PyTorch CE 的 loss/全参数梯度/单步 SGD 对照，CPU FP32 + H800 FP32/BF16）。https://github.com/modelscope/ms-swift/pull/10100'
+  behavior: 静默——显式 `loss_type` 用户配置的 token 权重（如多轮 `last_round`、工具位降权）不生效，模型按均匀权重训练，预期强调的 token 被稀释、该 mask 的位泄漏进梯度。与 SFT.12（多轮拆分默认 `loss_scale` 重复计权）同族同库：**`loss_scale` 权重链路在 trainer 分支间断裂**——那边默认路径重复计权、这边显式路径全丢；「配置面存在、执行面缺席」的死配置面与 CKPT.07/CKPT.20 同型，但打击的是 objective 本身。
+  discovery: 2026-09-13 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

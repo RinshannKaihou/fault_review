@@ -1,0 +1,54 @@
+id: INF-0402
+legacy_ids:
+- '6.9'
+slug: vllm_pd_preemption_race_empty_kv
+aliases: []
+title: vLLM P/D 抢占竞态使 connector 向 decode 传输空 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 异步 KV connector 传输取消
+  behavior: 请求被 preempt 时 KV blocks 已被 purge，但异步 connector 的 request_finished() 看到空 block 列表仍继续传输、未取消；竞态窗口在最终步 prefill 完成与传输取消之间。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: P/D 分离部署下请求被抢占时，decode 节点收到空 KV 或残留元数据，从空/过期 KV 开始解码，输出垃圾或无关内容；无 crash。单进程路径无法复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-07-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50297
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0399
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off` · Cov: `var:radix_kvcache_cross_contamination` · 触发 `no` · 置信度 `documented`'
+  mechanism: 分离式 Prefill/Decode (P/D) 部署下，当请求被 preempt 时，其 KV blocks 被 purge，但异步 connector 的 `request_finished()` 仍看到**空 block 列表**并继续传输。下游 Decode 节点接收到空 KV 或残留元数据，导致后续 decode 从空/过期 KV 开始。preemption race 的窗口在最终步 prefill 完成与 KV transfer 取消之间的间隙。
+  source: 'vLLM PR #50297（2026-07-28）。https://github.com/vllm-project/vllm/pull/50297'
+  behavior: 被 preempt 的请求的 KV 被清空但传输未取消，下游 connector 持有空 KV。无 crash，但 decode 结果基于空 KV → 输出垃圾或无关内容。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: 与 K5.3 `pd_disagg_dside_page_reuse_stale_kv` 和 K§5 (cross-node-transfer) 同族——分离式 KV 传输的生命周期管理 bug。infra_off，跨节点方向。单进程路径无法复现。
+  discovery: 2026-07-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

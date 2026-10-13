@@ -1,0 +1,66 @@
+id: INF-0899
+legacy_ids:
+- '9.16'
+slug: sglang_qwen38_nvfp4_fused_qknorm_rope_outgate_grounding
+aliases: []
+title: SGLang 融合 RoPE 路径致 Qwen3.8 NVFP4 坐标偏移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: 融合 QK-norm+RoPE+gate 路径
+  behavior: CUDA 且 attn_output_gate 时 qwen3_5.py 走的 QK-RMSNorm+RoPE+output-gate 融合路径数值错误，native 路径正确。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Qwen3.8-27B-NVFP4 在 SGLang CUDA 上 2D grounding 坐标严重偏移（中心误差 178.3px、IoU 0），同 checkpoint/图/prompt 在 vLLM 0.27.1 与 native 路径准确；生成文本表观正常，文本质量评测难以暴露。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang CUDA + Qwen3.8-27B-NVFP4（qwen3_5.py fused 路径 + attn_output_gate）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35949
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0891
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（CUDA fused QK-RMSNorm+RoPE+output-gate 融合路径数值错误——NVFP4 量化 VLM 的 2D grounding 坐标严重偏移：中心误差 178px/IoU 0，native 路径与 vLLM 正确） · Cov: `var:vllm_fused_qknorm_rope_divergent_warp_collective_partial_neox` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`RadixArk/Qwen3.8-27B-NVFP4` 在 SGLang（CUDA）上产出严重错误的 2D grounding 坐标；同 checkpoint、同图、同 prompt 在 vLLM 0.27.1 准确。A/B 隔离锁定 `python/sglang/srt/models/qwen3_5.py` 的 **CUDA fused QK-RMSNorm + RoPE + output-gate 路径**（`_is_cuda and self.attn_output_gate` 时走 `forward_prepare_cuda_fused`）；强制 native 路径即恢复 grounding 精度（中心误差 178.3px → 2.9px，IoU 0 → 0.71）。实测对照：SGLang fused 路径 `[420,675,548,694]` vs 期望 `[618,648,702,664]`。'
+  source: 'SGLang #35949（2026-08-20 open，"[Bug] Qwen 3.8 27b NVFP4 incorrect coordinate detection on image"）。https://github.com/sgl-project/sglang/issues/35949'
+  behavior: 无 crash。**空间 grounding 精度灾难性退化但生成式输出表观正常**——缺陷在数值融合路径、显形在下游坐标解码任务上，文本质量评测难以暴露。属已知「fused QK-norm+RoPE 融合路径数值错误」族（9.8 vLLM partial-NeoX warp collective UB、9.9 B200 FP8 CSE 失配）新实例，**新增 output-gate 融合变体**与 NVFP4 VLM 显形面；跨引擎 A/B（SGLang vs vLLM）是定位该族的有效手段。
+  trigger_surface: SGLang CUDA + Qwen3.8-27B-NVFP4（qwen3_5.py fused 路径 + attn_output_gate）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem：取 位置编码。原文把缺陷 A/B 锁定到 CUDA fused QK-RMSNorm+RoPE+output-gate 路径，并明确归入“fused QK-norm+RoPE 融合路径数值错误”族（9.8/9.9），本批同族条目（INF-0891、0895、0900）均归 位置编码，按 rule 1 取功能域以保持一致。保留意见：原文未确认错在 RoPE 部分还是融合内核的通用数值实现。visibility 独立判断曾取 静默错误，但 grounding 指标（中心误差 178px、IoU 0）可观测，质量退化 成立，维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 位置编码
+        to: 算子/内核
+        status: panel7
+    uncertain:
+    - effect
+    - visibility

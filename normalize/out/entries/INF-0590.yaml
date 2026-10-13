@@ -1,0 +1,56 @@
+id: INF-0590
+legacy_ids:
+- '6.197'
+slug: vllm_nixlpush_post_producer_end_write_wrong_kv_http200
+aliases: []
+title: vLLM NixlPushConnector 过期回调写错 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NixlPushConnector 延迟回调
+  behavior: 握手回调、deferred-inbox drain、transfer sink 三处延迟路径持有发起时的逻辑 block id 且无“请求已放弃”检查；生产者请求结束、源 block 被复用后仍提交 WRITE。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  detail: PD 分离部署中握手延迟或 lease 到期窗口内，仍在运行的 decode 请求在被另一请求内容污染的错误 KV 上继续生成；无 crash、API 返回 HTTP 200，输出看似正常但语义错误。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM PD 分离 + NixlPushConnector + 握手延迟/lease 到期窗口（分布式拓扑 + 时序触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55470
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（PD NixlPushConnector 等待 P→D 握手期间，完成回调捕获的是发起时的逻辑 block id——生产者请求已结束（lease 到期/推送完成）后回调仍提交 WRITE，源 block 可能已归属另一请求：仍在运行的 decode 请求从**错误的 KV** 生成，而 API 返回 HTTP 200） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`get_finished` 报告生产者完成后请求资源即可复用，但握手回调、deferred-inbox drain、transfer sink 三处延迟路径各自持有旧 block id 且无"请求已放弃"检查——异步回调的捕获状态与请求生命周期失配。修复在引擎线程把 finished/expired 请求标记 abandoned 并在三处拒绝 WRITE。'
+  source: 'vLLM PR #55470（2026-09-05，[Security] 标签；区别于 #50754 失败写通知缺失与 #54757 握手监听加固）。https://github.com/vllm-project/vllm/pull/55470'
+  behavior: 无 crash、HTTP 200——**跨请求 KV 错配的静默生成**：decode 请求在错误前缀上继续生成，输出看似正常但语义已被另一请求的内容污染。与 6.133（lease 到期零传输挂起）互补：同一 lease 生命周期管理域的两种显形——彼条卡死、本条静默错 KV；跨节点 P/D 部署的 KV 一致性风险面再 +1。
+  trigger_surface: vLLM PD 分离 + NixlPushConnector + 握手延迟/lease 到期窗口（分布式拓扑 + 时序触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: KV状态
+        to: 跨请求/跨样本数据
+        status: unanimous

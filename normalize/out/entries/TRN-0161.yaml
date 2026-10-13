@@ -1,0 +1,55 @@
+id: TRN-0161
+legacy_ids:
+- MOE.12
+slug: router_aux_loss_inplace_reduce_overwrites_token_count
+aliases: []
+title: Megatron MoE token 计数被就地归约覆写致 aux 梯度 ×TP
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: megatron-lm
+    component: moe_utils 有效 token 计数
+  behavior: local_tokens_per_expert 被 TP 归约就地覆写为全局和，带 padding_mask 时据此推导的 local_num_tokens 也成全局值，被当作 valid_token_count 算 aux loss。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 无 crash、无 NaN；MoE aux loss + padding_mask + per-token loss + TP/CP>1 时 router 梯度恒放大 TP 或 CP 倍（TP=2 时 2.226 vs 1.113），负载均衡压力随并行度漂移，不同 TP 的 run 不可比。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7481
+  kind: github_pr
+relations: []
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `get_tokens_per_expert_and_token_count`（moe_utils.py:269）把 `local_tokens_per_expert` 传给 `reduce_from_tensor_model_parallel_region`——`tensor_parallel/mappings.py` 的 `_reduce` 对 contiguous 输入**就地归约**（代码注释自认）。带 `padding_mask` 时下游（L283）又从这张**已被覆写为全局和**的张量推导 `local_num_tokens`：两个返回计数都成了全局值。`router.py:452/509/555` 把这个「local」计数当 `valid_token_count` 传进 aux loss——**aux loss 梯度被额外乘上 TP/CP 组大小**。TP=2、8 token 中 5 有效 repro：两 rank 都得 `local_num_tokens=5`，router 梯度范数 2.2258655 vs 正确 1.1129328（**恰好 TP× 过大**）。触发只需 MoE aux loss + padding_mask（数据调度器的 sequence packing 即产生）+ per-token loss + TP/CP>1——任何非空 mask 都选中该分支。2026-09 的 `/`→`//` 改动（#7081）不影响此缺陷。修复 = reduce 前 clone、或先算 local 计数再调集合通信。
+  source: 'Megatron-LM #7452（2026-09-17；finding 10；#6111 是同路径不同 crash 已关）。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；#7452 finding 10 独立确认 + 修复 PR（2026-09-18 补）：0z5a 在当前 main `d564dd01d` 上真实 NCCL 2-rank/EP=2/topk∈{1,2,4} 复现——rank0 3 有效行 / rank1 1 行，修复前两 rank「local」计数都得 **4**（= 组全局值）、修复后 3/1；`all_reduce` 作用于返回 buffer 会原地改变它，即别名污染的直接证据；隔离实验（routing map/scores/aux 公式/进程组全同、只改报告计数）下 aux 梯度随报告值**精确线性**缩放：local/total=7/10 → 1.428571×、3/10 → 3.333333×（恰为 `global/local`）；`//topk` floor（#7183）是独立改动、别名污染早于它存在；修复 PR #7481 在集合通信前把 rank-local 标量算进独立存储，base 5 failed → PR 后 11 passed。https://github.com/NVIDIA/Megatron-LM/pull/7481 ；2026-09-22 补：Connor-XY 09-21 在 #7481 请 zhongbozhu 评审「reduce 前的 local token-count 捕获及其在 router aux loss 中的使用」（邻近其 #7183 dtype 修复）并检查新增分布式回归 fixtures——PR 仍 open 未 merge。'
+  behavior: 无 crash、无 NaN——router/aux loss 梯度**恒放大于正确值 TP× 或 CP×**（取决于归约组），负载均衡压力随并行度漂移：同模型 TP=1 与 TP=2 的 run 行为不可比，专家均衡目标被过量施加。与 MOE.11（分母用当前 microbatch）同打击 aux loss 归一化语义、不同断点：那边分母时序错、这边**上游张量被集合通信就地污染后复用**；「in-place collective 污染调用方张量」与 KER.13（backward 就地覆写 logits）/DATA.09（覆写 caller mask）同一病根——**库代码就地复用调用方缓冲**；与 PAR.11（GTP 梯度 ×GTP 放大）症状面同为「梯度恒乘组大小」。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0907
+legacy_ids:
+- '9.24'
+slug: vllm_yarn_alias_variants_double_scale_max_len_rope_cache_oob
+aliases: []
+title: vLLM YaRN 别名绕过精确串判定致 max_len 二次缩放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: max_len 推导、vendor YaRN 类
+  behavior: _get_and_verify_max_len 只对精确串 "yarn" 重置派生长度，telechat3-yarn 等别名的已缩放长度被再乘 factor；vendor 类 attention_factor/mscale 与上游不一致。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: TeleChat3-36B 最大长度算成 131,072（应 32,768）、sarvam-105b 算成 5,242,880，放行请求越过 cos/sin cache 多数 crash；未 crash 时 attention_factor 错位，长上下文质量无告警退化。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + telechat3-yarn/deepseek_yarn 等 YaRN 别名变体模型（config）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/56446
+  kind: github_pr
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（vLLM `_get_and_verify_max_len` 只对**精确字符串 `"yarn"`** 把派生长度重置回 `original_max_position_embeddings`——YaRN 变体以别名注册（`telechat3-yarn`、`deepseek_yarn`）时，已经 scaled 的 `max_position_embeddings` 被**再乘一次 `factor`**：TeleChat3-36B-Thinking 131,072（应 32,768）、sarvam-105b 5,242,880（应 131,072），放行请求索引越过 cos/sin cache 末端。根因是与 `transformers.modeling_rope_utils._compute_yarn_parameters` 的整体漂移：上游 YaRN 从不把 `max_position_embeddings` 乘 factor、只有一份实现而非每 vendor 一个类、mscale/attention_factor 语义键也各vendor 特化（TeleChat3 预计算 attention_factor 不 round-trip：上游算 1.1386 vs vLLM 1.0970；Mistral-Large-3 1.3583 vs 1.0）。修复 PR #56446（merged 2026-09-11）对齐上游规则、删除 vendor 重复 RoPE 类，supersede #55116/#56279） · Cov: `NEW`（RoPE 变体别名绕过精确串匹配守卫子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`rope_type` 的判定是一处 exact-string 分支而非族判定，别名变体走不进重置分支；派生长度翻倍后 RoPE cache 按错误长度分配/索引。'
+  source: 'vLLM PR #56446（2026-09-11 merged，含双模型 before/after 长度表、上游对齐分析与 vendor 类删除清单）。https://github.com/vllm-project/vllm/pull/56446'
+  behavior: 越界索引在多数路径 crash（cos/sin cache OOB），但**静默面在于 attention_factor/mscale 漂移**——不 crash 的配置下 RoPE 缩放系数整体错位（1.0970 vs 1.1386 量级），长上下文质量退化无任何告警。9.18（transformers 嵌套 rope_parameters 层依赖误解析）与 9.23（KV offload 跨 RoPE 变更复用）之后 RoPE 配置族新成员：本条在别名变体 × 精确串匹配维度。
+  trigger_surface: vLLM + telechat3-yarn/deepseek_yarn 等 YaRN 别名变体模型（config）
+  discovery: |-
+    2026-09-11 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

@@ -1,0 +1,50 @@
+id: INF-0805
+legacy_ids:
+- '8.21'
+slug: vllm_hybrid_attn_eagle_drop_full_cache_miss
+aliases: []
+title: vLLM 混合模型 + Eagle 非块对齐 prompt 前缀缓存全 miss
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 混合模型前缀缓存 checkpoint 位置
+  behavior: Eagle 下 prefix cache 要求匹配点之后再多一块（128）才 drop；非块对齐 prompt 时 Mamba 两个边界 checkpoint 都坍缩到同一位置，无 checkpoint 能满足全注意力 +128 条件。
+effect:
+  objects:
+  - 性能/资源
+  detail: Kimi K3 + Eagle（block_size=1536、PMU=128）下，prompt_length=24577 等非块对齐 prompt 的 prefix cache 全 miss（0 hit），每请求全量重算，吞吐严重损失；无 crash，输出正确。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；hybrid sparse attention（Kimi K3）+ Eagle + 非块对齐 prompt
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51295
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（hybrid 稀疏注意力 Eagle drop 导致 prefix cache 意外全 miss） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: Kimi K3 + Eagle + block_size=1536 + PMU=128。当 prompt_length=24577（非块对齐）时，Mamba 在两个边界位置（最后块对齐 `prompt_length-1`；最后 PMU 对齐 partial 块）的 checkpoint 都坍缩到 24576，full attention 缓存到 24576。prefix cache 要求 Eagle 匹配 candidate 之后一块（128）再 drop。24577 时无 mamba checkpoint 能满足 `+128` 全注意力→全 miss（0 hit）。24576 时 23040 mamba checkpoint 满足（23040+128 缓存）。修复：Eagle 下前移 mamba/SWA cache state 位置。
+  source: 'vLLM PR #51295（2026-08-06 open）。Kimi K3 + TP8 B300。https://github.com/vllm-project/vllm/pull/51295'
+  behavior: 无 crash、无 NaN。非块对齐 prompt 的 prefix cache 全 miss→性能退化（每请求全量重算），无正确性错误但严重吞吐损失。属「hybrid 模型 Mamba/全注意力 cache 边界对齐 + Eagle drop 交互」签名——hybrid 模型 prefix caching 新子签名。
+  trigger_surface: vLLM；hybrid sparse attention（Kimi K3）+ Eagle + 非块对齐 prompt
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,61 @@
+id: INF-0788
+legacy_ids:
+- '8.4'
+slug: cache_position_off_by_one
+aliases: []
+title: cache_position 偏移致 RoPE 位置整体错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: cache_position 计算
+  behavior: 带 past_key_values 时 cache_position 算错使 position_ids 整体偏移常数、RoPE 角度错；孪生形态：右填充错位、左填充配 chunked attention 致首 chunk 全为 PAD。
+effect:
+  objects:
+  - 隐状态
+  - 输出分布
+  detail: 偏移小时 logits 静默漂移，偏移大时输出乱码；padding 类变体只在 batch>1 时出现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 可复现
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2510.01238
+  kind: arxiv
+relations:
+- kind: var
+  target_raw: 9.25 / fault_rope offset
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（源注明为 cache-plumbing origin） · Cov: `var:9.25 / fault_rope offset`（源同时注明这是一个 NEW 的专用 cache-indexing id） · 触发 `yes` · 置信度 `verified`'
+  mechanism: '当传入 past_key_values 时，cache_position 的 bug（transformers #36151 / #37078）会让 position_ids 整体偏移一个常数，于是 RoPE 用错误的角度旋转 key。孪生形态：在 causal decoder 上做 right-padding 会把真实 token 从生成位置上错开；left-pad 配合 chunked attention 则会让第一个 chunk 全是模型训练时从未见过的 PAD。本条为 MERGED 条目，合并的子故障为：padding_chunked_attn_mismatch（padding 与 chunked attention 不匹配）、right_padding causal（causal decoder 上的右填充）。'
+  source: 'transformers #36151、#37078；#40214（chunked attention + left pad）；arXiv:2510.01238（"Silent Tokens, Loud Effects"）；transformers #26072、#34842。'
+  behavior: 偏移小时表现为静默的 logit 漂移；偏移严重时输出乱码。padding 类变体只在 batch>1 时出现。
+  trigger_surface: 可复现
+  signature: off-manifold 但扰动**极小**——它是 bug_perfect_disguise 在注意力域的对应物。一个常数位置偏移只是把所有 RoPE key 额外旋转一个固定角度，几何扰动平滑且幅度小，geometric 族与 spectral 族都难以与健康抖动区分。最廉价的判据是 attention 的 distance-decay 曲线整体平移（cheap 族）。族归属上存在张力：bug_perfect_disguise 被标为 model_on，而这个 cache-plumbing 同胞被判为 off-manifold，理由是扰动源自 infra/caching 的实现缺陷而非模型自身的合法计算。
+  repro: 把 position_ids 或 cache_position 整体平移一个常数（单钩子即可）；padding 变体需要构造 batch>1 且带 pad 的输入。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem KV缓存 vs 位置编码：原文 meta 注明“cache-plumbing origin”“NEW 的专用 cache-indexing id”，出错的是带 past_key_values 时的 cache_position 计算，RoPE 只是承受错误位置的下游（rule 6：按出错代码归属）。定为 KV缓存。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

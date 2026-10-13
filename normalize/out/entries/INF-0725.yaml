@@ -1,0 +1,54 @@
+id: INF-0725
+legacy_ids:
+- '7.52'
+slug: sglang_compressed_tensors_kv_cache_scheme_scales_dropped
+aliases: []
+title: SGLang 静默丢弃 CT 检查点的 KV cache scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: CT 配置与 RadixAttention 分支
+  - subsystem: 权重/检查点
+    stack: sglang
+    component: qwen3_5 weight mapper
+  behavior: 三缺口叠加：from_config 不转发 kv_cache_scheme；get_quant_method 无 RadixAttention 分支，不建 k/v scale；weight mapper 只认 ModelOpt 式命名。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: compressed-tensors 检查点声明 kv_cache_scheme 并用 --kv-cache-dtype fp8_e4m3 时，校准 k_scale/v_scale 被丢弃，KV 按无 scale 量化、精度系统性劣化；无 crash、无告警，仅加载日志一行 not found。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + compressed-tensors checkpoint 声明 kv_cache_scheme + `--kv-cache-dtype fp8_e4m3`
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/35455
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（compressed-tensors 声明的 kv_cache_scheme 校准 k_scale/v_scale 加载期静默丢弃——fp8_e4m3 KV 跑无 scale cache；三个缺口叠加：from_config 不转发、get_quant_method 无 RadixAttention 分支、weight mapper 只认 ModelOpt 序列化） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: compressed-tensors checkpoint 声明 `kv_cache_scheme` 时随包校准的 per-tensor attention `k_scale`/`v_scale` 张量在加载时被**静默丢弃**（`Parameter model.layers.N.k_scale not found in params_dict`），`--kv-cache-dtype fp8_e4m3` 因此在**无 scale** 状态下跑 cache。三个缺口叠加：(1) `CompressedTensorsConfig.from_config` 从不转发 `kv_cache_scheme`（声明了也是 None）；(2) `get_quant_method` 无 `RadixAttention` 分支，k/v scale 参数从不被创建（ModelOpt 有 `ModelOptFp8KVCacheMethod`，compressed-tensors 等价物缺失）；(3) qwen3_5 weight mapper 只认 ModelOpt 式 `.k_proj.k_scale` 序列化，compressed-tensors 把 scale 存在 attention 模块（`.self_attn.k_scale`）。
+  source: 'SGLang PR #35455（2026-08-19 closed merged，"[Quant] Load compressed-tensors kv_cache_scheme scales"）。https://github.com/sgl-project/sglang/pull/35455'
+  behavior: 无 crash、无告警（仅 load 日志一行 not found）。**校准 KV 量化静默退化为 unit-scale 量化**——fp8 KV 精度系统性劣化但一切表面正常；校准工作量白费且无从发现。属「**量化元数据管线'找不到参数→丢弃'**」新子签名，与 7.44（同框架 lm_head weight_packed 无人读）同"静默丢弃量化元数据"族——本条对象是 KV scale、以三缺口叠加形式出现。
+  trigger_surface: SGLang + compressed-tensors checkpoint 声明 kv_cache_scheme + `--kv-cache-dtype fp8_e4m3`
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,52 @@
+id: TRN-0109
+legacy_ids:
+- OPT.09
+slug: clip_dispatch_ignores_fsdp_owner_grad_location
+aliases: []
+title: Megatron MFSDP v2 下 clip 读错梯度张量而失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: clip_grad_norm 梯度位置判据
+  behavior: clip_grad_norm 按优化器是否 precision-aware 判梯度在 decoupled_grad，而 MFSDP v2 恒 reduce 进 .grad；判据不看参数归属哪版 FSDP，clip 读错张量。
+effect:
+  objects:
+  - 梯度
+  detail: use_precision_aware_optimizer=True + MFSDP v2 时 clip_grad 完全失效：梯度保持未裁剪范数（实测 213.6 vs clip=1.0），loss 曲线与 clip_grad=0.0 bit 级相同；训练继续，异常梯度不再被截住。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7074
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0104
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `pretrain` · Cov: `var:global_clip_rescales_corrupted_grad_norm` · 置信度 `documented`'
+  mechanism: Megatron `clip_grad_norm`/`count_zeros` 对每个参数按「precision-aware optimizer ⇒ `use_decoupled_grad=True`」判梯度存放位；MFSDP v2 从不写 `decoupled_grad`、恒 reduce 进 `.grad`——判据没有「哪个 FSDP 版本持有该参数」的概念，precision-aware + MFSDP v2 组合下 clip 读错张量：**梯度保持未裁剪范数**（实测 213.6 vs clip=1.0），`clip_grad` 完全失效。修复 = 对带 `_mfsdp_parameter_group` 属性的参数返回 False。8×H100 DeepSeek-V3 MLA/MoE EP=2 验证：修复前 `use_precision_aware_optimizer=True + clip_grad=1.0` 的 loss 曲线与 `clip_grad=0.0` **bit 级相同**。
+  source: 'Megatron-LM PR #7074。https://github.com/NVIDIA/Megatron-LM/pull/7074'
+  behavior: clip 名义开启、实际 no-op——SDC 尖峰/异常梯度不再被 clip 截住，OPT.02（clip 吞 SDC）的正面防线静默缺失；训练继续、偶尔 spike 被归因于超参。与 OPT.04（global clip 重缩放坏梯度）对偶：那边 clip 在算但**参考范数已污染**，这边 clip **根本没作用在真梯度上**；判据写法（按优化器类型而非数据放置事实）是同族病根。
+  discovery: 2026-09-06 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

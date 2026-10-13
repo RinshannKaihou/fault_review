@@ -1,0 +1,55 @@
+id: INF-0534
+legacy_ids:
+- '6.141'
+slug: vllm_compile_cache_key_omits_spec_tokens_stale_graph
+aliases: []
+title: vLLM 编译缓存键漏推测 token 数致复用 stale 图崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: 推测配置 compute_hash
+  behavior: SpeculativeConfig.compute_hash() 不含 num_speculative_tokens，而 VllmConfig.compute_hash() 委托它生成 torch.compile 缓存键，不同 k 值同键。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 同一模型扫 k=7/9/11 并复用 cache 目录时，后续 k 加载为其他 k 编译的 Inductor 图，运行期报 expected size 7==9 断言；干净 cache 上正常，症状随 cache 历史漂移、跨机器难归因。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + torch.compile + speculative decoding + 变更 num_speculative_tokens 复用 cache 目录
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53366
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SpeculativeConfig.compute_hash 漏 num_speculative_tokens——同模型扫不同 k 值时 torch.compile 复用为其他 k 编译的 Inductor 图，size/stride 断言崩；顺序依赖、命中 stale 图则崩、干净 cache 则正常） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`VllmConfig.compute_hash()` 委托 `SpeculativeConfig.compute_hash()`，后者**不含 `num_speculative_tokens`**。同一模型做推测解码扫 k=7/9/11 时，vLLM 为一个 k 值编译的 torch.compile artifact 被不同 k 值复用——Inductor 图内嵌具体张量尺寸，加载 stale 图在运行期触发 `AssertionError: expected size 7==9, stride 5120==5120 at dim=0`。**顺序依赖**：首个编译的 k 填充 cache，后续 k 命中 stale 图则崩、恰好在干净 cache 上启动则正常——同一二进制在不同机器/清理史上行为不同，极难归因。修复（PR #53367）把 `num_speculative_tokens`（及动态推测的 per-batch-size 值）纳入 hash。'
+  source: 'vLLM #53366（2026-08-21 open，bug label，附 k 扫描复现）+ 修复 PR #53367。https://github.com/vllm-project/vllm/issues/53366'
+  behavior: crash（运行期 size/stride 断言）——但**症状随 cache 历史漂移**：干净环境不可复现、脏环境必崩，天然逃避"重启即愈"归因。属「**config-hash 键遗漏 → 编译图跨配置碰撞**」新子签名：缓存键完备性缺陷（语义相关的配置维度未入键），与 6.98/9.9（Inductor 图优化缺陷）同在 torch.compile 层但根因在**键生成**而非图变换。
+  trigger_surface: vLLM + torch.compile + speculative decoding + 变更 num_speculative_tokens 复用 cache 目录
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 'subsystem 维持 解码/采样：按 rule 功能域优先，缺陷代码是 SpeculativeConfig.compute_hash 漏 num_speculative_tokens，只在推测解码路径触发，修复 PR #53367 也改在该配置的 hash；torch.compile 缓存复用是后果发生处。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: INF-0873
+legacy_ids:
+- '8.89'
+slug: vllm_dsv41_sm120_cuda_graph_dummy_capture_poisons_null_kv_block_nan
+aliases: []
+title: DSV4.1 图捕获毒化 null KV 块致 attention 输出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: decode_dsv4 内核无效索引读
+  behavior: decode 内核对无效索引钳位读 slot 0 再靠 mask 丢弃，只有 scale load 有 idx_raw>=0 守卫，NoPE/RoPE 数据 load 没有；图捕获期 dummy batch 把 NaN 写进 block 0
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: DeepSeek-V4.1-Flash 在 GB10/SM120 上开启 CUDA graphs（FULL/PIECEWISE/FULL_DECODE_ONLY 均中招）时首层起 attention 输出 NaN，服务返回空串或乱码；--enforce-eager 完全正确
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + DeepSeek-V4.1-Flash（sparse MLA DSV41 路径）+ GB10/SM120 + CUDA graphs 非 eager 模式（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57156
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0630
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（vLLM main（b443c1c）+ DeepSeek-V4.1-Flash TP8+EP8 + 8×GB10（sm_121）+ FLASHINFER_MLA_SPARSE_DSV41 + fp8_ds_mla KV：**CUDA graphs 开启时输出空/乱码**（`FULL`/`PIECEWISE`/`FULL_DECODE_ONLY` 全部模式中招），`--enforce-eager` 正确。replay 探针：第 0 个 decoder layer 输入 hidden/q/kv 全有限、输出 NaN——NaN 来自 **KV cache block 0**：`sparse_mla_sm120/decode_dsv4_kernel.cuh` 对无效索引故意 gather slot 0 并靠 softmax mask 丢弃，scale load 有 `idx_raw >= 0` 守卫、**NoPE/RoPE 数据 load 却用 `idx = max(idx_raw, 0)` 钳位**；dummy capture batch（图捕获期的全 padding 输入）把 NaN 写进 block 0 后，所有后续 replay 的"无效槽位"读路径都拾取该 NaN——null block 变成全局毒源） · Cov: `var:vllm_glm53_nvfp4_gb10_concurrent_fragment_token_state_poisoning_fffd_cascade`（6.237 dummy/占位路径毒化共享池族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 内核以"slot 0 + softmax 掩码丢弃"实现无效索引的安全路径，但该路径对 slot 0 的数据读未做 NaN 免疫（只守卫了 scale）；CUDA graph 捕获期的 dummy batch 首先经此路径写 block 0——共享 null block 被一次污染后所有依赖"slot 0 安全"假设的 gather 全部拾取 NaN，mask 丢弃的是 attention 权重而非已注入的 NaN 传播。
+  source: 'vLLM #57156（2026-09-16 open，deepseek/DSv4.1 标签，含三图模式对照、enager 正确基线、replay 期逐层探针与内核行级守卫差异（272 行 scale 守卫 vs 299 行钳位））。https://github.com/vllm-project/vllm/issues/57156'
+  behavior: 无 crash——首层起每行 attention 输出 NaN，服务返回空串或乱码（`"The capital of France is"` → `""`）；enforce-eager 完全正确使"图模式开关"成为唯一二分线索。6.237（GB10 并发 fragment-token 毒化 FFFD 级联）之后"占位/dummy 路径毒化共享槽"族新成员：本条在 **null KV block 毒化**维度、NaN 从捕获期一次性写入持久生效。
+  trigger_surface: vLLM + DeepSeek-V4.1-Flash（sparse MLA DSV41 路径）+ GB10/SM120 + CUDA graphs 非 eager 模式（hw_specific）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

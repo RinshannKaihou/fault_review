@@ -1,0 +1,54 @@
+id: TRN-0139
+legacy_ids:
+- KER.08
+slug: overflow_grad_poisons_muon_momentum
+aliases: []
+title: DeepSpeed Muon 溢出梯度永久毒化 momentum
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: ZeRO-1/2 的 Muon 更新时序
+  behavior: ZeRO-1/2 的 Muon 路径在溢出检查之前对累积梯度执行 muon_update，momentum.lerp_ 把 inf/NaN 折进 momentum 且此后无人重置，nesterov 分支再把 NaN 原地写回梯度。
+effect:
+  objects:
+  - 优化器状态
+  - 模型权重
+  - 测试判定
+  detail: fp16+Muon+ZeRO-1/2 下首次溢出后每个 step 必然再溢出，loss scale 降到最小值后 Exception 退出，全程零参数更新；官方单测在 fp16 cast 前克隆参数，断言恒通过，run 太短的验证都报告成功。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8432
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0013
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `pretrain` · Cov: `var:loss_scaler_swallows_overflow` · 置信度 `documented`'
+  mechanism: DeepSpeed ZeRO-1/2 的 Muon 路径在 `independent_gradient_partition_epilogue` 里、于**溢出检查之前**对累积梯度跑 `muon_update`：`momentum.lerp_(grad, 1-β)` 把 inf/NaN 折进 momentum（此后无人重置，永久毒化）；nesterov 分支再把 NaN 原地写回梯度。被丢弃的 step 本应不动优化器状态——这里既毒了 momentum 又让**下一个** step 无论 loss scale 多小都必然再溢出：失败自持，loss scale 一路减到最小值后 `Exception` 退出，全程**零参数更新**。fp16 + Muon + ZeRO-1/2（官方 `tests/unit/ops/muon/test_muon.py` 自用的配置只多跑几步）即中招。测试套件绿的另一个原因：参数变更断言在 `deepspeed.initialize`（fp16 cast）**之前**克隆初始参数，fp32 vs fp16 的 `torch.equal` 恒 False——断言零步训练也能通过。
+  source: 'DeepSpeed #8432（隔离表：同配置仅 `initial_scale_power` 不同——默认 16（scale 65536）0/10 参数变更、momentum 非有限、死于最小 scale；scale 1（无溢出）10/10 正常训练）。https://github.com/deepspeedai/DeepSpeed/issues/8432'
+  behavior: fp16 面最终以 loss-scale 耗尽 crash 收场（首溢出前的训练与延迟可见面）；测试侧的静默面更宽：断言被 dtype cast 洗白，任何「run 太短够不到 crash」的验证都报告成功。与 NUM.04/NUM.10（scaler 吞溢出/静默 skip）同族：溢出处理契约与优化器状态生命周期错配——那边丢的是 step、这边毒的是永久缓冲；测试断言漂移与 OBS 面（观测骗过）交叉。
+  discovery: 2026-09-07 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

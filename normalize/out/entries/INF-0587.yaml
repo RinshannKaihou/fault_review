@@ -1,0 +1,58 @@
+id: INF-0587
+legacy_ids:
+- '6.194'
+slug: sglang_mapped_layer_courier_missing_record_stream_storage_reuse
+aliases: []
+title: SGLang 权重卸载缺 record_stream 致数据竞争
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: sglang
+    component: mapped-weight courier 交接
+  behavior: courier 在私有 copy stream 上创建权重张量交给 compute 线程，_collect_mapped_layer() 只等 copy event，未对 compute stream 调用 record_stream。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: diffusion layerwise-offload mapped-weight 路径中，最后的 Python 引用释放后 allocator 在 copy stream 完成即复用 storage，compute stream 可能仍在读：前向读到别的内容，输出偶发损坏/错值，随负载与时序漂移。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + diffusion layerwise-offload mapped-weight 路径（main `dae126d5`；功能开启即暴露）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37963
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（diffusion layerwise-offload 的 mapped-weight courier 在私有 copy stream 上创建 CUDA 张量交还 compute 线程，`_collect_mapped_layer()` 等 copy event 却**不调 `gpu_tensor.record_stream(compute_stream)`**——最后一个 Python 引用释放时 caching allocator 只知 copy stream（已完成后即复用 storage），compute stream 可能仍在读） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: PyTorch caching allocator 的 stream 语义：不 record 消费者 stream，则生产者 stream 完成后 storage 即可复用——compute kernel 侧 use-after-free；权重被换掉后前向读到别的分配的内容。与 6.194 前的 courier/异步 offload 族（6.149/6.151）同为生命周期契约缺口，本条是 allocator API 使用遗漏（一行 `record_stream`）而非逻辑错误。
+  source: 'SGLang #37963（2026-09-04 open，main `dae126d5` 复现 + 最小复现器）。https://github.com/sgl-project/sglang/issues/37963'
+  behavior: '**静默数据竞争**（权重内容被随机替换）：输出偶发损坏/错值，随负载与分配时序漂移——经典难复现形态；compute stream 恰好先完成则无症状。与 6.190（workspace realloc UAF）同为"地址生命周期与使用方脱钩"，本条在 allocator stream 语义层。属「**跨 stream 张量交接缺 record_stream**」新子签名。'
+  trigger_surface: SGLang + diffusion layerwise-offload mapped-weight 路径（main `dae126d5`；功能开启即暴露）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+        status: panel7

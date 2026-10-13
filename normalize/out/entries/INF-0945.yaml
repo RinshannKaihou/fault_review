@@ -1,0 +1,57 @@
+id: INF-0945
+legacy_ids:
+- '10.29'
+slug: trtllm_deepseekr1_parser_enable_thinking_request_ignored
+aliases: []
+title: TRT-LLM R1 parser 忽略 thinking 开关致正文为空
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: tensorrt-llm
+    component: DeepSeekR1Parser 推理切分
+  behavior: DeepSeekR1Parser 以类级常量 reasoning_at_start=True 注册，不读请求级 enable_thinking；缺 </think> 时仍按推理开头切分（子类 NemotronV3 已修，父类未回移）。
+effect:
+  objects:
+  - 输出内容
+  detail: enable_thinking=false 时模板不注入 <think>、模型不产 </think>，整个回复进 reasoning_content、content 为空；读 message.content 的客户端对成功请求拿到空，同服务要/不要 thinking 的客户端无法共存。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM；DeepSeekR1Parser 系 parser + per-request enable_thinking=false
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-18'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser）：暂归 调度/服务 的 API/前端，但 parser 缺陷与请求调度、批处理无关，单列便于聚类
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/17916
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0942
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（DeepSeekR1Parser 忽略 per-request enable_thinking=false → 无 </think> 时整回复进 reasoning_content，content 为空） · Cov: `var:vllm_gemma4_parser_template_thinking_default_mismatch` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`DeepSeekR1Parser` 以 `reasoning_at_start=True` 注册（qwen3_5 / minimax_m2 / minimax_m2_append_think）。请求传 `chat_template_kwargs: {"enable_thinking": false}` 时模板不注入 `<think>`、模型不产 `</think>`，`parse()` 在缺失标签上切分 → 整个回复进 `reasoning_content`、`content` 空——读 `message.content` 的常规 OpenAI 客户端对成功请求拿到空。其子类 `NemotronV3ReasoningParser` 已实现 `reasoning_at_start = chat_template_kwargs.get("enable_thinking", reasoning_at_start)`，父类未回移。同服务器双客户端（要/不要 thinking）无法共存。'
+  source: 'TensorRT-LLM #17916（2026-08-17 open，1.3.0rc23）。https://github.com/NVIDIA/TensorRT-LLM/issues/17916'
+  behavior: 无 crash。reasoning/content 分桶静默错位（成功请求返回空 content）——与 10.26（Gemma4 parser/模板默认值矛盾）同族「thinking 开关的 parser/模板契约漂移」，本条变体是**显式请求级 flag 被类级注册常量忽略**。
+  trigger_surface: TRT-LLM；DeepSeekR1Parser 系 parser + per-request enable_thinking=false
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

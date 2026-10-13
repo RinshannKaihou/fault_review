@@ -1,0 +1,50 @@
+id: INF-0839
+legacy_ids:
+- '8.55'
+slug: sglang_fast_topk_v2_threshold_bucket_overflow_silent_candidate_drop
+aliases: []
+title: sgl-kernel fast_topk_v2 候选缓冲溢出静默错选
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: sgl_kernel.fast_topk_v2
+  behavior: 两遍 radix top-k 在 threshold bin 候选超过 4096 条 shared-memory buffer 上限时静默丢弃超出部分，不置溢出标记，后续 threshold 选择基于截断总体。
+effect:
+  objects:
+  - 数值结果
+  detail: 长行（≥约 100K 列）× 大 k（如 2048）时输出恰好 k 个合法去重索引但混入非 top-k 成员；64×256K、k=2048 时 64 行全错、每行 6–42 条误选，哪些行出错 run-to-run 不确定；无 crash、无形状异常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang/sgl-kernel + `fast_topk_v2` + 长行（≥~100K 列）× 大 k（如 2048）使 threshold bucket >4096（shape 组合即触发，tie-边界决定是否显错）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36807
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（`sgl_kernel.fast_topk_v2`（topk.cu）在长行大 k 时，coarse-radix threshold bucket 内候选数超过固定 shared-memory buffer 的 **4096 条目上限**后**静默丢弃**超出候选（pass-2 staging 只写 `pos < SMEM_INPUT_SIZE` 的候选，`num_input` 裁剪不置 flag）：输出形状正常、恰好 k 个有效索引，但部分不在真 top-k 内——64×256K、k=2048 时全部 64 行错误，每行 6–42 条误选；哪些行错 run-to-run 非确定） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: 两遍 radix top-k：pass-1 对 fp16-high-byte key 建 256-bin coarse histogram 定 threshold bin；pass-2 把高于 threshold 的 score 直送输出、**在 threshold bin 内的** staged 进 `SMEM_INPUT_SIZE = kSmem/(2×sizeof(int)) = 4096` 的 shared-memory 候选 buffer 做 radix refinement。尺寸注释假设"每轮 radix 最多 ~TopK 个候选"——长行下 threshold bucket 远大于 k 即溢出；L173 `if (C10_LIKELY(pos < SMEM_INPUT_SIZE))` 静默丢弃，其贡献从 fused refinement histogram 一并丢失，后续 threshold 选择在截断总体上进行；L192 裁剪 `num_input`、L239 refinement 轮同款 silent-drop guard。溢出使损坏**可能**而非必然：k-th 值边界处大量 tie 时任意 k 个并列候选都合法（输出可能仍对），连续分数分布下测得越过悬崖的每行皆错。
+  source: 'SGLang #36807（2026-08-28 open，含 64×256K/64×1M 误选计数与逐行号机制分析）。https://github.com/sgl-project/sglang/issues/36807 · 修复 PR #38144（2026-09-05：溢出检测 + 全行重扫 refined radix fallback；实测 L=30,938 溢出 16K、L=65,504 溢出 34K 候选，CUDA-graph/PDL 安全）'
+  behavior: '**无 crash、无错误、无形状异常**——输出恰好 k 个合法去重索引，静默含非 top-k 成员；错误集合非确定（tie-边界依赖）。属「**固定容量中间缓冲 × 无溢出标记 = 截断总体上的静默错选**」新子签名：与 1.30/1.44（tt-metal topk 族）同 top-k 正确性域但本条在 CUDA 商用 kernel 且输出自洽到无法从形状/值域分辨；对依赖 top-k 精确性的下游（MoE 路由、检索）是分布级污染。'
+  trigger_surface: SGLang/sgl-kernel + `fast_topk_v2` + 长行（≥~100K 列）× 大 k（如 2048）使 threshold bucket >4096（shape 组合即触发，tie-边界决定是否显错）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

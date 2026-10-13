@@ -1,0 +1,50 @@
+id: INF-0195
+legacy_ids:
+- '1.196'
+slug: ttmetal_slice_rm_sharded_core_mapping_bounding_box_vs_corerange_order
+aliases: []
+title: ttnn.slice RM sharded 按包围盒顺序分发参数致错 core
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: slice RM sharded 参数分发
+  behavior: 程序工厂按输出 shard 网格包围盒从 (0,0) 行扫描分发 runtime args、从不读 start_coord，而 shard 实际按 corerange_to_cores 的逐矩形顺序放置。
+effect:
+  objects:
+  - 数值结果
+  detail: shard 网格不从 (0,0) 起、包围盒含空洞或由多个矩形组成时，shard i 的参数发给不持有它的 core，slice 输出静默错误（错 shard 数据或未初始化内存）；唯一检查是 TT_ASSERT，release 构建中不运行。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn.slice + RM sharded 输出 + 非 (0,0) 锚定/带洞/多矩形 shard 网格 + release 构建（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56162
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.slice` 的 `SliceRmShardedProgramFactory` 按**输出 shard 网格的 bounding box 行扫描**（`grid_x = end_coord.x+1`，永不读 `start_coord`，从 (0,0) 起扫 N 个 core）分发 runtime args，而 sharded buffer 的实际 shard 放置按 `corerange_to_cores` 的**逐矩形（CoreRangeSet）遍历序**——两序仅在"单一矩形且最低角为 (0,0)"时一致；网格不从 (0,0) 起、bounding box 含空洞、或网格由多个矩形组成时，为 shard i 构建的参数列表被发给不持有 shard i 的 core（空洞 core 收到参数、远端 shard core 收不到任何参数）→ **静默错误输出**；唯一能拦截的 `Kernel::set_runtime_args` 核检查是 `TT_ASSERT`，release 构建中不运行） · Cov: `NEW`（shard 放置序与参数分发序分歧子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 程序工厂假设 shard 网格是锚定 (0,0) 的满矩形；`corerange_to_cores`（`buffers.cpp:369-373`）先完成一个 CoreRange 再进下一个（`core_coord.cpp:606-627`）。三种分歧形态：偏移网格（必发参数给未放置 kernel 的 core）、带洞网格（扫描在远端 shard core 前耗尽 N 个列表）、多矩形网格。
+  source: 'tt-metal #56162（2026-09-10 open，含三种分歧形态的源码级分析与 release 断言编译掉的指出）。https://github.com/tenstorrent/tt-metal/issues/56162'
+  behavior: 无 crash——slice 输出静默错误（错误 shard 数据或未初始化内存）；release 构建无任何守卫。与 1.149（binary_ng 广播折叠计数器 OOB）同属"隐式网格几何假设"族，但本条在参数分发维度而非索引计数维度。
+  trigger_surface: tt-metal ttnn.slice + RM sharded 输出 + 非 (0,0) 锚定/带洞/多矩形 shard 网格 + release 构建（hw_specific）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

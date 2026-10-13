@@ -1,0 +1,53 @@
+id: INF-1001
+legacy_ids:
+- '10.85'
+slug: transformers_qwen2_tokenizer_pretokenizer_regex_overwrite_from_constant_v5_regression
+aliases: []
+title: transformers v5 用常量覆盖 Qwen 发布的预分词正则
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: transformers
+    component: Qwen2Tokenizer 预分词正则覆盖
+  behavior: Qwen2Tokenizer.__init__ 加载 tokenizer.json 后，用模块级常量 PRETOKENIZE_REGEX 无条件覆盖 pre_tokenizer，丢弃 Qwen3.6/3.8 发布的含 \p{M} 新正则。
+effect:
+  objects:
+  - 输入编码
+  - 输出分布
+  detail: transformers ≥v5 加载 Qwen3.6/3.8 系 tokenizer 时，含 combining marks 的文本（如阿拉伯语、天城文）token 序列与发布 tokenizer 不同（如 6 vs 8 token），英文不受影响；v4.57.6 正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers ≥v5（v4.48 系列引入、5.x 仍在）+ Qwen3.6/Qwen3.8 系 tokenizer（config：加载该族 tokenizer 即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/49066
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0972
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（transformers v4→v5 回归：`Qwen2Tokenizer.__init__` 新建 backend tokenizer 后用**模块级常量 `PRETOKENIZE_REGEX` 覆盖 `tokenizer.json` 刚加载的 `pre_tokenizer`**（`tokenization_qwen2.py` L75-86）——Qwen3.6/Qwen3.8 发布的 refined pattern（两个字符类新增 `\p{M}` combining marks）被静默丢弃：`Qwen/Qwen3.8-Flash-Next` 上 `"नमस्ते दुनिया"`（含 combining marks）发布 tokenizer 编码 6 token、`AutoTokenizer` 加载编码 8 token——**全族 Qwen3.6/3.8 模型 token IDs 全错**；4.57.6 行为正确、5.17.0 错。tokenizer-only 复现（无需模型）） · Cov: `var:trtllm_llm_args_tokenizer_alias_table_drift_bare_alias_crash`（10.56 tokenizer 双源漂移族——本条在 pre_tokenizer 正则维度：硬编码常量 vs 发布文件） · 触发 `config` · 置信度 `verified`'
+  mechanism: 旧 Qwen 系（≤Qwen3）发布文件与常量一致使覆盖无害；Qwen3.6/3.8 refined 正则后常量过期，`__init__` 的无条件赋值使**hub 文件的新行为被旧常量回写覆盖**——加载顺序上文件先生效后被冲掉，`tokenizer.json` 的权威性被破坏。凡 token 边界涉及 combining marks（印地语、阿拉伯语、带变音符文本）的输入 tokenization 分歧。
+  source: 'transformers #49066（2026-09-23 open，含发布 tokenizer vs AutoTokenizer 编码长度对照（6 vs 8）、v4.57.6/v5.17.0 版本 bisect、代码行定位）。https://github.com/huggingface/transformers/issues/49066 （**2026-09-26 回访补记**：独立复核者以 `Qwen/Qwen2.5-0.5B-Instruct` + 打补丁的 `\p{M}` 模式证明无需 gated 模型即可复现（发布 pattern 含 `\p{M}` 检测 False、save_pretrained 传播 False），且 ID 分歧是 vocab 相关（阿拉伯语 `مُحَمَّد` 5→8 token 捕获、泰文同错、天城文在该 vocab 上不发散）——回归测试须选对语言样本；5.16.1 同病确认 v5 全系回归。维护者（itazap）09-25 响应：常量覆盖是**有意的**（v5 把 checkpoint 的 `tokenization_<model>.py` 当 ground truth，允许从零构造 Qwen2Tokenizer），修复方向是**更新 tokenizer 映射表使该族不再走 TokenizersBackend** 并开 PR——判定不变：走 TokenizersBackend 路径的该族 tokenization 仍静默错，修复未落地前触发面照旧。）'
+  behavior: 无 crash——**受影响模型族的 tokenization 静默全错**：相同文本在训练/评测栈（走发布文件）与 transformers 推理栈（走常量）产生不同 token 序列，logits/续写系统性分歧；多语言（combining marks）场景受害，英文不可见——评测若只用英文即恒绿。
+  trigger_surface: transformers ≥v5（v4.48 系列引入、5.x 仍在）+ Qwen3.6/Qwen3.8 系 tokenizer（config：加载该族 tokenizer 即触发）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: INF-0859
+legacy_ids:
+- '8.75'
+slug: sglang_infllm_v2_pooling_wrapper_logical_stride_vs_padded_width
+aliases: []
+title: InfLLM-v2 池化 wrapper 按逻辑长度算 stride 读错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: InfLLM-v2 压缩分池化 wrapper
+  behavior: 压缩分池化 wrapper 按逻辑 context 长度推导行 stride（8500//16=531），而 score 张量实际 padded 到 128 倍数宽（640），后续行与注意力头的读 offset 全错
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: SGLang 跑 MiniCPM-SALA（max_context_len=8500）时无报错，块选择分数读错行/头（实测 39 个有限条目错、最大绝对误差 0.136，inf 掩码行同样错位），sparse 块选择静默偏差，长上下文检索退化
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + InfLLM-v2 sparse attention + score 张量 padded 宽 ≠ 逻辑 context/压缩步长（other_stack：SGLang；张量布局触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38231
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0748
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（InfLLM-v2 sparse attention 的压缩分池化 wrapper 从**逻辑 context 长度**推导行 stride（`8500 // 16 = 531`），而 score 张量实际 padded 到 128 倍数宽（640）——后续行/注意力头的读 offset 全错：39 个有限条目错、max abs err 0.136（inf 掩码行同样错位）；修复直接传 contiguous score 张量的实际宽度为原生行 stride（CUDA kernel 不变，per-request key 长度仍界定有效条目）） · Cov: `var:vllm_cutlass_c3x_scaled_mm_packed_stride_reconstruction_ignores_leading_strides`（7.75 逻辑宽 vs 物理宽族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: wrapper 假设 score 布局紧凑（逻辑宽=物理宽），padding 打破该假设。真实 MiniCPM-SALA 服务捕获同型 `[2,1,640]` BF16 score 张量（`max_context_len=8500`）对照：修复前 39 错/0.1357 max err，修复后 0/0、含 infinity mask 的输出与独立池化参考全匹配（RTX 5090 TP1 eager）。
+  source: 'SGLang PR #38231（2026-09-06，sgl-kernel label，含 padded/unpadded 回归与真实服务捕获对照）。https://github.com/sgl-project/sglang/pull/38231'
+  behavior: 无 crash——块选择分数读错行/头（错 offset 而非错值）：sparse 块选择静默偏差，长上下文检索退化。与 7.75（CUTLASS caller 重建 packed stride）同日同构：「逻辑维度推导 stride vs 分配实际宽度」在 CUDA GEMM caller 与 pooling wrapper 两处显形—— padded 分配 + 逻辑推导是跨栈反模式。
+  trigger_surface: SGLang + InfLLM-v2 sparse attention + score 张量 padded 宽 ≠ 逻辑 context/压缩步长（other_stack：SGLang；张量布局触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: INF-0182
+legacy_ids:
+- '1.183'
+slug: ttmetal_reciprocal_bh_additive_newton_term_subnormal_flush
+aliases: []
+title: BH reciprocal fp32 大操作数丢弃 Newton 精炼
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: BH reciprocal fast_24b 精炼
+  behavior: Newton 精炼按加法 MAD y=t2*y+y 计算，|x|≥2^119 时精炼项 t2*y 低于 FLT_MIN 被 SFPU flush 为零，未精炼的约 7-bit SFPARECIP 种子被原样存储。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32 dest 累加开启时，|x|≥2^119 的七个 binade 全部值带 0.56% 相对误差（90,174 ULP），2^111 起已有部分值受损；无 crash、无 NaN，下游归一化/attention 分母静默失准。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Blackhole SFPU reciprocal fp32 dest-accumulate + |x|≥2^111（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55797
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（Blackhole `ttnn.reciprocal` float32（dest-accumulate 路径 `_calculate_reciprocal_fast_24b_5c_`）对 `|x|>=2^119` **丢弃全部 Newton 精炼**、返回原始 ~7-bit `SFPARECIP` 种子：七个完整 binade（2^119..2^126）**100% 值 0.56% 相对误差（90,174 ULP）**，≈1.17 亿 bit pattern（有限正规 fp32 域的 2.75%）；2^111 起部分损失（2^111..2^118 约 23% 值）） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 精炼按**加法** MAD 计算：`y = t2*y + y`，其中精炼项 `t2*y ≈ 2^-8/x`；`|x|>=2^119` 时该项低于 FLT_MIN 被 SFPU flush-to-zero，MAD 什么都加不上——未精炼种子被原样存储。`recip_tile<false>` 在 fp32 dest 累加开启时即选中该路径（`unary_op_utils.cpp:753`）；同一加法 MAD 也在 `SFPLOADMACRO` 调度里。
+  source: 'tt-metal #55797（2026-09-08 open，bug label，含内核伪代码、binade 级误差分布与调度分析）。https://github.com/tenstorrent/tt-metal/issues/55797'
+  behavior: 无 crash、无 NaN——大操作数 reciprocal 携带 **0.56% 系统性误差**（等效 7-bit 精度），下游归一化/attention 分母静默精度税。SFPU reciprocal 下溢族第三形态：1.27（被乘数下泄）、1.75（compat 种子常量次优）之后，本条是**加法精炼项**被 flush——误差不是加剧而是精炼整体蒸发。
+  trigger_surface: tt-metal Blackhole SFPU reciprocal fp32 dest-accumulate + |x|≥2^111（hw_specific）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

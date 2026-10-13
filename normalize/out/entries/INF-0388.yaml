@@ -1,0 +1,55 @@
+id: INF-0388
+legacy_ids:
+- '5.41'
+slug: vllm_async_eplb_rearrangement_step_counter_runs_negative_silent_progress_stop
+aliases: []
+title: vLLM async EPLB 事件握手丢失致专家重排静默停止
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: async EPLB worker 事件握手
+  behavior: 异步重排 worker 与主循环的 CpuGpuEvent 握手丢失一环：某次 transfer 的 consumed 事件从未置位，worker 永久停在 consumed_event.wait()；主循环重排计数器不复位、持续跑负。
+effect:
+  objects:
+  - 性能/资源
+  - 指标/日志
+  detail: EP16 跨节点、use_async=True、nixl 下，自 step 1000 起 EPLB 不再重排专家，无 warning/error；日志 steps until the next rearrangement 递减为 -1300、-2000 等负值，负载不均渐进恶化，吞吐/延迟缓退。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + async EPLB（use_async=True）+ EP 多节点 + nixl communicator（config：该组合即暴露，负载相关）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57883
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0379
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（vLLM async EPLB（EP16 跨节点、`use_async=True`、communicator=nixl）**重排步计数器单调跑负永不复位**：`step_interval=1000` 应在 1000 触发 expert 重排，实际越过 1000/2000/3000 持续计数，"steps until the next rearrangement" 一路 -1300/-1400/-1500/-2000——首个停滞始于 step 1000。同时双 pod 多 EP rank 的 async worker 停在 `transfer_run_periodically` 的 `consumed_event.wait()`（`eplb_utils.py:44`），且该 wait 只在 `model_state.pending_result` 处理后到达——事件握手链条中某环从未完成。无 warning、无 error，EPLB 静默停止专家均衡） · Cov: `var:vllm_dbo_ubatch_early_leaver_ring_handoff_none_deref_and_parked_hang`（5.32 异步 rearrange 事件握手丢失方向） · 触发 `config` · 置信度 `verified`'
+  mechanism: 异步重排 worker 与主循环之间的 CpuGpuEvent（consumed/recorded）握手丢失一环：某次 transfer 的 consumed 事件从未被置位，worker 永久 park；主循环侧计数器以 step_interval 为模继续累加，减去永不到来的重排后显示为单调负值——负计数本身就是"错过 N 个重排周期"的可读指纹。
+  source: 'vLLM #57883（2026-09-21 open，含四条负计数日志时间线、双 pod async worker py-spy 停靠栈（eplb_utils.py:44 wait → async_worker.py:160 → pending_result 局部变量）、EP16 跨节点配置）。https://github.com/vllm-project/vllm/issues/57883'
+  behavior: 无 crash、无错误日志——EPLB **静默失效**：专家负载不均持续恶化（吞吐/延迟缓退），唯一可见指纹是日志里递减的负"steps until rearrangement"；5.32（DBO 微批早退 ring handoff）之后异步事件握手族新成员：本条在**跨节点 async rearrange** 维度，且失效是渐进的（每个错过的周期都加重不均）。
+  trigger_surface: vLLM + async EPLB（use_async=True）+ EP 多节点 + nixl communicator（config：该组合即暴露，负载相关）
+  discovery: |-
+    2026-09-21 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

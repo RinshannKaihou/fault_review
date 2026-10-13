@@ -1,0 +1,51 @@
+id: INF-0693
+legacy_ids:
+- '7.20'
+slug: vllm_nongated_moe_w13_shard_hardcode2_uninit_nan
+aliases: []
+title: 非门控 MoE 量化方法硬编码 2 个 w13 shard 致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: MoE 量化方法 w13 shard 数
+  behavior: 非门控 MoE 的 w13 只有一个 shard，14 种 MoE 量化方法却硬编码为 2：第二槽为未初始化内存，scale/bias 过量分配，zero-padding 边界算错、pad 行未清零。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: 仅非门控 MoE（如 NemotronH relu2_no_mul）配受影响量化方法时触发：无即时 crash，未初始化值流入量化权重与 scale，GEMM 产出 NaN，pad 行还污染真实专家行的共享 per-block scale；门控模型 bit-for-bit 不受影响。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 主路径；非门控 MoE（`is_act_and_mul=False`，如 NemotronH `relu2_no_mul`）+ 14 种受影响量化方法
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51125
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（非门控 MoE w13 shard count 硬编码为 2 → 未初始化内存 → NaN 污染专家权重） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: 非门控 MoE（`is_act_and_mul=False`，如 NemotronH 的 `relu2_no_mul`）只把 up projection 融进 `w13`，所以 `w13` 只持有**单个** `intermediate_size_per_partition` shard 而非两个 gate/up shard。但 **14 种 MoE 量化方法把 shard 数硬编码为 2**（只有 13 种已正确条件化）。后果：(1) 在线路径 `reload/meta.py` 用 `torch.empty_strided` 物化 → 第二 shard 槽是**未初始化内存**，随后流入 block/per-tensor amax、量化权重和 GEMM（`0 × NaN = NaN`）；(2) per-shard scale 和 bias 张量被 over-allocate（`torch.ones(E, 2)`、`torch.zeros(E, 2 * I)`）；(3) zero-padding 用错误的半计算边界（`for shard_id in range(2)`），pad 行从未被清零 → **未初始化值污染真实行的共享 per-block 权重 scale**。修复：在 `FusedMoEConfig` 上加 `w13_num_shards` 属性（`2 if is_act_and_mul else 1`），68 个替换点跨 13 文件统一使用。
+  source: 'vLLM PR #51125（2026-08-05 open）。组件：非门控 MoE 量化路径（quark_moe / mxfp4 / fp8 / auto_gptq / online fp8 / auto_awq / bitsandbytes / moe_wna16 / 等 14 方法）。https://github.com/vllm-project/vllm/pull/51125'
+  behavior: 无即时 crash。未初始化内存流入量化权重/scale → GEMM 产出 NaN（`0 × NaN = NaN`），且未清零的 pad 行污染真实专家行的共享 per-block scale → 静默数值损坏。属「MoE w13 shard count 错误 → 未初始化内存 → 静默 NaN 污染」新子签名。门控模型（gated）bit-for-bit 不受影响（属性返回 2），仅非门控 MoE 触发。
+  trigger_surface: vLLM 主路径；非门控 MoE（`is_act_and_mul=False`，如 NemotronH `relu2_no_mul`）+ 14 种受影响量化方法
+  discovery: 2026-08-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

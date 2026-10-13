@@ -1,0 +1,55 @@
+id: INF-0958
+legacy_ids:
+- '10.42'
+slug: vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop
+aliases: []
+title: vLLM Kimi-K3 parser 终止符假设不全丢 tool call
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: kimi_k3 reasoning/响应解析
+  behavior: is_reasoning_end() 只认 think 开/闭标记对，模型不发 close-think 直接开 tools 通道时恒假，tool parser 收不到 delta；流式路径未处理 close-message 终止符。
+effect:
+  objects:
+  - 输出内容
+  detail: Kimi-K3 跳过 close-think 的轮次 tool call 静默蒸发（finish_reason=stop、零输出 token）或裸 XTML 漏进可见内容；以 close-message 结尾的回答流式把终止符漏给客户端而非流式不漏；agentic 流量间歇触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + Kimi-K3 + `--reasoning-parser kimi_k3 --tool-call-parser kimi_k3` + 模型跳过 close-think 或以 close-message 结尾的轮次（自然 agentic 流量间歇触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser）：暂归 调度/服务 的 API/前端，但 parser 缺陷与请求调度、批处理无关，单列便于聚类
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54273
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（Kimi-K3 reasoning/tool parser 假设 `<|close|>think<|sep|>` 是 think 通道唯一出口、`<|close|>response<|sep|>`/`<|open|>tools<|sep|>` 是流式正文的仅有边界——实际模型还会**直接开下游通道而不发 close-think**、以 `<|close|>message<|sep|>` 终止无前导 close-response 的回答：`is_reasoning_end()` 永假 → tool call 永不被解析（finish_reason=stop、零输出 token 或裸 XTML 漏进可见内容）；流式路径把 message 终止符漏给客户端而同代非流式不漏——两路径对同一输出不一致） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 纯 Python parser 逻辑（复现只需 tokenizer，无 GPU 无权重）。缺陷 1：`kimi_k3_reasoning_parser.py` 的 `is_reasoning_end()` 只比对 think-open/think-close 标记对，模型从 think 直接进入 `<|open|>tools<|sep|>` 时 gate 对该轮永假；`DelegatingParser` 只在 reasoning 结束后把 delta 交给 tool parser → agentic 负载下 tool-calling 轮次间歇性丢调用，`is_reasoning_end_streaming()` 继承同一假设。缺陷 2：`_strip_response_content()`（非流式）删除 message 终止符而 `_extract_response_content()`（流式）既不作 sendable bound 也不进 partial-marker holdback——`<|close|>message<|sep|>` 结尾的回答把终止符流给客户端，非流式不漏。
+  source: 'vLLM #54273（2026-08-28 open，main 与 0.26.1rc1 生产构建复现，含纯 tokenizer 复现脚本）。https://github.com/vllm-project/vllm/issues/54273'
+  behavior: '**无 crash、HTTP 正常**——tool call 静默蒸发（对 agent 系统是功能级丢失）或裸 XTML 泄入用户可见内容；流式/非流式对同一生成结果不一致。属「**结构化输出解析器的终止符穷举假设 × 模型实际行为 = 间歇静默丢调用**」新子签名：与 10.35（Gemma4 tool parser FSM 死态）同 tool-parser 域，但本条根因是通道语义假设而非 FSM 构造错误，且间歇性（依赖模型逐轮行为）使固定回归集难以全覆盖。'
+  trigger_surface: vLLM + Kimi-K3 + `--reasoning-parser kimi_k3 --tool-call-parser kimi_k3` + 模型跳过 close-think 或以 close-message 结尾的轮次（自然 agentic 流量间歇触发）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

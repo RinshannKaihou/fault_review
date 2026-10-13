@@ -1,0 +1,50 @@
+id: INF-0200
+legacy_ids:
+- '1.201'
+slug: ttmetal_quasar_copy_via_memmove_double_uncached_base_dfb_oob_zero_read
+aliases: []
+title: Quasar memmove 重复叠加 uncached 基址致越窗读零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: Quasar copy_via_memmove
+  behavior: 'DFB getter 自 #52769 起已返回 uncached 别名，copy_via_memmove 仍再叠加一次 MEM_L1_UNCACHED_BASE，实际读 src+2×基址，落在两个 L1 窗口之外。'
+effect:
+  objects:
+  - 数值结果
+  detail: 行宽非 8 倍数的 tiled reshape_view 走 memmove 路径：ZEBU RTL 上 753/1152 失配、736 个零，越窗读返回 0 不 fault（仅 craq-sim abort）；对齐输入 bit-exact。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Quasar DM + DFB getter × copy_via_memmove/tt_memmove + 非对齐段（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56283
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（Quasar `copy_via_memmove()` 对源地址**再叠加一次 `MEM_L1_UNCACHED_BASE`**——自 #52769 起 `DataflowBuffer::get_read_ptr()/get_write_ptr()` 已返回 uncached 别名，任何把 DFB 指针喂给 `tt_memmove` 的内核实际从 `src + 2*MEM_L1_UNCACHED_BASE` 读取，落在两个 L1 窗口之外。非 8 元素对齐 tiled `reshape_view`（行宽非 8 的倍数 → 走 memmove 路径）在 ZEBU RTL 上 **mismatches=753/1152、zeros_in_output=736、无任何 fault**（craq-sim 才 abort）；地址精确等于 `L1偏移 + 2×0x400000`。main @ bfabefa8c2e 未修，影响**所有**组合 DFB getter 与 tt_memmove 的 Quasar DM 内核） · Cov: `NEW`（地址别名双重叠加越窗读子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: API 语义漂移——getter 改为返回 uncached 别名后，假设"自己补加别名"的老消费者未被迁移；硬件上越窗读返回 0 而不 fault，模拟器才有 MMIO 断言。修复建议：normalise 入参（`if (src >= MEM_L1_UNCACHED_BASE) don't add`）或恢复 cached getter。
+  source: 'tt-metal #56283（2026-09-11 open，bug+op_cat:mm label，含 ZEBU/craq-sim 双靶矩阵、地址算术推导与修复三方案）；#56281（reshape 宽度非 8 倍数错值的同触发面简报）。https://github.com/tenstorrent/tt-metal/issues/56283'
+  behavior: 无 crash——misaligned reshape 输出 65% 错值 + 64% 零（RTL 静默）；对齐控制组 bit-exact。与 1.122（修复未跨 arch 传播）同属"契约漂移单侧未迁移"族：本条在**内存别名契约**维度、且只在真硬件静默。
+  trigger_surface: tt-metal Quasar DM + DFB getter × copy_via_memmove/tt_memmove + 非对齐段（hw_specific）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: INF-0741
+legacy_ids:
+- '7.68'
+slug: vllm_rocm_quickreduce_bf16_to_fp16_no_saturation_inf_poison
+aliases: []
+title: QuickReduce bf16 转 fp16 不饱和致归约出 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: vllm
+    component: QuickReduce bf16→fp16 转换
+  behavior: quick_reduce_impl.cuh 在 pack 前用 __float22half2_rn 把 bf16 收窄为 fp16 且不饱和，超 65504 的值静默变 inf；位于所有 codec 公共路径，无数值检查。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: MI355X 上 TP2/TP4、bf16 激活超出 ±65504 时，单个超限元素即让各 rank 的归约输出含 inf，并沿残差流污染整层/整序列；无 crash、无 warning，下游 NaN/乱码易被误归因于模型或量化。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm + QuickReduce + bf16 激活超出 ±65504（hw_specific + 模型激活分布触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55345
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（ROCm QuickReduce 自定义 all-reduce 在 pack 前把 bf16 输入转 fp16 且**不饱和**：bf16 值域到 ~3.4e38、fp16 上限 65504——任何超限激活变 `inf` 并毒化整个归约结果；该转换位于**所有 codec（INT4/INT6/INT8/FP）的公共路径**（量化发生在 pack 之后），MI355X TP2/TP4 复现） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`quick_reduce_impl.cuh` 的 `__float22half2_rn(f)` 对超 fp16 域值静默产 inf——单 rank 单个 1e30（bf16 可表示）元素即让两 rank 的归约输出含 inf；无 warning、无数值检查。通信库把 dtype 收窄当无损转换使用，忽略收窄的值域语义。'
+  source: 'vLLM #55345（2026-09-04 open，`VLLM_ROCM_QUICK_REDUCE_QUANTIZATION=INT8`、逐行源码定位 + 两 rank 最小复现）。https://github.com/vllm-project/vllm/issues/55345'
+  behavior: 无 crash——**大激活经 all-reduce 静默变 inf** 并沿残差流污染整层/整序列（下游 NaN/garbage 会被归因于模型或量化，而非通信层）；位于公共路径意味着任何 codec 配置都暴露。与 7.51（TurboQuant fp16 zero-point 溢出投毒）同为"fp16 中间表示的值域假设崩塌"，本条在**集合通信库**且影响面是全部 codec。
+  trigger_surface: vLLM ROCm + QuickReduce + bf16 激活超出 ±65504（hw_specific + 模型激活分布触发）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

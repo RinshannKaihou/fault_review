@@ -1,0 +1,50 @@
+id: INF-1112
+legacy_ids:
+- '11.89'
+slug: flashinfer_chain_speculative_sampling_philox_offset_advance_mismatch_rng_draw_reuse
+aliases: []
+title: flashinfer 推测采样 Philox offset 步进不足致随机数复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: flashinfer
+    component: spec 采样 Philox offset 记账
+  behavior: chain_speculative_sampling 的 wrapper 按 B*(N+1) 上取整到 4 的倍数推进 offset 并返回推进后的值，而 kernel 每流在拒绝时最多消耗 N+2 个随机字，超出预付步进。
+effect:
+  objects:
+  - 输出分布
+  detail: 同一 torch.Generator 连续两次等形调用且首次发生拒绝时，恢复抽取与下次接受判定共用同一随机坐标；208 种子研究中目标事件 208/208（独立应约 1/2），输出合法无异常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: FlashInfer ≤main `85bfa5e4`（0.7.0 世代）`chain_speculative_sampling` + generator 托管 offset + 同一 generator 连续调用 + 首调用发生拒绝（other_stack；显式不相交 offset 免疫）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5637
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（FlashInfer `chain_speculative_sampling` 的 generator 托管路径**实际消耗的 Philox 随机字数超过 wrapper 预付的 offset 步进**：wrapper 按 `B*(N+1)` 向上取整 4 的倍数推进并返回**已推进值**（B=1,N=3 → 两次 launch 起点 4 与 8），而 kernel 内零基位置 j 的拒绝消耗 j+1 前缀检查 + N-j 诊断重抽（从 j 起）+ 1 恢复抽取 = **N+2 标量字**（全接受则 N+1 含 bonus）——首次强制拒绝的 call 0 用坐标 4,5,6,7,**8(R)**，call 1 起点 8 用**同一坐标做首次接受判定**（`managed: call0 [4 5 6 7 8(R)] call1 [8(A) 9 10 11]` vs 正确不相交的 `explicit 4/12`）。同一私有 `torch.Generator` 跨两次等形调用时**恢复抽取与下次接受判定共享随机坐标**：208 种子配对研究中目标事件 E（两谓词位相等，独立坐标下 p=1/2）在托管 offset 下 **208/208**、显式 4/8 重叠重放 208/208、显式不相交 4/12 仅 97/208——前两者与第三者的 111 vs 0 分歧（调整精确 p=9.2e-33）证明重叠真实且机制定位（`sampling.py#L49-65` advance-then-return × `sampling.cuh#L1882-1964` N+2 消耗的记账错位）；main `85bfa5e4b5` 与测试 pin 字节一致（非新复现）。影响面：spec 采样 token 与恢复 token 的**随机独立性前提被破坏**（确定性偏差方向取决于输入分布），不影响单次调用内部正确性 · Cov: `NEW`（spec 采样 RNG 流坐标记账子签名；与 11.83（flashinfer top-k/min-p indices 行错位+OOB）同 flashinfer 采样/索引域但机制独立——本条是 **wrapper↔kernel 随机流消费量契约错位**；与 11.28 系（parser 参数损坏）无关。确定性 `deterministic=True` 路径、B=1 小词表诊断构造下最易观测） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`generator helper` 先推进 offset 再返回推进后的值，而 kernel 每流最多消耗 N+2 字（超出 wrapper 假设的 N+1 上取整）；两次等形调用即重叠一个坐标。报告者明确声明：改 N+2 步进**不是普适修复**（advance-before-return 语义下不等形连续调用需独立预留分析与回归测试）；相关 PR #4861（per-request seed/offset 索引）、#5201（保 RNG 序的残差归约）、#2345（per-request generator 支持）为他人工作、非本报告附带修复。'
+  source: 'flashinfer #5637（2026-09-28 open，含源码坐标图、208 种子三臂配对研究（managed/explicit-4-8/explicit-4-12）计数 208/208/97、保留原生研究元数据（T4、0.7.0 源码构建 c0aca1f）、五臂扩展研究（208/208/97/106/106）与最小复现脚本（语法已查、未独立 GPU 执行——已声明））。https://github.com/flashinfer-ai/flashinfer/issues/5637'
+  behavior: 无 crash——**spec 解码随机性独立性静默破坏**：输出仍合法、无异常，恢复/接受判定使用相关随机数使 token 分布偏离设计（对小消费者可构造可测偏差；未主张普适输出错误或 LLM 质量退化——报告者明示）。跨调用等形（固定 batch/深度服务循环）是最坏暴露面。
+  trigger_surface: FlashInfer ≤main `85bfa5e4`（0.7.0 世代）`chain_speculative_sampling` + generator 托管 offset + 同一 generator 连续调用 + 首调用发生拒绝（other_stack；显式不相交 offset 免疫）
+  discovery: 2026-09-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

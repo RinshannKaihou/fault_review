@@ -1,0 +1,55 @@
+id: INF-0722
+legacy_ids:
+- '7.49'
+slug: vllm_draft_model_quant_config_packed_mapping_missing
+aliases: []
+title: vLLM draft 模型量化配置缺 packed 映射，加载期崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: get_draft_quant_config
+  behavior: draft 模型在 get_draft_quant_config 自建量化配置，不经 configure_quant_config，packed_modules_mapping 恒空，fused 投影无法映射回子模块而按未量化构建。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 量化 draft 模型（如 compressed-tensors FP8）开启推测解码时，加载期 weight_scale 无目标，报 AttributeError；非 fused 层量化正常，报错表面与量化无关；无需 GPU 即可复现。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + 量化 draft 模型（compressed-tensors 等）+ spec decode
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53116
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（draft 模型量化配置从不流经 configure_quant_config——packed_modules_mapping 恒空，fused 投影不量化构建，加载期 AttributeError crash） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`configure_quant_config()` 只在 `initialize_model()` 处理**目标**模型的 `vllm_config.quant_config`；draft 模型在 `get_draft_quant_config()`（model_executor/models/utils.py）自建配置对象，从不经过该函数，其 `packed_modules_mapping` 保持 base_config 的空 dict → `find_matched_target()` 无法把 `gate_up_proj` 映射回 `gate_proj`/`up_proj` → fused 投影层**不量化**构建 → 加载时 `weight_scale` 无目标，`AttributeError: ''MergedColumnParallelLinear'' object has no attribute ''data''`。非 fused 层（down_proj/o_proj）无需映射即匹配、量化内核照常选中——崩溃表面与量化无关，归因极难。无 GPU、无权重，仅 draft 检查点的 `quantization_config` 即可复现。'
+  source: 'vLLM #53116（2026-08-19 open，bug+speculative-decoding+quantization label，compressed-tensors FP8 channel draft，附修复方向）。https://github.com/vllm-project/vllm/issues/53116'
+  behavior: crash（AttributeError，加载期）——fail-fast 型；但归因陷阱深：错误在 draft 量化配置传播层、症状在权重加载层，且部分层（非 fused）量化正常。任何带 fused 投影的量化 drafter 均受影响。
+  trigger_surface: vLLM + 量化 draft 模型（compressed-tensors 等）+ spec decode
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 为 量化 vs 解码/采样：出错的是量化配置对象构造——get_draft_quant_config 不经 configure_quant_config 导致 packed_modules_mapping 为空（原文 mechanism），推测解码只是触发条件（rules“触发条件不是对象”），维持 量化。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,59 @@
+id: INF-0524
+legacy_ids:
+- '6.131'
+slug: vllm_mamba_align_precopy_state_idx_wrong_block_size_ima
+aliases: []
+title: vLLM Mamba 状态列误用 attention 块大小致越界崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: _mamba_state_idx_gpu 播种
+  behavior: add_request 用 attention 的 cache_config.block_size 而非 mamba 组块大小播种 _mamba_state_idx_gpu，致 state_idx=781（应为 45）。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: hybrid GDN + prefix caching + align 模式下第二请求续传时，precopy kernel 读越界 block_table，确定性报 CUDA illegal memory access；越界落在映射内时则静默读错 recurrent state。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid GDN + 显式 `--block-size` + `--enable-prefix-caching` + `--mamba-cache-mode align`（第二请求触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53142
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid mamba 状态列用 attention 的 `cache_config.block_size` 而非 mamba 组 block size 播种——prefix-cache 续传时越界读 block table → illegal memory access crash） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`MambaHybridModelState.add_request`（v1/worker/gpu/model_states/mamba_hybrid.py）以 `self.cache_config.block_size`（CLI/attention 块大小）播种 `_mamba_state_idx_gpu`，但 hybrid 模型 mamba KV 组的 block_size 由 page matching 推导（Qwen3.8-27B 为 2176），用户显式传 `--block-size 128`（量化 KV tile 布局所需）时两域必然分歧。带 prefix cache 的**第二**请求 resume（`num_computed_tokens=100096`）得 `state_idx=(100096-1)//128=781`，正确值为 `(100096-1)//2176=45`；fused align precopy 内核 `precopy_mamba_align_fused_kernel` 读 `block_table[req, 781]`（表仅 ~61 列）得到垃圾 block id → `RuntimeError: Triton Error [CUDA]: an illegal memory access was encountered`。'
+  source: 'vLLM #53142（2026-08-19 open，quantization label，含推导与崩溃栈）。https://github.com/vllm-project/vllm/issues/53142 · 修复 PR #55507（2026-09-05，以 mamba 组 block size 播种状态列；越界读在未映射处 crash、映射内静默错 recurrent state）'
+  behavior: crash（CUDA illegal memory access，第二请求确定性复现）——fail-fast 型。与 6.128 同属 hybrid GDN/Mamba 状态管理缺陷族。「双 block-size 域混淆」子签名：attention 与 recurrent-state 两个块尺寸域在 CLI 显式覆盖时被混用。
+  trigger_surface: vLLM + hybrid GDN + 显式 `--block-size` + `--enable-prefix-caching` + `--mamba-cache-mode align`（第二请求触发）
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: KV状态
+        status: panel7
+    uncertain:
+    - behavior
+    - detail

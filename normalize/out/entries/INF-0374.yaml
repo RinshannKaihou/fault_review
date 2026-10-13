@@ -1,0 +1,53 @@
+id: INF-0374
+legacy_ids:
+- '5.27'
+slug: sglang_kda_split_grid_stale_program_id_overwrite_state_corruption
+aliases: []
+title: SGLang KDA kernel 陈旧赋值覆写轴映射致状态损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: KDA kernel program-id 映射
+  behavior: 按 SPLIT_N_HV_GRID 建立 (i_k, i_n, i_hv) 映射后，残留的旧扁平 grid 赋值立即覆写这三个变量；NV>1 时 axis 0 被当作 i_k，读写越界 K tile。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: GLM-5.3-Flash 在 AMD MI355X（gfx950）上服务时 recurrent state 被损坏，输出 BF16 NaN，KPool page-table 出现非法值，可能进一步越界访问或 crash。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.3-Flash KDA kernel + `SPLIT_N_HV_GRID`（NV>1）+ AMD MI355X/gfx950（修复前版本）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/37250
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0552
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（KDA Triton kernel 的 `SPLIT_N_HV_GRID` 选定 `(NV, N, HV)` program-id 映射后，残留的扁平 grid 赋值立即覆写 `i_k/i_n/i_hv`——`NV > 1` 时 axis 0 被重新解释为 `i_k`，产出越界 K tile 并损坏 recurrent state：GLM-5.3-Flash 在 MI355X 服务上显形为 BF16 NaN 与非法 KPool page-table 值） · Cov: `var:vllm_glm53flash_multi_kernel_random_ima_single_corrupter` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 'kernel 先按 split-grid 语义建立 `(i_k, i_n, i_hv)` 三元映射，随后未被删除的旧扁平 grid 赋值把三个变量重新绑定到错误的轴解释——对 `NV > 1`（多 KV head 分片）配置，越界 K tile 读写直接污染跨步 recurrent state 与 KPool 页表结构。修复（PR #37250）仅删除陈旧赋值；定向回归（fused sigmoid gating recurrent + replayssm fold parity）修复前 NaN/非法页表、修复后 state max abs diff 1.19e-07。'
+  source: 'SGLang PR #37250（2026-08-31 closed，locked MI355X gfx950 复现 + 注册测试验证）。https://github.com/sgl-project/sglang/pull/37250'
+  behavior: 服务端 BF16 NaN 输出 + KPool page-table 非法值（可能进一步触发越界访问/crash）。GLM-5.3-Flash KDA 家族（6.159）在 AMD MI355X 路径的新实例：本条根因是**内核级 program-id 轴语义被陈旧赋值破坏**，非多内核随机单点损坏——同一模型家族在不同栈/硬件上以不同根因命中相似的 state 损坏表象。
+  trigger_surface: SGLang + GLM-5.3-Flash KDA kernel + `SPLIT_N_HV_GRID`（NV>1）+ AMD MI355X/gfx950（修复前版本）
+  discovery: 2026-08-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

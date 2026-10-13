@@ -1,0 +1,63 @@
+id: TRN-0065
+legacy_ids:
+- CKPT.16
+slug: async_rollout_buffer_state_lost_on_resume
+aliases: []
+title: 异步 RL resume 丢在途 rollout，prompt 被跳过或重复
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: 异步 rollout 缓冲与 resume 契约
+  behavior: resume 只存 dataloader/模型/优化器、不存在途 rollout：OpenRLHF 的 rollout 缓冲不入 ckpt 且 loader 耗尽后被误清；verl 异步 trainer 恢复时无条件补交 warmup 批。
+effect:
+  objects:
+  - 训练样本流
+  - 可用性/进度
+  detail: ckpt 与指标正常、run 继续，但已生成未训练的 rollout 永久丢失，prompt 被跳过或重复，生成批边界结束的 episode 整段重放甚至无限循环；verl 相对未抢占 run 静默跳过 prompt 并超填 in-flight 窗口。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/issues/1322
+  kind: github_issue
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1323
+  kind: github_pr
+- url: https://github.com/OpenRLHF/OpenRLHF/issues/1320
+  kind: github_issue
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1321
+  kind: github_pr
+- url: https://github.com/verl-project/verl/issues/7759
+  kind: github_issue
+- url: https://github.com/verl-project/verl/pull/7762
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0057
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `rl` · Cov: `var:epoch_boundary_resume_silent_skip` · 置信度 `documented`'
+  mechanism: 异步 RL 的 resume 契约只覆盖 dataloader/模型/优化器，不覆盖**在途 rollout 状态**，三个独立实现同型踩坑：(1) OpenRLHF oversampling（`vllm_generate_batch_size > batch_size`，README 文档化配置）把多生成的 `Experience` 留在 `_sample_buffer`，ckpt 只存 `prompts_dataloader.state_dict()`——resume 后 dataloader 跳过已生成 prompt、buffer 从空开始，**已生成未训练的 rollout 永久丢失**；且无 dataloader-exhausted 位，恰好在 generation-batch 边界结束的 episode 会整个重放。(2) 同实现里 loader 耗尽后的下一次调用把「iterator is None」误读为「新 episode」，清空仍非空的 buffer、从头重启同一 episode，可无限循环。(3) verl V1 `colocate_async/separate_async` resume 时 `fit()` 已 reissue 在途 prompt，两个 async trainer 又无条件补交 `num_warmup_batches` 批——相对未抢占 run **静默跳过 prompt** 并超填 in-flight 窗口。
+  source: 'OpenRLHF #1322（最小复现：loader 0..7 / batch 2 / gen 4，首块 [0,1]、buffer 存 2,3，resume 后 2,3 消失）。https://github.com/OpenRLHF/OpenRLHF/issues/1322 修复 #1323。https://github.com/OpenRLHF/OpenRLHF/pull/1323 ；OpenRLHF #1320（尾块丢弃 + episode 重启复现）。https://github.com/OpenRLHF/OpenRLHF/issues/1320 修复 #1321。https://github.com/OpenRLHF/OpenRLHF/pull/1321 ；verl #7759。https://github.com/verl-project/verl/issues/7759 修复 PR #7762（记录 reissue 计数、有恢复即跳过 warmup）。https://github.com/verl-project/verl/pull/7762'
+  behavior: ckpt 正常、指标正常、run 继续——丢的是数据流本身（prompt 被跳过/重复，episode 可能永不终止）。与 CKPT.08（resume 静默跳 epoch）同族：恢复的状态不是运行时真正消费的全部状态；异步化把「rollout 缓冲」变成了新的未 checkpoint 状态面。
+  discovery: 2026-09-06 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

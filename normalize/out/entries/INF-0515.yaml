@@ -1,0 +1,58 @@
+id: INF-0515
+legacy_ids:
+- '6.122'
+slug: vllm_nixl_hma_recv_fail_open_corrupted_200
+aliases: []
+title: vLLM NIXL KV 接收失败 fail-open 返回损坏 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NIXL HMA connector 接收失败处理
+  behavior: decode 节点 KV receive 失败时未终止请求，继续从 invalid/uninitialized KV cache 解码；KV load failure policy 声明为 fail，实现却是 fail-open。
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: 2×B200 P/D 分离 + NIXL HMA 下，网络故障或对端崩溃导致接收失败时无 crash、返回 HTTP 200 携带损坏 token；DeepSeek-V4 变体中损坏内容进 reasoning 字段、content 为空，客户端看到空响应。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM PD 分离；NIXL HMA connector + KV receive 失败注入（网络故障/对端崩溃场景）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52234
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/52276
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（PD 分离 NIXL HMA KV 接收失败后请求仍从 invalid/uninitialized KV 继续解码并返回 HTTP 200 携带损坏 token——声明的 fail 策略实际 fail-open） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 分离式 P/D（NIXL HMA connector）下，decode 节点的 KV receive 失败时请求**未被终止**，继续从 invalid/uninitialized KV cache 解码，最终返回携带 corrupted tokens 的成功响应（HTTP 200）。复现环境 2×B200 P/D 分离、gemma-4-26B-A4B-it-FP8-dynamic、NIXL 1.3.2、`--kv-transfer-config` 的 KV load failure policy 显式为 `fail`——**策略声明 fail 但实现 fail-open**。Red Hat AI 3.5 RC1（基于 v0.24）与 upstream main 均受影响；fail-closed 修复可干净 apply 到 v0.24.0。
+  source: 'vLLM #52234（2026-08-14 open，2×B200 P/D + NIXL HMA）。DeepSeek-V4 变体 #52276（2026-08-14，TP8 P/D + NIXL HMA + DSpark decode）：同一 fail-open 机制下损坏 token 进 `reasoning` 字段、`content` 为空——只读 `choices[].message.content` 的客户端看到"空响应"。https://github.com/vllm-project/vllm/issues/52234 https://github.com/vllm-project/vllm/issues/52276'
+  behavior: 无 crash、HTTP 200。KV 传输失败被静默吞掉，输出为损坏 token（DSV4 变体中损坏内容被 reasoning parser 分流、content 为空）。属「错误处理策略声明与实现不一致（fail → fail-open）」**新子签名**——与 6.x 既有 NIXL 计数不匹配族（#50754，transfer 启动失败通知缺失致挂起）同域但不同根因：本条失败后**不挂起而是静默继续**。
+  trigger_surface: vLLM PD 分离；NIXL HMA connector + KV receive 失败注入（网络故障/对端崩溃场景）
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: KV状态
+        to: 输出内容
+        status: unanimous

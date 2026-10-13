@@ -1,0 +1,53 @@
+id: TRN-0047
+legacy_ids:
+- PAR.19
+slug: sp_gradient_avg_divisor_splits_across_zero_paths
+aliases: []
+title: DeepSpeed SP>1 时 ZeRO 梯度平均除数随归约路径分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: ZeRO-3 非连续路径梯度除数
+  behavior: SP>1 时 ZeRO-1/2 与 ZeRO-3 连续桶路径除以 world_size/sp，ZeRO-3 非连续路径 __avg_scatter_grads 却除以整个 SP-DP 组；#4530 补 SP 因子时漏了后者。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 无crash；sp=2时reduce_scatter路径梯度为其余0.5×，ZeRO-3默认走此；contiguous_gradients:true+reduce_scatter:false下超reduce_bucket_size单参数与其余参数除数不同；ALST时ZeRO-1/2步长sp×过量。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8692
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'DeepSpeed `sequence_parallel_size>1` 下，ZeRO 对梯度平均用的**除数随归约路径分叉**：ZeRO-1/2（`stage_1_and_2.py::gradient_reduction_w_predivide` / `average_tensor` / `allreduce_bucket`）与 ZeRO-3 连续桶路径（`stage3.py::__avg_scatter_contiguous_grads`，显式 `buffer.div_(world_sz / sp)`）用 `world_size / sp`；ZeRO-3 非连续路径（`__avg_scatter_grads` → `coalesced_collectives.reduce_scatter_coalesced` 内部 `tensor_partition_flat_buffer.div_(world_sz)`）除以**整个 sequence-data-parallel 组**。#4530 给前一类补 SP 因子时漏了后一类。本扫描对 master 源码逐行核验闭合：分派点 `if self.contiguous_gradients and bucket.elements <= self.reduce_bucket_size and not self.reduce_scatter:` 走连续路径、否则走 `__avg_scatter_grads`——即 ZeRO-3 默认（`reduce_scatter: true`）全走整组除数路径。两个后果：(a) 同一模型同一 loss 下梯度随 stage/配置差 `sp` 倍（报告者 H20 + 单层 Linear + SGD lr=0 + `safe_get_full_grad` 实测：sp=2 时 ZeRO-1/2 与连续路径得 1.0×、`reduce_scatter` 路径 0.5×；sp=4 时 0.25×）；(b) **同一步内参数间分裂**——`contiguous_gradients: true` + `reduce_scatter: false` 时超过 `reduce_bucket_size`（默认 5e8）的单参数走 `__avg_scatter_grads`、其余走连续路径，152k 词表 × 4096 hidden（6.2e8）的 embedding 即中招：weight 拿 0.5×、bias 拿 1.0×，无任何 loss 约定能让两者一致。ALST recipe（HF Trainer `deepspeed_sp_compute_loss` / 教程 / `tests/unit/ulysses_alst`）的可微 all-gather loss 反向在 SP 组上求和、本地梯度已 ×sp——只在整组除数路径（ZeRO-3 默认）正确、在其余路径 sp× 过量。'
+  source: 'DeepSpeed #8692（2026-09-28；torchrun 2/4 rank 完整 repro 脚本 + 5 配置 × 2 loss 约定 × sp∈{2,4} 的梯度/真值比例表 + `Linear(4,4)` + `reduce_bucket_size=10` 的参数间分裂微复现 + 单测容差盲区分析（`TestUlyssesSPHF` ZeRO-2 案例在 atol=1e-3 下以 `grad_b ≈ 2.0005×grad_a` 通过）+ SGD lr=1 步长实测（无 clip 时 ZeRO-2 步 2.0× 真梯度、clip 阈值 1.5× 真范数时 ZeRO-2 仍 clip 而 ZeRO-3 不剪））。https://github.com/deepspeedai/DeepSpeed/issues/8692 ；源码核验（2026-09-29）：master `stage3.py` / `stage_1_and_2.py` / `coalesced_collectives.py` 三文件上述函数逐行核对，分派条件与两处除数与 issue 描述一致。'
+  behavior: 无 crash——SP>1 的 ZeRO run 有效学习率随 stage 与 `reduce_scatter`/`contiguous_gradients`/桶大小配置静默漂移：ZeRO-1/2 + ALST loss 恒 sp× 过量步长、clip 行为随路径分叉（该 clip 的不 clip）；参数间分裂时 embedding 与其余参数以不同速率训练、梯度方向畸变。与 PAR.16/17（DDP/MFSDP 缩放算术的 DP 因子错）同族「归约除数与并行度失配」第 3 个实例：那边是 collective 折叠缩放漏配、这边是**同一引擎内两条代码路径除数不一致**；与 OPT.15（FusedAdam 计数器在参数间漂移）同享「参数间异质静默分裂」表象；上游唯一评论为用户附和（2026-09-28）、尚无维护者裁决或修复 PR。
+  discovery: 2026-09-29 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    rewritten:
+    - detail

@@ -1,0 +1,57 @@
+id: INF-0198
+legacy_ids:
+- '1.199'
+slug: triton_gfx942_block_pingpong_sbarrier_before_ds_read_waitcnt_stale_next_kstep_a
+aliases: []
+title: Triton gfx942 pingpong 调度竞争致 matmul 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: AMD block-pingpong 调度
+  behavior: 调度器在本组 ds_read 的 waitcnt 之前发射 s_barrier，另一 warp group 下一 stage 的 ds_write 写入同一单级 LDS 缓冲，与本组未完成的读竞争。
+effect:
+  objects:
+  - 数值结果
+  detail: MI300X 上特定配置 fp32 matmul 200/200 次在 4×32 patch 读到下一 k 步的 A 操作数；关 block-pingpong 后 0/200，gfx950 不触发；inductor max-autotune 中表现为 flaky 失败。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Triton AMD gfx942 + block-pingpong 调度 + LDS 单级缓冲 matmul 类内核（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11696
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: ttmetal_sdpa_decode_mask_seed_scalar_store_no_drain_race
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（Triton gfx942（MI300X）block-pingpong 两 cluster 调度竞态 LDS：`s_barrier` 发射在 `ds_read` 的 waitcnt **之前**，另一 warp group 的 stage j+1 `ds_write` 落进单级 LDS 缓冲 → 128×128 输出 tile 内 intra-tile 行 32–47 的 **4×32 列对齐 patch**（一个 v_mfma_f32_32x32x2_f32 累加器 sub-fragment）消费**下一个 k 步**的 A 操作数——B=identity、A[r,k]=1000r+k 探针下 100% 错误元素均为精确 `A[r, k+64]`（+BLOCK_K）偏移、从非行偏移非垃圾；fp32 matmul BLOCK_M=128/N=128/K=64、num_warps=8、num_stages=2 配置 200/200 迭代错，`TRITON_HIP_USE_BLOCK_PINGPONG=0` 后 0/200；gfx950（async-copy 路径）不触发；PyTorch inductor max-autotune MI300 CI 验证 500/500 失败） · Cov: `var:ttmetal_sdpa_decode_mask_seed_scalar_store_no_drain_race`（1.9 存储/等待链同步缺失族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 调度器发射 `s_barrier` 时未先等待本组 `ds_read2` 完成——另一组对同一单级 LDS 缓冲的下一 stage 写入与本组未完成的读竞争。是否**观察到**错误取决于指令排布：失败变体在 barrier 前背靠背发射 stage 的 ds_read2 块，通过变体在 read 间交错指针递增 VALU（减少未决读）——缺失的 wait 是两者共同的 bug，间距只决定是否显形（tutorial 式 matmul 同配置 0/200 通过）。
+  source: 'triton #11696（2026-09-10 open，含 identity 探针的 +BLOCK_K 偏移证明、inductor CI 1377 失败迭代/1312 错元素统计与开关对照）。https://github.com/triton-lang/triton/issues/11696'
+  behavior: 无 crash——fp32 matmul 静默错值（4×32 patch、值错至 ~8 量级 on N(0,16) 尺度输入）；在 PyTorch 生态以"inductor max-autotune 验证 flaky 失败"形态浮出。1.121（sdpa_decode mask seed store 无 drain 竞态）之后"写后读同步缺失"族新成员：本条在 AMD 后端调度器代码生成维度、且错误值有确定性结构（下一步操作数）。
+  trigger_surface: Triton AMD gfx942 + block-pingpong 调度 + LDS 单级缓冲 matmul 类内核（hw_specific）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：s_barrier 先于 ds_read waitcnt、单级 LDS、200/200 vs 关 pingpong 0/200、gfx950 不触发、inductor max-autotune flaky，均有原文依据。分类 编译器/triton（调度器代码生成）、数值结果、静默错误 与独立判断一致。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

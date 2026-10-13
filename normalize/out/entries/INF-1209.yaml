@@ -1,0 +1,58 @@
+id: INF-1209
+legacy_ids:
+- '13.41'
+slug: transformers_umt5_decoder_self_attention_is_causal_flag_never_reaches_attention_sdpa_regression
+aliases: []
+title: UMT5 decoder 漏传 is_causal 致自注意力非因果
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: transformers
+    component: UMT5LayerSelfAttention
+  behavior: UMT5LayerSelfAttention 未传 is_causal=config.is_decoder（T5/MT5 均传），SDPA 下该 flag 即掩码，decoder 自注意力失去因果性；#47014 迁移 SDPA 时漏改。
+effect:
+  objects:
+  - 输出分布
+  - 训练信号
+  detail: v5.15.0 起（v5.14.1 正确）UMT5 teacher-forced 前向中各位置可注意后续位置，位置 0 的 logits 随追加 token 改变；无报错，teacher forcing 评估与 logprob 训练目标被污染，用户仅见翻译质量下降。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: HF transformers v5.15.0+（≤main）+ UMT5 系（google/umt5-*，AutoConfig 无 model_type 需显式类加载）+ teacher-forced 前向（config：版本回归）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/49134
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1195
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（`UMT5ForConditionalGeneration` 的 decoder self-attention **不做因果掩码**：`UMT5LayerSelfAttention` 不传 `is_causal=config.is_decoder`（T5Layer/MT5Layer 均传），SDPA 路径下该 flag *就是* 掩码本身——teacher-forced 全序列前向中每个位置可注意其后的位置，**位置 0 的 logits 随 decoder_input_ids 追加 token 而改变**（drift 复现脚本输出 `LEAKING`，T5/MT5 同脚本 `CAUSAL`）。**v5.14.1 正确，v5.15.0 起回归**（#47014 `560f36cc56` 2026-07-30 把 T5 家族迁到 SDPA 时 UMT5 分支漏传 flag）；受影响 v5.15.0/v5.16.0/v5.17.0 与 main。模型加载、生成流畅、无任何错误——翻译质量静默退化（未来信息泄漏进每步条件分布）） · Cov: `var:hf_gpt2_encoder_attention_mask_silently_discarded`（13.27 掩码参数在模型层被静默丢弃族——本条在 SDPA is_causal 传递维度：回归引入、错误形态为因果性整体缺失而非 padding 污染） · 触发 `config` · 置信度 `verified`'
+  mechanism: SDPA 的掩码语义收敛到单一布尔 flag 后，子类忘记传递即等于"无掩码"；UMT5 与 T5/MT5 共享 masking 基建但 layer 封装独立，迁移 PR 逐模型改动时漏掉一个分支。报告者附 Hub 直跑 drift 对照脚本（UMT5 drift>1e-5 LEAKING / T5 CAUSAL，`_attn_implementation` 与 `is_causal` 属性打印自证 flag 缺失）。
+  source: 'transformers #49134（2026-09-27 open，"[Regression v5.15.0+] UMT5 decoder self-attention is not causal"，含双模型 drift 复现、回归 PR 定位 #47014、受影响版本枚举）。https://github.com/huggingface/transformers/issues/49134'
+  behavior: 无 crash——teacher forcing 评估（BLEU/翻译基准）拿到的分布与自回归推理不一致，训练侧若用作 logprob 目标同样污染；用户可见症状仅为翻译质量下降且无诊断线索。13.27（GPT2 encoder_attention_mask 硬编码 None）之后掩码丢失族新成员：本条是 **SDPA 迁移回归**形态（单 flag 语义下沉后子类失传），与 10.86（Gemma1 GELU 守卫移除）同属"重构 PR 静默改变激活/掩码语义"谱系。
+  trigger_surface: HF transformers v5.15.0+（≤main）+ UMT5 系（google/umt5-*，AutoConfig 无 model_type 需显式类加载）+ teacher-forced 前向（config：版本回归）
+  discovery: 2026-09-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化
+        status: panel7

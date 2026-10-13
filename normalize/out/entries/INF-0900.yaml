@@ -1,0 +1,61 @@
+id: INF-0900
+legacy_ids:
+- '9.17'
+slug: sglang_qwen35vl_fused_partial_interleaved_mrope_grounding_offset
+aliases: []
+title: SGLang 融合内核误处理 partial+interleaved MRoPE
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: sglang
+    component: 融合 rope_gate 内核 MRoPE 处理
+  behavior: fused_qk_gemma_rmsnorm_rope_gate 内核对 partial_rotary_factor=0.25 与 mrope_interleaved=True 组合的内部处理有误；位置 id 与 rotary 参数均正确。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Qwen3.5-VL grounding bbox 尺寸正确但系统性偏移约 90px，中心精度 26.7%（HF/vLLM 80–82%），OCR/VQA 不受影响；首个 full_attention 层起发散，改走标准 MRotaryEmbedding 路径恢复到 81.7%。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang ≥0.5.15 CUDA + Qwen3.5-VL/Qwen3.5 家族（partial_rotary_factor + mrope_interleaved + attn_output_gate）（标准 rotary 路径规避）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36762
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0899
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（Qwen3.5-VL grounding bbox 系统性偏移 ~90px（中心精度 26.7% vs HF/vLLM 80–82%）——CUDA 融合内核 `fused_qk_gemma_rmsnorm_rope_gate` 对 **`partial_rotary_factor=0.25` × `mrope_interleaved=True` 组合**的处理缺陷：位置 id 逐位精确、独立 rope helper 一致、首个 full_attention 层发散跳 10×；改走标准 `MRotaryEmbedding` 路径即恢复 81.7%/0.5px） · Cov: `var:sglang_qwen38_nvfp4_fused_qknorm_rope_outgate_grounding` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 逐组件 bisect（vs HF）：image 预处理 mean|diff| 6e-5 → ViT+merger cos 0.9995 → M-RoPE 位置 id max|diff| 0（精确）→ GDN 层 cos 0.9997 → **第一个 full_attention 层 cos<0.99 token 数 34→316（发散跳 10×）**。`qwen3_5.py` 的 `_is_cuda and self.attn_output_gate` 恒走 `forward_prepare_cuda_fused`（fused kernel）；`_is_hip/_is_xpu/_is_cpu` 走 `forward_prepare_fused_gate`（标准 rotary，正确）。kernel 于 0.5.15 引入（0.5.13 无），匹配"worked before, broke after"。标准 rotary 参数全部正确（rotary_dim=64、mrope_section=[11,11,10]、interleaved=True、theta=1e7）——缺陷在融合内核对该组合的内部处理，非 config 解析。workaround：CUDA 强制标准 rotary 路径。
+  source: 'SGLang #36762（2026-08-28 closed，Qwen3.5-35B-A3B MoE+GDN hybrid，B300 sm10x，含逐组件 bisect 表与修复）。https://github.com/sgl-project/sglang/issues/36762'
+  behavior: 无 crash——bbox 尺寸正确但系统性偏移，grounding 任务（REFCOCO/ScreenSpot）精度坍塌而 OCR/VQA 不受影响。属 9.16（同 kernel 家族 grounding 偏移）已知类别的**机制定位变体**：9.16 报告于 NVFP4 量化 VLM（曾疑量化），本条在 BF16 权重 + 逐组件 bisect 证明缺陷在 partial+interleaved MRoPE 组合——**为 9.16 提供非量化解释**，两例合并指向该融合内核的 MRoPE 处理是根因层。
+  trigger_surface: SGLang ≥0.5.15 CUDA + Qwen3.5-VL/Qwen3.5 家族（partial_rotary_factor + mrope_interleaved + attn_output_gate）（标准 rotary 路径规避）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7
+    uncertain:
+    - subsystem
+    - effect

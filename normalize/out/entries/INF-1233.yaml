@@ -1,0 +1,61 @@
+id: INF-1233
+legacy_ids:
+- K2.3
+slug: streamingllm_position_not_recompacted_after_eviction
+aliases: []
+title: StreamingLLM 驱逐后未重新压紧位置，RoPE 旋转越出预训练窗口
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: 驱逐后的缓存内位置分配
+  behavior: 驱逐中间 token 后没有按 token 在缓存内部的位置连续重新编号，而是保留原始带间隙的位置，形成逐 token 可变的位置间隙
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  detail: 解码时 RoPE 把保留下来的键旋转到预训练位置窗口之外的相位区；源文档未给出外部可观察症状
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2309.17453
+  kind: arxiv
+relations:
+- kind: var
+  target: INF-0788
+original:
+  category: KV2
+  section: KV §2 index-position（索引/位置）
+  meta: '`infra_off` · Cov: `var:cache_position_off_by_one` · 触发 `partial` · 置信度 `documented`'
+  mechanism: StreamingLLM 要求在驱逐中间 token 之后，按 token 在缓存**内部**的位置（连续编号）来分配位置；若保留原始的带间隙位置，解码时的 RoPE 会把保留下来的键旋转到预训练窗口之外。这是一种**可变间隙**的位置漂移，而不是恒定偏移。
+  source: StreamingLLM arXiv:2309.17453 §3.2。
+  behavior: 源文档未给出该字段；机制中记载的直接后果是保留键被旋转到超出预训练位置窗口的相位区。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: '`infra_off` —— 源文档明确判为沿 RoPE 频率轴的**结构化离流形**：对旋转后的键做位置探针、与重新压紧（recompacted）后的参考对比即可显形。可捕获的是 geometric 族（沿 RoPE 频率轴的方向性偏离）与需要重算对照的 recompute-oracle 轴；与 K2.1 的区别是这里的 delta 逐 token 变化（间隙取决于驱逐分布），而 K2.1 是分段常量，两者在「位置探针残差的空间自相关」上可区分。范数类 statistical 族漏检。'
+  repro: 方案：单钩子在 prefill 后对缓存 K 施加逐 token 可变的重旋转 delta，delta = 原始位置 − 压紧后位置（由一个模拟的中段驱逐掩码决定），V 与 query 不动。属 partial：不做真实驱逐，只注入「位置未重压紧」这一相位末态。
+  locus: index-position
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 待定
+        to: 静默错误
+        status: panel7

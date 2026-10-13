@@ -1,0 +1,64 @@
+id: TRN-0049
+legacy_ids:
+- PAR.21
+slug: qgz_two_stage_weight_grad_scaled_by_local_ranks
+aliases: []
+title: DeepSpeed ZeRO++ qgZ 跨节点权重梯度被放大 L 倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: all_to_all_quant_reduce
+  behavior: ZeRO++ qgZ 跨节点 quantized_reduction 对 L 个本地 rank 与 N 个节点两级求和后只除以 N，2-D 权重梯度放大 L 倍；1-D 梯度走 fallback 返回真平均。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 无 crash；多节点 qgZ 下权重参数有效学习率放大 L 倍而 bias/norm 不放大，同一 step 内参数间更新尺度分裂、权重量级随节点数漂移，训练曲线无专属信号。4-rank repro：权重返回 −5.0、bias −2.5。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8729
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0047
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `shared` · Cov: `var:sp_gradient_avg_divisor_splits_across_zero_paths` · 置信度 `verified`'
+  mechanism: DeepSpeed ZeRO++ `qgZ` 跨节点路径中，`all_to_all_quant_reduce` 返回的 2-D **权重梯度**按「每节点设备数 L」放大，而 1-D 梯度（bias、norm）走 `reduce_scatter_coalesced` fallback 返回真平均。`quantized_reduction` 先对 L 个本地 rank 求和、末行再对 N 个节点求和、却**只除以 N**：`sum_n sum_l g / N = L · mean(g)`。修复 = 除以 `global_world_size = L·N`，与 fallback 的预除对齐。
+  source: 'DeepSpeed PR #8729（2026-10-02；4-rank 两级路径 gloo repro：2 节点 × 2 设备、rank r 持 `−(r+1)`，修复前权重返回 −5.0、bias −2.5，修复后均 −2.5）。https://github.com/deepspeedai/DeepSpeed/pull/8729'
+  behavior: 无 crash——多节点 qgZ 配置下**每个权重参数的有效学习率被放大 L 倍**（bias/norm 不放大）：同一 step 内参数间更新尺度分裂，权重量级随节点数漂移，训练曲线无专属信号。与 PAR.19（SP>1 下 ZeRO 梯度平均除数随归约路径分叉）同族「**除数取决于走了哪条归约路径**」：那边同一参数随 ZeRO stage 分裂、这边同一 step 内 2-D/1-D 参数分裂；与 PAR.16/PAR.17（aux 梯度 ×DP）同打击「梯度尺度因子错误」。修复截至 2026-10-10 仍 open。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 由 量化 改为 集合通信（第一遍两个候选之外）。依据“修复要改哪里”：原文修复 = 把 all_to_all_quant_reduce/quantized_reduction 的除数由 N 改为 global_world_size=L·N，错在这个两级归约集合操作自身的求平均算术，而非量化方案、scale 或低位格式（词表 量化 的内容）；并行切分 管切分逻辑与 rank 映射，这里切分与映射都对，是集合原语返回值错。component 改写为原文函数名 all_to_all_quant_reduce（qgZ 路径）（quantized_reduction 为其内部步骤）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 集合通信
+        to: 并行切分
+        status: unanimous

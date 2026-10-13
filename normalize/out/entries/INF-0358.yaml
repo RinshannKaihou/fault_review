@@ -1,0 +1,55 @@
+id: INF-0358
+legacy_ids:
+- '5.11'
+slug: vllm_cudahostregister_mixed_pinned_unpinned_tp_ranks
+aliases: []
+title: vLLM KV offload 各 rank 独立 pin 致混合状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV offload 的 pinned 注册
+  behavior: CPU KV offload 各 TP rank 独立对共享 mmap 调用 cudaHostRegister，失败时本地 warn-and-continue，缺少全 rank 协调，可形成 pinned/unpinned 混合状态。
+effect:
+  objects:
+  - 性能/资源
+  detail: TP=2 主机重复启动时注册状态随启动变化；混合启动下同步传输被 unpinned rank 限速，pinned rank 仍付页表 bookkeeping 成本（48 GiB 区域每 GPU 96 MiB PTE），无 crash。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；CPU KV offload + TP>1 + `cudaHostRegister`（大区域可能失败）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51762
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`ambiguous`（各 TP rank 独立 cudaHostRegister→失败时 warn-and-continue→混合 pinned/unpinned 状态） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: CPU KV offload 的各 rank 独立调用 `cudaHostRegister` 注册共享 mmap 的自己的进程 VA。失败时本地 warn-and-continue。跨两个独立 TP=2 主机重复启动产生两种状态：(a) 两 rank 均 pinned；(b) 混合启动——一个 rank 注册失败并继续 unpinned，另一个保持 pinned。pinned rank 承载预期的页表 bookkeeping 不对称（48 GiB 区域 96 MiB/GPU PTE）。同步传输性能随后被 unpinned rank 限制，pinned rank 仍付 bookkeeping 成本。
+  source: 'vLLM #51762（2026-08-11 open）。组件 CPU KV offload `cudaHostRegister`。2× RTX PRO 6000 Blackwell。https://github.com/vllm-project/vllm/issues/51762'
+  behavior: 无 crash。性能退化（unpinned rank 瓶颈）+ 不确定性（mixed registration state 随启动变化）。属「各 rank 独立注册缺乏协调→非确定性混合状态」**新子签名**——分布式注册的竞态/不一致需要协调的 all-rank 结果。
+  trigger_surface: vLLM；CPU KV offload + TP>1 + `cudaHostRegister`（大区域可能失败）
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：事实（各 rank 独立 cudaHostRegister、warn-and-continue、TP=2 两主机重复启动两种状态、unpinned rank 限速、48 GiB 区域每 GPU 96 MiB PTE、无 crash）均有原文依据；subsystem=KV缓存 符合 rule 1（缺陷只在 CPU KV offload 路径）；性能/资源 + 性能退化 符合（输出正确，仅传输性能变差）；形式与长度合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

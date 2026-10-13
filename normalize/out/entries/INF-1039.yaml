@@ -1,0 +1,50 @@
+id: INF-1039
+legacy_ids:
+- '11.15'
+slug: vllm_dspark_acceptance_collapse_after_pos0_dsv4_flash
+aliases: []
+title: vLLM DSPark 推测解码 position 1+ 接受率链式崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: DSPark 推测解码草稿链
+  behavior: 根因未定位。怀疑：parallel backbone 的 position 1+ 预测未以中间 draft token 为条件；_sample_sequential 给 markov head 的 prev/映射有误；mtp 权重命名交互。
+effect:
+  objects:
+  - 性能/资源
+  detail: DeepSeek-V4-Flash-0731 + 2×DGX Spark（GB10 SM121a）+ 5 个推测 token：position 0 接受率正常，position 1+ 条件接受率约 25%、3–4 位降为 0%，平均接受长度仅 1.46，加速几乎归零，输出仍正确。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；DSPark + DeepSeek-V4-Flash-0731 + GB10 SM121a
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51009
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（推测解码 position-0 后接受率链式崩溃） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: vLLM 0.26.1rc1 nightly，DeepSeek-V4-Flash-0731（fp8 权重、ue8m0 scale、fp4 experts、sparse MLA/DSA indexer），2× DGX Spark（GB10 SM121a，aarch64），DSPark 推测解码（5 个 speculative token）：**position 0 接受率正常**（greedy 85.7%、probabilistic 92.9%），但 **position 1+ 链式崩溃**（conditional ~25%，position 3-4 降到 0%），平均接受长度仅 1.46。目标模型单独输出完全正确。已排除：markov head 权重未加载（已验证非 default init）、draft-attention topk dispatch（topk=256 pad 到 512，数值 diff 0.0）、flashinfer 版本（0.6.13/0.6.15/0.6.16 均同）。怀疑区域：(1) parallel backbone 的 position 1+ 预测是否真的以中间 draft token 为条件（或是\"盲\"并行输出）；(2) `_sample_sequential` 中 `prev` token / `map_draft_to_target` 映射在 position 1+ 喂给 markov head 的问题；(3) draft model (mtp blocks) fp4-expert 处理与 checkpoint 的 mtp 权重命名（`mtp.{0,1,2}.*` vs `model.layers.43.mtp_block.*`）交互。
+  source: 'vLLM #51009（2026-08-04 open）。环境：vLLM 0.26.1rc1.dev255，2× DGX Spark GB10 SM121a，TP=2 跨节点，CUDA 13.0.88，flashinfer 0.6.15.post1，deep_gemm 2.5.0。https://github.com/vllm-project/vllm/issues/51009'
+  behavior: 无 crash、无 NaN、无 garbage。推测解码 position 0 正常但 position 1+ 接受率链式崩溃 → 平均接受长度从理论 5+ 降到 1.46，推测解码收益几乎归零，但输出仍正确（只是慢）。属「推测解码 position-0 后接受率链式崩溃 → 加速收益静默归零」新子签名——post-forward 结构性盲点。
+  trigger_surface: vLLM 主路径；DSPark + DeepSeek-V4-Flash-0731 + GB10 SM121a
+  discovery: 2026-08-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

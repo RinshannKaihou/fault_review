@@ -1,0 +1,61 @@
+id: TRN-0058
+legacy_ids:
+- CKPT.09
+slug: mxfp8_roundtrip_requant_scale_drop
+aliases: []
+title: MXFP8 ckpt 往返重量化非幂等，block scale 掉指数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: megatron-lm
+    component: fp8-param-gather ckpt 存取
+  behavior: fp8-param-gather 的 ckpt 只存 BF16 反量化权重、不存 MXFP8 scale；load 重量化时 block max ≤ 224·s 则 scale 掉一个 E8M0 指数，该 block 全部 code 翻倍。
+effect:
+  objects:
+  - 模型权重
+  detail: 加载成功、训练继续，GEMM forward/dgrad 0 差异；但量化编码逐元素差 −1 code（GB300 单 tensor 1664/32768），零容差 ckpt parity check 失败，resume 后量化编码与 fp32 master 的派生关系断裂。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6666
+  kind: github_pr
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: '`--fp8-param-gather` 路径的 ckpt 只存 BF16 反量化权重、不存 MXFP8 block scale；load 侧必须重量化，而 `MXFP8 → BF16 → MXFP8` **不是幂等的**。机制（逐 block 实测）：反量化后 block max ≤ 224·s（半 ceiling）时 scale 会掉一个 E8M0 指数，该 block 全部 32 个 code 翻倍——每个元素恰差 -1 code、单向、有界。'
+  source: 'Megatron-LM PR #6666（附独立 repro 仓；132 个 weight key 中含 ''scale'' 的为 0；GB300 单 tensor 1664/32768 code、52/1024 scale 差异；scale 减半当且仅当 dequant max ≤ 224·s，1024/1024 无例外；4×GB300 真 save/load 实测多参数量级差异）。https://github.com/NVIDIA/Megatron-LM/pull/6666'
+  behavior: '**值无损的编码损坏**：`dequant(W)` 与 `dequant(W2)` 逐元素 0/32768 差异，GEMM forward/dgrad 0 差异 → 训练继续且 bit 级等价，但零容差 ckpt parity check 失败、resume 后的量化编码与 fp32 master 的派生关系断裂。量化损失本身发生在训练期（ckpt 之前），round-trip 不增加误差。收录角度：合法配置下「加载成功但 ckpt parity 检查被骗过」的静默面；修复是 load 后从 FP32 master 重导量化参数。'
+  discovery: 2026-08-20 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 由 量化 改为 权重/检查点。依据“修复要改哪里”：原文缺陷是“ckpt 只存 BF16 反量化权重、不存 MXFP8 block scale”，修复是“load 后从 FP32 master 重导量化参数”，改动都在检查点内容与加载流程（词表 权重/检查点：加载/保存/转换、检查点内容）；MXFP8→BF16→MXFP8 非幂等是格式固有数学性质，原文明言“量化损失本身发生在训练期，round-trip 不增加误差”，量化方案本身没有缺陷。FP8 参数路径只是触发条件。component 随之改为指向 ckpt 存取。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 量化
+        status: panel7

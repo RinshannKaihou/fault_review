@@ -1,0 +1,54 @@
+id: INF-0463
+legacy_ids:
+- '6.70'
+slug: vllm_mooncake_connector_request_id_aba_kv_block_leak
+aliases: []
+title: vLLM Mooncake 抢占后请求 ID 复用致 KV block 泄漏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake 异步存储作业记账
+  behavior: MooncakeStoreConnector 以 Request-ID 为 key 跟踪异步存储作业；请求被抢占后重新调度时复用同一 Request-ID，旧作业仍在飞行中即被新作业覆盖记账（ABA），破坏异步存储作业记账
+effect:
+  objects:
+  - 性能/资源
+  - KV状态
+  detail: 无 crash；抢占频繁时 KV blocks 无人释放、静默累积泄漏，global segment 逐渐耗尽。复现于 vLLM 0.25/0.26 + Mooncake 0.3.12 + Qwen3-8B，TP2 多副本。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM；MooncakeStoreConnector + preemption（分离式 PD 部署）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51637
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（分离式 KV 传输中 Request-ID 在 preemption 后复用→ABA 破坏异步存储记账并泄漏 KV blocks） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: MooncakeStoreConnector 的异步存储作业以 Request-ID 为 key 跟踪。当 request 被 preempt 后重新调度时，Request-ID 被复用（ABA 问题）——旧的异步存储作业可能仍在飞行中，新的作业用相同 Request-ID 覆盖记账，导致 `async store job accounting` 被破坏。KV blocks 被泄漏（无人释放），global segment 逐渐耗尽。复现于 vLLM 0.25/0.26 + Mooncake 0.3.12 + Qwen3-8B，1 replica × TP2 至 4 replicas × TP2（8 GPU）拓扑。
+  source: 'vLLM #51637（2026-08-10 open）。组件 MooncakeStoreConnector async store job accounting。https://github.com/vllm-project/vllm/issues/51637'
+  behavior: 无 crash。KV blocks 静默泄漏（preemption 频发时累积），最终 global segment 耗尽。属「分布式传输中 ID 复用 ABA」**新子签名**——分离式 KV 传输的 preemption 安全性缺陷。
+  trigger_surface: vLLM；MooncakeStoreConnector + preemption（分离式 PD 部署）
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

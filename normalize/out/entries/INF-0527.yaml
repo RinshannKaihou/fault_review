@@ -1,0 +1,50 @@
+id: INF-0527
+legacy_ids:
+- '6.134'
+slug: vllm_tiering_unbound_store_60s_reap_recompute
+aliases: []
+title: vLLM offload 未绑定 store 固定 60s 回收致消费者落空重算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: tiering p2p 未绑定 store 回收
+  behavior: producer 的 parked KV 在 store 提交后固定 60s（UNBOUND_STORE_TIMEOUT_S）内无 FetchMsg 绑定即被 reap；定时器锚点在 store 时刻，与消费者请求是否仍存活或排队无关。
+effect:
+  objects:
+  - 性能/资源
+  detail: consumer 因队列积压晚于 60s 发出 fetch 时找到空，等满 LOAD_TIMEOUT_S=30s 后回退全量 prompt 重算；输出正确、无 crash，表现为 +30s 尾延迟，表面仅 recompute 计数上涨。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM PD Multi Tier offload + 消费者 fetch 延迟 >60s（队列积压场景）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53128
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（PD Multi Tier OffloadingConnector 的 UNBOUND_STORE_TIMEOUT 固定 60s 从 store 时刻起算——晚绑定的消费者 fetch 落空、烧满 30s 超时后整段 prompt 重算） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`OffloadingConnector` + `TieringOffloadingSpec`（CPU primary + p2p secondary）下，producer 的 parked KV 在 store 提交 60s 后若尚无 FetchMsg 绑定该 kv request id 即被 reap（`vllm/v1/kv_offload/tiering/p2p/manager.py` 固定 `UNBOUND_STORE_TIMEOUT_S=60.0`）。该定时器**与消费者请求是否仍存活/排队无关**：consumer 的 fetch 因队列积压晚于 60s 发出时找到空，等待 `LOAD_TIMEOUT_S=30.0` 耗尽后回退全量重算。与 #52808 不同、#52912（warm producer cascade）不覆盖本条。'
+  source: 'vLLM #53128（2026-08-20 open，vLLM main nightly 5a4c8d99 + 52912，附 tiering manager 代码定位）。https://github.com/vllm-project/vllm/issues/53128'
+  behavior: 无 crash、输出正确（recompute 兜底）。纯活性/成本故障：+30s 尾延迟 + 全量 prompt 重算，表面仅 recompute 计数上涨。属「固定定时器 reap × 消费者排队时序错配」新子签名（定时器锚点在 store 时刻而非消费者存在性）——与 6.x 既有 offload 条目（容量崩溃、refetch 错误输出）不同域：本条是**时序耦合缺失**导致的供给落空。
+  trigger_surface: vLLM PD Multi Tier offload + 消费者 fetch 延迟 >60s（队列积压场景）
+  discovery: 2026-08-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,54 @@
+id: INF-0245
+legacy_ids:
+- '1.246'
+slug: ttmetal_log_bf16_accurate_mode_signed_zero_exponent_before_normalisation_plus_inf
+aliases: []
+title: ttnn.log bf16 accurate 模式对 −0.0 返回 +inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: calculate_log_body
+  behavior: calculate_log_body 在 −0.0 规范化（a*1.0f+0.0f）之前读取指数、之后读取尾数，同一值的两个位域取自不同时刻，组合出错误符号的中间量。
+effect:
+  objects:
+  - 数值结果
+  detail: ttnn.log/log2/log10 在 bf16、默认 accurate 模式下对 x=−0.0 返回 +inf（应为 −inf），fp32 路径正确；任何下溢的负乘积/负商都会产生 −0.0。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.log/log2/log10` + bfloat16 + accurate mode + −0.0 输入（hw_specific：默认路径即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57538
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0192
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.log`/`log2`/`log10`（bfloat16、accurate mode 即 `fast_and_approximate_mode=False` 默认）在 x=−0.0 返回 **+inf**，torch 与内核自身注释的意图均为 −inf；float32 路径恰返回 −inf——**同一函数两 dtype 分歧**：根因是 `calculate_log_body`（`ckernel_sfpu_log.h`）在 **−0.0 规范化（`a = a*1.0f + 0.0f`）之前读取指数**、在规范化之后读取尾数——同一值的两个位域读自两个不同时刻。负零并非罕见：bf16/fp32 中任何下溢的负乘积/负商都产生 −0.0。系 #55931（log_bw 族 backward 同错号已修）的 **forward 姊妹缺陷**——backward 修后前向仍在错） · Cov: `var:ttmetal_log_family_bw_signed_zero_and_polygamma_pole_sign_hardcode`（1.193 log 族 ±0.0 极点符号族——前向内核维度补全） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: −0.0 的指数域全零、符号位为 1；规范化把 −0.0 变 +0.0 后尾数/符号语义才一致——指数读取发生在规范化前拿到的是 −0.0 的原始位型，与规范化后的尾数组合出错误符号的中间量，最终 `result *= +inf` 得 +inf 而非 −inf。修复（#57554）仅需交换规范化与指数读取两条语句的顺序（Wormhole/Blackhole 双副本），FAST_APPROX 路径不受影响。
+  source: 'tt-metal #57538（2026-09-23 open，Bad Outputs，含逐行源码 replay（无需设备）、bf16/fp32 双 dtype 对照、#55931 关联与修复 PR #57554（host 侧验证、待上机））。https://github.com/tenstorrent/tt-metal/issues/57538'
+  behavior: 无 crash——**符号级静默错值**（+inf vs −inf）：下游任何对 log 输出符号敏感的路径（损失、距离度量、概率域变换）得到系统性错误；−0.0 输入本身无异常特征，golden 对账（走 fp32/torch 路径）可能与 bf16 生产路径分歧。
+  trigger_surface: tt-metal + `ttnn.log/log2/log10` + bfloat16 + accurate mode + −0.0 输入（hw_specific：默认路径即触发）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

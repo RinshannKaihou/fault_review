@@ -1,0 +1,60 @@
+id: INF-0965
+legacy_ids:
+- '10.49'
+slug: vllm_qwen3_parser_malformed_parameter_element_streamed_json_poison
+aliases: []
+title: vLLM Qwen3 XML parser 参数正则过宽致流式 JSON 中毒
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: qwen3 XML parser 参数正则
+  behavior: 参数名正则 [^>]+ 过宽，畸形 <parameter>（缺名、缺 >、多余 =）使 partial converter 把直到闭合标签的整段当 key 流出，而 final 转换不产生该 key。
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: 流式下模型输出近错 XML tool call 时，流式前缀不变量被破坏、_flush_arg_converter 静默返回 None，客户端持有未终结 JSON；逐字回传 tool call 的客户端（Responses API/Codex CLI）此后该会话每个请求被 400 拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + qwen3/qwen3_coder tool parser + 模型近错 XML 输出 + 流式 + 逐字回传客户端（parser×模型行为触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-05'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser）：暂归 调度/服务 的 API/前端，但 parser 缺陷与请求调度、批处理无关，单列便于聚类
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55497
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0958
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（Qwen3 XML parser 的参数名正则接受除 `>` 外任意字符——模型写出的畸形 `<parameter>` 元素（缺名字/缺 `>`/多余 `=`）把后续**全部内容（含闭合标签）当 key** 流式透出；前缀无法扩展、`_flush_arg_converter` 静默返回 None，客户端持有未终结 JSON——Responses API 流（Codex CLI）此后该会话**每个请求 400**） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 流式假设族） · 触发 `config` · 置信度 `documented`'
+  mechanism: '`_PARAM_RE`/`_PARTIAL_PARAM_RE` 的 name 组 `[^>]+` 过宽：`<parameter=` + 换行、`<parameter=ids: [...]`、`<parameter=note=`（stray `=`）等模型实际会写的近错形式全部滑入，partial converter 用到闭合标签 `>` 为止的整段当 key（如 `"echo SAC_NAME=...\\n</parameter"`）流出；final conversion 不产生该 key → 流式前缀不变量破坏 → flush 静默 None。修复把 name 收紧为 `[^>\s<]` 并让 partial/final 一致丢弃畸形元素。'
+  source: 'vLLM PR #55497（fixes #55495，2026-09-05，含三形态畸形元素与 Codex 会话级 400 链路）。https://github.com/vllm-project/vllm/pull/55497'
+  behavior: 无 crash——一次坏 tool call 使流式输出含未终结 JSON；**会话级连锁**：逐字存储 tool call 的客户端（Responses API/Codex CLI）把坏 JSON 回传，会话内每个后续请求被 400 拒绝。与 10.42（Kimi-K3 通道终止符假设静默丢 tool call）互补：彼条丢调用、本条注入毒 key——同"parser 对模型近错输出的假设"族，10.44（数组非 object 丢邻居）第三成员。
+  trigger_surface: vLLM + qwen3/qwen3_coder tool parser + 模型近错 XML 输出 + 流式 + 逐字回传客户端（parser×模型行为触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: panel7
+    uncertain:
+    - visibility

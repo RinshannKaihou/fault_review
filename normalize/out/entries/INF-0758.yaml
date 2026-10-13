@@ -1,0 +1,58 @@
+id: INF-0758
+legacy_ids:
+- '7.85'
+slug: sglang_dsv41_fp8_wo_a_absorb_nonpow2_activation_scale_mantissa_truncated
+aliases: []
+title: SGLang DSV4.1 wo_a fp8 非 2 幂激活 scale 被截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: wo_a fp8_einsum 激活 scale
+  behavior: UE8M0 关闭分支给 deep_gemm.fp8_einsum 喂非 2 幂 fp32 per-token 激活 scale；内核要求 2 幂，但只对权重 scale 断言，对激活 scale 静默截断 mantissa。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: DeepSeek-V4.1 wo_a absorb GEMM 输出约 25% 静默错值，MSA 输出整层污染，无 crash 无警告；SM121 GB10 上用真实 checkpoint 权重隔离复现，分支按 flag 而非 arch 选择，其它 arch 理论可达。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang + DeepSeek-V4.1/Flash + wo_a absorb fp8 路径 + DEEPGEMM_SCALE_UE8M0=false（hw_specific：SM121 验证/按 flag 可达）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39193
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（SGLang DeepSeek-V4.1 `wo_a` absorb GEMM 的 **非 ue8m0 分支**（`DEEPGEMM_SCALE_UE8M0=false`，注释标 sm90 Hopper fp32 scale 路径）给 `deep_gemm.fp8_einsum` 喂 `scale_ue8m0=False` 产生的**非 2 幂 fp32 per-token 激活 scale**；内核要求 scale 为精确 2 幂（`smxx_layout.cuh:131` 断言 sign+mantissa 位全清）但**该前置条件只对权重 scale 强制、对激活 scale 静默截断 mantissa**——喂非 2 幂权重 scale 立即 assert 崩，喂非 2 幂激活 scale（正是该分支产出）无一声张返回 ~25% 错值。真实 checkpoint 权重（layers.20.attn.wo_a，[2048,4096] fp8）隔离复现（SM121 GB10；分支按 flag 选择而非 arch，理论其它 arch 可达）） · Cov: `NEW`（内核数值前置条件单侧强制：权重侧 assert、激活侧静默截断子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: fp8_einsum 内核布局契约要求两侧 scale 均 2 幂，assert 只覆盖权重张量；激活 scale 的 mantissa 被静默丢弃，等效对激活做了未声明的再缩放。
+  source: 'SGLang #39193（2026-09-12 open，含真实权重隔离实验、权重/激活 scale 不对称 assert 行为对照与 deep_gemm 源码定位）。https://github.com/sgl-project/sglang/issues/39193'
+  behavior: 无 crash、无警告——fp8 wo_a absorb 输出 **~25% 静默错值**，MSA 输出整层污染；单侧 assert 使"权重对但激活 scale 非法"的配置无法被启动检查捕获。7.68（ROCm QuickReduce bf16→fp16 无饱和 inf 毒化）之后"量化内核数值前置条件缺失"族新成员：本条在**前置条件仅单侧强制**维度——fail-loud 与 silent 腐蚀在同一内核对两个操作数分叉。
+  trigger_surface: SGLang + DeepSeek-V4.1/Flash + wo_a absorb fp8 路径 + DEEPGEMM_SCALE_UE8M0=false（hw_specific：SM121 验证/按 flag 可达）
+  discovery: |-
+    2026-09-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：title/behavior/detail 与原文一致（非 ue8m0 分支、非 2 幂 fp32 per-token 激活 scale、只对权重 assert、激活 mantissa 静默截断、~25% 错值、MSA 整层污染、SM121 GB10 真实权重隔离、按 flag 选择分支）；分类 量化/sglang、数值结果+隐状态、静默错误 与独立判断一致，无需修改。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

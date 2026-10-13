@@ -1,0 +1,53 @@
+id: TRN-0158
+legacy_ids:
+- MOE.09
+slug: load_balance_hook_scans_wrong_container
+aliases: []
+title: torchtitan 负载均衡 hook 漏掉 MTP MoE 层
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: torchtitan
+    component: 负载均衡 hook 的层容器枚举
+  behavior: 负载均衡 hook 只遍历 model.layers，而 DeepSeek MTP 块在 FSDP 后位于 model.mtp_layers，其 expert_bias_E/tokens_per_expert_E 从不上报、归约或更新。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: 主干训练正常，MTP 专家的 aux-loss-free 偏置停在初值、跨 rank token 计数不归约；两 rank Gloo 复现中修复前 MTP bias 不动、counter 停在 [3,1]，修复后 bias 为 [-0.3,0.3]、counter 归零。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/4494
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0155
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `pretrain` · Cov: `var:expert_bias_hook_implicit_semantics_shift` · 置信度 `documented`'
+  mechanism: torchtitan MoE 负载均衡 optimizer hook 只扫 `model.layers`；DeepSeek MTP decoder 块在 FSDP setup 后保留在 `model.mtp_layers`——MTP MoE 层的 `expert_bias_E`/`tokens_per_expert_E` **从不上报、从不更新**：bias 停在初值、本地计数器不归约不消费。修复 = hook 同时扫 `layers` 与 `mtp_layers`（ModuleDict/ModuleList 通吃），同一层迭代器保证发现/聚合/更新一致。
+  source: 'torchtitan PR #4494（已合并；两 rank Gloo reproducer：修复前 MTP bias 不动、counter 停 [3,1]，修复后 bias [-0.3,0.3]、counter 归零；4×4090D `deepseek_v3_mtp_fsdp+ep+compile` 10/10 步）。https://github.com/pytorch/torchtitan/pull/4494'
+  behavior: MTP 专家的 aux-loss-free 偏置冻结在陈旧值、跨 rank token 计数静默失真——主干预练正常、MTP 头的路由均衡静默失守。与 MOE.06（hook 隐式语义漂移）同根：负载均衡 hook 的作用域/语义契约脆弱；本条是**容器枚举漏掉一整组层**，机制上更接近 MOE.05 的「部分专家被更新机制遗漏」。
+  discovery: 2026-09-06 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

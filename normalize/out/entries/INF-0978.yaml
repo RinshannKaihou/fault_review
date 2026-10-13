@@ -1,0 +1,61 @@
+id: INF-0978
+legacy_ids:
+- '10.62'
+slug: vllm_glm53flash_reasoning_exit_tool_call_token_bleed_word_salad
+aliases: []
+title: vLLM GLM-5.3 退出推理段时 tool token 泄漏致乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: reasoning parser 退出边界处理
+  behavior: reasoning 解析器跳出思维链段时未检查 token 是否为 tool call 起始，tool-call 控制串泄漏进正文解码上下文，污染后续自回归生成。
+effect:
+  objects:
+  - 输出内容
+  detail: GLM-5.3-Flash 多轮 agentic 长会话中输出间歇性坍缩为重复 token/shell 片段 word salad，HTTP 200、finished_reason 正常；单轮/短请求干净，合成请求无法复现，仅真实 agentic 客户端触发，build A/B 回滚可消除。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + GLM-5.3-Flash（FP8）+ 多轮 agentic 长会话 + tool call（yes）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-13'
+remarks: subsystem 缺「输出解析（tool/reasoning parser）」：parser 既非分词/模板也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56605
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM GLM-5.3-Flash 多轮 agentic 长会话间歇性退化成重复 token / shell 片段 word salad（(tmp)(tmp)…）：HTTP 200、正常 finished_reason、无错误无 preemption——完全静默。维护者确认为 known issue："tool call / vllm frontend"；修复 PR #56635 = 跳出 reasoning 段时显式检查 tool call token 防止其 bleed 进正文。build A/B：0.1.dev20051（08-26）干净 vs 0.28.1rc1.dev580（09-08）退化（delta 含 vLLM commit 区间 / FlashInfer 0.6.17→0.6.18 / transformers 5.15.1→5.16.1）；单轮/短请求恒干净；30+ 合成请求（10 轮工具历史、34k 上下文、并发）全部无法复现——**仅真实 agentic 客户端（Claude Code/OpenCode 类）长会话触发**，证据是 build A/B + 回滚而非独立 repro；mamba 随机舍入/SSM dtype/MTP 开关均不影响） · Cov: `NEW`（reasoning 段退出边界的 tool-call token 泄漏子签名） · 触发 `yes` · 置信度 `verified`'
+  mechanism: reasoning 解析器跳出思维链段时未检查 token 是否为 tool call 起始，tool-call 控制串被泄漏进正文解码上下文，污染后续自回归生成。
+  source: 'vLLM #56605（2026-09-12 open，bug+glm label，含双 build 版本矩阵、六项合成复现尝试与回滚证据）；修复 PR #56635。https://github.com/vllm-project/vllm/issues/56605'
+  behavior: 无 crash、无任何错误标记——长 agentic 会话中途输出**静默坍缩为重复 token word salad**（finished_reason 正常）；单轮/短上下文完全免疫，故离线评测不可见。10.20（parser 截断丢 reasoning 块）/10.42（parser 通道终止符假设丢 tool call）之后"parser 边界 token 处置"族新成员：本条在 reasoning→正文退出边界、tool-call token 泄漏维度。
+  trigger_surface: vLLM + GLM-5.3-Flash（FP8）+ 多轮 agentic 长会话 + tool call（yes）
+  discovery: |-
+    2026-09-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: unanimous

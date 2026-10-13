@@ -1,0 +1,52 @@
+id: INF-0747
+legacy_ids:
+- '7.74'
+slug: vllm_cpu_wna16_int4_gemm_avx512_compile_guard_capability_mismatch
+aliases: []
+title: CPU WNA16 int4 GEMM 未查 AVX-512 致 AVX2 崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: CPUWNA16LinearKernel 能力探测
+  behavior: cpu_gemm_wna16 只在 AVX512F/riscv_v/s390x 下编译注册，而 CPUWNA16LinearKernel.can_implement() 只查 is_cpu、权重 dtype 与形状，不查 AVX-512。
+effect:
+  objects:
+  - 可用性/进度
+  detail: AVX2-only x86（如 i7-6700HQ）+ 官方 +cpu wheel 运行 AWQ/GPTQ int4 模型时，加载与预热成功，首次 forward 才报 AttributeError（_C 无 cpu_gemm_wna16），服务看似启动完成后才死。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM CPU 后端 + AVX2-only x86 + AWQ/GPTQ int4 模型（平台即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55613
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0726
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（CPU 后端 `cpu_gemm_wna16`（AWQ/GPTQ 共用的 WNA16 int4 GEMM）在 `csrc/cpu/torch_bindings.cpp` 里只于 `__AVX512F__/__riscv_v/__s390x` 下编译注册——AVX2-only x86 CPU（无 AVX-512）上该 op 根本不存在，但 `CPUWNA16LinearKernel.can_implement()` 只检查 `is_cpu()`/weight dtype/形状整除性不查 AVX-512：模型加载成功、深入模型执行才 `AttributeError: ''_OpNamespace'' ''_C'' object has no attribute ''cpu_gemm_wna16''`） · Cov: `var:vllm_cutlass_fp8_kernel_pre_sm89_ungated_autoselect`（7.53 能力守卫缺失族） · 触发 `config` · 置信度 `documented`'
+  mechanism: 能力探测（can_implement）与二进制编译守卫（#if 预处理）覆盖集不一致：探测通过的配置在运行时无对应实现。实测 i7-6700HQ（Skylake，AVX2 无 AVX-512）+ 官方 `+cpu` wheel：`dir(torch.ops._C)` 仅含 `create_onednn_mm_handler` 与 `dynamic_4bit_int_moe` 两个 op——所有 `__AVX512F__/__AVX512BF16__/__AVX512VNNI__` 门控的 op 在此类 CPU 上缺席。
+  source: 'vLLM #55613（2026-09-06 open，quantization label，含复现脚本、traceback 与 op 清单验证）。https://github.com/vllm-project/vllm/issues/55613'
+  behavior: 首次 forward crash（AttributeError，fail-loud 但在加载/预热之后——服务看似启动完成才死）。7.53（CUTLASS FP8 pre-SM89 门槛缺失）之后能力守卫族第二例：GPU 侧是 arch 门槛、CPU 侧是 ISA 编译守卫，「can_implement 谎报支持」同构；发行 wheel 的静态编译面使非主流 ISA 的退化**静默且全局**（不止量化路径）。
+  trigger_surface: vLLM CPU 后端 + AVX2-only x86 + AWQ/GPTQ int4 模型（平台即触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

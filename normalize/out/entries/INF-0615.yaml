@@ -1,0 +1,53 @@
+id: INF-0615
+legacy_ids:
+- '6.222'
+slug: sglang_pd_disagg_dcp_decode_retraction_widened_index_cpu_backup_oob
+aliases: []
+title: SGLang DCP>1 下 retract 备份用错 KV 索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: retract KV CPU 备份/恢复索引
+  behavior: decode retraction 把 req_to_token 中 DCP 扩宽的逻辑 KV 索引直接用作 MLA KV 池 get_cpu_copy/load_cpu_copy 的物理行索引，缺少按 owner rank 局部化的变换。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: PD 分离 decode 节点 DCP>1、容量压力触发 retract 时：索引越界则 CUDA device-side assert 崩溃；索引碰巧在界内则静默备份/恢复错误物理行的 KV 数据。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang PD disagg decode + DCP>1（如 DCP8）+ decode 容量压力触发 retract（other_stack：SGLang）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38645
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0550
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（PD 分离 **decode** 节点 + **DCP>1**：decode retraction（`retract_decode`）把被 retract 请求的 KV cache 备份到宿主内存时，`req_to_token` 存的是 **DCP-widened 逻辑 KV 索引**、per-rank MLA `kv_buffer` 只存 **rank-local 物理行**；正常 MLA 写路径会选 owner rank 并除以 `dcp_size` 做 localize，而 retraction 的 CPU 备份/恢复路径把 widened 逻辑索引**直接**喂给 `MLATokenToKVPool.get_cpu_copy()/load_cpu_copy()` 物理缓冲索引——缺 `owned = indices % dcp_size == dcp_rank; local = indices[owned] // dcp_size` 变换。DCP=8 时可产生越界物理访问 → CUDA device-side assert；即使 widened 索引碰巧在界内，也寻址到**错误物理行**——静默拷贝/恢复错误 KV 数据） · Cov: `var:vllm_kv_offload_finished_request_unwritten_final_slot_cross_request_poisoning`（6.157 KV offload 备份/恢复路径索引错配族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`schedule_batch.py:1853 release_req → req.offload_kv_cache` 与 `retract_decode`（:2754）路径复用了为非 DCP 布局写的索引传递；索引空间变换（widen→localize）只在正常 MLA 写路径实现。Kimi-K3 hybrid（MLA+KDA）TP8/DCP8 + DSPARK + ReplaySSM、B300 复现（v0.5.17、v0.5.19 源审计）。'
+  source: 'SGLang #38645（2026-09-09 open，bug label，含索引空间推导、缺失变换伪代码与 TP5 crash traceback：full token usage 1.00 触发 retract）。https://github.com/sgl-project/sglang/issues/38645'
+  behavior: 双形态——越界时 CUDA device-side assert（fail-loud crash，decode 容量压力下进入 retract 即触发）；在界时**静默恢复错误 KV 行**（跨请求 KV 数据错配）。6.157（offload 末槽投毒）之后 KV 备份/恢复索引族第二例：本条在 DCP 索引空间变换维度、且 crash/静默损坏双显形。
+  trigger_surface: SGLang PD disagg decode + DCP>1（如 DCP8）+ decode 容量压力触发 retract（other_stack：SGLang）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

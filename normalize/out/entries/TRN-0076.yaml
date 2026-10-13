@@ -1,0 +1,51 @@
+id: TRN-0076
+legacy_ids:
+- CKPT.27
+slug: async_save_skips_tracker_write_non_megatron_scratch_restart
+aliases: []
+title: verl async_save 漏写 tracker，重启后从头训练
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: verl
+    component: trainer async_save 跳过分支
+  behavior: async_save=True 时 _save_checkpoint 无条件跳过写 tracker、不检查 actor.strategy；只有 Megatron manager 会补写 tracker，FSDP 系未实现。
+effect:
+  objects:
+  - 可用性/进度
+  - 模型权重
+  detail: 非 Megatron 后端下 ckpt 完整落盘、只有一条 INFO 日志；重启时 find_latest_ckpt_path 返回 None，resume_mode=auto 判为无 ckpt，静默从 step 0 重训并覆写盘上完好的 ckpt。SFT 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7952
+  kind: github_issue
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'verl v0/v1 trainer 的 `_save_checkpoint` 都有一个无条件分支：`actor.checkpoint.async_save=True` 时只 `logger.info("skip write latest_checkpointed_iteration.txt ...")` 后 `return`——**不检查 `actor.strategy`**。该跳过假设「checkpoint manager 稍后会写 tracker」，但只有 `MegatronCheckpointManager` 自己写 tracker（megatron_checkpoint_manager.py:1136-1146，`async_save && rank==0` 守卫）；backing `fsdp`/`fsdp2`/`veomni`/`torchtitan` 全部引擎的 `FSDPCheckpointManager` 里 `async_save` **零次出现**——同步存分片、从不碰 tracker。于是非 Megatron 策略下 tracker 被两边同时跳过：trainer 跳（等 manager）、manager 无实现。`config.py:37` 注释明写「Only implemented for Megatron as of now」但无校验，`async_save: False` 存在于**每个** backend 的 actor.yaml:142——FSDP 上是可达旋钮。'
+  source: 'verl #7952（2026-09-20；驱动真实 `RayPPOTrainer._save_checkpoint` 的对照 repro：async_save=False → tracker 写出、`find_latest_ckpt_path` 返回 global_step_3；async_save=True → 只有 `global_step_3/`、tracker 不存在、返回 None；`grep -c async_save` megatron=10 / fsdp=0；upstream main `23a341e3`）。https://github.com/verl-project/verl/issues/7952 ；同日补：修复 PR verl #7955（方向 a——`ActorConfig.__post_init__` 拒绝 `async_save` + 非 Megatron strategy 组合 + CPU 单测）已开出。'
+  behavior: ckpt 数据完整落盘、run 正常推进、无 error 无 warning（唯一日志是一条 INFO）——重启时 `find_latest_ckpt_path` 返回 None → `resume_mode=auto` 判「无 ckpt」→ **静默从 step 0 重训并覆写盘上全部完好 ckpt**（长 run 的整段进度作废）。SFT 不受影响（CheckpointHandler 无条件写 tracker）。与 CKPT.20（V1 ESI force-save 不接线）同形「契约在配置面、执行面缺席」、同是 verl trainer 的保存决策面，差异：那边该存的时刻没存、这边存了但**指针（可达性）没写**；与 CKPT.15（ckpt worker 异常被吞返回 success）互补：那边内容坏、这边内容完好但不可达；「跳过方与善后方分属两层、互不知情」的断裂与 CKPT.16（异步 RL resume 契约漏在途状态）同族——异步保存契约没有单一 owner。
+  discovery: 2026-09-21 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

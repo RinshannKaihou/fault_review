@@ -1,0 +1,53 @@
+id: INF-1153
+legacy_ids:
+- '12.37'
+slug: trtllm_prompt_embedding_async_h2d_outlives_pinned_pool_source_midcopy_overwrite
+aliases: []
+title: TRT-LLM pinned 池复用覆写在途 prompt 表拷贝
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tensorrt-llm
+    component: prompt 表 pinned 池异步 H2D
+  behavior: prompt embedding 表经 copyFrom() 异步 H2D 拷贝，host 源缓冲借自可复用 pinned pool；movePromptEmbeddingTableToGpu() 归还缓冲前未等待拷贝完成事件。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: 高并发且同 GPU 有竞争 CUDA context 时，新分配者可在拷贝进行中覆写同一 pinned 页，设备端收到半旧半新的 embedding 表，prompt-tuning 请求生成质量随损坏比例退化、无日志；低并发下几乎不可复现。1.1.0/1.2.1 均复现。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: TRT-LLM C++ backend + prompt tuning（请求供给 embedding 表）+ pinned pool 复用 + 高并发/竞争 context（partial：窗口依赖时序）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-15'
+remarks: effect_object 缺“输入嵌入/软提示”：prompt embedding 表不是 token 序列，输入编码 只能近似覆盖
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/19172
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（TRT-LLM（1.1.0 与 1.2.1）prompt-tuning 请求供给的 prompt embedding 表经 `BufferManager::copyFrom()` 异步 H2D 拷贝，其 **host 源缓冲区借自可复用 pinned-memory pool**（tllmBuffers.h）：异步拷贝的 stream 生命周期超过 host 对象的池生命周期——池把缓冲区交还复用后，**新分配者可在拷贝仍在进行时覆写同一 pinned 页**，设备端收到半旧半新的 embedding 表。host 侧对象生命周期缺陷（非内核/架构问题、硬件无关）；高并发 + 同 GPU 竞争 CUDA context（decoder 在 trtllmExecutorWorker 独立进程/context）只是拉宽竞态窗口使其可观察） · Cov: `NEW`（异步 H2D 生命周期 vs pinned pool 复用竞态子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: pinned pool 的所有权契约（借出→归还→可复用）与异步拷贝的流契约（host 源必须活到拷贝完成或经 event 同步）未对齐——`movePromptEmbeddingTableToGpu()` 归还 host 缓冲前未等待/未注册拷贝完成事件；竞争 context 的分配恰好落在窗口内即覆写源页。
+  source: 'TRT-LLM #19172（2026-09-14 open，含双版本复现（stock 容器 .so 与本地构建）、H100/CUDA 13.1 环境、进程拓扑分析（独立 CUDA context）与受影响文件清单（llmRequest.cpp/promptTuningBuffers.cpp/bufferManager.cpp/tllmBuffers.h））。https://github.com/NVIDIA/TensorRT-LLM/issues/19172'
+  behavior: 无 crash——prompt embedding 表被静默替换为半旧半新内容（prompt-tuning 请求的软提示损坏），生成质量随损坏比例退化、无任何日志；低并发下窗口极窄近乎不可复现，生产高并发+多 context 部署（Triton Inference Server）才是可观察面。12.36（weight cache daemon IPC refcount 过早释放）之后"host 侧生命周期 vs 异步传输"族新成员：本条在 **pinned pool 复用**维度、损坏的是 prompt embedding 入口。
+  trigger_surface: TRT-LLM C++ backend + prompt tuning（请求供给 embedding 表）+ pinned pool 复用 + 高并发/竞争 context（partial：窗口依赖时序）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

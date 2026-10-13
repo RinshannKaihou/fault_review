@@ -1,0 +1,59 @@
+id: TRN-0091
+legacy_ids:
+- DATA.09
+slug: swa_branch_overwrites_caller_attention_mask
+aliases: []
+title: Megatron 融合 softmax 的 SWA 分支覆写调用方 mask
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: megatron-lm
+    component: 融合 softmax 的 SWA 分支
+  behavior: forward_torch_softmax 的 sliding-window 分支无条件用滑窗因果 mask 覆写调用方传入的 mask；相邻 plain-causal 分支有 mask is None 守卫，SWA 分支没有。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 数值结果
+  detail: SWA 层走 torch fallback（未开 softmax 融合）时，padding mask（mbs>1）或 packing 文档 mask 被丢弃，pad/跨文档 token 参与注意力；无异常无警告，loss 被静默污染，仅部分层出错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7039
+  kind: github_issue
+relations: []
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `sft/pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `FusedScaleMaskSoftmax.forward_torch_softmax` 的 sliding-window 分支**无条件覆写**调用方传入的 attention mask：`mask = get_sliding_window_causal_mask(sq, sk, self.window_size)`；隔壁 plain-causal 分支有 `mask is None` 守卫，SWA 分支没有。带 SWA 层的模型在 torch fallback 路径（`scaled_masked_softmax_fusion=False`）上，padding mask（`micro_batch_size>1`）或 packing 的块对角文档 mask 被 SWA 层静默丢弃——pad token / 跨文档 token 照常参与注意力；非 SWA 层行为正常，错位只出现在部分层，逐层排查才可见。
+  source: 'Megatron-LM #7039（MiMo-V2.5 全参 SFT 实际命中：48 层中 39 层 SWA 走该 fallback；`[2,1,8,8]` 零分 + 尾部 3 个 key 的 padding mask 复现——padded key 概率非零；修复 = 组合而非覆写 `mask = swa_mask if mask is None else (mask | swa_mask)`，`mask=None` 调用方行为不变）。https://github.com/NVIDIA/Megatron-LM/issues/7039'
+  behavior: 无异常、无警告，loss 被静默污染；issue 报告唯一安全配置退到 `micro_batch_size=1` + 关 packing（变长多模态数据的重大效率损失）。与 DATA.02（packing 不按文档边界切断注意力）同症状面——pad/跨文档注意力泄漏，但根因在**消费侧**：packer/调用方生成的 mask 是正确的，被融合算子 fallback 的条件分支吞掉。与 KER.03（kernel 同步语义静默错值）互补：这是 mask 语义在分支覆盖上的静默降级，非融合 kernel 本身算错。
+  discovery: 2026-09-03 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 算子/内核。依据“修复要改哪里”：原文修复 = 在 FusedScaleMaskSoftmax.forward_torch_softmax 内把覆写改为组合 mask | swa_mask；原文明说“packer/调用方生成的 mask 是正确的，被融合算子 fallback 的条件分支吞掉”，即建模代码的 attention mask 构造（模型定义）无误，错在 softmax 算子封装的分支。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

@@ -1,0 +1,59 @@
+id: INF-1160
+legacy_ids:
+- '12.44'
+slug: vllm_dflash_dcp_slot_mapping_kernel_block_size_vs_kv_block_size_ownership_divergence
+aliases: []
+title: vLLM DFlash 在 DCP 下混用块尺寸致 slot 错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: DFlash 输入准备 slot 映射
+  behavior: _prepare_dflash_inputs_kernel 用单一 kernel block size 同时算 DCP 归属与 slot offset；通用 compute_slot_mappings() 则把两种块尺寸分开。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: cp_size>1 且物理/KV 块大小≠kernel 块大小时，DFlash 读写落到错误 rank/错误槽，输出错误且无报错（测试例 B=32/K=16/CP=4 中 kernel 块 10 应得 slot 160）；默认同尺寸配置不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM main + DFlash + cp_size>1 + 物理/KV 块大小 ≠ kernel 块大小（partial：需 DCP 分离 + 非默认块大小组合）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59184
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（vLLM DFlash 输入准备把 **attention kernel block size 同时用作 DCP ownership/rank-local 位置计算与 expanded block-table/slot offset 计算**，而 `BlockTables` 显式支持物理/manager 块大小 ≠ kernel 块大小（`blocks_per_kv_block = bs // kbs`、一个 manager 块展开为多个 kernel 块 ID）；通用 `compute_slot_mappings()` 路径正确地把两者分开（`kv_block_size` 用于 DCP ownership、`kernel_block_size` 用于展开表查找），`_prepare_dflash_inputs_kernel` 却用 `block_size * CP_SIZE` 与 `cp_local_slot(..., block_size, ...)` 单一尺寸——**cp_size > 1 且物理块 ≠ kernel 块时 DFlash slot 映射偏离通用契约**（DCP 归属判定与 slot offset 双错，读写落到错误 rank/错误槽）。报告者附现有 CUDA 测试 harness 的参数化用例（B=32/K=16/CP_SIZE=4：kernel 块 10 应得 slot 160 而非按物理块算出的另值）与两 rank 期望值对照） · Cov: `NEW`（CP ownership 尺寸假设断裂子签名；与 6.262（DSpark lookahead 预留不足越界写）同 spec-decode slot 映射契约域——本条在 **DCP 归属双尺寸混淆**维度：非越界而是错位路由） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 调用方传入 `input_block_tables[gid]`/`kernel_block_sizes[gid]` 但 kernel 以单一 block_size 同时做 ownership 与查找；通用路径已示范正确分离方式。
+  source: 'vLLM #59184（2026-09-29 open，含 `BlockTables` 代码引用、触发条件式（cp_size>1 ∧ 物理块≠kernel 块）与测试 harness diff 形式的复现）。https://github.com/vllm-project/vllm/issues/59184'
+  behavior: 无 crash——**DCP>1 且块大小分歧配置下 DFlash 读写静默错槽/错 rank**：KV 内容归属与实际槽位错位，输出错误无任何报错；默认同尺寸配置免疫。
+  trigger_surface: vLLM main + DFlash + cp_size>1 + 物理/KV 块大小 ≠ kernel 块大小（partial：需 DCP 分离 + 非默认块大小组合）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: cause.subsystem 由 KV缓存 改为 解码/采样：原文说明通用 compute_slot_mappings()（KV 管理路径）已正确区分 kv_block_size 与 kernel_block_size，出错的是 DFlash 专属的 _prepare_dflash_inputs_kernel；按 rules“subsystem 按出错的那段代码归属”与功能域优先，归推测解码。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

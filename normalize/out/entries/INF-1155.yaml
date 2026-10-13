@@ -1,0 +1,53 @@
+id: INF-1155
+legacy_ids:
+- '12.39'
+slug: sglang_glm53_flash_pinned_transformers_missing_glm5_next_processor_degrades_tokenizer
+aliases: []
+title: SGLang GLM-5.3 图片输入静默失效（processor 降级）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: 多模态 processor 加载与能力探测
+  behavior: pin 的 transformers 5.12.1 缺 glm5_next 模块，AutoProcessor 静默回退为裸 tokenizer；SGLang 以其充当多模态 processor，能力探测只看 config。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: /model_info 报支持图像理解，但每张图被缩为 3 个 token（placeholder 不展开、无 pixel_values），模型凭空作答（纯红图答“穿亮黄夹克的人”）；文本路径正常，无报错无警告。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.3-Flash + transformers==5.12.1 pin（other_stack；版本组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39831
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0549
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（SGLang nightly 20260916 服务 `zai-org/GLM-5.3-Flash`：`/model_info` 报告 `has_image_understanding: true`，但**每张图片被静默缩为恰好 3 token**（`<|begin_of_image|>` + 1×`<|image|>` + `<|end_of_image|>`）——placeholder 永不展开、无 `pixel_values`/`image_grid_thw`，模型从幻觉作答（纯红图片答"穿亮黄夹克的人"）；文本路径不受影响。根因（容器内验证）：部署 pin `transformers==5.12.1`，而 **`glm5_next` 模块只存在于 transformers main**——5.12.1 上 `AutoProcessor.from_pretrained(..., trust_remote_code=True)` **静默返回 `TokenizersBackend`**（裸 tokenizer）而非报错；SGLang 以 tokenizer 充当多模态 processor 启动，图片加载照常（坏 base64 正确返回 400）但无人展开 placeholder/编码 pixel） · Cov: `var:sglang_uv_resolver_silent_old_version_regression_resurrection`（6.156 依赖解析静默降级族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`AutoProcessor` 的回退链在目标模块缺失时静默降级为纯 tokenizer（无 warning/异常），把"processor 能力缺失"从启动期 fail-loud 变为运行期 fail-silent；服务端能力探测（has_image_understanding）基于 config 而非实际 processor 类型，二者脱节。'
+  source: 'SGLang #39831（2026-09-16 open，含 nightly 镜像复现、容器内 AutoProcessor 类型验证、token 计数证据与文本路径对照）。https://github.com/sgl-project/sglang/issues/39831'
+  behavior: 无 crash、无警告——多模态请求被降级为"3 个占位 token + 纯文本幻觉"，图片理解 100% 失效但服务表面健康；文本正常使回归测试易漏多模态腿。6.156（uv resolver 静默回退旧版复活已修复 bug）之后依赖降级族新成员：本条在 **pin 版本缺模块 × AutoProcessor 静默回退**维度。
+  trigger_surface: SGLang + GLM-5.3-Flash + transformers==5.12.1 pin（other_stack；版本组合触发）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,58 @@
+id: INF-1046
+legacy_ids:
+- '11.22'
+slug: sglang_dflash_dspark_swa_eviction_unreachable_kill
+aliases: []
+title: SGLang DFLASH/DSPARK 漏调 SWA 驱逐致请求中途被撤回
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: DFlashDraftInputV2 解码准备
+  behavior: DFLASH/DSPARK 的 prepare_for_decode 从不调用 maybe_evict_swa，也不推进 decode_batch_idx（驱逐门要求 ≥1），而 EAGLE 路径两者都做，SWA 驱逐因此不可达。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: hybrid-SWA 模型 + DFLASH/DSPARK 长生成时，SWA KV 逐 token 保留，约 swa_full_tokens_ratio×max_total_num_tokens 个 token 后池耗尽，请求被中途 retract；实测 77,824 token 处触发。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；hybrid-SWA 模型 + DFLASH/DSPARK + 长生成
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33805
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（DFLASH/DSPARK 单请求生成被提前杀死——SWA 驱逐不可达→SWA 池耗尽） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`spec_prepare_for_decode` 路由 dflash-family（DFLASH、DSPARK）到 `DFlashDraftInputV2.prepare_for_decode`，该方法从不调 `maybe_evict_swa`、从不推进 `decode_batch_idx`（驱逐门要求 `>= 1`）。`eagle_prepare_for_decode` 两者都做。hybrid-SWA 模型上 SWA KV 逐生成 token 保留→单请求约 `swa_full_tokens_ratio * max_total_num_tokens` 生成 token 后耗尽 SWA 池，被调度器 mid-generation retract。'
+  source: 'SGLang PR #33805（2026-08-06 open）。DeepSeek-V4-Flash-0731，2x RTX PRO 6000 SM120，TP=2，DSPARK block size 5。在 77,824 token 精确 retract（`align_page_size(int(778496 * 0.1))`）。https://github.com/sgl-project/sglang/pull/33805'
+  behavior: 单请求生成被调度器 retract（mid-generation kill，无 crash）。属「推测算法路径遗漏 SWA 驱逐→线性内存增长」签名——dflash-family 与 EAGLE 的驱逐逻辑不对称新子签名。
+  trigger_surface: SGLang；hybrid-SWA 模型 + DFLASH/DSPARK + 长生成
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错
+        status: panel7
+    uncertain:
+    - subsystem

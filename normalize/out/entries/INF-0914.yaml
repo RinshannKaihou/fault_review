@@ -1,0 +1,60 @@
+id: INF-0914
+legacy_ids:
+- '9.28'
+slug: vllm_hunyuan_dynamic_rope_host_side_bool_sync_breaks_cudagraph_capture
+aliases: []
+title: vLLM 动态 RoPE 检查 host 同步致 cudagraph 捕获失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: dynamic_rope_update 钩子
+  behavior: Transformers 后端 dynamic_frequency_update 对张量 seq_len>max_seq_len_cached 求 bool，强制 D2H 同步，capture 内非法；被守卫的更新对本模型实为 no-op。
+effect:
+  objects:
+  - 可用性/进度
+  detail: vLLM ≥0.29 中 HunYuan Dense V1 等 dynamic-rope checkpoint 在所有 cudagraph 模式下 capture 失败，启动即死；≤0.28 原生实现正常，cudagraph_mode=NONE 可启动但 decode 性能受损。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM ≥0.29 + HunYuan Dense V1（或任何 `@dynamic_rope_update` checkpoint）+ cudagraph_mode ≠ NONE（config：默认 FULL 即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57890
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: §3.8 输入层故障（tokenizer / 模板 / RoPE）
+  meta: '`infra_off`（vLLM v0.29 起 HunYuan Dense V1 走 Transformers 后端（#53615），dynamic-rope checkpoint 的 `@dynamic_rope_update` → `dynamic_frequency_update` 中 `seq_len = torch.max(position_ids) + 1; if seq_len > max_seq_len_cached:`——**`Tensor.__bool__` 强制 D2H host 同步**，在 CUDA graph capture 段内非法 → `cudaErrorStreamCaptureInvalidated` 于 capture_end、启动死亡。FULL/PIECEWISE/FULL_AND_PIECEWISE 全模式失败（PIECEWISE 在 torch.compile 下 19/19 过，但 FULL 相/profile_cudagraph_memory 仍跑 raw forward 而死）。**vLLM `max_model_len <= max_position_embeddings` 使整个动态更新对本 checkpoint 实为 no-op——检查本身仍同步**。≤0.28 原生 `hunyuan_v1.py` 在 `__init__` 静态算 NTK-alpha inv_freq、CUDA graph 正常（版本回归）。workaround：`--compilation-config ''{"cudagraph_mode": "NONE"}''`（启动成功、decode 性能受损）） · Cov: `NEW`（host-sync 于 capture 段——no-op 检查的副作用子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: Python 层 `if tensor > scalar:` 触发隐式 D2H 同步——该模式在 eager 下无害，但在 stream capture 中是非法操作；危害的隐蔽性在于被守卫的分支**对新配置根本不会触发**（vLLM 不超 max_position_embeddings），即同步代价买的是一个永假的检查。9.24（YaRN 别名二次缩放 RoPE cache 越界）与 9.26（fault_rope 原型族）之后 RoPE 配置族新成员：本条在**RoPE 更新钩子的执行环境假设**维度（host 活动于 capture 段）。
+  source: 'vLLM #57890（2026-09-21 open，含 capture 失败栈（modeling_rope_utils.py:100 ← modeling_hunyuan_v1_dense.py:436）、回归定位（≤0.28 静态 inv_freq）、全 cudagraph 模式矩阵、workaround 与修复方向）。https://github.com/vllm-project/vllm/issues/57890'
+  behavior: '启动期 fail-loud 死亡（AcceleratorError: operation not permitted when stream is capturing）——非静默错值，但表现为"模型无法以任何 graph 模式启动"的可用性回归；TRANSFORMERS 后端接管原生实现后动态 RoPE 语义（host 端 max/比较）与 vLLM 图执行模型的冲突是结构性的，同类 `@dynamic_rope_update` checkpoint（所有依赖该 HF 工具的模型）都可能踩中。'
+  trigger_surface: vLLM ≥0.29 + HunYuan Dense V1（或任何 `@dynamic_rope_update` checkpoint）+ cudagraph_mode ≠ NONE（config：默认 FULL 即触发）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed:
+  - cause.behavior
+  note: 裁定 stack：取 vllm。原文回归由 vLLM v0.29 让 HunYuan Dense V1 改走 Transformers 后端（#53615）引入，HF 钩子在 eager 下无害，冲突在 vLLM 的图执行环境；issue 提在 vLLM、workaround 也在 vLLM 配置。审计：behavior 写“该检查实为 no-op”与原文不符——原文是“整个动态更新对本 checkpoint 实为 no-op——检查本身仍同步”，已改为“被守卫的更新实为 no-op”，并补上 Transformers 后端这一出错来源。其余字段与独立判断一致。
+  audit_issues:
+  - field: cause.behavior
+    type: 忠实性
+    detail: 原文说被守卫的动态更新对本 checkpoint 为 no-op、检查本身仍同步，第一遍写成“该检查实为 no-op”
+  audit:
+    round: gateway-audit-2026-10-12

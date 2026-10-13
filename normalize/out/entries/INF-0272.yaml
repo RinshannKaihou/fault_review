@@ -1,0 +1,51 @@
+id: INF-0272
+legacy_ids:
+- '1.273'
+slug: trtllm_group_rmsnorm_smem_init_race_and_onewarp_path_never_normalizes_input1
+aliases: []
+title: TRT-LLM group RMSNorm 初始化竞态与漏归一化第二输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tensorrt-llm
+    component: groupRmsNormKernels.cu
+  behavior: 两缺陷并存：①多 warp 写共享统计的共享内存初始化竞态，warp 归约和丢失；②one-warp large-batch 路径循环漏掉第二个输入的 rsqrt 归一化。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: A100 对 fp64 参照：group_rms_norm_base 几乎所有调用输出偏大（例 0.0262 vs 0.0187），heuristic 回退同错；group_rms_norm_large_batch 第二输入全部错（例 2448.0 vs 1.19）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: TRT-LLM PyTorch backend + `torch.ops.trtllm.group_rms_norm_*`（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/19955
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（TRT-LLM `groupRmsNormKernels.cu` 两缺陷并存：①共享内存初始化竞态使输出膨胀——warp 归约和丢失（`group_rms_norm_base` 64×[1536,512] 输入 397,748/397,774 次调用错、例 0.0262 vs 0.0187；heuristic 回退同内核同错）；②one-warp large-batch 路径**从不归一化 input 1**（`group_rms_norm_large_batch` 2048×[256,256] 第二输入 401,268/401,268 全错、例 2448.0 vs 1.19）。A100 实测 120 s 循环 harness 对同 bf16 输入的 fp64 参照；1.2.1 wheel 与 main `b031dbe` 设备内核一致） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: ①多 warp 写共享统计的初始化竞态；②large-batch 单 warp 循环漏掉第二个输入的 rsqrt 归一化。
+  source: 'TensorRT-LLM #19955（2026-10-08 open，含 fp64 参照 harness、逐调用错计数与错值样例）。https://github.com/NVIDIA/TensorRT-LLM/issues/19955'
+  behavior: 无 crash——组归一化输出静默错值（最高千倍级），消费该 norm 的模型图精度静默退化。
+  trigger_surface: TRT-LLM PyTorch backend + `torch.ops.trtllm.group_rms_norm_*`（hw_specific）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

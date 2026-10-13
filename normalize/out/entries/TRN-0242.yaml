@@ -1,0 +1,55 @@
+id: TRN-0242
+legacy_ids:
+- RL-RO.20
+slug: kept_mass_shift_rejects_all_rollout_correction
+aliases: []
+title: verl 截断采样的 kept-mass 偏置使校正拒绝全部序列
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: rollout.logprobs_mode 口径
+  behavior: 默认向 vLLM 请求 processed_logprobs，截断采样下按保留集归一化，而 trainer 的 old_log_probs 按全词表 log-softmax，两者之差逐 token 带 log(kept mass) 偏置。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: Geo-RS/Seq-MIS 预设拒绝每条序列、actor 梯度恒 0：top_p=0.8 时 100/100 步全拒，reward 停在 0.13–0.14 而对照升至 0.83；只有通用 warning 与 advantages NaN，不点名原因；k3 预设下偏置不可见。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-26'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/8020
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0229
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:nucleus_truncation_is_bias` · 置信度 `documented`'
+  mechanism: verl 默认向 vLLM 请求 `processed_logprobs`（`rollout.logprobs_mode`）。top_p / top_k / min_p 截断下，该 logprob 在**保留集上归一化**，而 trainer 侧 `old_log_probs` 在全词表 log-softmax——`old_log_probs − rollout_log_probs` 逐 token 携带 `log(kept mass)` 偏置，与策略变化无关。该偏置被送进 rollout-correction 预设后越过拒绝门限：per-token 几何均值 ratio ≈0.964（Geo-RS 门限 `0.999_1.001`），257-279 token 求和后 `rollout_is_mean` 0.0012-0.0017（Seq-MIS 门限 `0.5_2.0`）——两个预设**拒绝每一条序列**、actor 梯度恒 0。k3 预设对此二阶不敏感（`r−1−log r ≈ 0.0007` @ r=0.964），偏置留在权重里不可见。报告者在 `main`@`6093e00`（GSM8K GRPO、Qwen2.5-1.5B-Instruct、2×RTX4090、100 步/臂）实测：Geo-RS 默认门限 + `top_p=0.8` → 100/100 步全拒、reward 从 0.13 停到 0.14，而未校正对照从 0.34 升到 0.83；补支持集尺寸重放（actor 侧 `logsumexp(top-|S| logits/T) − logsumexp(logits/T)` 加回 rollout 侧）后 `rollout_corr/kl` 降到 0.00029、reward 跟随对照。#8010（score centering）在 config 校验层只接受 `top_p=1, top_k=-1`，#8009 列 top_p<1 replay 为后续项——受影响的正是没被这两个守卫盖住的预设路径。
+  source: 'verl #8020（2026-09-25；5 臂实测 + 100 步 stall 曲线 + 140 行 9 文件原型与全部 JSON 存档；`rollout_rs_seq_masked_fraction==1.0` 逐臂表格；评论含 100 步复跑与重放原型验证）。https://github.com/verl-project/verl/issues/8020'
+  behavior: 无 crash、无 NaN 崩溃——唯一可见症状是一条通用 warning「Response mask is all False, returning default advantage metrics」每步一次 + `critic/advantages/*` NaN，不点名预设、截断或拒绝；run 看似在训（reward 曲线在动），实际 100/100 步零梯度、reward 停在起点。这是 RL-RO.07（`nucleus_truncation_is_bias`——同一 kept-mass 偏置首次在 trl 定位）在 verl rollout-correction 栈上的**训练侧放大实例**：同一机制，不同触发点——trl 那边偏置直接进 PPO 分母，verl 这边越过拒绝门限把整个 run 变成零学习信号。与 RL-ADV.08（猜中与推理同量级 advantage）同属「reward 在动、学习没发生」表象；与 OBS 家族互补：本条是 TIM 偏置经门限静默杀梯度，不是指标失准。
+  discovery: 2026-09-26 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

@@ -1,0 +1,52 @@
+id: INF-0410
+legacy_ids:
+- '6.17'
+slug: vllm_dsv4_sm12x_nan_mqa_topk_illegal_access
+aliases: []
+title: vLLM DSv4 在 SM120 上 NaN 致 top-k 内核非法访存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: top_k_per_row_prefill 内核
+  behavior: top_k_per_row_prefill 内核被 NaN 的 MQA logits 喂入时，把未初始化的 shared memory 当作 index 输出，这些垃圾 index 随后被用于地址计算。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: DeepSeek-V4-Flash 在 SM120、TP=4 下，首个含超过约 2048 token prefill 的批次（如 16 个并发结构化输出请求）触发 CUDA illegal memory access，杀死全部 TP rank，报 EngineDeadError。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 绑定 Blackwell/新 arch kernel 路径；通用 Ampere/Ada/Hopper 上通常不可复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/49896
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（NaN 驱动的非法内存访问） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'DeepSeek-V4-Flash 在 SM120（由 #43477 启用）上，`top_k_per_row_prefill` 内核在被 **NaN 的 MQA logits** 喂入时，把**未初始化的 shared memory 当作 index 输出**，随后这些垃圾 index 被用于地址计算，触发 `CUDA error: an illegal memory access was encountered`，杀死全部 TP rank → `EngineDeadError`。触发于首个含 >~2048 token prefill 的批次（如 16 个并发结构化输出请求）。'
+  source: 'vLLM #49896（2026-07-26 open）。环境：4× RTX PRO 6000 Blackwell（SM120），TP=4，`--kv-cache-datatype fp8 --block-size 256 --tokenizer-mode deepseek_v4`，vLLM 0.26.0，flashinfer 0.6.14，torch 2.11.0+cu130，CUDA 13.0。https://github.com/vllm-project/vllm/issues/49896'
+  behavior: NaN logits 驱动 top-k 内核输出未初始化 smem 作为 index → 非法内存访问 → 全 TP rank 崩溃。属\"NaN 污染 logits 链式引发非法内存访问\"服务栈正确性 bug。
+  trigger_surface: 绑定 Blackwell/新 arch kernel 路径；通用 Ampere/Ada/Hopper 上通常不可复现
+  signature: 'infra_off / 崩溃型。NaN 是触发器；相关 #49897（route DSv4 sparse-indexer prefill top-k 绕开 NaN-broken kernel）是规避修复。单进程路径不可复现 SM12x + MQA top-k 路径。'
+  discovery: 2026-07-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

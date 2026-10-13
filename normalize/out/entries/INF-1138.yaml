@@ -1,0 +1,50 @@
+id: INF-1138
+legacy_ids:
+- '12.22'
+slug: vllm_kimi_k3_interleaved_weight_stream_double_finalize
+aliases: []
+title: vLLM Kimi-K3 交错权重流致 MegaMoE 重复 finalize
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: MegaMoE 权重 finalize
+  behavior: AutoWeightsLoader 假设同一顶层前缀相邻，交错流使 Kimi 语言模型 loader 被调用两次；每次结束都 finalize MegaMoE 权重并删除原始 weight 与 scale 参数，不可重入。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 仅在流式加载产出 language/vision/language 交错前缀时触发（传统全量加载不触发），后到组因缺失参数（如 w13_weight_scale）加载失败。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + Kimi-K3 + 流式权重加载（非连续前缀交错流）+ MegaMoE finalize
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53379
+  kind: github_pr
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（AutoWeightsLoader 按相邻前缀分组——language/vision/language 交错流使语言模型 loader 被调用两次，每次 finalize MegaMoE 权重并删除原始参数，后到组缺 w13_weight_scale 加载失败） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '流式（streaming）weight loader 产出**非连续顶层模块前缀**时，`AutoWeightsLoader` 的"相邻前缀分组"假设失效：`language_model.* / vision_tower.* / language_model.*` 交错流使 Kimi 语言模型 loader 被**调用两次**。此前每次调用结束都执行 MegaMoE 权重 finalize 并**删除原始 weight 与 scale 参数**——第二次调用时这些参数已不存在，后到组以缺失参数（如 `w13_weight_scale`）失败。修复（PR #53379）把 MegaMoE finalize 推迟到模型级 `process_weights_after_loading` 钩子（完整 checkpoint 流消费完毕后），多模态 wrapper 把该钩子转发给语言模型；附 CPU 回归测试（交错 language/vision/language 流）。'
+  source: 'vLLM PR #53379（2026-08-21 open，"Fix Kimi K3 loading with interleaved weight streams"）。https://github.com/vllm-project/vllm/pull/53379'
+  behavior: 加载期 crash（missing parameter）——fail-fast，但**仅在交错流式加载顺序**下触发（传统全量加载不触发），使缺陷依赖加载基础设施形态。属「**有消耗性副作用的 finalize 不可重入 × 分组假设**」新子签名：分组逻辑的"相邻"隐式假设遇上任意顺序的流式输入，叠加 finalize 的破坏性（删参数）即失败——与 12.18（metadata 未初始化）同加载族但机制在重入性。
+  trigger_surface: vLLM + Kimi-K3 + 流式权重加载（非连续前缀交错流）+ MegaMoE finalize
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

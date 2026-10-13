@@ -1,0 +1,61 @@
+id: INF-0437
+legacy_ids:
+- '6.44'
+slug: vllm_extract_hidden_proposer_wrong_slot_mapping
+aliases: []
+title: vLLM 隐藏态抽取 proposer 忽略分组 slot_mapping
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 隐藏态抽取 proposer.propose()
+  behavior: propose() 忽略按组 slot_mappings，改用主组（block_size=1024）的 slot_mapping；CacheOnly 层 block_size=28 时得出错误 block/offset，散射写入未分配块。
+effect:
+  objects:
+  - 隐状态
+  - KV状态
+  detail: hybrid 线性/全注意力模型多 KV cache group、CacheOnly 层 block_size 不同时触发；无 crash，抽取出的隐藏态 70%+ 为零值并含 NaN/inf，会毒化下游训练（若用于 RL proposer）或推测解码 draft。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；hybrid linear/full-attention 模型 + CacheOnly 层不同 block_size
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51328
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（ExtractHiddenStatesProposer 忽略 per-group slot_mapping，用错误 block_size 散射写入 → 零值/NaN 隐藏态） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '`ExtractHiddenStatesProposer.propose()` 忽略传入的 `slot_mappings`（per-layer dict，用正确 group block_size 计算），改用 `common_attn_metadata.slot_mapping`（主组 block_size=1024）。CacheOnly 层 block_size=28 时 `basic_cache()` 用 28 除/取模→错误 block/offset→散射写入未分配块。产出零值（70%+）和 NaN/inf 隐藏态。'
+  source: 'vLLM PR #51328（2026-08-07 open）。组件 `ExtractHiddenStatesProposer`。https://github.com/vllm-project/vllm/pull/51328'
+  behavior: 无 crash。产出零值/NaN/inf 隐藏态→毒化下游训练（若用于 RL proposer）或推测解码 draft。属「per-group slot_mapping 被忽略→跨 group block_size 不匹配散射写入」签名——hybrid 线性/全注意力模型的多 KV cache group 新子签名。
+  trigger_surface: vLLM；hybrid linear/full-attention 模型 + CacheOnly 层不同 block_size
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 解码/采样：原文缺陷是 ExtractHiddenStatesProposer.propose() 忽略传入的 per-group slot_mappings，修复点在推测解码 proposer 内；KV slot 映射本身（per-layer dict）是正确的。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: KV缓存
+        status: panel7

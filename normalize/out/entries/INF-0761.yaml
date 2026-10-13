@@ -1,0 +1,55 @@
+id: INF-0761
+legacy_ids:
+- '7.89'
+slug: vllm_compressed_tensors_mxfp4_w4a16_misclassified_w4a4_dispatch_sm100
+aliases: []
+title: MXFP4 W4A16 在 SM100+ 被误分派为 W4A4 内核
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: compressed-tensors 分派
+  behavior: quant-method selector 只按权重格式 _is_mxfp4 判别即构造 W4A4 Mxfp4 类，未检查 input_quant is None，丢弃激活量化元数据；NVFP4 分支已正确区分 use_a16。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: SM100+（B200×8 验证）加载 MXFP4 W4A16 checkpoint（如 llmcompressor RTN 量化的 Qwen3-8B）时，激活按 W4A4 的 FP4 路径处理，输出静默退化，无 crash、不拒绝加载；同一 checkpoint 在不同 SM 代际结果不一致。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + compressed-tensors MXFP4 W4A16 checkpoint + SM100+（原生 FP4 支持设备）（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56770
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0731
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（vLLM compressed-tensors **MXFP4 W4A16** checkpoint（`input_activations: null`、`output_activations: null`——纯权重量化，激活应保持 FP16/BF16）在 SM100+ 上被无条件分派 `CompressedTensorsW4A4Mxfp4`：`compressed_tensors.py`（v0.29.0 L745 起）的 quant-method selector 只检查权重格式 `_is_mxfp4(weight_quant)` 即构造 W4A4 类，**不保留 input_quant is None 事实**——对照 NVFP4 分支（`if input_quant is None: return CompressedTensorsW4A4Fp4(use_a16=True)`）已正确区分。设备原生 FP4 支持触发该分派（B200×8 验证；llmcompressor 0.11.0 RTN MXFP4 W4A16 Qwen3-8B 复现，config 全文附于 issue）） · Cov: `var:sglang_mxfp4_moe_runner_dispatch_else_swallow_nine_backends_fail_late`（7.58 mxfp4 分派判别不完整族） · 触发 `config` · 置信度 `verified`'
+  mechanism: 量化方法分派以**权重格式单变量**判别，丢弃激活量化元数据；W4A16 checkpoint 由此进入按 W4A4 语义实例化的内核（激活被按 FP4 块量化路径处理）。
+  source: 'vLLM #56770（2026-09-14 open，bug+quantization label，含完整 quantization_config JSON、llmcompressor 复现步骤与 v0.29.0 源码行号定位）。https://github.com/vllm-project/vllm/issues/56770'
+  behavior: 权重 MXFP4 + 激活被错误地按 W4A4 量化语义消费——输出静默退化（无 crash、无拒绝加载）；W4A16 与 W4A4 的评测差异使该 checkpoint 在不同 SM 代际上结果不一致。7.58（mxfp4 MoE runner else 吞 9 值 fail-late）之后"mxfp4 分派判别不完整"族新成员：本条在 selector 维度、丢失的是激活侧量化元数据。
+  trigger_surface: vLLM + compressed-tensors MXFP4 W4A16 checkpoint + SM100+（原生 FP4 支持设备）（config）
+  discovery: |-
+    2026-09-14 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

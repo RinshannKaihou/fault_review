@@ -1,0 +1,66 @@
+id: INF-0331
+legacy_ids:
+- '4.15'
+slug: funasr_fp16_dtype_token_degeneration_loop
+aliases: []
+title: FunASR fp16 推理下 ASR 转写退化为单 token 无限循环
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: FunASR encoder fp16 中间激活
+  behavior: fp16 窄动态范围下 ASR encoder（深层卷积/注意力混合）中间激活上溢或精度损失，使 decoder logits 坍缩到重复吸引子
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: vllm serve 的 /v1/audio/transcriptions 用 --dtype float16 时转写为整屏重复 token（zh.mp3 输出 locklocklock…），服务健康无 crash；--enforce-eager 下仍复现，切回 bf16/fp32 即恢复
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + FunASR 类 audio 模型 + `--dtype float16`（config 即触发；需该 checkpoint）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54569
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0320
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`ambiguous`（FunASR-Nano 语音模型 `--dtype float16` 下 ASR 转写退化为无限 token 重复循环——zh.mp3 复现输出整屏 "locklocklock…"；H100、`--enforce-eager` 下仍复现，dtype 相关） · Cov: `var:fp16_overflow_ceiling`（4.4） · 触发 `partial` · 置信度 `documented`'
+  mechanism: fp16 窄动态范围 × ASR encoder（深层卷积/注意力混合）中间激活——上溢/精度损失使 decoder logits 坍缩到重复吸引子（声学帧间差异低于 fp16 可分辨度）。报告为 vLLM serve 形态（audio transcription 端点）；dtype 是唯一变量开关（fp16 → 垃圾循环），eager 排除编译路径。属 4.4（fp16 溢出天花板）在 audio 模型族的新显形：语言模型的退化显形通常是重复短语，audio token 退化显形为单 token 无限循环。
+  source: 'vLLM #54569（2026-08-31 open，H100×4、vllm serve + /v1/audio/transcriptions、modelscope checkpoint、含请求级复现命令与完整垃圾输出）。https://github.com/vllm-project/vllm/issues/54569'
+  behavior: 无 crash——转写结果为无意义重复 token 串（整段输出被单 token 占满）；模型可用性完全丧失但服务健康。dtype 切回 bf16/fp32 即恢复（4.4 的标准规避）。
+  trigger_surface: vLLM + FunASR 类 audio 模型 + `--dtype float16`（config 即触发；需该 checkpoint）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 改为 模型定义。依据：原文把缺陷定在 FunASR“ASR encoder（深层卷积/注意力混合）中间激活”在 fp16 下上溢/精度损失，dtype 是唯一开关，--enforce-eager 排除编译路径，没有指出任何算子实现写错；按“修复要改哪里”和“按出错的那段代码”（rules），出错的是该模型 encoder 的建模数值路径，而非通用 kernel。4.4（INF-0320）通用条目归 算子/内核，本条是特定模型实例。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出内容
+        status: panel7
+    uncertain:
+    - subsystem

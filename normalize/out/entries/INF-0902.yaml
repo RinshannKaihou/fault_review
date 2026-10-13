@@ -1,0 +1,60 @@
+id: INF-0902
+legacy_ids:
+- '9.19'
+slug: sglang_pretokenized_image_retokenized_mask_length_drift_mrope_crash
+aliases: []
+title: SGLang GLM 预分词请求 ids 与 mask 不等长致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: GLM processor ids/mask 来源
+  behavior: pretokenized 请求中 input_ids 被换成客户端精确 ID，GLM 消费端仍读对 decode(input_ids) 重分词得到的 attention_mask；重分词对非规范序列不保长。
+effect:
+  objects:
+  - 输入编码
+  - 可用性/进度
+  detail: GLM-4V/GLM-5.3 的 pretokenized 多模态请求在 token 边界非规范时，MRoPE 用 N+1 长 ID 索引 N 长 mask 抛 IndexError；RL 多轮复用采样 ID 时最易命中，短单轮 VLM 测试不可见，表现为间歇崩溃。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang + GLM-4V/GLM-5.3 VLM + pretokenized 多模态请求 + RL 多轮采样 ID 复用（SGLANG_MM_AVOID_RETOKENIZE 路径）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37097
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（pretokenized 图像请求下 SGLang 给 GLM MRoPE 传两条来源不同的序列——`input_ids` 是客户端精确 ID（`SGLANG_MM_AVOID_RETOKENIZE` 恢复）、`attention_mask` 是 HF processor 对 `decode(input_ids)` **重分词**的产物；decode→re-tokenize 对非规范序列不保长（两个独立换行 token 合并为一个），MRoPE 用 N+1 长 ID 索引 N 长 mask 抛 IndexError） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: GLM processor 原始版本（#8798）中 ids 与 mask 同出 HF processor、天然对齐；#26555 为 RL/VLM pretokenized 请求加入精确 ID 恢复后，base processor 替换了 `input_ids` 而 GLM 消费端继续读旧 processor 结果的 `attention_mask`——两次各自合理的改动之间缺失所有权更新。tokenizer drift 可独立复现（GLM-5.3-Flash tokenizer：`len(retokenized)==len(exact)-1`）；模式存在于 main 与 GLM-5.3 实现（#36507）两处。长多轮 RL（采样 ID 反复复用为上下文）最易命中，短单轮 VLM 测试从规范 ID 出发不可见。
+  source: 'SGLang #37097（2026-08-29 open，源自 #36833 评论，含 tokenizer 级复现与最小修复）。https://github.com/sgl-project/sglang/issues/37097'
+  behavior: IndexError crash（fail-loud），但触发是**数据依赖的概率性**（依 token 边界是否规范）且只在 RL 多轮复用采样 ID 的负载出现——单轮测试绿、RL 挂的「间歇崩溃」。属「**同一下游算子消费两个分词时代的产物 = 长度漂移**」新子签名：与 10.37（StopStringCriteria round-trip 假设）同 decode/re-encode 往返域，本条损坏的是长度不变量而非子串查找。
+  trigger_surface: SGLang + GLM-4V/GLM-5.3 VLM + pretokenized 多模态请求 + RL 多轮采样 ID 复用（SGLANG_MM_AVOID_RETOKENIZE 路径）
+  discovery: |-
+    2026-08-30 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：title/component/behavior/detail 的事实（精确 ID 恢复、重分词 mask、N+1 vs N、IndexError、RL 多轮复用、GLM-4V/GLM-5.3）均有原文依据；调度/服务（GLM 多模态 processor 的 ids/mask 来源，属多模态输入预处理）、输入编码+可用性/进度、报错 与独立判断一致；behavior 只写原因、detail 只写影响，长度合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

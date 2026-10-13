@@ -1,0 +1,58 @@
+id: INF-0348
+legacy_ids:
+- '5.1'
+slug: moe_allreduce_topology_fp_reorder
+aliases: []
+title: TP all-reduce 累加顺序不同致 logprob 漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: 通用
+    component: TP all-reduce 累加顺序
+  behavior: TP 推理每层 all-reduce 中，NCCL reduce-scatter+all-gather 各 rank 累加顺序与自定义 Lamport/IPC 统一顺序不一致；浮点加法不结合，比特级差异逐层复合。
+effect:
+  objects:
+  - 隐状态
+  - 输出分布
+  - 训练信号
+  detail: 相对参考实现出现 sub-1e-3 的 KL 漂移，输出仍连贯但逐 token logprob 不同，静默污染以 KL 为锚的 RLHF/GRPO reward；单机多卡 NCCL 可复现，量级通常低于批不变性噪声底。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 单机多卡 allreduce 顺序；NVIDIA NCCL 可复现（原判定受单机无多卡限制）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://fireworks.ai/blog/when-faster-not-identical-moe-numerics
+  kind: other
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`model_on` · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: 在 TP 推理中，每一层的 partial output 需要跨 GPU 做两次 all-reduce 求和。NCCL 的 reduce-scatter + all-gather 在每个 rank 上按不同顺序累加各 chunk，与统一的自定义 Lamport/IPC 顺序不一致；浮点加法非结合（FP non-associativity）导致比特级结果不同，并沿全部层逐层复合。本条为 MERGED 条目，合并的子故障为：NCCL ring-vs-Lamport accumulation order（ring 拓扑归约顺序 vs Lamport/IPC 统一顺序之间的累加次序差异）。
+  source: 'Fireworks AI blog "Training-Inference Parity in MoE Models: Where Numerics Drift" (2026-03-10), https://fireworks.ai/blog/when-faster-not-identical-moe-numerics 。'
+  behavior: 相对参考实现出现 sub-1e-3 的 KL 漂移；输出依然连贯，但逐 token 的 logprob 不同，静默污染以 KL 为锚的 RLHF/GRPO reward。
+  trigger_surface: 单机多卡 allreduce 顺序；NVIDIA NCCL 可复现（原判定受单机无多卡限制）
+  signature: ON-manifold —— 扰动只是一个「不同但合法」的 FP 累加顺序，因此每层隐状态本质上仍停留在健康流形上。签名形式是 all-reduce 之后所有通道的一个极微小均匀扰动；只有 statistical 的 bulk-shift 与 trajectory 的 cos-drift 在 ~1e-4 量级可能捕获，且必须对固定的参考累加顺序做差分，geometric/spectral 的单点判定会漏检。注意该量级通常低于运行时批不变性噪声底，绝对量阈值无法判定，必须走参考对齐差分。它是 bug_perfect_disguise 的数值版本。
+  repro: 用一个 forward hook 在单 GPU 上模拟 multi-rank：把该层输出张量切成若干 chunk 后，按与参考不同的顺序重新求和（逐层改变 reduction order），从而只引入 FP 非结合性带来的差异，不改变任何数值语义。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 输出分布
+        to: 隐状态
+        status: panel7

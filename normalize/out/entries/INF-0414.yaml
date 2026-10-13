@@ -1,0 +1,51 @@
+id: INF-0414
+legacy_ids:
+- '6.21'
+slug: vllm_rocm_kimi_k3_kda_mixed_batch_nan_autotune_race
+aliases: []
+title: Kimi-K3 ROCm KDA 混合批 NaN 与 autotune 数据竞争
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: KDA 混合批分流与 autotune 配置
+  behavior: _forward 把混合批的 decode 序列送入 chunk 内核，该内核对 length=1 序列返回 NaN；recompute_w_u_fwd_kernel 的 autotune 选中有数据竞争的 num_stages=4。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: MI355X 上服务 Kimi-K3（gsm8k，VLLM_ROCM_USE_AITER=1）时，混合批中的 decode 序列得到 NaN；竞争配置（尤其配 num_warps=4）静默产生约 1e38 量级垃圾值，污染下游输出。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: AMD/Apple 路径，非本环境
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50649
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（混合批 NaN + autotune 数据竞争） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: Kimi-K3 在 ROCm KDA 路径上有两个正确性 bug：(1) `KimiGatedDeltaNetAttention._forward` 把混合 decode+prefill 非推测批次的 decode 序列送进 chunk 内核 `chunk_kda_with_fused_gate`，该 chunk 内核把每个 decode 当作 length=1 序列、对它们**返回 NaN**；(2) `recompute_w_u_fwd_kernel` 的 autotune 选了 `num_stages=4`，该配置（尤其配 `num_warps=4`）对该内核**有数据竞争**，可静默产生 ~1e38 量级垃圾值污染下游。修复：把 decode 从混合批分出送 `fused_recurrent_kda`；autotune 排除 `num_stages=4`。
+  source: 'vLLM #50649（2026-08-01 open PR）。环境：MI355X，`moonshotai/Kimi-K3`，gsm8k，`AITER_BF16_FP8_MOE_BOUND=0 VLLM_ROCM_USE_AITER=1`。https://github.com/vllm-project/vllm/pull/50649'
+  behavior: 混合批次 decode 序列得 NaN；autotune 数据竞争产生 ~1e38 垃圾值——均静默污染下游输出。属"内核 autotune 落在数据竞争配置 → 静默垃圾值"新子签名，与 1.12 `triton_fp8_e5m2_transposed_store_codegen_corruption`（Triton codegen）不同源（autotune 选 config vs codegen），但同为内核编译/调优路径的静默数值错误。
+  trigger_surface: AMD/Apple 路径，非本环境
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

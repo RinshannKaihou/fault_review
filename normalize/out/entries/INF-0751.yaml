@@ -1,0 +1,58 @@
+id: INF-0751
+legacy_ids:
+- '7.78'
+slug: vllm_nvfp4_gated_moe_end_padding_tp2_silent_corruption
+aliases: []
+title: NVFP4 gated-MoE TP2 end-padding 错位致输出腐蚀
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: NVFP4 MoE gate/up padding
+  behavior: TP2 后每投影 352 行不被 128 整除，把 fused gate+up 当连续行做 end-padding 而非两投影各自 pad，pad 行与 gate/up 错位使真实行按错 offset 解读；#48624 修复未覆盖此路径。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: B200+TP2+FlashInfer TRT-LLM FP4 MoE 服务 Gemma-4-26B-A4B-NVFP4 时 GSM8K strict-invalid 100%、flexible 2.047%，91.8% 响应为打满上限的乱码，引擎无错；TP1 无需 padding，完全正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + NVFP4 gated-MoE checkpoint（Gemma-4-26B-A4B）+ TP2 + B200 + FlashInfer TRT-LLM FP4 MoE（hw_specific：架构 × 拓扑 × 后端组合即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55649
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0857
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（`nvidia/Gemma-4-26B-A4B-NVFP4` + TP2 + FlashInfer TRT-LLM FP4 MoE 后端在 B200（SM100）：per-expert 中间宽 704 / TP2 = 每 gate/up 投影 352 行，FlashInfer shuffle 要求 fused gate+up 行数被 128 整除 → **end-padding**；gated-MoE 下 pad 行与 gate/up 两投影的**对齐错位**（PR #48624 的 split-pad 修复未覆盖此路径）→ 引擎全程无错完成 1,319 例 GSM8K，**strict-invalid 100%、flexible accuracy 2.047%**、91.8% 响应打满 1,024 token 上限输出数值腐蚀 gibberish；TP1 不需 padding 完全正确；同一 end-padding 逻辑在 0.28.1 dev 镜像仍在） · Cov: `var:vllm_glm53flash_kpool_topk_buffer_2048_index_width_overflow`（8.73 量化布局宽度失配族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '中间维不被 128 整除（704/2=352）时 TP 切分后的 gate/up 投影各自需要独立 pad 到 384；简单 end-padding 把两投影当作连续 fused 行 pad，gated-MoE 的 gate 激活与 up 线性在 pad 行上语义不同——错位 pad 使真实行被按错误 offset 解读。flashinfer #3206 / vLLM #39595 已报告对齐问题的 fail-loud 形态，本条是其**静默腐蚀形态**（TP2 + 编译 cudagraph 下不崩、只错）。'
+  source: 'vLLM #55649（2026-09-07 open，bug+quantization label，含 GSM8K 全量对照、TP1/TP2 消融与 root cause 分析；根因修复指向 PR #48624 未覆盖路径）。https://github.com/vllm-project/vllm/issues/55649'
+  behavior: 无 crash——**静默大规模数值腐蚀**（全基准 100% 无效但服务健康），是量化正确性谱系里最危险的一档。8.73（kpool 宽度失配）之后量化布局宽度失配族在 MoE 中间维 padding 域的新成员；「修复存在但只修了一个布局路径」使 TP2 部署在修复合并后仍坏。
+  trigger_surface: vLLM + NVFP4 gated-MoE checkpoint（Gemma-4-26B-A4B）+ TP2 + B200 + FlashInfer TRT-LLM FP4 MoE（hw_specific：架构 × 拓扑 × 后端组合即触发）
+  discovery: 2026-09-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

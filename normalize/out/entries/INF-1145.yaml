@@ -1,0 +1,57 @@
+id: INF-1145
+legacy_ids:
+- '12.29'
+slug: vllm_kda_chunked_scan_transient_buffers_outside_memory_profiling_oom
+aliases: []
+title: vLLM KDA 瞬态 buffer 漏计 profiling 致运行中 OOM
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 启动期 memory profiling
+  behavior: 启动 profiling 的 dummy 前向未覆盖 KDA chunked-scan 随 max-num-batched-tokens 线性增长的瞬态 buffer，KV cache 却按这部分内存空闲定容。
+effect:
+  objects:
+  - 可用性/进度
+  detail: GLM-5.3-Flash（MI350X MXFP4）在 --max-num-batched-tokens≥81920、16 并发 ~38k 请求时运行中 OOM，EngineCore 关闭，在途请求全部失败；8192–65536 稳定。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + KDA/gated-delta-rule 模型（GLM-5.3-Flash 类）+ `--max-num-batched-tokens ≥ ~81920` + 并发长请求（config + 负载触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54775
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0529
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`ambiguous`（KDA/gated-delta-rule chunked-scan 中间 buffer 随 `--max-num-batched-tokens` **线性增长**、在 forward 内瞬态分配、**不在启动期 memory profiling 覆盖内**——KV cache 按"该内存空闲"定容：8192–65536 全稳定，**81920 起 16 并发 ~38k 请求 11/16 在运行中 OOM**（`chunk_gated_delta_rule_fwd_h` 内 `torch.empty_like(u)` 1.25 GiB 分配失败）、131072 时 12/16 失败——引擎中途死亡，已服务的流量陪葬） · Cov: `var:vllm_hidden_states_kv_budget_overestimate_startup_reject`（6.136 profiler 盲区族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: vLLM 启动 profiling 用 dummy 前向估峰值，但 KDA chunked-scan 的 `v_new = torch.empty_like(u)` 等瞬态 buffer 依赖真实 chunk 尺寸（profiling 的 dummy run 未覆盖该路径或按不同形状执行）；`--max-num-batched-tokens` 调大后这些分配在生产 prefill/decode 中超出 profiling 预留。GLM-5.3-Flash（34 KDA + 11 sparse MLA 层）MI350X MXFP4、gpu-mem-util 0.93、fp8_e4m3 KV 复现，`flash_linear_attention/ops/chunk_delta_h.py:357`。
+  source: 'vLLM #54775（2026-09-01 open，MI350X、四档 max-num-batched-tokens × 16 并发成功率表、OOM 栈）。https://github.com/vllm-project/vllm/issues/54775'
+  behavior: 运行中 OOM → EngineCore 关闭（fail-loud 但**迟到**：启动通过、服务一段时间后死亡，正在处理的请求全部失败）。属「**profiler 盲区的瞬态分配**」：6.136（hidden-states KV budget 高估在启动期拒绝）的运行期形态——彼条启动即拒（无害），本条带病服务到中途崩溃（有害）；对线性注意力路径的 serving，`--max-num-batched-tokens` 是隐性 OOM 旋钮。
+  trigger_surface: vLLM + KDA/gated-delta-rule 模型（GLM-5.3-Flash 类）+ `--max-num-batched-tokens ≥ ~81920` + 并发长请求（config + 负载触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem（运行时/执行 vs 算子/内核）：维持 运行时/执行。原文 mechanism 的缺陷点是“启动 profiling 的 dummy run 未覆盖该路径或按不同形状执行”，导致 KV cache 按这部分内存空闲定容；KDA kernel 用 torch.empty_like 分配瞬态 buffer 本身是合法用法。词表 运行时/执行 含内存分配器。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

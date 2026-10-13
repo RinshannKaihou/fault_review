@@ -1,0 +1,50 @@
+id: INF-0864
+legacy_ids:
+- '8.80'
+slug: flashinfer_split_kv_partial_output_rounded_to_output_dtype_before_merge
+aliases: []
+title: split-KV partial 在 merge 前被舍入到输出 dtype
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: split-KV tmp_v partial 存储
+  behavior: split-KV 的 tmp_v 按 float 分配，却以输出 dtype 写入和读回，cast_store 在 merge 前就把 fp32 partial 累加器舍入到 bf16/fp16；prefill 调度器同型
+effect:
+  objects:
+  - 数值结果
+  detail: split-KV 激活时（如 KV_LEN 16384 的长上下文 decode），1/3–1/2 的 decode 输出相对 fp32 参考偏差 ≥1 个 bf16 步长，关闭 split 后降至 0.2%；无报错
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: flashinfer BatchDecode with split-KV（workspace 限制或长上下文触发 chunking）+ bf16/fp16 输出 dtype（yes）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5107
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（flashinfer Split-KV decode：KV 上下文分 chunk 时每个 chunk 的 partial 输出写入 `tmp_v`、随后 merge——但 `tmp_v` 按 `sizeof(float)` 每元素分配（`scheduler.cuh:485`）却以 `DTypeO*` 读回（`batch_decode.cu:231`），`decode.cuh:610` 的 `st.o.cast_store(...)` 把 fp32 累加器在** merge 之前**就舍入到 bf16：分配的上半区（512 KiB 中 256 KiB）从未写入，精度白白放弃不换任何内存。实测 split-KV 开启时 **1/3–1/2 的 decode 输出**相对 fp32 参考偏差 ≥1 个 bf16 步长，关闭 split（其余不变）降至 0.2%。prefill 调度器同型：`scheduler.cuh:860` 同样按 `sizeof(float)` 分配（`sizeof_dtype_o` 传入后在 :775 被丢弃），`batch_prefill.cu:210/:346` 同样以 `DTypeO*` 读回） · Cov: `NEW`（partial 输出提前舍入子签名） · 触发 `yes` · 置信度 `verified`'
+  mechanism: workspace 类型约定（fp32）与读回类型（输出 dtype）在分配点与消费点分裂；split-KV 的 merge 数学要求 partial 保持 fp32，逐 chunk 舍入后合并使误差不可逆。
+  source: 'flashinfer #5107（2026-09-10 open，bug label，含 8 组 batch size 的偏差计数对照与三处代码位点）。https://github.com/flashinfer-ai/flashinfer/issues/5107'
+  behavior: 无 crash——长上下文（split-KV 激活，如 KV_LEN 16384）decode 输出系统性精度退化，1/3–1/2 输出偏差 ≥1 bf16 步长。8.67（split-KV scratch 陈旧 partials 非有限 merge）同 locus 不同机制：那条是陈旧数据混入、本条是**合法数据的过早舍入**——两者都只在 split 路径显形。
+  trigger_surface: flashinfer BatchDecode with split-KV（workspace 限制或长上下文触发 chunking）+ bf16/fp16 输出 dtype（yes）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

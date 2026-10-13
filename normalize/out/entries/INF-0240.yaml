@@ -1,0 +1,50 @@
+id: INF-0240
+legacy_ids:
+- '1.241'
+slug: ttmetal_host_bfp4_bfp2_packer_direct_mantissa_round_vs_device_bfp8_then_narrow
+aliases: []
+title: host BFP4/BFP2 打包舍入与设备路径不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: tt-metal
+    component: host BFP packer 舍入
+  behavior: host packer 把 fp32 24 位尾数直接 RNE 舍入到 BFP4/BFP2 目标宽度，跳过 ISA 规定的先产 7 位 BFP8 幅值（ties-away）再截断的中间步。
+effect:
+  objects:
+  - 数值结果
+  detail: 同一 bf16 输入经 ttnn.from_torch（host）与 ttnn.typecast（设备）转 bfloat4_b，32×32 N(0,3) 上 42.5% 元素位型不同，最坏差一个完整 mantissa step（值 ×2），含 host 非零→设备零。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.from_torch` + bfloat4_b/bfloat2_b host 打包（hw_specific：所有 host 打包路径默认触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-22'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57410
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal host 数据格式 packer（`blockfloat_common.cpp` `convert_u32_to_bfp`）把 fp32 的 24-bit mantissa **直接 RNE 舍入到目标宽度**（BFP4 3-bit / BFP2 1-bit），而 ISA 规定的设备路径是**先产 7-bit BFP8 幅值（RNE、ties-away-from-zero）再截断到目标宽度**——两个不同函数。同一 bf16 输入经 `ttnn.from_torch(dtype=bfloat4_b)`（host）与 `ttnn.typecast(x16, bfloat4_b)`（设备）在 32×32 `N(0,3)` 上 **435/1024 元素（42.5%）位型不同**、最坏差一个完整 BFP4 mantissa step（值 ×2），含 host 非零→device 零；`ttnn.clone`/`ttnn.experimental.typecast` 均与设备侧一致——host 独错） · Cov: `NEW`（host/device 同名数据格式转换双实现数值契约分裂子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 舍入函数复合不可交换——`round_to_3bits(RNE)` ≠ `truncate_to_3(round_to_7bits)`；host packer 跳过 ISA 规定的中间 BFP8 物化步，任何落在两函数分歧域的值（约 43% 的均匀随机值）得到不同位型。BFP8 的 tie 规则（ties-away）与直接 RNE（ties-even）进一步扩大分歧。
+  source: 'tt-metal #57410（2026-09-22 open，Bad Outputs，含 16 元素块级 host/device 位型对照表、BFP4 step ×2 最坏例、ISA 规则引用与 `convert_u32_to_bfp` 定位）。https://github.com/tenstorrent/tt-metal/issues/57410'
+  behavior: 无 crash、无 NaN——**同一数值的两种合法入口产生不同精度结果**：host 打包的张量与设备转换差达 1 个 mantissa step（相对 ×2）；依赖 host from_torch 的量化权重预打包与依赖设备 typecast 的在线转换在同一模型内产生系统性数值分歧，golden 对账（走 torch host 路径）可能因此恒偏。
+  trigger_surface: tt-metal + `ttnn.from_torch` + bfloat4_b/bfloat2_b host 打包（hw_specific：所有 host 打包路径默认触发）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

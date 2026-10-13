@@ -1,0 +1,56 @@
+id: INF-0503
+legacy_ids:
+- '6.110'
+slug: sglang_dsv4_indexer_context_logits_alloc_unbudgeted_oom
+aliases: []
+title: DSV4 indexer logits 分配不计入预算致长上下文 OOM
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sgl-deep-gemm
+    component: indexer logits 张量分配
+  behavior: DeepSeek-V4 sparse indexer 在 host 侧为每层每个 prefill chunk 分配 fp32 logits 张量，大小随累积上下文线性增长，且对 mem_fraction_static 预算器不可见。
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: 约 800K 上下文的单请求在 prefill 中途确定性 OOM，indexer 复制而非 TP 分片，故每个 rank 同时 OOM；此前预算指标仍显示有余量。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；DeepSeek-V4 sparse indexer + 超长上下文 prefill
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-17'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35201
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（sparse indexer 每 chunk 的 fp32 logits 分配随上下文线性增长且不入 mem_fraction_static 预算 → 长上下文确定性 OOM） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: DeepSeek-V4 sparse indexer 在 sgl-deep-gemm host 侧（`csrc/apis/attention.hpp:398`）为**每层每 prefill chunk** 分配 `[chunk_tokens, aligned_c4_len]` fp32 logits 张量，大小随累积上下文线性增长；该分配对 `mem_fraction_static` 预算器完全不可见。约 800K 上下文的单个请求在 prefill 中途确定性 OOM，且因 indexer 复制（非 TP 分片）**每个 rank 同时 OOM**。
+  source: 'SGLang #35201（2026-08-16 open，4×H100 TP4 v0.5.17，100% 确定性复现）。https://github.com/sgl-project/sglang/issues/35201'
+  behavior: crash（OOM，非静默数值错误），但**触发确定性**且预算指标显示「有余量」——内存预算监控与真实分配脱钩。属「host 侧隐藏分配 × 预算器盲区」**新子签名**（与 8.44 indexer 配置面同对象、不同故障面）。
+  trigger_surface: SGLang；DeepSeek-V4 sparse indexer + 超长上下文 prefill
+  discovery: 2026-08-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: subsystem 维持 算子/内核、stack 维持 sgl-deep-gemm：原文把分配定位在 sgl-deep-gemm host 侧 `csrc/apis/attention.hpp:398` 的 indexer logits 张量，缺陷在该算子分配；mem_fraction_static 预算器只是没看见它。stack 按“缺陷在另一项目写真实栈”，词表外仅告警。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

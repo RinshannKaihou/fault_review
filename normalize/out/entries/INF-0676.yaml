@@ -1,0 +1,62 @@
+id: INF-0676
+legacy_ids:
+- '7.3'
+slug: fp8_static_scale_overflow
+aliases: []
+title: FP8 静态 per-tensor scale 遇离群值饱和或溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: FP8 静态 per-tensor scale
+  behavior: 采用由校准集导出的固定 per-tensor scale，遇 OOD 输入或 massive activation 时数值超出缩放后的 E4M3 范围（约 ±448），被钳到上限饱和或溢出为 inf→NaN。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 通常间歇性，只在出现离群值的 prompt 上触发：静默饱和时输出漂移，溢出时 NaN 灾难性传播。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 量化后端/位数/KV quant 配置
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2502.01070
+  kind: arxiv
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: FP8 E4M3 的可表示范围约为 ±448；采用 **STATIC per-tensor scale** 时使用一个固定的、由校准集导出的 scale。当遇到 OOD 输入或 massive activation，数值超过缩放后的范围，就会 SATURATE（被钳到上限）或直接溢出为 inf → NaN。vLLM 默认改用 dynamic（每次前向重新计算 scale）正是为了规避这一路径。
+  source: arXiv:2502.01070（FP8 across accelerators）；Wei et al. "FP8 Formats", MLSys 2024；vLLM FP8 docs。
+  behavior: 要么静默饱和（被钳位 → 输出漂移），要么灾难性 NaN 传播。通常是间歇性的——只在出现离群值的 prompt 上触发。
+  trigger_surface: 量化后端/位数/KV quant 配置
+  signature: infra_off。出现 NaN 时签名 STRONG，任何 statistical / cheap 族的 finite-value 检查都会立即命中。饱和路径更隐蔽：需要 statistical 族探测"数值被钉在 E4M3 上限（±448*scale）"这一分布特征，以及 per-tensor 激活 max 集中在天花板上。它与 weight_bitflip_naninf 的区别在于发生位置：后者是权重位翻转，本条是前向传播中的 FP8 饱和。因为触发是输入门控的，单条 prompt 的 geometric 检查可能完全看不到签名。
+  repro: 用 forward hook 把激活按固定 scale fake-quant 到 FP8（E4M3），并保留超范围时的 saturate / overflow-to-inf 两种分支。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 静默错误。原文并列两种表现，但先写“静默饱和（被钳位 → 输出漂移）”，signature 也指出 NaN 路径会被任何 finite-value 检查立即命中、饱和路径才是隐蔽的难点；按编目以静默后果为主的口径取 静默错误，NaN 路径已写入 detail。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+        status: panel7

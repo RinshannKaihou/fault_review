@@ -1,0 +1,51 @@
+id: INF-0618
+legacy_ids:
+- '6.225'
+slug: sglang_swa_mamba_branch_checkpoint_minlen_mismatch_wrong_state_attach
+aliases: []
+title: SGLang 混合分支缓存取 min 长度把晚期 Mamba 状态挂错键
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: Full/SWA/Mamba 分支点缓存插入
+  behavior: SWA 与 Mamba 的分支边界独立计算，调度器只按 Mamba 目标选 checkpoint；插入取各组件长度的 min，对不可切片的 Mamba 状态也照用，把 state192 挂到 key96 上。
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: 后续请求命中共享前缀键时从含未见 token 的 Mamba 状态恢复；H200 + Inkling checkpoint 复现，warm-cache logprobs 三组输入全部偏离、greedy 输出一组改变，冷缓存重复完全一致。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Full/SWA/Mamba 联合缓存 + SWA 页对齐与 Mamba checkpoint 网格不对齐的分叉点（other_stack：SGLang，机制可迁移任何"可切片缓存+不可切片状态"混合分支实现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38815
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang 联合 Full/SWA/Mamba 分支点缓存：SWA 按页对齐选边界、Mamba 按 checkpoint 网格对齐选边界，两目标**独立计算**；插入取全部组件请求长度的 `min(…)`——KV 可切片到该长度、**checkpoint 不可切片成更早状态**。实例：已有 checkpoint 64/128、新请求共享 96 token 后分叉（仅 checkpoint64 可复用），SWA 提议 branch96、Mamba 网格 round-down 到 64 已缓存故不提议新分支，prefill 继续到 192 并存 state192——插入取 `min(96,192)` 把 **state192 挂到 key96**，后续请求命中 96 从错误 Mamba 状态恢复。H200 + 真实 `thinkingmachines/Inkling` checkpoint + Rust TreeCore + Triton + page size 1 + Mamba `extra_buffer` 复现：warm-cache logprobs 三组输入全部分歧、greedy 输出一组改变；冷缓存重复完全一致） · Cov: `NEW`（多组件分支目标合并 min 语义对不可切片状态错配子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 'scheduler 只跟踪 Mamba 的目标而不用 SWA 的 branch96 决定 checkpoint 选择；插入逻辑的 `min` 长度对可切片的 KV 合法、对不可切片的 SSM/conv state 非法。PR #37584 把 SWA branching 传播进 Rust 后端后在共享插入逻辑中暴露；示例不需 SWA eviction 或 HiCache。'
+  source: 'SGLang #38815（2026-09-10 open，bug label，含逐步时序示例与 H200 GPU 复现参数）。https://github.com/sgl-project/sglang/issues/38815'
+  behavior: 无 crash——**跨请求状态污染**：命中共享前缀的后续请求从比键所声称更晚（含更多本请求未见 token）的 Mamba 状态恢复，warm-cache 输出/ logprobs 系统性偏离冷缓存。6.144（Mamba align 状态物化 × 查找上限错配零命中）同族但根因在新层：多组件**分支目标合并语义**而非单一组件的物化/查找错配。
+  trigger_surface: SGLang + Full/SWA/Mamba 联合缓存 + SWA 页对齐与 Mamba checkpoint 网格不对齐的分叉点（other_stack：SGLang，机制可迁移任何"可切片缓存+不可切片状态"混合分支实现）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

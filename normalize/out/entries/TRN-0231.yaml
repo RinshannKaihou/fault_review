@@ -1,0 +1,53 @@
+id: TRN-0231
+legacy_ids:
+- RL-RO.09
+slug: fused_expert_view_frozen_at_capture
+aliases: []
+title: Megatron colocated RL 生成引擎使用捕获时冻结的陈旧专家权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: megatron-lm
+    component: colocated RL 专家 fused 张量
+  behavior: serving 侧在捕获时另行 fuse 了一份 expert 张量，distributed optimizer 只更新自身参数 buffer，这份独立张量的值冻结在捕获时刻，不随优化器写回刷新。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: colocated RL 的生成引擎一直用陈旧专家权重采样，训练侧却在更新当前策略：rollout 与 train 权重静默脱钩，RL 循环被切断，mismatch 随训练增长，无任何警告。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6963
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0230
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:adapter_omitted_from_weight_sync` · 置信度 `documented`'
+  mechanism: Megatron colocated RL（trainer 与生成引擎同进程）里，serving 侧此前**在捕获时另行 fuse 了一份 expert 张量**；distributed optimizer 之后更新的是自己的参数 buffer，那份独立 fuse 的张量值**冻结在捕获时刻**——生成引擎一直用陈旧专家权重采样，训练侧却在更新当前策略。修复：DDP 构造前把 per-expert 权重分配为相邻 view 并在参数 buffer 中保持无间隙布局，serving 可恢复 zero-copy fused view 而不改 ckpt 参数名。
+  source: 'Megatron-LM #6963（PR 自述「causing colocated RL generation to use stale expert weights」；替代被关的 #6931）。https://github.com/NVIDIA/Megatron-LM/pull/6963'
+  behavior: rollout 与 train 权重静默脱钩——与 RL-RO.08（同步载荷缺 adapter）同行为面：RL 循环被切断、mismatch 随训练增长、无警告；机制不同：不是同步载荷缺项，是**存储别名**——合法 zero-copy 优化下被捕获的 fused 视图不随优化器写回刷新。
+  discovery: 2026-08-30 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

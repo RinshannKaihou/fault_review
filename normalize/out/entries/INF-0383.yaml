@@ -1,0 +1,56 @@
+id: INF-0383
+legacy_ids:
+- '5.36'
+slug: sglang_hyv4_a2a_backend_attn_tp_gather_moe_full_width_token_mismatch
+aliases: []
+title: SGLang HYV4 deepep 下 MoE 静默只算部分 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: sglang
+    component: require_attn_tp_gather()
+  behavior: require_attn_tp_gather() 仅凭设置了 a2a backend 就把 num_token_non_padded 按 attn-TP 分片推导，而 HYV4 无 LayerCommunicator、按全宽调 MoE。
+effect:
+  objects:
+  - 隐状态
+  - 输出分布
+  detail: HYV4 + deepep a2a + attn_tp_size>1（无 DP attention）时，超出分片宽度的行 topk_ids=-1、部分 EP rank routed_out 为 0；输出流畅、无报错、吞吐反升 16.7%，仅 logprob 对比可发现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Hunyuan-V4 + a2a MoE backend（deepep）+ attn_tp_size>1 无 DP attention（other_stack：SGLang，机制为通用契约推导缺陷）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38606
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（Hunyuan-V4-preview + `--moe-a2a-backend deepep` + `attn_tp_size>1`（如 `--tp 8 --ep 8` 无 DP attention）：`require_attn_tp_gather()` 单凭"a2a backend 已设置"推导 `num_token_non_padded` 为 attn-TP rank 的**序列分片**（`tokens_per_rank = num_tokens_per_dp // attn_tp_size`），但 HYV4 模型实现**没有 LayerCommunicator**、attention TP 仅 head-parallel、每 rank 以**全填充宽度**调 MoE——`DeepseekV2MoE.forward_deepep` 把 shard 局部的 num_token_non_padded 传给全宽 batch 的 `topk()`，超出该宽度的每行 `topk_ids=-1` 即不贡献。实测 8×B300、5-token prompt padded 到 8：topk_ids 行 1–7 全 −1、EP r5–r7 routed_out 恰为 0.0、首 token top-5 abs(dlogprob) 7.48（对照 `--disable-attn-tp-gather` 后 0.410）；**输出流畅健康-looking、无错误、服务健康、吞吐反而 +16.7%（2711 vs 2324 tok/s）**——只有 logprob 比较能发现。`--moe-a2a-backend deepep` 是官方 docs Playground 为该模型提供的开关之一） · Cov: `NEW`（跨组件契约推导 vs 模型实现假设不匹配的静默 token 子集计算子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`num_token_non_padded` 的契约（"MoE 收到的是 scatter 后的 shard"）只对带 LayerCommunicator 的模型成立；`require_attn_tp_gather()` 以全局并行配置单侧推导该契约成立，未按模型实现验证。HYV4 用 `hc_attn_layer`/`hc_mlp_layer`（`hunyuan_v4.py:358-384,606-607`）绕开整个 scatter 体系。与 6.216（drafter 后端阈值 min 聚合压垮目标模型）同属「配置聚合层对下层实现的单侧假设」。'
+  source: 'SGLang #38606（2026-09-09 open，含 8×B300 四臂对照实验表、topk_ids/routed_out 逐 rank 证据、dlogprob 度量与 docs Playground 指认）。https://github.com/sgl-project/sglang/issues/38606'
+  behavior: 无 crash——每 batch 只有 1/attn_tp_size 的 token 被 MoE 实际计算，其余静默跳过：**错误但流畅的输出 + 更高的吞吐**（省掉的算力变成加速）。这是「静默损坏反而更快」范式的极端形态：性能监控/延迟指标全部指向"更健康"。与 7.59（bench 静默跑 BF16 fallback）相反方向——本条是错误配置把生产流量算错还提速。
+  trigger_surface: SGLang + Hunyuan-V4 + a2a MoE backend（deepep）+ attn_tp_size>1 无 DP attention（other_stack：SGLang，机制为通用契约推导缺陷）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 2/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

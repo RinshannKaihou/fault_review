@@ -1,0 +1,55 @@
+id: INF-0322
+legacy_ids:
+- '4.6'
+slug: vllm_persistent_topk_silent_candidate_drop_narrow_range
+aliases: []
+title: vLLM persistent_topk 窄值域下静默丢弃真实 top-k 候选
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: persistent_topk 直方图 top-k
+  behavior: radix/直方图 top-k 原语在多元素落入同一粗直方图 bin 时选值出错，丢弃真实 top-k 候选并替换为严格更小的值（不是 tie-break 差异）
+effect:
+  objects:
+  - 数值结果
+  detail: 无 crash、无 NaN、无 -1 slot 或重复索引，只能与参考对比发现；logits 值域窄（trained indexer head 常态）时触发，k=512/1024/2048 均受影响，k=2048 长行最易触发（B300 sm_103）
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；persistent_topk + 窄 logits 值域（indexer head）+ k=2048 长行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51782
+  kind: github_issue
+relations: []
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（persistent_topk 在 logits 值域窄、多元素落入同一粗直方图 bin 时静默丢弃真实 top-k 候选→替换为更小值） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`torch.ops._C.persistent_topk`（`_quantize_pad_fp8_kernel` 邻接的 radix top-k 原语）在多元素落入同一粗直方图 bin 时静默返回错误结果——**丢弃真实 top-k 候选并替换为严格更小的值**。这不是 tie-break 差异而是值错误。失败是数据相关的（非纯 shape）：logits 占据窄值域时触发（trained indexer head 的常态）。所有支持 k 值（512/1024/2048）受影响，k=2048+长行最易触发。输出无 -1 slot、无重复索引，只能与参考对比才能发现。'
+  source: 'vLLM #51782（2026-08-11 open）。GPU B300 sm_103。组件 `torch.ops._C.persistent_topk` / `sparse_attn_indexer`。https://github.com/vllm-project/vllm/issues/51782'
+  behavior: 无 crash、无 NaN。**静默值错误**——返回的 top-k 值严格小于正确值，无任何异常标记。属「选择算法在数据相关条件下静默退化」**新子签名**——radix/直方图 top-k 在密集分布上的精度缺陷。
+  trigger_surface: vLLM；persistent_topk + 窄 logits 值域（indexer head）+ k=2048 长行
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：title/component/behavior/detail 中的事实（同一粗直方图 bin、严格更小值、非 tie-break、无 -1 slot/重复索引、窄值域 indexer head、k=512/1024/2048、k=2048 长行、B300 sm_103）均可在原文找到；kind=故障、算子/内核/vllm（indexer 用的 top-k 原语，非 sampler）、数值结果、静默错误 符合词表；behavior 只写原因、detail 只写影响，长度合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

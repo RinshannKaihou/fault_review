@@ -1,0 +1,61 @@
+id: INF-1104
+legacy_ids:
+- '11.81'
+slug: sglang_eagle_draft_num_token_non_padded_zero_topk_minus1_negative_index_wrap_moe_oob
+aliases: []
+title: SGLang EAGLE+EP 计数哨兵致 topk=-1 回绕越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: sglang
+    component: EP 专家映射与 padding 掩码
+  behavior: draft 批 num_tokens 被推为 0 而非 None，padded 掩码把全部 topk id 置 -1；dispatch 在 drop 检查前查 local_expert_mapping，-1 回绕到表尾真实专家致越界写。
+effect:
+  objects:
+  - 输出内容
+  detail: EAGLE + 专家并行 + overlap scheduler 高并发长生成时，CUDA graph 下部分在途请求 spec_accept_rate=0 并输出 !!!!! 垃圾至 token 上限，新请求正常；eager 下 cudaErrorIllegalAddress 崩溃。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang main≥#39574 + EAGLE spec + 专家并行（末 EP rank）+ overlap scheduler + CUDA graph + 高并发长生成（config：默认组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40156
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（SGLang main（#39574 `0dabef3d30` 起）EAGLE 推测解码 + 专家并行：draft 批到达 `ForwardBatch.init_new` 时 `input_ids is None`（scheduler 在 init_new 之后重建），`num_tokens` 推导为 **0 而非 None** → `global_num_token_non_padded` 变成"活的 0" → padded-region mask 以 0 计数武装，把 **draft 批每个 topk id 置 -1**；`StandardDispatcher.dispatch` 在 `-1` drop 检查**之前**执行 `local_expert_mapping[topk_ids]`——PyTorch 负索引回绕取表尾，末 EP rank 上 `mapping[-1]==mapping[287]==71` 是**真实本地专家**（rank 0–2 的 -1 良性恰掩埋缺陷）→ 整批行灌入专家 71：`masked_m[71]=384 > m_max=256`、`src2dst=[18176,18559]` 越 `72*256=18432` 区域 **OOB 写**。Eager：`cudaErrorIllegalAddress`（coredump 指 `fill_gateup_input_triton_kernel`，bounded 后腐蚀顺移到 `silu_mul_quant_varlen_kernel`）；**CUDA graph：无 crash——部分在途请求 `spec_accept_rate=0.00` + `!!!!!` 垃圾洪泛至 token 上限**，期间新准入请求健康（腐蚀是每请求持久状态）；关 overlap scheduler 或 `CUDA_LAUNCH_BLOCKING=1` 即消失。GLM-5.3-Flash（288 专家 top-8，ep_size=4×H20、EAGLE topk=1/3 draft steps）48 并发 ~8k 生成可靠复现） · Cov: `NEW`（计数哨兵 0/None 语义混用 × 负索引回绕先于 drop 检查的复合子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: 三层小错叠加——(1) `len(input_ids) if input_ids is not None else 0` 把"未知"折叠为"零"；(2) mask 以活计数 0 把全部行判为 padding 置 -1；(3) dispatch 顺序（映射先于 drop 检查）让 -1 经 PyTorch 负索引语义变成合法表尾专家 id。任何一层单独正确即不触发。
+  source: 'SGLang #40156（2026-09-18 open，含四步行号级调用链、masked_m/src2dst/cap 数值证据、eager vs CUDA graph 双形态对照、48 并发复现配置与无服务器聚焦 repro 设计）。https://github.com/sgl-project/sglang/issues/40156'
+  behavior: 双形态——eager：`cudaErrorIllegalAddress` crash；CUDA graph：**静默腐蚀**（accept_rate 塌 0、`!` 洪泛垃圾输出、per-request 持久）。11.20（DSpark large decode CUDA graph 非确定 IMA）与 6.233（padded 行流入 topk 路由 IMA）之后 spec×MoE 路由族新成员：本条在 **draft 批计数哨兵 × 负索引专家映射**维度——CUDA graph 把 OOB 写从 crash 降级为静默垃圾。
+  trigger_surface: SGLang main≥#39574 + EAGLE spec + 专家并行（末 EP rank）+ overlap scheduler + CUDA graph + 高并发长生成（config：默认组合触发）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: uncertain 字段 cause.subsystem（MoE路由 vs 解码/采样）：维持 MoE路由。原文三层缺陷中，(2) padded-region 掩码把 topk id 置 -1、(3) StandardDispatcher.dispatch 先映射 local_expert_mapping 后做 drop 检查，两层都在 MoE topk/专家分派代码里，越界写也发生在 MoE 专家缓冲；draft 批 input_ids 为 None 按 rule 6 是触发条件。审计：title/component/behavior/detail 中的事实（0 而非 None、mapping[-1] 回绕、CUDA graph 下 !!!!! 垃圾而新请求健康、eager 下 cudaErrorIllegalAddress）都有原文依据，visibility 质量退化 与先例（重复 ! 输出 → 质量退化）一致，未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: unanimous

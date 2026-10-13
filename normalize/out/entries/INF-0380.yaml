@@ -1,0 +1,54 @@
+id: INF-0380
+legacy_ids:
+- '5.33'
+slug: sglang_dspark_draft_kv_pool_budget_tp_size_vs_attn_tp_size
+aliases: []
+title: SGLang draft KV 池按 tp_size 少计预留致 OOM
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: draft KV 池预留预算
+  behavior: DFLASH/DSPARK draft KV 池的预留按原始 tp_size 计算，而 draft 池实际按 attn_tp_size 分片；DP attention 下两者相差 attn_dp_size 倍，预留被少计。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Kimi-K3 PD 解码节点开 DP attention + DSPARK 时，target KV 池已吃掉几乎全部 --mem-fraction-static 预算，draft worker 在 _build_mha_kv_pool 再分配 3.50 GiB 即启动期 OOM。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + DP attention + DFLASH/DSPARK speculative + 高 mem-fraction（other_stack：SGLang；拓扑组合触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38202
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0529
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（DFLASH/DSPARK draft KV 池的预留按原始 `tp_size` 计算，而 draft 池实际按 `attn_tp_size` 分片——DP attention 下两者差 `attn_dp_size` 倍，预留少计至该倍数；target KV 池已吃掉几乎全部 `--mem-fraction-static` 预算时 draft worker 随后分配自己的 KV 池即 OOM） · Cov: `var:vllm_hidden_states_kv_budget_overestimate_startup_reject`（6.136 预算记账域） · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '预留公式与分配分片度的并行度维度错配（tp vs attn_tp）。Kimi-K3 PD 部署解码节点 `--tp-size 16 --dp-size 16 --enable-dp-attention` + DSPARK draft：`_build_mha_kv_pool` 处 `torch.OutOfMemoryError: Tried to allocate 3.50 GiB`（GPU 267.69 GiB、free 1.46 GiB），rank1 4.33 GiB 分配失败。修复 PR #38203 按 `attn_tp_size` 计预算。'
+  source: 'SGLang #38202（2026-09-06 open，PD decode 节点完整启动配置与分配失败栈）；修复 PR #38203。https://github.com/sgl-project/sglang/issues/38202'
+  behavior: 启动期 OOM crash（fail-loud，但报错在 draft worker 池分配、根因是预留记账维度错——预算看似合理仍爆）。6.136（hidden-states KV budget 高估启动拒绝）之后预算记账域新成员：本条是 **draft/target 两级预算的并行度维度不一致**，DP attention 放大。
+  trigger_surface: SGLang + DP attention + DFLASH/DSPARK speculative + 高 mem-fraction（other_stack：SGLang；拓扑组合触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    rewritten:
+    - detail

@@ -1,0 +1,59 @@
+id: TRN-0093
+legacy_ids:
+- DATA.11
+slug: minillm_advantage_mask_checks_wrong_tensor
+aliases: []
+title: MiniLLM 掩码查错张量，advantage 被 padding 污染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: MiniLLM advantage 计算
+  behavior: completion mask 判 input_ids!=-100，而 -100 写在 labels，mask 恒全 1；长度归一化把掩位填 1e-4 混入分母；gamma 折扣按绝对位置而非 i−t 索引。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: 无crash：pad位reward被折进advantage，大小随batch padding量变化（reward=1.0、γ=1.0时单token pad到512得0.9514而非1.0），更新方向随batch组成漂移；gamma缺陷使后段token被指数级压制，或下溢致NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/pull/7044
+  kind: github_pr
+- url: https://github.com/huggingface/trl/issues/6626
+  kind: github_issue
+- url: https://github.com/huggingface/trl/issues/7295
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0085
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `rl` · Cov: `var:loss_mask_includes_prompt` · 置信度 `documented`'
+  mechanism: trl MiniLLM trainer 构造 completion mask 时判 `input_ids[:, prompt_lengths:] != -100`——但 `-100` 填充写在 `labels`（几行前由 attention_mask 构建），`input_ids` 从不含 -100：**mask 恒全 1**，padding 位保留 reward、每个更早位置的 advantage 把 pad 位的 reward 折进折扣和。同函数第二缺陷：长度归一化把 masked 位替换成 1e-4 再除——短 completion 的分母混入每个 pad 位的 `1e-4·γ^(i-t)`（reward=1.0、γ=1.0 时单 token pad 到 512 得 0.9514 而非 1.0），**advantage 的大小取决于 batch padding 而非序列本身**。修复 = mask 改读 labels、长度只数未掩位。
+  source: 'trl PR #7044（fixes #7024；指正 issue 里「labels 同时当 gather 索引」的一行修法会把 -100 喂进 `torch.gather`）。https://github.com/huggingface/trl/pull/7044 ；2026-09-20 补：**该 trainer 家族仍带第二处未修复静默错值**——#6626（open since 2026-08）：`_compute_advantage` 的 `gamma_pow[i] = gamma**i` 用**绝对位置**索引而非 `i−t`，`length_normalization=False` 时每个 advantage 多乘一个 `gamma^t`（常 reward=1、T=512、γ=0.9 下 t=200 处实测 advantage 缩小 1.4e9 倍——后段 token 指数级压制、无任何异常）；`=True` 时 `gamma^t` 分子分母相消，但 `gamma**i` float32 下溢为 0.0 后 0/0=NaN（γ=0.5 T=512 首 NaN t=150，NaN 位与下溢位逐点重合）。修复 PR #6635 open 自 8 月。trl #7295（2026-09-19，维护者提案移除 MiniLLMTrainer）把 #6626/#6635 列为「两个 open bug 均住在序列级 reverse-KL + gamma 折扣路径」的移除论据——若移除落地，本条机制面随模块消亡。https://github.com/huggingface/trl/issues/6626 ；https://github.com/huggingface/trl/issues/7295'
+  behavior: 无 crash；MiniLLM 的 advantage 系统性错值（pad 越多偏得越大），策略更新方向随 batch 组成漂移。与 DATA.03（loss mask 含 prompt）同族——都在 mask 构造处检查了错误的张量；与 RL-ADV.03（token 长度偏置）症状互补：那边是设计内的长度偏置，这边是 padding 泄漏制造的外生长度偏置。
+  discovery: 2026-09-06 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    rewritten:
+    - detail

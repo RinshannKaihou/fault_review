@@ -1,0 +1,52 @@
+id: TRN-0143
+legacy_ids:
+- KER.12
+slug: cudnn_sdpa_backward_padded_tile_scores_zero
+aliases: []
+title: cuDNN SDPA 反向 padding 半区计 0 分致 dQ NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cudnn
+    component: cuDNN SDPA bwd padding 半区
+  behavior: cuDNN SDPA backward 在显式 mask、L%128==64 且有 lse<−88.7 的行时，把末个 key tile 的 padding 半区打 0 分而非 −inf，exp 溢出后 inf×0 得 NaN 进 dQ。
+effect:
+  objects:
+  - 梯度
+  detail: DPO/KTO 带 padding mask（全 True 也触发）约 60 步内 grad_norm 永久 NaN；lse 未过阈时 dQ 带有限错值而静默；前向正确，换 EFFICIENT/MATH 后端或 is_causal=True 则干净。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7181
+  kind: github_issue
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: cuDNN SDPA **backward** kernel（torch 2.13 默认 SDPA 后端）在三个条件同时满足时算错：① 显式 `attn_mask`（全 True 的 bias 路径也触发）、② `seq_len % 128 == 64`（tile 对齐断裂）、③ 存在 logsumexp < −88.7 = ln(FLT_MAX) 的 query 行（如 Qwen2.5「massive activation」头：logits ±1600 量级）。kernel 把最后一个 128 宽 key tile 的 **padding 半区打 0 分而不是 −inf**，`exp(0 − lse)` 在 fp32 溢出，`inf × 0 = NaN` 进 dQ。forward 完全正确（cuDNN 前向误差 = mem-efficient 级），只有 `grad_q` 坏；同 q/k/v/mask 走 EFFICIENT 或 MATH 后端干净。**有限垃圾窗口**：lse 高于阈值时 pad 半区的错误值是有限的、乘 0 后不可见——大量形状下 kernel 错而不 NaN、梯度静默带错。12 行 torch-only 复现：`L=704`（L%128==64）非有限梯度元素 45056，`L=640/768` 干净，`enable_cudnn_sdp(False)` 或 `is_causal=True` 干净。
+  source: 'trl #7181（DPO/KTO on Qwen2.5-0.5B bf16 SDPA：~60 步内 grad_norm 永久 NaN；维护者 qgallouedec 2026-09-11 定位为 cuDNN SDPA backward kernel bug、非 trl/transformers 问题，bisect 到 DPO micro-batch 的 layer 8 head 3 + 12 行 torch repro）。https://github.com/huggingface/trl/issues/7181'
+  behavior: 可见面 = grad_norm NaN（DPO/KTO 任何带 padding mask 的 batch，all-True mask 同样触发）；**静默面 = lse 未过阈的错值梯度**——上限取决于模型激活分布（massive activation 头越多越易过阈）。与 KER.10（DSA cuDNN packed-THD+CP 错值被 flaky 标记掩盖）同族：cuDNN attention 路径在非规范形状下错值 + 现有测试形状恰好免疫（这边是 `L%128==64`，那边是 packed+CP 组合）；与 KER.09（Triton 掩码块内/全局坐标混淆）同病：**tile padding 半区的边界处理**决定对错。
+  discovery: 2026-09-13 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

@@ -1,0 +1,53 @@
+id: INF-0699
+legacy_ids:
+- '7.26'
+slug: trtllm_static_fp8_fused_projection_requant_discards_calibration
+aliases: []
+title: TRT-LLM 静态 FP8 融合投影取 max scale 二次量化丢校准
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: tensorrt-llm
+    component: Cosmos3 静态 FP8 融合投影加载
+  behavior: Q/K/V、gate/up 被融合为单个 per-tensor FP8 Linear，只能持有一个 weight scale；loader 保留 max(scales) 并重新量化组内其他成员，在 ModelOpt 校准上多一次舍入。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: 加载静态 FP8 的 Cosmos3 Nano/Super 检查点时，约 56% 的 fused shard（Nano 141/252、Super 252/448）附加误差达数值底限的 7–18 倍；无 crash、无 NaN，输出仍连贯但精度降低。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: TRT-LLM；静态 FP8 Cosmos3 Nano/Super + fused QKV/gate-up projection topology
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/17476
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（静态 FP8 检查点在 fused projections 上被二次量化：loader 保留 max(scales) 并重新量化组内其他成员→附加误差为数值底限的 7-18 倍） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 静态 FP8（ModelOpt 校准）的 Cosmos3 Nano/Super 检查点已加载，但**不忠实**。topology 将 generation tower 的 Q/K/V 融合为单个 `Linear`、两个 tower 的 gate/up 融合为另一个。per-tensor FP8 `Linear` 只持有一个 weight scale，loader 保留 `max(scales)` 并对组内其他成员重新量化：`qWi' = FP8-round((si * qWi) / max(s))` 而非保留 `si * qWi`。这是在 ModelOpt 校准之上的一次额外舍入。影响 Nano 252 个 fused shards 中的 141 个、Super 448 个中的 252 个（~56%），受影响 shards 的附加误差为**数值底限的 7-18 倍**。检查点本身正确，是 fusion topology 丢弃了校准。修复：static FP8 下保持 projections 分离，每个 tensor 和 scale 精确按校准加载。BF16/dynamically quantized/其他模型保持 fused topology 不变。
+  source: 'TRT-LLM #17476（2026-08-10 open）。组件 Cosmos3 static FP8 loader / fused projection topology。https://github.com/NVIDIA/TensorRT-LLM/pull/17476'
+  behavior: 无 crash、无 NaN。56% fused shards 数值退化（7-18x 数值底限），**静默**——输出仍 coherent 但精度降低。属「静态量化校准在 topology fusion 时被二次量化丢弃」**新子签名**——检查点正确但加载路径因 fused shape 约束重新量化。
+  trigger_surface: TRT-LLM；静态 FP8 Cosmos3 Nano/Super + fused QKV/gate-up projection topology
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

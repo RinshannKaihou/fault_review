@@ -1,0 +1,56 @@
+id: INF-0675
+legacy_ids:
+- '7.2'
+slug: kv_cache_fp8_quantization_drift
+aliases: []
+title: FP8 KV cache 量化误差随上下文长度累积漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FP8 KV cache scale 与粒度
+  behavior: KV cache 以 FP8（e4m3/e5m2）存储，默认 scale=1.0 严重欠用动态范围；Key 未用 per-channel、Value 未用 per-token 粒度，误差随 token 累积并被点积放大。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 长上下文退化并随长度复合放大：e4m3 且校准良好时较轻，e5m2 或未校准时严重，出现重复循环、约一句话后语无伦次；kv_cache_dtype=fp8 与 bf16 KV 对照可见。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM kv_cache_dtype=fp8（或 fp8_e4m3）；与 bf16 KV 对照
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2402.02750
+  kind: arxiv
+- url: https://arxiv.org/abs/2401.18079
+  kind: arxiv
+relations:
+- kind: var
+  target: INF-0870
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off` · Cov: `var:8.85` · 触发 `config` · 置信度 `documented`'
+  mechanism: KV cache 以 FP8（e4m3 / e5m2）存储，配 per-tensor 或 per-token scaling；默认 scale=1.0 会严重欠用动态范围，误差随 token 逐个累积到整个 context 上，attention 点积再把漂移放大；e5m2 尤其容易退化。正确的粒度要求是 Keys 必须 per-CHANNEL、Values 必须 per-TOKEN（KIVI / KVQuant 的结论），per-tensor 会把 key 压垮。本条为 MERGED 条目，合并的子故障为：KV-cache quantization granularity（量化粒度选错）、sink overflow（sink token 的极值在 FP8 范围内溢出）。
+  source: 'vLLM "Quantized KV Cache" docs + issue #10411；KIVI arXiv:2402.02750；KVQuant arXiv:2401.18079。'
+  behavior: 长上下文退化且随长度复合放大；e4m3 且校准良好时较轻微，e5m2 或未校准时严重——出现 repetition loop、约一句话之后开始语无伦次。
+  trigger_surface: vLLM kv_cache_dtype=fp8（或 fp8_e4m3）；与 bf16 KV 对照
+  signature: '**OFF-manifold 但处于边界**：作用在 K/V 上的是平滑的、与长度耦合的乘性偏置。最有辨识度的签名是误差随 token index（即 cache 填充顺序）**单调增长**。statistical 族可通过与长度相关的 logprob 漂移捕获，trajectory 族的逐层/逐 token 轨迹斜率变化也能看到这种单调累积；而 geometric 族会把它当成近流形扰动（等价于把 quant_Nbit 施加到 KV 上），单帧几何检测容易漏。'
+  repro: 通过 cache hook 对缓存的 K/V 做 FP8 / int 粒度的 fake-quant（可分别切换 per-tensor 与 per-channel/per-token 粒度以复现"粒度选错"变体）。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

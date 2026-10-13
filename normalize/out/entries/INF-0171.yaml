@@ -1,0 +1,60 @@
+id: INF-0171
+legacy_ids:
+- '1.172'
+slug: ttmetal_noc_mcast_incl_src_sender_sent_vs_landed_check
+aliases: []
+title: MoE act sender 回环多播以 SENT 代 LANDED 致竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: MoE act sender 回环多播同步
+  behavior: act sender 以 NIU_MST_NONPOSTED_WR_REQ_SENT（请求离开本 NIU）为依据把自身 INCL_SRC 回环块发布到 CB，而不等数据落回本核 L1，发送方一侧跳过 wait。
+effect:
+  objects:
+  - 隐状态
+  detail: Blackhole 上 compute 可能在发送方自身拷贝落地前读取该 CB slot，读到旧值或未初始化 L1，FFN 激活偶发损坏；时序依赖、非确定复现，deepseek_prefill MoE 全专家路径共享该模式。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal deepseek_prefill MoE + Blackhole NoC 多播 INCL_SRC（hw_specific；时序敏感）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55551
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（deepseek_prefill MoE 的 act sender 把自身 INCL_SRC 多播回环块发布到 CB 的依据是 `NIU_MST_NONPOSTED_WR_REQ_SENT`（请求离开本 NIU）而非数据落回本核 L1——compute 可在发送方自己的拷贝未落地时读取该 slot；内核注释声称"Blackhole 多播为 posted、无完成 ack 可等"，与其代码自身的 barrier 路径矛盾） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`MCAST_INCL_SRC` 多播使发送方自己的块经 NoC 回环返回；接收方由 linked=true 的 valid-sem 多播正确排序，发送方却跳过 wait（本地 set 使任何 wait 立即返回、不排序任何东西）。`noc_async_writes_flushed()` 轮询的是发送侧 NIU 队列而非 L1 落地。NoC 完成语义层的判定错位：SENT ≠ LANDED，且只有发送方一侧未被覆盖——非对称竞态（parent #50154 finding 17）。'
+  source: 'tt-metal #55551（2026-09-05 open，含代码摘录与注释矛盾分析；修复 PR #55552）。https://github.com/tenstorrent/tt-metal/issues/55551'
+  behavior: 概率性读旧值/未初始化 L1——FFN 激活偶发损坏，时序依赖、非确定复现；deepseek_prefill MoE 全专家路径共享该模式。新子签名「**NoC 完成语义非对称：发送方回环拷贝以 SENT 代 LANDED**」——为编目引入 NoC 多播完成语义维度；与 1.121（mask seed store 无 drain）同为硬件级写完成竞态，本条在片上互连原语层。
+  trigger_surface: tt-metal deepseek_prefill MoE + Blackhole NoC 多播 INCL_SRC（hw_specific；时序敏感）
+  discovery: |-
+    2026-09-05 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: 裁定 subsystem 由 MoE路由 改为 算子/内核：MoE路由 词条指 router、专家分派、负载均衡偏置；本条 act sender 是 deepseek_prefill MoE FFN 内把激活多播到计算核的数据搬运内核，原文后果是“FFN 激活偶发损坏”，与路由/分派决策无关，原文定性为“NoC 多播完成语义非对称”。rule 1 的前提（缺陷在 MoE路由 功能代码上）不成立，按“修复要改哪里”归 算子/内核。visibility 不可复现 与原文“时序依赖、非确定复现”一致，维持。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

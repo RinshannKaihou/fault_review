@@ -1,0 +1,56 @@
+id: TRN-0146
+legacy_ids:
+- KER.15
+slug: gathered_logits_fed_to_vocab_parallel_ce
+aliases: []
+title: Megatron 全词表 logits 被当作 TP 分片计算 CE
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: megatron-lm
+    component: language_module 的 CE 调用
+  behavior: 输出层 gather 出 TP replicated 全词表 logits 时，带 labels 的 loss 路径仍无条件调 vocab-parallel CE，把最后一维当本地词表分片求和归一；非 fused 路径无 assert。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 无 crash、能训，但 loss 恒偏高 log(TP)，梯度中 target 项消失；TP=2、logits [0,1,2,3]、label 3 时 loss 为 1.1333，正确值 0.4402。两个触发项都是公开模型选项，「loss 略高」易被归因为超参或数据。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `GPTModel` 在 `parallel_output=False` 或 `runtime_gather_output=True` 时以 `gather_output` 建输出层（gpt_model.py:292/579/671）——logits 是**全词表、TP replicated**；但带 labels 的路径 `compute_language_model_loss` 无条件调 vocab-parallel CE（language_module.py:127），该 CE 把最后一维当作**本地词表分片**：TE fused 路径有 assert 挡住、**非 fused 路径没有**。TP=2、logits `[0,1,2,3]`、label 3 repro：observed loss 1.1333369 = 正确值 0.4401897 **+ log(2)**（replicated logits 被当 shard 求和/归一，系统性偏 log(TP)）；物理梯度 `[0.0160,0.0436,0.1184,0.3220]` vs 参照 `[0.0321,0.0871,0.2369,-0.3561]`——target 项丢失。两个触发项都是公开模型选项。修复 = assert sharded、gathered 时回退普通 CE 或拒绝组合。
+  source: 'Megatron-LM #7452（2026-09-17；finding 2，113 行 CPU/Gloo repro；未发现既有上游报告）。https://github.com/NVIDIA/Megatron-LM/issues/7452'
+  behavior: 无 crash——loss 恒偏 **+log(TP)**、梯度结构性错误（target 梯度项消失）；「能训、loss 略高」的形态使它极易被归因为超参/数据。与 KER.14 同函数族但断点相反：那边输入确是 shard、归约缺失；这边输入是 **replicated 却被当 shard**——分布式类型混淆的两个方向；与 DATA.06（tokenizer 本地 vocab 分片错位）症状面相邻（词表域错值）但机制在 CE kernel 入口契约。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计通过：损失计算 符合（修复=CE 入口 assert sharded 或 gathered 时回退普通 CE，落在 loss 计算路径）；loss 1.1333 vs 0.4402、+log(TP)、target 梯度项消失、非 fused 路径无 assert 均有原文依据；形式合规。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,57 @@
+id: INF-1000
+legacy_ids:
+- '10.84'
+slug: vllm_hunyuan_a13b_streaming_answer_close_marker_leaked_into_content
+aliases: []
+title: vLLM hunyuan_a13b 流式解析把 </answer> 泄漏进正文
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: hunyuan_a13b parser 流式收尾
+  behavior: reasoning parser 的流式聚合路径把 answer 块的闭合标记当内容累积、终态未剥离，与非流式整体解析对同一 token 序列的处理不一致。
+effect:
+  objects:
+  - 输出内容
+  detail: 格式良好的 <think>…</think><answer>answer</answer> 输出，非流式 content 为 "answer"，流式聚合为 "answer\n</answer>"；两请求均 HTTP 200、token IDs 相同，流式与非流式客户端结果分裂。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `--reasoning-parser hunyuan_a13b` + 流式 Chat Completions（config：该 parser 流式即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-22'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser 对生成文本的后处理）一类；暂取最接近的 调度/服务（API/前端）。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58127
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0995
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `hunyuan_a13b` reasoning parser **流式/非流式对同一 token 序列返回不同 content**：格式良好的 `<think>…</think><answer>answer</answer>` 输出，非流式 `content="answer"`，流式聚合为 `content="answer\n</answer>"`——**闭合标记泄漏进用户可见正文**；两请求 HTTP 200、token IDs 逐位相同；复现经真实引擎+HTTP+生产 parser（logits processor 强制目标序列，无需 150GiB 权重），vLLM 0.29.0） · Cov: `var:vllm_functiongemma_hyphenated_tool_name_streaming_nonsplit_double_decode_divergence`（10.79 流式/非流式双解码路径分歧族第三成员） · 触发 `config` · 置信度 `verified`'
+  mechanism: 流式聚合路径对"已开 answer 块后遇到闭合标记"的状态机收尾处理与非流式整体解析不一致——流式侧把闭合标记当内容累积后未在终态剥离；同一 parser 两套代码路径（增量 vs 批量）对相同 token 流产生不同输出。10.79（FunctionGemma 流式/非流式分裂）之后该族第三成员：本条在**reasoning parser 闭合标记收尾**维度。
+  source: 'vLLM #58127（2026-09-22 open，vLLM 0.29.0 + Qwen3-0.6B 引擎 + Hunyuan tokenizer + `--reasoning-parser hunyuan_a13b`，含双模式对照复现脚本（真实 HTTP 链路）、终态输出对照）。https://github.com/vllm-project/vllm/issues/58127'
+  behavior: 无 crash——**模型协议语法泄漏到用户正文**：流式客户端渲染/持久化/解析答案时带上 `</answer>` 标记，且流式与非流式客户端对同一生成得到模式依赖的不同结果（下游对账/评测分裂）；纯文本消费场景读作噪声。
+  trigger_surface: vLLM + `--reasoning-parser hunyuan_a13b` + 流式 Chat Completions（config：该 parser 流式即触发）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

@@ -1,0 +1,57 @@
+id: INF-0566
+legacy_ids:
+- '6.173'
+slug: vllm_kv_pool_first_boot_capacity_under_allocation
+aliases: []
+title: vLLM 首次启动 KV 容量探测偏低约 5%，容量依赖启动历史
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 启动期 KV 容量显存探测
+  behavior: 某 shape 首次启动时，compile 与 CUDA graph capture 的临时分配先于容量探测且部分驻留，探测在 warmup 未回收时采样可用显存，结果偏低。
+effect:
+  objects:
+  - 性能/资源
+  detail: 每机每个 (max-num-batched-tokens, max-num-seqs) shape 首启或 compile cache 失效后，KV cache 容量比后续同参启动少约 5%（如 82,688 vs 88,096 token），首启慢 30–35s；无报错，部署容量取决于启动历史。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V1 + 新 shape 首启（每机器每 shape 一次；compile cache 失效后重现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54383
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（某 `(max-num-batched-tokens, max-num-seqs)` shape 的**首次**启动比后续同参启动少 ~5% KV cache 容量——首启时 compile + CUDA-graph capture 的分配先于容量探测且部分驻留，探测所得可用内存偏低：两组 shape 实测 82,688 vs 88,096 与 82,256 vs 86,528 token；差异随 compile cache 持久化固化——**部署容量取决于启动历史**） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: 容量探测在自有临时分配未完全回收的时刻采样；严格 drain（两 boot 前均等到 255 MiB 空闲）排除残留显存因素后差异仍在——是首启路径自身的 probe-while-warmup 时序问题。首启亦慢 30–35s（capture 不命中 `~/.cache/vllm/torch_compile_cache`），第二次起从缓存加载。AWQ Qwen3-32B TP2、v0.28.0 V1 引擎实测。
+  source: 'vLLM #54383（2026-08-29 open，含双 shape 双 boot 对照表与 drain 脚本）。https://github.com/vllm-project/vllm/issues/54383'
+  behavior: 无 crash、无错误——同配置部署的**容量不可复现**（±5%）：压测/容量规划出现无法归因的漂移，首启实例并发能力系统性偏低；与任何故障无关却与一切容量假设有关。属「**容量探测依赖启动历史**」新子签名：与 6.136（hidden-states KV budget 高估启动拒绝）同启动期容量核算域，本条不拒绝启动而是**静默少给**且带历史依赖。
+  trigger_surface: vLLM V1 + 新 shape 首启（每机器每 shape 一次；compile cache 失效后重现）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 运行时/执行。依据原文“首启路径自身的 probe-while-warmup 时序问题”：缺陷是启动期显存探测与 compile/CUDA graph capture 分配的时序，属设备执行侧的内存分配/探测（词表 运行时/执行 含内存分配器），不是 KV block 分配或缓存管理逻辑；KV 容量只是被探测结果影响的对象，已写在 component 与 effect 中。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

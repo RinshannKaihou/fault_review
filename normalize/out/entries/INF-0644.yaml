@@ -1,0 +1,54 @@
+id: INF-0644
+legacy_ids:
+- '6.251'
+slug: vllm_lmcache_kv_load_failure_hetero_attention_assert_kills_enginecore
+aliases: []
+title: vLLM LMCache KV 加载失败触发 assert 杀死引擎
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV load 失败处理与 xfer 完成回调
+  behavior: KV load 失败时调度器先移除请求，随后异步到达的传输完成回调对已删除请求执行裸 assert；失败处理与完成事件之间没有取消或序号屏障，也未走降级重算。
+effect:
+  objects:
+  - 可用性/进度
+  detail: LMCache 后端读错误（NVMe/hipFile I/O，failure_policy=fail）在 Gemma 4 等多 KV 组异构注意力模型上触发 AssertionError，EngineCore 死亡，在飞与后续请求全部 EngineDeadError，须重启服务。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM + LMCache connector + 异构注意力模型（多 KV 组）+ 后端读错误 + failure_policy=fail（other_stack：LMCache 侧失败事件时序）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57938
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0532
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM `LMCacheMPConnector` + 异构注意力模型（Gemma 4 31B 混合 SWA+全局注意力、6 个 KV cache 组）下 **KV load 失败走致命断言而非优雅恢复**：LMCache 读错误（NVMe/hipFile I/O failure，`kv_load_failure_policy=fail`）时调度器标记请求失败并移除，随后异步到达的 transfer 完成回调 `_update_from_kv_xfer_finished`（scheduler.py:3043）撞上 `assert req_id in self.requests`——AssertionError 使 **EngineCore 进程死亡**，期望行为是降级重算（recompute）。全部后续请求 `EngineDeadError`） · Cov: `var:vllm_kv_load_reject_partial_rollback_state_divergence`（6.139 KV load 拒绝后状态机部分回滚分歧族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: KV 传输失败路径的状态机时序洞——失败处理（移除请求）与传输完成事件（引用请求）之间没有取消/序号屏障：load 已失败但 xfer-finished 事件仍在飞行，到达时目标请求已被删除，裸 assert 把可恢复的 I/O 抖动升级为进程死亡。6.139（KV load 拒绝后部分回滚状态分歧）与 6.157（KV offload 完成请求未写末槽跨请求投毒）之后 KV connector 生命周期族新成员：本条在**失败路径与完成事件的竞态**维度。
+  source: 'vLLM #57938（2026-09-21 open，vLLM 0.29.1 + LMCache GDS/hipFile 后端 + MI325X/gfx942，含完整错误链日志（LMCache result=False → Failing 1 request → assert → fatal）与期望行为说明）。https://github.com/vllm-project/vllm/issues/57938'
+  behavior: EngineCore 死亡（fail-loud crash）——单次后端 I/O 错误放大为全引擎中断：所有在飞请求 `EngineDeadError`、服务需重启；对"offload 后端偶发读错"的生产部署（NVMe 抖动、网络存储毛刺），这是把可容错故障变成致命故障的升级路径。异构注意力（多 KV 组）路径更易触发。
+  trigger_surface: vLLM + LMCache connector + 异构注意力模型（多 KV 组）+ 后端读错误 + failure_policy=fail（other_stack：LMCache 侧失败事件时序）
+  discovery: |-
+    2026-09-21 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

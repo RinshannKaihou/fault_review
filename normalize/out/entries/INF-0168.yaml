@@ -1,0 +1,52 @@
+id: INF-0168
+legacy_ids:
+- '1.169'
+slug: triton_fuse_nested_loops_zero_trip_bound_load_hoist_ima
+aliases: []
+title: FuseNestedLoops 提升内层 bound load 致非法访存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: FuseNestedLoops flatten
+  behavior: flatten=True 时把内层循环 bound 的标量 tt.load 提升到外层循环之上，pass 后在函数作用域无条件执行该 load，与源控制流脱钩。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 内层 bound 来自无 mask 的指针标量读取且外层零次迭代（如 m=0）时，源程序从不访问的指针被解引用，launch 期 CUDA illegal memory access（exit=3）；同 kernel flatten=False 正常。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Triton 3.7.x 编译路径 + 嵌套循环 + 内层 bound 为指针标量 load + 外层零 trip 可能（kernel 结构触发；flatten 对照可隔离）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11601
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0126
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`tritongpu-fuse-nested-loops` `flatten=True` 把内层循环的 bound 计算（标量 `tt.load`）提升到外层循环之上——外层零次迭代时该 load 仍执行，源程序在 m=0 从不触碰的指针被解引用 → illegal memory access） · Cov: `var:triton_fuse_nested_loops_nondominating_assume_miscompile`（1.127 同 pass 第二形态） · 触发 `partial` · 置信度 `verified`'
+  mechanism: flatten 模式把内层 bound 的计算移出外层循环；当 bound 来自指针标量读取且无 mask 时，pass 后 IR 在函数作用域直接 `tt.load %q`（`FuseNestedLoops.cpp:246-253`）——零 trip 外层循环的 kernel 源从不读该指针，编译后却无条件读。与 1.127（同 pass 的非支配 assume miscompile）同根族：pass 对"内层循环是否执行"的证明与源控制流脱钩，本条显形为非法访存而非静默错值。
+  source: 'triton-lang/triton #11601（2026-09-05 open，含 pass 前后 IR dump 与 RTX PRO 6000 Blackwell 实测，triton 3.7.1/torch 2.13.0+cu130）。https://github.com/triton-lang/triton/issues/11601'
+  behavior: launch 期 CUDA illegal memory access（exit=3）——fail-loud；同 kernel `flatten=False` 干净。1.127 之后 FuseNestedLoops 第二形态：同 pass 在不同 kernel 形状下分别产生静默错值（1.127）与硬 crash（本条），对推理栈自定义 kernel 构成双重风险面。
+  trigger_surface: Triton 3.7.x 编译路径 + 嵌套循环 + 内层 bound 为指针标量 load + 外层零 trip 可能（kernel 结构触发；flatten 对照可隔离）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

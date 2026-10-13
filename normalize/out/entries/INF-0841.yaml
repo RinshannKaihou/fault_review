@@ -1,0 +1,50 @@
+id: INF-0841
+legacy_ids:
+- '8.57'
+slug: ttmetal_sdpa_zero_padded_mask_columns_read_as_allowed
+aliases: []
+title: tt-metal SDPA 将零填充 mask 列读作允许注意力
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SDPA 显式 attn_mask 消费路径
+  behavior: SDPA 消费显式 mask 时不区分逻辑列与物理 padding 列，而 from_torch 对 TILE 布局默认以 0 填充，key 长度非 32 倍数时 padding 的 0 被当作“允许注意力”而非屏蔽。
+effect:
+  objects:
+  - 数值结果
+  detail: Wormhole Galaxy 上显式 attn_mask + 默认 pad + Sk%32≠0（如 S=16/40）时 attention 输出严重错误且确定，无 crash；S=32 正常，改 pad_value=-inf 即与 is_causal=True 对照逐位一致。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal SDPA + 显式 attn_mask + `ttnn.from_torch` 默认 pad + Sk%32≠0（软件 API 组合；`pad_value=-inf` 规避）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54833
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（显式 `attn_mask` 经 `ttnn.from_torch` 默认**零填充** tile padding 列，key 长度非 32 倍数（Sk%32≠0）时 SDPA **读取物理 padding 的零值列**——0 被当"允许注意力"而非屏蔽：输出严重错误；仅改 `pad_value=-inf` 即恢复与 `is_causal=True` 控制组 bit-for-bit 一致） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`from_torch` 对 TILE 布局默认 `pad_value=0`；SDPA 的 mask 消费路径不区分逻辑列与物理 padding 列。S=16/S=40 失败、S=32 正常（tile 对齐）；逻辑 mask 值 `-1e9` vs `-inf` 输出逐位相同（证明是物理 padding 而非逻辑值域问题）；失败与修复均确定性（重复调用稳定）。与 PR #36170 宣称的"任意非对齐 Q/K 长度支持 explicit mask"契约冲突——调用方按契约构造的良好张量拿到严重错误值。'
+  source: 'tt-metal #54833（2026-08-29 open，Wormhole Galaxy，含 pad_value 对照与确定性验证）。https://github.com/tenstorrent/tt-metal/issues/54833'
+  behavior: 无 crash——非 tile 对齐序列的 attention 输出静默错误；token 选择/加性 bias 等 `is_causal` 无法表达的场景必经显式 mask 路径。属「**物理 padding 值被逻辑消费**」新子签名：与 1.36（pad float32 packed as bf16 halves）同 padding 语义域，本条是 padding **值语义**（0=允许 vs −inf=屏蔽）被下游算子读取；调用方无错的 API 默认值组合（from_torch 默认 + 非 32 倍数 + 显式 mask）触发。
+  trigger_surface: tt-metal SDPA + 显式 attn_mask + `ttnn.from_torch` 默认 pad + Sk%32≠0（软件 API 组合；`pad_value=-inf` 规避）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,61 @@
+id: INF-0856
+legacy_ids:
+- '8.72'
+slug: vllm_kv_sharing_layers_default_scale_dequant_mismatch
+aliases: []
+title: KV-sharing 层未继承 target scale，按 1.0 反量化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV cache 初始化 scale 传播
+  behavior: KV-sharing 层读 target 层以其 k/v_scale 写入的量化 KV，checkpoint 无 sharing 层 scale，绑定共享缓存时未传播 target scale，sharing 层按默认 1.0 反量化
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: Gemma-3n/Gemma-4-E 系列配量化 KV（NVFP4/fp8）时无报错，20 个 sharing 层注意力输出相对误差 0.40–0.91（正常层 0.10–0.26）；长文 needle 检索 2/9（修复后 7/9），chat 格式不受影响
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + Gemma-3n/Gemma-4-E（num_kv_shared_layers）+ 量化 KV（NVFP4/fp8）checkpoint（模型×量化组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55559
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0843
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（KV-sharing 层（Gemma-3n/Gemma-4 E 系列 `num_kv_shared_layers`）读 **target 层**以 target 的 `k_scale`/`v_scale` 写入的量化 KV cache，但量化 KV checkpoint 对 sharing 层无 scale（它们没有 K/V 投影、llm-compressor 不产出）——这些层停留 1.0 默认值、以错 scale 反量化：Gemma-4-E2B NVFP4 KV 实测 layer 15-34（20 个 sharing 层）k=v=1.0 而 layer 0-14 带校准值，attention 输出相对误差 0.40-0.91（正常层 0.10-0.26）；修复把 target 层 scale 传播到 sharing 层后 needle 检索 2/9 → 7/9（bf16 KV 基线 5/9）） · Cov: `var:vllm_qwen35_kv_scale_checkpoint_route_missing_autoweights_loader`（8.59 KV scale 路由缺失族） · 触发 `config` · 置信度 `verified`'
+  mechanism: '缓存生产者（target 层）与消费者（sharing 层）的 scale 语义在绑定共享缓存时未同步。修复在 worker KV-cache 设置处（modular `init_kv_cache` 与 legacy `initialize_kv_cache_tensors` 双路径）把 target 的 scale 拷贝到 sharing 层（`torch.no_grad()` 下，scale 可为 nn.Parameter）；fp8 KV 同样适用（FlashInfer 把 k_scale 折进 softmax scale、v_scale 施于输出）。同 class 的 Gemma-4 MTP draft 层变体已由 #49262 处理（speculator 私有拷贝），本条是 target 模型自身 sharing 层、与 spec 无关。'
+  source: 'vLLM PR #55559（2026-09-06，bug/quantization/mrv2 label，含逐层 scale dump、逐层误差对照与 needle 前后对照）。https://github.com/vllm-project/vllm/pull/55559'
+  behavior: 无 crash——量化 KV + KV-sharing 架构下**过半层注意力输出系统性偏差**（0.4-0.9 相对误差），长文 needle 检索质量退化（不是塌方：chat 格式 8/8 不变——**静默质量回归**最难发现的档位）。8.59（Qwen3.5 KV scale 加载路由缺失）之后 KV scale 传播域第二例：加载路由 → 共享绑定传播。
+  trigger_surface: vLLM + Gemma-3n/Gemma-4-E（num_kv_shared_layers）+ 量化 KV（NVFP4/fp8）checkpoint（模型×量化组合触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem：取 KV缓存。依据“修复要改哪里”：原文修复在 worker KV-cache 设置处（init_kv_cache 与 initialize_kv_cache_tensors）绑定共享缓存时把 target scale 拷贝到 sharing 层，缺陷是共享绑定未同步生产者/消费者的 scale 语义；量化 scale 是被传错的数据而非出错代码。effect 以 隐状态 为首（KV 内容本身按 target scale 正确写入，错在 sharing 层反量化后的注意力输出），优于独立判断的 KV状态。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - detail

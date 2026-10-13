@@ -1,0 +1,50 @@
+id: INF-1052
+legacy_ids:
+- '11.28'
+slug: trtllm_spec_decode_interior_control_token_rejection_silent_toolcall_drop
+aliases: []
+title: TRT-LLM 推测解码接受路径截断控制块致 tool call 静默丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tensorrt-llm
+    component: 推测解码 acceptance 路径
+  behavior: 单模型推测解码的 acceptance 路径只返回 accepted_tokens 与数量并直接写入 new_tokens，不检查 accepted token 流的结构完整性，也无下游 rollback。
+effect:
+  objects:
+  - 输出内容
+  detail: draft 提议 tool-call 控制前导而 target 拒绝其中某个内部 control token 时，控制块打开后永不闭合，返回空 tool_calls、空 content、finish_reason=stop、HTTP 200；非推测解码下同一 draft 产出完整调用。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM；单模型推测解码（Eagle one-model/MTP）+ tool-call 模型（Harmony/gpt-oss）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/17437
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（推测解码 acceptance 路径不检查 accepted token 流结构完整性→interior control token 被拒→控制块打开永不闭合→空 tool_calls + HTTP 200） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 单模型推测解码的 acceptance 路径只返回 `accepted_tokens` 和 `num_accepted_tokens`，从不检查 accepted token 流是否结构完整。当 draft 提议 tool-call 控制前导（Harmony CH MSG TOK END block）且 target 不青睐某个**内部** control token 时，accepted prefix 不完整：打开的控制块**永不闭合**，caller/parser 报 `finish_reason=stop` + 空 `tool_calls` + 空 `content`。模型明显意图是函数调用，调用被**静默丢弃**。非推测解码下相同 well-formed draft 产出完整调用——差异只在 draft/accept 边界落在哪里。accepted prefix 直接写入 `new_tokens`（`new_tokens_lens = num_accepted_tokens`），无结构检查、无下游 rollback。
+  source: 'TRT-LLM #17437（2026-08-08 open）。#16377 的 acceptance-side 机制分析。组件 spec-decode acceptance kernel / `chain_speculative_sampling`。RTX 5090 sm_120。https://github.com/NVIDIA/TensorRT-LLM/issues/17437'
+  behavior: 无 crash、无 NaN。tool-call **静默丢失**——空 tool_calls + 空 content + `finish_reason=stop` + HTTP 200。属「推测解码 acceptance 缺乏 token 流结构完整性验证→interior rejection 静默分裂控制块」**新子签名**——推测解码 acceptance 路径的结构性正确性缺失。
+  trigger_surface: TRT-LLM；单模型推测解码（Eagle one-model/MTP）+ tool-call 模型（Harmony/gpt-oss）
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

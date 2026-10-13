@@ -1,0 +1,50 @@
+id: INF-0480
+legacy_ids:
+- '6.87'
+slug: vllm_mamba_running_cow_misclassified_after_external_hits
+aliases: []
+title: vLLM 外部命中后 Mamba CoW 被误分类致状态不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mamba 块分配早退路径
+  behavior: 外部命中填充 Mamba block table 后，continuation 仍在同一 block 时 allocate_new_blocks() 提前返回、未登记该请求，后续 CoW 被误判为首次 prefill CoW
+effect:
+  objects:
+  - KV状态
+  detail: Mamba 混合模型（如 Kimi-K3）外部命中后注册 partial-tail cache 条目时，Core 替换 live block 而 worker 视请求为 running 并追加返回的 block ID，两侧对 live Mamba state 列不一致，后续可能读错状态。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；Mamba hybrid model + external computed blocks + partial-tail CoW
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51766
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（external computed blocks 后 Mamba running CoW 被误分类为 first-prefill CoW → Core/worker state column 不一致） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`allocate_external_computed_blocks()` 可填充 request 的 Mamba block table，但首次 continuation 留在同一 Mamba block 时，`allocate_new_blocks()` 提前返回不将 request 加入 `_allocated_block_reqs`。后续 partial-tail cache entry 注册时，CoW 被误分类为 first-prefill CoW——Core 替换 live block 并返回 replacement block，worker 视 request 为 running 并 append returned block IDs。**Core 和 worker 对 live Mamba state column 的理解不一致**。'
+  source: 'vLLM #51766（2026-08-11 open PR）。Kimi-K3 geometry。https://github.com/vllm-project/vllm/pull/51766'
+  behavior: Core/worker block table 状态不一致，可能导致后续 Mamba state 读错误。修复：在 no-new-block early-return 路径标记 request allocated。
+  trigger_surface: vLLM；Mamba hybrid model + external computed blocks + partial-tail CoW
+  discovery: 2026-08-13 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

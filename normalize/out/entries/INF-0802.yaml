@@ -1,0 +1,52 @@
+id: INF-0802
+legacy_ids:
+- '8.18'
+slug: sglang_dspark_dflash_page_size1_kv_slot_leak_boundary
+aliases: []
+title: SGLang spec v2 在 page_size=1 时 KV 行过窄
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: req_to_token 行宽分配
+  behavior: spec v2 每步按 committed+2×draft 数预留 KV slot，req_to_token 行却只在 page_size>1 时按此分配，page_size=1 时行宽低于预留水位，release 静默 clamp。
+effect:
+  objects:
+  - KV状态
+  - 性能/资源
+  - 跨请求/跨样本数据
+  detail: DSPARK gamma=16 等大 draft、请求接近 context 边界时，行写入溢出到邻居请求的行，溢出 tail slot 永不释放，KV slot 渐进泄漏、资源耗尽，并有跨请求损坏风险；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用；DSPARK/DFLASH spec v2 + page_size=1 + 大 gamma
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-07'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/33579
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（DSPARK/DFLASH spec v2 page_size=1 req_to_token 行过窄 → context 边界静默 KV slot 泄漏） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: DFLASH-family spec v2（含 DSPARK）每 decode step reserve `committed + 2*num_draft_tokens` KV slot（2x 是 overlap-mode double buffer），但 `req_to_token` 行仅在 `page_size>1` 时按此宽度分配。`page_size=1` 时行宽 `context_len + 4 + num_draft_tokens` 小于 reserve 水位。DSPARK gamma=16（`num_draft_tokens=17`）：行 headroom=21，per-step reserve 超 committed=34。请求接近 context 边界时（`committed > context_len-13`）：行写入溢出到**邻居请求的行**，release slice 静默 clamp 到行尾 → 溢出 tail slot 永不释放（KV slot 泄漏）。
+  source: 'SGLang #33579（2026-08-04 open）。DSPARK/DFLASH spec v2 + page_size=1 + gamma=16。https://github.com/sgl-project/sglang/issues/33579'
+  behavior: 无 crash、无 NaN。KV slot 泄漏（渐进式资源耗尽）+ 溢出到邻居请求行（潜在跨请求损坏）。属「推测解码 reserve 与 page_size=1 行宽不匹配」**新子签名**。
+  trigger_surface: SGLang 专用；DSPARK/DFLASH spec v2 + page_size=1 + 大 gamma
+  discovery: 2026-08-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

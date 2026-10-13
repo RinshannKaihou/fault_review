@@ -1,0 +1,54 @@
+id: TRN-0097
+legacy_ids:
+- DATA.15
+slug: sparse_attn_window_crosses_packed_document_boundary
+aliases: []
+title: torchtitan DSV4 稀疏注意力窗口跨越 packed 文档边界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: torchtitan
+    component: DSV4 get_attention_masks
+  behavior: DSV4 重写的 get_attention_masks() 丢弃 positions、padding 与文档边界元数据，按整条扁平 token 流的偏移构建 sparse attention 窗口，无视 position id 重置。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 隐状态
+  detail: 无 crash，packed 训练中第二文档首 token（query 64）可 attend 第一文档末 token（key 63），文档隔离静默失效；CPU 复现中 DSV4 mask 为 True、共享 mask 为 False，对训练 loss 的影响未量化。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/4801
+  kind: github_issue
+relations: []
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `pretrain/sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: torchtitan DeepSeek V4 [重写 `get_attention_masks()`](https://github.com/pytorch/torchtitan/blob/6c2dadbb3109998092d1164e990c6377b2b8fb50/torchtitan/models/deepseek_v4/model.py#L222-L232) 时**丢弃 positions、padding 与文档边界元数据**，sparse attention 窗口从**整条扁平 token 流的偏移**构建——position id 重置（文档边界信号）被无视，query 64（第二文档 position 0）允许 attend key 63（第一文档末 token）。共享 decoder 把 position 重置当文档边界处理，DSV4 override 破坏该契约；报告者指明只修 sliding window 不够（compressed-KV 与 indexer 行为同样未验）。
+  source: 'torchtitan #4801（2026-09-20；CPU 复现调真实 mask hook 构建实际 block mask：`DSV4 sparse mask: True` vs `shared packed-document mask: False` + 单文档对照 True；TorchTitan `6c2dadb`、PyTorch 2.12.0+cpu；未量化训练 loss 影响）。https://github.com/pytorch/torchtitan/issues/4801'
+  behavior: 无 crash——packing 文档隔离静默失效，跨文档注意力泄漏（DATA.02 的模型架构侧实例）；修复回归还应检查「改一条文档、另一条文档输出不变」。与 DATA.02（packing mask 未按文档边界切断）同族同现象，差异在断点位于**模型侧 mask hook override** 而非数据管线 mask 构造；与 DATA.06（padding-free 边界合并序列）互补：那边序列粘连、这边窗口越界；与 DATA.13（wrapper 签名探测丢 packed 边界能力 → cu_seqlens 丢失）共享「packed 几何元数据在某层被静默丢弃」病根。tianyu-l 09-21 已 cc 维护者（@drisspg @floatingtrees）。
+  discovery: 2026-09-23 每日扫描
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

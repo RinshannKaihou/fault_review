@@ -1,0 +1,54 @@
+id: INF-0888
+legacy_ids:
+- '9.5'
+slug: bf16_rope_precision_breakdown
+aliases: []
+title: BF16 计算 RoPE sin/cos 在长序列下精度崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: 通用
+    component: RoPE cos/sin/inv_freq 精度
+  behavior: RoPE 的 cos/sin/inv_freq 以 BF16 计算/存储，位置 m 很大且落在某些频率带时精度不足，连续若干位置映射到同一数值，误差沿序列累积
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 受长度与 dtype 双重门控：短序列或 fp32 下完全正常，长序列 + bf16 下劣化，表现为重复和位置信息丢失；扰动随位置索引增大
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: RoPE 相关配置
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2411.13476
+  kind: arxiv
+relations:
+- kind: var
+  target: INF-0765
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off` · Cov: `var:7.88` · 触发 `config` · 置信度 `verified`'
+  mechanism: RoPE 角度 theta_i = m*omega_i；当位置 m 很大且落在某些频率带时，用 BF16 计算/存储的 sin/cos 会损失精度，以至于连续的若干个位置映射到同一个数值。误差沿序列累积。官方修复是把 cos/sin/inv_freq 全部在 fp32 下计算。
+  source: 'Wang et al., "When Precision Meets Position", arXiv:2411.13476 (AnchorContext)。gpt-neox #1003；transformers #25681。'
+  behavior: 长度与 dtype 双重条件化的退化：短序列或 fp32 下完全正常，长序列 + bf16 下劣化，表现为重复、位置信息丢失。
+  trigger_surface: RoPE 相关配置
+  signature: off-manifold，但受长度与 dtype 门控：签名是局限在施加了 rotary 的 q/k 上的、类似量化噪声底的扰动，且随位置索引增长而变大。**在本项目的 fp32 设置下该故障默认是不存在的**——这使它成为一个很好的主动注入候选：故意把 RoPE 的 cos/sin 表下采样到 bf16。检测上需要按位置索引分层的 statistical/trajectory 度量；对整段序列求平均的度量会被前半段的健康位置稀释而漏检。
+  repro: 把 rotary embedding 的 cos/sin 查找表（或 inv_freq）显式 downcast 到 bf16 再 upcast 回 fp32，即可在纯 fp32 环境中重建该精度崩塌。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

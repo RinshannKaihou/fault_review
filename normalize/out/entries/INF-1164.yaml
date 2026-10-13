@@ -1,0 +1,60 @@
+id: INF-1164
+legacy_ids:
+- '12.48'
+slug: vllm_mimo_v2_mtp_loader_drops_fp8_kv_scales_draft_falls_back_unit_scale
+aliases: []
+title: vLLM MiMoV2 MTP 加载丢弃 FP8 KV scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: MiMoV2MTP KV scale 加载
+  behavior: MiMoV2MTP.load_weights 缺 KV scale 名映射：融合名、ModelOpt 分投影名、.kv_scale 三种命名下 FP8 KV scale 均被跳过，保持 −1.0 后重置为 1.0。
+effect:
+  objects:
+  - KV状态
+  - 性能/资源
+  detail: 带 fp8 KV scale 的 MiMo-V2 MTP 每个 draft 层以 unit scale 量化/反量化 cache，输出有限、无报错，接受率/输出质量静默退化，唯一痕迹是易被误读为 checkpoint 问题的启动 warning；主模型 loader 正确。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + MiMo-V2(+Omni) MTP + fp8 KV scale checkpoint（config）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/60333
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_compressed_tensors_kv_scale_dropped
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（vLLM `MiMoV2MTP.load_weights` 在三种命名族下全部丢弃 FP8 KV cache scale（llm-compressor 融合名 `qkv_proj.k_scale` 命不中 guard 落到裸 `continue`；ModelOpt per-projection 名被 stacked mapping 改写后同样失配；deprecated `.kv_scale` 直落）——scale 保持 −1.0 哨兵、`process_weights_after_loading` 重置 1.0，**每个 draft 层以 unit scale 量化/反量化 cache**，输出有限、唯一痕迹是可被误读为 checkpoint 问题的启动 warning。主模型两变体（Flash 手写 loader 调 `maybe_remap_kv_scale_name` / Pro 走 AutoWeightsLoader+mapper）均正确——MTP draft 是缺口。CPU harness 逐字运行 loader（commit 41cffa9af0，合成 checkpoint k_scale=12.5）验证） · Cov: `var:vllm_compressed_tensors_kv_scale_dropped`（7.52 KV scale 丢弃族——本条在 **MTP draft 加载器缺 mapper**维度） · 触发 `config` · 置信度 `documented`'
+  mechanism: '#43167 把 mapper 集中进 AutoWeightsLoader 时，手写 loader 的 MiMoV2MTP（#40967/#41905 进入）从未有过 scale 处理。'
+  source: 'vLLM #60333（2026-10-07 open，三命名族机制+CPU harness）。https://github.com/vllm-project/vllm/issues/60333'
+  behavior: 无 crash——spec draft 的 fp8 KV 以错误 scale 运行，接受率/输出质量静默退化。
+  trigger_surface: vLLM + MiMo-V2(+Omni) MTP + fp8 KV scale checkpoint（config）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: cause.subsystem 维持 量化：丢失的是 FP8 KV cache scale，缺陷只出现在 fp8 KV 量化 scale 的加载路径上（rules 功能域优先；Cov 归 7.52 KV scale 丢弃族）。visibility 维持 质量退化：原文“接受率/输出质量静默退化”，接受率为可观测指标。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

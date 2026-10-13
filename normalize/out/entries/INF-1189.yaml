@@ -1,0 +1,60 @@
+id: INF-1189
+legacy_ids:
+- '13.21'
+slug: vllm_gemma4_moe_v1_model_runner_mtp_dimension_mismatch
+aliases: []
+title: Gemma 4 MoE 回退 V1 后 MTP drafter 输入维度错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: Gemma4 MTP drafter 输入
+  behavior: MoE 变体回退 V1 runner，其路径给 MTP drafter 喂 backbone_hidden+draft_hidden（3840），而 pre_projection 需 2×backbone_hidden（5632）。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 以 MTP drafting 部署 Gemma 4 MoE（26B A4B）时，Dynamo fake tensor 调用抛 reduction dim 不匹配的 RuntimeError（[s47, 3840] × [5632, 1024]），engine 初始化失败。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；Gemma 4 MoE（26B A4B）+ MTP drafting
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51493
+  kind: github_pr
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（Gemma 4 MoE 回退 V1 model runner→MTP drafter 被喂错误输入维度→reduction dim mismatch→engine init 失败） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 'Gemma 4 dense 变体通过 `_is_default_v2_model_runner_model` 的 `not is_moe` 分支获得 V2 model runner，但 MoE 变体（26B A4B）回退 V1。V1 path 给 Gemma4 MTP drafter 喂错误输入维度：checkpoint `pre_projection.weight` = `[1024, 5632]` = `2 * backbone_hidden(2816)`，模型定义 `pre_projection = ColumnParallelLinear(2 * backbone_hidden_size, hidden_size, ...)`。但 V1 path 喂 `backbone_hidden + draft_hidden = 2816 + 1024 = 3840` → `RuntimeError: a and b must have same reduction dim, but got [s47, 3840] X [5632, 1024]`（Dynamo fake tensor call 失败）。'
+  source: 'vLLM #51493（2026-08-08 open）。组件 `_is_default_v2_model_runner_model` / Gemma4 MTP drafter。https://github.com/vllm-project/vllm/pull/51493'
+  behavior: crash（engine init 失败，TorchRuntimeError at Dynamo fake tensor call）。属「MoE 变体的 model runner 选择回退→MTP drafter 维度不匹配」**新子签名**——架构变体 dispatch 逻辑与 MTP 集成的交互 bug。
+  trigger_surface: vLLM；Gemma 4 MoE（26B A4B）+ MTP drafting
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：分类与独立判断一致（缺陷在 V1 路径给 MTP drafter 的输入构造，专属推测解码路径，rules 功能域优先归 解码/采样）；维度 3840/5632/[1024,5632]、26B A4B、Dynamo fake tensor 报错均见原文。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 运行时/执行
+        status: unanimous

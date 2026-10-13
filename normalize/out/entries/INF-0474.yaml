@@ -1,0 +1,50 @@
+id: INF-0474
+legacy_ids:
+- '6.81'
+slug: vllm_deepgemm_paged_mqa_metadata_oob_zero_seq_lens
+aliases: []
+title: vLLM DeepGEMM paged-MQA 全零 seq_lens 越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: indexer metadata 输入
+  behavior: indexer metadata 把 dummy seq_lens(=1) 除以 compress_ratio(=4) 得全零长度；DeepGEMM SM90 paged-MQA 调度在全零且 batch 为 32 倍数时越界读
+effect:
+  objects:
+  - 可用性/进度
+  detail: 仅 compress_ratio=4 的 DeepSeek-V4-Flash 受影响：FULL cudagraph 捕获（capture size 总是 32 的倍数）时出现 CUDA illegal memory access，engine 崩溃；4× GH200 复现。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；DeepSeek-V4-Flash（compress_ratio=4）+ FULL cudagraph capture（dummy-batch seq_lens=1）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-12'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51972
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DeepGEMM paged-MQA metadata scheduler 在全零 seq_lens + batch_size 为 32 倍数时读越界） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: DeepSeek-V4-Flash 在 FULL cudagraph 捕获时 CUDA illegal memory access。indexer metadata builder 将 dummy-batch seq_lens（=1）除以 `compress_ratio`（V4-Flash=4）得**全零长度**，DeepGEMM SM90 paged-MQA metadata scheduler 在所有长度为零且 `batch_size` 为 32 的倍数时（capture size 总是）读 shared-memory prefix-sum 缓冲区越界一个元素。`compress_ratio=1` 的模型永不产生全零长度，所以仅 V4-Flash 受影响。PR clamp scheduler-metadata 输入最小为 1——schedule 是 work-distribution hint，logits kernel 从 true `context_lens` 重新推导 per-token work，所以 clamp 是 semantics-preserving。
+  source: 'vLLM #51972（2026-08-12 open PR），修复 issue #51970。组件 DeepGEMM paged-MQA metadata kernel。4× GH200。https://github.com/vllm-project/vllm/pull/51972'
+  behavior: FULL cudagraph 捕获时 CUDA illegal memory access → engine crash。属「metadata builder 的整数除法产生全零→kernel 边界检查遗漏」**新子签名**——dummy-batch 的合成输入触发了真实 kernel 的 OOB。
+  trigger_surface: vLLM；DeepSeek-V4-Flash（compress_ratio=4）+ FULL cudagraph capture（dummy-batch seq_lens=1）
+  discovery: 2026-08-12 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

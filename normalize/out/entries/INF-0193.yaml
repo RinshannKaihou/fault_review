@@ -1,0 +1,51 @@
+id: INF-0193
+legacy_ids:
+- '1.194'
+slug: ttmetal_moreh_adam_bf16_hyperparameter_truncation_wrong_optimizer
+aliases: []
+title: moreh_adam/adamw 把超参截断到 bf16，实际运行的优化器不同
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: tt-metal
+    component: moreh_adam/adamw 超参投递
+  behavior: reader 以位截断（非转换）把 lr、beta1、beta2、eps、weight_decay 投递为 bf16 标量；adamw 的 EMA 系数用截断 beta 在设备上算，bias correction 却用宿主精确 beta。
+effect:
+  objects:
+  - 优化器状态
+  - 模型权重
+  detail: beta2=0.999 实际为 0.99609375，二阶矩视界从 1000 步塌到 256 步；beta2=0.9999 与 0.999 截断后位相同；精确算术 replay 中参数轨迹偏离 torch.optim.AdamW 34–44%，PCC 因尺度不变而察觉不到。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal moreh_adam/adamw + 默认 compute config（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55935
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`moreh_adam/moreh_adamw` 把全部 5 个超参（lr/beta1/beta2/eps/weight_decay）**截断到 bf16 再运算**：`beta2=0.999` 实际执行为 `0.99609375`——二阶矩平均视界 `1/(1−beta2)` 从 1,000 步塌缩到 256 步；`beta2=0.9999` 截断后与 0.999 **位相同**（源级 replay 两条轨迹 bit-identical）。`moreh_adamw` 还内部不一致：EMA 系数 `(1−beta)` 用截断 beta 在设备上算、bias correction 用宿主精确 beta 的 `pow`——**两套 beta 假设**，精确算术 replay 中参数轨迹偏离 torch.optim.AdamW 34–44%。PCC 对此结构性盲：错误 beta 主要 rescale 轨迹、PCC 尺度不变） · Cov: `NEW`（标量超参低精度截断改变优化器语义子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 'reader 经 `reader_moreh_adam.cpp#L13-L30` 以**位截断**（非转换）投递标量到设备——bf16 尾数 8 bit 决定了 0.999 最近的表示是 0.99609375。与 #46776（param_out 回写垃圾，正确标量也复现的 kernel bug）不相交。'
+  source: 'tt-metal #55935（2026-09-09 closed，$1000 bounty，含 V-horizon 分析、源级 replay 与 PCC 盲区论证）。https://github.com/tenstorrent/tt-metal/issues/55935'
+  behavior: 无 crash——**请求的优化器不是运行的优化器**：静默超参漂移（beta2 视界 1000→256 步）、语义上不同的设置不可区分、adamw 内部两套 beta 假设自相矛盾。非推理路径（训练/微调）故障但机制（标量以低精度位型投递后静默改变语义）对任何经设备标量传参的算子可迁移。
+  trigger_surface: tt-metal moreh_adam/adamw + 默认 compute config（hw_specific）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: INF-0223
+legacy_ids:
+- '1.224'
+slug: ttmetal_gather_rank5_independent_fold_operand_extents_divergence
+aliases: []
+title: ttnn.gather rank>4 两操作数独立折叠致取错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: gather ND→4D 折叠预处理
+  behavior: rank>4 时 input 与 index 各自按自身 extents 把 leading dims 折叠为 dim-0 线性 id，kernel 却把该 id 当共享坐标联合迭代；内部 leading dim 不等时两侧发散。
+effect:
+  objects:
+  - 数值结果
+  detail: rank>4 且 index 内部 leading dim 小于 input（host 校验允许的合法形状）时约半数输出元素静默错值，如 (2,3,4,5,64)×(2,2,4,5,64) 错 2556/5120；访问均在界内，无 assert 无 crash，形状与 dtype 正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal/ttnn + `ttnn.gather` + rank>4 + index 与 input 内部 leading dim 不等（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56880
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn `gather`（`data_movement/gather/gather.cpp:302-315`）对 rank>4 的 input 与 index 张量**各自独立**调用 `pre_gather_transform_tensor` → `reduction_common::transform_to_4d_tensor` → `squeeze_from_ND_to_4D`：用**各自 extents** 把 leading dims `[0..rank-4]` 合并为单个 dim-0 线性 id；而 device kernel 把该融合 id 当作两流之间**共享坐标**逐 stick 联合迭代。host 校验（`gather_device_operation.cpp:75-87`）明文允许 `index_shape[i] <= input_shape[i]`（i<dim-1）——**内部 leading dim 不等是合法输入**，此时两侧折叠发散、同一融合 id 在两张量中指向不同元素，gather 取回错值。Blackhole（main @ bef604f5d89，bf16 TILE 值 + uint32 TILE index）实测：`(2,3,4,5,64)`×`(2,2,4,5,64)` dim=-1 → **2556/5120（~50%）元素错**、rank-6 达 19178/23040；所有访问在界内、无 assert 无 crash。诊断矩阵：rank-4 从不折叠（0 错）、同形折叠一致（0 错）、仅最外层不等存活（0 错）——失败恰为内部 leading dim 不等的合法形状） · Cov: `NEW`（双操作数独立折叠 vs kernel 共享坐标假设错配子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: ND→4D 折叠用每张量自身 extents 计算线性 id，隐含"两操作数折叠后坐标系一致"假设；该假设仅在除最外层外 leading dims 全同时成立——恰好是 host 校验放行的输入域。kernel 的 stick 级联合寻址无法感知两侧坐标系已发散。
+  source: 'tt-metal #56880（2026-09-17 open，op_cat: TM，含 7 行形状×dim 失败/通过矩阵、元素级 mismatch 计数与修复建议（停止折叠：rank<4 补 1 维、rank≥4 直通））。https://github.com/tenstorrent/tt-metal/issues/56880'
+  behavior: '无 crash、无 assert——约半数输出元素静默错值（越界访问为零使 sanitizer/invariant 全盲），形状与 dtype 均正确；rank>4 且 index 内部 leading dim 小于 input 的"完全合法"调用必错。与 1.225（scatter 同族）构成同一根因的姊妹条目；修复模板同 #56875。'
+  trigger_surface: tt-metal/ttnn + `ttnn.gather` + rank>4 + index 与 input 内部 leading dim 不等（hw_specific）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

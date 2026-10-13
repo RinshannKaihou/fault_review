@@ -1,0 +1,58 @@
+id: TRN-0177
+legacy_ids:
+- LOSS.13
+slug: bypass_mode_token_mean_divides_by_prerejection_count
+aliases: []
+title: verl 拒采 bypass 模式 token-mean 分母用拒采前计数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: rollout_rs bypass 分母计数
+  behavior: bypass 模式逐 micro-batch mask 被拒 token，但 batch_num_tokens 在拒采前已算好，token-mean 下 loss 为 kept token loss 和除以拒采前 token 数。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: rollout_rs bypass + loss_agg_mode=token-mean 时 loss 与梯度按 kept 比例缩小（各 keep 7/8 时 0.3199 vs 正确 0.3656），有效学习率随拒绝率动态缩水，无任何指标可见；decoupled 模式不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/8176
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0173
+original:
+  category: LOSS
+  section: LOSS
+  meta: 'stage: `rl` · Cov: `var:dapo_family_gas_double_scaling` · 置信度 `verified`'
+  mechanism: 'verl rejection sampling bypass 模式（`rollout_rs`）在 policy loss 内按当前 log probs 逐 micro-batch mask 掉被拒 token，但引擎**早在拒采前**就把全局 batch token 数（`batch_num_tokens = loss_mask.sum()`，DP all-reduce）算好交给 `ppo_loss`；`loss_agg_mode="token-mean"` 下 policy loss = **kept token 的 loss 和 ÷ 拒采前 token 数**——被拒比例直接成为 loss 的隐形缩放因子。Decoupled 模式先改 `response_mask` 再计数、无此问题。修复（PR #8176）= bypass 模式按（拒采前/拒采后 kept）token 比例重缩放，计数跨 DP all-reduce。'
+  source: 'verl PR #8176（2026-10-09；CPU 回归测试：两个 micro-batch 各 keep 7/8 token，accumulated bypass loss 0.3199 vs 正确 token-mean 0.3656 = 恰 7/8；修复算术闭合）。https://github.com/verl-project/verl/pull/8176'
+  behavior: 无 crash——bypass 模式 + token-mean 下**有效学习率随拒采比例缩水**：拒绝率高（rollout-correction 门限紧、质量差的 batch）时梯度步子被同比缩小，拒绝率本身随训练动态变化 → 隐形的非平稳 LR 调制、无任何指标可见。与 LOSS.09（DAPO/CISPO 全局归一后再除 G）同族「**token 计数分母与 mask 后真值不一致**」：那边 Trainer 层再除 G、这边引擎层过早计数；与 RL-RO.20（rollout-correction 拒绝门限使梯度恒 0）同路径互补：那边全拒断流、这边部分拒缩流。截至 2026-10-10 open。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '维持 RL训练回路：rule1 功能域优先，缺陷只出现在拒采（重要性采样修正）bypass 模式路径上，decoupled 模式不受影响，修复（PR #8176）也限于 bypass 模式；与 TRN-0173 同口径。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

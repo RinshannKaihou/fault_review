@@ -1,0 +1,55 @@
+id: INF-1131
+legacy_ids:
+- '12.15'
+slug: sglang_update_weights_from_disk_silent_weight_drop
+aliases: []
+title: SGLang 热更新报成功却漏载 VAE buffer 与文本编码器
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: sglang
+    component: update_weights_from_disk
+  behavior: named_parameters() 排除 buffer，VAE BatchNorm buffer 从未加载；text encoder 走通用名称映射，不能去 model. 前缀或融合 q/k/v，实际未加载；API 无异常即算更新成功。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: diffusion 模型调用 update_weights_from_disk 报告成功、无错误；VAE 沿用过期 latent 归一化统计，text encoder 仍为旧权重，输出质量不可预测地退化。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；`update_weights_from_disk` + diffusion 模型（VAE + text encoder）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-12'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33588
+  kind: github_pr
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（update_weights_from_disk 报告成功但丢弃 VAE buffers + text encoder 权重） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'SGLang `update_weights_from_disk` 报告成功但实际**静默丢弃权重**：(a) VAE BatchNorm buffers 从未加载——`named_parameters()` 排除 buffers，留下过期的 latent 归一化统计，scale 每次 decode；(b) text encoders 走通用 name-mapping 路径，无法 strip `model.` 前缀或 fuse q/k/v，所以无权重实际加载；(c) API 只要无异常就计模块为已更新，所有这些都不可见。修复加 `named_buffers()`、专用 TextEncoder 路径（materialising layerwise-offloaded encoders first）、per-module loaded count 报告并对零值 warn。已知限制：FSDP-sharded text encoders 仍被跳过（`load_weights` 在 `shard_model()` 之前运行，无 DTensor 分支），现在显示为 `text_encoder: 0` 而非静默。'
+  source: 'SGLang #33588（2026-08-12 open PR）。组件 `update_weights_from_disk` / diffusion model weight update。https://github.com/sgl-project/sglang/pull/33588'
+  behavior: 无 crash、无 error。权重静默丢弃——VAE 用过期归一化、text encoder 权重未更新→输出质量不可预测退化。属「权重更新 API 的成功语义过弱（无异常=成功）+ 参数/buffer 加载路径不完整」**新子签名**——热更新路径的完整性验证缺失。
+  trigger_surface: SGLang；`update_weights_from_disk` + diffusion 模型（VAE + text encoder）
+  discovery: |-
+    2026-08-12 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

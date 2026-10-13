@@ -1,0 +1,51 @@
+id: INF-0894
+legacy_ids:
+- '9.11'
+slug: sglang_rope_flat_kernel_pow2_padding_column_overwrite
+aliases: []
+title: SGLang flat RoPE 内核缺列掩码，越界覆写相邻 head
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: sglang
+    component: flat RoPE Triton 内核列掩码
+  behavior: flat RoPE 内核按 next_pow2(rope_dim) 遍历列且 load/store 只带行掩码；rope_dim 非二次幂时 padding 列被旋转并 in-place 写入下一个 head，末行越过 tensor 末端。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: rope_dim 非二次幂的模型配置（deepseek_v4 rope flat kernel）下无 crash，相邻 head 的 RoPE 输入被部分旋转两次，注意力模式静默错误；tensor 末端越界写是潜伏的内存破坏。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；deepseek_v4 rope flat kernel + rope_dim 非二次幂的模型配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-17'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35096
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（flat RoPE Triton 内核 RD=next_pow2(rope_dim) 且只带 row mask：padding 列被旋转并 in-place 覆写相邻 head 数据，末行越过 tensor 末端） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`apply_rotary_emb_triton` 三选一中的 `apply_rotary_emb_flat_kernel` 以 `RD = max(next_power_of_2(rope_dim), 2)` 起核并遍历 `d = tl.arange(0, RD)`，但 load（:225）与 store（:254）只带 row mask `rmask[:, None]`、无列 mask（另两个内核都有 `offs_pair < rope_dim//2` / `pair < rope_dim//2` 列掩码）。rope_dim 非二次幂时 `rope_dim..RD-1` 列被读出、旋转、写回——内核 in-place 运行，越界写落到**下一个 head 的数据**，最后一行越过 tensor 末端（cos/sin 载入同形）。'
+  source: 'SGLang #35096（2026-08-16 open，`python/sglang/kernels/ops/attention/deepseek_v4_rope.py`）。https://github.com/sgl-project/sglang/issues/35096'
+  behavior: 无 crash（越界写幅度小、多数情形不触发 fault）。相邻 head 的 RoPE 输入被部分旋转两次 → 注意力模式静默错误；tensor 末端越界写是潜伏的内存破坏。属「幂取整 padding 列未掩码 × in-place 越界写」**新子签名**（mask 完备性按内核变体而非 op 粒度审查的教训）。
+  trigger_surface: SGLang；deepseek_v4 rope flat kernel + rope_dim 非二次幂的模型配置
+  discovery: 2026-08-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

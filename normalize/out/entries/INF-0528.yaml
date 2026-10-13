@@ -1,0 +1,52 @@
+id: INF-0528
+legacy_ids:
+- '6.135'
+slug: vllm_scheduler_deferred_wedge_healthy_engine
+aliases: []
+title: vLLM scheduler deferred 计数泄漏致准入永久停止
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: v1 scheduler 准入计数
+  behavior: 准入计数把 skipped_waiting（deferred）请求与 running 一起计入 max_num_seqs 上限；deferred 请求被跳过后既不释放名额也不被重排，计数永久钉在上限。
+effect:
+  objects:
+  - 可用性/进度
+  detail: deferred 请求累积至 max_num_seqs 后新请求不再被接纳（排队堆积或超时），而进程、指标、健康检查正常、KV cache 大量空闲，仅重启可恢复；无需特殊模型，#53868 在 CPU offload TP=2 下独立复现。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM v1 scheduler；deferred/skipped_waiting 请求累积至 max_num_seqs（无需特殊模型）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53130
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/53868
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（scheduler 在 running + skipped_waiting 达 max_num_seqs 后永久停止准入——引擎健康、KV cache 大量空闲、不再接收新请求，仅重启可恢复） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: vLLM v1 scheduler 的准入计数把 `skipped_waiting`（"deferred"）请求与 running 一起计入 `max_num_seqs` 上限。deferred 请求因条件不满足被跳过后**既不释放名额也不被重排**，计数永久钉在上限；此后 scheduler 停止准入任何新请求。引擎本身健康（健康检查通过、KV cache 大量空闲、无 OOM），形成"活着但不服务"的僵尸状态，仅重启恢复。
+  source: 'vLLM #53130（2026-08-20 open，bug/scheduler label，PyTorch 2.13.0+cu130，附环境与复现描述）。https://github.com/vllm-project/vllm/issues/53130 ；独立复现补充：vLLM #53868（2026-08-26 open，SimpleCPUOffloadConnector eager TP=2 夜版 dev1214 wedged at Running:0/Waiting:3（1 capacity + 2 deferred），附 wedged 态 py-spy 栈与 /metrics——#45406 stranding 族的又一生产数据点）。https://github.com/vllm-project/vllm/issues/53868'
+  behavior: 无 crash。服务**静默降级为拒绝服务**：新请求不再被接纳（排队堆积或超时），但进程、指标、健康检查全部正常。属「scheduler 准入状态机 wedge」新子签名——服务栈活性盲区（C.6）又一实证：与 6.x 既有 GDN 大图准入 wedge（3047 行）不同，本条由 **deferred 计数泄漏**（状态机计数不回收）驱动，无模型特殊性，任何负载下可积聚。
+  trigger_surface: vLLM v1 scheduler；deferred/skipped_waiting 请求累积至 max_num_seqs（无需特殊模型）
+  discovery: 2026-08-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

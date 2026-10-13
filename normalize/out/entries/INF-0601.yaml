@@ -1,0 +1,57 @@
+id: INF-0601
+legacy_ids:
+- '6.208'
+slug: sglang_b12x_w4a8_arena_launcher_value_vs_aggregate_prefill_undersize
+aliases: []
+title: SGLang B12X arena 定容小于聚合 prefill 需求
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: B12X W4A8 共享 arena 定容
+  behavior: W4A8 共享 arena 按 launcher 的 token 值与 sparse decode/幂次阶梯定容，未计入 scheduler 聚合 prefill 与多模态 span 对齐过冲，准入请求所需 workspace 超出预留。
+effect:
+  objects:
+  - 可用性/进度
+  detail: B12X Vision 分支在首批聚合 prefill 时运行期双 rank 终止，启动自检干净；实测 launcher 供 8,192 行而聚合 prefill 准入 16,384 行，一请求需 412,183,756 B 仅预留 400,008,864 B。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + B12X Vision + W4A8 + 聚合 prefill 超静态假设 / DSV4 Vision 图像 span 边界（other_stack：SGLang；负载模式触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38235
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0529
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（B12X Vision 分支的共享 W4A8 arena 由 launcher 拥有的 token 值 + sparse decode/幂次阶梯定容，而 SGLang 可把 prefill 聚合到超过 per-request chunk、DSV4 Vision 可把切点移到不可分图像 span 末尾——被合法准入的请求可选出需要超过预留 workspace 的 B12X 计划：实测 launcher 供 8,192 行而聚合 prefill 准入 16,384 行，一请求需 412,183,756 B 仅预留 400,008,864 B，双 rank 终止） · Cov: `var:vllm_hidden_states_kv_budget_overestimate_startup_reject`（6.136 容量契约域） · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 容量契约的所有权错位：scratch 大小由 launcher 的静态值推导，而真实需求由 scheduler 聚合行为（aggregate prefill + 多模态对齐过冲 + decode graph/running 上限 + spec 宽度）决定。修复从 scheduler 合同解析单一最大 MoE 行契约（16,767 行 = 16,384 聚合 + 383 vision 过冲），多模态处理器须声明最大前向过冲（未知者 fail-closed），逐精确准入行数用 `B12X required_nbytes` 定容 + bind 前检查活字节数。
+  source: 'SGLang PR #38235（2026-09-06，deepseek label，2×DGX Spark 实测崩溃数字与修复后双节点全功能验证）。https://github.com/sgl-project/sglang/pull/38235'
+  behavior: 运行期双 rank 终止（fail-loud 但在首批聚合 prefill 才显形——启动自检干净）。「容量契约与准入逻辑分属两个所有者」是 6.136/5.33 之后容量记账域第三例：本条是 **scratch/arena 维度**（前两条是 KV 池维度），且多模态对齐过冲是新的需求侧来源。
+  trigger_surface: SGLang + B12X Vision + W4A8 + 聚合 prefill 超静态假设 / DSV4 Vision 图像 span 边界（other_stack：SGLang；负载模式触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: 调度/服务
+        status: panel7

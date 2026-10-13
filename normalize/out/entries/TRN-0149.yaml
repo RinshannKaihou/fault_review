@@ -1,0 +1,59 @@
+id: TRN-0149
+legacy_ids:
+- KER.18
+slug: module_cast_silently_converts_purpose_built_buffers
+aliases: []
+title: torchtitan module.to() 静默转型专用 buffer
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: torchtitan
+    component: 模型自有浮点 buffer 的 dtype 保护
+  behavior: nn.Module.to(dtype) 等把浮点 buffer 连同参数一起转型，而 RoPE cache、inv_freq、MoE 专家计数/偏置等 buffer 是刻意按固定 dtype 构建的 cache/累加器，转型无保护。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 调用 .to(bf16) 等后触发：ComplexRoPE 只留实部（仅一条 UserWarning），CosSinRoPE/inv_freq 被 round 无警告，q·k spread 由 2.3e-3 升到 24.6；MoE 每专家计数超 256 后不再精确，负载均衡 bias 更新读错数据。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/5153
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0017
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `pretrain/shared` · Cov: `var:bf16_token_count_rounding_flips_bias_sign` · 置信度 `documented`'
+  mechanism: '`nn.Module.to(dtype)` / `.half()` / `.bfloat16()` 会把**浮点 buffer 连同参数一起转型**，而 torchtitan 模型中每个浮点 buffer 都是**刻意以固定 dtype 构建**的 cache/累加器（`_init_self_buffers` 每次按该 dtype 重建）：`ComplexRoPE`（complex64 cache）被 cast 到 bf16 只留实部（唯一信号是一条去重的 `UserWarning`）；`CosSinRoPE`/`MRoPE` 与视觉编码器 `inv_freq`（fp32 cache）被 round、**无任何警告**；MoE `tokens_per_expert_E`/`expert_bias_E`/`AuxLoss.instance_acc`（fp32 累加器）转 bf16 后 `tokens_per_expert_E` 超 256/专家即停止精确计数、load-balance bias 更新直接读它。修复（PR #5153）= `Module._apply` 保留各模块自有 buffer 的原 dtype（参数照常转型）。实测 `q·k` spread（8192-token cache、offset 1 逐位置）：ComplexRoPE fp32 2.3e-3 → cast 后 24.6、CosSinRoPE 2.9e-3 → 0.17。'
+  source: 'torchtitan PR #5153（2026-10-08；A100 上 19 例对 FP64 参照验证 + spread 量化表；覆盖 torchtitan 全部 debug model）。https://github.com/pytorch/torchtitan/pull/5153'
+  behavior: 静默错值三类——RoPE 位置编码依赖绝对位置（attention score 随位置漂移）、inv_freq 精度损失、**MoE 专家计数冻结在 bf16 粒度**（>256 停止区分）使负载均衡 bias 更新读错数据。与 NUM.08（Megatron expert token 计数 float buffer 被 Float16Module 转 BF16）为**跨栈同机制正面对应**：那边是框架精度包装器在 cast、这边是用户/框架层 `module.to()` 调用，打击同一个「累加器 buffer 被混精 cast」失效面——故 `var:`。截至 2026-10-10 open。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+        status: unanimous

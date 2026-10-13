@@ -1,0 +1,53 @@
+id: INF-1060
+legacy_ids:
+- '11.37'
+slug: vllm_spec_decode_structured_output_commit_before_grammar_validation
+aliases: []
+title: vLLM 推测解码在 grammar 校验前提交 token 破坏结构化输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: scheduler 推测 token 提交
+  behavior: scheduler 在 StructuredOutputGrammar.accept_tokens() 校验 accepted block 之前就把它追加进请求历史，破坏历史与 grammar 状态沿同一最长合法前缀推进的提交不变量。
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: 推测解码 + 结构化输出在推理结束延迟激活 grammar 或 grammar 状态迁移边界处，请求历史与 grammar 状态失同步，输出可违反 schema，被拒后缀无法重新采样，表现为卡死或非法 JSON；DS4-Flash 复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；推测解码 + structured outputs（grammar/JSON schema）+ 延迟 grammar 激活或状态转换边界
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52452
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（scheduler 在 grammar 校验前把 accepted block 提交进请求历史 → 结构化输出不变量破坏） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '推测解码 + 结构化输出（JSON schema / grammar）必须满足提交不变量：请求历史与 grammar 状态沿**同一最长语法合法前缀**推进，被拒后缀保持可重新调度。`main@ac2ae879` 的 scheduler 却在 `StructuredOutputGrammar.accept_tokens()` 校验 accepted block **之前**就把它追加进请求历史。前瞻 grammar mask 降低非法 token 概率但无法在 accepted block 跨越两类状态转换时维持不变量：(1) 推理结束时的延迟 grammar 激活；(2) grammar 状态迁移边界。修复（PR #52452）在 commit 前先校验 accepted blocks。'
+  source: 'vLLM PR #52452（2026-08-15 open，fixes #43338）。DS4-Flash 复现。https://github.com/vllm-project/vllm/pull/52452'
+  behavior: 结构化输出请求在特定状态转换点上**历史与 grammar 状态失同步**——输出可违反 schema 且被拒绝后缀不可恢复重采样（卡死或非法 JSON）。属「spec-decode 提交时序 × grammar 状态机转换」**新子签名**。
+  trigger_surface: vLLM；推测解码 + structured outputs（grammar/JSON schema）+ 延迟 grammar 激活或状态转换边界
+  discovery: |-
+    2026-08-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,57 @@
+id: INF-0735
+legacy_ids:
+- '7.62'
+slug: sglang_gptq_marlin_moe_bf16_scale_dtype_and_tp_descact_w2_sharding_nan
+aliases: []
+title: SGLang GPTQ Marlin MoE scale dtype 与分片错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: GPTQ Marlin MoE scales 加载
+  behavior: (1) w13/w2 scales 恒按 float16 分配，不跟随 params_dtype；(2) desc_act=True 且 TP>1 时每 rank 需完整 w2 scale 表，现逻辑却加载 TP 分片版本。
+effect:
+  objects:
+  - 输出分布
+  - 数值结果
+  - 可用性/进度
+  detail: BF16 模型下 Marlin MoE kernel 因 hidden_states 与 scale dtype 失配断言 crash；act-order × TP 下反量化读到错位 scale 产生 NaN 并传到 logits，采样器报 inf/nan 错误。RTX 4090×2 TP2 复现。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GPTQ Marlin MoE + BF16 `params_dtype` 或 `desc_act=True` × TP>1（config 组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36822
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（GPTQ Marlin MoE 服务 BF16 模型 + 张量并行两个正确性缺陷：(1) `w13_scales`/`w2_scales` 恒按 `torch.float16` 分配而非跟随 `params_dtype`——BF16 hidden_states 与 fp16 scales dtype 失配触发内核断言；(2) `desc_act=True` + TP 下每个 rank 需要**完整** `w2` scale 表，现逻辑却分配/加载 TP-sharded 版本——无效 scale 把 NaN 传播到输出 logits） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '缺陷 (1) 使 Marlin MoE kernel 直接 assert `hidden_states.dtype(bf16) == w1_scale.dtype(fp16)` 失败（loud 失败形态）；缺陷 (2) 在 act-order 启用时每 rank 只持有 1/TP 的 w2 scale 表，Marlin 反量化读越界/错位 scale 产生 NaN → 采样器报 `probability tensor contains either inf, nan or element < 0` 或 `NaN detected! sampler: next_token_logits`。修复见 PR #35955：scales 跟随 `params_dtype`；`desc_act=True` 时全表加载、否则本 rank 分片。RTX 4090 ×2 TP2 复现。'
+  source: 'SGLang #36822（2026-08-28 open，4090×2 TP2、laser-dolphin-mixtral GPTQ，含两种失败形态与修复 PR）。https://github.com/sgl-project/sglang/issues/36822'
+  behavior: 双形态——dtype 断言 **crash**（加载/首 forward 期 loud），或 act-order × TP 路径 **NaN 传播至 logits** 使采样崩溃/输出 NaN。属「**量化 scale 张量的 dtype 硬编码 + act-order 语义下的分片策略错配**」复合子签名：与 5.3（tp_marlin_gibberish，TP shard-split 错误 partial result）同 GPTQ-Marlin × TP 域，但本条 locus 在 scale 元数据而非 GEMM partial。
+  trigger_surface: SGLang + GPTQ Marlin MoE + BF16 `params_dtype` 或 `desc_act=True` × TP>1（config 组合即触发）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 数值结果
+        to: 输出分布
+        status: unanimous

@@ -1,0 +1,54 @@
+id: INF-0550
+legacy_ids:
+- '6.157'
+slug: vllm_kv_offload_finished_request_unwritten_final_slot_cross_request_poisoning
+aliases: []
+title: vLLM KV offload 水位线含未写入末槽致跨请求 KV 投毒
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV offload 完成请求存储水位线
+  behavior: 正常完成分支用 req.num_tokens 作存储水位线（中止分支正确），含从未被 forward 写入的末位 KV slot；offload_prompt_only=False 时不 clamp，块对齐时该块按内容 hash 存为完整。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: offload_prompt_only=False 且请求结束恰在 block 边界（约 1/block_size）时，后续同内容请求（如多轮重发 transcript）命中该块，末槽为 stale/未初始化 KV，推测解码下为被拒 draft 的 KV、看似合法；无 crash，续写质量静默退化。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + KV offload connector + `offload_prompt_only=False` + 请求结束恰逢 block 边界（~1/block_size，规模化下常规）+ 多轮内容复用（config 组合 + 概率性边界）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54193
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（KV offloading connector 在请求完成时把 store watermark 记为 `req.num_tokens`——包含**最后一个被采样的 token，而该位置的 KV slot 从未被任何 forward 写入**；`offload_prompt_only=False` 下若结束恰落在 block 边界，该 block 以内容 hash 存为"完整"，后续命中同一内容请求加载到末槽为垃圾/stale 的 KV——静默跨请求 KV 投毒：无 crash、无错误，仅持续退化） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py` 的 per-step store-jobs walk 中，`FINISHED_ABORTED` 分支用 `num_computed_tokens`（正确），而正常完成分支用 `req.num_tokens`——位置 `n-1`（EOS/stop token）的 KV slot 只被采样、从未 forward：普通 decode 下持有 stale/未初始化值，**推测解码下持有第一个被拒 draft token 的 KV（in-distribution，肉眼检查缓存都看不出异常）**。`offload_prompt_only=False` 使 `_calc_num_offloadable_tokens` 不 clamp 到 prompt，block 对齐时最后一块按 token-ids hash（全合法）存入并命中。多轮对话重发全 transcript（采样出的 stop token 是 assistant 消息一部分）即标准触发路径。默认 `offload_prompt_only=True` 时 clamp 使 bug 潜伏。'
+  source: 'vLLM #54193（2026-08-28 open，scheduler 纯逻辑、后端无关，含代码定位与触发条件分析）。https://github.com/vllm-project/vllm/issues/54193'
+  behavior: '**无 crash、无错误**——被投毒的 slot 是整块 KV 中一个 token 的份额，检索式测试难以命中；多轮/共享 transcript 场景续写质量静默退化。属「**水位线含未计算槽位 × 内容寻址缓存 = 跨请求投毒**」新子签名：与 6.1（APC 脏块 hash）同在内容寻址复用域，但本条污染源是**从未写入的槽**而非 stale 复用，且推测解码使投毒值伪装成合法分布。'
+  trigger_surface: vLLM + KV offload connector + `offload_prompt_only=False` + 请求结束恰逢 block 边界（~1/block_size，规模化下常规）+ 多轮内容复用（config 组合 + 概率性边界）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

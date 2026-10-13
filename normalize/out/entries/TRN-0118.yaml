@@ -1,0 +1,53 @@
+id: TRN-0118
+legacy_ids:
+- OPT.18
+slug: gdn_shared_out_norm_missing_tp_grad_sum
+aliases: []
+title: Megatron GDN out_norm 在 SP 关闭时漏做 TP 梯度求和
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: GDN out_norm TP 梯度求和
+  behavior: GDN 的 out_norm 是作用于所有 TP 切分 head 的共享向量；finalize_model_grads 只在 SP 开启或名含 q/k_layernorm 时做 TP 梯度求和，SP 关时它从不 all-reduce。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: GDN + TP>1 + SP 关时各 TP 副本只持部分和，out_norm 权重自第一步起确定性分叉并偏小（20 步 Adam 后两副本差 0.0039）；无 crash、无 NaN，下游 loss 无即时信号。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7613
+  kind: github_pr
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron GDN（GatedDeltaNet）的 `out_norm`（common.py:267）建在 `value_head_dim` 上——**一个向量施加到所有 head**，而 head 被 TP 切分。`finalize_model_grads.py:452` 只在 **SP 开启**或参数名含 `q_layernorm`/`k_layernorm` 时对该类共享向量做 TP 梯度求和；GDN + TP>1 + **SP 关**时 `out_norm.weight` 的梯度从不 all-reduce，两个 TP 副本各自持有部分和。TP=2 全 GDN 模块 repro：其余参数梯度与未分片参照吻合 7.5e-9，`out_norm` 梯度 `[0.1200,0.0400]` / `[0.0197,-0.0077]` vs 完整 `[0.1397,0.0323]`；20 步 Adam 后两副本差 0.0039，加 TP sum 后每步 2.4e-7。暴露面：Bridge Qwen3.5 full-SFT recipes 用 TP=2/4 **不开 SP** 跑 MCore GDN。
+  source: 'Megatron-LM #7452（2026-09-17；finding 11，全 GDN 模块 CPU repro + 20 步 Adam 漂移对比）。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；2026-09-22 补：vipulsarode 09-21 认领 finding 11（计划按 `11_gdn_out_norm_missing_tp_sum.py` repro 走），oncall tracking map 要求认领时链接 scoped PR——PR 尚未开出；2026-09-24 补：scoped 修复 PR #7613 已开（2026-09-23）——在 `6a36609` 上用原 repro 复现，修复后两 TP rank 的 `out_norm` 梯度与单进程参照吻合，覆盖 GDN/GDN2 × RMSNorm/LayerNorm，附参数 tagging 与 finalizer 恰好一次求和（SP on/off）单测。https://github.com/NVIDIA/Megatron-LM/pull/7613'
+  behavior: 无 crash、无 NaN——TP 副本从第一步起**确定性分叉**（不是 SDC 式随机，是结构性的部分和），`out_norm` 权重跨 rank 漂移、且永远偏小（漏加其余 rank 贡献）；下游 loss 无立刻信号。与 PAR.13（DDP reducer hooks 早退）/PAR.09（分桶谓词跳过 allreduce）同族「梯度归约静默缺失」，差异在这边只打击**名字白名单外的共享向量参数**——选择性漏归约；与 SFT 侧 `q_layernorm` 特判（同函数）对照可见这是**白名单式 finalize 假设**的固有脆弱性（新架构新参数不在名单）。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

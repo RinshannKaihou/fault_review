@@ -1,0 +1,51 @@
+id: INF-0636
+legacy_ids:
+- '6.243'
+slug: vllm_nixl_pd_base_addr_dedup_folds_hybrid_layers_shared_storage_silent_garble
+aliases: []
+title: vLLM NIXL 区域仅按 base_addr 去重致传输花屏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NIXL base_worker 区域注册去重
+  behavior: 传输区域注册仅按 base_addr 去重，折叠分支只在 is_mla_region 为真时刷新 block_len/stride/num_blocks；共享存储基址但块长不同的 hybrid 层被折叠进先注册区域的几何。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: DeepSeek-V4.1-Flash 走 NIXL P/D 分离（2P×TP8+2D×TP8）时，compressor state 等按错误块长截断错位传输，输出全量乱码或 content/reasoning 为空，无错误日志；全注意力模型同拓扑正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + NIXL P/D disagg + hybrid 注意力（SWA+compressor/indexer 多层共享存储基址）模型（partial：需 2 节点 RDMA 拓扑）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57661
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM NIXL P/D 分离服务 DeepSeek-V4.1-Flash（2P×TP8 + 2D×TP8，2×H200 RDMA）**静默花屏**：输出乱码字符或 content/reasoning 字段为空，无错误无 crash——同镜像同拓扑下纯全注意力模型（GLM-5.3）完全正确。根因在 `kv_connector/v1/nixl/base_worker.py` 的传输区域注册：**仅按 `base_addr` 去重**，折叠分支只在 `is_mla_region` 为真时刷新 `block_len/stride/num_blocks`。DSV4.1-Flash 的 `layers.2.attn.compressor.state_cache`（CircularBufferSpec，需 block_len=32768）与 `layers.0.attn.swa_cache`（MLA，19008）**共享存储基址**——折叠进 region 0 且不更新 block_len，compressor state 以每块仅 19008 字节、按 swa 视图计算偏移传输：**截断+错位**；`layers.2.attn.indexer.k_cache` 触发第二处同型冲突。诊断签名：受害区域同时显示 `rgid=-1`（共享）、`scratch=True`、`is_mla=True`——三个互斥属性并存。修复按 `(base_addr, block_len)` 去重后区域数 12→14，200-token 生成花屏率 0%、6 并发流全净） · Cov: `NEW`（传输区域去重键窄于区域身份子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 去重键（单一 base_addr）窄于区域身份（base_addr+传输几何）：hybrid 模型不同注意力层共享底层存储分配但需要不同 block_len/stride——键碰撞时后注册区域被静默折叠进先注册区域的几何，产生以错误块长切分的截断传输；与 1.224/1.225（gather/scatter 独立折叠坐标系发散）构成**跨层同构**："身份键不足以唯一确定操作语义"。
+  source: 'vLLM #57661（2026-09-19 open，含根因定位、rgid/scratch/is_mla 互斥属性诊断签名、修复前后集群级对照（花屏率全量→0%）与单元回归测试声明）。https://github.com/vllm-project/vllm/issues/57661'
+  behavior: 无 crash、无错误日志——P/D 分离部署下输出**全量花屏**（短补全全乱码、中文对话返回空 content/reasoning）；单全注意力模型正常服务使问题被误判为模型侧。6.197（NixlPush lease 到期错写 KV）与 K§5 族（cross-node-transfer）之后 NIXL 族新成员：本条在**注册期去重键缺陷**维度（非传输时序），且以"混合注意力层共享存储"为触发前提。
+  trigger_surface: vLLM + NIXL P/D disagg + hybrid 注意力（SWA+compressor/indexer 多层共享存储基址）模型（partial：需 2 节点 RDMA 拓扑）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

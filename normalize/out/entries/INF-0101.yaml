@@ -1,0 +1,50 @@
+id: INF-0101
+legacy_ids:
+- '1.102'
+slug: ttmetal_logsigmoid_sfpu_missing_branch_range_splits
+aliases: []
+title: ttnn.log_sigmoid SFPU 区间分裂缺分支，fp32 静默大误差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.log_sigmoid SFPU 内核
+  behavior: SFPU 内核采用三段区间分裂实现：x≤−4 分支缺失使输入原样返回，x>4 正尾部只用单项级数，中段多项式在 x=0 处偏离 ln2 达 7.12e-4。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32 log_sigmoid 全域静默误差，峰值 9.13e-3（131,755 ULP，对比 PyTorch golden）；无 crash、无 NaN。bf16 几乎不受影响，bf16-only sweep 长期掩盖该缺陷。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal；fp32 log_sigmoid，x≤−4 / x>4 / 中段全域
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53787
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（log_sigmoid SFPU 内核三重精度缺陷：x≤−4 分支缺失原样返回输入 + 正尾部单项级数 + 中段多项式偏 ln2——峰值 131,755 ULP 静默大误差） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`ttnn.log_sigmoid` SFPU 内核采用脆弱的三段区间分裂实现，三处独立缺陷：（a）**x ≤ −4 分支缺失**——输入原样 fall-through 返回（0.452% 相对误差）；（b）**正尾部 x > 4** 用单项级数（0.91% 误差）；（c）**中段多项式**在 x=0 处偏离 ln2 达 7.12e-4。两百万 fp32 输入的 source-level 模型给出峰值误差 9.13e-3 = **131,755 ULP** vs PyTorch golden。修复（PR #54078，$5k bounty）以单一稳定恒等式 `logsigmoid(x) = min(x,0) − log1p(exp(−|x|))` 替换三段分裂，误差降至 ~2 ULP。**bf16 几乎不受影响**（修复前 2.1 ULP / 修复后 1.3 ULP）——bf16-only sweep 曾长期掩盖此缺陷；binding 声明 FLOAT32 且无范围警告。'
+  source: 'tt-metal #53787（2026-08-17 open，Bounty $5k，IssueType: Bad Outputs）；修复 PR #54078（2026-08-19 closed，sweep 范围从 [-4,10] 扩至 [-30,30]）。https://github.com/tenstorrent/tt-metal/issues/53787'
+  behavior: 无 crash、无 NaN/inf。SFPU 数学函数**静默大误差**（非溢出非竞态）：负区间输出≈输入本身、正区间 0.91% 错、中段系统偏移。属「**区间分裂实现分支缺失/退化**」新子签名——与 1.28（naive 分解中间值溢出→inf）同为 SFPU 数学函数缺陷但机制不同（本条是分支覆盖缺陷，值域有限但错）；且揭示「低精度 sweep 掩盖高精度缺陷」的测试盲区。
+  trigger_surface: Tenstorrent TT-Metal；fp32 log_sigmoid，x≤−4 / x>4 / 中段全域
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

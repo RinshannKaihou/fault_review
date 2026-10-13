@@ -1,0 +1,58 @@
+id: INF-1148
+legacy_ids:
+- '12.32'
+slug: vllm_rslora_moe_pack_recompute_alpha_rank_drops_sqrt_r
+aliases: []
+title: vLLM pack_moe 重算 scaling 致 rsLoRA MoE 弱化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: pack_moe/pack_moe_stacked
+  behavior: pack_moe/pack_moe_stacked 从原始字段重算 scaling=lora_alpha/rank，无视 PEFTHelper 为 rsLoRA 存储的 lora_alpha/√r 因子。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: rsLoRA adapter 作用于 MoE expert 模块时 delta 被削弱 √r 倍（r=16/alpha=32 应为 8 实为 2），无报错，输出看似健康但微调效果打折；dense 路径正常，CPU 可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + `--enable-lora` + rsLoRA adapter + MoE expert target modules（pack_moe/pack_moe_stacked）（配置即触发；CPU 可复现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55545
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（rsLoRA adapter（`use_rslora:true`）作用于 **MoE expert 模块**时缩放因子错误：`PEFTHelper` 为 rsLoRA 计算 `vllm_lora_scaling_factor = lora_alpha/√r` 并随每个 `LoRALayerWeights` 存储（dense/packed 路径经 `optimize()` 把 scaling 合并进 `lora_b` 正确生效），但 `PackedLoRALayerWeights.pack_moe`/`pack_moe_stacked` 从原始字段**重算 `scaling = lora_alpha/rank`** 并无视存储因子——r=16/alpha=32 时正确因子 8、实际应用 2，adapter delta 弱 √r 倍（本例 4×）；无报错、输出静默错） · Cov: `NEW`（MoE 打包路径重算覆盖存储参数子签名） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 磁盘加载链 `LoRAModel.from_lora_tensors` → `from_config`（收存储因子）→ `_create_merged_loras_inplace` → `pack_moe` 实际到达重算路径。dense 路径的 `optimize()` 合并与 MoE 路径的重算是同一语义的两个实现，MoE 侧从未跟上 rsLoRA（#6909 加 dense 支持、MoE 打包后到）。CPU 纯 Python 最小复现（无需 GPU/模型/服务）：`pack_moe([make(...)]).scaling` 打印 `[2.0,2.0,2.0]` 而非 `[8.0,8.0,8.0]`。修复应使用存储的 per-adapter scaling 并保留非门控 MoE w3=1.0 特例（防双重缩放）。
+  source: 'vLLM #55545（2026-09-06 open，bug label，含代码行定位、pack/pack_moe_stacked 双路径分析与 CPU 复现脚本；main `f2e2936f91` 验证）。https://github.com/vllm-project/vllm/issues/55545'
+  behavior: 无 crash——rsLoRA MoE expert adapter 的效果被静默削弱 √r 倍（微调看似"没调好"）：典型的**静默错值**（输出健康-looking、效果打折）。新子签名「**并行打包路径从原始字段重算、丢弃上游计算好的派生参数**」：与 10.56（别名表双源漂移）同构的重复计算分歧，本条在数值参数域；LoRA 域内与 12.28（unload 前端-only 泄漏）互补——一个状态泄漏、一个参数错算。
+  trigger_surface: vLLM + `--enable-lora` + rsLoRA adapter + MoE expert target modules（pack_moe/pack_moe_stacked）（配置即触发；CPU 可复现）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：事实都有原文依据（pack_moe/pack_moe_stacked 重算 lora_alpha/rank；r=16/alpha=32 时应为 8 实为 2，削弱 4×=√r；dense 路径经 optimize() 正确；CPU 可复现）；LoRA 打包属 adapter 加载合并，不是 LoRA 计算 kernel，归 权重/检查点 正确，未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

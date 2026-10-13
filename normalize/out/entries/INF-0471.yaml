@@ -1,0 +1,54 @@
+id: INF-0471
+legacy_ids:
+- '6.78'
+slug: vllm_diffusiongemma_full_cudagraph_freezes_attention_mask
+aliases: []
+title: vLLM DiffusionGemma FULL graph 冻结 mask
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: DiffusionGemma causal 标志
+  behavior: _causal_buf 非 int32，metadata build 每次经 .to(int32) 分配新张量；FULL graph 绑定捕获时地址，后续对 _causal_buf 的更新到不了 graph 读的孤儿张量
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 默认 O2（decode_mode=FULL）下 vllm serve diffusiongemma 无参数即触发：经已捕获 FULL graph 的请求静默沿用 warmup 时的 causal/bidirectional 模式，输出质量不可预测地退化，E2E 影响难定量。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；DiffusionGemma + 默认 O2（FULL_AND_PIECEWISE decode=FULL）；任何 `_causal_buf` 非 int32 的 FULL graph 路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-12'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51994
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DiffusionGemma FULL CUDA graph 捕获后 _causal_buf 停止更新→永久使用 warmup 时的 attention mask） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`DiffusionGemmaModelState._causal_buf`（每请求 causal/encoder vs bidirectional/denoise 切换标志）在 `CUDAGraphMode.FULL` 捕获后**停止更新**。`FlashAttentionMetadataBuilder.build()` 通过 `causal.to(torch.int32)` 对非 int32 causal 张量每次分配新张量，FULL-mode graph 绑定捕获时看到的地址，之后永远读那个孤儿张量。对 `_causal_buf` 的后续更新永远无法到达。任何经已捕获 FULL graph 服务的请求**静默**使用捕获（warmup）时的 causal/bidirectional 模式，持续整个 graph 生命周期。**默认 O2 优化级解析为 FULL_AND_PIECEWISE，decode_mode=FULL**，所以 `vllm serve google/diffusiongemma-26B-A4B-it` 无参数即触发。E2E 影响难定量（denoising 自身 run-to-run 方差相近），但机制用 capture/replay 测试直接复现。修复：`_causal_buf` 从构造即为 int32 并原地 `.copy_()` 更新。'
+  source: 'vLLM #51994（2026-08-12 open PR）。组件 DiffusionGemma FULL cudagraph。https://github.com/vllm-project/vllm/pull/51994'
+  behavior: 无 crash、无 NaN。FULL graph 服务的请求使用错误的 attention mask 模式（causal vs bidirectional 错配），输出质量不可预测地退化。属「FULL CUDA graph 捕获 dtype 触发的张量重分配→地址绑定使更新失效」**新子签名**——graph capture 与 per-request 动态张量的交互盲区。
+  trigger_surface: vLLM；DiffusionGemma + 默认 O2（FULL_AND_PIECEWISE decode=FULL）；任何 `_causal_buf` 非 int32 的 FULL graph 路径
+  discovery: 2026-08-12 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - visibility

@@ -1,0 +1,57 @@
+id: INF-0588
+legacy_ids:
+- '6.195'
+slug: sglang_pdmux_mixed_batch_deadlock_after_long_prefill_hybrid_gdn
+aliases: []
+title: SGLang PDMux 长 prefill 后混合 batch 死锁
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: PDMux 调度器事件循环
+  behavior: ≥4K-token prefill 改变事件顺序后，混合 decode+split-prefill batch 的多 stream 交错在 decode_stream.synchronize() 处形成循环等待。
+effect:
+  objects:
+  - 可用性/进度
+  detail: hybrid GDN 模型在 PDMux 下经 ≥4K prefill 后的混合 batch 上调度器挂起，无 crash 无日志，吞吐归零、请求堆积；时序敏感，单轮 30–70% 触发，CI/冒烟可全过。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang PDMux + hybrid GDN + ≥4K prefill 后混合 batch（负载形态触发；时序敏感）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37904
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（PDMux 调度器事件循环在 **≥4K-token prefill 之后**的混合 decode+split-prefill batch 上死锁于 `decode_stream.synchronize()`（hybrid GDN 模型）——时序敏感（单 b1 轮 30–70% 触发），PR #37905 附单 GPU ~10 分钟自包含复现脚本 + 嵌入 py-spy dump；验证环境还需两条 stale-field 修复（`self.gpu_id`→`self.ps.gpu_id` 等）PDMux 才能启动） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 长 prefill 改变的事件顺序与混合 batch 的 stream 交错在 `decode_stream.synchronize()` 形成循环等待——多 stream 调度器的经典死锁形态；复现脚本双向验证（仅前置修复→exit 2 死锁；全 PR→三轮全过 exit 0）。附带暴露 PDMux 分支连启动都依赖未合入的 stale-field 修复（特性分支腐化信号）。
+  source: 'SGLang #37904（2026-09-04 open，A100 双向验证 + py-spy 栈）。https://github.com/sgl-project/sglang/issues/37904'
+  behavior: 活性死亡（hang，无 crash 无日志）——吞吐归零、请求堆积；时序敏感性使 CI/冒烟全过而生 prod 概率性死锁。与 6.137（supply/demand 契约漂移）同为调度器活性故障，本条是 stream 同步级死锁且有可重放脚本（编目中少数带 canonical in-repo reproducer 的条目）。
+  trigger_surface: SGLang PDMux + hybrid GDN + ≥4K prefill 后混合 batch（负载形态触发；时序敏感）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '维持 调度/服务。原文“PDMux 调度器事件循环……死锁于 decode_stream.synchronize()”，循环等待由调度器组装的混合 decode+split-prefill batch 的 stream 交错造成，修复 PR #37905 改的是 PDMux 调度分支；stream 同步只是死锁的表现位置。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: INF-0494
+legacy_ids:
+- '6.101'
+slug: vllm_hybrid_mamba_align_near_ceiling_requeue_livelock
+aliases: []
+title: vLLM hybrid Mamba 近池上限请求被接纳后永不重调度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: scheduler 准入与重调度
+  behavior: 长度接近 KV 池上限的请求仍被接纳，chunk-prefill 到约 99% 占用后最后一块分配失败被去调度，此后永不重新调度，也没有“池永远装不下”的失败通道。
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: hybrid Mamba + --mamba-cache-mode align 下触发：请求零输出直至客户端超时，prefill 被整体丢弃，仅 vllm:num_requests 可见停滞；关联问题中 prefix cache 把丢弃的命中报成干净 miss。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；hybrid Mamba + `--mamba-cache-mode align` + 请求长度 ≈ KV 池上限
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52530
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid Mamba align 模式近池上限请求被接纳后无限重排 → 零输出、prefill 反复丢弃、无 preemption 记账） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 'hybrid Mamba + full-attention 模型 + `--mamba-cache-mode align` 下，长度接近 KV 池上限的请求被**接纳**，chunk-prefill 至 ~99% 池占用，最后一块无法分配时被去调度（descheduled）后**永不重新调度**——零输出 token、整个 prefill 被丢弃，唯一可观测信号是 `vllm:num_requests` 计数。修复（PR #52530，fixes #52520）让「KV 池永远装不下」的请求直接 fail 而不是无限重试。关联观测盲区（PR #52527）：Mamba group 只保留稀疏状态 checkpoint，共享 prefix 内无 checkpoint 命中时 `HybridKVCacheCoordinator` 把 attention groups 的命中丢弃、prefix cache 报「干净 miss」——「找到又丢弃」与「无共享 prefix」不可区分；#52527 将其导出为 `vllm:prefix_cache_sparse_retention_misses` 指标。'
+  source: 'vLLM PR #52530（fixes #52520）/ PR #52527（metrics，relates #45238）。https://github.com/vllm-project/vllm/pull/52530'
+  behavior: 无 crash。请求**静默零输出直至客户端超时**（livelock），指标上只有 num_requests 停滞；prefix cache 统计同时漏报可复用 token。属「准入-容量不变量缺失 × 无失败通道」**新子签名**——活性失败表现为静默 wedge 而非错误。
+  trigger_surface: vLLM；hybrid Mamba + `--mamba-cache-mode align` + 请求长度 ≈ KV 池上限
+  discovery: 2026-08-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

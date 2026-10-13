@@ -1,0 +1,50 @@
+id: INF-0226
+legacy_ids:
+- '1.227'
+slug: ttmetal_pow_int32_scalar_exponent_fast_path_float_bit_reinterpretation
+aliases: []
+title: ttnn pow(int32,0–3) 快速路径返回 float 位模式
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: pow 标量指数 0–3 快速路径
+  behavior: pow 标量 int 指数 0–3 快速路径直接调用 power_iterative，二者均无 dtype 校验，绕过 float_only 的 dtype policy；kernel 按 float 计算后写回 INT32 张量。
+effect:
+  objects:
+  - 数值结果
+  detail: INT32 输入且标量指数 0–3 时返回 float 位模式重解释的整数（如 1.0f→1065353216、NaN→2143289344），pow(x,1)≠x，无报错；指数≥4 被正常拒绝，float32 输入与张量指数路径不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal/ttnn + `ttnn.pow(int32_tensor, k)` 且 k∈{0,1,2,3}（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56853
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn `pow(Tensor, int32_t exponent)` composite 快速路径（`binary_composite_op.cpp:1087-1089`）对指数 0–3 直接调 `power_iterative` **无任何 dtype 检查**，而 `power_iterative`（`unary.cpp:520-533`）同样不做校验：INT32 输入经 `UnaryOpType::POWER_ITERATIVE` 被 device kernel 按 float 语义计算后以 INT32 声明 dtype 返回——**float 位模式被静默重解释为整数**。实测 `[7,-7,8,-8,3,-3,1,5]`：k=0 全 `1065353216`（0x3F800000 = 1.0f 位型）、k=1 正输入得 0 且 `pow(x,1)!=x`、k≥2 正输入 0 / 负输入 `2143289344`（0x7FC00000 = quiet NaN 位型）；指数 ≥4 走 `ttnn.power` 经 dtype policy 正常拒绝、float32 输入全对、tensor-exponent 路径同 int32 输入正确 TT_FATAL——缺陷仅在标量指数 0–3 快速路径） · Cov: `NEW`（composite 快速路径绕过 dtype policy × 位模式重解释子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: dtype policy（`BinaryOpType::POWER` 声明 float_only，`binary_op_dtype_policy.cpp:54`）只在 tensor-exponent 路由强制执行；标量 int 指数重载的迭代快速路径与 unary 封装双层均无校验，JIT 编译的 device kernel 对 INT32 输入产出 float 位型结果写回 INT32 张量。
+  source: 'tt-metal #56853（2026-09-17 open，op_cat: eltwise + community，含三组输入向量 × k=0..3 的 ttnn/torch 对照、0x3F800000/0x7FC00000 位型解读、main e37ab0ff1f 源码行级定位与"float 路径正确 + op 已知如何拒绝"双重对照）。https://github.com/tenstorrent/tt-metal/issues/56853'
+  behavior: 无 crash、无报错——INT32 pow 返回 float 位模式重解释的整数（1.0f→1065353216、NaN→2143289344），下游整数运算系统性错值；`pow(x,1)!=x` 直接违反恒等预期；声明的 INT32 dtype 使消费方无法从元数据察觉。
+  trigger_surface: tt-metal/ttnn + `ttnn.pow(int32_tensor, k)` 且 k∈{0,1,2,3}（hw_specific）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

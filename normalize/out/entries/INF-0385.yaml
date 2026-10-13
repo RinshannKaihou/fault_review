@@ -1,0 +1,60 @@
+id: INF-0385
+legacy_ids:
+- '5.38'
+slug: vllm_dense_dp_weight_transfer_ipc_payload_selection_dp_rank_reset_zero
+aliases: []
+title: vLLM DP 重配置将 rank 置 0 致权重 payload 选错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: vllm
+    component: 权重传输 payload 槽位选择
+  behavior: worker 按 data_parallel_rank 选本地 payload，但 reconfigure_for_independent_dp_rank() 将其重置为 0，非零 DP replica 均选中 DP0 payload。
+effect:
+  objects:
+  - 可用性/进度
+  - 模型权重
+  detail: DP≥2+TP 用 IPC 权重传输时，非零 replica 拿 GPU0/1 的 CUDA IPC 句柄到 GPU2/3 使用，UUID mismatch 使 /update_weights 返回 HTTP 500，服务未崩；若校验放宽则会跨 replica 静默错载权重。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM dense DP（≥2 replica）+ TP + IPC 权重传输后端 + `/update_weights`（partial：需 4 卡拓扑）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56949
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0369
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（vLLM dense data-parallel 权重传输把完整 `update_info` 列表广播给每个 EngineCore，各 GPU worker 用 `parallel_config.data_parallel_rank * parallel_config.world_size + self.rank` 选取本地 payload；但 `reconfigure_for_independent_dp_rank()` 会把每个 dense DP engine 的 `data_parallel_rank` **重置为 0**——非零 DP replica 的 worker 由此全部选中 **DP0 的 payload**（DP2×TP2：DP1-TP0 取 slot0 而非 slot2、DP1-TP1 取 slot1 而非 slot3），拿到 GPU0/GPU1 的 CUDA IPC 句柄去 GPU2/GPU3 用 → IPC UUID mismatch，`POST /update_weights` HTTP 500。`data_parallel_index` 在重配置后保留全局 DP 身份、应以其选 payload） · Cov: `var:sglang_mooncake_pd_mamba_ssm_dtype_item_length_mismatch_state_corruption`（5.22 分布式状态路由错位族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: payload 槽位索引依赖"全局 DP 身份"这一隐式契约，而重配置入口覆写了身份字段且无断言校验句柄与目标设备的归属一致性——索引语义在两个配置域（全局 DP 布局 vs 独立 DP 域）间静默切换。
+  source: 'vLLM #56949（2026-09-15 open，含 DP2×TP2 槽位矩阵、A40×4 复现环境与修复方向（改用 `data_parallel_index`））。https://github.com/vllm-project/vllm/issues/56949'
+  behavior: fail-loud 于权重更新接口——IPC UUID mismatch 使 `/update_weights` 返回 HTTP 500（服务本身未崩）；若未来路径放宽校验则形态是**跨 replica 权重静默错载**。5.22（PD Mamba state dtype/布局失配）之后分布式状态路由族新成员：本条错位的是**权重分发身份**、由配置重入触发。
+  trigger_surface: vLLM dense DP（≥2 replica）+ TP + IPC 权重传输后端 + `/update_weights`（partial：需 4 卡拓扑）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 模型权重
+        to: 可用性/进度
+        status: panel7
+    uncertain:
+    - subsystem
