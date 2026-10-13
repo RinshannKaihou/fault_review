@@ -35,7 +35,7 @@
 
 - 沙盒用火山网关的 `zhipu/glm-5.3`（high）；正式扫描是 Z.ai 直连、任务级 `reasoning_effort: max`。行为应接近，头几晚需要盯。
 - Z.ai 额度按周/月计，测试扫描不再使用 Z.ai。
-- RAG 仓库 `catalogs/` 仍是 10-12 的 Markdown 快照；RAG 改读 YAML 是下一阶段的工作，在此之前 RAG 检索不会包含切换后的新条目。
+- RAG 仓库已改读上游 YAML（`9435368`，验收见 `eval/ACCEPTANCE.md`）；它仍是手动同步的快照（`scripts/sync_catalogs.sh`），每日扫描新增的条目要到下次同步后才能检索到。
 
 ## 执行记录（2026-10-13）
 
