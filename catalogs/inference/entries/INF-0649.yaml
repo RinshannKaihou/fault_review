@@ -1,0 +1,62 @@
+id: INF-0649
+legacy_ids:
+- '6.256'
+slug: pd_disagg_mla_target_gqa_draft_kv_asymmetric_tp_mistransfer_vllm_nixl_sglang_mooncake
+aliases: []
+title: PD 分离 MLA target+GQA draft 异构 TP 传输错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Nixl/Mooncake draft KV 映射
+  behavior: 传输层把 MLA 复制假设套到按头切分的 GQA draft 区域：vLLM Nixl 全区域按 kv_heads=1 映射，SGLang Mooncake 把 P 侧 item length 当 D 侧 stride。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  - 性能/资源
+  detail: prefill TP < decode TP 时：vLLM 握手拒绝正确几何、接受错误几何，7/8 decode rank 读错 draft 头致接受率下降但输出正确；SGLang draft 按错误步长落址，B300 实测 28/256 请求 KV 传输失败。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM Nixl / SGLang Mooncake PD 分离 + MLA target + GQA draft（DFlash）+ prefill TP < decode TP（other_stack：双栈各自默认路径内的非对称拓扑）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58470
+  kind: github_issue
+- url: https://github.com/sgl-project/sglang/issues/41038
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（PD 分离下 **MLA target + GQA draft**（DFlash 类）且 prefill TP < decode TP 时 draft KV 传输错位——vLLM Nixl 与 SGLang Mooncake 双栈同机制：**模型级 MLA 复制假设被无差别套到 head-sharded draft 区域**。vLLM：`compute_tp_mapping` 按 `use_mla` 给全部区域 `total_num_kv_heads=1, rank_offset_factor=0`（对 MLA 层正确、对按头切分的 draft 错误）——(1) handshake 尺寸校验把 draft 区域当 replicated，**正确几何反被 assert 拒绝**（`local=2048, remote=16384`）、**未按头比缩放的错几何反被接受**；(2) 读路径每 decode rank 都读 prefill 块的 draft head 0（7/8 rank 读错头，target verify 使输出最终正确但 **draft 注意错头、接受率下降**）；(3) hetero-TP 头切分守卫在 `use_mla` 时被跳过。SGLang：非 DCP hybrid-MLA 分支 `send_kvcache` 把 **P 侧 item length 当 D 侧 stride**——P TP2 draft 页每 rank 字节数是 D TP4 的两倍，draft 写入按错误步长落址（target MLA KV 每_rank 布局兼容不受影响）；B300 双 P（TP2/EP2）× 单 D（TP4/EP4）实测 28/256 请求 KV 传输失败，本地原型（target 走通用路径、只传 owning D rank 的 draft 头切片）256/256） · Cov: `NEW`（draft 区域沿用模型级复制/单一长度假设子签名；按"同目标双栈同机制"合并编目——判例同 11.73（vLLM #56088 + SGLang #38589）） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: MLA 的"每 rank 持全量 KV"与 GQA draft 的"按头分片"在同一 engine 里共存，传输层的区域分类（vLLM `_is_region_replicated` 已判 SPLIT 但三处仍用模型级答案）/长度参数（SGLang 源 stride 复用为目的 stride）都没有按区域粒度区分。
+  source: 'vLLM #58470（2026-09-23 open，含 CPU handshake 单测复现（main 上 assert 触发）、三处代码定位与修复 PR 测试设计；GLM-5.3 + DFlash2、2×8×H200）；SGLang #41038（2026-09-24 open，含 28/256 失败计数、RDMA HCA 排除与本地修复原型对照；GLM-5.3-Flash + DFlash2、B300）。https://github.com/vllm-project/vllm/issues/58470 ; https://github.com/sgl-project/sglang/issues/41038'
+  behavior: vLLM 侧显形为 fail-loud assert（正确几何被拒）或**静默接受错误几何**（错值传输潜伏面）；读错头形态无 crash、输出经 verify 保持正确但**接受率静默受损**（吞吐损失无诊断）。SGLang 侧 KV 传输失败（请求级失败/重试）。6.226（GDN hybrid PD 双维 stride 错切）之后 PD 非对称 TP 族在 **draft-GQA × target-MLA 混合几何**维度的首例。
+  trigger_surface: vLLM Nixl / SGLang Mooncake PD 分离 + MLA target + GQA draft（DFlash）+ prefill TP < decode TP（other_stack：双栈各自默认路径内的非对称拓扑）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: visibility 维持 报错：vLLM main 上握手 assert 拒绝正确几何（原文 CPU 单测 main 上 assert 触发），SGLang 实测 28/256 请求 KV 传输失败，两栈的默认显形都是显式失败；读错 draft 头、接受率下降的静默性能后果已写入 detail 和 effect.objects（性能/资源），符合“报错仅在伴随静默后果时出现”。subsystem KV缓存 与独立判断一致（KV 跨节点传输的区域映射/stride 管理逻辑）。改动：条目按双栈同机制合并，两栈同属 KV缓存，按 rule 4 不拆多项；component 改为同时点名 Nixl 与 Mooncake，避免只看 stack=vllm 漏掉 SGLang 侧。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

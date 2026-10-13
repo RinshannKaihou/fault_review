@@ -1,0 +1,62 @@
+id: TRN-0254
+legacy_ids:
+- OBS.05
+slug: train_loader_geometry_reused_for_val
+aliases: []
+title: verl SFT 验证集沿用训练 batch，val/loss 为 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: verl
+    component: SFT trainer 验证 loader 构造
+  behavior: 两个 SFT trainer 用训练全局 batch 构造验证 loader，sampler 与 dataloader 均 drop_last=True；注释所称的 val batch 字段在 val 路径从未被读。
+effect:
+  objects:
+  - 指标/日志
+  detail: val 集小于每 rank 训练 batch 时 loader 产出 0 个 batch，空张量取均值得 val/loss=NaN，无警告且 exit 0；val 集略大于 batch 时静默丢尾部样本（300 样本丢 5）。Ray 路径 200 样本×batch 256 即复现。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7464
+  kind: github_issue
+relations: []
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'verl 两个 SFT trainer（`sft_trainer.py` SPMD + `sft_trainer_ray.py`）都用**训练**全局 batch（`data.train_batch_size`，默认 256）构造**验证** loader，且 sampler 与 dataloader 双 `drop_last=True`；配置注释写明 `micro_batch_size_per_gpu: 4  # this is also val batch size`，但该字段在 val 路径从未被读。当 val 集小于每 rank train batch 尺寸时 loader 产出 **0 个 batch**，收尾 `torch.mean(torch.tensor([]))` = NaN。同仓 PPO 的 val loader（`drop_last=False` + 独立 `val_batch_size`）是现成的正确对照。'
+  source: 'verl #7464（读 main 复现 + CPU 最小复现；两入口同错；含具体数值表：Ray 路径 200 样本 val × batch 256 → 0 batch → `val/loss=NaN`）。https://github.com/verl-project/verl/issues/7464'
+  behavior: '`val/loss = NaN` 无警告、run exit 0；val 集略大于 batch 时静默丢尾部样本（300 样本 val 丢 5）。与 CKPT.07（死参数/影子参数）的边界：那边配置**声明了但没被消费**，这边字段在 train 侧正常消费、只是 train 的几何参数漏进了 val 构造——错的是 loader 装配而非配置面。观测面与 OBS.02 同型（图表被读成健康），但根因是「验证从未发生」而非空文件。'
+  discovery: 2026-08-22 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 观测/评测 vs 数据管线：定为 观测/评测。缺陷只在验证 loader 的装配上（train 几何参数漏进 val 构造），训练数据流不受影响，后果只是 val/loss 读数 NaN 或丢尾部验证样本；词表 数据管线 针对训练数据集/packing/sampler，验证 harness 归 观测/评测（rule 1 功能域优先）。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 数据管线
+        status: panel7
+    uncertain:
+    - effect

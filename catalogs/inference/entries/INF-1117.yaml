@@ -1,0 +1,52 @@
+id: INF-1117
+legacy_ids:
+- '12.1'
+slug: wrong_dtype_cast_bf16_as_fp16
+aliases: []
+title: bf16 权重加载时被强转 fp16 溢出为 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: transformers
+    component: transformers 加载 dtype 转换
+  behavior: 加载时经 torch_dtype 或 transformers v5 auto-dtype 把 bf16 权重强制转成 fp16，对全部权重做确定性逐元素转换，超出 fp16 最大值（约 65504）的元素溢出为 ±inf。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 输出重复、与上下文无关的 token，最终为空输出或 NaN；命中饱和通道时激活直接出现 inf/nan，范数与谱全局偏移。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 加载/文件/config 操作可复现
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2510.26788
+  kind: arxiv
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off` · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: bf16 权重（8-bit exponent）在加载时经 `torch_dtype` 或 transformers v5 的 auto-dtype 被强制转成 fp16（5-bit exponent）。fp16 的最大可表示值约 65504，远小于 bf16 的约 3e38，因此任何超出 fp16 动态范围的权重或激活值在转换瞬间溢出为 ±inf。这是一次对每一个权重元素的确定性逐元素量化，不是稀疏的单点破坏。
+  source: HF Transformers DeepSpeed Integration docs（Troubleshooting NaN）。arXiv:2510.26788。
+  behavior: 输出垃圾：重复、与上下文无关的 token，最终产生空输出或 NaN。
+  trigger_surface: 加载/文件/config 操作可复现
+  signature: 强 off-manifold —— 一旦命中饱和通道，激活中直接出现 inf/nan；由于该 cast 是对全部权重的确定性逐元素量化，范数与谱在全局层面发生偏移。geometric（per-channel norm/range）、statistical（inf/nan 占比、kurtosis）、cheap（max-abs）三族都能捕获。它是稠密/全局的破坏，这一点与稀疏的 `weight_bitflip` 结构性不同。
+  repro: 用 weight-clone-restore：对选定层（默认全部 `q_proj/k_proj/v_proj/o_proj/gate_proj/up_proj/down_proj`）的 Linear 权重执行 `w.to(torch.float16).to(fp32)` 往返，退出上下文时还原克隆副本。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

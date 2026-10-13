@@ -1,0 +1,62 @@
+id: TRN-0141
+legacy_ids:
+- KER.10
+slug: dsa_cudnn_packed_cp_wrong_values_flaky_masked
+aliases: []
+title: DSA cuDNN packed+CP 错值被 flaky 掩盖
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: megatron-lm
+    component: DSA cuDNN 路径 THD+CP
+  - subsystem: 观测/评测
+    stack: megatron-lm
+    component: DSA parity 单测 flaky 标记
+  behavior: 'DSA cuDNN real-kernel 路径在 packed-THD + CP>1 下 top-k 索引整体错位、融合输出错值，根因分层未定；对应单测自 #5099 起带 flaky 标记，掩盖了真实数值失败。'
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: 张量全部有限、训练不崩，单测中 top-k 索引 8/8 全错、输出与参考 cosine 仅 0.365，CI 因 flaky 标记永远报绿；GB200/SM100 上 packed+CP 配置触发，生产形状 loss 暂未见差异，中招形状未定位。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7105
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7463
+  kind: github_issue
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `pretrain/sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'Megatron DSA（DeepSeek Sparse Attention）cuDNN real-kernel 路径在 **packed-THD + context-parallel（CP>1）** 组合下产出错误数值：top-k 索引测试 8/8 元素全错（应 bottom-right 对齐却整体错位）、full-fusion 输出与参考路径 cosine 相似度仅 **0.365**（两条路径对同一输入严重分歧）；张量全部有限——kernel 正常运行完、值是错的。两测试自 #5099 合入起就带 `@pytest.mark.flaky` / `flaky_in_dev`（注释引用 import error 与「CI 里的确定性 CUDA error」），GB200/SM100 实机上标记下藏的是**真数值失败**。cuDNN 版本对照已做（torch 编译于 9.23 vs 装的 9.21，换 9.23 后同样 2 failed）——非版本错配。该 packed+CP 组合正是 GB200 GLM-5.2 SFT recipe 的形状（`dsa_kernel_backend=cudnn`、CP4、packed、`cp_comm_type=allgather`）；32 节点训练形状对照显示 10 步内 lm loss 差 ≤0.7%、100 步 plateau 同型（0.646 vs 0.615）——**哪些形状中招未能定位**，影响面悬置。'
+  source: 'Megatron-LM #7105（`tests/unit_tests/transformer/experimental_attention_variant/test_dsa_native_parity.py` 78 passed / 2 failed 实测 + 复现环境全列；#5099 引入 CP-via-THD，#4878 仍 open）。https://github.com/NVIDIA/Megatron-LM/issues/7105 ；同 kernel 家族 crash 面（2026-09-22 补）：Megatron-LM #7463——同 packed+CP 路径在 256K 序列（同配置 32K 成功）于 indexer top-k `cudaErrorIllegalAddress`（nemo2608 镜像 / Megatron-LM 0.19）；09-21 oncall Connor-XY 分配 hxbai triage、要求补 cuDNN Frontend/CUTLASS 版本与 cu_seqlens 元数据——illegal-address 本身尚不能区分 shape/packing 问题与上游 kernel 缺陷。https://github.com/NVIDIA/Megatron-LM/issues/7463'
+  behavior: 训练不崩、loss 轨迹看不出——生产形状实测「碰巧」贴住参考路径，但单测证明部分 packed+CP 配置下 kernel 输出错值：使用形状与中招集合的交集未刻画前，任何 cuDNN-DSA packed+CP run 都不可信。`flaky` 标记让 CI 永远报绿，故障对测试基建**隐形**——KER 错值与 OBS 掩体的复合：标记本身成了掩体。与 KER.01/02/09 同为训练 kernel 静默错值，差异在根因分层未知（cuDNN kernel vs Megatron 调用序 vs THD+CP 布局契约）且**实机硬件相关**（GB200/SM100）；测试标记掩盖面与 KER.08 的「断言被 cast 洗白」同族——验证基建自己失效。
+  discovery: 2026-09-09 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 算子/内核 + 观测/评测：rule6 触发条件不是对象，packed-THD 与 CP>1 只是触发形状，出错的是 DSA cuDNN real-kernel 路径的输出值；观测/评测 保留，因原文明述 flaky 标记让 CI 永远报绿、修复须同时去掉标记。根因分层（cuDNN kernel / Megatron 调用序 / THD+CP 布局契约）原文未定，保留意见。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

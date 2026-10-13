@@ -1,0 +1,57 @@
+id: INF-0641
+legacy_ids:
+- '6.248'
+slug: vllm_sm120_per_tensor_static_fp8_w8a8_production_xid13_ima_024_stable
+aliases: []
+title: vLLM 0.28 在 SM120 静态 FP8 W8A8 下周期性崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: SM120 FP8 W8A8 相关内核（未定位）
+  behavior: 0.24→0.28 间引入或变更的内核路径在 SM120 + per-tensor static FP8 W8A8 + 非对齐剩余 chunk 下越界访问或执行非法指令；肇事内核未定位。
+effect:
+  objects:
+  - 可用性/进度
+  detail: RTX PRO 6000 生产流量 3 小时内 EngineCore 三次死亡（illegal memory access/illegal instruction，伴 Xid 13），均在部分前缀命中的单请求 prefill 步；回滚 v0.24 或升级 v0.29 稳定，按记录形状重放未复现。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM v0.25–0.28 + SM120 + compressed-tensors per-tensor static FP8 + 持续生产流量 + 部分前缀命中的单请求 prefill（hw_specific：负载+平台+版本组合）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57822
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0603
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（v0.28.0 官方镜像、RTX PRO 6000 Blackwell（SM120）+ **compressed-tensors per-tensor static FP8（W8A8）** Qwen3-4B-Instruct-2507 生产流量：3 小时内 EngineCore 三连死（2×`CUDA error: an illegal memory access` + 1×`an illegal instruction`，均于 `async_utils.py:168 copy_event.synchronize()` 异步浮出），主机内核日志同刻 **Xid 13 "Graphics SM Warp Exception"** 两种子类型与两种错误串精确对应；升级前 30 天与回滚后 **0 条 Xid**，全部 580 条 Xid 落在三次 v0.28 崩溃 burst 内。**同机同 checkpoint 同 flags 回滚 v0.24.0 完全稳定**——版本二分把缺陷钉在 0.24→0.28 之间引入/变更的内核路径。非资源问题：每次崩溃时调度器仅 1 个运行请求、KV 利用率 0.066–0.094%；三次均为**部分前缀命中 + 非对齐剩余 chunk（361/499/263 tokens）的单请求 prefill 步**。注意非 block-scaled 变体（#47436/#51884 那类在加载期确定性失败）——本条干净加载、服务约 1 小时后才崩。无 backend 覆盖：`cudagraph FULL_AND_PIECEWISE`、`linear_backend=''auto''`、flashinfer autotune 开） · Cov: `var:vllm_flashinfer_fp8_scaled_mm_sm120_sustained_load_xid13_ima`（6.210 SM120 持续负载 Xid 13 IMA 族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: per-tensor static FP8 W8A8 + SM120 + 部分前缀命中产生的非对齐 token 数组合触发越界访问；异步错误上报使浮出点（输出拷贝同步）远离肇事内核。崩溃步的共性（非对齐剩余 chunk）提示 prefill 形状边界，但报告者自述无法从异步报告定位肇事内核属于哪一步。
+  source: 'vLLM #57822（2026-09-20 open，含三崩时间线、580 条 Xid 分布、三次崩溃的 dump_input 调度器状态表、量化 config 全文、v0.24↔v0.28 回滚对照）。https://github.com/vllm-project/vllm/issues/57822 **2026-09-25 回访补记**：报告者 09-23 评论更正——环境表 `torch 2.11.0+cu130` 实为误读 v0.24 回滚容器版本（v0.28 值无记录）；v0.29.0 同机同 checkpoint 同 flags 生产 2 天 9 小时 **80,000 请求 0 崩溃 0 Xid**（对照 v0.28 3 小时 3 崩 580 Xid；并行 v0.24 实例同期 78,000 请求 0 错）；v0.28 上以 3 次崩溃实时记录的 dump_input 形状合成重放 29,404 请求（3 小时）**无法复现**（触发面窄于记录形状）；报告者关联 #55571 并以 v0.29 稳定为负对照。条目判定不变（v0.28 版本窗口回归证据反而加强），补充 v0.29 稳定与"记录形状不可复现"两个边界事实。'
+  behavior: 运行期 EngineCore 死亡（Xid 13 IMA/illegal instruction，fail-loud）——生产 SLO 破坏型，约每小时一崩。6.210（sm120 FlashInfer FP8 scaled MM 持续负载 IMA）、6.160（sm120 NVFP4+fp8KV IMA）之后 SM120×FP8 IMA 族第三例：本条新增**per-tensor static 变体**与**版本二分证据**（v0.24 稳定 → 缺陷为版本窗口内回归而非平台固有），崩溃时近空闲状态排除了负载饱和解释。
+  trigger_surface: vLLM v0.25–0.28 + SM120 + compressed-tensors per-tensor static FP8 + 持续生产流量 + 部分前缀命中的单请求 prefill（hw_specific：负载+平台+版本组合）
+  discovery: 2026-09-20 每日扫描；2026-09-25 回访补记（见下来源行）。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 量化。依据 rule 1：崩溃只在 compressed-tensors per-tensor static FP8 W8A8 路径上出现（原文 trigger_surface 与 Cov 均以该量化变体界定），肇事内核未定位，但它位于该量化方案的代码路径上，算子/内核 只用于不专属功能特性的通用缺陷。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

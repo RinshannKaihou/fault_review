@@ -1,0 +1,56 @@
+id: TRN-0233
+legacy_ids:
+- RL-RO.11
+slug: decode_reencode_drifts_trajectory
+aliases: []
+title: rollout 的 decode/re-encode 使训练序列偏离采样
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: ms-swift
+    component: rollout decode/re-encode
+  behavior: 多步 rollout 把引擎采样的 assistant token ids decode 成文本，构造后续历史或训练输入时再 re-encode；tokenization 非双射，round-trip 后的 token 序列不等于采样序列。
+effect:
+  objects:
+  - 输入编码
+  - 训练信号
+  detail: 无 crash、无 NaN；logprob/IS ratio 带结构性偏置，策略按自己未产生过的序列更新，轨迹越长、工具轮次越多偏差越大，off-policy 校正补不齐；漂移点含特殊 token 拼接、空格归并、工具观察插入、多模态 chunk 重建。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10012
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0223
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:tim_rollout_trainer_logprob_delta` · 置信度 `documented`'
+  mechanism: agentic 多步 rollout 把引擎采样的 assistant token ids **decode 成文本**，构造后续推理历史或训练输入时再 **re-encode**。tokenization 非双射（特殊 token 拼接、空格归并、工具观察插入、确定性前缀、多模态 chunk 重建处均可漂移），round-trip 后的 token 序列 ≠ 采样序列。RL 里 token 轨迹是训练样本本体：policy 被按**它没有产生过的序列**计算 logprob/优势并更新。泄漏点横跨 colocate/server 多轮 rollout、scheduler hook（要求文本形态）、agentic 续写、多模态 chunk 重建。修复 = 引擎采样的 token ids 全程作为 source of truth，文本仅在 scheduler hook 需要时临时物化；对确定性前缀/scheduler 追加内容用对齐的 loss mask 表达。
+  source: 'ms-swift PR #10012（引 verl agent-loop 文档的 chat-completion vs token-in/token-out 区分；覆盖 scheduler 变更、工具观察、确定性 response prefix、agentic 续写、多模态 chunk 重建五个泄漏点的回归测试）。https://github.com/modelscope/ms-swift/pull/10012'
+  behavior: 无 crash、无 NaN；logprob/IS ratio 带一个结构性 bias（训练序列不是采样序列），轨迹越长、工具轮次越多偏得越大，off-policy 校正永远补不齐。与 RL-RO.01（数值核差）正交：权重和分布都对，错的是**序列恒等性**——同一 token 串在采样侧与训练侧是两个不同的 int 序列；与 RL-RWD.06（RM 吃错位 token）同根因（decode/re-encode 非双射），那边污染 reward 输入，这边污染训练轨迹。
+  discovery: 2026-09-04 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

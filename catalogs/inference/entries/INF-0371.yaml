@@ -1,0 +1,58 @@
+id: INF-0371
+legacy_ids:
+- '5.24'
+slug: sglang_mhc_communicator_missing_dp_reduce_scatterv_pair
+aliases: []
+title: SGLang MHC communicator 缺 DP 归约分支致输出损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: sglang
+    component: MHC communicator 的归约分支
+  behavior: 'MHC communicator 从 PR #24785 前的快照改编、未回映上游修复：scatter 缺 MoE partial combine，should_use_reduce_scatter 仍返回 False。'
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 'dp-attention 且 TP=DP=EP 时 SUM_LEN 轮每 token 只得 1/4 routed experts，输出 "A: A: A:" 式重复坍缩；只修前者则 dense MLP 输出 ×4，流畅但 tool-call schema 仅 49/63。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.3-Flash/MHC 模型 + `--enable-dp-attention` + EP=DP=TP（config 组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36879
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（`communicator_mhc.py` 从早于 PR #24785 的 `communicator.py` 快照改编、未回映上游修复——两个 override 缺 `should_use_dp_reduce_scatterv()` 分支，构成**顺序依赖缺陷对**：(1) SUM_LEN 轮 MoE partial 永不 combine，每 token 只带 owning DP rank 的 1/4 routed experts（EP4）→ "A: A: A:" 重复坍缩；(2) 只修 (1) 则 `mlp_reduce_scatter=False` 使 dense MLP（GLM 0–2 层）被 all-reduce + scatter 双重归约、输出精确 ×4——流畅输出但 tool-call schema 49/63 vs TP 基线 372/372） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 'MHC communicator 是从 base 快照衍生的镜像文件，base 在 PR #24785（2026-05-10 修复 SUM_LEN 的 reduce_scatterv producer 契约）后演进、镜像未回映。(1) `MHCCommunicateSummableTensorPairFn._scatter_hidden_states` 缺 combine；(2) `MHCLayerCommunicator.should_use_reduce_scatter` 仍发布 False。两修齐用恢复与 plain TP 精确对等。触发门：`moe_a2a_backend==none ∧ dp-attention ∧ attn_dp_size>1 ∧ tp_size==attn_dp_size ∧ moe_ep_size==attn_dp_size`；损害限于 SUM_LEN 轮。报告者实际经历了"只移植 (1) 修复"引入更隐蔽回归的过程。'
+  source: 'SGLang #36879（2026-08-28 closed，PR #36507 head `aa8c950a3d` 复现，含 tau2-airline schema 对照表）。https://github.com/sgl-project/sglang/issues/36879'
+  behavior: '**无 crash、两种输出都流畅**——(1) 重复坍缩/回声/自信错答（逐 DP rank 严重度不同）；(2) ×4 缩放的静默语义损坏，单 prompt 冒烟通过。属「**镜像文件快照漂移的顺序依赖缺陷对**」新子签名：第二个缺陷只在第一个修复后可达，部分移植比不移植更危险（quiet regression）；与 5.7（communicator map 损坏）同 communicator 域。'
+  trigger_surface: SGLang + GLM-5.3-Flash/MHC 模型 + `--enable-dp-attention` + EP=DP=TP（config 组合即触发）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7
+    uncertain:
+    - effect

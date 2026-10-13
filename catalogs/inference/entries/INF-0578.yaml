@@ -1,0 +1,71 @@
+id: INF-0578
+legacy_ids:
+- '6.185'
+slug: vllm_glm53_flash_sparse_mla_indexer_prefill_workspace_token_vs_pool_granule
+aliases: []
+title: vLLM GLM-5.3 indexer workspace 漏除压缩比
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: GLM indexer prefill 缓冲大小
+  behavior: GLM 路径按 get_max_prefill_buffer_size() 的 token 数申请 indexer workspace，未除以 compress_ratio（KV 为 pool 粒度，deepseek_v4 已除）。
+effect:
+  objects:
+  - 性能/资源
+  detail: GLM-5.3-Flash + 1M 级 --max-model-len 时每 GPU 多锁约 2.6 GiB，KV 池少约 8%（修复前→后 KV 可用 29.44→32.06 GiB、池 4.50M→4.90M token），长上下文吞吐/并发下降；无 crash，needle 检索不变。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + GLM-5.3-Flash + 1M 级 `--max-model-len`（config 触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55221
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0566
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（GLM-5.3-Flash sparse-MLA indexer 的 prefill workspace 以 `get_max_prefill_buffer_size()`（token 计数）原样申请，而该 indexer 的 KV 是 **pool 粒度**且 `compress_ratio == index_kpool`、`split_indexer_prefill_chunks()` 吃的是压缩后序列长——`deepseek_v4/attention.py` 同一调用点已除以 compress_ratio，GLM 路径漏除：1M 上下文下 per-GPU 多锁 ~2.6 GiB（KV 可用 29.44→32.06 GiB、池 4.50M→4.90M token，1M needle 检索 4/4 不变）） · Cov: `var:vllm_kv_pool_first_boot_capacity_under_allocation`（6.173 容量失准族；亦为 12.29 profiler 盲区的静态变体） · 触发 `partial` · 置信度 `documented`'
+  mechanism: 单位错配（token vs pool granule）+ 姊妹模型路径已有修复未对齐——与 1.153（div_bw 修复未回灌兄弟 op）同「修复存在于相邻路径」模式。#53906 引入的两缺陷之一（另一为 fp8 KV dtype 拒绝，见 8.62）。
+  source: 'vLLM #55221（2026-09-03 open，与 #53906 关联；右值化前后 KV 池对照 + needle 检索回归）。https://github.com/vllm-project/vllm/issues/55221'
+  behavior: 无 crash——静默容量损失（~8% KV 池），长上下文吞吐/并发下降；needle 检索不变使其难被功能测试发现，只显形为容量账目。
+  trigger_surface: vLLM + GLM-5.3-Flash + 1M 级 `--max-model-len`（config 触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed:
+  - cause.objects
+  - effect.detail
+  note: 裁定：subsystem 由 算子/内核 改为 模型定义。依据原文“deepseek_v4/attention.py 同一调用点已除以 compress_ratio，GLM 路径漏除”“姊妹模型路径已有修复未对齐”：修复是在 GLM 模型专属调用点给 workspace 大小除以 compress_ratio，属建模代码；缺陷是缓冲区尺寸核算而非 kernel 计算实现，不归 算子/内核；被挤占的 KV 池只是后果，也不归 KV缓存。审计：effect.detail 中“KV 池少约 8%（29.44→32.06 GiB、4.50M→4.90M token）”的箭头方向读起来像池在增大，原文这组数是修复前→修复后，已注明。其余字段忠实。
+  audit_issues:
+  - field: effect.detail
+    type: 忠实性
+    detail: 29.44→32.06 GiB、4.50M→4.90M token 是修复前→修复后的对照，第一遍紧接“KV 池少约 8%”书写、未注明，读起来方向相反
+  - field: cause.objects
+    type: 分类
+    detail: 修复点在 GLM 模型专属调用点（对照 deepseek_v4/attention.py），属 模型定义 而非 算子/内核
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: KV缓存
+        status: unanimous

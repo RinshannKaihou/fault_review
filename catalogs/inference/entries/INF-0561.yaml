@@ -1,0 +1,50 @@
+id: INF-0561
+legacy_ids:
+- '6.168'
+slug: vllm_hybrid_page_alignment_giant_blocks_fixed_footprint_collapse
+aliases: []
+title: vLLM hybrid 页对齐巨块致每请求固定足迹与并发坍塌
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: hybrid attention 页大小对齐
+  behavior: 为使 attention 页字节 ≥ mamba 页字节，block size 被向上对齐（GLM-5.3-Flash 达 7,808 token/页），未重审 KV 组数 × 每组每请求至少一页，约 23 组使每请求固定占约 23 巨页。
+effect:
+  objects:
+  - 性能/资源
+  detail: TP2/DCP2 实测 457,880-token 池仅 70 页，12-token 请求占 32.9%，并发上限 3；35k 缓存 prompt 交错 admission 后命中 23,808→0、TTFT 2.3s→7.1s；收紧 --max-model-len 无效，无报错。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid mamba/attention 模型（GLM-5.3-Flash/Glm5Next、Qwen3-Next 形）+ 多 KV group 部署（TP2+DCP/DFlash 加重组数；MTP3 配置足迹占比降至 9.3% 仍达 8 请求上限）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54458
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid 线性注意力模型上 vLLM 把 attention block size 向上对齐到「一页 attention 字节 ≥ 一页 mamba state 字节」——GLM-5.3-Flash 实测被抬到 **7,808 token/页**；~23 个 KV group（GDN state 组 + attention 组 + indexer + spec-decode）各需每运行请求至少一页 → **每请求固定 ~23 巨页足迹（118k–150k token 当量）与 prompt 长度无关**） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`Setting attention block size to 7808 tokens to ensure that attention page size is >= mamba page size`——对齐约束把 page 数量换成 page 尺寸后未重新审计组数 × 每组最少页数。实测（2× RTX PRO 6000 TP2/DCP2，EXL3 4bpw）：457,880-token 池只有 70 页，12-token 请求占 32.9% 池、并发天花板 3 请求；缓存命中的粒度也是 7,808 token/块。收紧 `--max-model-len` 无效（池与足迹同比缩、占比仍 29–33%）。生产多 agent 塌缩（6 agent 聚合 decode 8-30 tok/s）被追因到此处。'
+  source: 'vLLM #54458（2026-08-29 open，含三配置池/足迹/天花板测量表与 LRU 驱逐轨迹）。https://github.com/vllm-project/vllm/issues/54458'
+  behavior: 无 crash、无错误——并发能力静默坍塌（2-3 请求后全部排队）、prefix cache 形同虚设（35k 缓存 prompt 3 次交错 admission 后命中 23,808→0、TTFT 2.3s→7.1s）、max-model-len 调节无效的「容量异常」。属「**对齐派生常量 × 组数 = 固定足迹税**」新子签名：与 5.23（DFLASH Mamba 钳制误读为带宽天花板）同「容量派生约束静默生效」族，本条在页对齐层且退化的是并发/缓存而非单请求时延。
+  trigger_surface: vLLM + hybrid mamba/attention 模型（GLM-5.3-Flash/Glm5Next、Qwen3-Next 形）+ 多 KV group 部署（TP2+DCP/DFlash 加重组数；MTP3 配置足迹占比降至 9.3% 仍达 8 请求上限）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

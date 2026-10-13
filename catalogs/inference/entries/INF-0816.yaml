@@ -1,0 +1,63 @@
+id: INF-0816
+legacy_ids:
+- '8.32'
+slug: vllm_sliding_window_from_kv_group_spec_global_layers_lose_tokens
+aliases: []
+title: vLLM 组级 window 套用到全局层致旧 token 丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: FA/CPU attention 窗口来源
+  behavior: FlashAttention 从 KV cache group spec 读取 window 并应用到组内每一层，组内同时含滑窗层与全局层时全局层也被套用窗口；CPU attention 的组级元数据同样如此。
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  - 输出内容
+  detail: Gemma-3 + --disable-hybrid-kv-cache-manager（滑窗层提升为 full-attention 存储）时，全局层静默丢失窗口以外的旧 token，上下文在窗口边界被截断，输出退化但不报错、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；Gemma-3 + `--disable-hybrid-kv-cache-manager`（sliding-window 层提升为 full-attention 存储）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51756
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（FA 从 KV cache group spec 读 window 并应用到组内每层→全局层静默丢失 window 以外旧 token） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 一个 KV cache group可同时含 windowed 和 global 层——Gemma-3 用 `--disable-hybrid-kv-cache-manager` 将 sliding-window 层提升为 full-attention 存储，合并的 group spec 仍记录 window。FlashAttention 从 group spec 读 window 并应用到组内每层，**全局层因此静默丢失 window 以外的所有旧 token**。CPU attention 对其组级 scheduler metadata 做同样的事。
+  source: 'vLLM #51756（2026-08-11 PR）。组件 FlashAttention / CPU attention sliding-window 来源。Gemma-3 + `--disable-hybrid-kv-cache-manager`。https://github.com/vllm-project/vllm/pull/51756'
+  behavior: 无 crash、无 NaN。**全局层静默丢失旧 token**——context 在 window 边界被截断，输出退化但不报错。属「KV cache 组合并后 window scope 被错误传播到全局层」**新子签名**——混合 KV 管理的 scope 混淆。
+  trigger_surface: vLLM；Gemma-3 + `--disable-hybrid-kv-cache-manager`（sliding-window 层提升为 full-attention 存储）
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+        status: panel7
+      effect:
+        from: 隐状态
+        to: KV状态
+        status: panel7
+    uncertain:
+    - visibility

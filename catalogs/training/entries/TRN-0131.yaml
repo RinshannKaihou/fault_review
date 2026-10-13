@@ -1,0 +1,50 @@
+id: TRN-0131
+legacy_ids:
+- ACT.10
+slug: deepep_dispatch_replay_reorders_rows_wrong_grads
+aliases: []
+title: FullAC 重放 DeepEP dispatch 致 MoE 梯度错路由
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: torchtitan
+    component: FullAC 重放 DeepEP dispatch
+  behavior: FullAC（及未保存 ep_communication 的 RegionAC）backward 重放前向使 DeepEP dispatch 再跑一次，接收槽由原子操作分配、行序可变，梯度却按首次 handle 路由。
+effect:
+  objects:
+  - 梯度
+  detail: routed-expert 与 router 梯度与正确值几乎不相关（cosine 约 0.01–0.03），loss 仅差约 0.0005、曲线照常；使用 FullAC，或 RegionAC 未保存 ep_communication 的 DeepEP MoE 训练时触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/5123
+  kind: github_pr
+relations: []
+original:
+  category: ACT
+  section: ACT
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'DeepEP 的 dispatch op 返回 received rows + 记录行来源的 handle；dispatch 的 backward（combine）与 combine 的 backward（dispatch）都用 handle 路由梯度。FullAC（及 RegionAC 未把 `ep_communication` 存入 save_regions 时）在 backward **重放** block 前向 → dispatch 跑第二次，而 DeepEP 用**原子操作分配接收槽**（`dispatch.cuh:345`）——第二次 dispatch 收到的行序可以不同：grouped GEMM 的激活来自第二次 dispatch、梯度却按第一次的 handle 路由，**每个 token 的梯度遇到另一个 token 的激活与 score**。修复（PR #5123，2026-10-07 merge）= 保存 dispatch/combine 而非重放（SelectiveAC 本就如此）；FullAC 顺带提速 4.8%、代价 +1.1 GiB/MoE 层@16k。'
+  source: 'torchtitan PR #5123（2026-10-07；DSv3 671B 形状 4k token/rank、1 MoE 层实测：routed-expert 权重梯度相对 L2 偏 **1.41**、router 1.20、input 0.93，expert/router 梯度与正确值 cosine 仅 0.01–0.03（不相关）；loss 几乎不显——step-2 loss 6.1263 vs 无 AC 6.1208；新增 2-GPU 测试 main 挂修复过）。https://github.com/pytorch/torchtitan/pull/5123'
+  behavior: '**近乎全错的专家/router 梯度、loss 只差 0.0005 量级**——FullAC MoE 训练的梯度与正确值不相关（cosine~0.02）却无明显 loss 信号，是「曲线还能跑、梯度已毁」的极端实例。与 ACT.08（recompute 不重入 fp8_autocast）/ACT.06（SAR 不重放 in-place 写）同族「**重放的前向 ≠ 原前向**」新断点：那边丢精度上下文/副作用、这边**通信原语的原子序非确定性**使重放天然不可重现；与 MOE.03/CKPT 类的专家错位表象同族但发生在梯度路由而非权重加载。loss-隐匿特性使它同时是 LOSS 域候选，按机制归 ACT。'
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

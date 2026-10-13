@@ -1,0 +1,57 @@
+id: INF-0390
+legacy_ids:
+- '5.43'
+slug: sglang_pd_retract_rebootstrap_recompute_not_pinned_to_bound_prefill_dp_rank
+aliases: []
+title: SGLang P/D 回撤重算未绑定原 prefill DP rank
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: retraction 重算的 DP 路由
+  behavior: retraction 后的 rebootstrap 重算只取客户端提示的 prefill DP rank（多为 None），由普通负载均衡派发；而 decode 侧 KV receiver 按 init 时 DP rank 绑定且复用。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 多 prefill DP 且客户端未 pin 时，重算落到其它 DP rank：sender 与 receiver 各等 300s 超时后请求失败，无 crash；错路由 sender 还覆写 bootstrap 表 room→dp_rank 映射。dp_size==1 或显式 pin 不受影响。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang P/D 分离 + 多 prefill DP + retraction 重算 + 客户端未 pin disagg_prefill_dp_rank（config）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40730
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（SGLang P/D 分离 decode 侧 **true retraction** 后的 rebootstrap 重算请求不携带 prefill DP rank 绑定：#39357 加的 `routed_dp_rank`/`disagg_prefill_dp_rank` 字段取自 `Req.disagg_prefill_dp_rank`——仅是客户端/router 提示、多数部署为 None → 重算被 prefill 普通 load balancer 派发；而 decode 侧 `CommonKVReceiver.init(prefill_dp_rank)` 是键控**绑定**（连接池按 `{addr}_{dp_rank}_{cp}_{tp}` 键化、init 后不重解析、rebootstrap 复用现存 receiver）。重算落到其它 DP rank 时：该 rank 的 sender 为 room bootstrap 却无 decode 注册、decode receiver 等待永不开始的传输——**双侧各等 300s 默认超时后请求失败**；错误路由的 sender 还经 `_register_prefill_dp_rank()` **覆写 bootstrap 表 room→dp_rank 映射**使表不再反映 decode 绑定） · Cov: `NEW`（重算路由键与 KV 接收绑定键断裂子签名） · 触发 `config` · 置信度 `documented`'
+  mechanism: 两个命名空间的键不一致——recompute 路由按 load balancer 决策、KV 传输按 init 时绑定的 prefill DP rank；retraction+rebootstrap 路径只重发计算不复原绑定，#39357 的修复依赖客户端提示而未覆盖默认（无提示）部署形态。
+  source: 'SGLang #40730（2026-09-22 open，含 conn.py/schedule_batch.py/data_parallel_controller.py 行级分析、四种路由配置影响矩阵、双侧超时行为与 bootstrap 表覆写副作用）。https://github.com/sgl-project/sglang/issues/40730'
+  behavior: retraction 后重算请求 **5 分钟级停滞后失败**（KVPoll.WaitingForInput 超时）；无 crash——高 retraction 压力下 P/D 集群周期性请求失败长尾 + bootstrap 表污染累积。`dp_size==1`、客户端显式 pin、follow_bootstrap_room 三种形态不受影响。
+  trigger_surface: SGLang P/D 分离 + 多 prefill DP + retraction 重算 + 客户端未 pin disagg_prefill_dp_rank（config）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 调度/服务：原文 mechanism“retraction+rebootstrap 路径只重发计算不复原绑定”，出错的是重算请求由普通 load balancer 派发的路由决策；KV receiver 按 init 绑定是既有契约，被打破而非出错。visibility 挂起：双侧各等 300s 超时。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

@@ -1,0 +1,50 @@
+id: INF-0452
+legacy_ids:
+- '6.59'
+slug: sglang_hicache_write_through_host_mirror_starvation
+aliases: []
+title: SGLang HiCache write_through 致存储层饥饿
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HiCache host 池回收
+  behavior: write_through 下每个进 device radix cache 的节点立即 pin host 镜像；backup ack 只减引用计数不释放内存；唯一回收器 evict_host 跳过 device 常驻节点。
+effect:
+  objects:
+  - 性能/资源
+  detail: HiCache write_through 配存储后端（如 mooncake）且 host 池小于 device 池时触发；host slot 被 device 常驻节点永久占满，存储层静默饥饿、无法写入新条目，表现为缓存命中率逐渐下降，无 crash。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；HiCache write_through + 存储后端（mooncake 等）+ host 池 < device 池
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33862
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（HiCache write_through + 存储后端：host 镜像立即 pin 且永不释放→存储层静默饥饿死锁） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`--hicache-write-policy write_through` 下每个插入节点立即 pin host 镜像（`write_backup()` 为每个进 device radix cache 的节点分配 host slot，threshold=1）；backup ack 只 `release_host()`（减 `host_ref_counter`，内存仍附 `node.host_value`）；唯一回收器 `evict_host` 拒绝 device-resident 节点（`if not x.evicted: continue`）。host(L2) 池小于 device 池时→所有 host slot 被 device-resident 节点永久占→存储层静默饥饿。'
+  source: 'SGLang PR #33862（2026-08-06 open）。组件 `write_through` host-pool / `evict_host`。https://github.com/sgl-project/sglang/pull/33862'
+  behavior: 无 crash。存储层静默饥饿（无法写入新缓存条目），表现为缓存命中率渐进下降。属「多层缓存引用计数与回收不变式不一致」签名——HiCache 持久化层新子签名。
+  trigger_surface: SGLang；HiCache write_through + 存储后端（mooncake 等）+ host 池 < device 池
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-1007
+legacy_ids:
+- '10.91'
+slug: vllm_thinking_budget_state_holder_stale_state_leak_and_row0_collapse_under_spec
+aliases: []
+title: vLLM thinking budget 状态容器行映射塌缩与陈旧态泄漏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: ThinkingBudgetStateHolder
+  behavior: (a) 零 draft 步 cu_num_tokens 全 0，各请求的 forced </think> 都写进 logits row 0；(b) sync_batch 单向 move 仅在源有 state 时清目标，残留前任 state。
+effect:
+  objects:
+  - 输出分布
+  - 跨请求/跨样本数据
+  detail: thinking_token_budget 批内：请求 0 被插入别人的 </think>，其余请求 budget 不再强制、超预算生成；槽位复用时无 budget 的新请求被按前任预算强插 </think> 截断推理。无任何报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM v0.30.0/main + thinking_token_budget + spec decode（(a) 需"spec 开启且某步零 draft"；(b) 需批内槽位复用）（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59272
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/59273
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1109
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `ThinkingBudgetStateHolder`（thinking budget 的 logits 处理器态容器）两个独立静默缺陷：(a) **行映射塌缩**——spec 解码开启但某步无 draft 时 `_apply_forcing_to_logits` 以 `len(spec_token_ids[i])` 推 `cu_num_tokens`，全为 0 时**每个请求的 forced `</think>` 都写进 logits row 0**：请求 0 被注入别人的 end token、请求 1..n−1 的 thinking budget 完全不强制；(b) **陈旧态泄漏**——`sync_batch` 对 UNIDIRECTIONAL move `i1→i2` 只在 `i1` 有 state 时清 `i2`，新占用者无 budget 而 `i2` 残留前任 state 时被按别人的预算计费、被强插 `</think>`（从未请求 budget）。两缺陷均附 CPU 级单元复现（BatchUpdate 构造、可退出码验证）） · Cov: `var:11.86`（thinking budget 强制结束状态机族——11.86 是预算耗尽点重复循环、11.61 是 MRV2+MTP budget 失联；本条两条是**预算状态的批管理容器缺陷**：行映射塌缩与跨请求陈旧态，同族从"结束序列状态机"扩到"状态容器生命周期"维度） · 触发 `config` · 置信度 `verified`'
+  mechanism: '(a) 无 draft 步的 `cu_num_tokens` 全零推导；(b) unidirectional move 只清源索引条件错误。报告者风格与 #59230/#59250/#59267-#59273 同系（v0.30.0 tag 源码提取 + CPU 单元复现）。'
+  source: 'vLLM #59272（行映射塌缩）与 #59273（陈旧态泄漏）（均 2026-09-29 open，各含 CPU 单元复现脚本）。https://github.com/vllm-project/vllm/issues/59272 · https://github.com/vllm-project/vllm/issues/59273'
+  behavior: 无 crash——(a) **多请求批内 thinking budget 静默失效/错插**：一个请求收到别人的 `</think>`、其余请求预算不再强制（思维链超预算烧 token）；(b) 无 budget 请求被按前任预算强插 `</think>` 截断推理。两者都改变输出语义且无任何报错。
+  trigger_surface: vLLM v0.30.0/main + thinking_token_budget + spec decode（(a) 需"spec 开启且某步零 draft"；(b) 需批内槽位复用）（config）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

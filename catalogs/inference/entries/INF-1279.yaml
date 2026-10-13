@@ -1,0 +1,55 @@
+id: INF-1279
+legacy_ids:
+- K8.2
+slug: specdec_bonus_token_draft_kv_desync
+aliases: []
+title: 推测解码 bonus token 未写入 draft KV 致上下文滞后一位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: 推测解码 bonus token 处理
+  behavior: 提议全部被接受时会从 verifier 采样 bonus token，但对自持 KV 的 proposer（draft model/MTP），该 token 的 K/V 从未在 draft 中生成，draft KV 比被接受序列少一项。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: draft 与 target 上下文永久错位，后续每次提议都基于落后一位的上下文，接受率下降、输出静默偏移；仅在提议全部被接受且 proposer 自持 KV 时触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/4212
+  kind: github_issue
+  resolved_from: 'vLLM #4212'
+relations: []
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`model_on` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 当所有提议 token 都被接受时，会从 verifier 采样一个 "bonus" token；对于自持 KV 的 proposer（draft model / MTP），该 bonus token 的 K/V 从未在 draft model 中生成 → draft KV 比被接受序列**少一项**。vLLM 因此禁用了 bonus token（"causes corrupt KV cache for proposal methods that require KV cache"）。
+  source: 'vLLM #4212。'
+  behavior: draft 与 target 的上下文永久错位，后续每一次提议都基于落后一位的上下文，接受率下降、输出静默偏移。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: model_on——每一步的状态仍自洽，只是位置**滞后**。可捕获：trajectory 族的互相关滞后 / 相移检测（隐藏态轨迹与 token 位置之间存在一致的一位滞后）。会漏检：所有幅值型指标（geometric 范数、statistical 分布矩）——分布不变，只是时间轴平移。与 `cache_position_off_by_one` 的常数相位偏移区别在于：这里是缓存长度短一位造成的**结构性滞后**而非 RoPE 角度偏移。
+  repro: 无 draft model 的单模型路径下，把 desync 施加到 TARGET cache 上：**仅一次**，在第一个 decode 步（`hidden_states` seq-len == 1；prefill 与无 cache 重跑时惰性），从**每一层**裁掉刚写入的最后一行（即 "bonus" token 的 K/V）。此后 cache 正常增长但永远比真实序列少一项，之后每个 token 的 position id 滞后一位（`position_ids = get_seq_length()`）——即编目中的 one-entry LAG。（若每一步都裁剪，cache 会冻结在 prefill 长度，签名会坍缩到 `cudagraph_cache_position_captured_constant` 的停滞形态，故加了一次性守卫。）裁剪在最后一层 post-forward 执行，第一步 logits 保持完整，滞后从下一步开始累积。
+  locus: control-flow
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

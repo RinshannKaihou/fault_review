@@ -1,0 +1,56 @@
+id: INF-1121
+legacy_ids:
+- '12.5'
+slug: merge_precision_loss
+aliases: []
+title: LoRA merge 与运行时 dtype 或运算顺序不一致致精度损失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: peft
+    component: 适配器 merge dtype/运算顺序
+  behavior: 把适配器 merge 进基权重（W += scaling*B@A）时使用与运行时不同的 dtype 或运算顺序，merged 权重与 unmerged 前向之间产生纯舍入级差异。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: merged 与 unmerged 两条路径输出出现细微分歧：起初零星 token 不同，长生成中逐步累积放大；量级可能低于运行时噪声底，单靠隐藏态极难检测。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 加载/文件/config 操作可复现
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/peft/issues/1836
+  kind: github_issue
+  resolved_from: 'peft #1836'
+- url: https://github.com/huggingface/peft/issues/1035
+  kind: github_issue
+  resolved_from: '#1035'
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`model_on` · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: 把适配器 merge 进基权重（`W += scaling*B@A`）时使用了与运行时不同的 dtype 或不同的运算顺序，导致 merge 后的权重与 unmerged 前向之间存在纯舍入级别的差异。
+  source: 'peft #1836、#1035；HF Forum #103986。'
+  behavior: merged 与 unmerged 两条路径的输出出现细微分歧；起初只是零星 token 不同，在长生成中逐步累积放大。
+  trigger_surface: 加载/文件/config 操作可复现
+  signature: ON-manifold 且极其细微：量级仅为一个低秩 delta 的舍入误差，很可能低于运行时噪声底。这是**单靠隐藏态最难检测**的一类，是对检测器灵敏度下限的强测试；geometric / spectral / trajectory 都可能与 `null_*` 对照不可分。
+  repro: weight-clone-restore：先给某个 Linear 加一个极小的低秩 delta（`B@A`，`scale` 默认 1e-3，即"适配器"），再把 merge 后的和整体做 bfloat16 往返舍入。**核验注（实测，非计划内发现）**：该 checkpoint 的发布权重本身就是以 fp32 存储的 bf16 精度值 —— 对**未修改**的基权重直接做 `to(bfloat16).to(float32)` 往返是精确的 no-op（逐参数核验 maxdiff = 0.0）。因此只做基权重 bf16 往返在本模型上与 `null_identity` 不可区分、会静默地无法体现该故障；必须先加上一个非 bf16-exact 的小低秩 delta 再做往返，才能得到真实的非零但极小的舍入残差，这与源目录"低秩 delta 的舍入误差级别……可能低于噪声底"的描述一致。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

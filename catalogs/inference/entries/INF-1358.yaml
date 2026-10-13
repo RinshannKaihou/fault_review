@@ -1,0 +1,58 @@
+id: INF-1358
+legacy_ids:
+- '10.110'
+slug: trtllm_qwen3vl_epd_handoff_drops_timestamp_tokens_mrope_misalignment
+aliases: []
+title: TensorRT-LLM E/PD 交接丢视频时间戳token致mRoPE错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: tensorrt-llm
+    component: E/PD 交接的 prompt 重建
+  behavior: 分离路径 PD 侧重建的 prompt 缺少 per-frame-group 时间戳 token 与 vision 标记，对 encoder 传来的 mRoPE position ids/deltas 无校验即按更短 prompt 切片。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: E/PD 分离部署输入 Qwen3-VL 视频时，视觉 token 位置与 decode 期 mRoPE delta 错位，输出前几个 token 即偏离聚合路径，模型失去时间感但帧内容仍可识别，无任何报错。LLM API 路径触发；trtllm-serve 协议尚不载多模态 handle。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: 'false'
+  trigger_note: TensorRT-LLM MultimodalEncoder E/PD 交接 + Qwen3-VL 视频输入（LLM API 路径）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: '分离路径 prompt 布局与聚合路径分歧，且 mRoPE 张量长度无契约校验；与 Qwen3-VL 视频管线另一处静默错（同模型同周暴露）。来源：TensorRT-LLM #20138（rc25 与 main 同码）。'
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/20138
+  kind: github_issue
+relations: []
+original:
+  mechanism: 分离路径的 prompt 布局与聚合路径分歧，且 mRoPE 张量长度无契约校验。与 10.109 同模型同周暴露 Qwen3-VL 视频管线两处独立静默错。
+  source: 'TensorRT-LLM #20138（2026-10-12 open，合成视频 LLM API 复现 + 聚合/分离输出对照；rc25 与 main 同码）。https://github.com/NVIDIA/TensorRT-LLM/issues/20138'
+  behavior: 无 crash——分离部署下视频问答输出偏离正确结果、时间感丢失。
+  trigger_surface: TensorRT-LLM MultimodalEncoder E/PD 交接 + Qwen3-VL 视频输入（other_stack；LLM API 路径，trtllm-serve 协议尚不载多模态 handle）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（TensorRT-LLM 多模态 E/PD 分离交接（`MultimodalEncoder`→`DisaggregatedParams`→`LLM.generate_async`）：PD 侧重建的 prompt 缺少 per-frame-group 时间戳 token 与 `<|vision_start|>/<|vision_end|>` 标记，而 encoder 侧发来的 mRoPE position ids/deltas 按聚合路径布局生成——PD 侧**不做任何检查地按自己更短的 prompt 长度切片**，视觉 token 位置与 decode 期 mRoPE delta 错位；无错误，输出前几个 token 即偏离聚合路径、模型失去时间感但帧内容仍可识别） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 输出内容
+        to: 输入编码

@@ -1,0 +1,52 @@
+id: INF-0176
+legacy_ids:
+- '1.177'
+slug: ttmetal_clip_grad_norm_undefined_p_decomposition_inf_zero
+aliases: []
+title: moreh_clip_grad_norm 对 inf/0 阶范数计算失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: tt-metal
+    component: moreh_clip_grad_norm 阶数分解
+  behavior: 把 norm_type 拆为整数/小数/符号三部分逐元素计算，该分解只对有限非零阶成立；host 侧仅检查 isnan，inf 与 0 穿透，step2 中 1/inf=0 使 x⁰ 全为 1。
+effect:
+  objects:
+  - 梯度
+  detail: norm_type∈{inf,−inf,0} 时 total_norm 恒为 1.0 或非有限：默认 error_if_nonfinite=False 下全体梯度被无差别按 max_norm 缩放或乘 NaN，梯度裁剪静默失效；为 True 时对有限梯度误报 norm 非有限。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + moreh_clip_grad_norm + norm_type ∈ {inf, -inf, 0}（hw_specific；参数触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55587
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: ttmetal_argmax_comparator_nan_semantics_dtype_split
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`moreh_clip_grad_norm` 把 `norm_type` 分解为整数/小数/符号三部分再逐元素算 `|x|^p·exp(log|x|·decimal)`——该分解只对有限非零阶有意义：`+inf` 使 `floor(inf)-inf=NaN`、`static_cast<uint32_t>(inf)` 未定义；step2 算 `y^(1/norm_type)` 时 `1/inf=0` 使全体 x⁰=1——total_norm 恒 1.0 或非有限，梯度按 `max_norm/(1+1e-6)` 无差别缩放或乘 NaN） · Cov: `var:ttmetal_argmax_comparator_nan_semantics_dtype_split`（1.151 特殊值语义族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: host 侧唯一守卫是 `error_if_nonfinite && std::isnan(norm_type)`，inf 与 0 穿透。inf 是实践中第二常用选择（`torch.nn.utils.clip_grad_norm_` 的 infinity norm）。`norm_type=0` 时每个元素（含 mask 写入 tile padding 的零）贡献 `0^0=1`，per-tensor "和" 变 padding 元素计数。`moreh_norm` 对同三阶有特判而 clip_grad_norm 没有——同库不一致。
+  source: 'tt-metal #55587（2026-09-06 open，IssueType: Bad Outputs，含逐代码路径推导表）；修复 PR #55593。https://github.com/tenstorrent/tt-metal/issues/55587'
+  behavior: 无 crash——`error_if_nonfinite=True` 时对完全有限的梯度报误导性"norm 非有限"错误；默认 False 时全体梯度被乘 `max_norm`（与其大小无关）或 NaN——训练期梯度裁剪静默失效/污染。1.159（dtype= 静默忽略）之后"参数域未验证"族新成员：本次是数学上未定义的阶数穿透分解。
+  trigger_surface: tt-metal + moreh_clip_grad_norm + norm_type ∈ {inf, -inf, 0}（hw_specific；参数触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

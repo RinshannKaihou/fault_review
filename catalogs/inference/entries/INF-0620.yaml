@@ -1,0 +1,56 @@
+id: INF-0620
+legacy_ids:
+- '6.227'
+slug: vllm_cpu_offload_gb_lost_across_enginecore_boundary_noopoffloader
+aliases: []
+title: vLLM cpu_offload_gb 跨进程丢失退化为 Noop 卸载
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: vllm
+    component: cpu_offload_gb 跨进程传递
+  behavior: vllm_config 经 AsyncLLM spawn EngineCore 的 pickle 跨进程传递后，worker 侧收到 cpu_offload_gb=0；auto 后端把零预算静默映射为 NoopOffloader 而不报错。
+effect:
+  objects:
+  - 性能/资源
+  - 可用性/进度
+  detail: --cpu-offload-gb 被接受并回显在参数里，但权重从未卸载：模型大于显存时加载期 OOM；小于显存容差时以 Noop 状态正常服务、offload 整体失效，默认日志无痕迹（仅 DEBUG 级宣告）。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `--cpu-offload-gb > 0` + AsyncLLM/V1 多进程路径（config）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56283
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_hidden_states_kv_budget_overestimate_startup_rejection
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM `--cpu-offload-gb` 被接受、回显在 non-default args（`''cpu_offload_gb'': 15.1`）里，worker 侧 `create_offloader` 却收到 `cpu_offload_gb=0` → 选出 **NoopOffloader**：权重从不卸载、19.33GB checkpoint 全量建上 15.47GB 卡 → 加载期 OOM；NoopOffloader 的选择只在 DEBUG 级日志宣告（`set_offloader`），默认日志里其名字唯一露面处是 traceback——API server 进程内 config 正确（`EngineArgs.create_engine_config()` 打印出 15.1）、全局 offloader 单元可被正确设置，唯一未插桩的链路是 AsyncLLM **无条件** spawn EngineCore（VLLM_ENABLE_V1_MULTIPROCESSING 只管 offline LLMEngine 路径）时 vllm_config 以 pickled kwarg 跨 `context.Process` 边界的传递） · Cov: `var:vllm_hidden_states_kv_budget_overestimate_startup_rejection`（6.136 配置传递/预算丢失族） · 触发 `config` · 置信度 `documented`'
+  mechanism: offload 预算数值在跨进程边界序列化途中归零（报告逐环排除：flag→config 正确、`create_offloader` 对 15.1 返 UVAOffloader、全局单例唯一）；`auto` 后端把零预算静默映射为 Noop 而非报错。
+  source: 'vLLM #56283（2026-09-10 open，含逐环排除实验、DEBUG 级日志掩盖分析与可复现命令：任何大于卡容差的模型 + `--cpu-offload-gb` 大于差值）。https://github.com/vllm-project/vllm/issues/56283'
+  behavior: 本例以加载期 OOM crash 显形，但**静默面真实存在**：小于卡容差的模型会带着"Noop 但没人知道"的状态正常服务（offload 语义整体失效），日志默认无任何痕迹。6.136（hidden-states KV budget 高估启动拒绝）与 6.19（envs 声明/运行时默认分裂）之后"配置值跨边界丢失"族新成员：本条在 multiprocess pickle 边界维度。
+  trigger_surface: vLLM + `--cpu-offload-gb > 0` + AsyncLLM/V1 多进程路径（config）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - visibility

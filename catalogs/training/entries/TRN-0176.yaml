@@ -1,0 +1,56 @@
+id: TRN-0176
+legacy_ids:
+- LOSS.12
+slug: dsv4_indexer_aux_loss_path_grad_none
+aliases: []
+title: torchtitan DSV4 indexer 辅助 loss 缺失致投影无梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: torchtitan
+    component: DSV4 indexer 辅助 loss 未接入
+  - subsystem: 模型定义
+    stack: torchtitan
+    component: Indexer.select 只返回整数索引
+  behavior: indexer 辅助 loss 被临时移除（TODO），Indexer.select() 只返回不带梯度的整数 top-k 索引，idx_q/idx_k/idx_w 投影从主 attention loss 拿不到梯度。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: torchtitan main 上训练 DeepSeek V4 时，三个投影 grad 全为 None、整个训练期停在初始化值，稀疏注意力选 token 的质量从不改进；训练曲线正常、无 crash 无 warning，损害不体现在 loss 上。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-26'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/4802
+  kind: github_issue
+- url: https://github.com/pytorch/torchtitan/pull/4835
+  kind: github_pr
+relations: []
+original:
+  category: LOSS
+  section: LOSS
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'torchtitan DeepSeek V4 的 indexer（DSA 稀疏注意力 token 选择器）辅助训练 loss 被临时移除（`attention.py` L55-57 TODO，等通用 aux-loss 机制 #3864 落地），但 indexer 前向仍在产出 scores：`Indexer.select()` 只返回整数 top-k 索引——**索引不携带梯度**，query/key/weight 三个投影（`idx_q`/`idx_k`/`idx_w`）从主 attention loss 拿不到任何梯度。报告者用 torchtitan 真实 `Indexer` 类做 CPU 函数级核对（PyTorch 2.12）：对 selected values 的 loss 反传后 `values.grad` 非 None、三个投影 `grad` 全 None。通用 aux-loss 机制现已可用（#3864），恢复路径存在但主线未接。'
+  source: 'torchtitan #4802（2026-09-20；CPU 梯度路径核对 + TODO 定位；Matrix-Z97 确认正从 NPU 适配迁移实现、将开 Draft PR）。https://github.com/pytorch/torchtitan/issues/4802 ；修复在途（2026-09-28 补）：PR #4835（2026-09-22）把社区 `AuxLoss` 框架接进 DSV4 CSA——`Indexer.select()` 改返回 topk_indices + **可微 topk_scores**、新增 `SparseIndexerLoss(AuxLoss)` 经 FlexAttention `out_transform` 注入（attention LSE 作 teacher 归一化、teacher detach 保梯度）、`register_aux_loss_zero_hook` 挂进 optimizer post-build；仅 `compress_ratio==4` CSA 层配置；4-GPU（tp2/ep2/spmd_types 路径）smoke 训完，探针确认 `topk_scores.requires_grad=True`、aux loss 累计非零；尚 open 待 review。https://github.com/pytorch/torchtitan/pull/4835'
+  behavior: 无 crash、无 warning，训练曲线正常——DSV4 在 torchtitan main 上的 run 整个训练期 indexer 投影停留在初始化值（等价于随机 token 选择器被冻结），稀疏注意力选 token 的质量从不改进，质量损害不体现在 loss 上。与 RL-KL.04 / MOE.14（aux loss 静默 no-op）同族「**辅助目标缺位而主训练无感**」：那边配置在、执行路径丢，这边路径整个未接且代码内 TODO 自认；与 LOSS.07（零初始化首步全零）同属「合法运行掩盖未训练子模块」。
+  discovery: 2026-09-26 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

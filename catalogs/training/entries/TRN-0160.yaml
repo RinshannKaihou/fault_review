@@ -1,0 +1,59 @@
+id: TRN-0160
+legacy_ids:
+- MOE.11
+slug: global_aux_loss_denominator_uses_current_microbatch
+aliases: []
+title: Megatron 全局 aux loss 分母误用当前微批 token 数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: megatron-lm
+    component: global aux loss 归一化分母
+  behavior: --global-aux-loss 下 expert 计数跨 microbatch 累积，但归一化分母取 ga_steps × 当前 microbatch 有效 token 数，累积分子配了瞬时分母。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 各 microbatch 有效 token 数不同时触发，物理等长 padding 会掩盖触发条件；同 12 token 下 balanced [4,4,4] 与 uneven [6,2,4] 的 router 梯度相对 L2 差 0.25（修复后 2.25e-7），无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-14'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7213
+  kind: github_issue
+relations: []
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron-Core `--global-aux-loss` 开启时，router aux loss 的 expert 计数在微批间**累积**（`global_tokens_per_expert` 跨 microbatch 累加），但归一化分母是 `ga_steps × 当前 microbatch 的有效 token 数`——把「历史每个 microbatch 都有当前 token 数」当作假设。各 microbatch 有效 token 数不同（含物理等长 padding 下）时分母即错：6+2 token 两微批后分子覆盖 8 token、分母却按 `2×2=4` 计，专家频率估计被系统性放大。修复 = 伴随累积计数维护累积 token 数（同 scope all-reduce），或等价换算 `累积计数 × 当前 token 数 / 累积 token 数` 传入 loss helper。
+  source: 'Megatron-LM #7213（open；core_v0.18.2 router.py 定位 + TopKRouter 最小复现：balanced `[4,4,4]` vs uneven `[6,2,4]` 同 12 token、router 梯度相对 L2 差 **0.2500001**，修复后 2.25e-7、FP64 参考 1.33e-15；修复 PR #7214 open 未合并）；#7197（同文本 issue，closed 标 community-request、重命名并入 #7213 跟踪）。https://github.com/NVIDIA/Megatron-LM/issues/7213'
+  behavior: 无 crash、无 NaN——aux loss 数值正常、可下降，但**负载均衡压力随 microbatch 有效 token 分布的方差系统性漂移**：router 梯度带错值，专家均衡目标被过/欠施加；物理等长 padding 完全掩盖触发条件。与 MOE.07（计数经 BF16 buffer 舍入）同为「累积 expert 计数的数值语义错误」但断点不同：那边是**存储精度**（float buffer 转 BF16）、这边是**归一化分母的时序语义**（累积分子配瞬时分母）；「梯度对 microbatch 划分方式敏感」的表现面与 LOSS.09（G 缩放漂移）同型的隐式超参依赖。
+  discovery: 2026-09-14 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 改 MoE路由：rule1 功能域优先，缺陷只出现在 MoE router 负载均衡 aux loss（router.py 的 global_tokens_per_expert 累积）路径上；损失计算 只用于不专属于功能特性的通用 loss。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

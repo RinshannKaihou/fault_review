@@ -1,0 +1,65 @@
+id: INF-0843
+legacy_ids:
+- '8.59'
+slug: vllm_qwen35_kv_scale_checkpoint_route_missing_autoweights_loader
+aliases: []
+title: Qwen3.5 漏重映射 KV scale，fp8 KV 静默用 1.0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: qwen3_5 load_weights 重映射
+  behavior: Qwen3.5 的 load_weights 未调 maybe_remap_kv_scale_name，加载器与 ModelOpt 也不重映射，checkpoint 的 k/v_scale 路由不到运行时参数
+effect:
+  objects:
+  - KV状态
+  - 模型权重
+  detail: 以 --kv-cache-dtype fp8 加载携带校准 KV scale 的 Qwen3.5 家族 checkpoint（如 NVFP4 版）时，无报错，仅加载期一条 WARNING 提示使用 scale 1.0；校准 KV 量化退化为 unit-scale，fp8 KV 精度系统性劣化
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 'vLLM + Qwen3.5 家族 + NVFP4/fp8 携带 `kv_cache_scheme` 校准 scale 的 checkpoint + `--kv-cache-dtype fp8`（修复 PR #54624 前的版本）'
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54623
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0725
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（Qwen3.5 家族所有 `load_weights` 用裸 `AutoWeightsLoader` 且从不调 `maybe_remap_kv_scale_name`（gemma4/gpt_oss/hunyuan_v1 均调）；`AutoWeightsLoader` 与 ModelOpt quant config 自身也不做重映射——checkpoint 的 `...self_attn.{k,v}_scale` 无路由到运行时 `...self_attn.attn.{k,v}_scale`，`--kv-cache-dtype fp8` 对**携带校准 scale 的 checkpoint** 仍静默以 scale 1.0 服务，仅一条 WARNING 提示） · Cov: `var:sglang_compressed_tensors_kv_cache_scheme_scales_dropped` · 触发 `config` · 置信度 `verified`'
+  mechanism: 三重独立缺失叠加：(1) `qwen3_5.py` 全部 `load_weights` 实现直接把 iterable 交给 `AutoWeightsLoader`，不像 `gemma4.py`/`gpt_oss.py`/`hunyuan_v1.py` 那样调用 `maybe_remap_kv_scale_name`；(2) `AutoWeightsLoader`（models/utils.py）自身从不调用该重映射；(3) ModelOpt quant config 无 KV-scale 名字处理。而 `maybe_remap_kv_scale_name` 的默认模式（`\.([qkv])_scale$` → `.attn.\1_scale`）恰好覆盖这个改名——只是没人调用。对照实验：把 checkpoint 的 32 个 scale 张量手工重命名为 vLLM 参数路径即可正常加载（DEBUG 日志可见）。
+  source: 'vLLM #54623 + 修复 PR #54624（2026-08-31 open，RTX 5090 SM120，Qwen3.8-27B hybrid GDN NVFP4 + `--kv-cache-dtype fp8` + FLASHINFER + MTP；unsloth/Qwen3.8-27B-NVFP4 携带 32 个校准 scale、声明 `kv_cache_scheme: {dynamic: false, num_bits: 8, type: float}`、下载量 2.4M）。https://github.com/vllm-project/vllm/issues/54623'
+  behavior: 无 crash、仅 load 期一条 WARNING（`Using KV cache scaling factor 1.0 ... If this is unintended ...`）——**校准 KV 量化静默退化为 unit-scale 量化**，fp8 KV 精度系统性劣化，2.4M 下载量的主流 checkpoint 全体中招。7.52（SGLang compressed-tensors KV scale 丢弃）的 vLLM 侧同构实例：跨栈同模式（"KV scale 名字重映射缺失"），说明这是行业级缺陷模式而非单栈笔误。
+  trigger_surface: 'vLLM + Qwen3.5 家族 + NVFP4/fp8 携带 `kv_cache_scheme` 校准 scale 的 checkpoint + `--kv-cache-dtype fp8`（修复 PR #54624 前的版本）'
+  discovery: 2026-08-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem：取 量化。依据 rule 1（功能域优先）：缺陷只在携带校准 KV scale 的量化 KV 路径（--kv-cache-dtype fp8）上出现，错的是 scale 的路由，词表 量化 明列 scale；权重/检查点 不在功能域优先之列，名字路由只是缺陷所在环节。其余字段与独立判断一致（KV状态 为首项；模型权重 指运行时 k/v_scale 参数停在 1.0，可接受），维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: 权重/检查点
+        status: panel7
+    uncertain:
+    - effect

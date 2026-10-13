@@ -1,0 +1,62 @@
+id: INF-1274
+legacy_ids:
+- K6.9
+slug: mla_absorb_vs_naive_materialization_mismatch
+aliases: []
+title: MLA absorb 路径折叠错误致与 naive 路径数值不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: MLA absorb 的 W^UK/W^UV 折叠
+  behavior: MLA absorb 路径把 W^UK 折进 query 投影、W^UV 折进输出，直接在潜空间做注意力；matmul 重排改变舍入，折叠 bug（RoPE/content 维度切分错、因子转置、投影过期）使其偏离 naive 解压路径。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 原文按机制推断：naive prefill 与 absorb decode 之间出现无告警的数值不一致，潜缓存本身看似有效，长序列上逐渐放大为可见的输出偏差。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2509.21081
+  kind: arxiv
+relations: []
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`model_on` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: MLA 缓存一个低秩潜变量 `c_KV` 加一个解耦的 RoPE key。naive 路径通过 `W^UK`/`W^UV` 解压 `c_KV`；absorb 路径把 `W^UK` 折进 query 投影、把 `W^UV` 折进输出，直接在潜空间做注意力。重排这些 matmul 会改变舍入，而折叠 bug（RoPE/content 维度切分错误、因子转置、投影过期）会让 absorb 解码偏离 naive prefill，而潜缓存本身看起来仍然有效。
+  source: 'TyphoonMLA arXiv:2509.21081；vLLM PR #12601。'
+  behavior: 源文档未单列该字段；由机制可得——prefill 与 decode 之间出现无告警的数值不一致，长序列上逐渐放大为可见的输出偏差。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: model_on——MLA 层注意力子层输出的在流形小角度漂移；absorb 路径的 K/V 重建与 naive 参考之间余弦 < 1 并随序列长度增长。可捕获：geometric 的余弦/小角度漂移 + trajectory 的长度相关累积；会漏检：幅值阈值型 statistical 探针（漂移量级贴近运行时噪声底、形态平滑）。非 MLA 模型上只有合成的低秩类比能复现。
+  repro: （源文档指明的唯一路径）用合成低秩类比替代：在非 MLA 的标准模型上把某层 K/V 经一对低秩因子 `W^UK`/`W^UV` 压缩再重建，并在重建时故意转置/错切 RoPE-content 维度，制造 absorb-vs-naive 的等价性破缺；因不是真实 MLA 架构，仅算 partial。
+  locus: eviction-compression
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '维持 subsystem=算子/内核。缺陷在 absorb 路径的 matmul 重排与 W^UK/W^UV 折叠（RoPE/content 维度切分、因子转置、投影过期），属注意力计算实现；来源 vLLM PR #12601 为推理后端实现。stack=通用 可接受（论文机制 + 单个 PR）。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

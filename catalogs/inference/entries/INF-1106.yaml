@@ -1,0 +1,55 @@
+id: INF-1106
+legacy_ids:
+- '11.83'
+slug: flashinfer_topk_minp_sampling_indices_per_request_threshold_row_mismatch_oob_read
+aliases: []
+title: flashinfer top-k/min-p 采样阈值按错行读取
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: flashinfer
+    component: TopK/MinP 采样 kernel 阈值索引
+  behavior: top-k/min-p 采样 kernel 用 top_k_arr[bx]/min_p_arr[bx] 按输出位置取阈值，而非 indices[bx] 对应的数据行；长度校验只对照 probs 而非 indices。
+effect:
+  objects:
+  - 输出分布
+  detail: 传入 indices（gather/重排批）且 top_k/min_p 为 per-request 张量时，每个输出行套用错误行的阈值，采样分布静默错误；len(indices) 大于 probs 行数时读越阈值张量末尾。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: flashinfer 采样 API + `indices` 非 None + top_k/min_p 为 per-request tensor（yes：纯内核级、无硬件依赖）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5339
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（flashinfer `top_k_sampling_from_probs` / `min_p_sampling_from_probs` 在 `indices` 参数与 per-request 阈值张量（`top_k`/`min_p` 为 tensor）同时使用时**按输出位置（`bx`）而非采样数据行（`row_idx`）查阈值**：`TopKSamplingFromProbKernel` 用 `top_k_arr[bx]`、`MinPSamplingFromProbKernel` 用 `min_p_arr[bx]`，而 `top_p_sampling_from_probs` 与 `top_k_top_p_sampling_from_probs` 自 #923 起已改用 `row_idx`（`indices[bx]`）——**四个采样入口对"per-request 张量"语义不一致**，git 考古表明是 #431 引入时漏改的两处而非有意差异。后果：(a) gather/重排批（indices≠恒等）下每个输出行用错行的阈值，采样分布**静默错误**（实测 `drawn([1,1,4],[2,2,2])` 全部输出按 row-2 的 k=4 采样出 4 类、`drawn([1,4,4],[0,0,0])` 后两个输出按错误的高 k 采出多类）；(b) `len(indices) > probs.size(0)` 时 `csrc/sampling.cu` 只对照 probs 校验长度，top-k/min-p 内核**读过阈值张量末尾**（OOB 读）） · Cov: `NEW`（采样入口索引语义分裂子签名） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 内核把"输出槽位坐标"与"数据行坐标"混用——indices 参数的存在使两者分离（输出 i 采样自 probs 行 indices[i]），top-p 系已统一按 row_idx 取 per-request 参数，top-k/min-p 系仍按输出位取；长度校验也按 probs 而非 indices 做，越界读成为第二缺陷。
+  source: 'flashinfer #5339（2026-09-19 open，含四入口 kernel 代码对照（L870/L1002/L1125/L1223 行号）、`git log -S` 溯源（#923 vs #431）、两组概率级复现（2000 seed 采样集合统计）与 OOB 读条件）。https://github.com/flashinfer-ai/flashinfer/issues/5339'
+  behavior: 无 crash、无 NaN——**采样分布静默错误**：重排/gather 批下每行套用错误阈值（top-k 或 min-p），低温下表现为偶发"不该出现的 token"；OOB 读分支下阈值读自未定义内存。11.x 采样族（post-forward 结构性盲点）新成员：本条在**索引重排 × per-request 参数查找**维度，与 11.76（extract_hidden_states 只读第 0 列）同属"坐标语义错位"类；隐藏态监控原理上看不见（纯采样层），只能靠分布级统计对拍。
+  trigger_surface: flashinfer 采样 API + `indices` 非 None + top_k/min_p 为 per-request tensor（yes：纯内核级、无硬件依赖）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：各字段与原文一致（top_k_arr[bx]/min_p_arr[bx]、长度校验只对照 probs、len(indices)>probs 行数时 OOB 读）；采样 kernel 归 解码/采样，stack=flashinfer 正确，未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

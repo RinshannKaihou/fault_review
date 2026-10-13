@@ -1,0 +1,57 @@
+id: INF-0706
+legacy_ids:
+- '7.33'
+slug: sglang_dspark_draft_quantized_lm_head_shape_dtype_mismatch
+aliases: []
+title: DSpark draft 未处理量化 lm_head，启动崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: DSpark draft lm_head 投影
+  behavior: draft 借用 target 的 lm_head，直接对 .weight 做 dense matmul；lm_head 为 uint8 packed 时 K 维错误、激活被转成 uint8，采样 buffer 也取 uint8。
+effect:
+  objects:
+  - 可用性/进度
+  detail: target 检查点 lm_head 已量化（如 ModelOpt NVFP4）且启用 DSpark 推测解码时，CUDA graph capture 与 eager 均报 mat1 and mat2 shapes cannot be multiplied，server 启动即 crash。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang；DSpark spec decode + target checkpoint with quantized lm_head（NVFP4/ModelOpt export）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34742
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（DSpark draft 借用 target 量化 lm_head 时 uint8 packed weight 被 dense matmul 错误解码） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: DSpark draft 借用 target 的 `lm_head` 并通过 dense matmul on `.weight` 投影。当 target 检查点量化 lm_head（如 ModelOpt NVFP4 export），weight 被打包为 `uint8 [vocab, hidden/2]`，matmul 获得错误 K，`hidden.to(weight.dtype)` cast 将 bf16 activations **重解释为 uint8**。CUDA graph capture 时 `mat1 and mat2 shapes cannot be multiplied (51x5120 and 2560x248320)`。eager 路径同样失败。draft sampler 的 static `corrected_out` buffer 和 memory probe 从 `lm_head.weight.dtype`（uint8）取 dtype，导致 uint8 logits buffer 和 2x undercount。
+  source: 'SGLang #34742（2026-08-13 open PR）。27G NVFP4 (W4A4) checkpoint，RTX PRO 6000 Blackwell SM120。https://github.com/sgl-project/sglang/pull/34742'
+  behavior: 'server 启动即 crash（`RuntimeError: mat1 and mat2 shapes cannot be multiplied`）。修复：dispatch 到 `quant_method.apply` when head is quantized。'
+  trigger_surface: SGLang；DSpark spec decode + target checkpoint with quantized lm_head（NVFP4/ModelOpt export）
+  discovery: 2026-08-13 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 为 解码/采样 vs 量化：rules“触发条件不是对象”——量化 lm_head 是触发条件，出错代码是 DSpark draft 借用 lm_head 时直接 dense matmul（原文修复：head 量化时 dispatch 到 quant_method.apply，改在 draft 投影处），维持 解码/采样。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

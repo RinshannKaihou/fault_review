@@ -1,0 +1,53 @@
+id: INF-1002
+legacy_ids:
+- '10.86'
+slug: transformers_gemma1_hidden_activation_guard_removed_exact_gelu_silently_since_v4_48
+aliases: []
+title: transformers≥4.48 Gemma 1 静默改用 erf GELU
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: transformers
+    component: GemmaConfig hidden_act 守卫
+  behavior: '#35235 删去将 hidden_act="gelu" 改为 gelu_pytorch_tanh 的守卫，以 tanh 近似训练的 Gemma 1.0 checkpoint 按字面执行 exact erf GELU，无警告。'
+effect:
+  objects:
+  - 隐状态
+  - 输出分布
+  detail: transformers ≥v4.48.0 加载 gemma-2b/7b/-it、codegemma-2b 时输出静默偏离训练分布，质量小幅但系统性退化，跨版本评测不一致；Gemma 1.1、Gemma 2 不受影响。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers ≥v4.48.0 + Gemma 1.0 / CodeGemma-2B checkpoint（config：加载该族 checkpoint 即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/49051
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1155
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（transformers 自 **v4.48.0** 起（#35235 移除 `hidden_activation` 守卫）对 **Gemma 1.0 原 checkpoint（gemma-2b/7b/-it、codegemma-2b）静默改用 exact erf GELU**，而这些模型训练时用的是 `gelu_pytorch_tanh` 近似——无任何警告。受影响 checkpoint 的 config `hidden_act: "gelu"` 在 v4.47.1 被守卫改写为 `gelu_pytorch_tanh`、v4.48.0 起按字面执行 exact erf。Gemma 1.1/CodeGemma 7B-it/Gemma 2 不受影响（config 本身写明 tanh）。版本 bisect 精确到 v4.47.1→v4.48.0；独立 Rust 实现（candle-mi `validate_gemma_forward.rs`）交叉验证暴露） · Cov: `var:sglang_glm53_flash_pinned_transformers_missing_glm5_next_processor_degrades_tokenizer`（12.39 版本 pin 摩擦谱系——本条在激活语义维度：跨版本 unpublished 契约丢失） · 触发 `config` · 置信度 `verified`'
+  mechanism: 'Gemma 1 checkpoint 的 `hidden_act` 字面值 `gelu`（exact）与训练时实际激活（tanh 近似）不一致，历史守卫代码（`if hidden_act == "gelu": hidden_act = "gelu_pytorch_tanh"`）承载这一 unpublished 事实；#35235 清理时删守卫未发现该隐含契约。erf-GELU 与 tanh-GELU 逐元素差虽小（~1e-3 量级），但对以 tanh-GELU 训练的权重是系统性分布位移。'
+  source: 'transformers #49051（2026-09-23 open，含版本 tag bisect 表（v4.47.1 有守卫/v4.48.0 无）、受影响 repo 清单、candle-mi Rust 交叉验证、维护者确认修复方向（config post-init 恢复映射并 warn））。https://github.com/huggingface/transformers/issues/49051 （**2026-09-26 回访**：issue 已 closed/completed（2026-09-25）；末轮评论确认修复路径——`GemmaConfig.__post_init__`（modular_gemma.py）恢复 `gelu→gelu_pytorch_tanh` 映射并 warn，覆盖 from_dict/Hub 加载全体受影响人群；报告者以四树×CPU/GPU×F32/BF16 十二腿 verifier 实测两修复 PR；维护者另关闭了两个 AI bot PR、由报告者按该方向提 PR。**closed+修复方向确认不等于已发布版本**，含修复的 release 待查。）'
+  behavior: 无 crash——**受影响 Gemma 1 checkpoint 的输出自 v4.48.0 起静默偏离训练分布**：质量退化幅度小但系统性，用户无从归因（升级 transformers 与质量下降间隔可能数月）；复现/评测对比跨版本不一致。
+  trigger_surface: transformers ≥v4.48.0 + Gemma 1.0 / CodeGemma-2B checkpoint（config：加载该族 checkpoint 即触发）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,58 @@
+id: INF-1252
+legacy_ids:
+- K4.5
+slug: trtllm_ptuning_fake_id_reuse_collision
+aliases: []
+title: TRT-LLM p-tuning fake id 键碰撞，复用他人软提示 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tensorrt-llm
+    component: KV 复用块匹配键（p-tuning）
+  behavior: KV 复用只按 token id 匹配块；p-tuning 虚拟 token 用超出词表的 fake id，真正条件在 prompt-embedding 表里被缓存键忽略，省略 extra_ids 时不同 embedding 撞到同一节点
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: embedding 不同但 fake id 相同的请求 B 复用 A 的虚拟 token KV，被 A 的软提示条件化，输出看似正常但遵循另一套 prompt-tuning 的指令倾向
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: TensorRT-LLM KV-cache-reuse 文档（p-tuning / extra_ids 章节）。
+relations:
+- kind: var
+  target: INF-0395
+original:
+  category: KV4
+  section: KV §4 cross-request（跨请求，缓存键 / 汏染）
+  meta: '`model_on` · Cov: `var:vllm_multimodal_cachekey_collision` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: KV-reuse 按输入 token id 匹配块；在 p-tuning 下，虚拟 token 用的是大于词表大小的 fake id，而真正的条件信息在 prompt-embedding 表里——这部分被「仅按 id」的缓存键完全忽略。两个 embedding 不同但 fake id 相同的请求会哈希到同一个 reuse 节点，于是请求 B 复用了 A 的虚拟 token KV。官方缓解手段是给每个 token 加 `extra_ids`；省略它就重新引入碰撞。
+  source: TensorRT-LLM KV-cache-reuse 文档（p-tuning / extra_ids 章节）。
+  behavior: 源文档未给出独立的「行为效应」条目；按机制，B 请求实际被 A 的软提示条件化，输出看起来正常但遵循了另一套 prompt-tuning 的指令倾向。
+  trigger_surface: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  signature: on-manifold（model_on）——虚拟 token 位置携带的是另一份 embedding 产生的 K/V，范数与谱形都落在健康流形上，只是落错了簇；相对「用正确 embedding 重跑」的逐位置余弦偏低。捕获者：geometric（参考对齐后的逐位置余弦）、trajectory（前缀段方向偏移）、cheap（recompute-oracle）。漏检者：statistical / spectral / infotheoretic 的无参考单点判据——这是本项目 model_on 类故障的典型盲区：一切「像健康激活」的度量都会通过。
+  repro: 用 `inputs_embeds` 路径喂入一段软提示 embedding，抓取其虚拟 token 段的 K/V；再换一段不同的软提示前向，用单个 `self_attn` pre-hook 把虚拟 token 段的 cached K/V 换成第一段捕获的张量。
+  locus: '`cross-request`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

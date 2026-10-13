@@ -1,0 +1,60 @@
+id: INF-1143
+legacy_ids:
+- '12.27'
+slug: ttmetal_dit_weight_cache_drops_non_parameter_derived_state
+aliases: []
+title: tt-metal tt_dit 权重缓存丢失非 Parameter 派生状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: tt-metal
+    component: tt_dit Module.save/load
+  behavior: Module.save/load 只序列化 named_parameters()，_prepare_torch_state 派生的宿主侧非 Parameter 值不进 weight cache、load 时也不重算，回退为构造器默认值。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 使用 weight cache 时 cached 与非 cached 部署行为静默分歧，无错误、无 shape mismatch、无日志；实例：LTX-2.5 text encoder 的 prompt adherence 在每次 cached run 被毁。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal tt_dit + `Module.save/load` + 模块在 `_prepare_torch_state` 派生非 Parameter 状态（cache 使用即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55014
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1131
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（tt_dit `Module.save/load` 只序列化 `named_parameters()`——`_prepare_torch_state` 内从 checkpoint 派生的**宿主侧非 Parameter 值**（buffer/标量/配置派生物）不进 weight cache、load 时也不重算，**静默回退构造器默认值**：无错误、无 shape mismatch、无日志。`Module.__setattr__` 的 else 分支显式把这些值排除出 `_children/_parameters` 注册表） · Cov: `var:sglang_update_weights_from_disk_silent_weight_drop`（12.15 非 Parameter 状态丢失族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`Module.load(cache_dir)` 与 `load_torch_state_dict` 的等价性不变式只对 parameters 成立；一次实害：LTX-2.5 text encoder 的 prompt adherence 在**每次 cached run** 被毁（已修）；树中另有 4 处针对同一根因的独立 ad-hoc workaround，框架层面仍允许该失败模式（§4/§6）。与 1.132 同"工具存在但未接线"模式。'
+  source: 'tt-metal #55014（2026-09-01 open，含 module.py:75/94-98/213 行级机制、LTX-2.5 实害案例与 4 处 workaround 清单）。https://github.com/tenstorrent/tt-metal/issues/55014'
+  behavior: 无 crash——cached 与非 cached 部署**行为分歧**（静默）：凡依赖派生宿主状态的模块，cache 命中即性能/行为退化且完全不可见。属「**序列化注册表 ≠ 模块状态**」：12.15（SGLang named_parameters 排除 VAE buffers）的 tt-metal 同构——两栈独立命中同一抽象缺口（"状态 = parameters"的隐含假设）。
+  trigger_surface: tt-metal tt_dit + `Module.save/load` + 模块在 `_prepare_torch_state` 派生非 Parameter 状态（cache 使用即触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：title/component/behavior/detail 都有原文依据（只序列化 named_parameters、_prepare_torch_state 派生值回退构造器默认值、LTX-2.5 text encoder prompt adherence 在每次 cached run 被毁）。visibility 我独立判断为 质量退化，复核后维持 静默错误：原文强调“无错误、无 shape mismatch、无日志”“完全不可见”。未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

@@ -1,0 +1,58 @@
+id: INF-1281
+legacy_ids:
+- K8.4
+slug: specdec_eagle_lookahead_slot_uncontamination
+aliases: []
+title: vLLM V1 未给 EAGLE draft token 预留 KV 槽致覆盖
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: V1 KV 槽分配（lookahead）
+  behavior: V1 只为 target 验证 token 分配 KV 槽，未为 EAGLE draft head 提议的 token 分配；因分页 block_table 跨层共享，draft head 把 K/V 写进了从未为它保留的槽。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 已验证位置的 KV 被覆盖，后续 token 基于被污染的上下文生成，输出静默错误、无报错；仅在 vLLM V1 启用 EAGLE 推测解码时出现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/16370
+  kind: github_pr
+  resolved_from: 'vLLM PR #16370'
+- url: https://github.com/vllm-project/vllm/issues/15901
+  kind: github_issue
+  resolved_from: 'issue #15901'
+relations: []
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: vLLM V1 最初只为 target model 的验证 token 分配 KV 槽，而不为 EAGLE draft head 提议的 token 分配；由于分页 `block_table` 跨层共享，draft head 把 K/V 写进了从未为它保留的槽。修复方式是把 `num_lookahead_tokens` 传入 `allocate_slots`。
+  source: 'vLLM PR #16370（issue #15901）。'
+  behavior: 已验证位置的 KV 被 draft 写入覆盖，后续 token 基于被污染的上下文生成，输出静默错误。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: infra_off——在被污染位置处出现突兀的不连续（trajectory 跳变 + spectral 能量偏移）。可捕获：trajectory 的曲率/位移突变与 spectral 能量谱变化；cheap 的逐位置差分探针也能定位。会漏检：全序列平均的 statistical 指标（单点污染被稀释）。
+  repro: KV 钩子用下一（draft）步的 K/V 覆写刚验证位置的 K/V。无分页 `block_table` 与真实 EAGLE 头的单模型路径只能复现"被验证槽被后继步写脏"的数值后果，故为 partial。
+  locus: control-flow
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

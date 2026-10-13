@@ -1,0 +1,55 @@
+id: INF-1305
+legacy_ids:
+- K9.14
+slug: chunked_prefill_position_ids_wrong_rope
+aliases: []
+title: chunked prefill 后续 chunk 位置编号错误致 RoPE 偏移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: transformers
+    component: 分块预填充 position_ids 设置
+  behavior: chunked prefill 实现为第一个 chunk 之后的各 chunk 错误设置 position_ids，偏移由 chunk 边界派生、结构化且非恒定，使这些 token 被施加错误的 RoPE 旋转。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 长 prompt 走 chunked prefill 时输出质量下降，短 prompt（单 chunk）正常；无报错。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: KV 子系统场景构造
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/43082
+  kind: github_issue
+  resolved_from: 'transformers #43082'
+relations: []
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: chunked-prefill 实现为第一个 chunk 之后的各 chunk **错误设置 `position_ids`** → 这些 token 被施加了错误的 RoPE 旋转 → 输出劣化。需与两个近邻故障区分：`left_padding_cache_position_desync` 的偏移由 padding 派生，`cache_position_off_by_one` 是**恒定**偏移（相对位置意义上近乎 null）；而这里的偏移**由 chunk 边界派生**，因此是结构化、非恒定的。
+  source: 'transformers #43082（CLOSED 2026-01-03，"chunked prefill implementation is incorrect"）。'
+  behavior: 长 prompt 走 chunked prefill 时输出质量下降，短 prompt（单 chunk）正常；无报错。
+  trigger_surface: KV 子系统场景构造
+  signature: off-manifold——**chunk 边界位置上的 RoPE 相位误差（结构化、非恒定）**。因为只有部分序列被偏移，跨边界的 query-key 相对相位全部改变，不会像恒定偏移那样被相对位置不变性抵消（已在原型上验证 prefill 非 null）。检测面：trajectory 族在边界处出现相位不连续；geometric 族看到边界之后的隐藏态偏离第一 chunk 的流形；per-position statistical 度量在边界处有阶跃。全序列聚合的 cheap 度量灵敏度低。
+  repro: 单钩子实现——在 `model.model.rotary_emb` 上挂 forward_pre_hook（arg/kwarg 处理与 cache_position_off_by_one 注入器相同），在每次 rotary 调用覆盖的 T 个位置中，令 `position >= floor(boundary_frac * T)` 的位置 `+= offset`，即"第二个 chunk"被当作晚 `offset` 个位置开始来旋转。参数守卫：`boundary_frac` 必须在 (0,1) 开区间（0.0 会偏移每个位置退化为已验证近 null 的恒定平移，1.0 则一个都不偏移），`offset` 必须非零。这是**prefill 故障**：单进程路径不真正切分 prefill，故在一次整体前向内模拟边界伪影；它同时扰动 extraction 重跑，这一点是忠实的——真实 bug 损坏的是前向计算本身而非持久化的 cache。
+  locus: index-position
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

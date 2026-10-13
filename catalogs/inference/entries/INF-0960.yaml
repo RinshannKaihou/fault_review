@@ -1,0 +1,57 @@
+id: INF-0960
+legacy_ids:
+- '10.44'
+slug: sglang_tool_call_array_nonobject_entry_discards_valid_neighbors
+aliases: []
+title: SGLang tool 数组含非 object 项时整批丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: sglang
+    component: parse_base_json
+  behavior: parse_base_json 对 action 数组逐项调用 act.get("name") 而不做 isinstance 检查，非 object 条目抛 AttributeError，上层异常处理丢弃整批结果而非只跳过畸形项。
+effect:
+  objects:
+  - 输出内容
+  detail: 模型输出的 tool-call 数组含 "junk"、[1,2]、null 等非 object 条目时，旁边格式良好的调用一并消失（零 tool call），异常被吞、对话照常继续，agent 表现为该调用时没调用。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang function calling + 模型输出含非 object 条件的 tool-call 数组（模型行为即触发，无需恶意输入）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-01'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser）：暂归 调度/服务 的 API/前端，但 parser 缺陷与请求调度、批处理无关，单列便于聚类
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37283
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0958
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（tool-call 数组含一个**非 object 条目**（`"junk"`/`[1,2]`/`null`/`[[]]`）时，`BaseFormatDetector.parse_base_json` 的 `act.get("name")` 直接对非 dict 调 `.get` 抛 AttributeError——异常处理把旁边**格式良好的有效 tool call 一并静默丢弃**：`[{"name":"get_weather",...}, "junk"]` → 零 tool call；无需恶意构造，模型输出轻微畸形数组即普通行为） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 假设致 tool call 丢失族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`python/sglang/srt/function_call/base_format_detector.py:83` 对 `action` 数组逐项 `act.get("name")` 无 isinstance 检查；非 object 项抛 AttributeError 后上层把整批结果弃掉——单条畸形的**失败粒度是整批而非单项**。与 10.42（parser 假设通道终止符→丢 tool call）互补：彼条是流式分帧假设、本条是批量解析的异常粒度；两者共同点都是"合法邻居为畸形邻居陪葬"。'
+  source: 'SGLang #37283（2026-08-31 open，`[{"name":"get_weather","arguments":{"city":"Paris"}}, "junk"]` 最小复现 + 四类非 object 条目的 AttributeError 栈）。https://github.com/sgl-project/sglang/issues/37283'
+  behavior: 无 crash（异常被吞）——模型正确请求的工具调用静默消失，对话继续但工具链断流；对 agent 是"该调用时没调用"。属「**批解析的单点畸形 → 整批丢弃**」：修复方向是逐项隔离（跳过畸形项保留有效项）而非整批回滚。
+  trigger_surface: SGLang function calling + 模型输出含非 object 条件的 tool-call 数组（模型行为即触发，无需恶意输入）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

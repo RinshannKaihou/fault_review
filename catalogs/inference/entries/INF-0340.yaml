@@ -1,0 +1,53 @@
+id: INF-0340
+legacy_ids:
+- '4.24'
+slug: vllm_gfx1151_rocm_attn_decode_output_depends_on_previous_requests
+aliases: []
+title: vLLM gfx1151 ROCM_ATTN decode 输出依赖先前请求
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: ROCM_ATTN decode 内核
+  behavior: ROCM_ATTN decode 内核疑在请求间保留设备态（如工作区/tiling 状态未清零或按历史长度参数化），具体载体待上游定位。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: gfx1151 上 max_num_seqs=1、eager、关前缀缓存的完全串行配置下，20 次变长 filler 后同一 greedy probe 的 decode 第 5 步 logprob 出现 4 个值、completion 2 种，prefill 首 token 20/20 恒定。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm + gfx1151 + ROCM_ATTN decode + 先前请求历史（hw_specific：RDNA 3.5 实测）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57493
+  kind: github_issue
+relations: []
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（AMD gfx1151（Radeon 8060S，RDNA 3.5）上 `ROCM_ATTN` 后端：`max_num_seqs=1`、enforce_eager、prefix caching 关闭的**完全串行**配置下，同一固定 greedy probe 请求的** decode 步输出依赖此前跑过什么请求**——20 次变长 filler 后 probe 的 logprob[5]（decode step 5）出现 4 个不同值、completions 2 种（14×''…capital of Spain is Madrid'' vs 6×''…capital of Germany is Berlin''）；而 prefill 驱动的 logprob[0] 恒定（20/20 同值）——**缺陷锁定在 decode 路径的跨请求状态残留**，非 prefill 非确定、非 batch 交互（无并发批）。TURBOQUANT 因与 DECODER AttentionType 不兼容被 override 为 ROCM_ATTN 后触发） · Cov: `NEW`（单序列 decode 内核跨请求状态泄漏子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: prefill 驱动 token 恒定而 decode step 5 翻转，排除输入编码与首层归约差异；单序列 + eager + 无前缀缓存排除调度/缓存复用——指向 ROCM_ATTN decode 内核自身在请求间保留的设备态（如工作区/tiling 状态未清零或按历史长度参数化），具体载体待上游定位。
+  source: 'vLLM #57493（2026-09-18 open，bug/rocm/quantization，含 20 轮 filler+probe 稳健性脚本、distinct logprob/completions 统计输出与 assert 化自检）。https://github.com/vllm-project/vllm/issues/57493'
+  behavior: 无 crash、无 NaN——greedy 输出非确定且**由请求历史决定**（同一提示在不同工作负载下得到不同答案）；对评测、回归对拍与确定性审计全部失效。4.12（跨构建 near-tie 翻转 + worker 级非确定）与 4.23（Mamba cache_mode=all 非确定）之后非确定族新成员：本条在 **decode 路径 × 跨请求历史依赖**维度、且以"prefill 恒定 vs decode 翻转"完成路径级二分。
+  trigger_surface: vLLM ROCm + gfx1151 + ROCM_ATTN decode + 先前请求历史（hw_specific：RDNA 3.5 实测）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

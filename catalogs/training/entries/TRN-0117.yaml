@@ -1,0 +1,60 @@
+id: TRN-0117
+legacy_ids:
+- OPT.17
+slug: tp_sharded_param_unmarked_skipped_by_grad_norm_filter
+aliases: []
+title: softmax_offset 未标 TP 分片致 grad norm 少算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: softmax_offset 的 TP 分片标记
+  behavior: softmax_offset 逐本地 head 创建、实为 TP 分片参数，却未标 tensor_model_parallel；_filter_grads_for_norm 只在 TP rank 0 保留它，其余 rank 梯度被漏计。
+effect:
+  objects:
+  - 梯度
+  - 指标/日志
+  detail: GPT-OSS learnable attention sink + TP>1 时 grad norm 偏小（2-rank repro 得 3 而非 5），该触发的 clip 被跳过，全部参数裁剪强度漂移；相对误差约 1e-3、随 head 分布变化，无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7530
+  kind: github_pr
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `DotProductAttention.softmax_offset`（`softmax_type="learnable"`，GPT-OSS learnable attention sink）按**每本地 head 一项**创建——本质是跨 TP head-sharded 参数，却**从不标 `tensor_model_parallel`**（TEDotProductAttention + TE 2.15 同样漏标）。`MegatronOptimizer` 的 `_filter_grads_for_norm`（optimizer.py:299）按 `param_is_not_tensor_parallel_duplicate` 只在 **TP rank 0** 保留该参数：其余 rank 的 sink 梯度被从 grad-norm 里**静默丢弃**。2-rank repro：sink 梯度 3 与 4 → norm 算出 3 而非 5；`clip_grad=4` 时 clip 被跳过（scale 1.0 而非 0.8）。真实小 attention 块：norm 1.22608447 vs 1.22774088，一步 clipped 更新后输出误差 2.4e-4——**该 norm 用于裁剪全部参数**。修复 = 给 `softmax_offset` 设 `tensor_model_parallel=True, partition_dim=0`。同类错误：#5916（expert grouped-linear 梯度被 clip norm 漏计，2026-07-25 已修）。
+  source: 'Megatron-LM #7452（2026-09-17；finding 8，166 行 CPU/Gloo repro 把 fused multi-tensor L2 kernel 换 CPU sum 后跑真实 `clip_grads.get_grad_norm_fp32` + Gloo collective；Bridge GPT-OSS GB200 recipe 用 TP=2 CP=4 暴露面确认）。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；2026-09-20 补：dundysm 认领 finding 8（计划 `softmax_offset` 标 `tensor_model_parallel`，与条目修复方向一致），修复 PR 待开出。修复 PR #7530 已开（2026-09-22 补：`mark learnable softmax_offset as tensor parallel for clip norm`，自述「Fixes Finding 8 of #7452 only」），尚未 merge。https://github.com/NVIDIA/Megatron-LM/pull/7530'
+  behavior: 无 crash、无 NaN——grad norm 略偏小、clip 阈值行为错位，所有共享该 norm 的参数的裁剪强度漂移；误差量级小（1e-3 相对）且随 head 数分布变化，极难从曲线上归因。与 OPT.09（clip 读错张量）/OPT.13（clip 平均不相交专家范数）/OPT.16（混 dtype 列表）同族「clip 路径的参数归属/几何假设破裂」的第 4 个实例，这边断点是**参数未标的 TP 分片标志**；与 MOE.08（负载均衡 hook 漏扫 mtp_layers）同型「过滤器按名字/标志白名单、新参数不在名单」。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计通过，维持原判。subsystem=并行切分 依据原文修复“给 softmax_offset 设 tensor_model_parallel=True, partition_dim=0”——缺的是 TP 分片标志；title/behavior/detail 中 3 而非 5、clip 被跳过、1e-3 相对误差、无 crash 无 NaN 均有原文依据。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

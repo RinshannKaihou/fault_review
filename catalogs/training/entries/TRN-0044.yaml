@@ -1,0 +1,61 @@
+id: TRN-0044
+legacy_ids:
+- PAR.16
+slug: ddp_normalization_shrinks_aux_loss_grad_dp_factor
+aliases: []
+title: Megatron global aux loss 梯度被 DDP 缩小 DP 倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: megatron-lm
+    component: global-aux-loss 梯度归约
+  behavior: --global-aux-loss 把已全局归一化的 aux loss 梯度交给 DDP 归约，DDP 按 1/DP 平均；该梯度是各 rank 同份的标量损失梯度，应 SUM 却被 AVG。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 无 crash，loss 曲线无异常；DP=2 时 aux 梯度 norm 0.3794 vs 正确 0.7588。aux loss 有效系数随 DP 度缩小，负载均衡压力不足、专家分布漂向不均衡，DP 扩容即改变训练目标；Qwen3-Next Bridge recipe 走该路径。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: aux_loss_normalization_domain
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `pretrain` · Cov: `var:aux_loss_normalization_domain` · 置信度 `documented`'
+  mechanism: Megatron `--global-aux-loss` 的 aux 梯度路径把全局（跨 microbatch 累积、已对 aux loss 归一化的）aux loss 梯度交给 DDP 归约——DDP all-reduce 带 `1/DP` 平均，而该梯度的语义是**每步一份的标量损失梯度**（每个 DP rank 对同一 aux loss 贡献同一份、不是各持 partial）：AVG 之后 aux 梯度被**缩小 DP×**（audit 实测 DP=2 时 norm 0.3794 vs 正确 0.7588）。#7452 Appendix C 列为「常数尺度误差、无数值 dataflow 见证不计数」；09-19 裁决收录——**「应 SUM 的语义量被 AVG」本身就是分布类型错**，与 MOE.11（分母时序域）同一 aux-loss 归一化语义域、不同断点（归约算子选择），报表者注明 Qwen3-Next Bridge recipe 选中该路径。审核方（0z5a，#7481 作者）已声明其修复**不覆盖**本项（`global aux-loss normalization` 是独立在跟踪的工作）。
+  source: 'Megatron-LM #7452 Appendix C（2026-09-17；ezyang Astra+spmd_types 审计；DP=2 数值对照）。https://github.com/NVIDIA/Megatron-LM/issues/7452'
+  behavior: 无 crash——**aux loss 的有效系数随 DP 度静默缩小 DP×**：负载均衡压力不足，专家分布漂向不均衡；DP 扩容（常用吞吐手段）即改变训练目标语义，且 loss 曲线不显任何异常。与 PAR.11 / PAR.15 / MOE.12 同族「并行度旋钮 × 恒定因子改梯度」，方向相反（缩小而非放大）；与 MOE.11 互补成对：同一 aux loss 的分子域（累积计数）与归约域（SUM/AVG）各有一个静默断点；与 PAR.05（退化 DP 组 2^N）都打击「对什么求平均」的假设，这边是**语义整体量被当可平均量**。
+  discovery: 2026-09-19 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 由 MoE路由 改为 损失计算。依据：词表 损失计算 明列“loss 与辅助 loss 的计算、归约与归一化”，原文断点正是 aux loss 梯度的归约算子选择（应 SUM 被 AVG），并称与 MOE.11 同属“aux-loss 归一化语义域”；MoE路由 词表只含 router/专家分派/负载均衡偏置，不含 aux loss 归约。功能域优先规则针对的是 算子/内核/编译器/运行时 这类通用子系统，不强制把专项子系统 损失计算 让给 MoE路由。与同域 TRN-0160（MOE.11，第一遍归 损失计算）保持一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

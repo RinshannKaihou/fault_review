@@ -1,0 +1,51 @@
+id: INF-0689
+legacy_ids:
+- '7.16'
+slug: onnxruntime_matmulnbits_accuracy_level4_int8_act_massive_activation_wrong_argmax
+aliases: []
+title: ORT MatMulNBits int8 激活量化在 CPU 选错 argmax
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: onnxruntime
+    component: MatMulNBits int8 激活量化
+  behavior: CPU EP 上 MatMulNBits 在 accuracy_level=4 时先把激活 A 做 int8 量化再做 int8 matmul，对 massive activation/outlier 通道量化过粗。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: ORT-GenAI 默认导出 accuracy_level=4；Qwen3-0.6B、Phi-3.5-mini 等在 CPU 上贪婪解码时于 near-tie logits 处选错 argmax，token 流与 accuracy_level 0/1/2/3 参考不一致；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: 量化后端/位数/KV quant 配置
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/microsoft/onnxruntime/issues/29849
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`model_on`（量化精度退化） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: 在 **CPU EP** 上，`com.microsoft::MatMulNBits` 用 `accuracy_level=4`（对激活 `A` 做 **int8 量化**后再 int8 matmul）时，对于拥有大模幅「massive activation」/outlier 通道的 transformer LLM（如 Qwen3-0.6B、Phi-3.5-mini），会**选出不同的、错误的 argmax token**——相对 `accuracy_level` 0/1/2/3 基准。ORT-GenAI 模型构建器**默认导出 `accuracy_level=4`**，故 CPU 上贪婪解码产生**错误的 token 流**，静默。翻转发生在 near-tie logits 处，与 int8 激活量化对 outlier 通道过粗一致。隔离方法：fp32 oracle——把导出 `model.onnx` 的每个 `MatMulNBits.accuracy_level` 改写为 `0` 再贪婪解码，0/1/2/3 互洽，仅默认 4 翻转。
+  source: 'onnxruntime #29849（2026-07-24 open）。标签 quantization。组件 `com.microsoft::MatMulNBits`。https://github.com/microsoft/onnxruntime/issues/29849'
+  behavior: 无 crash、无 NaN。int8 激活量化在 near-tie logits 处选错 argmax → 贪婪 token 流与高精度参考不一致，静默。属"int8 激活量化在巨大激活通道上选错 argmax"新子签名，与 7.1 `massive_activation_quantize_sink`（巨大激活通道族）概念呼应但不同层（argmax token 选择 vs attention sink 量化）。
+  trigger_surface: 量化后端/位数/KV quant 配置
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

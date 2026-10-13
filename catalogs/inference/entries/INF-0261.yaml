@@ -1,0 +1,52 @@
+id: INF-0261
+legacy_ids:
+- '1.262'
+slug: ttmetal_matmul_1d_in0_mcast_sharded_output_out_block_w_lt_per_core_n_wrong
+aliases: []
+title: matmul in0-mcast sharded 输出子块偏窄致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: matmul 工厂 sharded 输出与验证器
+  behavior: 输出子块验证谓词把 out_block_h==1 当作普适豁免，放行 sharded 输出下 out_block_w<per_core_N 的配置；而 partials 跨 N 块原地共享输出 shard，写路径与之不符。
+effect:
+  objects:
+  - 数值结果
+  detail: width-sharded L1 输出且 out_block_w<per_core_N 时 PCC 降至 0.10–0.63，比值越小越差；out_block_w==per_core_N、interleaved 或 DRAM 输出全对，稀疏测试易漏网；2D 工厂同缺陷。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn.matmul + 1D in0-mcast program_config + width-sharded L1 输出 + out_block_w < per_core_N（hw_specific；DRAM/interleaved 输出免疫）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-27'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58046
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0118
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`MatmulMultiCoreReuseMultiCast1DProgramConfig`（`mcast_in0=True`）+ **sharded L1 输出**在 `out_block_w < per_core_N` 时输出错值：验证器 `validate_output_subblock_block_divides_per_core_n` 因 `out_block_h == 1` 放行（`out_block_w == per_core_N || out_block_h == 1`），但该条件对 sharded 输出不成立——实测 8×8 grid bf16 `32×1024 @ 1024×4096`（per_core_N=2）：`out_block_w=2` INTERLEAVED/WIDTH_SHARDED 均 PCC 0.9999，`out_block_w=1` WIDTH_SHARDED **PCC 0.6322**（INTERLEAVED 同参正确）；生产形状 `1×2048×39576`（per_core_N=20）：out_block_w=20 PCC 0.9999、10/5/4/2 → **0.48/0.31/0.31/0.10**；`1×1280×51866`（per_core_N=26）：13/2 → 0.62/0.13。与 in0_block_w、bias、A 布局、N 是否整除 per_core_N×cores 无关；DRAM 输出全对；2D 工厂走同一验证检查未测） · Cov: `var:ttmetal_matmul_multicore_reuse_oversubscribed_block_silent_drop`（1.119 MatmulMultiCoreReuse 同 op 族——本条在 1D in0-mcast + sharded 输出维度：验证器谓词对输出布局过度放行而非块数超核） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 输出子块验证谓词把 `out_block_h == 1` 当作普适豁免，但 sharded 输出的写路径要求输出子块宽度与 per-core 列宽对齐；验证接受 ≠ 内核正确，错值幅度随 out_block_w/per_core_N 比值单调恶化。报告者附 repro 脚本与 5 组 M×K×N 矩阵。
+  source: 'tt-metal #58046（2026-09-27 open，Bad Outputs，含 pcc 函数、双形状矩阵、无关变量排除表与"验证收紧或内核修复"双修复方向）。https://github.com/tenstorrent/tt-metal/issues/58046 ＋ **2026-09-28 回访补记**：rmillerTT 确认 **2D 工厂同缺陷**（block-sharded 输出 + per_core_M == out_block_h == 1 + out_block_w < per_core_N 同错值，同因为 partials 跨 N 块原地共享输出 shard），修复 PR **tt-metal #58180**（"[Bug fix] matmul: don''t share a sharded output with partials across N blocks"，open 未合并）覆盖两工厂。'
+  behavior: 无 crash——PCC 0.10–0.63 级**静默错值**，且 `out_block_w == per_core_N` 的"合理"配置全对使问题极易在稀疏测试下漏网；1.119（2D 过订阅丢块）之后 MatmulMultiCoreReuse 族新成员：**验证器豁免谓词与 sharded 写路径契约不符**——"通过验证的每个配置都应正确，否则验证必须拒绝"的契约缺口。
+  trigger_surface: tt-metal ttnn.matmul + 1D in0-mcast program_config + width-sharded L1 输出 + out_block_w < per_core_N（hw_specific；DRAM/interleaved 输出免疫）
+  discovery: 2026-09-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

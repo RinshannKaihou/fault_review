@@ -1,0 +1,57 @@
+id: INF-1285
+legacy_ids:
+- K8.8
+slug: frozen_kv_mtp_draft_depth_gated_corruption
+aliases: []
+title: Frozen-KV MTP 在 draft 深度≥5 且并发时输出损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: Frozen-KV MTP 的 verify 路径
+  behavior: 根因未确认（issue open）；推测为 Frozen-KV 策略在 verify 路径 CUDA graph 捕获/重放中，draft 链越长 KV slot 记账累积偏差越大，使 verify batch 读到错位 KV。
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: 并发≥2 且 draft depth≥5 时，所有无 grammar 约束的请求返回退化 token 泥浆并跑到 max_tokens（8/8），无 crash/NaN；depth≤3 或串行干净，depth=4 时 verify CUDA graph 捕获非法访存、服务无法启动。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/32666
+  kind: github_issue
+  resolved_from: 'SGLang #32666'
+relations: []
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`ambiguous`（gated on draft chain depth） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: Frozen-KV MTP（Multi-Token Prediction，`--speculative-algorithm NEXTN`）在并发 ≥2 时产生**静默输出损坏**，但触发器不是常规的 batch size / concurrency，而是**单请求 draft 链深度（draft depth）**。报告者给出了决定性反证：`depth=3 @ concurrency=6` 干净，而 `depth=5 @ concurrency=4` 损坏——两者 `concurrency × draft_tokens` 乘积相同（24）却结果相反。`depth=4` 时服务器甚至无法启动（verify CUDA graph 捕获时 illegal memory access）。推测根因：Frozen-KV 策略在 verify 路径的 CUDA graph 捕获/重放中，draft chain 越长则 KV slot 记账中的累积偏差越大，最终导致 verify batch 读到错位的 KV。但 issue 仍 open，根因尚未最终确认。
+  source: 'SGLang #32666（2026-07-28，open）。测试环境：单卡 B200 服务 Gemma-4-31B-IT-NVFP4。'
+  behavior: 并发 ≥2 且 draft depth ≥5 时，所有无 grammar 约束的请求返回"退化 token 泥浆"并跑到 `max_tokens`；串行或低 depth 时完全干净。8/8 请求受影响。无 crash、无 NaN（depth=5），但 depth=4 时 verify CUDA graph 捕获产生 illegal memory access（崩溃路径）。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: ambiguous / 受 draft depth 门控——只有 depth ≥5 的并发请求才出现签名，depth ≤3 或串行时隐状态完全健康。触发时表现为**退化输出轨迹**（token 泥浆 = 极低熵的重复 token 序列），签名的可观测面在于输出 token 的熵坍缩与 decode step 的 KV slot 错位，而非中间层隐藏态的几何离群——这使它更接近 K8.2 `specdec_bonus_token_draft_kv_desync`（draft KV desync）的近亲，但门控变量不同（K8.2 的门控是 batch 内重复 prompt，本条是 draft chain depth）。可捕获：infotheoretic 族（predictive_entropy 在退化输出上飙升）；以及 decode 路径的 cheap 族（recompute-oracle 比较 frozen-KV verify vs 独立重算）。会漏检：prefill 路径的 geometric / spectral 单帧快照（prefill 本身可能完全正确，损坏发生在 decode verify 步）。
+  repro: 不可软件复现——需要 Frozen-KV MTP 服务栈（`--speculative-algorithm NEXTN`）+ CUDA graph + 并发请求调度，单进程路径无法复现 spec-dec verify 路径与 draft chain depth 的交互。
+  locus: '`control-flow`'
+  priority: '`high`（生产级静默输出损坏，触发条件隐蔽，8/8 请求受影响）'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

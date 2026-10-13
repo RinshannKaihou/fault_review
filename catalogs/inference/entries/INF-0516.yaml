@@ -1,0 +1,57 @@
+id: INF-0516
+legacy_ids:
+- '6.123'
+slug: trtllm_batched_prefill_gt3_progressive_corruption
+aliases: []
+title: TRT-LLM 批处理 prefill 在 batch>3 时输出逐步损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tensorrt-llm
+    component: 批处理 prefill（batch>3 分支）
+  behavior: 批处理 prefill/生成路径在 batch>3 时的数值或索引处理有误，原文推测为内部 kernel/调度按 batch size 分岔，根因未定位。
+effect:
+  objects:
+  - 输出内容
+  detail: Qwen3.5-2B 20 并发同 prompt 时 19/20 输出幻觉重复，batch≤3 正确；批 prefill 的请求输出彼此相同；损坏随生成长度累积，短输出看似正确，smoke test 会通过；关 CUDA graph 无效，vLLM 同模型正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM pytorch backend；Qwen3.5-2B + 并发 prefill batch>3（其他模型架构待确认）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/17964
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（TRT-LLM pytorch backend 批处理 prefill batch>3 时输出幻觉重复、损坏随输出长度逐 token 累积——单请求/小 batch 正确） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: TensorRT-LLM 1.3.0rc24 pytorch backend 服务 Qwen3.5-2B（L20，TP1）：单请求输出正确（14 token 翻译）；20 并发同 prompt 请求时 19/20 产生幻觉重复（"Where are you from?" 循环）。**批处理边界清晰**：batch ≤3 正确、>3 损坏；19 个批 prefill 的请求返回彼此相同的错误输出，与单独 prefill 的那 1 个不同。损坏随生成长度累积——短输出（~7 token）在高并发下也看似正确。关闭 CUDA graph（enable_padding 配置不变）无效；同模型 vLLM `--language-model-only` 任意并发正确。缺陷在批处理 prefill/生成路径的数值或索引处理（batch 维度 >3 时的 kernel/调度分岔）。
+  source: 'TensorRT-LLM #17964（2026-08-19 open，附完整 yaml 配置 + 20 并发复现脚本）。https://github.com/NVIDIA/TensorRT-LLM/issues/17964'
+  behavior: 无 crash。greedy 温度下批处理输出静默损坏，且**短输出掩护缺陷**（损坏未累积到可见程度）——smoke test（短 completions）会通过。属「批处理路径按 batch size 分岔的静默损坏」**新子签名**（batch≤3/)>3 的行为开关提示内部 kernel/config 分支）。
+  trigger_surface: TRT-LLM pytorch backend；Qwen3.5-2B + 并发 prefill batch>3（其他模型架构待确认）
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: subsystem 维持 算子/内核：原文称缺陷在“批处理 prefill/生成路径的数值或索引处理”，batch≤3/>3 的开关“提示内部 kernel/config 分支”，且批 prefill 的 19 个请求输出彼此相同、非请求间混排，更符合 kernel 数值/索引分支。保留意见：根因未定位，调度侧不能排除。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

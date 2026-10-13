@@ -1,0 +1,51 @@
+id: INF-0558
+legacy_ids:
+- '6.165'
+slug: sglang_kda_triton_padding_remap_to_allocatable_last_slot
+aliases: []
+title: SGLang KDA Triton padding 哨兵重映射到可分配末槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: KDA Triton padding 槽位重映射
+  behavior: kda_triton.py 把 padding 哨兵 -1 重映射到 shape[0]-1，假设尾槽是保留哨兵，但分配器保留的是 slot 0、尾槽可分配；重映射发生在内核见到索引之前，绕过 index>=0 守卫。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 存在 DP/CP padding 行且 mamba 池满压使末槽被活请求占用时，padded 行读写该活请求（或 radix checkpoint）的循环状态，输出错误且无任何错误信号；审计发现，生产未观测到。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.3-Flash KDA Triton backend + DP/CP padding 行 + mamba 池满压（配置组合 + 内存压力时序）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36880
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（KDA Triton backend 把 padding 哨兵 `-1` 重映射到 `ssm_states.shape[0]-1`——注释假设尾槽是保留哨兵，但 `MambaSlotAllocator` 保留的是 **slot 0**、`1..size` 全部可分配：重映射目标 `size` 是**最后一个可分配槽**——padded 行读写活请求（或 radix checkpoint）的 SSM 状态，`INPLACE_UPDATE` epilogue 的 `index>=0` 守卫被重映射前置击穿） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`kda_triton.py:239` `torch.where(cache_indices >= 0, cache_indices, ssm_states.shape[0] - 1)`；分配器 `mamba.py:94` `free_slots = arange(1, size+1)`（"Slot 0 is reserved as a dummy write target for padded tokens"）。padded 行以该槽内容为初始 state 读入、经 `chunk_gated_delta_rule_fwd_h` 的 INPLACE_UPDATE 写回。内存压力下 free list 达到 `size` 时该槽必被活请求占用。decode 路径有 sentinel-skip、base GDN chunked 路径有 PR #33810 等价修复——重映射在内核见到索引**之前**发生，绕过两道守卫。可达路径：DP/CP padding 与 `hybrid_linear_attn_backend.py` 的 `mamba_cache_indices[real_bs:] = -1`。'
+  source: 'SGLang #36880（2026-08-28 closed，PR #36507 head `aa8c950a3d`，含分配器代码引证；生产未观测——报告者配置不产生 padded 行）。https://github.com/sgl-project/sglang/issues/36880'
+  behavior: 无 crash——被占槽位时活请求 recurrent state **静默损坏**、输出错误无任何错误信号；audit 发现而非生产命中（潜伏地雷型）。属「**哨兵假设端点错误 × 守卫前置击穿**」新子签名：与 6.11（DCP block table 未保留）同 mamba 状态域，本条是静态可审计的注释-实现矛盾且触发依赖内存压力时序。
+  trigger_surface: SGLang + GLM-5.3-Flash KDA Triton backend + DP/CP padding 行 + mamba 池满压（配置组合 + 内存压力时序）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

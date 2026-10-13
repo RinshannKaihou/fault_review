@@ -1,0 +1,58 @@
+id: INF-0886
+legacy_ids:
+- '9.3'
+slug: rope_scaling_wrong_type
+aliases: []
+title: 服务时 rope_type 与训练不一致，频率带被错误重映射
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: 通用
+    component: rope_scaling.rope_type
+  behavior: 服务时使用的 rope_type（linear/dynamic）与训练时（yarn/llama3）不同；transformers<4.43 不识别 llama3 类型而静默回落到其他类型，各旋转频率带按错误规则重映射
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 长上下文能力出现弱到中等的退化，误差只在部分旋转频率带上发生；对整层隐状态求全局范数的度量会因误差被平均而漏检
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: RoPE 相关配置
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/6689
+  kind: github_issue
+  resolved_from: 'vLLM #6689'
+- url: https://github.com/OpenNMT/CTranslate2/issues/1743
+  kind: github_issue
+  resolved_from: 'CTranslate2 #1743'
+relations:
+- kind: var
+  target: INF-0912
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`model_on` · Cov: `var:9.26` · 触发 `config` · 置信度 `verified`'
+  mechanism: 训练用一种 `rope_type`（yarn / llama3），服务时却用了另一种（linear / dynamic）。Llama-3.1 那套 grid-search 出来的 'llama3' 类型需要 transformers>=4.43，更老的技术栈会静默回落到别的类型。结果是各旋转频率带被按错误的规则重映射。
+  source: 'HF Llama-3.1-8B discussion #15；vLLM #6689；CTranslate2 #1743。'
+  behavior: 长上下文能力出现由微弱到中等的退化；错误是按频率带选择性发生的。
+  trigger_surface: RoPE 相关配置
+  signature: on-manifold。wrong-type 造成的误差是 frequency-band-selective 的——只有部分旋转频率带被错误缩放。因此对 rotary 频率做 spectral 度量，或把注意力分数按 head-dimension band 分组后再做度量，可以暴露一个带内局部化（band-localized）的偏差。反之，对整层隐状态求全局范数的 geometric/statistical 度量会因为误差被平均掉而漏检。
+  repro: 直接改写模型 config 中的 `rope_scaling` 类型字段（或等价地替换 rotary embedding 的 inv_freq 计算方式），无需前向钩子。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,57 @@
+id: INF-0848
+legacy_ids:
+- '8.64'
+slug: vllm_rocm_glm53flash_kpool_mtp_decode_memory_access_fault
+aliases: []
+title: ROCm kpool 页粒度错配致 MTP decode 显存 fault
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: kpool indexer 页/块粒度
+  behavior: hybrid 对齐器落定 block_size=1152 后，kpool indexer 把 288-entry 存储虚拆为 32-entry paged-MQA 页，存储页粒度与块粒度错配，MTP decode 路径越界访问
+effect:
+  objects:
+  - 可用性/进度
+  detail: ROCm gfx942（MI325X、TP4）上 GLM-5.3-Flash 开 MTP（k=2）decode 时报 GPU Memory access fault，单 worker abort 致引擎下线；非 OOM，加 slot-mapping 守卫后仍复现
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm + GLM-5.3-Flash + kpool indexer + MTP decode（模型+平台+spec 组合触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55280
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0840
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（GLM-5.3-Flash（hybrid KDA+MLA+kpool indexer）在 ROCm gfx942（8×MI325X、TP4、MTP `num_speculative_tokens=2`）上：hybrid 对齐器落定 `cache_config.block_size=1152` 后，kpool indexer 把 288-entry 存储虚拆为 **32-entry paged-MQA 页**，MTP decode 期 `Memory access fault by GPU node-N`（单 worker abort → 引擎整体下线）；非 OOM，含 #54296 V2 slot-mapping in_range 守卫后仍复现） · Cov: `var:vllm_rocm_glm53flash_kpool_block_size_advertising_mismatch_self_overwrite`（8.56 kpool 页粒度错配族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 与 8.56 同一根因的两端显形：kpool 存储页粒度（32-state）与对齐器/block table 的块粒度（1152）错配——8.56 在该错配上**静默自覆写**（5× 过订阅、79% 索引键错误），本条在 MTP decode 路径上越界访问直达硬件级 fault。同一缺陷的 crash/静默双显形谱，取决于越界落点是否命中已分配页。
+  source: 'vLLM #55280（2026-09-04 open，main `1560505` 行号对照 + 2026-09-03 两起 serving abort 时间线（含 2304-token chunked prefill 混合 batch））。https://github.com/vllm-project/vllm/issues/55280'
+  behavior: MTP decode 期硬件 fault crash（无 Python traceback、worker abort）——与 8.56 的"文本仍流畅"形成对照：同根因下修复压力完全不同（crash 必修、静默错数据可长期潜伏）。kpool 族第三成员（8.56 静默覆写 / 8.63 邻域 encoder 拒绝 / 本条 MTP crash）。
+  trigger_surface: vLLM ROCm + GLM-5.3-Flash + kpool indexer + MTP decode（模型+平台+spec 组合触发）
+  discovery: 2026-09-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：title/component/behavior/detail 的事实（block_size=1152、288-entry 拆 32-entry 页、MI325X TP4、MTP k=2、非 OOM、slot-mapping 守卫后仍复现）均可在 meta/mechanism 找到；KV缓存（kpool 存储页粒度与块粒度错配，属 block 分配管理）、可用性/进度、报错 与独立判断一致；behavior 只写原因、detail 只写影响，长度合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

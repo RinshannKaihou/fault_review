@@ -1,0 +1,50 @@
+id: INF-0599
+legacy_ids:
+- '6.206'
+slug: sglang_unified_radix_cache_finished_empty_key_insert_root_repoint
+aliases: []
+title: SGLang 统一 radix 缓存 finished 路径缺空键早退
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: cache_finished_req 早退守卫
+  behavior: cache_finished_req 缺 effective_cache_len<=0 早退：空键仍 insert() 并把 last_node 指向未持锁 root；ReplaySSM 下 cache_len 可为负，负切片插入错键。
+effect:
+  objects:
+  - KV状态
+  detail: 短 mamba 请求未达 track boundary，或 ReplaySSM no-buffer + session radix cache 时，无 crash：缓存树锁语义被静默破坏并插入错键，为后续驱逐/复用路径埋下状态分歧。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + UnifiedRadixCache + 短 mamba 请求（未达 track boundary）/ ReplaySSM no-buffer + session radix cache（other_stack：SGLang；请求模式触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38191
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（`UnifiedRadixCache.cache_finished_req` 缺少 `cache_unfinished_req` 有的 `effective_cache_len <= 0` 早退——短 mamba 请求未达 track boundary 时 `cache_len None -> 0` 仍走空键 `insert()`：树核空键守卫不建节点但结果携带 `last_device_node=root`，`cache_finished_req` 把 `req.last_node` repoint 到**请求未持锁的 root** + 注册零长 session ref；ReplaySSM（no-buffer）变体 `cache_len = len - write_pos` 可为负，`token_ids[:负数]` 从尾部错切并插入错键） · Cov: `NEW`（空键插入 root repoint 子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '同一不变量（空缓存长度不可插入）在 unfinished/finished 两条路径只实现了一半。修复在 finished 路径补早退（释放无保护 KV 行、释放树锁、component cleanup 用 `insert_result=None`）+ `insert()` 对 None/空键短路返回 `InsertResult(prefix_len=0, mamba_exist=True)`（额外覆盖 page-align-to-zero：`effective_cache_len>0` 但不足一页、mamba extra-buffer `page_size>1` 可达）。为 legacy `MambaRadixCache` #35821 的 unified 路径对应修复。'
+  source: 'SGLang PR #38191（2026-09-06，unified-radix-cache label，含 4 用例 CUDA 回归：空插入不 repoint、有 boundary 仍插入、零长请求纯净 no-op、空键 no-op）。https://github.com/sgl-project/sglang/pull/38191'
+  behavior: 无 crash——锁语义破坏（未持锁的 root 被引用为 last_node）+ 零长 session ref 注册 + ReplaySSM 的负切片错键插入：为后续驱逐/复用路径埋下状态分歧（缓存树锁协议被静默掏空）。新子签名「**finished 路径缺失 unfinished 路径已有的不变量守卫**」：对称路径单侧实现。
+  trigger_surface: SGLang + UnifiedRadixCache + 短 mamba 请求（未达 track boundary）/ ReplaySSM no-buffer + session radix cache（other_stack：SGLang；请求模式触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: INF-0196
+legacy_ids:
+- '1.197'
+slug: ttmetal_softmax_sfpu_exp_sanitize_swallows_nan_inf_uniform_or_zero
+aliases: []
+title: softmax 对全 −inf 行给均匀分布、含 inf/NaN 行给全 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: softmax 的 exp sanitize
+  behavior: x−max 产生的 NaN 被 SFPU exp 的 sanitize 钳位求值为 exp(−88.5) 或 flush，各 lane 得同一微小值；含 +inf 行经 sum 溢出路径得 0，NaN 未被传播。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 全 −inf 行（如全 padding 的 attention 行）返回均匀 1/64≈0.0156、行和 0.97，含 +inf/NaN 行返回全 0，而 golden 与 torch 均为 NaN；无报错，fp32/bf16 与所有 program factory 均受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn.softmax + ±inf/NaN 输入行（全 padding attention row、上游溢出）（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56056
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.softmax` 对全 `−inf` 行返回 **uniform 1/64 ≈ 0.0156**（行和 0.97 的"貌似合法概率分布"）、对含 `+inf`/`NaN` 的行返回**全 0**——而其自带 golden（`torch.softmax`）与 torch 均返回 NaN；无错误无警告。全 `−inf` 行正是 additive mask 后**全 padding 的 attention 行**的现实输入形态） · Cov: `NEW`（SFPU exp sanitize 钳位吞 NaN 语义子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: softmax compute pipeline（`softmax.cpp`）为 `reduce_max → x−max → exp_tile → sum → divide`。两步独立摧毁应传播的 NaN：(1) 全 `−inf` 行 `x−max = NaN`，SFPU exp 的 sanitize 步（`ckernel_sfpu_exp.h`，文档自述把输入钳进 `{−88.5, +inf}`）把 NaN lane 求值为 `exp(−88.5)≈3e-39` 或 flush → 各 lane 同微小值 → 归一化后**均匀分布**；(2) 含 `+inf` 行 `x−max=NaN` 同路但 sum 溢出路径给全 0。ttsim Blackhole 模拟器验证（无需硬件），fp32/bf16 均中招，所有 program factories。
+  source: 'tt-metal #56056（2026-09-10 open，bug + op_cat:eltwise/reduces label，含 ttsim 复现脚本与六行输入对照表）。https://github.com/tenstorrent/tt-metal/issues/56056'
+  behavior: 无 crash——数学上未定义的输入得到**貌似合法的有限输出**：全 padding attention 行得到均匀 attention 权重（而非 NaN 传播暴露问题），下游无从察觉。1.151（argmax 比较器 NaN/±0 语义 dtype 分裂）之后 NaN 语义族新成员：本条在 softmax 归一化路径、由 SFPU sanitize 钳位导致，比返回错误值更隐蔽（返回的是"合理-looking"分布）。
+  trigger_surface: tt-metal ttnn.softmax + ±inf/NaN 输入行（全 padding attention row、上游溢出）（hw_specific）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

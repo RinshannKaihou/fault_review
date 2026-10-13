@@ -1,0 +1,52 @@
+id: INF-0836
+legacy_ids:
+- '8.52'
+slug: vllm_dsv4_sm120_sparse_mla_page_size_advertise_mismatch
+aliases: []
+title: vLLM DSV4 SM120 页大小声明错配致专用 decode 内核被跳过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: DSV4 sparse 后端页大小声明
+  behavior: DSV4 SparseMLA/Indexer 后端硬编码声明 [256]，而 FlashInfer 在 SM120 按 64-token 页编译 DSV4 decode，块大小协商无法把 256 拆成内核页。
+effect:
+  objects:
+  - 性能/资源
+  detail: SM120/GB10（DGX Spark）+ --block-size 256 时专用 sparse decode 内核被静默跳过、退回非专用路径，吞吐/延迟退化；无 crash、无警告日志，无信号说明专用内核未被使用。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + DeepSeek-V4 sparse MLA + SM120/GB10（DGX Spark）+ `--block-size 256`
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53425
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（FlashInfer main 把 SM120 DSV4 decode 按 64-token 页编译，而 SparseMLA/Indexer 后端硬编码声明 [256]——select_common_block_size 无法把 --block-size 256 切分为内核页，专用 sparse decode 内核被静默跳过、退回通用路径） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'FlashInfer main 上 `_DECODE_DSV4_PAGE_BLOCK_SIZE = 64`（SM120/GB10 的 DSV4 decode 编译页大小），但 vLLM 的 `DeepseekV4SparseMLABackend` / `DeepseekV4IndexerBackend` 仍向 block-size 协商机制硬编码广播 `[256]`（继承自硬编码 override），`select_common_block_size` 因此无法把 manager `--block-size 256` 拆分为内核实际需要的 64-token 页——**专用 sparse decode 内核被静默跳过**。被跳过的内核本身健康：隔离 page-64 测试对 torch 的 cosine 为 0.99966。修复（PR #53425）按 capability family 120 返回 `[64]`、SM100 保持 `[256]`。声明矩阵（arch × kernel × page size）与编译事实之间的无校验漂移。'
+  source: 'vLLM PR #53425（2026-08-23 open，"[Bugfix][DSv4] SM12x FlashInfer sparse MLA kernel block size 64"，2×DGX Spark GB10 TP2 实证）。https://github.com/vllm-project/vllm/pull/53425'
+  behavior: 无 crash、无警告日志。**内核静默降级**——DSV4 稀疏注意力 decode 走非专用路径，吞吐/延迟退化且无任何信号说明专用内核未用；与 7.53（CUTLASS FP8 pre-SM89 门槛缺失致不支持平台自动选中）同属「能力矩阵漂移」族但方向相反（本条是**该用的内核没被用**——silent skip-down，7.53 是不该用的被用——silent pick-up）。
+  trigger_surface: vLLM + DeepSeek-V4 sparse MLA + SM120/GB10（DGX Spark）+ `--block-size 256`
+  discovery: |-
+    2026-08-23 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

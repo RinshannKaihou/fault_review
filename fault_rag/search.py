@@ -20,20 +20,34 @@ def _passes(e, repo=None, category=None, confidence=None, trigger=None,
         return False
     if repo and e["repo"] != repo:
         return False
-    if category:
-        cat = category.lower().lstrip("cat")
-        ec = e["category"].lower()
-        # accept NUM / cat1 / 1 / KV1 / kv1 / neg_rejected forms
-        if not (ec == category.lower() or ec == "cat" + cat or ec == "kv" + cat
-                or ec.lstrip("catkv") == cat):
-            return False
+    if category and not _category_matches(e, category):
+        return False
     if confidence and (e.get("confidence") or "") != confidence:
         return False
-    if trigger and (e.get("trigger") or "") != trigger:
+    if trigger and _norm_trigger(e.get("trigger") or "") != _norm_trigger(trigger):
         return False
     if neg is not None and bool(e["neg"]) != neg:
         return False
     return True
+
+
+def _legacy_category_matches(ec, category):
+    """Old Markdown categories: accept NUM / cat1 / 1 / KV1 / kv1 / neg_rejected forms."""
+    cat = category.lower().lstrip("cat")
+    ec = ec.lower()
+    return ec == category.lower() or ec == "cat" + cat or ec == "kv" + cat or ec.lstrip("catkv") == cat
+
+
+def _category_matches(e, category):
+    """--category takes either the current subsystem (e.g. KV缓存) or an old Markdown category."""
+    if e["category"] == category or e["category"].lower() == category.lower():
+        return True
+    legacy = e.get("legacy_category") or (e["category"] if e.get("neg") or "legacy_ids" not in e else None)
+    return bool(legacy) and _legacy_category_matches(legacy, category)
+
+
+def _norm_trigger(value):
+    return "not_target" if value == "n/a" else value
 
 
 def _ranks(scores, eligible):
@@ -95,9 +109,13 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
             "bm25_rank": bm25_r.get(i),
             "id": e["id"],
             "name": e["name"],
+            "title": e.get("title"),
+            "legacy_ids": e.get("legacy_ids", []),
             "repo": e["repo"],
             "category": e["category"],
+            "legacy_category": e.get("legacy_category"),
             "confidence": e.get("confidence"),
+            "status": e.get("status"),
             "neg": e["neg"],
             "entry_type": _entry_type(e),
             "name_ambiguous": e.get("name_ambiguous", False),
@@ -110,15 +128,18 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
 
 
 def lookup(q):
-    """Exact id / name / alias, then name substring for non-ID queries."""
+    """Exact id, old Markdown id (incl. merged ones such as 1.70 -> INF-0044), name / alias,
+    then name substring for non-ID queries."""
     idx = get_index()
     rows = []
     if q in idx.by_id:
         rows = idx.by_id[q]
+    elif q in getattr(idx, "by_legacy", {}):
+        rows = idx.by_legacy[q]
     elif q in idx.by_name:
         rows = idx.by_name[q]
-    elif re.fullmatch(r"(?:\d+|[A-Z][A-Z0-9-]*)\.\d+", q):
-        # A retired/missing catalog ID must not partially match an unrelated ID.
+    elif re.fullmatch(r"(?:\d+|[A-Z][A-Z0-9-]*)\.\d+|(?:INF|TRN)-\d+|K\d+\.\d+", q):
+        # An unknown catalog ID must not partially match an unrelated ID.
         rows = []
     else:
         ql = q.lower()
@@ -157,8 +178,13 @@ def _full(e):
     return {
         "id": e["id"],
         "name": e["name"],
+        "title": e.get("title"),
+        "legacy_ids": e.get("legacy_ids", []),
         "repo": e["repo"],
         "category": e["category"],
+        "legacy_category": e.get("legacy_category"),
+        "kind": e.get("kind"),
+        "status": e.get("status"),
         "confidence": e.get("confidence"),
         "coverage": e.get("coverage"),
         "stage": e.get("stage"),
@@ -173,6 +199,7 @@ def _full(e):
         "line": e["line"],
         "line_end": e["line_end"],
         "links": e["links"],
+        "relations": e.get("relations", []),
     }
 
 
@@ -187,6 +214,8 @@ def stats():
         (e["repo"], e.get("confidence") or ("neg" if e["neg"] else "?"))
         for e in idx.entries)
     by_entry_type = collections.Counter(_entry_type(e) for e in idx.entries)
+    by_status = collections.Counter(
+        (e["repo"], e.get("status") or ("negative" if e["neg"] else "?")) for e in idx.entries)
     name_collisions = [
         {"repo": repo, "name": name, "ids": ids}
         for (repo, name), ids in sorted(idx.name_collisions.items())
@@ -197,6 +226,7 @@ def stats():
         "by_category": {f"{r}:{c}": n for (r, c), n in sorted(by_cat.items())},
         "by_confidence": {f"{r}:{c}": n for (r, c), n in sorted(by_conf.items())},
         "by_entry_type": dict(sorted(by_entry_type.items())),
+        "by_status": {f"{r}:{s}": n for (r, s), n in sorted(by_status.items())},
         "name_collisions": name_collisions,
         "links": sum(len(e["links"]) for e in idx.entries),
     }

@@ -1,0 +1,60 @@
+id: INF-0635
+legacy_ids:
+- '6.242'
+slug: vllm_async_scheduler_chunked_prefill_premature_sampled_token_placeholder_underflow
+aliases: []
+title: vLLM async 调度分块 prefill 提前交付 token 致下溢
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: discard_request_mask 判据
+  behavior: async scheduling 下 runner 的 discard_request_mask 未丢弃未完成 prefill chunk 步的采样 token，scheduler 却未为其预留 placeholder，两侧判据不对称。
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: 默认 async scheduling + chunked prefill + 并发多块长 prompt（约 9k+）时 num_output_placeholders 下溢、断言杀死 EngineCore；此前伪 token 已写入用户可见响应。关 async scheduling 可规避。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM ≥0.25 + async scheduling（默认开）+ chunked prefill + 多请求并发 + 多块长 prompt（~9k+）（config：默认组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57562
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM 0.29.0 默认 async scheduling 下，**chunked prefill 与其他请求生成并发**时 Model Runner 在 `num_computed_tokens(8448) < num_tokens(9119)` 的 prefill chunk 步上**仍返回一个采样 token**（`discard_request_mask` 未按 `optimistic_seq_len < num_tokens` 抑制），scheduler 因 `prefill_chunk=True` 未预留 placeholder → 交付时 `num_output_placeholders` 计数 **-1 下溢**、`assert request.num_output_placeholders >= 0` 杀 EngineCore。更危险的是**伪 token 被追加进用户可见响应**：同一请求反复下溢、`output` 在仍在 prefill 时 1→2→…→7 增长。44 次下溢签名全同（`computed=8448 num_tokens=9119 prefill_chunk=True`）；单块 prompt 0 次、~143k token 多块 44 次（随 chunk 数线性）；`--no-async-scheduling` 即 24/24 完成；0.24.0 同负载 0 次（回归，scheduler 侧字节级一致 → 分歧在 runner 是否发 token）；#50692 一行修复无效。无 spec decode、无 preemption、无 /v1/realtime。Qwen3.6-35B-A3B-FP8 hybrid GDN，1×H100 NVL） · Cov: `NEW`（未完成 prefill 步上采样 token 提前交付子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: runner 侧 `discard_request_mask` 的判据与 scheduler 侧 placeholder 预留判据（`is_prefill_chunk`）不对称——runner 在 computed<num_tokens 的步上"泄漏"一个采样 token，scheduler 没有为它预留交付槽位；assert 挡住的是崩溃，伪 token 已先行写入响应缓冲。0.24.0→0.29.0 之间 runner 行为改变（#48245 stale-token 重构一带）使泄漏显形。
+  source: 'vLLM #57562（2026-09-18 open，含 44 次下溢打点日志签名、六条件受控实验矩阵（单块/多块/独跑/无前缀缓存/无异步/0.24.0 基线）、#50692 无效验证与版本间字节级 diff）。https://github.com/vllm-project/vllm/issues/57562'
+  behavior: 默认配置即 crash（EngineCore AssertionError，全租户 EngineDeadError）；**移除 assert 的"修复"会把 crash 降级为静默输出污染**（prefill 未完成的请求响应里混入提前采样的 token）。6.161（AsyncLLM 流式原地变异 prompt）之后 async 调度交付契约族新成员：本条在 **runner/scheduler 交付判据不对称 × chunked prefill**维度，回归自 0.24.0。
+  trigger_surface: vLLM ≥0.25 + async scheduling（默认开）+ chunked prefill + 多请求并发 + 多块长 prompt（~9k+）（config：默认组合即触发）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 运行时/执行
+        status: panel7
+      effect:
+        from: 可用性/进度
+        to: 输出内容
+        status: panel7

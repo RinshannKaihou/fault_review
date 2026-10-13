@@ -1,0 +1,62 @@
+id: INF-0678
+legacy_ids:
+- '7.5'
+slug: per_tensor_act_clamp_outlier
+aliases: []
+title: per-tensor 激活量化被 outlier 通道抬高 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: per-tensor 激活量化 absmax
+  behavior: per-tensor 激活量化只用一个 absmax scale，少数系统性 outlier 通道（约 0.01%–0.7% 维度，幅度为常规通道 6–20x）抬高 scale，压垮主体数值；朴素 W8A8 int8 即属此类。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: perplexity 中等到严重上升并出现 Flips；outlier 列占比较高时模型可能实质性崩溃。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 量化后端/位数/KV quant 配置
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2208.07339
+  kind: arxiv
+- url: https://arxiv.org/abs/2211.10438
+  kind: arxiv
+relations:
+- kind: var
+  target: INF-0765
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off` · Cov: `var:7.88`（源目录原值；经 FAULT_GAPS_ANALYSIS.md G10 核验应为 NEW） · 触发 `config` · 置信度 `verified`'
+  mechanism: Per-tensor 激活量化只用**一个** absmax scale；而 LLM 中存在少数系统性 outlier 通道（约占 0.01%–0.7% 的维度，幅度约为常规通道的 6–20x），它们把 scale 抬高，把主体数值压垮。这正是朴素 W8A8 int8 在 LLM 上失效的根本原因。注意源目录同时注明：本条与既有的 quant_Nbit 有本质区别——quant_Nbit 是 weight-only，本条的作用位点在前向传播的**激活**侧，属于经 hook 注入的 activation-side per-tensor fake-quant，因此在 FAULT_GAPS_ANALYSIS.md G10 中被核验为应标为 NEW 而非 VARIANT-OF。
+  source: Dettmers et al., "LLM.int8()", NeurIPS 2022, https://arxiv.org/abs/2208.07339 ；SmoothQuant arXiv:2211.10438。
+  behavior: 中等到严重的 perplexity 上升与 Flips；当 outlier 列的占比较高时，模型可能实质性崩溃。
+  trigger_surface: 量化后端/位数/KV quant 配置
+  signature: infra_off（硬性 clamp 属于栅格裁剪，不是模型能自洽吸收的扰动）。签名 STRONG 且廉价：statistical 族看到激活 kurtosis / skew 被 outlier 通道抬高，per-tensor scale 被 max 通道主导，主体分布整体向零收缩；cheap 族的 per-channel absmax 探针直接可见。与权重侧 RTN 量化的区分点是作用位点在前向激活。geometric 族因整体幅度收缩而只看到一个近似全局缩放，容易与健康的 layernorm 尺度变化混淆。
+  repro: forward hook 在 Linear 输入/输出的激活上做 per-tensor absmax fake-quant（单一 scale），并可扫描注入的 outlier 通道占比来复现从"中等退化"到"崩溃"的谱系。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+        status: panel7

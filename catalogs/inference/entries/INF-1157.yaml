@@ -1,0 +1,51 @@
+id: INF-1157
+legacy_ids:
+- '12.41'
+slug: sglang_glm5_next_mtp_skip_guard_raw_name_language_model_prefix_bypass_mtp_weights_into_main_model
+aliases: []
+title: SGLang GLM-5.3 MTP 跳过守卫被前缀绕过，MTP 权重进主模型
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: sglang
+    component: load_weights NextN 层跳过守卫
+  behavior: load_weights 的 NextN 跳过守卫在原始名上检查 model.layers 前缀，checkpoint 名含 language_model. 中缀使守卫永不触发；名字规范化晚于该判定，MTP 层权重进入主模型 loader。
+effect:
+  objects:
+  - 模型权重
+  - 可用性/进度
+  detail: 同格式 checkpoint（nvidia 官方 NVFP4）加载“成功”、服务正常，主模型多出 MTP 层权重、MTP 权重源错位；混合格式 checkpoint（layer-45 为 MXFP8）则在启动期 shape mismatch 报错。TP=2、2×DGX Spark 复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.3-Flash（`model.language_model.*` 命名 checkpoint）+ MTP/NextN 层存在（other_stack：checkpoint 命名约定触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40285
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（SGLang `Glm5NextForConditionalGeneration.load_weights` 的 MTP/NextN 层跳过守卫（`is_nextn=False` 时跳过 `layers.{num_hidden_layers}`）**测试原始 checkpoint 名的 `model.layers` 前缀**，而 GLM-5.3-Flash checkpoint 命名为 `model.language_model.layers.45.*`——中缀 `language_model.` 使 `name.startswith("model.layers")` 永假、守卫从不触发，MTP 层权重喂进主模型 fused-MoE loader。双形态后果：混合格式 checkpoint（`local-inference-lab/GLM-5.3-Flash-NVFP4`，layer-45 experts 为 **MXFP8** 而主体 3-44 层 NVFP4）fail-loud（fp8 全宽 down_proj 拷进半宽 NVFP4 参数 → shape mismatch RuntimeError）；**同格式 checkpoint（nvidia 官方 NVFP4，layer-45 恰也是 NVFP4）静默把 MTP 层加载进主模型的错误位置**——尺寸兼容使加载"成功"，主模型 45 层后多出不属于它的权重、MTP 单独加载时权重源错位。修复应在 NextN 跳过**之前**做 `model.language_model.`→`model.` 重命名（或按名字解析层号无视前缀）。TP=2、2×DGX Spark 复现） · Cov: `NEW`（前缀规约时序错——重命名晚于分支判定子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 权重名规范化（checkpoint 名→模型参数名）与条件跳过（NextN 层过滤）的**执行顺序颠倒**：守卫在原始名空间判定、加载器在规范化后名空间工作——任何带 `language_model.` 中缀的合法命名变体都绕过守卫；fail 与否取决于 MTP 层与主模型参数的形状巧合。
+  source: 'SGLang #40285（2026-09-19 open，含守卫代码行级引用（glm5_next.py ~1452-1461）、双 checkpoint 形态对照、MXFP8/NVFP4 混合量化 config 证据与修复方向）。https://github.com/sgl-project/sglang/issues/40285'
+  behavior: 双形态——混合格式 checkpoint **fail-loud**（启动期 shape mismatch）；同格式 checkpoint **静默错位加载**（服务器正常起来，主模型带脏权重/MTP 权重源错），后者才是监控威胁。12.33（GLM-5.3 transformers round-trip 单向重命名丢 97% 权重）之后 GLM 命名处理族新成员且互为镜像：**12.33 是该重命名的方向丢权重、本条是重命名时序晚于守卫导致多加载**——同一 `language_model.` 前缀处理的两个失效方向；与 12.39（GLM-5.3-Flash pin transformers 缺 AutoProcessor）同属 GLM-5.3 生态命名/版本摩擦族。
+  trigger_surface: SGLang + GLM-5.3-Flash（`model.language_model.*` 命名 checkpoint）+ MTP/NextN 层存在（other_stack：checkpoint 命名约定触发）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

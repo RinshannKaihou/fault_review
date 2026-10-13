@@ -1,0 +1,57 @@
+id: INF-1154
+legacy_ids:
+- '12.38'
+slug: sglang_anthropic_streaming_multi_tool_arguments_merged_single_block
+aliases: []
+title: SGLang Anthropic 流式多 tool call 参数并入同一块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: sglang
+    component: Anthropic 流式块索引路由
+  behavior: Anthropic 流式适配器把 OpenAI 风格的 tool-call index 翻译为 content_block index 时未跟踪多调用的块边界，所有 input_json_delta 都路由到当前打开的第一个块。
+effect:
+  objects:
+  - 输出内容
+  detail: /v1/messages stream=true 且单响应含多个 tool call 时，三个调用的参数全标 index=0 灌入同一块，聚合成拼接的非法 JSON，工具调用全部失效，HTTP 200 无错；OpenAI 端点流式/非流式与 Anthropic 非流式均正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Anthropic `/v1/messages` + stream=true + 单响应多 tool call（other_stack）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39782
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0971
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（SGLang `/v1/messages` Anthropic 兼容端点 `stream=true`：多个 tool call 的 JSON 参数流被**合并进第一个 `tool_use` content block**——`content_block_start index=0` 后，三个调用的 `input_json_delta` 全部标 index=0 依序灌入同一块，聚合出非法 JSON `{"value":"a"}{"value":"b"}{"value":"c"}`；HTTP 200 无错。四模式对照：OpenAI 兼容非流式 3/3 正确、流式 3/3 正确（index 0/1/2）、Anthropic 非流式 3/3 正确、**Anthropic 流式 0/3 全错**——缺陷在 Anthropic 流式适配层的 block index 路由） · Cov: `var:sglang_dsv4_dsml_incremental_parser_partial_tool_transaction_escape`（10.55 流式解析状态机族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: Anthropic 流式适配器把 OpenAI 风格的 tool-call index 流翻译为 `content_block_index` 时未跟踪多调用的块边界（所有 input_json_delta 路由到当前打开块），块开启/关闭事件与新调用起始不对齐。
+  source: 'SGLang #39782（2026-09-16 closed，含四模式 3 次重复对照表与 wire 级事件序列）。https://github.com/sgl-project/sglang/issues/39782'
+  behavior: 无 crash、HTTP 200——客户端收到单个 tool_use 块、参数为多个 JSON 对象拼接的非法 JSON，工具调用全部失效；非流式与 OpenAI 端点正确使缺陷被锁定在单一（端点 × 模式）组合。10.55（DSV4 DSML 增量 parser 部分事务逃逸）之后流式解析族新成员：本条在 **API 适配层的块索引路由**维度。
+  trigger_surface: SGLang + Anthropic `/v1/messages` + stream=true + 单响应多 tool call（other_stack）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

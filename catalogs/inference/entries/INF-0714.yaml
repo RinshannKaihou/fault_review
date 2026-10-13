@@ -1,0 +1,52 @@
+id: INF-0714
+legacy_ids:
+- '7.41'
+slug: sglang_dsv4_fp4_dequant_env_short_circuited_by_native_branch
+aliases: []
+title: ROCm 下 FP4 dequant 开关被 AITER 分支短路致起服失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: Fp8MoEMethod 块量化权重后处理
+  behavior: Fp8MoEMethod 块量化后处理在检查 dequant_fp4_to_fp8 前就从 AITER 原生 FP4 分支 return，原 dequant 块又因 _is_fp8_fnuz 在 ROCm 上不可达，开关不生效。
+effect:
+  objects:
+  - 可用性/进度
+  detail: ROCm + AITER 加载 FP4 checkpoint 并设 SGLANG_DSV4_FP4_DEQUANT=1 时，routed 专家权重仍为 FP4，起服报 Unsupported kernel config for moe heuristic dispatch。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang ROCm；AITER + FP4 checkpoint + `SGLANG_DSV4_FP4_DEQUANT=1`
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-17'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35122
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0709
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（SGLANG_DSV4_FP4_DEQUANT=1 被 AITER 原生 FP4 分支提前 return 短路 → 不 dequant、MoE dispatch 失败拒起服） · Cov: `var:vllm_rocm_situ_moe_dual_flag_layout_mismatch_silent_garbage` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'ROCm + AITER 下，`Fp8MoEMethod.process_weights_after_loading_block_quant()` 在检查 `dequant_fp4_to_fp8` 之前就从 AITER 原生 FP4 分支 return；且已有 dequant 块因 `_is_fp8_fnuz` 先行占支而在 ROCm 上不可达。结果 `SGLANG_DSV4_FP4_DEQUANT=1` 被接受却不生效 → routed FP4 专家权重保持 FP4 → 后续 `RuntimeError: Unsupported kernel config for moe heuristic dispatch`。本地补丁验证：修复后 8 卡全部起服、GSM8K 187/200=93.5%。与 #32333（backend 选择）相关但不同——本条是**缺失的 ROCm 权重处理路径**。'
+  source: 'SGLang #35122（2026-08-16 open，8×MI308X TP8）。https://github.com/sgl-project/sglang/issues/35122'
+  behavior: crash（MoE dispatch RuntimeError，起服失败）——非静默，但用户看到的错误（kernel config）与真实根因（flag 被短路）相距两层。属 7.36「跨层 flag 契约无一致性校验」族的 ROCm dequant 新变体：flag 声称的语义与实际执行路径脱钩。
+  trigger_surface: SGLang ROCm；AITER + FP4 checkpoint + `SGLANG_DSV4_FP4_DEQUANT=1`
+  discovery: 2026-08-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

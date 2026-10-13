@@ -1,0 +1,52 @@
+id: INF-0968
+legacy_ids:
+- '10.52'
+slug: vllm_include_stop_str_in_output_ignored_for_stop_token_ids
+aliases: []
+title: vLLM stop_token_ids 命中时停止符混入输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: 增量 detokenizer update()
+  behavior: 增量 detokenizer update() 只在与 EOS 共用的 stop_terminated 下跳末 token，从不读 stop_token_ids；stop-string 路径各自处理了包含语义，token-id 路径漏了。
+effect:
+  objects:
+  - 输出内容
+  detail: include_stop_str_in_output=False 且命中 stop_token_ids 时，stop token 文本留在 output_text 与流式 delta 中；依赖输出不含停止符的下游解析（agent 协议、结构化拼接）被污染。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + `include_stop_str_in_output=False` + `stop_token_ids`（任意栈版本；config 组合即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55483
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（`include_stop_str_in_output=False` 只对 stop **strings** 截断：增量 detokenizer 从不检查 `sampling_params.stop_token_ids`——命中的 stop token 文本留在 `output_text` 与流式 delta 中（EOS 共享的 `stop_terminated` flag 不区分来源，三条 stop-string 路径不受影响，纯 token-id 路径语义缺口）） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '`BaseIncrementalDetokenizer.update()` 只在 `stop_terminated=True`（`finish_reason==STOP`，与 EOS 共享）时跳过最后 token，且从不读取 `stop_token_ids`；stop-string 家族（`_stop_basic/_stop_multi_tokens/_stop_partial_token`）各自处理了包含语义，token-id 家族漏掉。文档化的失败用例即 `tests/detokenizer/test_stop_strings.py` 的 `_stop_token_id`（被注释掉的测试）。'
+  source: 'vLLM PR #55483（2026-09-05，含与 stop-string 行为的对照矩阵）。https://github.com/vllm-project/vllm/pull/55483'
+  behavior: 无 crash——stop token 文本（往往是不可见/特殊 token 或自定义触发词）**静默混入输出**与流式 delta；依赖"输出不含停止符"的下游解析（agent 协议、结构化拼接）被污染。「同一语义参数在并行实现族中只覆盖一支」：include/exclude 截断语义的 token-id 盲区。
+  trigger_surface: vLLM + `include_stop_str_in_output=False` + `stop_token_ids`（任意栈版本；config 组合即触发）
+  discovery: |-
+    2026-09-05 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

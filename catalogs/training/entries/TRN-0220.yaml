@@ -1,0 +1,51 @@
+id: TRN-0220
+legacy_ids:
+- RL-KL.07
+slug: k3_clip_saturates_but_gradient_nans
+aliases: []
+title: OpenRLHF k3 KL 先 exp 后 clamp 致反向 NaN 梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: k3 KL 估计器 clamp 位置
+  behavior: k3 KL 估计器在 exp 之后才对输出 clamp：极端 log-prob 差经 exp 变 inf，返回值被拉回有限，但 autograd 图中 exp 留下 0×inf 型 NaN 梯度
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: 无 crash、KL 指标正常有限，但 grad_norm 突然 NaN，一次 KL 正则更新即污染参数；off-policy 漂移或 rollout-train 失配大、log-prob 差极端时更易触发
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1335
+  kind: github_pr
+relations: []
+original:
+  category: RL-KL
+  section: RL-KL
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: OpenRLHF 的 k3 KL 估计器在算完指数后对**输出**做 clamp——极端但有限的 log-prob 差先过 `exp` 变成 `inf`，clamp 把返回值拉回有限，但 autograd 图里留着 `exp` 的 NaN 梯度（`0 × inf` 型）：**KL 值有限、backward 产出 NaN**，一次 KL-regularized optimizer 更新即可污染原本有限的参数。修复 = 只在「输出 cap 已饱和」的区间内对**局部 log-ratio 拷贝**先 bound 再 exp（保持被 clip 的目标函数与其正常区梯度不变；原始 log ratio 仍留给可选的 corrected-gradient surrogate）。FP16/BF16/FP32 值/梯度对 float64 参照 + corrected-gradient 覆盖 + CPU AdamW 更新测试全过。
+  source: 'OpenRLHF PR #1335（2026-09-11；「返回的 KL clip 后仍有限，但 backward 经 `0*inf` 产生 NaN」）。https://github.com/OpenRLHF/OpenRLHF/pull/1335'
+  behavior: 无 crash——KL 指标一切正常（clamp 住了），grad_norm 突然 NaN、参数被污染；触发面是极端 log-prob 差（off-policy 漂移 / rollout-train mismatch 大时更可能），恰好是最需要 KL 惩罚兜底的场景。与 NUM.04（scaler 吞溢出）互补：那边前向溢出被吞、这边**反向** inf 被 forward-side clip 掩盖；与 RL-RO.04（GSPO 比值指数溢出）同根（无界指数），差异在那边直接 inf、这边被 clamp 转成静默 NaN 梯度。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,62 @@
+id: TRN-0262
+legacy_ids:
+- OBS.13
+slug: fp32_zero0_global_grad_norm_none
+aliases: []
+title: DeepSpeed fp32 ZeRO-0 丢梯度范数，grad_norm 缺失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: engine 梯度裁剪后的范数记录
+  behavior: fp32+ZeRO-0 裁剪时 clip_fp32_gradients() 返回的范数被丢弃；engine 只读 optimizer._global_grad_norm，基础优化器不设它，故 grad norm 恒为 None。
+effect:
+  objects:
+  - 指标/日志
+  detail: max_grad_norm>0 时 HF Trainer 经 Accelerate 读到 None，grad_norm 从日志静默消失；gradient_clipping 默认改为 1.0 后普通配置即触发，autocast+stage 0 同样命中。裁剪与更新不受影响，事后诊断缺范数序列。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-26'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8660
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/issues/7255
+  kind: github_issue
+relations: []
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed fp32 + ZeRO stage 0 的梯度裁剪在 `_take_model_step` 里走 `clip_fp32_gradients()` → `clip_grad_norm_`，该函数**返回总范数但值被丢弃**（engine.py L3425-3442）；之后 engine 只从 `optimizer._global_grad_norm` 拷贝，而该属性只有 fp16/bf16/ZeRO 包装优化器会设置——fp32 stage 0 用基础优化器（`torch.optim` / FusedAdam / CPUAdam / FusedLamb），`get_global_grad_norm()` 恒返回 `None`。范数已算出、就在丢弃点之前，仅未存。报告者提供 CPU 单进程 repro（master `bc44b341`）：stage 0 打印 `None`、stage 1 打印 `2.7553305625915527`；同路径在 `torch_autocast` + stage 0 也命中。2026-10-01 追踪更新：同函数族的 `torch_autocast` fp16 路径把**跳过步当已应用**记账（`was_step_applied()=True`、`skipped_steps=0`、LR scheduler 照走），根因同为 `_take_model_step` 只探测 `self.optimizer.overflow` 属性而该路径 optimizer 是客户端裸 `torch.optim`、恒无此属性——见 OBS.14。
+  source: 'DeepSpeed #8660（2026-09-25；repro + 根因 + 修复提案：`clip_fp32_gradients()` 返回值存入 `_global_grad_norm`，回归测试对照纯 torch pre-step 范数——测试 master 上挂、修复后过）。https://github.com/deepspeedai/DeepSpeed/issues/8660 ；同症状先例 #7255（2025-04 开、无 repro）。https://github.com/deepspeedai/DeepSpeed/issues/7255'
+  behavior: '无 crash——`max_grad_norm>0` 时 HF Trainer 经 Accelerate 读到 `None`，把 `grad_norm` 从日志**静默丢弃**；#8068 把 `gradient_clipping` 默认值改为 1.0 后，plain DeepSpeed 配置即中招。观测缺口：无梯度范数序列 → spike 事后诊断无从谈起（对比 OPT.03 lr_zero 骗过监控的「监控在、值骗人」，这边是**监控读取点直接缺失**，与 OBS.02 空指标当健康同族但方向相反）；训练本身（裁剪、权重更新）不受影响。fp32 stage 0 是最小配置面（无混精、无 ZeRO 分片），恰是排查数值问题时的对照基线——基线 run 丢 grad_norm 使对照失效。修复 PR #8708 已于 2026-09-28 merge。'
+  discovery: 2026-09-26 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 观测/评测 vs 优化器：定为 观测/评测。原文「训练本身（裁剪、权重更新）不受影响」，缺陷只是 clip_fp32_gradients() 返回的范数未存进 _global_grad_norm，致 get_global_grad_norm() 上报 None；出错的是范数记录/上报，梯度裁剪逻辑本身正确。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 优化器
+        status: unanimous

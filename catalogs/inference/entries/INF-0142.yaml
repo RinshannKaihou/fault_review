@@ -1,0 +1,52 @@
+id: INF-0142
+legacy_ids:
+- '1.143'
+slug: ttmetal_avg_pool2d_global_fastpath_interleaved_pad_wrong_mean
+aliases: []
+title: avg_pool2d 全局快路径把交错 pad 当尾部后缀致均值错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: avg_pool2d 全局快路径 fold
+  behavior: pad_to_tile 使 NHWC 每行带交错 W_pad，快路径把 (N,H,W) fold 成单一归约轴，#54410 守卫只校验 pad 数量并假设 pad 在尾部；RM reader 按逻辑行数读页、跨过交错 pad。
+effect:
+  objects:
+  - 数值结果
+  detail: padded ROW_MAJOR 输入满足 H*ceil32(W)==ceil32(H*W) 时输出被静默缩放：[1,2,17,64] 全 1 输入期望均值 1.0 实得 0.559，最差偏差 44%；H≤64、W≤128 内 328 个组合命中，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `global_avg_pool2d`/`avg_pool2d` 全局快路径 + `pad_to_tile` ROW_MAJOR 输入 + `H*ceil32(W)==ceil32(H*W)` 形状（软件 shape 选择即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-02'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55227
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0075
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`avg_pool2d/global_avg_pool2d` 全局快路径对 padded ROW_MAJOR NHWC 输入把**交错**填充误当尾部后缀：快路径 fold (N,H,W) 入单归约轴使 #54410 守卫的 roundup 支恒过（`H*ceil32(W)==ceil32(H*W)` 即通过），dense RM reader 按**逻辑行数**读页、跨过交错 W_pad——`[1,2,17,64]` ones 输入期望均值 1.0 实得 0.559（=19/34），最差 44%；H≤64、W≤128 共 **328 个 (H,W) 组合**命中） · Cov: `var:ttm_global_avg_pool_non_tile_divisible_shape_structural_pcc_error`（1.76 同 op 填充形状结构损坏族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`pad_to_tile` 填最后两维，NHWC 每 H 行携带一份 W_pad（交错非后缀）；#54410 守卫只校验 pad **数量**并**推断位置**（假设 pad 在真实行之后）。快路径 fold（`generic_pools.cpp:1110-1121`）把全部 pad 塌入 H 总量、NC=1，谓词只剩 roundup 支；reader（reader_unary_reduce_rm.cpp H 分支）读前 H*W 页跨过交错 pad。两个不同输入产生 byte-identical canonical tensor spec——fold 处信息已丢失，reduce_op.cpp 层不可修。'
+  source: 'tt-metal #55227（2026-09-02 open，PR #54410 review follow-up，含 4-shape 复现表、根因推导与 328 组合计数）。https://github.com/tenstorrent/tt-metal/issues/55227 · 前置修复：PR #54410（resnet50 个案）'
+  behavior: 无 crash——pool 输出被静默缩放/结构错位（0.559 vs 1.0）；CNN 分类/VLM 前端静默退化。属「**守卫校验数量、缺陷在位置**」新子签名：shape 只记录有多少 pad 不记录在哪，fold 后两种情形不可区分——1.76（non-tile-divisible global_avg_pool 结构错误）逃逸的兄弟路径。
+  trigger_surface: tt-metal + `global_avg_pool2d`/`avg_pool2d` 全局快路径 + `pad_to_tile` ROW_MAJOR 输入 + `H*ceil32(W)==ceil32(H*W)` 形状（软件 shape 选择即触发）
+  discovery: 2026-09-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

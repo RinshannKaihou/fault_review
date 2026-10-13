@@ -1,0 +1,56 @@
+id: INF-1338
+legacy_ids:
+- K10.27
+slug: ollama_context_shift_nkeep_zero_sink_bos_drop
+aliases: []
+title: Ollama 上下文平移在 n_keep=0 时驱逐 sink/BOS
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: ollama
+    component: context-shift 驱逐与位置重基
+  behavior: Ollama 的 context-shift 在 n_keep=0 时把 BOS/attention-sink token 一并驱逐，且不重新基准化位置。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 长会话触发 context shift 后突然开始复读或输出退化，重启会话即恢复；sink 消失后首层注意力熵出现尖峰。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: '`gh`：ollama #2805、#3176 *（误引用的 #5303 已弃用）*。'
+relations:
+- kind: var
+  target: INF-0785
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`infra_off` · Cov: `var:attn_sink_eviction_collapse` · 触发 `yes` · 置信度 `documented`'
+  mechanism: Ollama 的 context-shift 在 `n_keep=0` 时把 BOS / attention-sink token 一并驱逐，且不重新基准化（re-base）位置。sink token 承担 softmax 的"泄压阀"作用，一旦被移除，注意力分布坍缩，解码进入循环。
+  source: '`gh`：ollama #2805、#3176 *（误引用的 #5303 已弃用）*。'
+  behavior: 长会话在触发 context shift 之后突然开始复读 / 输出退化，重启会话则恢复。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: sink 丢失导致注意力坍缩是强 infra_off。签名**与已实现的 `attn_sink_eviction_collapse` 相同**（sink 消失后首层熵尖峰）——正因签名相同，本条在实现中被裁定为 `attn_sink_eviction_collapse` 的 dispatch 别名而非独立注入器。statistical（首层注意力熵尖峰）与 trajectory（触发点的 STEP）主捕获；geometric 亦强响应。检测意义上它不增加新的可分辨签名，只增加一个新的现实触发路径。
+  repro: 本条直接复用 `attn_sink_eviction_collapse` 的注入器（默认 `L=8, k_sink=4`）——按本文档"签名相同"的裁定作为 dispatch 别名，即在指定层驱逐前 `k_sink` 个 sink 位置的 KV。
+  locus: eviction-compression
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

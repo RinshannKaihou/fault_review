@@ -1,0 +1,60 @@
+id: INF-1350
+legacy_ids:
+- '6.282'
+slug: vllm_nixl_lease_expiry_releases_blocks_under_inflight_read_cross_request_kv_substitution
+aliases: []
+title: vLLM NixlConnector lease 到期释放 KV 块致跨请求串答
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NixlConnector lease 生命周期
+  behavior: producer 在 kv_lease_duration 到期时无条件释放请求 KV 块，不检查 consumer 的远端 READ 是否在途；块描述符无内容/身份绑定，NIXL 兼容检查只比 layout hash，不校验内容身份。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 无 crash、无报错：consumer 读到的字节已是复用后其他请求内容，直接送入模型，decode 输出延续他请求内容；decode 停顿（GC/调度）超过默认 30s lease 即触发；SIGSTOP 33.6s 可确定性复现 5/5；仅事后告警，部分运行不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: 'false'
+  trigger_note: vLLM NixlConnector 1P1D + kv_lease_duration 过期 + decode 停顿（GC/调度）超过 lease（默认 30s）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: '与 6.265（P2P 超时解钉）同族不同站：本条在 1P1D NIXL lease 生命周期。来源 vLLM #61229（v0.30.0 Qwen2.5-0.5B 1P1D UCX，10 次试验 + 三组干净对照）。'
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61229
+  kind: github_issue
+relations: []
+original:
+  mechanism: lease 过期策略以"到期时间"而非"读完成"为释放条件；无内容校验的块描述符使释放-复用-读取竞态静默串答。与 6.265（P2P 超时解钉）同族不同站：本条在 1P1D NIXL lease 生命周期。
+  source: 'vLLM #61229（2026-10-12 open，10 次试验 + 三组干净对照；v0.30.0 Qwen2.5-0.5B 1P1D UCX）。https://github.com/vllm-project/vllm/issues/61229'
+  behavior: 无 crash、无错误——decode 输出延续其他请求的内容（跨请求串答）；GC/长步/调度停顿即可自然触发。
+  trigger_surface: vLLM NixlConnector 1P1D + kv_lease_duration 过期 + decode 停顿（GC/调度）超过 lease（other_stack；默认 30s）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（vLLM NixlConnector pull 流：producer 在 `kv_lease_duration` 到期时**无条件**释放请求 KV 块——不管 consumer 的远端 READ 是否在途/即将发起；consumer 侧块描述符无内容/身份绑定，读到的字节可能已是**复用后的其他请求内容**并直接送入模型。确定性复现：SIGSTOP 拖住 decode 33.6s 超过默认 30s lease → producer 释放并复用槽位 → 恢复后 decode 输出延续**他请求**内容，5/5（lease=1 时 5/5）；producer 有事后告警日志但字节已被消费，部分运行连告警都不触发；NIXL 兼容检查只比 layout hash，不校验内容身份） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

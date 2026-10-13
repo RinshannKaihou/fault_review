@@ -1,0 +1,50 @@
+id: INF-0189
+legacy_ids:
+- '1.190'
+slug: ttmetal_typecast_float_int32_positive_overflow_saturates_int32_min
+aliases: []
+title: typecast float→int32 正溢出饱和成 INT32_MIN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU typecast 正溢出饱和
+  behavior: SFPU typecast 内核只加载单一饱和常量 0x80000000（INT_MIN），二补码取反仅在 in<0 时触发，正溢出 lane 没有通往 INT32_MAX 的路径。
+effect:
+  objects:
+  - 数值结果
+  detail: ≥2^31 的 float 输入均返回 −2147483648（符号反转，如 3e9），NaN 也返回 INT32_MIN（torch 给 0），覆盖 19.34% 的 float32 域；负输入正确，自家 golden 正确 clamp，下游索引/位移拿到错误符号。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn.typecast float32→int32 + |x|≥2^31 或 NaN（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55933
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.typecast(t, ttnn.int32)` 对每个 `>= 2^31` 的 float 输入返回 `-2147483648`——正溢出饱和为 INT32_MIN（**符号反转而非精度损失**：最大可表示正 float 变成最负 int32），NaN 也返回 INT32_MIN（torch 给 0）；自家 golden 正确 clamp 到 +2147483647，负输入全部正确——**只有正侧坏**，覆盖 19.34% 的 float32 域） · Cov: `NEW`（设备侧饱和常量单符号子签名；与 1.185 宿主侧 cast UB 同域不同机制） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: SFPU 内核 `ckernel_sfpu_typecast.h:194` 只加载**单一**饱和常量 `0x80000000`（INT_MIN），第 196 行把 lane mask 收窄到 `exp < 31`（`|x| >= 2^31` 的 lane 保留该常量），而第 206–209 行的二补码取反仅在 `in < 0` 时触发——由于 `-INT_MIN == INT_MIN`，正溢出 lane 根本没有通往 INT32_MAX 的路径。
+  source: 'tt-metal #55933（2026-09-09 open，bug label，含内核代码逐行分析、golden 对照表与 19.34% 域覆盖计算）。https://github.com/tenstorrent/tt-metal/issues/55933'
+  behavior: 无 crash——float→int32 转换在大正值域**静默符号反转**（3e9 → −2147483648），下游索引/位移计算拿到错误符号结果。1.185（from_torch 宿主 static_cast UB、x86/aarch64 分歧）之后 float→int cast 族第二形态：本条在设备侧 SFPU 内核、由饱和常量缺少正路径导致。
+  trigger_surface: tt-metal ttnn.typecast float32→int32 + |x|≥2^31 或 NaN（hw_specific）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

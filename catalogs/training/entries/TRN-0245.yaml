@@ -1,0 +1,53 @@
+id: TRN-0245
+legacy_ids:
+- RL-RO.23
+slug: fp32_lm_head_not_applied_to_generation_backends
+aliases: []
+title: trl cast_lm_head_to_fp32 未作用于生成后端
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: FP32 lm_head 生成路径
+  behavior: cast_lm_head_to_fp32 只接到训练打分路径：替换 head forward 时未禁用 autocast，generate 仍按 BF16 投影；构建 VLLMGeneration 时也不传 head dtype 覆盖。
+effect:
+  objects:
+  - 输出分布
+  - 训练信号
+  detail: 无 crash、无 warning；BF16 训练下 transformers 与 vLLM 生成后端都从 BF16 head 采样，训练侧 logprob 按 FP32 算，IS 权重与 KL 系统偏置；CPU repro 中 logits 误差 3.7e-4。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7430
+  kind: github_issue
+- url: https://arxiv.org/abs/2510.13786
+  kind: arxiv
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: trl `GRPOTrainer(cast_lm_head_to_fp32=True)` 只把 FP32 投影接到**训练侧打分路径**，两个生成后端都仍从 BF16 head 采样：`GRPOTrainer.__init__` 用 FP32 `linear` 替换 head forward 但**不禁用 autocast**——`Trainer.train()` 经 Accelerate prepare 后整个 forward 跑在 BF16 autocast 下，`model.generate()` / `generate_batch()` 采样的 logits 是 BF16 权重 × BF16 hidden 的 autocast 结果（chunked head 训练路径倒是显式 `torch.autocast(enabled=False)`，讽刺地造成「训练 logprob FP32、rollout 分布 BF16」的双轨）；vLLM 路径上 `GRPOTrainer.__init__` 构建 `VLLMGeneration` 时不传任何 head dtype 覆盖，colocated `vllm.LLM` 按模型 dtype 投影 head（v0.26.0 起有 `head_dtype` 覆盖可用但未被使用；v0.20.0-0.25.x 根本无此能力）。净效果：rollout 来自的策略与被训练/打分的策略**不是一个**——正是 ScaleRL 论文用 FP32 head 消除的 mismatch 源。本扫描对 trl `main`@HEAD 逐行核对：`grpo_trainer.py` 的 `_cast_lm_head_to_fp32` 无 autocast 处理、`vllm_generation.py` 全文无 `head_dtype`/`cast_lm_head` 引用；报告者 CPU repro（LlamaConfig 1 层 + `bf16=True` + `cast_lm_head_to_fp32=True`）实测 autocast 路径 logits 对 FP32 投影的 max abs error 3.7e-4、chunked 路径 0.0。触发条件：`cast_lm_head_to_fp32=True`（ScaleRL recipe）+ BF16 训练，transformers 生成与 vLLM（server/colocate）双后道中招；chunked head 下仅 vLLM 侧缺口。
+  source: 'trl #7430（2026-09-28；autocast/vLLM 双路径代码流定位 + CPU repro 实测数字 + vLLM `head_dtype` 覆盖的历史与版本边界 + server 模式 `--hf-overrides` 手动缓解）。https://github.com/huggingface/trl/issues/7430 ；对照论文：ScaleRL arXiv:2510.13786（FP32 LM head 消除的 rollout-trainer mismatch 即该 flag 的设计动机）。https://arxiv.org/abs/2510.13786'
+  behavior: 无 crash、无 warning——flag 被静默半执行：训练侧 logprob/梯度按 FP32 head 计算、rollout 侧采样分布仍是 BF16 head 的，RL-RO.01（TIM logprob delta）的一个人为放大源被 flag 自己制造：IS 权重与 KL 都在「真策略」与「采样策略」的 dtype 差上系统性偏置，与 flag 想消除的 mismatch 同号。与 NUM.15（进程级 mixed precision 环境变量泄漏使 fp32 阶段静默继承 bf16）同族「精度意图被 autocast 上下文吞掉」：那边是环境变量钉死、这边是 autocast 上下文环绕；与 RL-RO.22（FP8 MoE repack 检测失明）互补：那边是权重布局契约断、这边是**同一权重的两种数值化身**分别喂训练与采样；与 RL-RO.20 同属「校正/增强机制自身成为 mismatch 源」。截至收录无评论、无修复 PR。2026-10-06 更新：verl 侧同构实例见 RL-RO.24（`fsdp_config.dtype` 被忽略、rollout FP16 / trainer BF16）。
+  discovery: 2026-09-29 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

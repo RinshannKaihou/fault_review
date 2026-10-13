@@ -1,0 +1,55 @@
+id: INF-0947
+legacy_ids:
+- '10.31'
+slug: sglang_toolcall_parsers_streaming_vs_detect_mismatch
+aliases: []
+title: SGLang 8 个 tool parser 流式与一次性解析不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: sglang
+    component: 8 个 tool parser 流式增量解析
+  behavior: 8 个 parser（minimax-m2、mistral、gemma4 等）的 parse_streaming_increment 状态机遇空参数 {} 等极简参数时走空分支处理错误，与 detect_and_parse 结果不一致。
+effect:
+  objects:
+  - 输出内容
+  detail: stream=true 且 tool call 含空/极简参数时，流式 200 成功但调用静默丢失或残缺：minimax-m2 整个调用消失、mistral 丢第 2 个调用、cohere_command4/gemma4 被截断；同一文本流式与非流式结果矛盾。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: 'SGLang；8 个受影响 tool-call parser + `stream: true` + 空/极简参数调用'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser）：暂归 调度/服务 的 API/前端，但 parser 缺陷与请求调度、批处理无关，单列便于聚类
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35564
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（8 个 tool-call parser 在逐字符 streaming 模式下与 one-shot `detect_and_parse` 结果不一致——空参数 `{}` 调用丢失、多调用丢后续、增量拆分错误） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '对 `cohere_command4, gemma4, glm, glm45, glm47, minimax-m2, mistral, step3` 8 个 parser 做系统对拍：把含空 `{}` 参数（或极简参数）tool call 的文本逐字符喂给 `parse_streaming_increment`，与 `detect_and_parse`（one-shot）对比——结果不一致。失败模式：minimax-m2 流式下调用**整个消失**（final: `{0: get_weather {}}` vs streamed: `{}`）；mistral 流式丢第 2 个调用；cohere_command4/gemma4 调用被截断等。空参数调用是最小触发负载（参数为空的 JSON 对象使增量 parser 的"参数累积"状态机走空分支）。'
+  source: 'SGLang #35564（2026-08-19 open，附 8 parser 的一致性对拍方法与失败模式清单）。https://github.com/sgl-project/sglang/issues/35564'
+  behavior: 无 crash、流式 200 成功。tool call 静默丢失/残缺——agentic 客户端拿到的调用集合与模型实际输出不同，且流式与非流式结果互相矛盾（同一文本两条路径两个答案）。属「流式与 one-shot 解析双路径一致性缺口（8 parser 系统性）」**新子签名**——与 10.14（DSV4 六个流式 bug）同域但本条是**跨 parser 家族的系统性对拍缺口**而非单 parser 缺陷。
+  trigger_surface: 'SGLang；8 个受影响 tool-call parser + `stream: true` + 空/极简参数调用'
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

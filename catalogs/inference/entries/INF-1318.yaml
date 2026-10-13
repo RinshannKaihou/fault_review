@@ -1,0 +1,58 @@
+id: INF-1318
+legacy_ids:
+- K10.7
+slug: cachedattention_truncation_stale_positional_kv_reuse
+aliases: []
+title: CachedAttention 式 KV 持久化烘焙 RoPE 相位致截断后错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: 分层 KV 存储的会话复用与截断
+  behavior: CachedAttention 式分层 KV 存储把 RoPE 相位烘焙进持久化的 K；恢复的会话历史被截断后存活 token 逻辑位置整体下移，但存储的 K 仍保留旧相位，键侧角度偏离一个截断长度。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 会话恢复并截断历史后，模型对早段上下文的指代与距离判断错乱；首次会话完全正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2403.19708
+  kind: arxiv
+relations:
+- kind: var
+  target_raw: streamingllm_position_not_recompacted
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`infra_off` · Cov: `var:streamingllm_position_not_recompacted` · 触发 `yes` · 置信度 `documented`'
+  mechanism: CachedAttention 式的分层 KV 存储把 RoPE 相位**烘焙**进持久化的 K 里；当被恢复的会话历史被截断时，所有存活 token 的逻辑位置整体下移，但存储的 KV 仍保留旧的嵌入相位。于是每个被复用键的 RoPE 角度恰好偏离一个截断长度，与新鲜查询的相位不再匹配。
+  source: arXiv:2403.19708（USENIX ATC'24）。
+  behavior: 会话恢复 + 历史截断后，模型对早段上下文的指代和距离判断错乱，而首次会话完全正常。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: 这是**键侧单边**相位错误，与 `cache_position_off_by_one` 的近似空操作有本质区别——后者移动 position_ids，查询与键被同一常数旋转，相对角度不变；此处只有键被重旋转，QK^T 相对相位真实改变，隐状态离开健康流形（infra_off）。geometric 与 trajectory 在被复用键所在的位置段可见跳变，statistical 上表现为注意力质量向"看起来更近"的旧键迁移；纯范数类 cheap 指标漏检（范数不变，只有相位变）。
+  repro: '`model.model.layers[L]` 上的 forward hook，prefill 时触发一次：把该层全部缓存 K 按**常数** delta = `+trunc_len` 重新旋转。符号为正（经复核修正）——过期键保留的是截断前的旧相位，比存活者的新逻辑位置高出 `trunc_len`，对新鲜查询而言显得比实际近 `trunc_len` 个位置。**只动 K**，查询与解码位置正常推进，与真实 resume 路径一致。'
+  locus: index-position
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

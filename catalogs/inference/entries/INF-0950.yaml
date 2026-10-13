@@ -1,0 +1,55 @@
+id: INF-0950
+legacy_ids:
+- '10.34'
+slug: sglang_kimi_k3_dp_vision_shard_local_grid_index
+aliases: []
+title: SGLang Kimi-K3 DP 视觉预处理索引错位致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: Kimi-K3 deferred 视觉预处理索引
+  behavior: 'DP 分片视觉的 deferred GPU 预处理路径以 shard-local 位置索引按全局图片位置组织的 grid_thws_host，缺少 shard-local→全局位置的换算（回归自 #34404）。'
+effect:
+  objects:
+  - 可用性/进度
+  detail: Kimi-K3 + cpu transport + DP-sharded vision 下，batch 含 ≥2 张不同分辨率图片即抛 ValueError（wrong grids）使服务崩溃；各图 grid 相同时缺陷不可见，原单测用相同 grid 样例因而长期漏检。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Kimi-K3 + DP-sharded vision + cpu transport + 混合分辨率多图 batch
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/35305
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（DP 分片视觉预处理 deferred 路径用 shard-local 位置读全局 grid_thws_host——batch 内 ≥2 张不同分辨率图即"wrong grids" ValueError 崩服务；相同 grid 掩盖缺陷） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'Kimi-K3 + cpu transport + DP-sharded vision 下，一个 batch 含 **≥2 张不同分辨率**图片即触发 `ValueError: Kimi-K3 deferred GPU preprocessing produced wrong grids` 崩掉服务。根因（回归自 #34404）：deferred 预处理路径以 **shard-local 位置**索引 `grid_thws_host`，而该数组按**全局图片位置**组织——DP 分片边界两侧的坐标语义换算缺失。修复（PR #35305）在两处 deferred 读取处经 `image_indices` 把 shard-local 位置映射回全局位置。原有单测用 **identical grids** 的多图样例恰好掩盖了缺陷（分片换算错误在相同 grid 下不可见），修复后单测改用 distinct per-image grids 才 fail-on-main。'
+  source: 'SGLang PR #35305（2026-08-19 open，4 节点 × 8 H100 TP32/EP32 cpu transport 实证：3 张不同分辨率图 main 上崩、修复后过）。https://github.com/sgl-project/sglang/pull/35305'
+  behavior: crash（ValueError，服务死亡）——fail-loud 但有**测试盲区放大**：identical-grid 测试数据长期掩盖 shard 边界换算错误。属「**DP 分片局部索引 vs 全局数组索引错位**」新子签名：分布式切分维上的坐标语义换算缺失（第 5 类分布式 × 第 10 类多模态预处理交叉），与 10.32/10.33 同为多模态前处理静默/崩溃族但根因在 shard 边界。
+  trigger_surface: SGLang + Kimi-K3 + DP-sharded vision + cpu transport + 混合分辨率多图 batch
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 调度/服务：按 rules“触发条件不是对象”，DP-sharded vision 是触发条件；出错代码是 deferred 预处理的两处 grid_thws_host 读取（原文“修复在两处 deferred 读取处经 image_indices 映射回全局位置”），属词表 调度/服务 的“多模态输入预处理”，并非 DP 切分逻辑本身。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

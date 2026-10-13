@@ -1,0 +1,54 @@
+id: INF-0868
+legacy_ids:
+- '8.84'
+slug: sglang_glm5x_nope_mla_sm120_no_dsa_backend_available_unrunnable
+aliases: []
+title: SGLang GLM NoPE MLA 在 SM120 无可用 DSA 后端
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: sparse-MLA 后端 smem/维度特化
+  behavior: 各 sparse-MLA 后端的 smem 预算与维度特化只按 Hopper/B200（576 维）编写：tilelang 需 202KB smem 超 SM120 上限，FlashInfer 内核拒绝 NoPE 512 维
+effect:
+  objects:
+  - 可用性/进度
+  detail: SGLang 在 SM120（RTX PRO 6000 Blackwell）上服务 GLM-5.x（qk_rope_head_dim=0）时启动或首 token 崩溃、kernel launch 被拒，模型完全不可服务；fp8 KV 下按构造不可运行，bf16 KV 下其余后端各自受阻
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.x（NoPE MLA，qk_rope_head_dim=0）+ SM120（RTX PRO 6000 Blackwell）（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39302
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0846
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（SGLang GLM-5.x **NoPE MLA**（`qk_rope_head_dim=0`，absorbed q head dim = `kv_lora_rank`=512 而非 DeepSeek 的 576）在 **SM120**（RTX PRO 6000 Blackwell，cc 12.0）上无任何可用 DSA sparse-MLA backend：(a) tilelang 需 202 KB 动态 smem 而设备实测上限 101376 B（`cudaFuncSetAttribute` 131072/163840/202752/206848 全 invalid argument）；(b) GLM + fp8 KV + SM120 代码**强制**的 FlashInfer 路径其内核拒绝 NoPE 维度——fp8 KV 下 unrunnable by construction；bf16 KV 其余 backend 各自受阻。该几何与 flashinfer 自家 `nope_mla_dimensions` preset 逐字段一致（上游一等公民几何），非量化/repack 特有） · Cov: `var:vllm_flashinfer_mla_sparse_sm90_fp8_kv_storage_dtype_rejected_startup`（8.62 sparse-MLA 后端可用性矩阵缺口族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 各后端的 smem 预算与维度特化表均按 Hopper/B200（~228 KB smem、576 absorbed dim）编写；SM120 的 99 KB smem 上限与 NoPE 的 512 维组合双双落在所有实例化之外，逐 backend 依次失败。
+  source: 'SGLang #39302（2026-09-13 open，含逐 backend 失败矩阵、CUDA 设备属性实测程序与 flashinfer preset 对照）。https://github.com/sgl-project/sglang/issues/39302 · 补充来源：vLLM PR #55738（2026-09-14 merged：GLM-5.3-Flash NoPE MLA（qk_nope_head_dim=256, qk_rope_head_dim=0, v_head_dim=256）加入 FlashAttention MLA prefill allow-list + masked-MHA 可用性检查 + `k_pe` 零宽 concat 短路；#56896 为旧树（0.28.x）移植参考文档，含"仍显示 No MLA prefill backend supports this model 即损失 prefill 吞吐"的量化说明与 SM120 注记）· vLLM #57578（2026-09-18 open：vLLM 侧 GLM-5.3-Flash NoPE MLA 在唯一后端 FLASHINFER_MLA_SPARSE_SM120 的 `concat_and_cache_mla` 内核硬编码 DeepSeek 几何 `pe_dim==64`/`kv_lora_rank==512`——MLA warmup 即 RuntimeError；报告者论证**放宽 assert 会更糟**：block(96) 的 RoPE 线程将读不存在的 `k_pe` 写入 656B 固定布局的 bogus rope 区 → 静默损坏，需要专用 NoPE 内核变体+条目布局+格式路由）· vLLM #57532（2026-09-18 open：GLM-5.3-Flash NVFP4+MTP 启动失败——draft `shared_head.head` 占位层的 NVFP4 weight_scale 永不加载仍 NaN 被 fail-loud 拒绝；该层加载后即被 `lm_head` 替换不参与推理，属加载期 false positive，佐证 GLM NoPE MLA × 量化 checkpoint × MTP 装配链路的元数据缺口）（2026-09-18 每日扫描补充）'
+  behavior: fail-loud（启动/首 token 崩溃或 kernel launch 拒绝）——模型在 SM120 完全不可服务；但族谱意义在于**可用性矩阵的缺口形态**：不是崩溃而是"若降级到其它 dtype/后端组合，维度假设潜伏"。8.62（fp8 KV sparse-MLA SM90 storage dtype 启动拒绝）之后"sparse-MLA 后端 × dtype × arch 可用性矩阵"族新成员：本条在 NoPE 几何 × SM120 smem 上限维度。
+  trigger_surface: SGLang + GLM-5.x（NoPE MLA，qk_rope_head_dim=0）+ SM120（RTX PRO 6000 Blackwell）（hw_specific）
+  discovery: |-
+    2026-09-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

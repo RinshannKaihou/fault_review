@@ -1,0 +1,55 @@
+id: TRN-0072
+legacy_ids:
+- CKPT.23
+slug: onpolicy_resume_offset_counted_in_rollout_rows
+aliases: []
+title: ms-swift on-policy 续训 offset 错算跳过数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: on-policy 续训 offset 与种子
+  behavior: ckpt 的 consumed_train_samples 计的是 rollout 行数，dataloader 却按 query 行索引并原样使用该 offset；sampler 只用 epoch 作种子、忽略 data_seed。
+effect:
+  objects:
+  - 训练样本流
+  detail: Megatron 后端 GRPO/GKD 在 n 路 generation 下 resume 无报错，但跳过 n 倍过远，从数据集错误位置继续：部分 query 从未训练、部分重复训练，梯度与 loss 曲线正常；配置的 data_seed 对 on-policy 数据序无效。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10099
+  kind: github_issue
+- url: https://github.com/modelscope/ms-swift/pull/10113
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0067
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `rl/sft` · Cov: `var:resume_rebuilt_sampler_loses_epoch_seed` · 置信度 `documented`'
+  mechanism: ms-swift Megatron on-policy（GRPO/GKD）训练里，ckpt 的 `state.consumed_train_samples` 计的是**已优化的 rollout 行数**（queries × num_generations），而 on-policy dataloader 索引的是**未重复的 query 行**；`_prepare_dataloader` 把持久化 offset 原样喂给 `MegatronPretrainingRandomSampler`——n 路 generation 下 resume 跳过 **n 倍太远**，训练静默接在数据集错误位置继续。同一报告的第二断点：该 sampler 用 `epoch` 单独作 epoch 排列种子，配置的 `data_seed` 对 on-policy 数据序**毫无效果**。修复 = 构造 dataloader 时 `//= num_generations` 换算回 query 行（不持久化计数本身、不可整除即 `RuntimeError` fail-closed）+ sampler 接受 `seed`、两个分片分支统一 `seed + epoch`。
+  source: 'ms-swift #10099（双 bug 报告：resume offset ×n 跳过 + sampler seed 不生效）、#10098；修复 PR #10113（同 PR 覆盖 #10098 的 strict 化）。https://github.com/modelscope/ms-swift/issues/10099 https://github.com/modelscope/ms-swift/pull/10113'
+  behavior: resume 无任何报错，采样流从错误 offset 继续：部分 query 从未训练、部分重复训练——梯度与 loss 曲线正常，数据覆盖静默偏移（与 CKPT.18 的 81% 重复/15% 缺训同后果面）。与 CKPT.18（epoch 种子不传播）同族：**resume 时数据流位置的语义换算缺失**，那边丢 epoch 维、这边丢 generation 重复维；`data_seed` 死配置面与 CKPT.07/CKPT.20（死键）同型。
+  discovery: 2026-09-13 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: INF-0768
+legacy_ids:
+- '7.95'
+slug: vllm_sm12x_fp8_deepgemm_float32_scale_route_unsupported_nan_or_runtimeerror
+aliases: []
+title: DeepGEMM fp8 路由忽略 scale 格式致 SM12x 输出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: DeepGEMM fp8 linear 路由谓词
+  behavior: should_use_deepgemm_for_fp8_linear() 不看 scale 格式与设备族；E8M0 关闭时 scale 为 FLOAT32 仍路由到在 SM12x 上无 float32 scale 路径的 DeepGEMM。
+effect:
+  objects:
+  - 数值结果
+  detail: GB10（sm_121）上设置 VLLM_USE_DEEP_GEMM_E8M0=0 时，旧 DeepGEMM 下 fp8 block linear 输出 0.78%–38.7% 为 NaN，新版本改为 RuntimeError；默认值 1 时结果正确。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + SM12x（GB10/SM121）+ fp8 block linear + `VLLM_USE_DEEP_GEMM_E8M0=0`（config：文档化开关触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57486
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（vLLM `should_use_deepgemm_for_fp8_linear()`（`utils/deep_gemm.py`）只看 support/输出 dtype/形状对齐，**不看 scale 格式与设备族**：`VLLM_USE_DEEP_GEMM_E8M0=0`（文档化用户可设）时 scale oracle 返回 `FLOAT32` 而路由仍选 DeepGEMM——其在 SM12x 上没有可用的 float32 scale 路径。GB10（sm_121）2×DGX Spark 逐 case 独立进程实测：DeepGEMM `ad1f1726` 下 **NaN 占输出的 0.78%–38.7%**（M×N×K 五档扫描，如 4096×13824×16384 达 38.7%）；`a6bbb80` DeepGEMM#9 pin bump 后改为 host 侧 assert **RuntimeError**（fail-loud 化）。默认 `VLLM_USE_DEEP_GEMM_E8M0=1` 下 oracle 返 UE8M0、逐 case rel 0.0 全对——即**同一内核选择的正确性取决于一个默认开、文档说可关的环境变量**) · Cov: `NEW`（scale 格式 oracle 维度未纳入内核路由决策子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: 路由谓词与内核能力谓词脱节——`can_implement` 复用了同一个不完备谓词，scale 格式（UE8M0 vs FLOAT32）作为 DeepGEMM 在 SM12x 上的硬约束未参与决策；旧 DeepGEMM 对 float32 scale 静默产出 NaN，新版本才以 assert 显式拒绝。
+  source: 'vLLM #57486（2026-09-18 open，quantization，含五档 M×N×K × 双 DeepGEMM commit × UE8M0 对照的 NaN 比例表、oracle 单测复现与路由源码定位）。https://github.com/vllm-project/vllm/issues/57486'
+  behavior: 双形态——旧依赖：**静默 NaN 污染**（最高 38.7% 输出元素）；新依赖：启动/首算 RuntimeError（fail-loud）。7.83（vendored TRT-LLM fp8 cast 经 bf16 双舍入修复未传播）与 7.50（UE8M0 双后端 scale 分歧）之后 fp8 路由/scale 族新成员：本条在 **环境变量控制的 scale 格式 × SM12x 内核能力矩阵**维度。
+  trigger_surface: vLLM + SM12x（GB10/SM121）+ fp8 block linear + `VLLM_USE_DEEP_GEMM_E8M0=0`（config：文档化开关触发）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

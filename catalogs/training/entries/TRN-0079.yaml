@@ -1,0 +1,52 @@
+id: TRN-0079
+legacy_ids:
+- CKPT.30
+slug: cyclic_sharded_resume_dp_resize_reorder
+aliases: []
+title: Megatron cyclic 分片 sampler 换 DP 续训致样本错乱
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: megatron-lm
+    component: cyclic 分片 sampler 重建
+  behavior: 默认 data sharding 下 ckpt 只存标量 consumed_train_samples；resume 用新的 DP 尺寸重建 sampler，而各 rank 的 bucket 大小、偏移与起点都依赖 DP 尺寸。
+effect:
+  objects:
+  - 训练样本流
+  detail: 换 DP 尺寸 resume 后无 error 无 warning，已消费样本被重放、未消费样本被跳过，此后每个 epoch 都从错误 offset 开始（DP4→2 时 58 条重复、58 条未抽到）；single 类型不受影响，端到端影响未实测。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7645
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7648
+  kind: github_pr
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `--dataloader-type cyclic` + 默认 data sharding 下，ckpt 只持久化标量 `consumed_train_samples`；resume 时 `build_pretraining_data_loader` 用**新的** `data_parallel_size` 重建 `MegatronPretrainingRandomSampler`，而 sharding 路径每个 rank 走自己连续 bucket 的排列，`bucket_size`/`bucket_offset`/`start_idx` 全部依赖 DP 尺寸。换 DP resume 后各 rank 从**不同 bucket 的不同 offset** 续走——已消费样本被重放、未消费样本被跳过，此后每个 epoch 都从错误 offset 开始。官方 dist-checkpointing 文档承诺 ckpt 可在不同并行配置（含 DP）下加载：权重/优化器 reshard 正确，数据序契约破裂。
+  source: 'Megatron-LM #7645（2026-09-24；CPU-only sampler 级 repro，`main`@`ec806b2`：DP4→2 @ epoch 内 step 5 恢复 → 58 duplicated / 58 never drawn、DP4→8 → 56/56；对 {1,2,4,8}×全部恢复点扫描几乎全失败，整除/非整除数据集都中招；`--dataloader-type single` 全部通过）。https://github.com/NVIDIA/Megatron-LM/issues/7645 ；修复 PR #7648（2026-09-24 开：不兼容 sharded cyclic resume 显式失败 + ckpt 元数据 + 回归测试，fail-loudly 方向）。https://github.com/NVIDIA/Megatron-LM/pull/7648 （2026-09-26 复核：reviewer SeverinVisionary 于 09-25 验证 head `a9ecd39`——新旧 ckpt 元数据两条路径的 DP-size 不匹配 resume 均被正确拒绝、匹配 resume/single/finetune/release 不受影响；同时发现**残留缺口**：sharded→unsharded 切换（resume 时加 `--no-data-sharding`）因检查在 unsharded 分支提前返回仍被静默接受，同 repro 下 55 dup/55 miss，旧 ckpt 的 args 里存有 `data_sharding` 可用于同一检查——待 PR 更新）。'
+  behavior: 无 error 无 warning，训练正常推进——换 DP 尺寸 resume 的 run 静默改变样本覆盖（部分样本两遍、部分零遍）。repro 为 sampler 级计数，端到端 loss/收敛影响未实测（来源未提供）。与 CKPT.18（ms-swift resume 重建 sampler 丢 epoch 种子→81% 重复）同族「**resume 进度标量 + sampler 重建参数 = 不完整的状态契约**」，差异在这边 DP 尺寸是隐藏几何参数、那边是 epoch 种子；与 CKPT.23（on-policy offset 按 rollout 行计数喂 query 行 sampler）同理是进度语义与游标几何的错位。
+  discovery: 2026-09-25 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

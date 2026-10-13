@@ -1,0 +1,66 @@
+id: INF-1240
+legacy_ids:
+- K3.3
+slug: llamacpp_kv_defrag_cell_move_corruption
+aliases: []
+title: llama.cpp KV defrag 搬移偏移错误，首次整理后持续乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: llama.cpp
+    component: KV defrag cell 搬移逻辑
+  behavior: llama_kv_cache_defrag_impl 搬移被占用的 cell 并重写 cell→位置映射时算出错误的 src/dst 偏移（量化缓存叠加并行槽时更严重），KV 落到错误位置
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 首次 defrag 之后输出持续乱码，直到进程重启；拷贝路径还可能直接段错误
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: llama.cpp 专用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/ggml-org/llama.cpp/issues/12253
+  kind: github_issue
+  resolved_from: 'llama.cpp #12253'
+- url: https://github.com/ggml-org/llama.cpp/issues/12259
+  kind: github_issue
+  resolved_from: '#12259'
+- url: https://github.com/ggml-org/llama.cpp/issues/3380
+  kind: github_issue
+  resolved_from: '#3380'
+- url: https://github.com/ggml-org/llama.cpp/pull/10873
+  kind: github_pr
+  resolved_from: 'PR #10873'
+relations: []
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: '`llama_kv_cache_defrag_impl` 通过搬移被占用的 cell 并重写 cell→位置映射来压紧碎片化的缓存；搬移逻辑算出错误的 src/dst 偏移（量化缓存 + 并行槽的组合下更严重），KV 因而落到错误位置，拷贝路径还可能段错误。首次 defrag 之后，输出会持续为乱码直到重启。'
+  source: 'llama.cpp #12253（主要）、#12259、设计 #3380、修复 PR #10873。'
+  behavior: 首次 defrag 通过之后输出持续乱码、直到进程重启；拷贝路径可能直接段错误。
+  trigger_surface: llama.cpp 专用
+  signature: '`infra_off` —— 在 defrag 那一步出现尖锐的阶跃式变化：KV 相对 token 位置被打乱，位置↔KV 绑定破裂。关键细节是**单看任一位置的 KV 值仍是真实向量**（逐维分布、范数都正常），是「置换」这一组合结构把注意力输出推离流形；因此值分布类 statistical 族会漏检，必须用位置敏感的 trajectory 变化点检测、逐位置 KV 范数排序的不连续性，或 recompute-oracle 对照。'
+  repro: 方案：单钩子对单层缓存 K/V 沿位置维施加一个分段置换（模拟 cell 搬移），只改顺序不改值，从而精确保留「值合法、绑定错误」这一签名特性。属 partial：真实故障还含段错误与量化缓存交互，此处只注入非致命的置换分支。
+  locus: block-slot-alloc
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

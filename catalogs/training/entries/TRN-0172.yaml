@@ -1,0 +1,51 @@
+id: TRN-0172
+legacy_ids:
+- LOSS.08
+slug: gkd_mean_of_means_token_reweighting
+aliases: []
+title: ms-swift GKD 损失取均值的均值，token 权重随长度偏移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: ms-swift
+    component: Megatron GKD loss 归约
+  behavior: GKD loss_func 先在每个微批内除以自身有效 token 数，scheduler 再对各微批等权平均，且 calculate_per_token_loss 默认 False，token 梯度权重随所在微批长度变化。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 无 crash/NaN，蒸馏 loss 正常下降；micro_batch_size=1 时 10 与 1000 token 回复的 per-token 权重差 100×，训练被短回复支配；改全局 token 归一后 loss 0.499→0.396、grad norm 42.77→25.21。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10076
+  kind: github_issue
+relations: []
+original:
+  category: LOSS
+  section: LOSS
+  meta: 'stage: `sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: ms-swift Megatron 后端 GKD（full-vocab Reverse-KL 蒸馏，`rlhf_type='gkd'`）的损失归约是「均值的均值」而非全局 token 均值：`gkd_loss` 返回未归一 `(total_loss, num_valid)`；`loss_func` 先 `cp_reduce(total_loss, num_valid)` 在**每个 micro-batch 内部**除以自己的有效 token 数（per-mb token mean）；Megatron scheduler 再对 micro-batch 等权平均（`loss /= num_microbatches`），且 RLHF 路径 `calculate_per_token_loss` 默认 False、`finalize_model_grads` 收到 `num_tokens=None`。最终 `L = (1/M)·Σ_mb[Σ_t KL_t / N_mb]`——每个 token 的梯度权 `1/(M·N_mb)` 取决于**所在 micro-batch 的长度**。`micro_batch_size=1` 时退化为序列均值：10-token 与 1000-token 回复分属不同 mb 时 per-token 权差 100×，训练被短回复支配。同 seed 切全局 token 归一后 loss 0.499→0.396、grad norm 42.77→25.21（比值 ~0.79 vs ~0.59 不一致，证实是 token 重加权而非常数缩放）。
+  source: 'ms-swift #10076（ms-swift main `426f897`，teacher Qwen3.5-27B → student Qwen3-4B，TP=4，解析推导 + smoke A/B）。https://github.com/modelscope/ms-swift/issues/10076'
+  behavior: 无 crash、无 NaN；蒸馏 loss 正常下降，但隐式目标从「每 token 等权」变成「短回复 token 加权」——蒸馏出的分布偏短答行为，长度分布漂移不可见。与 RL-ADV.03（token 长度偏置）同症状面；与 OBS.11（trl loss-path 指标按 micro-batch 平摊）同机制不同后果：那边错指标、这边错梯度；修复 = GKD 强制 `calculate_per_token_loss=True` 走 Megatron token-count-aware 终化路径。
+  discovery: 2026-09-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

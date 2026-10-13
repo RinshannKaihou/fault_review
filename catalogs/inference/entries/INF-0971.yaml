@@ -1,0 +1,57 @@
+id: INF-0971
+legacy_ids:
+- '10.55'
+slug: sglang_dsv4_dsml_incremental_parser_partial_tool_transaction_escape
+aliases: []
+title: SGLang DeepSeek V4 增量 parser 截断时泄出部分工具调用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: sglang
+    component: DeepSeek V4 DSML 增量解析器
+  behavior: 增量 parser 在 invoke 开标签出现即发布函数名、DSML 信封闭合前发布临时参数，发布粒度与事务完整性不匹配；流末不丢弃不完整/畸形 DSML。
+effect:
+  objects:
+  - 输出内容
+  detail: DeepSeek V4 function calling 生成被截断（max_tokens 边界）时，客户端收到永不完整的部分 tool call；非流式异常路径把畸形 DSML 当普通 assistant content 返回。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + DeepSeek V4 function calling + 生成截断/max_tokens 边界（other_stack：SGLang；截断条件触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: subsystem 缺「输出解析（tool/reasoning parser）」：parser 既非分词/模板也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38233
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0958
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（DeepSeek V4 继承 V3.2 的增量 function-call parser：opening invoke tag 一出现即发布函数名、闭合 DSML 信封前可发布**临时参数**——生成被截断时客户端收到永不完整的事务（部分 tool call）；非流式异常路径可把 malformed DSML 当普通 assistant content 返回） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 增量 parser 边界族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 增量发布的粒度（tag 边界）与事务完整性（闭合信封）不匹配。修复缓冲 DSML 直到完整 wrapper（或独立 invoke）到达、以稳定工具索引原子发布每个完成的调用；尾部 partial V4 marker 按协议处理（而非 assistant content）；流末丢弃不完整/畸形 DSML 而非 flush 成文本或部分调用；保留调用前后的 prose。V3.2 行为不变、生成侧（structural tag/xgrammar schema）不动。
+  source: 'SGLang PR #38233（2026-09-06，deepseek label，含截断/原子完成/畸形完整 DSML/partial 尾标记/parser 异常五类回归）。https://github.com/sgl-project/sglang/pull/38233'
+  behavior: 无 crash——截断时**部分工具调用逃逸给客户端**（从未闭合的事务）：agent 侧可能执行带残缺参数的动作或进入重试风暴；malformed DSML 混入 content 则污染下游文本处理。10.42（Kimi-K3 parser 终止符假设静默丢 tool call）之后增量 parser 边界族第二例：一个是丢（fail-closed 方向），本条是漏出（fail-open 方向）——同一"流式 parser 无事务边界"缺陷面的两翼。
+  trigger_surface: SGLang + DeepSeek V4 function calling + 生成截断/max_tokens 边界（other_stack：SGLang；截断条件触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

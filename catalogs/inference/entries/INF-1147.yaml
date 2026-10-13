@@ -1,0 +1,52 @@
+id: INF-1147
+legacy_ids:
+- '12.31'
+slug: vllm_dflash2_draft_fp16_xpu_zero_acceptance_bf16_works
+aliases: []
+title: vLLM XPU 上 DFlash2 fp16 draft 接受率归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: DFlash2 draft fp16 路径
+  behavior: XPU 上 DFlash2 draft 模型在 fp16 下数值路径与 target 分歧（block_size-8 局部计算 fp16 累积误差更大），逐 token 分布偏离到 verify 永远拒绝。
+effect:
+  objects:
+  - 性能/资源
+  detail: XPU + DFlash2 + --dtype float16 时服务正常、输出正确，但 acceptance length 恒 1.00（0% 接受），吞吐回到普通 decode 且白占 draft 显存算力；bf16 正常，GPTQ/int4 常用 fp16 故默认踩坑。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM XPU + DFlash2 推测解码 + `--dtype float16`（dtype 组合触发；bf16 绕过）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55250
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（XPU 上 DFlash2 推测解码 + `--dtype float16`：服务正常加载、**每条生成序列都正确**（target verify 环保证输出），但 draft **从未被接受**（acceptance length 恒 1.00、0% 接受）——同一配置 `--dtype bfloat16` 则完全正常；fp16 是 XPU 上 GPTQ/int4 目标的常用 dtype，故 int4 组合默认踩坑） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: draft 模型在 fp16 下的逐 token 分布与 target（同 dtype）偏离到 verify 永拒——draft/verify 两模型在同一 dtype 上的数值路径分歧（draft 的 block_size-8 局部计算在 fp16 累积误差更大），推测加速归零。verify 环兜住了正确性、掩盖了失效：输出正确是 spec 架构的容错特性，反过来使性能失效零告警。
+  source: 'vLLM #55250（2026-09-03 open，Intel Arc Pro B70、Qwen3.8-27B + incoai DFlash2、nightly 2026-09-02）。https://github.com/vllm-project/vllm/issues/55250'
+  behavior: 无 crash、输出正确——**spec 加速静默归零**（吞吐回到普通 decode，等于白载 draft 模型的显存与算力）；唯一信号是 acceptance 指标。与 12.24（MTP 权重丢弃 accept 恒 1）同"accept 恒 1"显形，本条根因是 dtype 数值分歧而非权重丢失；与 4.16（dtype 硬编码降级）共同说明 fp16/bf16 在 XPU 栈的路径不对称仍是故障多发区。
+  trigger_surface: vLLM XPU + DFlash2 推测解码 + `--dtype float16`（dtype 组合触发；bf16 绕过）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

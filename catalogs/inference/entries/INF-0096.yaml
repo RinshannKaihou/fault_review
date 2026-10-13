@@ -1,0 +1,53 @@
+id: INF-0096
+legacy_ids:
+- '1.97'
+slug: ttmetal_layerack_enqueue_time_semantics_kv_stream_race
+aliases: []
+title: gpt-oss 逐层 ack 早于 KV 写完成，逐层迁移会读到半写 cache
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tt-metal
+    component: gpt-oss 逐层 ack 与 KV 迁移
+  behavior: GPT-OSS 的 per-layer ack（layer_ack_channel.inject）在 host 完成层 enqueue 后立即注入，无任何 device 同步；且从不调用 zero_padded_kv_cache。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 当前全序列化迁移下无害；启用 ack 驱动的逐层 streaming 迁移（PREFILL_MIGRATION_INTERLEAVED=1）后 decode 读到部分写入的 KV，迁移 PCC 校验失败，无报错；迁移尾部还携带陈旧 pad 数据。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent；gpt-oss + ack 驱动逐层 KV 迁移（overlapped driver）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53815
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（per-layer ack 在 host enqueue 时即触发而非 device 写完成时——ack 语义是"层已提交"而非"KV 已可读"，ack 驱动的 KV 逐层迁移一旦启用即静默损坏） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: GPT-OSS tt 实现的 per-layer ack（`on_layer_complete` → `layer_ack_channel.inject`，`gpt_oss_d_p/tt/model.py`）在 host 完成 layer **enqueue** 后立即注入，无任何 device 同步。当前迁移全序列化（全部 chunk prefill → ack 排空作 barrier → 每槽一次 bulk 迁移）故无害；一旦 C++ PrefillScheduler 的 ack 驱动逐层 streaming 迁移信任该 ack 提前迁移，decode 即读到部分写入的 cache 且无任何报错。复现：`PREFILL_MIGRATION_SELFTEST=1 PREFILL_MIGRATION_INTERLEAVED=1` 使竞态 live，迁移 PCC 校验失败。参照修复：DeepSeek 版把 D2H device-op ack 排入同一 CQ（ack 物理上不可能先于写完成）或显式 `synchronize_device`；GPT-OSS 两者皆无（D2H 路径直接 `NotImplementedError`）。附带缺口：gpt-oss 从不调用 `zero_padded_kv_cache`，迁移尾部无论是否 overlap 都携带陈旧 pad 数据。
+  source: 'tt-metal #53815（2026-08-19 open，含 selftest 复现与 DeepSeek 参照修复）。https://github.com/tenstorrent/tt-metal/issues/53815'
+  behavior: 现状无害（序列化屏障掩盖）；激活 overlapped driver 后 decode 收到部分写入的 KV——静默输出损坏，无 error。属「同步原语语义缺陷 × 未启用的调度优化」时间炸弹型子签名：正确性目前只依赖"没人打开那个开关"。
+  trigger_surface: Tenstorrent；gpt-oss + ack 驱动逐层 KV 迁移（overlapped driver）
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - detail

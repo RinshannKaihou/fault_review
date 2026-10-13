@@ -1,0 +1,53 @@
+id: INF-0253
+legacy_ids:
+- '1.254'
+slug: ttmetal_layer_norm_post_all_gather_bf16_stats_e_x2_minus_mean_squared_collapse
+aliases: []
+title: 分布式 layernorm bf16 统计相消致方差塌缩或 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: 分布式 layernorm 方差计算
+  behavior: 分布式 layernorm 默认路径按 E[x²]−E[x]² 计算方差，统计默认 bf16、中间 tile 也存 bf16；fp32_dest_acc_en 时 stats 输入仍经 bf16 舍入，相减发生灾难性相消。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: interleaved 路径下 mean≫std 激活（σ≲μ/23）方差塌缩为 0，输出 ±10⁶ 量级；fp32_dest_acc_en 时方差可为负，整行 NaN；σ≲μ/7 即超 10% 方差误差，与 eps 无关；来源为无设备内核算术模拟。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `layer_norm_pre/post_all_gather`（interleaved 非 sharded 路径）+ bf16 默认统计 + mean≫std 激活（hw_specific：默认配置即触发；RMSNorm 分布式版与单设备融合路径不受影响）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57861
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0230
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（分布式（TP）layernorm 默认路径方差按 **E[x²]−E[x]²** 在 **bfloat16 统计**中计算、每个中间 tile 也存 bfloat16：mean≫std 的激活（post-residual 流的常态形状）下相减**灾难性相消**——方差塌缩为 0（默认 eps=1e-12 下 rstd≈1e6、输出 ±10⁶ 量级）或为负（rsqrt(负)=NaN 整行）。判决数据（fp32 输入 cast bf16、eps 两侧一致、按内核算术逐级模拟的**最优情形**——默认 DEST 16-bit 累加只会更差）：x~N(1000,1) W=128 → device var=0（torch rstd=1.0696、out≈±0.03）；x~N(100,1) → var=0、out 2e6/1e6/0/0（torch ≈2.28/1.18）；x~N(10,1) → var=1（~2% 误差）。阈值规律：σ≲μ/7 即 >10% 方差误差、**σ≲μ/23 完全塌缩**（μ=100,σ=4 已塌缩）；eps 无关性判决（eps=1e-5 时塌缩 case 输出仍 ~300× 错）。`fp32_dest_acc_en=True` 时中间为 fp32 但 **stats 输入仍 bf16 舍入**：同输入 var=999424−1000000=**−576 → NaN**——两种配置皆败、方式不同。RMSNorm 分布式版**构造上免疫**（var=E[x²] 无相减）；sharded 输入路由到另一未分析内核；单设备融合 `ttnn.layer_norm` 是另一路径不受影响） · Cov: `var:ttmetal_groupnorm_sharded_welford_batch_stride_uses_block_hw_reads_previous_batch`（1.231 分布式归约统计管线相邻缺陷——本条是 layernorm_distributed 族在方差公式量纲上的姊妹：同为统计归约内核的数值契约违反，机制独立（相消 vs 边界步进）） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`layer_norm_pre_all_gather` 默认 `dtype=BFLOAT16`（nanobind :85、docstring 自述）；post 内核 `mul_tiles/sub_tiles` 链在 Float16_b 打包（8-bit 有效位），E[x²] 与 E[x]² 各携 μ²·2⁻⁹ 绝对舍入误差 → 方差相对误差 ≈ (μ/σ)²·2⁻⁸。#54016（Welford 两遍优化） bounty 文本自认"先中心化可避免大偏移相消"——现象获维护者间接承认；本条是**默认非 Welford 路径的正确性**报告。来源为源码级分析 + 内核算术逐级模拟（无设备、最优情形）。'
+  source: 'tt-metal #57861（2026-09-25 open，Bad Outputs，含三档 μ 对照表、eps 无关性判决、fp32_dest 双模式失败数据、内核代码行定位与 #54016 关联）。https://github.com/tenstorrent/tt-metal/issues/57861'
+  behavior: 无 crash——TP layernorm 对 post-residual 流（mean≫std 是常态）**静默输出 ±10⁶ 量级垃圾或 NaN**；fp32 stats 消费者（下游 norm/residual）连锁污染。与 4.x 域的 fp32 相消族（1.118 KDA 倍增求逆）同属"教科书公式在窄尾数域的直接实现"签名，但本条在**分布式归约内核默认路径**。
+  trigger_surface: tt-metal + `layer_norm_pre/post_all_gather`（interleaved 非 sharded 路径）+ bf16 默认统计 + mean≫std 激活（hw_specific：默认配置即触发；RMSNorm 分布式版与单设备融合路径不受影响）
+  discovery: 2026-09-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

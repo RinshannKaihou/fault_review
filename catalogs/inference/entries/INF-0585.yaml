@@ -1,0 +1,52 @@
+id: INF-0585
+legacy_ids:
+- '6.192'
+slug: sglang_single_malformed_mm_request_engine_suicide_retry_cluster_takedown
+aliases: []
+title: SGLang 单个畸形多模态请求致引擎自杀并经重试击穿集群
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: 多模态 embedding 校验与异常隔离
+  behavior: 缺少输入校验，embedding 短于 placeholder 数的多模态请求进入前向，_adjust_embedding_length() 抛 RuntimeError；调度器把单请求错误升级为 SIGQUIT 整引擎退出。
+effect:
+  objects:
+  - 可用性/进度
+  detail: SGLang 多模态 VLM 服务收到单个畸形 mm 请求即整台 8-GPU 引擎退出；请求未被消费，客户端重试 × 粘性路由把它送到下一节点，2 小时内 5 节点集群的 5 个引擎实例全部被击穿。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + 多模态 VLM 服务 + 畸形 mm 请求 + 客户端自动重试 + 多节点粘性路由（输入触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38022
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（单个畸形多模态请求（embedding 短于 placeholder 数）使 `_adjust_embedding_length()` 在调度器前向路径内抛 RuntimeError → `run_scheduler_process` 向父进程发 **SIGQUIT——整台 8-GPU 引擎退出**；请求未被消费，客户端重试 × 粘性路由把同一请求送到下一节点——**2026-09-04 当天 2 小时内 5 节点集群的 5 个引擎实例全部被同一个会话击穿**） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 三段连环放大：(1) 输入校验缺陷让畸形请求进入前向；(2) 异常粒度错误——单请求级错误升级为引擎级自杀（SIGQUIT 全体退出而非拒绝该请求）；(3) 基础设施正反馈——请求不被消费 + 客户端重试 + 负载均衡粘性 = 巡回击穿。任何"校验晚于调度 + 异常全局化 + 自动重试"的服务栈都有同构风险。
+  source: 'SGLang #38022（2026-09-04 open，GLM-5.3-Flash VLM、8×H20-3e×5 节点、DP8+EP8+mm-dp-encoder，含事件时间线）。https://github.com/sgl-project/sglang/issues/38022'
+  behavior: 整引擎 crash ×N（集群级级联）——可用性故障而非数值故障，但编目价值在**放大链结构**：单请求 → 单引擎 → 全集群，且攻击面只需构造一个多模态 payload（DoS 向量）。与 6.159（三内核族随机 IMA）同为多实例连锁，本条是**确定性输入驱动的连锁**（可重放、可武器化）。属「**请求级异常未被隔离为请求级失败**」新子签名。
+  trigger_surface: SGLang + 多模态 VLM 服务 + 畸形 mm 请求 + 客户端自动重试 + 多节点粘性路由（输入触发）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,71 @@
+id: INF-1238
+legacy_ids:
+- K3.1
+slug: static_cache_seqlen_dependent_gibberish
+aliases: []
+title: StaticCache 掩码未限到已填充前缀，贪心结果随缓存长度变化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: StaticCache 路径因果掩码构造
+  behavior: 注意力掩码没有把注意力限制在已填充前缀上，cache_position 与掩码在 StaticCache 预分配的零缓冲区上错位，query 会注意到零值的未初始化槽
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: 同一 prompt 的贪心解码结果随 max_new_tokens/max_cache_len 改变而改变，间或输出乱码；切到 DynamicCache 路径即消失
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/30400
+  kind: github_issue
+  resolved_from: 'transformers #30400'
+- url: https://github.com/huggingface/transformers/issues/30670
+  kind: github_issue
+  resolved_from: '#30670'
+relations: []
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '`StaticCache` 预分配一个固定的 `[B,H,max_cache_len,D]` 零缓冲区；当注意力掩码没有把注意力限制在已填充的前缀上（即 cache_position 与掩码在预分配区域上错位）时，query 会注意到**零值的未初始化槽**，于是贪心生成结果相对 `max_new_tokens` / `max_cache_len` 变得非确定，有时直接是乱码。DynamicCache 路径是正确的。'
+  source: 'transformers #30400（根因修复在 `_prepare_4d_causal_attention_mask_with_cache_position`）；相关 #30670。'
+  behavior: 同一 prompt 的贪心解码结果随 `max_new_tokens` / `max_cache_len` 改变而改变，间或输出乱码；切到动态缓存路径即消失。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: '`infra_off` —— 注意力质量落在零 K/V 槽上（朝向未填充位置的注意力尾部异常平坦），漂移幅度随未填充缓冲区大小放大。零 K 对每个 query 的打分都是 0（softmax 前权重均匀），零 V 把注意力输出往 0 稀释，因此 statistical / infotheoretic 族（attention-mass-on-empty-slot、有效上下文长度）与 geometric 族（注意力输出范数被稀释而下降）都能看到；spectral 族基本漏检（零槽不改变权重谱）。与 `kv_corrupt`（改的是已填充槽）和 `causal_mask_future_leak`（泄漏的是真实未来内容）在机制与签名上都**不同**。'
+  repro: '参考实现参数 `{n_empty: 4}`。DynamicCache 路径没有可泄漏的预分配尾部，因此**人为制造**泄漏槽：在最后一层 decoder 上挂 forward hook（此时全部层都已写完 prefill 行，挂更早的层会有一层落后），prefill 后一次性给**每一层**追加 `n_empty` 行全零 K/V；长度变化必须逐层一致（掩码只由 layer 0 的 `get_seq_length()` 构建一次，不一致会在掩码相加处崩溃）。诚实近似 / 已知混淆：下一个 decode token 的 `position_ids` 也会跳到 `T + n_empty`（DynamicCache 从 `get_seq_length()` 推位置），而真实的 StaticCache bug 正确跟踪 cache_position、**没有**这个位置跳变——因此该故障的可检测信号应按「零槽注意力 + 位置跳变伪影」两者之和解读。'
+  locus: block-slot-alloc
+  priority: high
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 模型定义 → KV缓存。原文'DynamicCache 路径是正确的'，缺陷只出现在 StaticCache 预分配缓冲区路径上；rules 第 1 条（功能域优先）明确在该情形下选功能域，且 rules 优先于'修复要改哪里'口诀。修复虽落在 _prepare_4d_causal_attention_mask_with_cache_position，但该掩码错位正是相对 StaticCache 预分配区域而言。component 保留。effect/visibility 与独立判断一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出内容
+        status: panel7
+    uncertain:
+    - visibility

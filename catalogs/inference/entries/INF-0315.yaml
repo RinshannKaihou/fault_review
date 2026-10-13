@@ -1,0 +1,54 @@
+id: INF-0315
+legacy_ids:
+- '3.19'
+slug: weight_bitflip
+aliases: []
+title: weight_bitflip：Linear 权重 bit 翻转造成持久静默损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 硬件
+    stack: 硬件
+    component: 中层 MLP down_proj 权重位
+  behavior: Linear 权重中一个或 n 个 bit 被 XOR 翻转并持久保留，形成静默权重损坏；按位类别分符号位、指数位（exp_high=30、exp_low=23）与尾数位
+effect:
+  objects:
+  - 模型权重
+  - 隐状态
+  - 输出内容
+  detail: exp_high 翻转使输出显著劣化，损坏经残差流只在注入层下游的隐状态显形（评估层在上游必漏检）；mantissa 单翻转在 fp32 上几乎无可观测变化，模型可带损坏权重长期服务无人察觉
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: CUDA 上 int32 view 权重 bitflip 稳定可靠
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat3
+  section: 第 3 类 · 比特翻转攻击与定向权重篡改（BFA 家族 + LLM 时代变体）
+  meta: '`infra_off` · Cov: `NEW`（本项目早期实测条目） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 对一个 Linear 权重的一个（或 n 个）bit 做 XOR，制造**持久**的静默权重损坏：先克隆原权重，对权重张量取 int32 view 逐个 `iv[row, col] ^= 1 << bit`，退出时按克隆还原。bit 类别到 fp32 位索引的映射：符号位 31 / 指数 30:23 / 尾数 22:0；`exp_high = 30`（指数 MSB，产生巨大有限值或溢出）、`exp_low = 23`、`mantissa_high = 22`、`mantissa_low = 0`。参数轴：目标模块（典型为中层 MLP down_proj）× bit_class × 层位置 × 翻转个数。
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。原型阶段实测结论：`mantissa_high` 与 `mantissa_low` 单翻转均为 benign，`exp_high` 才是 off-manifold 的那一类。
+  behavior: '`exp_high` 翻转让某个权重元素变成巨大有限值（或 inf/nan，见 3.20），输出显著劣化；`mantissa_low`/`mantissa_high` 单点翻转在 fp32 上几乎不改变任何可观测行为——这正是"持久静默"的含义：模型带着损坏权重可以长期服务而无人察觉。'
+  trigger_surface: CUDA 上 int32 view 权重 bitflip 稳定可靠
+  signature: 签名**强烈依赖 bit 类别**，这一条本身就是一条 model_on/infra_off 的分界实验。`exp_high` 是明确的 `infra_off`：损坏的 MLP 输出经残差流进入注入层下游的隐状态，geometric 族在下游层捕获，`nan_inf_flag`（cheap）在极端情形直接触发。`mantissa_*` 单翻转则落在运行时噪声底附近，**所有度量族都接近不可检测**——它是天然的"弱故障"锚点，用来验证 graceful degradation。注意注入层与评估层的先后关系是硬约束：在层 L 的 down_proj 翻转只会在其下游层显形，若评估层固定在注入层上游就必然漏检。
+  repro: 以"clone-and-restore 的一次权重变换"实现（不是 hook）；在 int32 view 上完成翻转后写回，退出时按克隆还原，保持"仅一处变更"的注入契约。
+  相关条目: '`var:3.19` → **2.1 `rowhammer_gddr6`**（多翻转、相邻行成簇）、**2.2 `hbm_xid_spare_row_exhaustion`**（同形态、成因不同）、**3.6 `bfa_progressive_sign_exponent`**（位类别已被覆盖）、**12.7 `safetensors_shard_mmap_corruption`**（同时挂靠 `var:8.85`）。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

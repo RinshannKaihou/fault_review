@@ -1,0 +1,53 @@
+id: INF-0878
+legacy_ids:
+- '8.94'
+slug: vllm_rocm_kpool_indexer_block_table_unconverted_640_token_table_as_32pool_pages
+aliases: []
+title: ROCm kpool indexer 非整除时跳过块表转换致检索失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MLA indexer 块表粒度转换
+  behavior: indexer metadata builder 仅在存储块整除 kernel 块时转换块表；ROCm 上 kernel 块 640、存储块 128 不整除，块表被原样当作 32-pool 页号交给 writer 与 gather
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: GLM-5.3-Flash 在 ROCm（gfx1030 实测）上 74 页中仅 3 页正确：写入落 padding、越块位置别名 block 0、超列宽被 mask，sparse attention 的 top-k 检索基于错或零 keys，输出退化为无索引注意力；NVIDIA 走整除分支不受影响
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + GLM-5.3-Flash + ROCm（gfx1030 实测；gfx942/gfx950 疑似待确认）+ kpool indexer（hw_specific）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-26'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58858
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0867
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（vLLM GLM-5.3-Flash kpool indexer 在 ROCm 上：`Glm5NextIndexerCache` 以 32-pool 页（128-token 存储块）存 pooled keys，而 hybrid KDA 页规则使 attention/kernel 块为 **640**；indexer metadata builder 仅当存储块整除 kernel 块（`block_size % kernel_block_size == 0`）时做 `// factor` 表转换——**128 % 640 ≠ 0，640-token 表被原样传给 kpool writer 与 gather 内核**，每个表项被当作一个 32-pool 页号解释。实测（gfx1030，真实 kpool writer + gather 对 9,432-token prompt 回读比对）：builder 原表 74 页仅 **3 页正确**（全零页 + 错 keys 页 + mask 页遍布）；页粒度修正表（block b → pages 5b..5b+4）74/74 全对。NVIDIA 侧 kernel 块为 64、整除分支命中故免疫； gfx942/gfx950 共享该代码路径（`get_supported_kernel_block_sizes` 接受 `MultipleOf(16)` 使 `select_common_block_size` 保持 640）但无 MI300/MI355 实测确认） · Cov: `var:vllm_glm53flash_rocm_indexer_block_table_granularity_mismatch_kpool_generic_slotmap`（8.83 GLM-5.3-Flash indexer 寻址族——本条在 ROCm kernel-block 维度：非整除时**完全跳过转换**而非转换错误，损坏面从长上下文尾部扩展到全域） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`vllm/v1/attention/backends/mla/indexer.py` prefill/decode 两分支的 `if storage_block % kernel_block == 0` 守卫：非整除时无声落入按 32-pool 页消费的路径；报告者附免模型 reproducer（真实 writer/slot mapping/gather 双臂对照，gfx1030 两 run 一致）。'
+  source: 'vLLM #58858（2026-09-26 open Question，含双臂 74 页比对图、gfx1030 复现脚本链接与 NVIDIA 侧整除分支分析；请求 gfx942/gfx950 硬件确认，ROCm bot 已 CC 维护者）。https://github.com/vllm-project/vllm/issues/58858'
+  behavior: 无 crash——**indexer 检索全域静默失效**（3/74 页正确：块未分配时写入落 padding、越块位置别名 block 0、超 52 列表宽被 gather mask）：sparse attention 的 top-k 检索基于错 keys/零 keys，输出退化为无索引注意力。8.83（存储页 vs manager 块粒度断裂）之后同族第三形态：**整除守卫的非整除分支从未被正确处理**；与 8.73（top-k 2048 宽溢出）共同构成 GLM-5.3-Flash kpool 寻址三缺陷谱系。
+  trigger_surface: vLLM + GLM-5.3-Flash + ROCm（gfx1030 实测；gfx942/gfx950 疑似待确认）+ kpool indexer（hw_specific）
+  discovery: 2026-09-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

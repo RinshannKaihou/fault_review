@@ -1,0 +1,55 @@
+id: INF-0995
+legacy_ids:
+- '10.79'
+slug: vllm_functiongemma_hyphenated_tool_name_streaming_nonsplit_double_decode_divergence
+aliases: []
+title: vLLM functiongemma 连字符工具名非流式解析失败并泄漏控制帧
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: functiongemma 非流式解析
+  behavior: 流式与非流式 parse 对工具名的假设不同：非流式整段 parser 的名字白名单/正则拒绝含连字符的函数名，拒绝后不报错，把未消费的控制帧放入 content。
+effect:
+  objects:
+  - 输出内容
+  detail: 声明函数名含连字符（get-weather）时非流式请求返回无 tool call，并把完整 <start_function_call>…<end_function_call> 控制帧作为 assistant content 暴露；流式正常，改名 get_weather 两模式都正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + functiongemma parser + 声明含连字符的工具名 + 非流式请求（config：命名约定触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-21'
+remarks: subsystem 缺「输出解析（tool/reasoning parser）」：parser 既非分词/模板也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57950
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `functiongemma` tool parser 对**同一模型输出**的行为随流式/非流式分裂：声明函数名含连字符（`get-weather`）时流式返回结构化 tool call，**非流式返回无 tool call 且把完整 `<start_function_call>call:get-weather{...}<end_function_call>` 控制帧作为 assistant content 暴露**（含本应被 parser 消费的模型专属控制 token）；改名 `get_weather`（下划线）两模式都正常。逐 token 流式喂入与非流式整段 parse 对照复现——两路径对同一字符序列的解码分歧） · Cov: `NEW`（同一输出流式/非流式双解码路径分歧子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: 流式与非流式 parse 对工具名 token 边界的假设不同（连字符在 tokenizer 中与名字形成不同合并形态）：流式增量 parser 容忍连字符、非流式整段 parser 的名字白名单/正则拒绝；拒绝后不报错而是把未消费的控制帧泄入 content。10.75（四族 converter 流式/非流式语义分裂——流式 flush 产物比已流出更短）之后双路径分歧族新成员：本条方向相反（**非流式失败、流式成功**），且叠加控制帧泄漏。
+  source: 'vLLM #57950（2026-09-21 open，vLLM 0.29.0，含逐 token 流式 vs 非流式对照 repro（可离线）、get_weather 控制组、泄漏控制帧原文）。https://github.com/vllm-project/vllm/issues/57950'
+  behavior: 无 crash——应用从流式切非流式（或混用）时**静默收到普通 content 而非工具调用**：agent 工作流的工具链路凭部署形态差异断链；泄漏的控制帧 token 还可能污染下游 prompt（被当普通文本回传模型）。名字拼写（`-` vs `_`）决定是否触发，使问题呈现"换个函数名就好"的玄学特征。
+  trigger_surface: vLLM + functiongemma parser + 声明含连字符的工具名 + 非流式请求（config：命名约定触发）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

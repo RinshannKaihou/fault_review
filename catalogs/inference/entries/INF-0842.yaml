@@ -1,0 +1,55 @@
+id: INF-0842
+legacy_ids:
+- '8.58'
+slug: vllm_hy4_sm120_flashinfer_mla_sparse_degenerate_output
+aliases: []
+title: vLLM SM120 hy_v4 sparse MLA 后端输出退化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: SM120 sparse MLA 后端
+  behavior: 嫌疑在该 SM120 sparse-MLA 后端：fp8_ds_mla KV 数值，或 sparse kernel 对 hy_v4 gated DSA/IndexCache 的处理（此前仅验证 DeepSeek/GLM 形状）；根因待定。
+effect:
+  objects:
+  - 输出内容
+  detail: SM120（RTX PRO 6000）上 hy_v4/Hy4-preview 任意 prompt（含 5-token）temp=0 都产出 " of of of…" 退化输出且可复现，无 crash；SM120 上没有替代 sparse 后端，模型在该硬件上不可用。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + SM120 + hy_v4/Hy4-preview + FLASHINFER_MLA_SPARSE_SM120 + fp8_ds_mla KV（该硬件唯一 sparse 路径即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54434
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（SM120 上 hy_v4（Hy4-preview）用 `FLASHINFER_MLA_SPARSE_SM120`（SM120 上**唯一可选**的 sparse-MLA 后端：`FLASHMLA_SPARSE` gate 到 major 9/10、hy_v4 sparse 层拒绝 dense fallback）从任意 prompt（含 5-token）temp=0 产出退化输出 `" of of of of…"`） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 系统性排除后嫌疑收敛于后端两处：fp8_ds_mla KV 在 SM120 的数值（后端拒绝 bf16 KV，dtype A/B 无法排除 fp8 类），与 sparse kernel 对 hy_v4 **gated DSA / IndexCache** 的处理（该后端此前只为 DeepSeek/GLM 形状验证——hy_v4 是首个 gated-MLA 消费者）。已排除：MoE 专家后端 ×3（flashinfer_cutlass/marlin/emulation）byte-identical、MXFP8 linear kernel ×2 一致、模型侧代码与官方参考一致（sigmoid gate on decompressed attn_out、is_neox_style=False）、sink 参数温和（0.1–0.7 均值）、5-token prompt 排除 indexer scoring。根因开放。
+  source: 'vLLM #54434（2026-08-29 open，2 节点 8×RTX PRO 6000 Max-Q TP8、NVFP4 专家改造 checkpoint 经 dequantize 验证 0.094 rel err）。https://github.com/vllm-project/vllm/issues/54434'
+  behavior: 无 crash——任意 prompt 静默退化输出，temp=0 可复现；SM120 上无替代 sparse 后端 = 该硬件上模型不可用。属「**后端消费者域外推（gated-MLA 首次消费）× 强制 fp8-KV 掩蔽数值排查**」新子签名：与 8.54（DSV4-Flash FP8 MI300X 长度平滑退化）同 sparse-MLA × fp8-KV 数值嫌疑域，本条在 SM120 且有 gated DSA 维度；后端验证域与模型特性矩阵的错配是共性根因。
+  trigger_surface: vLLM + SM120 + hy_v4/Hy4-preview + FLASHINFER_MLA_SPARSE_SM120 + fp8_ds_mla KV（该硬件唯一 sparse 路径即触发）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 算子/内核 vs 量化：原文两处嫌疑（fp8_ds_mla KV 在 SM120 的数值、sparse kernel 对 gated DSA/IndexCache 的处理）都落在 FLASHINFER_MLA_SPARSE_SM120 后端内，且已排除 MoE 专家后端、MXFP8 linear、模型侧代码；定为 算子/内核。根因开放，behavior 已注明待定。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

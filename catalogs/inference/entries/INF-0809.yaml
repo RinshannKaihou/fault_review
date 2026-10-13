@@ -1,0 +1,53 @@
+id: INF-0809
+legacy_ids:
+- '8.25'
+slug: sglang_dsv4_spec_draft_gt4_compress_ring_underwrite
+aliases: []
+title: SGLang DSV4 draft>4 时压缩状态 ring 欠写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: c_plan.cuh 压缩写入计划
+  behavior: compress write-plan 按乐观 seq_len 规划，pad 却硬编码为 4（host 路径完全缺 pad），num_draft_tokens>4 时欠写 ring，部分 committed token 未持久化。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: DSV4 + 推测解码且 speculative_num_draft_tokens>4 时，后续压缩窗口从 stale ring slot 计算，输出语义静默偏差、表面正常；无越界、NaN 或 assert。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；DSV4 + 推测解码 + `speculative_num_draft_tokens > 4`
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33872
+  kind: github_pr
+- url: https://github.com/sgl-project/sglang/pull/34189
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（DSV4 推测 draft token >4 时 compress-state ring 静默欠写→从 stale slot 计算） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: DSV4 spec verify 的 compress write-plan（`plan_w`）用乐观 `seq_len = prefix_len + num_draft_tokens`，但验证后序列尾回滚到 `prefix_len + accept_len`。每个最终 committed token 必须仍驻留 compress-state ring。`c_plan.cuh` 硬编码 pad `kMaxMTPDraftTokens=4`，所以 `num_draft_tokens>4` 时 plan 欠写 ring：`seq_len-4` 到 `seq_len-num_draft_tokens` 间 token 永不持久化。无越界/NaN/assert，仅静默精度退化——后续压缩窗口从 stale ring slot 计算。host 路径完全缺 pad。
+  source: 'SGLang PR #33872（2026-08-06 open）。组件 `c_plan.cuh` compress write-plan。https://github.com/sgl-project/sglang/pull/33872。**补充来源**：SGLang PR #34172（2026-08-09，supersede #33872）将 pad 重定义为 ring 属性（`ring_size - window_size + 2`）而非 batch 属性，统一三条 planner 路径并加启动时容量校验（`DSV4PoolConfigurator` 拒绝 ring 无法服务的 draft count）。https://github.com/sgl-project/sglang/pull/34189'
+  behavior: 无 crash、无 NaN。压缩状态从 stale slot 计算→静默精度退化（输出语义偏差但表面正常）。属「硬编码 draft token 上限与运行时配置不匹配→ring 欠写」签名——compress-state ring 与推测解码的新子签名。
+  trigger_surface: SGLang；DSV4 + 推测解码 + `speculative_num_draft_tokens > 4`
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

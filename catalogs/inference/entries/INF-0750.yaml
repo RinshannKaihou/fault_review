@@ -1,0 +1,52 @@
+id: INF-0750
+legacy_ids:
+- '7.77'
+slug: trtllm_moe_op_provider_resolved_before_per_layer_quant_config
+aliases: []
+title: TRT-LLM MoE 先于逐层量化配置选 provider 致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: tensorrt-llm
+    component: FusedMoE op provider 选择
+  behavior: TRTLLMGenFusedMoE 在 __init__ 解析 op provider，而 ConfigurableMoE 到 create_weights() 前才安装最终 per-layer 量化配置，决策早于其输入定型。
+effect:
+  objects:
+  - 可用性/进度
+  detail: layerwise 量化 checkpoint 模型级声明 NVFP4、个别 MoE 层未量化时，该层在 __init__ 时看似量化而保留 native provider，但只有 FlashInfer 实现 BF16 MoE 内核，warmup 时 run_bf16_moe 失败。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM + layerwise 量化（模型级 NVFP4 + 层级 BF16 的 MoE 层）（other_stack：TRT-LLM；量化布局触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/18770
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0557
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（`TRTLLMGenFusedMoE` 在 `__init__` 解析 op provider（native TRTLLM-Gen vs FlashInfer），而 `ConfigurableMoE` 到 `create_weights()` 前一刻才安装最终 per-layer 量化配置——layerwise 量化 checkpoint 可在模型级声明 NVFP4 而个别 MoE 层未量化：`__init__` 时该层看似量化、保持 native provider，但只有 FlashInfer 实现 BF16 MoE 内核 → warmup `run_bf16_moe` 失败） · Cov: `var:vllm_envs_typechecking_default_runtime_split_hybrid_mode_off`（6.164 配置时序分裂族） · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 决策输入（quant config）与决策点（provider 选择）的生命周期错位。修复把选择移入 `_select_op_provider()` 并在 `create_weights()` 顶部二次调用（两次读取同源配置，provider 与 `_get_quant_method()` 不可能分歧）；`ConfigurableMoE` 的 `use_flashinfer` 镜像同步刷新，但 NVLink 双边策略的 provider/strategy 不一致组合显式 `NotImplementedError`（静默换 alltoall 内核会是数值错误而非 crash）。
+  source: 'TensorRT-LLM PR #18770（2026-09-06，含 CPU 单测覆盖四种 config 演化路径）。https://github.com/NVIDIA/TensorRT-LLM/pull/18770'
+  behavior: warmup crash（fail-loud）。「配置在决策之后才定型」与 6.164（声明/运行时默认分裂）同签名：本条在 layerwise 量化的 provider 选择域；修复模式（决策延后/重做 + 不一致组合 fail-loud）本身是这类时序缺陷的模板。
+  trigger_surface: TRT-LLM + layerwise 量化（模型级 NVFP4 + 层级 BF16 的 MoE 层）（other_stack：TRT-LLM；量化布局触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

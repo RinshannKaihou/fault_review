@@ -1,0 +1,61 @@
+id: INF-1149
+legacy_ids:
+- '12.33'
+slug: sglang_glm53_transformers_roundtrip_oneway_rename_drops_97pct_weights
+aliases: []
+title: transformers 存盘名错位致 SGLang 静默丢 97% 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: transformers
+    component: conversion_mapping 单向重命名
+  behavior: transformers 读 GLM-5.3-Flash 时按 conversion_mapping 重命名张量，save_pretrained 不逆向改回；SGLang 加载器只认 released 名，未匹配张量无警告跳过。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 经 save_pretrained 的 GLM-5.3-Flash checkpoint（微调/合并/dtype 重导出）在 SGLang 启动正常、/health 200，但生成 token 噪声；45 层实测丢 524/1609 张量（97% 文件），MoE/mHC/KDA 留在初始态。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.3-Flash + 任何 transformers save_pretrained 产物（fine-tune/merge/dtype 重导出）（other_stack：SGLang；转换表在 transformers 侧）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38618
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（任何经 transformers `save_pretrained` round-trip 的 GLM-5.3-Flash checkpoint（fine-tune、merged adapter、dtype 重导出）加载 SGLang 时**大部分权重静默丢弃**：服务器日志 `The server is fired up and ready to roll!`、`/health` 200、随后生成 **token 噪声**。根因是 transformers 经 `conversion_mapping.py` 的 `"glm5_next"` 条目在**读取** released `zai-org/GLM-5.3-Flash` checkpoint 时重命名张量（`attn_hc.{fn,base,scale}`→`hc_attn_*`、`self_attn.forget_gate.*`→`self_attn.*`、packed `mlp.experts.gate_up_proj [E,2I,H]`→per-expert `{i}.{gate,up}_proj`、packed `self_attn.conv1d.weight [3P,1,K]`→`{q,k,v}_conv1d` 等），**保存时不逆向重写**；`sglang/srt/models/glm5_next.py` 只认 released 名——transformers 名 miss `params_dict`、`load_weights` 跳过。45 层 bf16 checkpoint（288 routed experts、1,609 张量、628 GB）实测丢 **524/1,609 张量 = 304.4B 参数 = 97% 的文件**：routed MoE experts 84、mHC 270、KDA forget gate 136、KDA packed conv1d 34——MoE/mHC/KDA 模块留在初始态） · Cov: `NEW`（序列化格式单向转换重命名子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`transformers/conversion_mapping.py` 的条目是读侧单向映射（为对齐新命名规范），`save_pretrained` 无逆映射——round-trip 产出"合法但名字错位"的 checkpoint；SGLang 加载器按 released 名精确匹配、未匹配张量**无警告跳过**（长度对不上也不报错）。三方（transformers 转换表、SGLang 期望名、加载器静默容错）共同把 97% 权重丢失变成健康-looking 启动。'
+  source: 'SGLang #38618（2026-09-09 open，bug label，含完整双列名对照表、45 层 checkpoint 的 524/1609 逐类计数与"server fired up"日志证据）。https://github.com/sgl-project/sglang/issues/38618'
+  behavior: 无 crash——**最大单条静默权重损坏面**：健康检查 200 + token 噪声输出（MoE/注意力核心模块全为初始随机态）。12.25（transformers NVFP4 反量化丢 weight_global_scale）、12.27（tt_dit 丢非 Parameter 态）之后检查点加载族新形态：本条不是丢一个派生标量而是**序列化层名字空间整体错位**——fine-tune 生态（所有走 transformers 保存的用户）默认踩中。与 10.56（TRT-LLM tokenizer 别名表漂移）同为"别名表单向漂移"类。
+  trigger_surface: SGLang + GLM-5.3-Flash + 任何 transformers save_pretrained 产物（fine-tune/merge/dtype 重导出）（other_stack：SGLang；转换表在 transformers 侧）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: cause.stack 维持 transformers：meta 指明根因是 transformers conversion_mapping 读侧重命名、save_pretrained 不逆向改回，trigger_surface 注明“转换表在 transformers 侧”（extract 规则：stack 取缺陷真实所在项目）。SGLang 加载器无警告跳过同属 权重/检查点，按 rules 多对象条款不拆分。保留意见：SGLang 静默容错是共同成因。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: unanimous

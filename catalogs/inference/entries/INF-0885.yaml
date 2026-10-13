@@ -1,0 +1,58 @@
+id: INF-0885
+legacy_ids:
+- '9.2'
+slug: rope_scaling_dropped_no_scaling
+aliases: []
+title: 服务侧加载丢弃 rope_scaling，退化为朴素 RoPE
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: 通用
+    component: rope_scaling 配置加载
+  behavior: 服务侧加载路径把 rope_scaling 丢弃（置为 None），用 PI/NTK/YaRN/Llama3 类缩放训练过的长上下文权重按原始 base 频率的朴素 RoPE 运行
+effect:
+  objects:
+  - 隐状态
+  - 输出分布
+  detail: 低于原始训练上下文长度时与健康模型不可区分，超过该长度 perplexity 陡峭断崖、迅速劣化；只在短序列上评估会完全漏检
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: RoPE 相关配置
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/unslothai/unsloth/issues/3083
+  kind: github_issue
+  resolved_from: 'Unsloth #3083'
+- url: https://github.com/vllm-project/vllm/issues/10293
+  kind: github_issue
+  resolved_from: 'vLLM #10293'
+relations:
+- kind: var
+  target: INF-0912
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`model_on` · Cov: `var:9.26` · 触发 `config` · 置信度 `verified`'
+  mechanism: 模型训练时用了 PI / NTK / YaRN / Llama3 类的 rope scaling，但服务侧的加载路径把 `rope_scaling` 丢掉（置为 None），于是用训练好的权重跑退化成了朴素 RoPE。权重仍然是长上下文微调过的，但位置编码回到了原始 base 频率。
+  source: 'Unsloth #3083；vLLM #10293。'
+  behavior: 在原始训练上下文长度处出现陡峭的 perplexity 断崖：低于该长度一切正常，超过之后迅速劣化。
+  trigger_surface: RoPE 相关配置
+  signature: 边界以下是 on-manifold（与健康模型不可区分），边界以上转为 off-manifold。用按长度分层（length-stratified）的度量对比 L-1 与 L+1 处的隐状态，会看到一个突兀的跳变；这种"长度阈值化"本身就是一个可辨识的签名，其他故障不具备。只在短序列上评估的 geometric/spectral 检测器会完全漏检。
+  repro: 单钩子只能部分复现——需要构造一个带 rope_scaling 的检查点再于加载时抹掉该字段；若手头模型本身无 rope scaling，则只能用改写 rotary base/scale 属性的方式近似模拟长度阈值行为。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

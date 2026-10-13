@@ -1,0 +1,53 @@
+id: INF-0364
+legacy_ids:
+- '5.17'
+slug: vllm_mooncake_hetero_tp_replicated_gqa_head_transfer_gap
+aliases: []
+title: vLLM Mooncake 异构 TP 只传 25% KV 却标记就绪
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake 异构 TP 传输规划器
+  behavior: 规划器把 replicated 当作每个 rank 持整块 KV；num_kv_heads < producer_tp_size 时只传 rank 0 的一个 head 切片，仍按成功回执标记 KV-ready。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: PD 分离 + 异构 TP（如 TP8 prefill→TP1 decode、4 个 KV head）时 75% 字节未传，decode 基于缺 3/4 KV head 的 cache 生成静默错误输出，无 crash 无报错、传输层显示成功；Qwen3-235B-A22B-FP8 官方模型可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM PD 分离；Mooncake connector + 异构 TP（如 TP8 P → TP1 D）+ GQA（num_kv_heads < producer_tp_size）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52516
+  kind: github_pr
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（异构 TP 规划器把 head 复制当整块复制 → 只传 25% 字节、KV-ready 却已标记） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'Mooncake 异构 TP（producer/consumer TP size 不同）规划器把 `producer_cache_replicated=True` 当作「每个 producer rank 持有整块 KV」。但 `num_kv_heads < producer_tp_size` 时每个**唯一** KV head 被复制、每个 rank 仍只拥有一个 head 大小的切片。TP8 prefill → TP1 decode、4 个 KV head：decode 期望 262,144 字节整块，旧规划器只选 rank 0 写 offset 0（65,536 字节），**其余 196,608 字节（75%）未传输，decode 仍按 Mooncake 的成功回执标记 KV-ready**。修复（PR #52516）计算 producer/consumer KV-head 分区并传输重叠、为每个复制 head 选 canonical producer。官方 Qwen3-235B-A22B-FP8 + vLLM v0.27.1 复现——缺陷在通用异构 TP 规划器而非定制模型。'
+  source: 'vLLM PR #52516（2026-08-16 open，bug/kv-connector）。MiniMax M3 定制量化部署首见，Qwen3-235B-A22B-FP8 官方模型复现。https://github.com/vllm-project/vllm/pull/52516'
+  behavior: 无 crash、无报错。decode 基于缺 3/4 KV head 的 cache 生成 → **静默错误输出**；传输层一切「成功」。属「复制语义误读 × 成功回执即 ready」**新子签名**——分离式 KV 传输完整性与回执的脱钩。
+  trigger_surface: vLLM PD 分离；Mooncake connector + 异构 TP（如 TP8 P → TP1 D）+ GQA（num_kv_heads < producer_tp_size）
+  discovery: |-
+    2026-08-16 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

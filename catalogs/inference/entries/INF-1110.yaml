@@ -1,0 +1,57 @@
+id: INF-1110
+legacy_ids:
+- '11.87'
+slug: vllm_v1_thinking_budget_spec_decoding_multi_token_end_forcing_desync_corrupts_end_sequence
+aliases: []
+title: vLLM V1 thinking budget 叠加推测解码致结束序列残缺
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: V1 thinking budget 强制推进
+  behavior: 强制结束每步至多一个 force_index，后续步按 spec_token_ids 匹配推进 end_count；draft 匹配位置不强制、交 target 自由采样，被拒时游标不回退，跳过的 end token 永不发出。
+effect:
+  objects:
+  - 输出内容
+  detail: V1 runner + 推测解码 + 14 token 的 reasoning_end_str 时结束短语被跳 token 残缺化；GB10+27B+MTP 32 请求中 17 例结束序列损坏、5 例烧到 max_tokens，同一 main 走 V2 全部完好；loop-breaker 同病。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V1 + `thinking_token_budget`/loop-breaker + speculative decoding + 多 token `reasoning_end_str`（config：MRV2 默认不可达，V1-only spec 特性组合可达）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58485
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1109
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（vLLM V1（`VLLM_USE_V2_MODEL_RUNNER=0` 或 V1-only spec 特性——`ngram`/`draft_model`/`medusa` 等仍路由 MRV1）：`thinking_token_budget` 强制结束机制在**多 token `reasoning_end_str`（实测 14 token）+ speculative decoding**下损坏结束序列——`thinking_budget_state.py` 的全部 16 处 `force_index` 赋值要么 `[]` 要么**单元素列表**（类型上"至多一个位置/步"）；后续步走 `spec_token_ids` 匹配推进 `end_count`：draft 恰好匹配下一 end token 的位置**不被强制**、由 target 自由采样，target 若采出别的 token 该 draft 被拒、但 `end_count` 已越过它——**下一步从更后的索引强制，被跳过的 end token 永不发出**，产出"I have to give final based on …"式残缺结束短语。GB10 + 27B + MTP 实测 32 请求：17/32 结束序列损坏、5/32 推理烧到 max_tokens、21/32 得到最终答案；**同一 main 走 V2 全净（32/32 intact）**、#52677 树 V1 全净（Fisher p=8.2e-7）；CPU 单测 6 例中 5 例对未修代码失败。loop-breaker（#52677 引入）共用该强制路径同病（两 host 6/25 vs 23/51 损坏）） · Cov: `var:vllm_thinking_token_budget_forced_end_prefix_realign_repetition_loop_at_exhaustion`（11.86 thinking-budget 强制结束状态机族——姊妹半边：11.86 是预算边界处重复死循环、本条是 spec 窗口内多 token 序列被跳跃性损毁；两缺陷同文件不同分支） · 触发 `config` · 置信度 `documented`'
+  mechanism: 强制进展以"draft 匹配即放行"推进，但匹配 draft 被拒绝时已推进的游标不回退（进展应取自 accepted output 而非 draft 匹配）；修复（#52677）：end 序列进展改由 accepted 输出驱动、verify 窗口每个位置（含 bonus）各强制到自己的 end token、部分起步的窗口同样处理——含 V1 调用序（bonus pass 在 Sampler、target pass 在 RejectionSampler）的 CPU 单测。
+  source: 'vLLM #58485（2026-09-24 open，含 32 请求×3 臂对照表、逐文件 force_index 赋值清单（16 处）、机制逐行游标示例、6 例单测通过率与 #52677 关联；评论含 hclsys 源码级独立复核（"单位置"半边成立且比报告更强）、njhill 指示 MRV2、hclsys 实测 V2 干净并指出 V1-only spec 特性组合仍可达）。https://github.com/vllm-project/vllm/issues/58485'
+  behavior: 无 crash——**预算触发时结束序列被静默替换为残缺变体**（真词表 token、非乱码）：推理段闭合与最终答案跟随率双降（27/32→全闭、21/32→答案），thinking budget + V1 spec 用户得到格式损毁的输出；温度 0 下同模型 297 个此类位置未见损坏（依赖模型在序列内"不同意正确 draft"的采样）。
+  trigger_surface: vLLM V1 + `thinking_token_budget`/loop-breaker + speculative decoding + 多 token `reasoning_end_str`（config：MRV2 默认不可达，V1-only spec 特性组合可达）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：事实都有原文依据（force_index 单元素、end_count 不回退、14 token reasoning_end_str、32 请求中 17 例损坏/5 例烧满 max_tokens、V2 全净、loop-breaker 同病）；thinking budget 强制结束属 logits 处理 → 解码/采样；结束短语是真词表 token 而非乱码，visibility 静默错误 合理，未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

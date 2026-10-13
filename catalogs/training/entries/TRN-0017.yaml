@@ -1,0 +1,51 @@
+id: TRN-0017
+legacy_ids:
+- NUM.08
+slug: bf16_token_count_rounding_flips_bias_sign
+aliases: []
+title: BF16 token 计数舍入翻转 MoE 路由 bias 更新方向
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: megatron-lm
+    component: router token 计数 buffer
+  behavior: aux-loss-free router 的 token 计数注册为浮点 buffer，被 Float16Module 转成 BF16 后累积并跨 rank 归约；计数约 40K 时 spacing=256，专家间小差异被舍入抹掉或翻转。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: 无 NaN、无 crash、loss 正常；bias 更新方向 sign(avg−count) 在两次合法运行间相反（W64 实测 −1 vs +1），router bias 沿错误方向更新、训练轨迹分叉，且随归约树/拓扑变化不可复现，eager-vs-eager 也复现。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7081
+  kind: github_pr
+relations: []
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: aux-loss-free router 的 `local_tokens_per_expert` 注册为**浮点 buffer**，`Float16Module` 随即把它转成模型精度（BF16）——token 计数这一**整数语义**在 BF16 里累积、跨 rank all-reduce。计数到 ~40K 量级时 BF16 spacing=256，专家间小差异被舍入抹掉甚至翻转：bias 更新方向 `sign(avg − count)` 在两次合法运行间得到相反符号（实测 W64 BF16：64 个 local 值 608–676、精确和 40,840；BF16 all-reduce 后 eager=41,216 / partial-CG=40,704 / 行均值=40,960 → 方向 −1 vs +1，bias update ∓0.0009994507）。BF16 加法非结合 + NCCL 归约树/通道序差异使 **eager-vs-eager** 也复现（pre-allreduce buffer 逐位相同、post-allreduce 64 rank 全不同）。修复 = 注册 int64 buffer（阻断精度转换）+ 用整数等价式 `total_tokens − tokens_per_expert · num_experts` 比较方向，只有最终方向转成 bias dtype。
+  source: 'Megatron-LM PR #7081（W64 BF16 trace + 相邻计数回归测试）。https://github.com/NVIDIA/Megatron-LM/pull/7081'
+  behavior: 无 NaN、无 crash、loss 正常；router bias 沿错误方向更新、训练轨迹分叉，且分叉随归约树/拓扑变化**不可复现**。与 NUM.03/NUM.07（归约序非确定）同根因，但被破坏的是整数计数语义而非连续梯度；与 MOE.06（bias 更新语义被隐式换掉）同一受体（expert bias），本条错在**数值载体**。
+  discovery: 2026-09-05 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

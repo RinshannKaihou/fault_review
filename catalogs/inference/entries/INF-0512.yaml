@@ -1,0 +1,50 @@
+id: INF-0512
+legacy_ids:
+- '6.119'
+slug: vllm_streaming_input_zero_token_turn_engine_die
+aliases: []
+title: vLLM streaming input 零输出轮非法重入队杀死引擎
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: streaming input 续写轮重入队
+  behavior: streaming-input 请求某续写轮生成零个输出 token（首个采样即 stop token）时，被重新放回 waiting 队列但状态仍为 RUNNING，scheduler 遇此非法状态直接抛 RuntimeError。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 可恢复会话 + temperature>0 + 非首轮即可命中，普通聊天流量也会触发：EngineCore 死亡并带走全部并发请求，5 实例 4 配置观测到 9 次引擎死亡。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM V1；streaming input/resumable session + temperature>0 多轮会话
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52693
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（streaming input 续写轮采样出 stop token（零输出轮）→ 请求以 RUNNING 状态非法重入队，scheduler raise 杀死 EngineCore 全引擎） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 'streaming-input（可恢复会话）请求在某个续写轮生成**零个输出 token**（首个采样 token 即 stop/terminator，"discard last sampled token" 后无剩余）时被重新入队但状态仍为 `RUNNING`；scheduler `schedule()` 在 waiting 队列发现该状态抛 `RuntimeError: Invalid request status: RUNNING`，沿 EngineCore→scheduler 栈传播（无 frontend 帧），杀死 EngineCore 与全部并发请求。触发三条件：可恢复会话 + temperature>0（stop token 可在首抽签获胜）+ 非首轮。普通聊天流量（gemma-4 默认 temperature=1.0）即可命中——5 实例 4 配置观测 9 次引擎死亡。'
+  source: 'vLLM #52693（2026-08-17 open，v0.25.1+；#52471 streaming-input 深度成本报告的姊妹篇）。https://github.com/vllm-project/vllm/issues/52693'
+  behavior: crash（整引擎死亡、并发请求陪葬——客户端可触发的共享引擎 DoS 面）。属「采样结果 × 调度器状态机非法转移」**新子签名**——正常采样输出（零 token 轮）成为状态机未建模输入。
+  trigger_surface: vLLM V1；streaming input/resumable session + temperature>0 多轮会话
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

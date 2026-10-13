@@ -1,0 +1,50 @@
+id: INF-0813
+legacy_ids:
+- '8.29'
+slug: vllm_amd_kda_packed_decode_unit_stride_assumption_spec_decode
+aliases: []
+title: vLLM AMD KDA decode kernel 假设单位步幅致推测解码崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: AMD KDA packed decode 内核
+  behavior: AMD 版 fused_recurrent_kda_packed_decode 假设 state_indices 单位步幅并预先拒绝非连续 tensor（NVIDIA 版已支持 stride 参数）。
+effect:
+  objects:
+  - 可用性/进度
+  detail: AMD 上 KDA 线性注意力开启推测解码时，GDNAttentionMetadataBuilder 取 block_table_tensor[:, 0] 得到 strided view，warmup 阶段抛 ValueError 崩溃；无推测解码时不暴露。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM AMD；KDA linear attention + 推测解码（`num_speculative_blocks > 0`）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51682
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（AMD 版 fused_recurrent_kda_packed_decode 假设 state_indices 单位步幅，推测解码开启时 block_table strided view→warmup 失败） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'AMD 版 `fused_recurrent_kda_packed_decode` 将 `state_indices` 视为单位步幅（`state_idx = tl.load(state_indices + i_n)`），并 up front 拒绝非连续 tensor（`if state_indices.ndim != 1 or state_indices.stride(0) != 1: raise ValueError`）。NVIDIA 版同 kernel 已接受 `stride_state_indices` 参数且只要求 1-D。推测解码开启时 `GDNAttentionMetadataBuilder` 将 KDA state slot 派生为 `block_table_tensor[:, 0]`，而 Mamba group 的 block table 是 `1 + num_speculative_blocks` 列宽 → 该列是**strided view**。无推测解码时 table 单列、view 平凡单位步幅，不暴露。'
+  source: 'vLLM #51682（2026-08-10 closed）。组件 AMD `fused_recurrent_kda_packed_decode` / `GDNAttentionMetadataBuilder`。https://github.com/vllm-project/vllm/pull/51682'
+  behavior: crash（warmup 时 ValueError）。属「AMD/NVIDIA 同 kernel 实现分叉 + 推测解码暴露 stride 假设」**新子签名**——vendored kernel 的平台特定实现不一致。
+  trigger_surface: vLLM AMD；KDA linear attention + 推测解码（`num_speculative_blocks > 0`）
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

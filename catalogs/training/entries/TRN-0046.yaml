@@ -1,0 +1,50 @@
+id: TRN-0046
+legacy_ids:
+- PAR.18
+slug: named_children_dedup_drops_shared_submodule_params
+aliases: []
+title: DeepSpeed ZeRO ckpt 重建缺别名子模块参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: deepspeed
+    component: _get_shared_params 子模块遍历
+  behavior: _get_shared_params() 用按对象身份去重的 named_children() 遍历，子模块被第二个属性名别名时其子树不被访问、参数不记为 shared，与 state_dict() 的遍历结果不一致。
+effect:
+  objects:
+  - 模型权重
+  detail: ckpt 无错写出；zero_to_fp32.py 等重建的 state_dict 缺别名子模块（如 self.layer2 = self.layer1）参数；之后 load_state_dict 报错，或容忍 missing keys 时静默加载成不完整模型。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8686
+  kind: github_pr
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed `DeepSpeedEngine._get_shared_params()` 用 `named_children()` 遍历模块树，而 `nn.Module.named_children()` **按对象身份去重**——整个子模块（不只是 tied leaf `Parameter`）被第二个属性名别名（`self.layer2 = self.layer1`）时，第二个名字的子树从不被访问，其参数不被记录为 shared，`zero_to_fp32.py` / `load_state_dict_from_zero_checkpoint()` 重建的 state_dict **缺这些参数**。保存路径（`nn.Module.state_dict()` 直接走 `_modules`、不去重）与重建路径对「哪些名字存在」的答案不一致；既有端到端转换测试要求 accelerator、多数环境 skip，树遍历缺陷从未被测过。修复 = 改走 `module._modules.items()`，与 `state_dict()` 的遍历对齐。
+  source: 'DeepSpeed PR #8686（2026-09-27；`m.a = inner; m.b = inner` 时 `named_children()` 只出 `[''a'']`、`_modules.items()` 出 `[''a'',''b'']` 的隔离复现 + 负对照（revert 修复后新单测 `assert None == ''layer1.weight''` 失败）；fixes #1789）。https://github.com/deepspeedai/DeepSpeed/pull/8686'
+  behavior: 无 crash——ckpt 无错写出，别名子模块的参数缺失只在**之后**浮出：`load_state_dict` 失败算好下场，更糟的是被静默加载成**不完整模型**（missing keys 被容忍时直接缺肢体训练/推理）。与 CKPT.19（类名白名单漏 norm 权重留 meta）同族「重建路径的遍历器与保存路径不一致」：那边按类名白名单、这边按对象身份去重；与 CKPT.15（reader 吞 shard 异常自报成功）同为「ZeRO ckpt 重建面」的自欺家族；参数别名面与 RL-RO.15（`to_empty()` 断 tied embedding 别名）同病根（别名语义在库遍历中被抹掉）、断点一在加载侧一在导出侧。
+  discovery: 2026-09-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

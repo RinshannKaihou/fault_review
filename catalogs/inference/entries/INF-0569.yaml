@@ -1,0 +1,60 @@
+id: INF-0569
+legacy_ids:
+- '6.176'
+slug: flashmla_sparse_decode_tmem_alloc_spin_wedge_ptxas
+aliases: []
+title: FlashMLA TMEM 分配无界自旋致 rank 静默挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: flashmla
+    component: FlashMLA tcgen05 TMEM 分配
+  behavior: FlashMLA sparse-decode 的 tcgen05.alloc.cta_group::2 被 ptxas 降低为等待对侧 CTA 的 TMEM 分配自旋循环，无超时；该循环由 ptxas 生成，源级无法加界。
+effect:
+  objects:
+  - 可用性/进度
+  detail: vLLM Blackwell tcgen05 路径上对侧 CTA 因任何原因停滞时，本 rank 以 100% SM 利用率无界空转、看似在计算；约 300s 后才在其他 rank 不相关的 collective 超时中报错，报错位置与肇事 rank 无关。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + FlashMLA sparse-decode（Blackwell tcgen05 路径）+ 任意导致对侧 CTA 停滞的前置条件（概率性）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/54638
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（FlashMLA sparse-decode kernel 可静默 wedge：ptxas 把 `tcgen05.alloc.cta_group::2` 降低为 CTA-pair TMEM 分配自旋循环——**无超时**，停滞 rank 以 100% SM 利用率空转，唯一错误 300s 后才在不相关 collective 中浮现；自旋循环是 ptxas 生成的、源级无法加界，只能靠 worker 级 watchdog 兜底） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'Blackwell CTA-pair TMEM 分配指令被 ptxas 展开为等待对侧 CTA 的自旋循环；对侧若已停滞（任何原因），本侧 rank 进入无界自旋——100% SM 利用率伪装成"在算"，300s 后其它 rank 的 collective 超时才间接触发可见错误，且报错位置与本 rank 无关。修复（PR #54638）无法在源级界定 ptxas 生成循环，改为：(1) 在 `execute_model` 周围武装 worker 级 watchdog（复用 `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS`）打 rank-local 诊断；(2) FlashMLA 编译加 `-lineinfo` 使 cuda-gdb 栈可映射到源。'
+  source: 'vLLM PR #54638（2026-08-31 open，bug label，Closes #51035）。https://github.com/vllm-project/vllm/pull/54638 · 原始报告：#51035'
+  behavior: 无 crash、无错误输出——**100% SM 利用率的活性死亡**（wedge），错误在 300s 后出现在不相关 collective（错误归因陷阱：症状在受害者 rank 不在肇事 rank）。属「**编译器生成的无界自旋 = 源级不可修的挂起面**」新子签名：与 5.25（NCCL 无超时阻塞）同 silent-wedge 域，本条的等待点在 ptxas 生成的设备码内、应用层不可插桩；watchdog 是唯一可用检测手段。
+  trigger_surface: vLLM + FlashMLA sparse-decode（Blackwell tcgen05 路径）+ 任意导致对侧 CTA 停滞的前置条件（概率性）
+  discovery: 2026-08-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 算子/内核、stack=flashmla。挂起发生在 FlashMLA sparse-decode kernel 的 tcgen05.alloc.cta_group::2 等待对侧 CTA 处；原文未称 ptxas 有 bug，只说自旋循环由 ptxas 生成、源级无法加界，故不归 编译器。stack：kernel 属 FlashMLA 项目（extract 说明：缺陷在另一项目时写真实所在栈），独立判断曾写 vllm（修复 PR 在 vLLM，仅加 watchdog 与 -lineinfo 兜底），最终取 flashmla。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 编译器
+        status: panel7

@@ -1,0 +1,56 @@
+id: INF-1312
+legacy_ids:
+- K10.1
+slug: tgi_prefix_cache_discontiguous_slot_misindex
+aliases: []
+title: TGI paged-v3 误设槽连续，KV 写进其他请求的槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tgi
+    component: paged-v3 KV 槽索引计算
+  behavior: paged-v3 用 slots.expand + arange_int 计算 KV 槽索引，隐含假设槽序号连续，但 RadixAllocator 发放非连续槽，追加的 KV 按错误序号写进其他请求的缓存槽。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 启用 prefix caching 的多请求服务上，命中前缀后生成的尾部内容被污染，出现跨请求内容串味；单请求难以复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: TGI 专用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/text-generation-inference/pull/2711
+  kind: github_pr
+  resolved_from: 'TGI PR #2711'
+relations: []
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: TGI 的 paged-v3 通过 `slots.expand + arange_int` 计算 KV 槽索引，隐含假设分配到的槽序号是连续的；但 RadixAllocator 实际发放的是**非连续**槽。于是追加写入的 KV 按错误的连续序号落地，写进了其他请求的缓存槽。命中前缀缓存后新增的那段 KV 与实际查询流不再对应。
+  source: '`gh`：TGI PR #2711（closed，"Fix prefix caching + speculative decoding"）。'
+  behavior: 在启用 prefix caching 的多请求服务上，命中前缀后生成的尾部内容被污染，出现跨请求的内容串味；单请求复现困难。
+  trigger_surface: TGI 专用
+  signature: 写入/读取到他请求 K/V 属典型 infra_off——被污染的尾部位置的隐状态离开健康流形。geometric（相对健康基线的余弦/范数偏离）与 statistical 在命中后的尾部位置上可见；trajectory 深度剖面呈 STEP 型跳变。但签名严格受「有前缀命中且槽非连续」这一服务态条件门控，单序列路径不会自发触发，最可靠的是 cheap 族里的 recompute-oracle 轴（同 8.85 `kv_corrupt` 的重算对照）。
+  repro: 单钩子只能做近似——prefill 后在某层的 forward hook 里，把 cache 尾部若干位置的 K/V 行替换为另一条 prompt 前向所得的对应行，模拟"追加 KV 落进他请求槽"；真实的 RadixAllocator 槽分配路径与分页几何无法复现。
+  locus: block-slot-alloc
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

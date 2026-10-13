@@ -1,0 +1,62 @@
+id: INF-1256
+legacy_ids:
+- K4.9
+slug: prefix_cache_shared_block_bitflip_silent_divergence
+aliases: []
+title: 共享前缀 KV 块位翻转导致跨请求静默发散
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 硬件
+    stack: 硬件
+    component: GPU DRAM 位翻转（共享前缀 KV 块）
+  behavior: GPU DRAM 上 rowhammer 类位翻转或 row-remap 耗尽的物理故障翻转共享前缀 KV 块中的 bit；vLLM 前缀缓存的共享块是单一物理副本且无完整性校验，损坏被所有共享请求复用。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 跨请求/跨样本数据
+  detail: 共享该前缀的请求得到连贯但错误的输出：16 个 BF16 bit 位中 13 个翻转产生 coherent-but-altered 响应，无 clean baseline 不可区分；仅共享前缀的请求受影响，损害无时间衰减、随请求数线性累积。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-30'
+remarks: ''
+evidence:
+- url: http://arxiv.org/abs/2604.17249v2
+  kind: arxiv
+relations: []
+original:
+  category: KV4
+  section: KV §4 cross-request（跨请求，缓存键 / 汏染）
+  meta: '`infra_off` · Cov: `NEW`（新威胁面：共享 KV 块无完整性校验） · 触发 `config`⚠ · 置信度 `documented`'
+  mechanism: vLLM Prefix Caching 的**共享 KV 块**是单一物理副本、**无完整性校验**。GPU DRAM 上的 rowhammer 类位翻转（或 row-remap 耗尽的物理故障）可翻转共享 prefix block 中的 bit。论文用理想 bit 定位的软件故障注入刻画了最坏情况严重度，识别三大特性：(1) **静默发散**——16 个 BF16 bit 位中 13 个产生**连贯但被篡改**的输出，无 clean baseline 不可区分；(2) **选择性传播**——仅共享目标前缀的请求受影响；(3) **持久累积**——无时间衰减，累积损害随后续请求**线性增长**。提出 checksum 反制在调度时检测任意单 bit 损害，将累积损害限制在一个 batch 内。
+  source: Wang et al., "Bit-Flip Vulnerability of Shared KV-Cache Blocks in LLM Serving Systems", arXiv:2604.17249（2026-04-19）。http://arxiv.org/abs/2604.17249v2 。相关 vLLM Prefix Caching 文档。
+  behavior: 共享 prefix block 的 bit 翻转让所有共享该前缀的请求得到**连贯但错误**的输出——13/16 bf16 位翻转产生 coherent-but-altered 响应，检测器需 clean baseline 才能区分。损害无时间衰减，随请求数线性累积。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: infra_off 的新威胁面——"**共享 KV 块无完整性校验**"。与 K4.1（LoRA name/id 碰撞）同属 cross-request locus，但本条根因是**物理/Rowhammer bit 翻转在共享块上**而非缓存键碰撞。签名形态：单看一个请求的输出是连贯的（near-perfect-disguise），但因损害**选择性传播**到所有共享前缀的请求，跨请求一致性检查（同一 prefix 的多个请求输出是否一致）可暴露。
+  repro: partial——3.19 `weight_bitflip` / 8.85 `kv_corrupt` 的复现路径可在共享 KV 块上翻转 bit 并观察对多个共享前缀请求的影响；但 vLLM 的物理共享块机制（单一物理副本）需服务栈复现。
+  locus: '`cross-request`'
+  priority: '`medium`'
+  discovery: 2026-07-30 每日扫描（arxiv 2604.17249）。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: cause.objects 由 硬件+KV缓存 两项合为 硬件 单项。rule 4：只有修复必须同时改两个 subsystem 才写多项——DRAM 位翻转无法在软件侧修复，论文反制（调度时 checksum）只落在一处，不满足'必须同时改两处'；rule 3：rowhammer 类/row-remap 耗尽的自然物理位翻转、原文未描述蓄意攻击者 → 硬件。共享块单副本无校验这一放大因素写进 component 与 behavior。effect/visibility 维持。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

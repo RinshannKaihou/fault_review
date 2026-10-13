@@ -1,0 +1,58 @@
+id: INF-0665
+legacy_ids:
+- '6.272'
+slug: vllm_recoverssm_align_exact_block_boundary_commits_state_to_unwritten_block
+aliases: []
+title: vLLM RecoverSSM align 块边界处把 state 提交到未写块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: RecoverSSM align 状态提交列号
+  behavior: align 模式把最终提交的 state 写入 floor(x/B) 列，而 align 路径其余部分用 ceil(x/B)−1；两约定仅在 x 为 B 整倍数时分歧，此时 state 提交到本请求从未写过的块。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: spec decode 下 verify 步恰在块边界全接受后，下一步读到垃圾或他人的 recurrent/conv state；GLM-5.3 KDA 长 prompt 4 并发实测 10–11/16 输出损坏（mid-word 丢上下文后单 token 重复到 max_tokens）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + RecoverSSM（Kimi-K3/GLM-5.3 KDA）+ align + spec（partial）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59933
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0652
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（RecoverSSM align 模式把最终提交 state 写入 `floor(x/B)` 列，而 align 路径其余部分用 `ceil(x/B)−1`——verify 步恰在块边界全接受时，state 提交到本请求**从未写过的块**，下一步从该块读 recurrent/conv state 为垃圾或他人 state（新 Mamba 块不清零 #56524）。fork 上实测（GLM-5.3 KDA 走 Kimi-K3 RecoverSSM、4 并发 28–34k prompt、4000 输出）：未打补丁+spec 10–11/16 输出损坏（症状：若干 token 后 mid-word 丢上下文再单 token 重复到 max_tokens）；`ceil−1` 两行修复后 0/16。两处站点：`recoverssm.py:287` 与 `gpu/model_states/recoverssm.py:97`） · Cov: `var:vllm_dflash2_prefix_cache_hit_permanent_acceptance_zero_hybrid_mamba_state_boundary_misregistration`（6.259 hybrid mamba state 块边界错配族——本条在 **floor vs ceil−1 恰边界提交**维度且直接产生垃圾输出） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 两套列号约定仅在 x 为 B 整倍数时分歧，恰是全接受 verify 步。
+  source: 'vLLM #59933（2026-10-04 open，边界分析源自 Morrowmake/glm53-flash-cmp170hx-recipe#7，含修复 diff 与 16 输出对照）。https://github.com/vllm-project/vllm/issues/59933'
+  behavior: 无 crash——spec decode 下块边界处生成静默退化为重复 token 流。
+  trigger_surface: vLLM + RecoverSSM（Kimi-K3/GLM-5.3 KDA）+ align + spec（partial）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

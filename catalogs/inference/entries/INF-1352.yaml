@@ -1,0 +1,54 @@
+id: INF-1352
+legacy_ids:
+- '6.284'
+slug: vllm_mooncake_store_connector_drops_secondary_kv_views_corrupted_loadback
+aliases: []
+title: vLLM Mooncake 只存 list 值层缓存首个视图，加载后静默损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MooncakeStoreConnector
+  behavior: 观测配置中层以 list 值缓存同一存储不同 offset 的 [K, V] 视图；store worker 把 list 值 reduce 成 cache[0]，物理 buffer 注册覆盖全存储但传输 layout 丢掉 V。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: save/lookup/load 全链路成功无报错；tuple 值直接断言失败，单张量缓存不走该分支。fresh consumer 加载 15,360 token KV 成功后静默生成损坏输出（V 缺失）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: 'false'
+  trigger_note: vLLM + MooncakeStoreConnector + list 值多张量层缓存（Ascend 910B2 观测，机制在通用路径）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: '与 6.258/6.266（offload 只搬部分视图/层）同族：多视图 KV 的传输侧只取第一个视图。建议修复保留全部 list/tuple 视图，干净池验证恢复正确输出。来源：vLLM #61208（Qwen3.8-27B TP2 LBNHC Ascend 910B2）。'
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61208
+  kind: github_issue
+relations: []
+original:
+  mechanism: '`cache[0]` 折叠多视图张量；与 6.258/6.266（offload 只搬部分视图/层）同族——"多视图 KV 的传输侧只取第一个视图"。建议修复保留全部 list/tuple 视图，干净池验证恢复正确输出。'
+  source: 'vLLM #61208（2026-10-12 open，Qwen3.8-27B TP2 LBNHC Ascend 910B2，15,360 token 加载成功后输出损坏）。https://github.com/vllm-project/vllm/issues/61208'
+  behavior: 无 crash——外部缓存 load 全链路成功后静默生成损坏内容（V 缺失）。
+  trigger_surface: vLLM + MooncakeStoreConnector + list 值多张量层缓存（Ascend 观测，机制在通用路径）（other_stack）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（vLLM MooncakeStoreConnector store worker 把 list 值层缓存 reduce 成 `cache[0]`：观测配置中层提供同存储不同 offset 的 `[K, V]` 视图——物理 buffer 注册覆盖全存储但**传输 layout 丢掉 V**；save/lookup/load 全部成功无错，fresh consumer 消费后生成**损坏输出**。tuple 值则直接断言失败；单张量缓存不走该分支） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

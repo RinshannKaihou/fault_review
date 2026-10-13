@@ -1,0 +1,51 @@
+id: INF-0999
+legacy_ids:
+- '10.83'
+slug: vllm_cross_encoder_max_length_padding_token_type_ids_inherit_last_real_segment
+aliases: []
+title: vLLM cross-encoder 的 pad 位段 ID 填错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: token_type_ids 填充与压缩表示
+  behavior: host 侧用最后真实 token 的段 ID（token_type_ids[-1]）回填 pad 位而非 0；worker 侧压缩表示只存一个 0→1 边界，无法编码 0*1*0* 形状，重建后 pad 位仍为 1。
+effect:
+  objects:
+  - 输入编码
+  - 输出分布
+  detail: BERT 系 /score、/rerank 用 padding="max_length" 时 HTTP 200，但 pad token 被当作文档段送入模型，分数静默偏差、可翻转排序与阈值决策；短输入配长 max_length 时偏差更大。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + cross-encoder/BERT 系 + `padding="max_length"` + /score、/rerank 端点（config：该 padding 模式即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58138
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM cross-encoder（BERT 系 `/score`/`/rerank`）`padding="max_length"` 时 **padding 位置的 `token_type_ids` 填最后真实 token 的段 ID**（query/doc 对中为 1）而非 `pad_token_type_id=0`——**双重缺陷**：(1) host 侧 `_apply_post_tokenization_to_token_type_ids()` 用 `token_type_ids[-1]` 回填 pad 位；(2) worker 侧压缩表示**只存一个 0→1 边界**——能编码 `0*1*` 却编码不了正确的 `0*1*0*`，即使修 host 填充、压缩重建仍把全部 pad 位恢复为 1。对照实测：vLLM `[0,0,0,1,1,1,1,1]` vs transformers `[0,0,0,1,1,0,0,0]`（input_ids 逐位相同）） · Cov: `NEW`（padding 段 ID 填充错 + 有损压缩表示不可编码正确形状双位点子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: padding 语义（pad 位应属中性段 0）被实现为"延续末值"；随后的 token-type 压缩格式（单边界游程编码）对右 pad 形状 `0*1*0*` 表达力不足——修复需同时改填充源与压缩格式，单点修复被另一点抵消。BERT 消费 token-type embedding，段 ID 直接参与前向。
+  source: 'vLLM #58138（2026-09-22 open，vLLM 0.29.0 + L40S，含 input_ids/token_type_ids 对照、root cause 双点定位、PR #47772 界分说明、无需 GPU 的复现脚本）。https://github.com/vllm-project/vllm/issues/58138'
+  behavior: 无 crash、HTTP 200——**分数静默偏差**：padding 段把 pad token 当文档段喂进 BERT，改变 `/score`/`/rerank` 分数、可翻转排序与阈值决策；短输入长 max_length 配置放大 pad 占比、放大偏差。
+  trigger_surface: vLLM + cross-encoder/BERT 系 + `padding="max_length"` + /score、/rerank 端点（config：该 padding 模式即触发）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

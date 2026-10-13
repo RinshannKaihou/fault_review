@@ -1,0 +1,55 @@
+id: INF-1232
+legacy_ids:
+- K2.2
+slug: swa_sliding_cache_premature_roll
+aliases: []
+title: SlidingWindowCache 守卫差一，提前 roll 留下零值槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: HybridCache 滑窗更新守卫条件
+  behavior: _sliding_update 守卫 cache_position >= max_cache_len - 1 在 seq_len 首次达到窗口时提前一步触发，缓存未满就被 torch.roll 平移，旧 token 被移出并留下未初始化零槽
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 长上下文解码中 seq_len 越过 SWA 窗口后，窗口边界附近的注意力被破坏，零值 K/V 槽与错位一格的旧 token 使生成持续劣化
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/37574
+  kind: github_issue
+  resolved_from: 'transformers #37574'
+relations: []
+original:
+  category: KV2
+  section: KV §2 index-position（索引/位置）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 在 `SlidingWindowCache`/`HybridCache._sliding_update` 中，守卫条件 `to_shift = cache_position >= max_cache_len - 1` 在 `seq_len` 首次达到窗口时提前一步触发，缓存还没填满就被 `torch.roll` 平移，把较旧的 token 移出窗口并在某个槽里留下未初始化的零。上游修复是把 `>=` 改成 `>`。
+  source: 'transformers #37574。'
+  behavior: 长上下文解码中窗口边界附近的注意力被破坏；一旦 `seq_len` 越过 SWA 窗口，被清零的 K/V 槽加上错位一格的旧 token 会持续劣化生成。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: '`infra_off` —— 在 `seq_len == window` 处出现尖锐不连续：恰好一个 KV 槽为零（硬性的流形空洞），相邻槽整体平移一位，于是 decode query 在「前一个位置的 rotary 相位」下读取每个窗口位置的内容。可捕获的是 geometric 族的逐位置 KV 范数 / 零槽检测器（零槽是所有度量里最便宜的强信号）与 trajectory 族的局部跳变；spectral 族基本无响应（单槽置零几乎不动谱），infotheoretic 族只能通过注意力分布的边界畸变间接看到。'
+  repro: '参考实现参数 `{L: 8, window: 16}`。在全注意力 + DynamicCache 路径上直接复现 roll 的**末态**：prefill 后在单层 L 就地（等长、逐层安全、无需跨层长度一致）把最后 `W = min(window, T)` 个位置的 K/V 左移一位并把最后一个槽清零，`window < 2` 报错（至少需要一个被平移的槽加一个被清零的槽）。'
+  locus: index-position
+  priority: high
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,57 @@
+id: INF-0584
+legacy_ids:
+- '6.191'
+slug: vllm_mig_nVML_permission_swallowed_smallest_gpu_batch_defaults
+aliases: []
+title: vLLM MIG 下 NVML 探测失败被吞，batch 默认值静默落入最小档
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: NVML 显存探测与 batch 默认值
+  behavior: MIG 容器内 NVML 取父设备 handle 查询被权限拒绝，get_batch_defaults() 的 catch-all 吞异常并以 device_memory=0 兜底，未回退 torch total_memory。
+effect:
+  objects:
+  - 性能/资源
+  detail: H200 2g.35gb MIG 引擎依赖默认 batch 参数时静默拿到最小档 max_num_batched_tokens=2048/max_num_seqs=256（整卡档 8192/1024），吞吐降 28–53%；输出正确、默认日志级无告警，显式设置该参数可绕过。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + MIG 容器（NVML 父设备权限拒绝）+ 依赖默认 batch 参数（环境组合触发；显式 `--max-num-batched-tokens` 即绕过）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55381
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（MIG 容器内 NVML 对**父设备**的查询被权限拒绝——异常被 `EngineArgs.get_batch_defaults()` 的 catch-all 吞掉、`device_memory=0`——内存阶梯落入最小 GPU 档：H200 2g.35gb 引擎静默拿 `max_num_batched_tokens=2048`/`max_num_seqs=256`（整卡档为 8192/1024），吞吐 **-28~53%**；唯一痕迹是默认日志级不输出的 `logger.debug`；同机整卡对照同镜像同探针返回 16384/8192 档） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: NVML 平台解析物理 index 并取**父设备** handle，MIG 容器内该查询 permission-denied；catch-all 以 0 兜底而非回退 `torch.cuda.get_device_properties().total_memory`（`NonNvmlCudaPlatform` 已有正确做法）；chunked prefill 引擎拿 2048 步预算对照 40,960 `max_model_len`。5,118 个 engine step 零步超过 2048 桶实证 clamp 真实生效。
+  source: 'vLLM #55381（2026-09-04 open，v0.28.0 tag + main 根因确认、MIG/整卡同机对照、-28~53% 吞吐表、修复建议）。https://github.com/vllm-project/vllm/issues/55381'
+  behavior: 无 crash、输出正确——**静默性能塌方**（最高损失一半吞吐）且零可见告警；容量规划/成本核算全部失真。属「**能力探测失败被静默降级到最保守档**」新子签名：与 6.162（liveness 伪 sentinel）同为"异常处理吞掉关键信号"，本条吞的是硬件探测、显形为性能而非正确性；同机整卡/MIG 差异使问题看似"硬件慢"而逃过归因。
+  trigger_surface: vLLM + MIG 容器（NVML 父设备权限拒绝）+ 依赖默认 batch 参数（环境组合触发；显式 `--max-num-batched-tokens` 即绕过）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 运行时/执行。原文根因是“NVML 平台解析物理 index 并取父设备 handle，MIG 容器内该查询 permission-denied”，加上 catch-all 以 0 兜底而非回退 torch.cuda.get_device_properties().total_memory——两处都是设备能力/显存探测（driver/平台层），batch 默认值只是探测结果的下游消费者，故不归 调度/服务。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

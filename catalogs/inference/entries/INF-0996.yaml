@@ -1,0 +1,57 @@
+id: INF-0996
+legacy_ids:
+- '10.80'
+slug: vllm_batch_completions_include_reasoning_false_logprobs_token_ids_leak_hidden_chain
+aliases: []
+title: vLLM batch 端点 token 级字段泄漏隐藏思维链
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: batch 响应组装 reasoning 剥离
+  behavior: include_reasoning=false 的剥离只作用于 message 结构化字段，logprobs 的 token 字符串与 choice.token_ids 等 token 级通道仍携带未过滤的原始生成序列。
+effect:
+  objects:
+  - 输出内容
+  detail: batch 端点同时设 include_reasoning=false 与 logprobs=true 或 return_token_ids=true 时，HTTP 200、message 体干净，但客户端可从 token 级字段完整恢复隐藏的 <think> 推理内容。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM batch 端点 + `include_reasoning=false` + `logprobs=true` 或 `return_token_ids=true`（config：三参数组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57935
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0981
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `/v1/chat/completions/batch` 在 `include_reasoning=false` 时响应**移除 `message.reasoning` 但保留完整原始生成的元数据通道**——隐藏的 `<think>PRIVATE_CHAIN</think>` span 可从 logprob 的 token 字符串或 `choice.token_ids` **完整恢复**。Qwen3-0.6B + 官方 batch 响应组装器 + Qwen3 reasoning parser 确定性探针：engine 输出 `<think>PRIVATE_CHAIN_7f3a</think>PUBLIC_ANSWER`，请求 `include_reasoning=false, logprobs=true, return_token_ids=true` 后 message 体干净但 token 级通道全放行） · Cov: `var:vllm_responses_api_include_reasoning_flag_ignored`（10.65 include_reasoning flag 语义失效族） · 触发 `config` · 置信度 `verified`'
+  mechanism: reasoning 剥离只作用于 message 结构化字段（reasoning/content 分离），token 级附属通道（logprobs 的 token 字符串、token_ids）直接携带未过滤的原始生成序列——flag 的语义被实现为"结构层剥离"而非"信息层移除"。10.65（Responses API 整个忽略 include_reasoning）之后 flag 语义族新成员：本条是**部分生效**形态（正文剥离、元数据放行），泄漏更隐蔽因为响应"看起来"已遵守 flag。
+  source: 'vLLM #57935（2026-09-21 open，vLLM 0.29.0，含确定性探针脚本（本地 tokenizer 离线可跑）、请求/响应 JSON、恢复链演示）。https://github.com/vllm-project/vllm/issues/57935'
+  behavior: 无 crash——**隐私/安全面静默泄漏**：依赖 `include_reasoning=false` 保证思维链不外泄的部署（多租户、合规场景）中，任何开 logprobs/token_ids 的客户端（或代理默认加参）都能恢复完整隐藏推理；与 6.180（prompt_cache_key 静默丢弃）同属"API flag 语义部分实现"谱系，但本条方向是**过度暴露**。
+  trigger_surface: vLLM batch 端点 + `include_reasoning=false` + `logprobs=true` 或 `return_token_ids=true`（config：三参数组合即触发）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: panel7

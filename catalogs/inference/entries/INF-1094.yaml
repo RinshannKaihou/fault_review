@@ -1,0 +1,52 @@
+id: INF-1094
+legacy_ids:
+- '11.71'
+slug: trtllm_guided_decoding_grammar_restart_after_kv_recompute
+aliases: []
+title: TRT-LLM KV 重计算后 grammar 重启，guided 输出违反约束
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tensorrt-llm
+    component: grammar matcher 重算恢复路径
+  behavior: KV 重计算路径重建 attention 状态，但不保存/恢复 grammar matcher 已消费 token 的游标；matcher 从头初始化，把恢复后的上下文当作新的约束会话。
+effect:
+  objects:
+  - 输出内容
+  detail: MAX_UTILIZATION 调度器因 KV 容量不足暂停请求并重算后，guided 输出从头重新满足约束：约束 a{31}b{32}c{32} 时在 64 个 token 后又输出 31 个 a，静默违反长度/顺序约束；只在容量压力下出现，冒烟测试不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM + guided decoding + MAX_UTILIZATION 调度 + KV 容量压力触发重计算（other_stack：容量压力即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/18891
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（TRT-LLM guided decoding 在 `MAX_UTILIZATION` 调度器因容量暂停请求并触发 **KV-cache 重计算**后**重启 grammar**：已提交 token 的 matcher 历史不随重计算路径保存/恢复——两个 95-token 请求约束 `a{31}b{32}c{32}`，容量 512 全对；容量 128 下第二个请求在 64 个已提交 token 后被暂停重算，恢复后输出 31 个 `a`（从头重新满足约束）而非剩余的 b/c 段——**约束进度蒸发、输出结构性重复**；main 与 v1.3.0rc25 同路径，v1.2.1 无该 workers） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: KV 重计算路径重建 attention 状态但**不重建 grammar matcher 的消费游标**：matcher 从头初始化，把恢复后的上下文当作新约束会话——调度器驱动的状态重建与约束解码的增量状态机不同步。
+  source: 'TRT-LLM #18891（2026-09-08 open，含 guided_worker.py 公开复现、容量 512/128 对照与版本矩阵）。https://github.com/NVIDIA/TensorRT-LLM/issues/18891'
+  behavior: 无 crash——压力下（容量触发重算）guided 输出**静默违反长度/顺序约束**（重新输出已满足段）；与 11.70 构成 grammar 正确性的两条独立丢失路径（树扩展绕过 vs 重算重启），且本条只在容量压力下显形、冒烟测试不可见。
+  trigger_surface: TRT-LLM + guided decoding + MAX_UTILIZATION 调度 + KV 容量压力触发重计算（other_stack：容量压力即触发）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

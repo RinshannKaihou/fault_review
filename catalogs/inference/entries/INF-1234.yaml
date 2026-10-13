@@ -1,0 +1,70 @@
+id: INF-1234
+legacy_ids:
+- K2.4
+slug: llamacpp_self_extend_grpattn_position_fold
+aliases: []
+title: llama.cpp self-extend 平移回收出错，破坏位置→KV 映射
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: llama.cpp
+    component: self-extend 缓存平移回收
+  behavior: self-extend 在 grp_attn_w 窗口内按 grp_attn_n 整除折叠位置并据此平移缓存，其 shift/reclaim 逻辑有误，位置→KV 映射被下取整折叠破坏
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 启用 self-extend 且上下文超过 grp_attn_w 时，上下文过早耗尽（平移后 KV-cache 满），或在折叠位置下输出错误（#7742 还带架构门控）
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: llama.cpp 专用
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/ggml-org/llama.cpp/issues/9171
+  kind: github_issue
+  resolved_from: 'llama.cpp #9171'
+- url: https://github.com/ggml-org/llama.cpp/issues/7742
+  kind: github_issue
+  resolved_from: '#7742'
+relations:
+- kind: var
+  target: INF-0788
+original:
+  category: KV2
+  section: KV §2 index-position（索引/位置）
+  meta: '`ambiguous` · Cov: `var:cache_position_off_by_one` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: self-extend（Group Attention）在 `grp_attn_w` 窗口内把位置整除折叠成大小为 `grp_attn_n` 的组，并据此重新平移缓存；其 shift/reclaim 逻辑有误，导致上下文过早耗尽，或折叠后的位置产生错误输出——位置→KV 的映射被下取整折叠破坏。
+  source: 'llama.cpp #9171（平移后 KV-cache 满）、#7742（架构特定的错误输出）。'
+  behavior: 源文档未单列该字段；机制中记载的可观测后果是上下文过早耗尽（KV-cache full）或在折叠位置下输出错误。
+  trigger_surface: llama.cpp 专用
+  signature: '`ambiguous` —— 只在启用 self-extend 且上下文超过 `grp_attn_w` 时出现（#7742 还带架构门控）。需要注意机制的两半在本项目轴上分属不同族：**正确**的 self-extend 位置折叠本身是模型能吸收的 model_on 型压缩，而**错误**的 shift/reclaim 才把状态推离流形。签名是折叠后的相对位置把不同 token 坍缩到同一有效位置，导致 K/query 点积的位置可分性下降、组内注意力异常尖锐。可捕获的是 statistical 族（注意力峰度）与 infotheoretic 族（注意力熵 / 位置可分性）；geometric 族的范数离群检测漏检，因为折叠只改相位不改幅值。'
+  repro: 方案：单钩子对缓存 K 按 `pos → grp_start + (pos - grp_start) // grp_attn_n` 的折叠位置重新旋转，query 侧保持原位置以复现「组内多 token 同相位」的坍缩。属 partial：真实故障还包含 reclaim 逻辑导致的缓存耗尽，单钩子层面无法复现该资源侧行为。
+  locus: index-position
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 subsystem=KV缓存。原文明确错在 self-extend 的'shift/reclaim 逻辑'（缓存平移/回收），后果是 KV-cache 过早耗尽；signature 指出'正确的 self-extend 位置折叠本身'可被模型吸收，错的是 shift/reclaim，而 位置编码 词表指 RoPE 及其缩放/插值配置本身。visibility 独立判断为 静默错误，与第一遍 质量退化 不一致；原文后果是上下文耗尽或输出错误，未给'看似合理'的描述，两者都不完全贴合，维持第一遍。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: unanimous

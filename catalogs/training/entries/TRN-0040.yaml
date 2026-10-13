@@ -1,0 +1,67 @@
+id: TRN-0040
+legacy_ids:
+- PAR.12
+slug: hybridep_intermittent_bad_gradients
+aliases: []
+title: HybridEP 梯度范数间歇放大/NaN，疑 GEMM 与 NCCL 并发
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cuda
+    component: cublasLt GEMM 与 NCCL 异流并发
+  behavior: BF16 GEMM（beta=0）与 NCCL all-gather/reduce-scatter 异流并发时，本应覆写的输出元素残留预填旧值；根因尚未最终定位，已提交 NVIDIA 内部 bug。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: MFSDP v2+HybridEP+专家 optimizer sharding 下梯度范数间歇放大或 NaN（3254.10@step2）；clip 关时日志打印 grad norm 0，需 PRE_OPT 仪器才可见；对插桩敏感，换 alltoall dispatcher 健康。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7400
+  kind: github_issue
+- url: https://nvbugspro.nvidia.com/bug/6798870
+  kind: other
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7232
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron MFSDP v2 + **Flex/HybridEP dispatcher**（`NVTE_CUTEDSL_FUSED_GROUPED_MLP=1`）+ 专家 outer optimizer sharding（`expert_outer_dp_sharding_strategy=optim`）下，全局梯度范数**间歇性**异常放大或 NaN。已排除的必要条件：CUDA graphs（训练/优化器图全关，eager 复现）、梯度裁剪（`clip_grad=0.0` 下复现）、rank-capacity 模式（unset 时同样 spike 到 3,254）、FP32 主梯度存储（FP16 主梯度 2/3 异常）。隔离对照：同模型 `alltoall` dispatcher 3/3 健康十步跑、轨迹贴合；换回 Flex/HybridEP 即复现 spike/NaN（65.97 @step3 / 3254.10 @step2）。根因尚未定位（issue 提供约化 repro，疑点在 flex dispatcher 的专家梯度归约路径）；敏感于插桩、健康跑也会出现，两节点 8×GB200 DeepSeek-V3 proxy（MLA + 16 专家 top-8，EP=2，4 个分布式优化器实例）。
+  source: 'Megatron-LM #7400（2026-09-16；PRE_OPT 仪器读数 6.2→107.7→84.6→NaN 的原始序列 + 四臂隔离表；MCore `7a9e9c6` + #7277、DeepEP hybrid-EP `de0dd11`、TE 2.18.0）。https://github.com/NVIDIA/Megatron-LM/issues/7400 ；根因突破（2026-09-17/18 补）：报告者先在双 GB200 上以纯 Python 脚本（TE grouped GEMM + NCCL all-gather/reduce-scatter 并发异流、无 HybridEP/FSDP/autograd/优化器/图）复现，再以**独立 CUDA C++ reproducer**（直接 `cublasLtMatmul` + `ncclAllGather`/`ncclReduceScatter`，单进程每 GPU 一 host 线程、无 PyTorch/TE 依赖）复现同一「retained output」症状——8×BF16 GEMM M=N=2048/K=4096、FP32 累加、beta=0 本应覆写每个输出元素，检查却见 `2**100` 预填值残留；已提交 NVIDIA 内部 bug 6798870。https://nvbugspro.nvidia.com/bug/6798870 ；关联线索 #7232（HybridDeviceOptimizer 被 distributed optimizer 双重实例化，同域 c=0 未定）。https://github.com/NVIDIA/Megatron-LM/issues/7232'
+  behavior: '无 crash：标准训练日志在 clip 关闭时打印 `grad norm: 0`（不代表梯度为零），异常只能靠独立 PRE_OPT 仪器看见；间歇性 + 对插桩敏感使复现困难，健康跑与坏跑交替。与 PAR.06（verl `fsdp_size=1` 静默关同步）区分：那边是配置面同步被关、数值恒错；这边数值**间歇**坏且 eager/无图/无裁剪三重排除后仍存，指向 dispatcher/归约路径本身的竞争或错值。clip 开启时会被裁剪吃掉变成「间歇性梯度被错误压制」（连坐 OPT 家族裁剪面）。'
+  discovery: 2026-09-17 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 算子/内核/cuda。依据：source 根因突破段——独立 CUDA C++ reproducer 只用 cublasLtMatmul + NCCL，症状是 beta=0 的 BF16 GEMM 本应覆写的输出元素残留 2**100 预填值，即 GEMM 输出写入错误；词表 算子/内核 含 matmul 类库 kernel，运行时/执行 无直接证据（原文未提 stream 同步/驱动缺陷）。保留意见：NVIDIA bug 6798870 未结，最终也可能落在驱动/调度层。visibility 维持 不可复现（原文：间歇性、健康跑与坏跑交替）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 数值异常
+        status: panel7
+    uncertain:
+    - subsystem

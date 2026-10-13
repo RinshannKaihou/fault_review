@@ -1,0 +1,53 @@
+id: INF-0870
+legacy_ids:
+- '8.85'
+slug: kv_corrupt
+aliases: []
+title: KV cache 单位置 K/V 行损坏（zero/noise/swap）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: KV cache 第L层位置j的K/V行
+  behavior: 第 L 层 KV cache 中位置 j 的 K、V 行被改写：zero 整行清零、noise 加按该位置 K/V 范数定标的高斯噪声、swap 换成同序列另一位置的 K/V；破坏的是该 token 对其他 token 的可见内容
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 后续解码 token 基于被污染的上下文，表现为忘记或记错前文某个词；zero 模式下该位置对后续 query 近乎无信息，swap 模式像把相邻位置内容重复读一遍；打到 attention-sink 位置时破坏最大
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: KV 张量 hook/直接写 cache；vLLM 上可改为写 paged KV
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off` · Cov: `NEW`（本项目早期实测条目） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 损坏第 L 层 KV cache 中位置 j 的 K 与 V 行——**关系型**（relational）基础故障：被破坏的不是某个 token 自己的隐状态，而是它对**其他** token 的可见内容。三种模式：`zero`（整行清零）、`noise`（按该位置自身 K/V 范数定标的种子化高斯噪声）、`swap`（改写为同一序列另一位置的 K/V）。参数轴：`L` × `j` × `mode`。注意：真正的**跨序列**污染（radix-cache 串扰）不属于本原语的覆盖范围，见 K9.6 / K10.11 等条目。
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。注入走 decode 路径：prefill 后损坏 cache、再解码若干步，提取**损坏之后**生成 token 的隐状态。
+  behavior: 解码出的后续 token 基于被污染的历史上下文——表现为"忽然忘了/记错了前文某个词"，`zero` 模式下该位置对所有后续 query 变成一个近乎无信息的槽位，`swap` 模式下则表现为把相邻位置的内容重复读了一遍。
+  trigger_surface: KV 张量 hook/直接写 cache；vLLM 上可改为写 paged KV
+  signature: '`infra_off`，但**出现在被污染 token 的下游**而不是注入层本身：位置 j 的 K/V 被改写后，误差要经过 attention 加权才进入后续 token 的残差流，因此 geometric 族的分离度低于 1.212 的直接尖峰，且强烈依赖被污染位置的 attention 权重（打到 attention-sink 位置时破坏最大）。`recompute_oracle_mismatch`（cheap，paired）以极低成本命中——重算 prefill 会得到与被污染 cache 不一致的结果（前提：存在可复现的重算路径，见图例噪声底注记）。会漏检的是：单次 pass 的 spectral 族（token 集合的整体谱结构变化很小）以及任何只看注入层的度量。'
+  repro: 需要"prefill + decode"两段式抽取，hook 只挂一处、只在 prefill 触发一次；因为写的是 cache 对象而非模型参数，退出只需移除 hook，无需权重还原。
+  相关条目: '`var:8.85` → **6.6 `radix_kvcache_cross_contamination`**（swap = 跨序列，正是本条未覆盖的那一半）、**7.2 `kv_cache_fp8_quantization_drift`**、**8.7 `paged_attention_block_corruption`**（swap 模式）、**12.7 `safetensors_shard_mmap_corruption`**。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

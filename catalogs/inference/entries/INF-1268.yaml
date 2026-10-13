@@ -1,0 +1,56 @@
+id: INF-1268
+legacy_ids:
+- K6.3
+slug: pyramidkv_layer_uniform_budget_misalloc
+aliases: []
+title: PyramidKV：逐层统一 KV 预算致低层关键 token 被丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: KV 驱逐的逐层预算分配
+  behavior: 对各层采用统一 cache 预算而非 PyramidKV 的算术衰减分配，在注意力收敛的稀疏高层保留无用 token，在注意力弥散的低层丢弃集体重要的 token。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 原文按机制推断：给定总预算下长上下文检索/聚合能力下降，低层被饿死，答案遗漏早期上下文中的分散证据，且不报错。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2406.02069
+  kind: arxiv
+- url: https://arxiv.org/abs/2411.18077
+  kind: arxiv
+relations: []
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`model_on` · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 注意力在较低层弥散（许多位置集体重要）、在较高层收敛到少数 sink/heavy token（"金字塔式漏斗"）；统一的每层 cache 预算会在稀疏的高层保留无用 token，同时在稠密的低层丢弃集体重要的 token。可复现的故障 = 强制**平坦**的每层预算，取代 PyramidKV 的算术衰减分配。
+  source: PyramidKV arXiv:2406.02069（佐证 MiniKV arXiv:2411.18077）。
+  behavior: 源文档未单列该字段；由机制可得——在给定总预算下长上下文任务的检索/聚合能力下降，低层被"饿死"导致答案遗漏早期上下文中的分散证据，且不报错。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: model_on 但按深度劣化——保留下来的 cache 仍是合法子集，模型自洽地吸收缺失。可捕获：逐层 attention-entropy / effective-rank（spectral 族）在低层异常下降（注意 feasibility 评估对 spectral 族检测 infra 故障持保留态度，需目标栈验证），隐藏态偏离**前置到早期层**，形成一个 depth-shaped 签名（与 depth-profile 的 GRADUAL/STEP 形状族同轴）。会漏检：只看末层或只看全局幅值的 geometric/statistical 探针。与层内的 `h2o_kv_eviction_misrank` 误排、`attn_sink_eviction_collapse` 的 sink 驱逐互相区分——后两者的深度形状是平坦的。
+  repro: prefill 时一次性、在**每一层**只保留前 `k_sink` + 后 `n_recent` 个位置，中间段的 K/V 就地置零（depth-uniform 预算本身即故障）。诚实近似：真实驱逐会物理移除条目（缓存缩短、decode 位置随之平移），这里沿用与 `_ctx_h2o_kv_eviction_misrank` 相同的置零约定，保持长度/位置/mask 不变，只移除条目的**内容**（置零的 key 在 logit q·k=0 处仍会收到 softmax 质量）；建模的是预算**形状**误差而非移除机制。钩子挂在最后一个 decoder layer（该 hook 点上所有层的 cache 都已写入），故障只通过 decode 路径可见。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,60 @@
+id: TRN-0145
+legacy_ids:
+- KER.14
+slug: vocab_parallel_ce_label_smoothing_local_shard
+aliases: []
+title: 词表并行 CE 的 label smoothing 只算本地分片
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: megatron-lm
+    component: vocab_parallel CE 平滑项
+  behavior: vocab_parallel_cross_entropy 的 label smoothing 尾项用 TP 本地分片宽度作 vocab_size、只在本地 shard 平均 log_probs，未归约就与完整 CE 基项相加。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 开启 label smoothing 且 TP>1 时无 crash，各 TP rank 打出不同 loss、梯度带 0.1 量级误差，单卡与 TP>1 的 run 从第一步起不可比；per-rank loss 差异常被误当数值噪声或归约顺序。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7466
+  kind: github_pr
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7464
+  kind: github_issue
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'Megatron `vocab_parallel_cross_entropy` 的 label-smoothing 尾部按 **TP 本地词表分片**计算：`vocab_size = exp_logits.size(-1)` 取 per-rank 分片宽度（cross_entropy.py:158）、`log_probs.mean(dim=-1)` 只在本地 shard 上平均（L175）、backward 复用 `ctx.vocab_size`（L191）。base CE 的 max/target-logit/exp-sum 都正确 all-reduce，**只有 smoothing 尾是局部的**——局部均值是 Partial 值，却与已完整的 CE 基项直接相加、无归约。TP=2、smoothing 0.2 repro：两 rank loss `[1.4401896, 1.0951819]`（互不相等）、全局公式 `[0.8401898, 0.8618487]`，max 梯度误差 0.1333。修复 = 对 TP 组 sum 本地 log-prob 和再除全局词表（PR #5522 提出过精确该修复、被关未合）；#737（2026-09-17 有第三方独立同分析评论）。'
+  source: 'Megatron-LM #7452（2026-09-17；finding 1，126 行 CPU/Gloo repro 附 spmd_types `Found types: [I, P]` 拒绝见证）；上游线索 #737 / PR #5522。https://github.com/NVIDIA/Megatron-LM/issues/7452 ；修复 PR（2026-09-22 补）：#7466 by gss10282025（draft，uses the global vocabulary size and global mean log-prob）——Connor-XY 09-21 在 #7452 建立 oncall tracking map 列 finding 1 已挂该 PR。https://github.com/NVIDIA/Megatron-LM/pull/7466 ；独立社区复现（2026-09-24 补）：Megatron-LM #7464——与 finding 1 无依赖的第三方报告，RTX 5090 + FP32、TP1 vs TP2 全梯度相对 L2 `0.0515`、三台主机复现，修复后 discrepancy 降至原值 ~1.7e-6 并对齐 float64 参照；再引 #737 / #5522 相同上游线索。https://github.com/NVIDIA/Megatron-LM/issues/7464'
+  behavior: 无 crash——**每个 TP rank 打出不同的 loss**、梯度带 0.1 量级误差；单卡 vs TP>1 的 run 从第一步起不可比，且 per-rank loss 差异常被当作「数值噪声/归约顺序」忽略。与 KER.13（fused CE 路径就地覆写）同文件域不同断点：那边破坏 autograd 契约、这边是**分布式归约域错误**（Partial 进非线性组合）；与 PAR.04（Ulysses 头数锁死）同型「TP 切分下 per-rank 常数被当全局常数」。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计通过：损失计算 符合（label smoothing 尾项在 CE 函数内未做 TP 归约，TP>1 只是触发条件）；各事实（cross_entropy.py 本地 vocab_size、log_probs 本地均值、0.1 量级梯度误差、per-rank loss 不同）均有原文依据；behavior/detail 分工与长度合规。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,61 @@
+id: INF-1098
+legacy_ids:
+- '11.75'
+slug: vllm_ngram_spec_hybrid_recurrent_state_layout_convention_switch_stale_slot
+aliases: []
+title: vLLM ngram 推测下 hybrid 循环状态槽约定分歧致读陈旧状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: GDN/Mamba 循环状态槽布局约定
+  behavior: 推测与非推测路径对循环状态的存放约定不同（固定槽 0 vs 按接受数选槽），runner 与 GDN builder 可在相邻步间切换约定，读槽 0 得到陈旧状态；num_accepted_tokens 初始为 0 会成索引 −1。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 接受 draft 的步紧接 ngram 无匹配的零 draft 步时触发（EAGLE/MTP 不触发），Qwen3-Next、Nemotron Mamba2、Kimi-Linear 等 hybrid 模型间歇性掉字/重复 token，负载依赖、无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + ngram speculative + hybrid recurrent 模型（GDN/Mamba2/KDA）（partial）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/56531
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（vLLM ngram 推测解码静默损坏 hybrid recurrent 模型输出（Qwen3-Next/Qwen3.5 GDN、Nemotron Mamba2、Kimi-Linear KDA，issue #40875）：SSM/Mamba 类 attention 的 per-request recurrent state 在同一 backend 的**推测与非推测两条路径上存放在不同位置**——非推测路径每请求 1 槽（`block_table[:,0]`），推测路径 `num_spec+1` 槽窗口、kernel 按 `num_accepted_tokens−1`（含 bonus，最小 1）选权威槽。两约定只在 `num_accepted==1`（即槽 0）重合；某步接受 draft 后状态活在槽 k>0，任何读槽 0 的路径拿到**接受 token 应用前的陈旧状态**——读在界内、shape 匹配、无检测。触发条件是"接受 draft 的步"紧接"零 draft 的步"：EAGLE/MTP 恒 draft 不产生，ngram 查找无匹配时例行产生 → 间歇性、负载依赖的掉字/重复字而非 crash。修复 PR #56531 选纯分类学方案（可 spec 的行恒走 spec 路径、零 draft 即 num_spec=0 退化单槽）；另修 `num_accepted_tokens` 初始化 0→1（0 会成槽索引 −1：某些布局 OOB 读、另一些静默错行读）） · Cov: `NEW`（spec/非spec 路径状态布局约定分歧子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: runner 与 GDN builder 多处可在两个连续步之间把一行从一种约定翻到另一种；非 0 即 −1 的占位符与未初始化 buffer 加剧错读。修复统一约定而非到处打补丁（每 backend 一份 kernel 改动或状态复制都会使 bug class 存活）。
+  source: 'vLLM PR #56531（2026-09-11 open，fixes #40875；含双路径布局对照、三修复方案权衡与 prefill 尾部分类细节）。https://github.com/vllm-project/vllm/pull/56531'
+  behavior: 无 crash——**间歇性掉字/重复 token**（陈旧 recurrent state 起步的生成），负载依赖且难复现。11.64（mamba spec context 陈旧 batch 映射毒化 recurrent state）与 6.212（hybrid GDN align 块边界 checkpoint NaN）之后 hybrid-state × spec 族新成员：本条不在缓存而在**路径约定的语义分叉**维度。
+  trigger_surface: vLLM + ngram speculative + hybrid recurrent 模型（GDN/Mamba2/KDA）（partial）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem（KV缓存 vs 解码/采样）：维持 KV缓存。出错的是 recurrent state 的槽位布局约定（非推测路径用 1 槽 block_table[:,0]，推测路径用 num_spec+1 槽并按 num_accepted_tokens−1 选槽），读槽 0 拿到陈旧状态，属循环状态池的存放/映射逻辑；ngram 零 draft 步按 rule 6 是触发条件。visibility 我独立判断为 静默错误，第一遍为 不可复现：原文强调“间歇性、负载依赖”“难复现”，维持 不可复现。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+        status: panel7

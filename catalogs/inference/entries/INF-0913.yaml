@@ -1,0 +1,51 @@
+id: INF-0913
+legacy_ids:
+- '9.27'
+slug: ttmetal_hf_rope_decode_cos_sin_shard_grid_mismatches_q_grid_wrong_angles
+aliases: []
+title: tt-metal hf_rope 的 cos/sin 与 Q 分片网格错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: tt-metal
+    component: HfRotarySetup 分片 grid
+  behavior: （未确认）decode HfRotarySetup 在 11 宽 grid 上按 batch 行分片 cos/sin，decode Q 钉在 8×4 block；rotary_embedding_hf 读驻留 shard，跨核时角度错。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Blackhole 上 hf_rope decode batch 32 的 test_attention PCC 降到 0.767–0.897（门槛 0.99），batch 1 与 mllama_rope 均通过；Wormhole 不触发，decode 质量随 batch 劣化。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + Blackhole + tt_transformers hf_rope decode + batch 32（与 Q shard grid 不重合的 batch 档）（hw_specific）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56986
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: §3.8 输入层故障（tokenizer / 模板 / RoPE）
+  meta: '`infra_off`（tt-metal `tt_transformers` Blackhole（p100a，11 宽 grid）上 `hf_rope` **decode batch 32** 失败 `test_attention`（PCC 0.767–0.897 vs 0.99 门槛，逐 step 0.897/0.825/0.796/0.797/0.767/0.774），batch 1 与 `mllama_rope` batch 1/32 全过（0.9994+）。疑似根因（报告者自述 not confirmed）：decode `HfRotarySetup` 把 cos/sin shard 在 `num_cores_to_corerangeset(batch=32, row_wise=True)` 上分布（11 宽 Blackhole grid → rows 0–1 + row 2 十核），而 decode Q 经 `nlp_create_qkv_heads_decode` 钉在 8×4 block 的 `get_attn_create_head_output_mem_config`——`rotary_embedding_hf` decode 模式在输入 bounding box 上跑 sharded factory 并从 resident shard 读 cos/sin，**某 batch 行的 cos/sin shard 位于另一核心时读错角度**；mllama 路径（`RotarySetup.get_batch_grid` 返 8×8 CoreGrid）同 batch 32 通过。Wormhole 两 grid 均 8 宽恰好重合故不触发；与 #56985 decode SDPA grid 变更无关（同结果）） · Cov: `NEW`（cos/sin 分片坐标系与 Q 分片坐标系独立选择不重合子签名） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: RoPE 角度表与 Q 张量各自按不同的核心网格分片，decode 内核按 Q 所在 grid 的 bounding box 寻址 cos/sin——两 grid 几何不重合时角度读取跨核错位；batch 1（单 shard）与 8 宽架构（grid 恰重合）天然免疫。
+  source: 'tt-metal #56986（2026-09-18 open，bug/blackhole，含六用例通过/失败矩阵、逐 step PCC 序列、双 grid 布局推导（rope.py get_rot_mats vs nlp_create_qkv_heads_decode）与 #56985 无关性对照）。https://github.com/tenstorrent/tt-metal/issues/56986'
+  behavior: 无 crash、无 NaN——decode 大 batch 注意力输出 PCC 降到 0.77–0.90 的**静默数值退化**（角度错位是确定性系统错误）；端到端 Llama-3.1-8B decode 质量随 batch 宽度劣化。9.24（YaRN 别名二次缩放 RoPE cache 越界）与 9.26（fault_rope 原型族）之后 RoPE 基础设施族新成员：本条在 **分片坐标系不一致**维度、且是架构特定 grid 几何（11 宽 vs 8 宽）触发。
+  trigger_surface: tt-metal + Blackhole + tt_transformers hf_rope decode + batch 32（与 Q shard grid 不重合的 batch 档）（hw_specific）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

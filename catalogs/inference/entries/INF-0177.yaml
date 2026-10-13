@@ -1,0 +1,52 @@
+id: INF-0177
+legacy_ids:
+- '1.178'
+slug: ttmetal_norm_backward_zero_slice_singular_reciprocal_nan
+aliases: []
+title: moreh_norm_backward 全零切片梯度为 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: moreh_norm_backward 倒数链
+  behavior: 按 dx=sign(x)·|x|^(p-1)·y·dy·(1/y^p) 计算且全程无 y==0 守卫，丢掉了 PyTorch 每分支都有的 masked_fill_(norm==0, 0)；p<1 时 |0|^(p-1) 同样未处理。
+effect:
+  objects:
+  - 梯度
+  detail: 被归约切片全零（零初始化 embedding 行、padding/全 mask 位、死通道）时 recip_tile 得非有限值，与零因子相乘成 NaN（PyTorch 返回 0）；NaN 梯度静默传播，经优化器毁掉整个参数张量的下一步。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + moreh_norm_backward + 全零被归约切片 / p<1 零元素（hw_specific；数据分布触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55585
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0170
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`moreh.norm_backward` 按 `dx = sign(x)·|x|^(p-1)·y·dy·(1/y^p)` 计算且全程无 `y==0` 守卫——被归约切片全零时 `y=0`、`1/y^p` 非有限，与零因子相乘得 NaN 而非抵消；PyTorch 的同名推导每分支都带 `masked_fill_(norm==0, 0)`，tt-metal 把这一段 inline 丢了） · Cov: `var:ttmetal_prod_bw_zero_input_nan_gradient`（1.171 反向零哨兵族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: kernel 链（sign → xpow → ×y → ×dy → recip(y^p) → ×） 中 `power_and_recip_tile_to_cb` 末端的 `recip_tile` 在 y=0 产生非有限值；全零切片时 xpow/y/sign 全零恰把非有限转成 NaN。`p<1` 且元素恰为零时 `|0|^(p-1)` 同样非有限（PyTorch 亦 mask）。全零切片不罕见：零初始化 embedding 行、padding/全 mask 序列位、死通道。
+  source: 'tt-metal #55585（2026-09-06 open，bug/community，含与 PyTorch `FunctionsManual.cpp` 逐分支对照）。https://github.com/tenstorrent/tt-metal/issues/55585'
+  behavior: 无 crash——全零切片梯度 NaN 静默传播（单个非有限梯度经优化器毁掉整个参数张量的下一步）；PyTorch 返回有限 0。1.171（prod_bw 零输入）之后反向零哨兵族第二例：两者都是"解析梯度需要特判、实现走了朴素公式"，本条连参考实现的特判代码都被引证在案。
+  trigger_surface: tt-metal + moreh_norm_backward + 全零被归约切片 / p<1 零元素（hw_specific；数据分布触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

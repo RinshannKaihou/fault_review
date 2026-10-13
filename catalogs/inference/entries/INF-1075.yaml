@@ -1,0 +1,64 @@
+id: INF-1075
+legacy_ids:
+- '11.52'
+slug: vllm_async_sched_hybrid_spec_update_states_postprocess_race
+aliases: []
+title: vLLM 异步调度+spec 下状态重写与 mamba 后处理竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: spec 输入准备与后处理同步
+  behavior: input prep 同步只等 forward 前的事件；_update_states 先于 _prepare_inputs 执行且无等待，改写上一步 postprocess_mamba_align_gpu 仍在读写的持久缓冲
+effect:
+  objects:
+  - KV状态
+  detail: async scheduling + hybrid（Mamba align）+ spec decode 下，postprocess 读到半新半旧的 block table/状态索引，状态物化或计数出错，可发展为 cache 污染或崩溃；原文未给终端症状，窗口随并发批次增大
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + async scheduling / max_concurrent_batches>1 + hybrid（Mamba align）+ spec decode
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53613
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（async scheduling（max_concurrent_batches>1）+ hybrid + spec decode：`_update_states` 重写 block table/condense/Mamba 状态缓冲的同时，上一步的 `postprocess_mamba_align_gpu` 仍在 GPU 上读写同一批持久缓冲——两者之间无任何执行排序） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`synchronize_input_prep()` 只等待 `prepare_inputs_event`——该事件在 context 自己的 `finally` 中记录，只标记输入准备（模型 forward **之前**）的结束，对 `_update_states_after_model_execute → mamba_utils.postprocess_mamba_align_gpu`（forward **之后**运行）毫无排序作用。唯一排序该 postprocess 的是 `_prepare_inputs` 内部的 `num_accepted_tokens_event.synchronize()`，但 `execute_model` 中 `_update_states`（:4322）先于 `_prepare_inputs`（:4365）执行且中间无任何等待——`_update_states` 重写 postprocess 正在使用的全部状态：per-group 持久 block table、staged mamba state-index/num-scheduled/num-computed/num-draft GPU buffer、accepted counts 的 D2H pinned buffer。修复（PR #53613）在 context 顶部等待 `num_accepted_tokens_event`。「异步调度 × CPU 状态重写与 GPU 后处理竞态」签名。'
+  source: 'vLLM PR #53613（2026-08-24 open，"[Bugfix][Spec Decode] Order input prep after the previous step''s spec-decode postprocess"；行号基于 79bb395ee）。https://github.com/vllm-project/vllm/pull/53613'
+  behavior: 竞态窗口内 Mamba/hybrid 状态被并发改写——postprocess 读到半新半旧的 block table/状态索引，产出错误的状态物化或计数（可发展为 cache 污染或崩溃，报告未给出终端症状矩阵）；异步调度使窗口随并发批次数增大。与 1.99（TT unpack-sync 竞态）跨栈同构：host 侧状态机与 device 侧后处理缺同步原语。
+  trigger_surface: vLLM + async scheduling / max_concurrent_batches>1 + hybrid（Mamba align）+ spec decode
+  discovery: 2026-08-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 'uncertain 字段 cause.subsystem（解码/采样 vs KV缓存）：维持 解码/采样。修复 PR #53613 标 [Spec Decode]，标题与内容都是让 input prep 等到上一步 spec-decode postprocess 结束（在 context 顶部等待 num_accepted_tokens_event）。改的是推测解码的步间排序，Mamba 状态缓冲是被竞态改写的一方，已由 effect=KV状态 体现（同先例 INF-1062：缺陷只在推测路径上 → 解码/采样）。visibility 维持 待定：原文明言“报告未给出终端症状矩阵”，只说可能发展为 cache 污染或崩溃，属原文缺信息。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 运行时/执行
+        status: unanimous
+      visibility:
+        from: 待定
+        to: 静默错误
+        status: unanimous

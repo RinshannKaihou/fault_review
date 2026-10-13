@@ -1,0 +1,56 @@
+id: INF-0001
+legacy_ids:
+- '1.1'
+slug: sdc_multibit_warp_spray
+aliases: []
+title: GPU 多 bit SDC 呈 warp 对齐成簇污染隐状态通道
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 硬件
+    stack: 硬件
+    component: GPU/加速器计算硅、显存
+  behavior: GPU/加速器 SDC 同时翻转多个 bit（单 bit 不足 40%，多 bit 超 60%），翻转常在同一 SIMT warp（32 lanes）内对齐、呈空间周期性；rowhammer 成簇形态与之部分重叠。
+effect:
+  objects:
+  - 隐状态
+  - 输出分布
+  detail: 落到 Linear/matmul 时，同一 block、同一 token 的隐状态中若干通道被成簇共同污染，而非单通道尖峰；logits 看似合理但错误，NaN/Inf 仅约 1%，几乎不崩溃，表现为输出细微漂移，偶尔冒出明显错误 token。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 多通道 SDC：扩展 1.212 `sdc_spike` 的 hook 模式
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2605.04213
+  kind: arxiv
+relations:
+- kind: var
+  target: INF-0211
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off` · Cov: `var:1.212` · 触发 `yes` · 置信度 `verified`'
+  mechanism: GPU/加速器 SDC 会**同时**翻转多个 bit，且这些翻转常在一个 SIMT warp（32 lanes）内共同对齐。门级 stuck-at 注入研究显示，单 bit 翻转只占全部事件的 **<40%**（即 **>60% 为 multi-bit**），并呈现 warp-aligned 的空间周期性。落到 Linear/matmul 上，其表现是**同一个 block、同一个 token 的隐状态中若干个通道被共同污染**——是一片成簇的 "spray"，而不是干净的单通道加性尖峰。本条为 MERGED 条目，合并了三个子故障：（a）"GPU multi-bit SDC"；（b）"MBU/warp-aligned"（多 bit 翻转 / warp 对齐模式）；（c）rowhammer 成簇形态与之重叠的部分（rowhammer-clustered shape overlap）。
+  source: 'Tung, Huang, Saxena, Shirvani, Hukerikar, Jain, Tyagi, Gongalore, "The Anatomy of Silent Data Corruption: GPU Error Pattern Study and Modeling Guidance", DSN 2026 Industry Track, https://arxiv.org/abs/2605.04213 （>60% multi-bit, warp-aligned）。旁证：Sullivan, Tsai, Ding et al., "Characterizing and Mitigating Soft Errors in GPU DRAM", MICRO-54 2021（HBM2 中子束实验中的局部性）。'
+  behavior: 产生"看起来合理"的错误 logits；NaN/Inf 只占约 **1%** 的结果，因此几乎从不崩溃。表现为输出的细微漂移，偶尔在生成流中冒出一个明显错误的 token。
+  trigger_surface: 多通道 SDC：扩展 1.212 `sdc_spike` 的 hook 模式
+  signature: 强 off-manifold，但形态是空间 block 内**一簇共同被污染的通道**（共享的幅度/符号偏置），而非单个通道。当前 `sdc_spike` 所假设的 per-channel 检测器会**部分漏检**；需要具备空间/局部性感知的 geometric 检测器（clustered Mahalanobis），或能识别相关多维分量的 spectral 检测器。cheap 类度量在幅度足够大时可命中，但无法区分它与单通道 spike。
+  repro: 用一个 forward hook 对某一 block、某一个 token 的隐状态**连续通道子向量**（contiguous channel sub-vector）整体施加共同的幅度/符号偏置即可。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

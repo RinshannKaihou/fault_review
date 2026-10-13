@@ -1,0 +1,50 @@
+id: INF-0244
+legacy_ids:
+- '1.245'
+slug: ttmetal_sdpa_implicit_kv_tile_padding_reaches_output_nonmultiple32_pcc_zero
+aliases: []
+title: SDPA 隐式 KV tile padding 泄漏到输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SDPA 内核 KV 尾 tile 长度掩码
+  behavior: 非 causal、无 attn_mask 时 SDPA 内核未对 K/V 尾 tile 的 padding 位置施加（或未完整施加）逻辑长度掩码，QK 分数与 P·V 读取都放行 padding。
+effect:
+  objects:
+  - 数值结果
+  detail: 序列长非 32 倍数且 padding 含非零值时输出错：K/V padding 填 1e38 时 PCC −0.003、max abs err 5.5e36，仅 K 填时 PCC 0.973；不 raise、输出有限，长度对齐时全对。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.transformer.scaled_dot_product_attention` + 非 32 倍数序列长 + padding 位含非零值（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57608
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.transformer.scaled_dot_product_attention`（非 causal、无 attn_mask——内核应自行 mask 掉超过逻辑序列长度的 key 位置）在**序列长非 32 整数倍**时 K/V 的**隐式 tile padding 内容到达输出**：K 与 V padding 同时填 1e38（bf16 有限值）时输出 PCC −0.003、max abs err 5.5e36；仅 K padding 填 1e38 时 PCC 0.973、RMSE 为干净案例 8×；仅 V padding 无影响；长度为 32 倍数（无 padding）时全对；**不 raise、输出有限**。同一组含 padding 的 bf16 张量走 `ttnn.matmul→softmax→matmul` 设备路径全部案例无恙——缺陷在 SDPA 而非精度。`[1,1,T,64]` bf16、T=449 实测） · Cov: `NEW`（SDPA 内核 padding 值越界泄漏子签名；与 8.57（零填充 mask 列被读为允许）同族——本条在 SDPA 隐式 tile padding 维度） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: SDPA 内核对 KV 尾 tile 的 padding 行未施加（或未完整施加）逻辑长度掩码——QK 分数与 P·V 读取都放行了 padding 位置，K padding 大值经 softmax 抬权后被放大进输出；matmul 路径因显式长度切片不受影响，证明缺陷在 SDPA 的边界处理而非数据布局。
+  source: 'tt-metal #57608（2026-09-23 open，Bad Outputs，含 T=449 双 padding/单 K/单 V/无 padding 四案例 PCC-maxerr-RMSE 表与 matmul-softmax-matmul 对照）。https://github.com/tenstorrent/tt-metal/issues/57608'
+  behavior: 无 crash、无 NaN——**静默错值且错误幅度可达灾难级**（PCC≈0、5.5e36 量级）；只要上游张量的 padding 位置残留大值（未清零的复用内存、未初始化 buffer）且序列长非 32 对齐即触发，长度对齐的测试集恒绿掩盖该路径。
+  trigger_surface: tt-metal + `ttnn.transformer.scaled_dot_product_attention` + 非 32 倍数序列长 + padding 位含非零值（hw_specific）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

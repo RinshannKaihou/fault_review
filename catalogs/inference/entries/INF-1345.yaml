@@ -1,0 +1,61 @@
+id: INF-1345
+legacy_ids:
+- '1.297'
+slug: ttmetal_bfp_pack_exp_a_underflow_hidden_bit_inflates_to_2pow_minus15
+aliases: []
+title: tt-metal is_exp_a 块浮点打包下溢仍追加 hidden bit
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: tt-metal
+    component: convert_u32_to_bfp
+  behavior: is_exp_a=true 打包在 se<0 下溢分支清 mantissa 后仍无条件追加 hidden 1，下溢元素编码为 1.0×2^(0-15)；get_max_exp 亦把共享指数钳到 0，整行小值解码为 ±2^-15。
+effect:
+  objects:
+  - 数值结果
+  detail: exp-A 模式 Bfp8/4/2 打包的微小值静默膨胀约 30 倍（1e-6 → 3.052e-05，-1e-6 → -3.052e-05），无 crash、无报错；默认 exp-B（BFLOAT8_B/BFLOAT4_B）路径不受影响。CPU-only 可确定性复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: 'false'
+  trigger_note: tt-metal host 打包 pack_as_bfp*_tiles 且 is_exp_a=true 时触发
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: 与 1.27（subnormal flush）同属块浮点下溢语义族，本条在 host 打包侧；修复为在 se<0 分支 return 0。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/60245
+  kind: github_issue
+relations: []
+original:
+  mechanism: hidden-bit 添加位置在 underflow 分支之后；与 1.27（subnormal flush）同属块浮点下溢语义族，本条在 host 打包侧。
+  source: 'tt-metal #60245（2026-10-12 open，逐 is_exp_a×输入值解码表 + 源码定位；main@3ba039a 2026-10-11）。https://github.com/tenstorrent/tt-metal/issues/60245'
+  behavior: 无 crash——exp-A 模式 Bfp8/4/2 打包的微小值静默膨胀 30×+（1e-6 量级），非默认格式（默认 exp-B 不受影响）。
+  trigger_surface: tt-metal host 打包 pack_as_bfp*_tiles + is_exp_a=true（hw_specific：host 代码，任何产品）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（host 块浮点打包 `convert_u32_to_bfp<..., is_exp_a=true>`：指数下溢分支 `se<0` 时清 mantissa 后**无条件追加 hidden 1**（`(1<<23)|mantissa` 在分支之后），下溢元素编码为 1.0×2^(0−15)=3.05e-5 而非 0——`get_max_exp` 同样把共享指数钳到 0，一整行小值解码为 ±2^-15；1e-6 → 3.052e-05（30× 膨胀）、−1e-6 → −3.052e-05。exp-B（`_b`，默认 BFLOAT8_B/BFLOAT4_B）路径无恙。CPU-only 确定性复现（逐函数拷贝自 blockfloat_common.cpp，无设备）；修复一行（se<0 分支 return 0）） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化

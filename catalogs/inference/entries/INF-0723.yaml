@@ -1,0 +1,50 @@
+id: INF-0723
+legacy_ids:
+- '7.50'
+slug: vllm_ue8m0_group_quant_backend_scale_divergence
+aliases: []
+title: vLLM FP8 组量化双后端 UE8M0 scale floor 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FP8 组量化 Triton fallback
+  behavior: use_ue8m0=True 时，C++ op 把 scale floor 到 1e-10 再上取 2 的幂，Triton fallback 只 floor absmax、不 floor scale，两后端对近零组的 scale 不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: 全零组 C++ 得 2^-33、fallback 得 2^-42；absmax 低于约 2.61e-8 的组两后端给出不同 scale 与 fp8 码。连续输入走 C++、非连续走 Triton，同一算子随输入连续性 bitwise 分歧，无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `use_ue8m0=True` + per-token-group FP8 + 含近零组的激活（触发可经 config A/B 输入连续性）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53339
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（use_ue8m0 下 per_token_group_quant_fp8 的 C++ op 与 Triton fallback 的 scale floor 不一致——全零组 2^-33 vs 2^-42，absmax<2.61e-8 的组两后端 bitwise 分歧） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`use_ue8m0=True` 时 `per_token_group_quant_fp8` 的 wrapper 按输入分派不同后端：C++ op（`per_token_group_quant.cu`，serve 连续 CUDA/XPU 输入）把 scale 在硬编码 `1e-10` 处 floor 后 round-up 到 2 的幂（`exp2f(ceilf(log2f(fmaxf(y_s, 1e-10f))))`，自 #21083 引入、packed 变体同）；in-file Triton fallback 内核**只 floor absmax、不 floor scale**。全零组因此 C++ 得 `2^-33`、fallback 得 `2^-42`；absmax 低于 `448 * 2^-34 ≈ 2.61e-8`（E4M3FN）的任何组，两后端发出**不同 scale 与不同 fp8 codes**（FNUZ 仅平移指数、不改变分歧）。同一算子在同一框架内随输入连续性（contiguous dispatch → C++；非连续 → Triton fallback）bitwise 分歧。修复（PR #53346）在 Triton 路径同样 floor `1e-10`。'
+  source: 'vLLM #53339（2026-08-21 open，2×RTX 5090 bitwise 级验证）+ 修复 PR #53346。https://github.com/vllm-project/vllm/issues/53339'
+  behavior: 无 crash、无 NaN。**同算子双后端静默数值分歧**——超小绝对值激活组（如深度归一化后近零通道）的量化结果取决于后端分派路径；跨后端 A/B 测试不可比、checkpoint 内 kernel 逐层混用时分果。属「**量化 helper 双后端 floor 语义单侧缺失**」新子签名——与 6.46（融合 pass 丢 ue8m0 契约）同为 ue8m0 scale 语义缺口但发生在后端孪生实现不对齐层。
+  trigger_surface: vLLM + `use_ue8m0=True` + per-token-group FP8 + 含近零组的激活（触发可经 config A/B 输入连续性）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

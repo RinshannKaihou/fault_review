@@ -1,0 +1,53 @@
+id: INF-1204
+legacy_ids:
+- '13.36'
+slug: bug_drop_residual
+aliases: []
+title: decoder block 丢失残差连接致表示偏移乃至崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: 通用
+    component: decoder block 残差连接
+  behavior: decoder block 的输出丢掉残差项 h_in，只留下子层变换 f(h_in)，抹掉残差高速路；对应重构 forward 时写漏一个 + 的 bug。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 单层丢残差使该层之后的表示大幅偏移，全层丢残差时模型基本崩溃、输出无意义；残差流范数随深度增长的健康结构被破坏，residual_exactness_defect、layerwise_cosine_drift 等剧烈响应，单层版本需在注入层下游评估。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: drop residual hook
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off` · Cov: `NEW`（本项目早期实测条目） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 丢掉残差连接。decoder block 的输出是 `h = h_in + f(h_in)`；用带输入捕获的 forward hook 取回 `h_in`，返回 `hs - h_in = f(h_in)`——只留下子层变换、抹掉残差高速路。参数轴：`part ∈ {attn, mlp, both}` × `layers ∈ {single, all}`（原型实现中 `part` 仅是标签，三种取值对应同一种实际行为：整块残差被丢弃）。
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。
+  behavior: 单层丢残差会让该层之后的表示大幅偏移（残差流被截断一次），全层丢残差则模型基本崩溃、输出无意义。是典型的"重构 forward 时写漏一个 `+`"类 bug。
+  trigger_surface: drop residual hook
+  signature: '强 `infra_off`，且是**结构性**的——残差流的范数随深度单调增长这一健康结构被直接破坏，因此除 geometric 族外，trajectory 族的 `residual_exactness_defect`（专为"残差恒等式是否成立"设计）与 `layerwise_cosine_drift` 都会剧烈响应，spectral 族因为整层表示被替换也会动。它是架构 bug 类的**参照样本**（签名余弦矩阵里的锚点之一）。几乎没有度量族会漏检 `layers: all` 的版本；`single` 版本的难点仅在于评估层必须在注入层下游。'
+  repro: 用一个带输入捕获（with_kwargs）的 block hook 即可，无需权重拷贝；注意必须拿到 block 的**输入**才能做减法，所以不能用普通 forward hook（拿不到 `h_in`）。
+  相关条目: 编目中无以 `var:13.36` 挂靠的条目；同类结构性架构 bug（**13.2 `bug_prenorm_postnorm_swap`**、**13.3 `bug_final_norm_missing`**）均被判为 NEW，且其实现（`_ctx_bug_prenorm_postnorm_swap`）复用了同样的 "`f_out = hook_output - h_in`" 恢复技巧。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

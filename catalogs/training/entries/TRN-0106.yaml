@@ -1,0 +1,58 @@
+id: TRN-0106
+legacy_ids:
+- OPT.06
+slug: unscaled_grad_divided_by_loss_scale
+aliases: []
+title: DeepSpeed fp16 ZeRO-0 梯度未放大却被除 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: ZeRO-0 fp16 loss scale 路径
+  behavior: fp16 + ZeRO stage 0 下 engine.backward() 直接调用 loss.backward()，未先乘 loss scale；FP16_Optimizer.step() 却无条件把梯度除以 cur_scale。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 仅 fp16 非 ZeRO 组合触发：有效参数更新比预期小约 cur_scale（典型 32768）倍，无 NaN、无 crash，loss 微降后停滞在高位（CIFAR-10 MoE 基准 acc 22–28%，修复后 49%），易被误判为超参问题。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8393
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0013
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `sft` · Cov: `var:loss_scaler_swallows_overflow` · 置信度 `verified`'
+  mechanism: DeepSpeed fp16 + ZeRO stage 0：`engine.backward()` 直落 `loss.backward()`，**没有**先乘 loss scale；而 `FP16_Optimizer.step()` 无条件把梯度除以 `cur_scale`（典型 32768）——从未放大过的梯度被照常缩小，有效参数更新比预期小约 `cur_scale` 倍。训练静默停滞在高位 loss，无 NaN、无 crash。该路径留有 `# TODO` 自认未完成；ZeRO>0 与 AMP 路径正确，只有 fp16 非 ZeRO 组合中招。修复 = 该组合路由进 `FP16_Optimizer.backward()`（先乘 scale 再 backward，与 step 的预期对齐）。
+  source: 'DeepSpeed PR #8393（CIFAR-10 MoE 基准（fp16、ZeRO-0、8 experts）实测：修复前 acc 22–28%、loss 停滞 ~1.8；修复后 acc 49%、loss 收敛 ~0.7）。https://github.com/deepspeedai/DeepSpeed/pull/8393'
+  behavior: lr 看似正常、梯度有限、loss 微降后平台化——表象与「lr 太小 / 数据太难」无法区分，极易被当超参问题丢弃。与 NUM.04（scaler 吞溢出）同属 loss-scaling 契约断裂，但方向相反：那边该更新的 step 被跳过，这边全部 step 被缩小；与 OPT.03（lr=0 阶段藏坏梯度）共享「有效步长≈0 却无信号」的观测面。
+  discovery: 2026-09-04 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

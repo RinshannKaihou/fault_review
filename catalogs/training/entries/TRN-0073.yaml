@@ -1,0 +1,52 @@
+id: TRN-0073
+legacy_ids:
+- CKPT.24
+slug: zero3_tag_load_reads_latest_weights
+aliases: []
+title: DeepSpeed ZeRO-3 按 tag 加载实际读入 latest 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: deepspeed
+    component: FP32 重建分支 tag 透传
+  behavior: _load_checkpoint 的 FP32 权重重建分支调用 get_fp32_state_dict_from_zero_checkpoint 时不透传 tag，helper 内部重新解析 latest 指针。
+effect:
+  objects:
+  - 模型权重
+  detail: 指定 tag 且 load_optimizer_states=False 加载、latest 指向其他版本时，返回路径与 client_state 指向请求版本，实际进模型的却是 latest 的权重，无报错无警告；目录无 latest 文件时反而 ValueError。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-14'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8499
+  kind: github_issue
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed ZeRO-3（非 MoE/非流水线）`load_checkpoint(root, tag="earlier", load_optimizer_states=False)` 时，`DeepSpeedEngine._load_checkpoint()` 的 FP32 权重重建分支调 `get_fp32_state_dict_from_zero_checkpoint(load_dir)` **不透传 tag**——helper 内部重新解析 `root/latest` 指针。`latest` 指向 `later` 时，返回的加载路径与 `client_state` 都指 `earlier`，**实际进模型的权重是 `later`**。同一缺陷对称分支：请求的 ckpt 存在但目录无 `latest` 文件时反而 `ValueError`。修复 = 透传 engine 已解析的 tag（`get_fp32_state_dict_from_zero_checkpoint(load_dir, tag=tag)`）。
+  source: 'DeepSpeed #8499（真实训练 + 双 ckpt + 参数逐比对 repro，作者建议 severity: high；master 71d316d）。https://github.com/deepspeedai/DeepSpeed/issues/8499'
+  behavior: 无报错、无警告——rollback、eval 或新微调 run 静默用错模型，且唯一可见线索（返回路径/client_state）指向「正确」那份，日志无法自证。与 CKPT.01/CKPT.21（reshard 错位/文件名字典序错 rank）同族：**load 语义成功 + 内容错误**；差异在这边不是分片错位，而是**版本选择被 `latest` 文件劫持**——元数据来源与权重来源分离，显式 tag 的契约在重建分支断掉。
+  discovery: 2026-09-14 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - detail

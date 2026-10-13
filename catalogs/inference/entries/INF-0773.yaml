@@ -1,0 +1,52 @@
+id: INF-0773
+legacy_ids:
+- '7.100'
+slug: sglang_mimo_v2_fp8_label_mxfp4_experts_selects_fp8_runner_sm100
+aliases: []
+title: MiMo-V2 为 MXFP4 专家误选 FP8 MoE runner
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: MiMo-V2 MoE runner 自动选择
+  behavior: _mimo_v2_overrides 在 SM100、runner=auto 时只看 quant_method=fp8 恒选 flashinfer_trtllm，无视已检测到的 is_fp4_experts（专家实为 MXFP4）。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 4×B200 TP4 加载 MiMo-V2 混合 checkpoint（fp8 标签 + mxfp4 专家）时启动即报 RuntimeError（gemm1_weights 为 int8 而非 float8_e4m3fn）；显式指定 runner 不受影响；若下游 check 后移则可能变为静默。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang + MiMo-V2 混合量化 checkpoint（fp8 标签 + mxfp4 experts）+ SM100 + moe_runner_backend=auto（hw_specific；显式 runner 选择免疫）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/41569
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0771
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（SGLang `_mimo_v2_overrides` 在 SM100 上当 `moe_runner_backend=auto` 且 checkpoint `quant_method=fp8` 时**恒选 `flashinfer_trtllm`**：MiMo 混合 checkpoint 用该标签表示 dense 层、routed experts 却存 **MXFP4**（公开 `XiaomiMiMo/MiMo-V2.6-Flash-RL` config 同时含 `quant_method: fp8` 与 `store_dtype: mxfp4`）——`ModelConfig` 已通过 `is_fp4_experts` 检测该布局，但模型 override **无视它**、为 packed FP4 专家权重选了普通 FP8 runner。GPU 启动即 `RuntimeError: Check failed: gemm1_weights.dtype() == dl_float8_e4m3fn (int8 vs. float8_e4m3fn)`（4×B200 TP4 实测 fail-loud）；选择层可独立复现——`_mimo_v2_overrides(args, hf_config)` 以 `is_fp4_experts=True` + SM100 模拟返回 `{''moe_runner_backend'': ''flashinfer_trtllm''}`，应为既有 `flashinfer_mxfp4` 路径（MXFP4 加载支持 #40448 已在）。相关 #40722（SM120 MXFP4 自动选择修复）open 未合并且不覆盖此 SM100 override · Cov: `var:vllm_triton_fused_moe_per_channel_weight_scales_indexed_as_per_tensor_quark_static_int8`（7.98 量化配置元数据与实际权重格式错配族——本条在 **runner 自动选择读 quant_method 标签而无视同文件 store_dtype** 维度；与 8.94 引用的 GLM kpool 语境同"配置标签窄于实际载荷"模式） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: override 只看 `quant_method` 字符串；修复为 SM100 + `moe_a2a_backend=none` 时按 `is_fp4_experts` 走 `flashinfer_mxfp4`，保留普通 FP8 默认/显式选择/a2a 配置的现有解析。报告者附双架构回归测试（未打补丁失败、打补丁通过）；SM100 启动/精度/吞吐验证 pending。
+  source: 'SGLang #41569（2026-09-28 open，含 GPU 启动失败日志、免 GPU 选择层最小复现脚本、config.json 证据链与 #40448/#40722 谱系）。https://github.com/sgl-project/sglang/issues/41569'
+  behavior: '主形态 fail-loud（启动 kernel dtype check）——非静默错值；收录价值在**结构模式**：同一 checkpoint 内 dense/routed 量化格式异构、顶层标签（fp8）窄于实际载荷（MXFP4 experts），自动选择读标签即错——与 12.41（前缀守卫按原始名绕过）同属"按名字而非按实际结构分派"域，静默形态风险在选择层被下游 check 拦住时消除、check 后移即静默。 回访（2026-10-09）：issue #41569 已 closed/completed（10-01）、修复 PR #41668 同刻 merged（janbernloehr 09-30 开出）——机制记录不变。'
+  trigger_surface: SGLang + MiMo-V2 混合量化 checkpoint（fp8 标签 + mxfp4 experts）+ SM100 + moe_runner_backend=auto（hw_specific；显式 runner 选择免疫）
+  discovery: 2026-09-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: INF-0150
+legacy_ids:
+- '1.151'
+slug: ttmetal_argmax_comparator_nan_zero_sign_semantics_dtype_split
+aliases: []
+title: ttnn.argmax 比较器 NaN/±0 语义错且两 dtype 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: argmax 位型比较器 helper
+  behavior: float32_greater 令 NaN 永不大于任何值，bfloat16_greater 无 NaN/零处理、按符号位使 +0 大于 −0；argmax 的严格大于更新与裸 == tie 消费二者，四个 reader 均继承。
+effect:
+  objects:
+  - 数值结果
+  detail: 非 SFPU 路径上含 NaN 或 ±0 的行 argmax 索引静默出错：fp32 永不选中 NaN（torch 视 NaN 为最大），bf16 让后来的 +0 胜过早先的 −0；同输入两种 dtype 返回不同索引且都异于 torch。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent WH/BH + `ttnn.argmax` + 含 NaN 或 ±0 行（软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55346
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.argmax` 非 SFPU 路径经两个位型比较器：FLOAT32 的 `float32_greater` 实现 "NaN 永不大于任何值"（torch 语义为 NaN 即最大）→ 永不选中 NaN；BFLOAT16 的 `bfloat16_greater` 无 NaN/零处理、符号位优先排序 → +0 严格大于 −0（torch 语义 −0==+0）→ 后来的 +0 打败早先的 −0；**同输入两个 dtype 返回不同索引且都异于 torch**，tie 测试是裸 `val == max_val` 位比较） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`float32.h`/`bfloat16.h` 两个共享比较器 helper 的 NaN/带符号零语义既不同于对方也不同于 torch golden（`torch.argmax` NaN 传播 + 首索引 + −0==+0）；`argmax_common.hpp` 的 `update_max_if_greater`（仅严格大于）与 `process_core_data`（raw `==` tie）消费这两个比较器，四个 reader kernel（single/multicore/tile/h_col）全部继承。'
+  source: 'tt-metal #55346（2026-09-03 closed，源级逐行分析 + C++ 整数 replay）。https://github.com/tenstorrent/tt-metal/issues/55346'
+  behavior: 无 crash——含 NaN/±0 行的 argmax 索引静默错，且 **dtype 间不一致**（fp32 跳过 NaN、bf16 让 +0 胜 −0）；对依赖 argmax 做 gating/检索的模型图是静默语义分歧。与 1.140（比零谓词无 inf 项）同「比较器 NaN/inf 语义不完整」族、与 1.109（tensor-scalar 比较 NaN 补码缺陷）共享「位型比较器实现 IEEE 边角语义」域——本条新增 **dtype 间语义分裂**维度。
+  trigger_surface: Tenstorrent WH/BH + `ttnn.argmax` + 含 NaN 或 ±0 行（软件 API 可触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

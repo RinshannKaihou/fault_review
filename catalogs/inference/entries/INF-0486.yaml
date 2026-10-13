@@ -1,0 +1,52 @@
+id: INF-0486
+legacy_ids:
+- '6.93'
+slug: vllm_mooncake_preemption_frees_blocks_under_async_store_kv_key_mismatch
+aliases: []
+title: vLLM Mooncake 抢占释放在飞 store 的 block 致键值错配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake 异步 store/ledger
+  behavior: 异步 KV store 任务在飞行中时，抢占路径已释放其正在读取的 GPU block 并可复用给其他请求；store 随后写入可能已被覆盖的内容，且 ledger 键缺少序列维度区分
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: Mooncake 分离式部署发生抢占时，store 中 key 与 KV 内容错配；后续命中该 key 的 prefill 读到其他请求/内容的 KV，从 prefill 起消费错误上下文，输出静默退化，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；Mooncake 分离式 KV 传输 + preemption + async store（KVConnector v1）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52360
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（preemption 释放仍被异步 store 读取的 GPU block → store ledger 按 key 存入不属于该 key 的 KV） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 'MooncakeStoreConnector 的异步 KV store 任务在飞行中时，调度器 preemption 路径已释放其正在读取的 GPU block（可被复用给其他请求）；store 任务随后把（可能已被新请求数据覆盖的）block 内容写入 store ledger，且 ledger 键缺少序列维度区分——最终 **key 与值错配**：后续命中该 key 的分离式 prefill 读到其他请求/其他内容的 KV。修复（PR #52372）：store job 持有对 GPU block 的引用 + ledger 按 `save_seq` 键控。'
+  source: 'vLLM #52360（2026-08-14 open）/ 修复 PR #52372。组件 MooncakeStoreConnector / KVConnector。https://github.com/vllm-project/vllm/issues/52360 · 补充修复：PR #52470（2026-08-15 open，preemption 时 abort 在飞 async store 任务）'
+  behavior: 无 crash。分离式（PD 分离）部署下 KV 传输层的**跨请求缓存键污染**——命中被污染 key 的请求从 prefill 起消费错误上下文，输出静默退化。属「异步 store 生命周期 × preemption 竞态 → 键值错配」**新子签名**——K§5 cross-node-transfer locus 在服务栈侧的新变体。
+  trigger_surface: vLLM；Mooncake 分离式 KV 传输 + preemption + async store（KVConnector v1）
+  discovery: 2026-08-14 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

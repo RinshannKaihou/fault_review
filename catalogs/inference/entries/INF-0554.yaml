@@ -1,0 +1,56 @@
+id: INF-0554
+legacy_ids:
+- '6.161'
+slug: vllm_async_llm_streaming_session_inplace_prompt_mutation
+aliases: []
+title: vLLM AsyncLLM 流式输入原地修改调用方 prompt list
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: AsyncLLM 流式输入处理
+  behavior: AsyncLLM.generate 的客户端侧 streaming 输入处理把后续 chunk 的 token 原地追加到调用方传入的 prompt list 对象上，而不是使用副本；污染发生在引擎边界之外。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输入编码
+  detail: 调用方复用同一 list 对象时，64-token 会话后该 list 变为 76 个 token，后续请求静默携带未发送的 token（演示中注入的 token 888 出现在输出中）；服务端看来请求内容即如此，无从检测。OpenAI/HTTP serving 路径不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM Python API（AsyncLLM/LLM）+ streaming session + 调用方复用同一 prompt list 对象（纯软件，无 GPU 依赖）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54215
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（AsyncLLM 客户端流式输入处理**原地修改调用方传入的 prompt list**：后续 stream chunk 的 token 被 append 到首个 chunk 的 list 上（64-token 会话后变 76）——任何复用同一 list 对象的后续请求静默携带污染 token，未发送的 token 出现在输出里） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: '`AsyncLLM.generate(AsyncGenerator[StreamingInput])` 的客户端侧 streaming 处理把 chunk token 追加进 caller 拥有的 prompt 对象；最小复现无需权重与 tokenizer（纯 Python 层）。OpenAI/HTTP serving 路径不受影响（每请求构造新对象）；引擎本身只处理收到的输入——**污染发生在引擎边界之外**。'
+  source: 'vLLM #54215（2026-08-28 open，0.28.0，8×3090，含 copy-paste 复现与 token 888 注入演示）。https://github.com/vllm-project/vllm/issues/54215'
+  behavior: 无 crash、无服务端可见信号——后续请求输出被无关会话内容影响（注入 token 888 显形），跨请求污染对服务端检测**原理上不可见**（请求看起来就是那个内容）。属「**客户端 API 契约违反的原地变异**」新子签名：与 6.2（多模态 cache key 碰撞）同跨请求污染域，本条在客户端数据面且必须靠调用方不变式检查捕获。
+  trigger_surface: vLLM Python API（AsyncLLM/LLM）+ streaming session + 调用方复用同一 prompt list 对象（纯软件，无 GPU 依赖）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 输入编码
+        to: 跨请求/跨样本数据
+        status: unanimous

@@ -1,0 +1,61 @@
+id: INF-0156
+legacy_ids:
+- '1.157'
+slug: ttmetal_rpow_bw_differentiates_x_base_instead_of_base_x
+aliases: []
+title: ttnn.rpow_bw 误按 pow 求导且注册 golden 同错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: unary_backward 的 rpow_bw
+  - subsystem: 观测/评测
+    stack: tt-metal
+    component: rpow_bw 的 backward golden
+  behavior: rpow 前向是 base**x，rpow_bw 却按 pow 求导返回 grad*base*x**(base-1)，正确应为 base**x*ln(base)；注册的 backward golden 复刻了同一错误公式。
+effect:
+  objects:
+  - 梯度
+  - 测试判定
+  detail: 两式仅在 x==1 相等，实测梯度 286068 vs 正确 628.7（约 455 倍）；对每个 x<0（非整数 base）强制返回 NaN，而真值有限。op 与 golden 同错，常规对拍测试无法发现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent WH/BH + `ttnn.rpow_bw`（任意负输入即 NaN；软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55289
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.rpow(x, base)` 前向是 `base**x`（SFPU kernel 注释与 golden 一致）而 `rpow_bw` 返回 `grad*base*x**(base-1)`——**对 x** 求了导，正确是 `base**x*ln(base)`，两式仅在 x==1 相等；因 `x**(base-1)` 对负 x 非整数 base 无定义，op 对**每个 x<0** 强制 NaN（该处真值是普通有限数）；注册 backward golden 复刻了同一误读——**op 与 golden 一起错**） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`unary_backward.cpp` 把 rpow 的梯度公式认成 pow 的（参数序颠倒）；golden 同错意味着常规对拍测试原理上无法发现——错误被测试基础设施**双重背书**。实测 15.2² 梯度 286068 vs 正确 628.7（455× 错）。'
+  source: 'tt-metal #55289（2026-09-03 closed，前向 kernel 注释/golden/导数公式三方对照 + host replay）。https://github.com/tenstorrent/tt-metal/issues/55289'
+  behavior: 无 crash——梯度数量级错（可达数百倍）+ 负输入全域 NaN；「golden 与实现同源同错」是比 PCC 盲区更深层的测试失效形态（oracle 本身损坏），此前编目未见——**错误 oracle**新子签名。
+  trigger_surface: Tenstorrent WH/BH + `ttnn.rpow_bw`（任意负输入即 NaN；软件 API 可触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：逐字段核对原文（455×、286068 vs 628.7、x<0 强制 NaN、golden 同错）均有依据。分类与独立判断一致：修复须同时改 rpow_bw 与注册的 backward golden，按 rule 4 写 算子/内核 + 观测/评测 两项成立；effect 梯度、测试判定；visibility 静默错误（x<0 的 NaN 分支已写入 detail）。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

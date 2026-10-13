@@ -1,0 +1,54 @@
+id: TRN-0075
+legacy_ids:
+- CKPT.26
+slug: async_resume_cursor_pinned_by_stale_dropped_group
+aliases: []
+title: trl AsyncGRPO resume 游标被 stale 丢弃组钉死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: trl
+    component: 异步 GRPO/蒸馏 resume 游标
+  behavior: _save_checkpoint 取不在 _trained_groups 中的最小 group id 作 resume 位置，但被 staleness 检查丢弃的 group 永不进入该集合，游标被钉死；蒸馏 trainer 同病。
+effect:
+  objects:
+  - 训练样本流
+  detail: 有 group 因超过 max_staleness 被丢弃时，ckpt 正常写出、无报错、指标正常；resume 后从被钉住的位置重启，近全量数据被重复训练（复现中 150 行有 147 行训练两次）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7274
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7294
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0065
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `rl` · Cov: `var:async_rollout_buffer_state_lost_on_resume` · 置信度 `documented`'
+  mechanism: trl AsyncGRPO `_save_checkpoint` 用「不在 `_trained_groups` 中的最小 group id」推 resume 位置——但 `RolloutQueueDataset.__iter__` 的 staleness 检查**丢弃**的 group（如慢 group 超 `max_staleness=4`）永远到不了 collator、永远不会进 `_trained_groups`：一个 stale-dropped group 把保存的 resume 游标**钉死**在它的位置。ckpt 正常写出、无任何错误。无 GPU 12 秒 repro（150 组、1 慢组）：run 1 实际训完 150 组、saved `prompt_index=2`（被 group 2 钉住）；resume 后从行 2 重启——**147/150 行被训练两次**、只有 3 行是新的。`AsyncDistillationTrainer._save_checkpoint` 的 `_trained_prompts` 同代码同病。修复 = resume 游标对 `_trained_groups ∪ _dropped_groups` 取（在途组仍照旧压住游标）。
+  source: 'trl #7274（2026-09-18；纯 CPU repro gist + 双 run 对照）。https://github.com/huggingface/trl/issues/7274 ；修复 PR trl #7294（cross-ref 于 2026-09-18，仍 open）——修法即「`_trained_groups ∪ _dropped_groups`」并加在途组照旧压游标，与本条记载的修复方向一致。https://github.com/huggingface/trl/pull/7294'
+  behavior: 无 crash、ckpt 可加载、指标正常——**resume 后近全量数据被重复训练**（数据分布被旧样本主导），有效样本量与预算核算系统性失真；「保存的数字看起来合理」（在合法范围内）使其不被怀疑。与 CKPT.16（异步 RL resume 丢在途 rollout 状态）同族**异步 RL 的 resume 契约缺状态面**第 4 个实例：那边丢 buffer 内容、这边游标被死键钉住，方向相反（丢 vs 重）；与 CKPT.18（sampler 重建丢 epoch 种子 → 81% 重复）行为效应同型「resume 后大比例样本重复」，这边重复是**staleness 丢弃副作用**而非种子丢失。
+  discovery: 2026-09-19 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

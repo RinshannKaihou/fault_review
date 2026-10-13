@@ -1,0 +1,53 @@
+id: INF-1137
+legacy_ids:
+- '12.21'
+slug: vllm_punica_lora_long_seq_nan_token0
+aliases: []
+title: vLLM punica LoRA 长序列出 NaN，输出全为 "!"
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: punica LoRA kernel 长序列路径
+  behavior: vLLM 动态 LoRA serving 的 punica Triton kernel 在长序列（>~400 token）路径上出错，原文推测为序列分块/累积路径越界或数值爆掉；base、merged LoRA、HF PEFT 对照均正常。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: hybrid-GDN 模型 + 动态 LoRA，prompt 超过约 400 token 时 logits 为 NaN，argmax 得 token 0，输出全为 "!"；HTTP 200 无 crash，短 prompt 完全正常，smoke test 不可见。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；hybrid-GDN 模型 + --enable-lora 动态 adapter + >~400 token 序列（Hopper 实证，或为通用 punica 路径）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52568
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（punica Triton LoRA kernel 在 hybrid-GDN 模型长序列（>~400 token）下产生 NaN logits → argmax(NaN)=token 0，全部输出 "!"） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: Qwen3.5-9B（hybrid-GDN：24 linear_attn + 8 self_attn 层）+ dynamic LoRA（r=64，target 含 q/k/v/o、in_proj_qkv/in_proj_z/out_proj、MLP）在 vLLM v0.27.0（H20，bf16，enforce-eager）：短 prompt（<~400 token）输出正常；长 prompt（>~400 token）输出全为 "!"（token id 0）。对照隔离：base 模型正常、merged LoRA 正常、HF PEFT 推理正常——缺陷锁定在 vLLM 动态 LoRA serving 的 **punica Triton kernel 长序列路径**。NaN 位于 logits：`argmax(NaN) → token 0 → "!"`。长度阈值 ~400 token 提示 kernel 的序列分块/累积路径在特定长度后越界或数值爆掉。
+  source: 'vLLM #52568（2026-08-17 open，H20/Hopper SM90，flashinfer 0.6.16.post3，LoRA 由 Unsloth 训练）。https://github.com/vllm-project/vllm/issues/52568'
+  behavior: 无 crash、HTTP 200。长序列输出**全部退化为 "!"**（NaN argmax 的确定性出口）——静默错误回答；短序列完全正常使缺陷在 smoke test 下不可见。属「动态 LoRA kernel × 序列长度分块边界 NaN」**新子签名**——"!"（token 0）全输出是 argmax-over-NaN 的可编程检测签名（与 6.x AITER fused-MoE NaN→token0 同行为出口、不同根因层）。
+  trigger_surface: vLLM；hybrid-GDN 模型 + --enable-lora 动态 adapter + >~400 token 序列（Hopper 实证，或为通用 punica 路径）
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 2/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

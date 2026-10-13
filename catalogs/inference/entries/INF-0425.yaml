@@ -1,0 +1,55 @@
+id: INF-0425
+legacy_ids:
+- '6.32'
+slug: vllm_batch_invariant_not_disable_async_scheduling
+aliases: []
+title: vLLM batch-invariant 未约束 async 调度致不可复现
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: async scheduling 组批时序
+  behavior: VLLM_BATCH_INVARIANT=1 只固定 kernel 逐行结果，不约束 scheduler 组批；默认开启的 async scheduling 提前组下一 batch，成员随 wall-clock 时序变化，无 guard。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: VLLM_BATCH_INVARIANT=1 配默认 async scheduling（大 batch、变长长请求）时结果仍随时序变化，服务正常启动运行、无警告、无文档，确定性承诺静默失效；--no-async-scheduling 可消除，约损 3% 吞吐。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 主路径；`VLLM_BATCH_INVARIANT=1` + 默认 async scheduling（大 batch、变长长请求）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51287
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0317
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（batch-invariant flag 不管 scheduler batch 成员 → 非确定性） · Cov: `var:fp_reduction_order_nondeterminism` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`VLLM_BATCH_INVARIANT=1` 固定 kernel 使某行结果不再依赖 batch size/composition，但**不管 scheduler 把请求放进哪个 batch**。Async scheduling 默认开启（`SchedulerConfig.async_scheduling = None` → `True`）且在当前 step 退役前组合下一步 batch，故 batch 成员依赖 wall-clock timing。timing jitter 因此再次进入数值，flag 不兑现其承诺。无 guard、无警告、无文档；服务器启动、服务、且静默不可复现。`--no-async-scheduling` 修复，代价约 3% 吞吐。'
+  source: 'vLLM PR #51287（2026-08-06 open）。https://github.com/vllm-project/vllm/pull/51287'
+  behavior: '无 crash、无 NaN。batch-invariant 模式下结果仍因 scheduler 时序而非确定性——对研究和监管工作负载（flag 的目标用户）静默失效。属「确定性保证被 scheduler 层时序绕过」新子签名——与 4.1 `fp_reduction_order_nondeterminism` 同族（run-to-run variance），但非确定性源是 scheduler batch 成员而非 FP reduction order。补充 4.1 已记 #51187 高并发非确定性（kernel 层），本条补 scheduler 层。'
+  trigger_surface: vLLM 主路径；`VLLM_BATCH_INVARIANT=1` + 默认 async scheduling（大 batch、变长长请求）
+  discovery: 2026-08-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

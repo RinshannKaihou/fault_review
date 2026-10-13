@@ -1,0 +1,62 @@
+id: TRN-0261
+legacy_ids:
+- OBS.12
+slug: missing_dataloader_silently_disables_resampling
+aliases: []
+title: DeepSpeed ZenFlow 未传 dataloader 时列永不重选
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: deepspeed
+    component: ZenFlow 列重选间隔解析
+  behavior: epoch/auto 策略从 training_dataloader 取 epoch 步数，自管 dataloader 时其为空，设 select_interval=0 即永不重选；告警处误写 raise Warning，实为抛异常。
+effect:
+  objects:
+  - 训练轨迹
+  detail: 默认配置、自管 dataloader 下无报错无日志，第 0 步选出的列沿用整个 run（40 步对照重选 1 次 vs 4 次），训练动态与配置语义背离；auto+整数 interval 组合在初始化期报错。既有 ZenFlow 测试都跑在这条错路径上，但只断言不 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8456
+  kind: github_issue
+relations: []
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: DeepSpeed ZenFlow 的列重选间隔按 `'epoch'` 策略表达（`'auto'` 默认解析到它），需要 epoch 步数——从 `engine.training_dataloader` 读，而该属性**只有调用方把 dataloader 交给 `deepspeed.initialize()` 时才非空**；自管 dataloader（常见路径）走 else 分支 `select_interval = 0`，`is__zenflow_select_boundary()` 把 0 读作「永不重选」：**第 0 步选一次、整个 run 不再换列**。无 error、无 warning，默认配置即中招。40 步对照：默认 `auto`（无 dataloader）重选 1 次 vs 正确路径 4 次。掩体一：**全部既有 ZenFlow 测试都跑在这条错路径上**（测试在 init 之后自建 dataloader），断言「不 crash」恒绿；掩体二：`raise Warning(...)`——`Warning` 是 `Exception` 子类，本想 warn 的分支实际**直接抛异常**，紧随其后的 fallback 行不可达（engine.py / engine_stage3.py / 第三处共三份拷贝）。
+  source: 'DeepSpeed #8456（2026-09-08；间隔解析表、`raise Warning` 语义坑、测试盲区三段式分析）。https://github.com/deepspeedai/DeepSpeed/issues/8456'
+  behavior: 无 crash、无日志——自管 dataloader 的 ZenFlow run 用**第一步选出的列**训完整个 run：重要性列从不轮换，训练动态与配置语义（按 epoch 重选）背离；`auto`+整数 interval 组合还会在初始化期以一条「描述 fallback 的报错」崩掉，掩盖真正语义。与 OBS.02（空指标当健康）同族但更隐蔽：**指标全正常、行为整体退化**；「测试断言不 crash 而非断言语义」的掩体与 OBS.07/KER.10 的假绿同型；与 CKPT.07（配置被静默忽略）的差异：这边不是死配置，是**配置语义依赖一个未传入的运行时对象**，签名上完全合法。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed:
+  - effect.detail
+  note: uncertain 字段 cause.subsystem 重计算/卸载 vs 优化器：定为 重计算/卸载。出错代码是 ZenFlow（ZeRO-Offload 的卸载扩展）在 engine 里的列重选间隔解析，优化器算法本身未改；按 rule 1 功能域优先归 重计算/卸载。审计：effect.detail 原写「未覆盖此路径」与原文相反，已改正。
+  audit_issues:
+  - field: effect.detail
+    type: 忠实性
+    detail: 原文「全部既有 ZenFlow 测试都跑在这条错路径上」，第一遍写成「未覆盖此路径」，意思相反
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

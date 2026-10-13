@@ -1,5 +1,15 @@
 """Parse the vendored catalog snapshots (+ negative docs) into entries.jsonl.
 
+Since the 2026-10-13 cut-over the fault entries come from the upstream structured catalogs
+(catalogs/<repo>/entries/*.yaml, synced by scripts/sync_catalogs.sh): one YAML per fault with a
+semantic-free id (INF-0044 / TRN-0001) and the old Markdown ids in legacy_ids, so lookups and
+benchmark labels written with old ids keep resolving. Negative docs are unchanged: training
+rejected.md / blindspots.md and appendix C/D of the frozen inference Markdown master.
+
+The Markdown entry parser below (parse_master) is kept for the frozen masters and for tools that
+still read Markdown (e.g. normalize/convert.py); parse_all no longer uses it for fault entries.
+
+
 Reads the snapshots under ``catalogs/`` in this repo:
   - catalogs/inference/FAULT_MASTER_REFERENCE.zh.md  (inference master)
   - catalogs/training/FAULT_MASTER_REFERENCE.zh.md   (training master)
@@ -33,6 +43,10 @@ INFERENCE_MASTER = os.path.join(CATALOGS, "inference", "FAULT_MASTER_REFERENCE.z
 TRAINING_MASTER = os.path.join(CATALOGS, "training", "FAULT_MASTER_REFERENCE.zh.md")
 TRAINING_REJECTED = os.path.join(CATALOGS, "training", "rejected.md")
 TRAINING_BLINDSPOTS = os.path.join(CATALOGS, "training", "blindspots.md")
+INFERENCE_ENTRIES = os.path.join(CATALOGS, "inference", "entries")
+TRAINING_ENTRIES = os.path.join(CATALOGS, "training", "entries")
+NARRATIVE_KEYS = ("mechanism", "behavior", "source", "trigger_surface", "signature", "repro", "discovery", "locus", "priority")
+SKIP_STATUSES = ("merged", "retired")
 
 # Entry headers: `### 1.1 `name``  /  `### K1.1 `name``  /  `### HW.01 `name``
 # Tolerates trailing notes（（arxiv）/ ⚑§9）, uppercase in names, and dual-name
@@ -354,18 +368,99 @@ def parse_appendix(path, repo, letters=("C", "D")):
     return chunks
 
 
+def _join(values, sep="；"):
+    return sep.join(str(v) for v in values if v not in (None, "", "N/A")) if isinstance(values, list) else (values or "")
+
+
+def _legacy_category(legacy_ids, repo):
+    """Old Markdown category of an entry, derived from its first old id (the old ids encoded it)."""
+    for old in legacy_ids or []:
+        try:
+            return _category_from_id(str(old), repo)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_yaml_entries(path, repo):
+    """One entry per catalog/entries/<ID>.yaml, in the schema the index and search already use."""
+    import yaml
+
+    entries = []
+    for name in sorted(os.listdir(path)):
+        if not name.endswith(".yaml"):
+            continue
+        fp = os.path.join(path, name)
+        with open(fp, encoding="utf-8") as fh:
+            text = fh.read()
+        y = yaml.safe_load(text)
+        if y.get("status") in SKIP_STATUSES:
+            continue
+        cause, effect = y.get("cause") or {}, y.get("effect") or {}
+        objs = cause.get("objects") if isinstance(cause.get("objects"), list) else []
+        labels, orig = y.get("labels") or {}, y.get("original") or {}
+        fields = {k: str(orig[k]) for k in NARRATIVE_KEYS if orig.get(k)}
+        if orig.get("notes"):
+            fields["notes"] = _join(orig["notes"], "\n")
+        if orig.get("meta"):
+            fields["meta"] = orig["meta"]
+        fields.update({
+            "title": y.get("title", ""),
+            "cause_behavior": cause.get("behavior", ""),
+            "effect_detail": effect.get("detail", ""),
+            "component": _join([o.get("component") for o in objs]),
+            "subsystem": _join([o.get("subsystem") for o in objs]),
+            "stack": _join([o.get("stack") for o in objs]),
+            "effect_objects": _join(effect.get("objects"), "、"),
+            "visibility": effect.get("visibility", ""),
+            "mitigation_detect": (y.get("mitigation") or {}).get("detect", ""),
+            "mitigation_fix": (y.get("mitigation") or {}).get("fix", ""),
+        })
+        stage = labels.get("stage")
+        entries.append({
+            "id": y["id"],
+            "name": y["slug"],
+            "title": y.get("title", ""),
+            "aliases": list(y.get("aliases") or []),
+            "legacy_ids": [str(x) for x in y.get("legacy_ids") or []],
+            "repo": repo,
+            "category": (objs[0].get("subsystem") if objs else None) or "待定",
+            "legacy_category": orig.get("category") or _legacy_category(y.get("legacy_ids"), repo),
+            "section": orig.get("section", ""),
+            "section_line": 0,
+            "file": fp,
+            "line": 1,
+            "line_end": text.count("\n") + 1,
+            "neg": False,
+            "entry_type": "pointer" if y.get("kind") == "指针" else "fault",
+            "kind": y.get("kind"),
+            "status": y.get("status"),
+            "stage": "/".join(stage) if isinstance(stage, list) else None,
+            "axis": None if labels.get("family") in (None, "N/A", "待定") else labels.get("family"),
+            "coverage": labels.get("coverage"),
+            "trigger": None if labels.get("trigger") in (None, "N/A", "待定") else labels.get("trigger"),
+            "confidence": None if labels.get("confidence") in (None, "N/A", "待定") else labels.get("confidence"),
+            "relations": list(y.get("relations") or []),
+            "fields": fields,
+            "raw": text,
+        })
+    return entries
+
+
 def build_links(entries):
     """Wire cross-references between entries.
 
-    Sources: `var:<name>` coverage, `交叉：<repo> <id>` pointers, and exact
-    mentions of known ids / snake_names in the raw text. Only ids/names that
-    actually exist in the corpus are kept (no false positives from version
-    numbers like 2.7.1).
+    Sources: explicit `relations` (var / cross, by current id), legacy Markdown coverage
+    `var:<name|id>` and `交叉：<repo> <id>` pointers, and exact mentions of known ids — current or
+    legacy — in the narrative text. Legacy ids resolve to the entry that now carries them; only ids
+    that exist in the corpus are kept (no false positives from version numbers like 2.7.1).
     """
     by_id = {}
     by_name = {}
     for e in entries:
         by_id.setdefault(e["id"], []).append(e)
+        for old in e.get("legacy_ids", []):
+            by_id.setdefault(old, []).append(e)
         by_name.setdefault(e["name"], []).append(e)
         for alias in e.get("aliases", []):
             by_name.setdefault(alias, []).append(e)
@@ -387,17 +482,21 @@ def build_links(entries):
             if prio[kind] > prio.get(links.get(key), 0):
                 links[key] = kind
 
+        for rel in e.get("relations", []):
+            for t in by_id.get(rel.get("target"), []):
+                add("var" if rel.get("kind") == "var" else "cross", t)
         cov = e.get("coverage") or ""
         if cov.startswith("var:"):
             target = cov[4:]
             # training: var:<snake_name>; inference: var:<id> (e.g. var:1.212)
             for t in by_name.get(target, []) + by_id.get(target, []):
                 add("var", t)
-        for m in re.finditer(r"交叉[：:]\s*(\S+)\s+([A-Z]*\d+\.\d+)", e["raw"]):
+        text = e["raw"] if e.get("neg") or "relations" not in e else "\n".join(str(v) for v in e["fields"].values())
+        for m in re.finditer(r"交叉[：:]\s*(\S+)\s+([A-Z]*\d+\.\d+)", text):
             for t in by_id.get(m.group(2), []):
                 add("cross", t)
         if id_pat:
-            for m in id_pat.finditer(e["raw"]):
+            for m in id_pat.finditer(text):
                 for t in by_id.get(m.group(1), []):
                     add("mentions", t)
         e["links"] = sorted(
@@ -421,14 +520,22 @@ def embedding_hash(text):
 
 
 def embed_text(e):
-    """Composed text fed to the embedding model."""
+    """Composed text fed to the embedding model.
+
+    Narrative only, as before the YAML switch: the structured title/cause/effect
+    fields are summaries of this same narrative, and prepending them pulled the
+    vectors toward mechanism wording and away from the symptom phrasing users
+    query with (independent set Recall@10 0.984 -> 0.968). Only the title goes
+    to BM25 (see index.bm25_text). Migrated entries keep their old category
+    token, so their vectors are identical to the Markdown-era ones.
+    """
     f = e["fields"]
     if e["neg"]:
         parts = [e["name"], f.get("content", "")]
     else:
         parts = [
             e["name"].replace("_", " "),
-            f"category {e['category']}",
+            f"category {e.get('legacy_category') or e['category']}",
             f.get("mechanism", ""),
             f.get("behavior", ""),
             f.get("signature", ""),
@@ -439,8 +546,8 @@ def embed_text(e):
 
 def parse_all():
     entries = []
-    entries += parse_master(INFERENCE_MASTER, "inference")
-    entries += parse_master(TRAINING_MASTER, "training")
+    entries += parse_yaml_entries(INFERENCE_ENTRIES, "inference")
+    entries += parse_yaml_entries(TRAINING_ENTRIES, "training")
     entries += parse_negative_doc(TRAINING_REJECTED, "training", "rejected")
     entries += parse_negative_doc(TRAINING_BLINDSPOTS, "training", "blindspot")
     entries += parse_appendix(INFERENCE_MASTER, "inference")

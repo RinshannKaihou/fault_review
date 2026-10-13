@@ -1,0 +1,51 @@
+id: TRN-0063
+legacy_ids:
+- CKPT.14
+slug: quantized_extra_state_silently_dropped_on_load
+aliases: []
+title: Megatron GPT 加载丢弃 output_layer 量化 state
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: megatron-lm
+    component: GPT sharded_state_dict
+  behavior: GPTModel.sharded_state_dict 无条件 pop output_layer._extra_state 并 assert 为空，而量化 state 正存于 _extra_state；该方法同时决定 load plan。
+effect:
+  objects:
+  - 模型权重
+  detail: save 侧对多元素 byte tensor 做 and 判断直接崩；load 侧 saved 量化 state 被忽略，量化 lm_head 静默恢复成未量化权重，训练/推理权重路径分叉。MambaModel 无此规则，故只有 GPT 系不能 ship 量化 lm_head。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7086
+  kind: github_pr
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `sft/pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `GPTModel.sharded_state_dict` 无条件 pop `output_layer._extra_state` 并 assert 为空——对「旧 GPT ckpt 只存 output 权重」的历史语义是对的，但量化框架把 per-module 量化 state 存在 `_extra_state` 里：**save 侧**直接崩（多元素 byte tensor 上 `and` 触发 ambiguous bool），**load 侧更糟**——同一方法也是 load plan 的依据，key 被 pop 掉后 saved state 被忽略，量化 output layer 被静默恢复成**未量化**权重。`MambaModel` 无此规则，因此 Mamba 系模型早已能 ship 量化 `lm_head`（Nemotron-3.5-Lightning-30B-A3B-NVFP4）而 GPT 系不能。修复 = 仅当占位符为空时才 drop，携带数据时保留。
+  source: 'Megatron-LM PR #7086（Qwen3.6-35B-A3B：`lm_head` 509M params ≈ 35% per-token 权重读取，量化不可用即损失大头 decode 吞吐）。https://github.com/NVIDIA/Megatron-LM/pull/7086'
+  behavior: 量化 `lm_head` 的 ckpt「加载成功」但量化语义已丢——训练/推理权重路径分叉，无 crash（save 面才崩）；与 CKPT.09（MXFP8 round-trip 丢 scale）同为量化 state 在存取路径上的静默丢失，本条丢的是**整个量化元数据条目**；与 CKPT.05（strictness 吞 unexpected key）同面：load plan 主动 pop 掉本应恢复的 key。
+  discovery: 2026-09-05 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

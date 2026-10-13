@@ -1,0 +1,54 @@
+id: TRN-0263
+legacy_ids:
+- OBS.14
+slug: autocast_z0_overflow_skip_miscounted_as_applied
+aliases: []
+title: DeepSpeed autocast fp16 ZeRO-0 溢出跳步记为已应用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: _take_model_step 溢出探测
+  behavior: _take_model_step 只查 optimizer.overflow 属性探测溢出，该路径为裸 torch.optim、无此属性，overflow 恒 False；GradScaler 已跳过 step，engine 仍记已应用。
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  - 指标/日志
+  detail: 溢出步 was_step_applied() 为 True、skipped_steps 恒 0、lr_scheduler 照常推进而参数未变；GradScaler 默认 init_scale 65536 使前几步常溢出，warmup 被静默烧掉、schedule 相位前移。fp16 配置块路径正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8723
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0262
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `shared` · Cov: `var:fp32_zero0_global_grad_norm_none` · 置信度 `verified`'
+  mechanism: DeepSpeed `torch_autocast` fp16 + ZeRO stage 0（engine 驱动 `torch.amp.GradScaler`，`torch_autocast_z0_gradscaler`）下，梯度溢出时 `GradScaler.step()` 正确跳过 `optimizer.step()`，但 **engine 完全看不见这次跳过**：`_take_model_step`（engine.py L3476-3520）只用 `hasattr(self.optimizer, "overflow")` 探测溢出，而该路径的 optimizer 是客户端裸 `torch.optim`、恒无该属性 → `overflow` 恒 `False`。三个直接后果：`was_step_applied()` 返回 `True`（参数实际未变）、`skipped_steps` 恒 0、`lr_scheduler.step()` 照常推进——**调度器跑到优化器前面**。对照组：`fp16` 配置块（`FP16_Optimizer`/ZeRO 包装）同注入下 `was_step_applied()=False`、`skipped_steps=1`、scheduler 保持。无需任何注入故障即命中：`GradScaler` 默认 `init_scale=65536`，run 前几步 scale 校准期常溢出——**warmup 步被静默烧掉且记为已应用**。报告者单进程 repro（CUDA 原生 / CPU patch `is_fp16_supported` 双模式，第 3 次 backward 注入 inf）闭合。
+  source: 'DeepSpeed #8723（2026-10-01；`_take_model_step` 探测逻辑代码定位 + 双模式 repro + 与 `fp16` 配置块路径的对照）。https://github.com/deepspeedai/DeepSpeed/issues/8723 ；修复 PR #8727（跳过计数 + 非有限梯度行为）同日跟进。'
+  behavior: 无 crash、无日志——autocast fp16 stage 0 run 的 LR 调度与实际参数更新**静默脱钩**：warmup 期每个溢出步都推进 scheduler 却不更新权重（有效 warmup 缩水），之后整个 schedule 相位前移；`skipped_steps` 指标恒 0 使溢出频率完全不可观测。与 OBS.13（同 `_take_model_step` 函数族的 fp32 路径丢 grad_norm）为**同函数两种静默记账错**：那边丢观测值、这边错记状态转移；与 OPT.20（stage 0 fp16 丢 hysteresis）继续坐实「stage 0 混精路径是二等公民」族——fp16 config 块的等价路径全部行为正确。RL 场景后果被放大：rollout-reward 的有效 LR 相位漂移无任何日志痕迹。
+  discovery: 2026-10-09 每日扫描（停机补扫）
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

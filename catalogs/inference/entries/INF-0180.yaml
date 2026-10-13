@@ -1,0 +1,58 @@
+id: INF-0180
+legacy_ids:
+- '1.181'
+slug: vllm_cpu_moe_torch_compile_nan_logits_quantization_independent
+aliases: []
+title: vLLM CPU MoE 经 inductor 编译产出 NaN logits
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: CPU MoE 内核 inductor 编译路径
+  behavior: torch.compile/inductor 为 Qwen3_5Moe 架构生成的 CPU MoE 内核路径（或其与 Inductor 分解的组合）计算出错，与权重量化方法无关。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 从首个生成 token 起全词表 logits 为 NaN，输出为重排的垃圾文本，无 crash；bf16 与 GPTQ-Int4 checkpoint 均复现，--enforce-eager 即愈。vLLM 0.28.0 CPU 镜像、AMX CPU、TP=1 即触发。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM CPU 后端 + Qwen3_5Moe 架构 + torch.compile 默认路径（partial：架构特定，配置即触发、eager 即愈）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55560
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0012
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（CPU 后端 + `Qwen3_5MoeForConditionalGeneration`：torch.compile/inductor 编译路径下 **MoE kernel 产出全词表 NaN logits**（重排为 garbage token），bf16 未量化 checkpoint 与 GPTQ-Int4 量化**均复现**（报告者当日勘误：最初归因 GPTQ-Int4 dequant 内核是错的，同一 checkpoint 的 bf16 版同崩）；`--enforce-eager` 两例皆愈——量化方法无关的 CPU MoE × inductor 编译缺陷，AMX CPU（amx_bf16/int8/tile 全在）TP=1 即触发） · Cov: `var:triton_fp8_e5m2_transposed_store_codegen_corruption`（1.12 编译器代码生成损坏族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: vLLM 0.28.0 CPU 官方镜像；NaN 从首个生成 token 起贯穿整个 rollout，eager 执行同一模型干净——故障位于 torch.compile/inductor 为该 MoE 架构生成的 CPU 内核路径（或其与 Inductor 分解的组合），与权重量化方法正交。chunked prefill 开、KV cache 16 GiB、OMP auto 均为常规配置。
+  source: 'vLLM #55560（2026-09-06 open，torch.compile+quantization label，含同日勘误更新、bf16 与 GPTQ-Int4 双复现与 eager 消融）。https://github.com/vllm-project/vllm/issues/55560'
+  behavior: 无 crash——**静默 NaN 服务**（输出为重排垃圾文本），与 7.53（CPU WNA16 编译守卫失配）同为 CPU 后端编译路径缺陷，但本条不挑量化、显形为 NaN 而非不可用；对 CPU 推理基准/本地部署是全输出损坏型。1.12（Triton codegen 腐蚀）之后编译器生成代码数值损坏族在 **CPU Inductor** 域的第一例。
+  trigger_surface: vLLM CPU 后端 + Qwen3_5Moe 架构 + torch.compile 默认路径（partial：架构特定，配置即触发、eager 即愈）
+  discovery: 2026-09-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem=编译器（维持）：原文“故障位于 torch.compile/inductor 为该 MoE 架构生成的 CPU 内核路径”、eager 即愈，缺陷不在 router/专家分派，MoE路由 不适用。stack 维持 vllm：原文未把根因确定到 PyTorch Inductor 本身（“或其与 Inductor 分解的组合”），按 stack_hint 与 issue 所在项目保留；若后续确认在 Inductor 应改 pytorch。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

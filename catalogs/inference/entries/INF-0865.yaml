@@ -1,0 +1,53 @@
+id: INF-0865
+legacy_ids:
+- '8.81'
+slug: ttmetal_sdpa_decode_k_chunk_size_32_second_chunk_garbage_default_path
+aliases: []
+title: sdpa_decode chunk 32 第二块起输出垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: sdpa_decode 多 chunk 归并
+  behavior: sdpa_decode 在 k_chunk_size=32 时对第二个及之后 chunk 的边界/累加处理错误；默认 get_chunk_size() 取 KV 长度最大 2 的幂因子，32·奇数长度会自动选 32
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Wormhole T3K 上 k_chunk_size=32 且 cur_pos≥32 时 decode 注意力输出垃圾（PCC 崩塌）；无 program_config 时 96/160/224 等 KV 长度默认中招，如 Qwen3-VL 96 位 KV 产生垃圾 token，128 位缓存正确
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal sdpa_decode + k_chunk_size=32（显式或 32·odd KV 长度默认选中）+ cur_pos≥32（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56171
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0063
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（`ttnn.transformer.scaled_dot_product_attention_decode` 在 `k_chunk_size=32` 且 `cur_pos >= 32`（第二个 chunk 进入注意力范围）即返回垃圾；仅第一个 chunk 被注意时正确，chunk 64/128 任意 chunk 数（2/3/4/8）正确；head size 32/128、batch 1、Wormhole T3K 复现。**内核默认路径自中招**：无 `program_config` 时 `get_chunk_size()`（`sdpa_decode.cpp:22`）取 KV 长度的最大 2 的幂因子——任何 32·odd 形式长度（96/160/224…）默认选 32，即普通调用 96 位缓存开箱即错。FIBO-vlm（Qwen3-VL）经 `models/tt_dit/encoders/transformer.py` 解码：96 位 KV + 32 位 chunk 产生垃圾 token，同模型 128 位缓存单 chunk 正确） · Cov: `var:ttmetal_sdpa_decode_fp32_dest_acc_silent_wrong_96head_hang`（1.63 sdpa_decode 配置敏感错值族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 多 chunk 归并路径在 chunk size 32 时对第二 chunk 及以后的边界/累加处理错误（chunk 64/128 的对齐路径不同且正确）；默认启发式（最大 2 的幂因子）会自动落进坏档位，用户未显式传 config 时无任何警告。
+  source: 'tt-metal #56171（2026-09-10 open，community label，含 chunk×cur_pos 矩阵复现脚本、PCC 对照与默认路径命中分析）。https://github.com/tenstorrent/tt-metal/issues/56171'
+  behavior: 无 crash——decode 注意力输出垃圾（PCC 崩塌），下游 token 全错。1.63（fp32_dest_acc 大多数 shape 静默错）之后 sdpa_decode 配置敏感族第三形态：本条在 **chunk size 维度**且默认启发式即触发（与 1.191"传 config 降 fidelity"构成镜像：用户传参中招 vs 默认启发式中招）。
+  trigger_surface: tt-metal sdpa_decode + k_chunk_size=32（显式或 32·odd KV 长度默认选中）+ cur_pos≥32（hw_specific）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

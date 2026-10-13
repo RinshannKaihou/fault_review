@@ -1,0 +1,56 @@
+id: TRN-0126
+legacy_ids:
+- ACT.05
+slug: partitioned_activation_recompute_mangles_args
+aliases: []
+title: DeepSpeed 分区激活重算时非张量参数错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: deepspeed
+    component: merge_tensors 参数表还原
+  behavior: partition_activations 下每个参数保存 (value, size) 成对条目，merge_tensors 的折叠启发式只对张量参数有效，非张量参数后会多插一个 None，其后所有参数右移。
+effect:
+  objects:
+  - 梯度
+  - 隐状态
+  detail: 检查点函数带非张量参数（flag、标量超参、None）且开启 partition_activations 时，重算前向在错位参数表上执行：可能因形状错崩溃，更可能静默产出与原前向不一致的激活和错误梯度；全张量参数不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8455
+  kind: github_pr
+relations: []
+original:
+  category: ACT
+  section: ACT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: DeepSpeed `partition_activations` 下，`get_partitioned_activations_for_backward` 对**每个**参数保存 `(value, size)` 成对条目——`tensor_flags` 与 `non_tensor_objects` 因此各持有**每参数两条**。`merge_tensors`（recompute 时还原参数表）的折叠启发式「跳过 True 后面那条」只对张量参数有效（非张量参数的 value 与其 `None` size 都是非张量，啥也没折叠）：recompute 收到的参数表里**每个非张量参数后面多插一个 `None`**，其后所有参数右移。CPU 驱动真实 save/restore 链路实测：`(tensor, 2)` → `(tensor, 2, None)`；`(tensor, None, True, tensor)` → `(tensor, None, None, True, None, tensor)`。修复 = 每参数占偶数下标，`[::2]` 丢弃奇数条。既有 `TestCheckpointNonTensor` 恰好覆盖这些参数形状但**从不在 partition_activations 下跑**——全张量参数免疫，所以一直没被发现。
+  source: 'DeepSpeed PR #8455（2026-09-08；`pytest -k partitioned` master 6 failed → 修复后 6 passed；端到端需真 Stream，作者如实标注未跑）。https://github.com/deepspeedai/DeepSpeed/pull/8455'
+  behavior: recompute 参数表错位——检查点函数带任何非张量参数（flag / 标量超参 / None）且开 partition_activations 时，重算前向在**错误的参数表**上执行：可能崩（形状错）、更可能静默产出与原前向不一致的激活 → 错梯度。与 ACT.01（MoE 数据依赖 recompute 分叉）同族：**重算图 ≠ 原前向**；差异在这边是参数表序列化/折叠 bug 而非 RNG/数据依赖；与 DATA 家族的错位面不同：只打击开 partitioned activation ckpt 的组合。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 梯度
+        status: unanimous

@@ -1,0 +1,58 @@
+id: INF-1248
+legacy_ids:
+- K4.1
+slug: vllm_lora_prefix_cache_name_id_collision
+aliases: []
+title: vLLM 前缀缓存哈希用 lora_name，同名适配器复用他人 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: LoRA 前缀缓存额外哈希键
+  behavior: _gen_lora_extra_hash_keys 用 lora_name 而非唯一的 lora_int_id 生成块哈希，LoRARequest 的 __eq__/__hash__ 也只看 lora_name，同名不同权重适配器哈希相同
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 前缀缓存开启且同名适配器被热切换/重载后，适配器 B 的请求命中 A 权重下算出的 KV 块，输出语法正常但内容偏向另一适配器，无一致性校验报警
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 配置/后端/缓存开关可构造对照
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/30931
+  kind: github_issue
+  resolved_from: 'vLLM #30931'
+- url: https://github.com/vllm-project/vllm/issues/42125
+  kind: github_issue
+  resolved_from: '#42125'
+relations: []
+original:
+  category: KV4
+  section: KV §4 cross-request（跨请求，缓存键 / 汏染）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`_gen_lora_extra_hash_keys()` 把 `lora_name`（而非全局唯一的 `lora_int_id`）混入 prefix-cache 的块哈希，同时 `LoRARequest.__eq__/__hash__` 也只以 `lora_name` 为键。于是两个同名但权重不同的适配器（热切换 hot-swap / reload 场景）会算出完全相同的块哈希；在前缀缓存开启时，一个运行在适配器 B 上的请求会命中在适配器 A 权重下计算出来的 K/V 块。故障是静默的：缓存层认为命中合法，没有任何一致性校验能发现「这段 KV 是别的权重算出来的」。'
+  source: 'vLLM #30931（热切换变体 #42125）。'
+  behavior: 源文档未给出独立的「行为效应」条目；按机制，B 请求的前缀被 A 的权重条件化，输出在语法上正常但内容偏向另一套适配器的行为，且只在同名适配器被替换过之后才出现。
+  trigger_surface: vLLM 配置/后端/缓存开关可构造对照
+  signature: off-manifold（infra_off）——前缀位置的 K/V 属于适配器 A 的分布，而 query 流是在 B 权重下产生的，两者不自洽。捕获者：trajectory（相对「在 B 下重算」的参考轨迹的逐层/逐位置偏离）、geometric（跨适配器逐位置余弦下降）、cheap（recompute-oracle 轴：命中路径 vs 重算路径的输出比对）。漏检者：statistical / spectral 的全局矩与谱形——A 与 B 的 KV 都是「健康 LoRA 权重」的输出，范数与谱几乎同分布，只有在与正确权重参考对齐后才暴露。该签名受门控：必须存在同名适配器替换 + 前缀缓存命中，单请求单适配器下不出现。
+  repro: 两遍捕获-拼接近似。第一遍在一个低秩扰动过的权重下（复用 `lora_wrong_scaling_alpha` 一类的 LoRA-delta 注入）跑同一 prompt，抓下第 L 层 self_attn 的前缀 K/V；第二遍在原权重下前向，用单个 `self_attn` 前向 pre-hook把前 p 比例位置的 cached K/V 替换成第一遍捕获的张量。单模型路径无需真实 LoRA 服务栈。
+  locus: '`cross-request`'
+  priority: '`medium`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

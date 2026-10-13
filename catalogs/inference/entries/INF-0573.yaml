@@ -1,0 +1,52 @@
+id: INF-0573
+legacy_ids:
+- '6.180'
+slug: sglang_responses_api_prompt_cache_key_silent_drop_global_namespace
+aliases: []
+title: SGLang 静默丢弃 prompt_cache_key 致缓存隔离失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: ResponsesRequest 字段适配
+  behavior: ResponsesRequest 未声明 OpenAI 标准字段 prompt_cache_key（仅有原生 cache_salt），Pydantic 忽略未知字段将其丢弃，适配器以 cache_salt=None 构造请求。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  detail: SGLang /v1/responses 收到 Codex 等客户端的 prompt_cache_key 时请求成功、无告警，但不同 key 的请求全部落入同一全局 radix-cache 命名空间，跨任务/租户缓存隔离失效，客户端无法察觉。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang /v1/responses + OpenAI 兼容客户端发送 `prompt_cache_key`（Codex 等；软件协议组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37263
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0562
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（OpenAI Responses API 的 `prompt_cache_key` 被 Pydantic 忽略未知字段**静默丢弃**——`ResponsesRequest` 声明原生 `cache_salt` 却不声明该标准字段，适配器以 `cache_salt=None` 构造 `GenerateReqInput`：不同 caller cache key 的请求全部落入同一全局 radix-cache 命名空间；key 在 wire 上存在、服务端接受成功，语义失效） · Cov: `var:sglang_lmcache_storage_keys_drop_cache_salt_tenant_isolation`（6.169 缓存身份隔离丢失族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: schema 级复现（构造 `ResponsesRequest` 即见字段被吞）：Pydantic 默认 ignore unknown fields + OpenAI 兼容层未把标准字段桥接到原生等价物。Codex 类 agent 客户端每 task/thread 发稳定 `prompt_cache_key`（新 task 换 key）——本意是跨请求缓存身份 + 隔离，现全部请求共享全局命名空间：(a) 缓存隔离预期失效（跨 task 串扰面）；(b) 命中率语义与客户端假设脱钩。与 6.169（LMCache 存储 key 丢 cache_salt）互补：彼条在存储层、本条在 API 协议适配层。
+  source: 'SGLang #37263（2026-08-31 open，schema 级最小复现 + e2e 测量，引 #9163/#10718 历史）。https://github.com/sgl-project/sglang/issues/37263'
+  behavior: 无 crash、无告警——请求成功但缓存身份静默合并：跨租户/跨任务的 prompt 缓存共享（隔离失效）且客户端无法察觉（字段被接受）。属「**协议标准字段被静默丢弃 = 缓存命名空间坍缩**」：6.169 的 OpenAI 兼容层同构实例。
+  trigger_surface: SGLang /v1/responses + OpenAI 兼容客户端发送 `prompt_cache_key`（Codex 等；软件协议组合即触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

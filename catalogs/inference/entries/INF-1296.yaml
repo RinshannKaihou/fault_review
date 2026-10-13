@@ -1,0 +1,68 @@
+id: INF-1296
+legacy_ids:
+- K9.5
+slug: fp8_kv_pd_disagg_arithmetic_error
+aliases: []
+title: PD 分离下 FP8 KV 跨节点传输无法往返致算术错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: PD 分离 FP8 KV 传输与反量化
+  behavior: FP8 KV 在 prefill 侧量化、跨节点传输后在 decode 侧反量化时无法往返，量化元数据与数值在传输边界上不一致。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: NVFP4 的 PD 分离服务开启 --kv-cache-dtype fp8 时，连 2+2 这类基础算术都答错（得 5），服务无报错；改用 BF16 KV 则正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/42179
+  kind: github_issue
+  resolved_from: 'vLLM #42179'
+relations: []
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`infra_off` · Cov: `NEW` · 触发 `no` · 置信度 `verified`'
+  mechanism: 在 NVFP4 的 prefill/decode 分离（PD-disaggregated）服务中，`--kv-cache-dtype fp8` 把输出损坏到 **2+2=5** 的程度；换成 BF16 即修复。根因是 FP8 KV 在 prefill 侧量化、经跨节点传输、再在 decode 侧反量化时**无法往返（round-trip）**——量化元数据与数值在传输边界上不一致。
+  source: 'vLLM #42179（CLOSED 2026-05-09）。'
+  behavior: 基础算术这类最简单的确定性任务都给出错误答案（2+2=5），服务无报错。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: off-manifold KV，且**只出现在被传输的 KV 块上**（cross-node × quant 复合）。检测面：per-block / per-position 的 statistical KV-norm 离群与 geometric 偏移在传输块边界处最强，块边界形成可定位的空间结构；纯全局 cheap 度量能看到严重退化但无法定位；spectral 族对块状扰动响应中等。因为损坏幅度极大（算术都错），这是一个"检测容易、定位难"的 infra_off 故障。
+  repro: 以"对 KV 的一个连续位置区间（充当被传输的块）施加 fp8 量化-反量化不匹配（用错误的 scale 反量化）"近似；单钩子在 cache 写入后按区间施加。
+  locus: cross-node-transfer
+  priority: |-
+    low
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem KV缓存 → 量化。原文根因是'量化元数据与数值在传输边界上不一致'，即 FP8 KV 的量化/反量化 scale 无法往返，属量化方案的 scale 处理；P/D 跨节点传输是触发条件（rule 6），与 INF-1272（FP8 KV 复用 scale 不一致 → 量化）、INF-1244 同口径。component 保留。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: KV缓存
+        status: unanimous

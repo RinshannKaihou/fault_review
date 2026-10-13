@@ -1,0 +1,59 @@
+id: INF-1343
+legacy_ids:
+- '1.295'
+slug: ttmetal_concat_f32_height_sharded_width_tf32_truncation_via_unpacktosrc
+aliases: []
+title: ttnn.concat FLOAT32 sharded 静默截断为 TF32
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ConcatS2S 工厂 UnpackToSrc
+  behavior: FLOAT32 且 L1 height-sharded 时 concat 选中 S2S 工厂，三个 buffer unpack mode 全设 UnpackToSrc，tile 经 SrcA 截断为 TF32，丢低 13 位尾数。
+effect:
+  objects:
+  - 数值结果
+  detail: L1 height-sharded FLOAT32 宽 concat（dim=-1）全元素静默 TF32 截断：8192 元素 8190 错，与 TF32 截断参考 bit-exact 相等；DRAM/L1 interleaved 同调用逐位正确。ttsim Blackhole 复现，硅上待确认。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: ttnn.concat dim=-1 + FLOAT32 TILE + L1 HEIGHT_SHARDED
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: '与 1.249 共享 SrcA TF32 10-bit 尾数截断机制，但本条独立成因（unpack mode 差错而非 dtype= 转换缺失）；姊妹工厂 transpose_wh_sharded_program_factory.cpp 对 FLOAT32 用 UnpackToDest 是正确实现。测试盲区：test_sharded_concat 只参数化 bfloat16/int32/uint32，test_concat_fp32_last_dim_mantissa_not_truncated 只覆盖 interleaved。修复 PR #59639 open（前身 #59634 closed）。来源 tt-metal #59530。'
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/59530
+  kind: github_issue
+relations: []
+original:
+  mechanism: 纯数据搬运作（concat）在 FLOAT32+sharded 组合下误经 SrcA unpack 路径；与 1.249（TF32 SrcA 截断）共享 SrcA 10-bit 尾数截断机制，但触发面在 sharded concat 工厂选择。10-12 扫描已标记"强候选、预计 var:1.266 族"——实读后定为本条独立机制（unpack mode 差错而非 dtype= 转换缺失）。
+  source: 'tt-metal #59530（2026-10-09 open，逐 memory config 对照 + TF32 参考逐位相等证明 + 根因 UnpackToSrc vs UnpackToDest 源码定位）。https://github.com/tenstorrent/tt-metal/issues/59530'
+  behavior: 无 crash——height-sharded FLOAT32 宽 concat 全元素静默 TF32 截断。
+  trigger_surface: tt-metal + ttnn.concat dim=-1 + FLOAT32 TILE + L1 HEIGHT_SHARDED（hw_specific；ttsim 复现、硅上待确认）
+  discovery: 2026-10-12 每日扫描（10-12 扫描"下轮优先"补录，正文本日深读）。
+  meta: '`infra_off`（`ttnn.concat([a, b], dim=-1)` FLOAT32 TILE 输入且 **L1 HEIGHT_SHARDED** 时选中 `ConcatS2STiledProgramFactory`：compute kernel 转置途经 tile，FLOAT32 工厂开了 32-bit Dest 但把三个 buffer 的 unpack mode 全设 `UnpackToSrc`——tile 经 SrcA 被**截断为 TF32**（低 13 位尾数丢弃），8192 元素 8190 错（-11.258398→-11.2578125，与 TF32 截断参考 bit-exact 相等）；DRAM/L1 interleaved 同调用逐位正确；姊妹工厂 `transpose_wh_sharded_program_factory.cpp` 对 FLOAT32 用 `UnpackToDest` 是正确实现并存。测试盲区：`test_sharded_concat` 只参数化 bfloat16/int32/uint32、`test_concat_fp32_last_dim_mantissa_not_truncated` 只覆盖 interleaved。ttsim Blackhole 复现，机制非模拟器特定、硅上待确认。修复 PR #59639 open（#59634 closed 前身）） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

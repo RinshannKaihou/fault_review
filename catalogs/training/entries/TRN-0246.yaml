@@ -1,0 +1,57 @@
+id: TRN-0246
+legacy_ids:
+- RL-RO.24
+slug: fsdp_engine_dtype_config_ignored_rollout_trainer_split
+aliases: []
+title: verl FSDP 引擎不读 dtype 配置，训练侧静默保持 BF16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 配置/参数
+    stack: verl
+    component: FSDP 引擎 dtype 配置读取
+  behavior: FSDP 引擎从不读取 fsdp_config.dtype，compute dtype 只来自 mixed_precision.param_dtype，mixed_precision 为默认 None 时硬编码为 bfloat16。
+effect:
+  objects:
+  - 训练信号
+  detail: 无报错；设 rollout.dtype 与 fsdp_config.dtype 为 float16 时 rollout 为 FP16、trainer 仍为 BF16，GradScaler 也被跳过；k3_kl 约为真 FP16 配置的 63 倍。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-09'
+remarks: subsystem 缺「训练精度/混合精度配置」：训练引擎未消费 dtype 配置字段，不属于切分、算子或量化，暂归最接近的 运行时/执行。
+evidence:
+- url: https://github.com/verl-project/verl/issues/8076
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0245
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:fp32_lm_head_not_applied_to_generation_backends` · 置信度 `verified`'
+  mechanism: verl FSDP 引擎**从不读 `fsdp_config.dtype`**：该字段定义在基类 `EngineConfig`（`verl/workers/config/engine.py` L98）并被 `FSDPEngineConfig` 继承、docstring 明示「Mixed precision training param dtype」，但 `main` 上代码检索仅 Megatron 引擎消费它；FSDP compute dtype 只来自 `fsdp_config.mixed_precision.param_dtype`，`mixed_precision=None`（默认）时在 `transformer_impl.py` ~L391-400 硬编码 `param_dtype = torch.bfloat16`。用户按直觉设 `rollout.dtype=float16 + fsdp_config.dtype=float16` 期望 FP16 训练：vLLM rollout 确实 FP16（引擎日志可见），**trainer 静默保持 BF16**；副作用：`param_dtype == torch.float16` 才创建的 `ShardedGradScaler` 路径也被跳过。正确写法 `fsdp_config.mixed_precision.param_dtype=fp16` 才生效。报告者 verl `6093e007` 实测（1-step GRPO 门、4 prompts × 2 样本、`rollout_corr/k3_kl`）：BF16/BF16 默认 7.6e-4；错配组合 4.5e-4（mismatch 停留在 BF16 量级、约为真 FP16/FP16 的 63 倍）；FP16/FP16 7.2e-6。
+  source: 'verl #8076（2026-09-30；`dtype` 字段定义/继承/唯一消费者三段代码定位 + 三配置实测 KL 表；`main@3084c261` 行为不变）。https://github.com/verl-project/verl/issues/8076'
+  behavior: 无 error、无 warning——为压 TIM 专门选的 FP16 配置只改了 rollout 半边，trainer/rollout mismatch 纹丝不动，还叠加「FP16 rollout 无 GradScaler」的新精度面。与 RL-RO.23（trl `cast_lm_head_to_fp32` 只护训练侧打分）共享失效机制：**精度意图只落到训练侧、生成侧不跟**——触发点不同（那边是 autocast 上下文环绕 + vLLM 无 `head_dtype` 覆盖，这边是配置字段在引擎族中被静默不消费）。legacy `fsdp_workers.py` 路径报告者未核。截至 2026-10-09 open、0 评论、无修复。
+  discovery: 2026-10-09 每日扫描（停机补扫）
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 配置/参数
+        status: panel7

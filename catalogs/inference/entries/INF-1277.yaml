@@ -1,0 +1,66 @@
+id: INF-1277
+legacy_ids:
+- K7.2
+slug: nemotron_cudagraph_track_buffer_stale_tail
+aliases: []
+title: SGLang 混合 Mamba CUDA graph track 缓冲尾部过期
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: CUDA graph mamba track 缓冲
+  behavior: CUDA graph 的 _replay_metadata 只重填 mamba_track_indices_buf 的 [:bs]，却把整个 max_bs 缓冲交给 ForwardMetadata，尾部残留旧 replay 的 track。
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: Mamba2 混合模型开 CUDA graph 且前缀命中 decode-seeded mamba 条目时读到损坏 track，logits 明显偏离（mean logprob diff≈0.61、KL≈1.55，关 CUDA graph 为≈0.002），输出语义漂移但流畅，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/32555
+  kind: github_pr
+  resolved_from: 'SGLang PR #32555'
+relations:
+- kind: var
+  target: INF-1284
+original:
+  category: KV7
+  section: KV §7 arch-specific-cache（架构特定缓存）
+  meta: '`infra_off` · Cov: `var:cudagraph_padded_batch_stale_block_table` · 触发 `partial` · 置信度 `verified`'
+  mechanism: Mamba2 混合架构（NemotronH / Nemotron-3-Super-120B）+ CUDA graph 开启时，decode CUDA graph 的 `_replay_metadata` 每次 replay 在 `[:bs]` 前部重填静态 track 目标缓冲 `mamba_track_indices_buf`，却把**整个 `max_bs` 缓冲**交给了 `ForwardMetadata`——导致尾部（`[bs:max_bs]`）保留着**先前 replay 的过期 track 数据**，prefix 命中 decode-seeded mamba 条目时读取了损坏的 track → 返回错误的 logits。与 K8.7 `cudagraph_padded_batch_stale_block_table` 是同一模式（CUDA graph replay 下静态缓冲的 stale tail 被读），但作用对象不同：K8.7 是 **block-table / slot_mapping**（attention paged KV），本条是 **mamba track indices**（SSM conv+SSM 状态的 track 缓冲），且发生在混合架构（attention + Mamba 堆叠）而非纯 attention 架构上。关 CUDA graph 后 KL 从 ≈1.55 降至 ≈0.002。
+  source: 'SGLang PR #32555（2026-07-27，open）。报告者已将根因定位到 `_replay_metadata` 的缓冲长度不一致（`[:bs]` vs `max_bs`）。'
+  behavior: '**纯静默损坏**——无 crash、无 assert、无 NaN。prefix 命中 decode-seeded mamba 条目时返回的 logits 明显偏离（mean logprob diff ≈ 0.61，KL ≈ 1.55 vs 关 CUDA graph 的 ≈0.002），表现为输出语义漂移但语法仍流畅。仅在 CUDA graph 开启 + Mamba2 混合架构 + prefix cache 命中 decode-seeded mamba 条目时触发。'
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: infra_off，但**仅在混合架构的 Mamba 层轨迹上**出现——attention 层的隐藏态不受影响，只有 conv+SSM 层的 state 更新因 track index 错误而偏离正确轨迹。可捕获：trajectory 族的**按层族分组**轨迹对比（与 K4.8 `hybrid_mamba_ssm_attention_state_desync` 同族——异常只存在于 attention 层与 Mamba 层的**相对**关系中）；spectral 族可能看到 SSM state 的能量分布因错误 track 而偏移。会漏检：全部层混合汇总的 statistical / geometric 指标（两类层各自看差异很小，attention 层完全健康）；以及任何不区分层架构的度量。纯 attention 架构没有 Mamba 层，该签名在标准稠密模型上原理上不可复现。
+  locus: '`arch-specific-cache`'
+  priority: |-
+    `medium`（静默损坏，但限定于 Mamba2 混合架构 + CUDA graph 的交集）
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 subsystem=KV缓存。独立判断曾按与 INF-1284 同模式归 运行时/执行，复核后按 rule 1 维持 KV缓存：被读错的是 mamba_track_indices_buf（Mamba conv+SSM 状态的 track 缓冲），只在 prefix 命中 decode-seeded mamba 条目的状态缓存路径上出现，词表 KV缓存 含 SSM 循环状态池；而 INF-1284 的 block-table/slot_mapping 是通用 paged attention 输入，不专属任何功能特性，故两条归属不同。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

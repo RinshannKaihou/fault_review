@@ -1,0 +1,56 @@
+id: TRN-0155
+legacy_ids:
+- MOE.06
+slug: expert_bias_hook_implicit_semantics_shift
+aliases: []
+title: torchtitan Qwen3 无条件注册均衡 hook，升级后轨迹分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: torchtitan
+    component: Qwen3 负载均衡 hook 注册
+  behavior: '#3666 起 Qwen3 registry 无条件注册 aux-loss-free 负载均衡 hook，每步用累计计数更新持久 buffer expert_bias_E；该变更无独立开关，ckpt/配置也不记录更新模式。'
+effect:
+  objects:
+  - 训练轨迹
+  - 模型权重
+  detail: 同 ckpt、数据、seed 与确定性执行下，升级前后从 step 2 起 loss 分叉（235B 1000 步 MAE 0.042、最大差 0.129），grad_norm 首差在 step 19；无 crash、NaN 或日志差异，旧版本 run 无法复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-02'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/4394
+  kind: github_issue
+relations: []
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'torchtitan #3666 起 Qwen3 registry 无条件注册 aux-loss-free 负载均衡 hook（`post_optimizer_build_fn=register_moe_load_balancing_hook`），optimizer pre-hook 每步用累计 `tokens_per_expert_E` 更新持久 buffer `expert_bias_E` 并清零计数。行为变更完全隐式：`load_balance_coeff` 默认 1e-3 照旧、无独立开关、ckpt/配置元数据不记录更新模式——同 ckpt + 同数据 + 同 seed + 确定性执行，升级前后从 step 2 起 loss 静默分叉（Qwen3-235B-A22B 1000 步 MAE 0.042、最大差 0.129@step 955；grad_norm 首差 step 19、最大差 5.31；Qwen3-30B-A3B 复现 step 2 首差），pre-#3666 run 因此不可复现且无任何警告。消融闭合因果边界：两侧关 #3666 后残差缩到 MAE 0.012；#3666+#3386 双关时 1000/1000 步 loss/grad_norm/batch fingerprint 全部 bitwise 全等。'
+  source: 'torchtitan #4394（235B/30B 双模型受控对比 + 四组消融 + freeze/迁移契约诉求，明确不要求 revert）。https://github.com/pytorch/torchtitan/issues/4394'
+  behavior: 无 crash、无 NaN、无日志差；路由选择所依赖的训练态被 registry 默认值隐式换掉，升级即静默换一条训练轨迹，且 ckpt 里非零 `expert_bias_E` 的 freeze 语义未定义。与 KER.05（版本漂移致发散、机制未定位）的区别：这边因果已闭合到单一 hook 注册，缺的是显式契约与迁移可见性；与 MOE.05 的区别：那边是模块替换时丢偏置张量，这边是偏置**更新语义**被隐式改变。
+  discovery: 2026-09-02 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+        status: panel7

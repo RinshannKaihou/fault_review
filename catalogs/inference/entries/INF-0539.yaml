@@ -1,0 +1,52 @@
+id: INF-0539
+legacy_ids:
+- '6.146'
+slug: vllm_eagle_last_block_drop_hybrid_alignment_unit_recompute
+aliases: []
+title: vLLM EAGLE 命中扣除按 hybrid 大对齐单元重算致吞吐下降
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV 协调器 eagle 组标记
+  behavior: 模型无 is_eagle_group 注解时把所有 KV 组标为 eagle，命中扣除一个 scheduler 对齐单元；为 16-token 块设计的保护在 hybrid 的 1,648-token 对齐单元上代价放大约 100 倍。
+effect:
+  objects:
+  - 性能/资源
+  detail: hybrid GDN/Mamba + prefix caching + 任意 EAGLE 族推测解码（含 K=0）时每次命中重算整个对齐单元：warm 命中率 97.5% 降至 86.9–91.7%，c=8 吞吐 327 降至约 200 tok/s；无报错，仅缓存计数器可见。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid GDN/Mamba 模型 + prefix caching + 任意 EAGLE 族 speculative_config（含 K=0 配置）+ 多轮/重复 prompt 负载
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53670
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（EAGLE last-block drop 保护在 hybrid GDN 布局上以 scheduler 对齐单元为粒度——16-token 块的设计在 1,648-token 对齐单元上每次命中丢弃整块重算，prefix 命中率掉 6–10 点、batch 吞吐 -30~40%） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 模型无 `is_eagle_group` 注解时 `kv_cache_coordinator.py` 保守地把**所有** KV 组标为 eagle；EAGLE 标记的 dense/full-attention 组从命中中扣除一个对齐单元（防 draft-layer KV 依赖写者续写与 chunk 边界 lookahead 污染），hybrid reconciliation 再把合并命中限制到该更短边界——请求重算一个 scheduler 对齐单元。dense 模型该单元是 16-token block；Qwen3.8-27B hybrid GDN/Mamba 布局（15 MambaSpec KV 组 + full-attention 组，scheduler/hash block=1,648 token）上同一保护代价 ~100×：实测 warm lookup 命中率 97.5% → 86.9–91.7%，c=8 吞吐 327 → ~200 tok/s。dflash(DFlash2,K=7)/mtp 双复现，even `[[1,16,0]]+skip_draft_when_k0` 也复现——drafter 实际不运行时保护仍生效。
+  source: 'vLLM #53670（2026-08-25 open，V1/V2 model runner + async scheduling，2×RTX 5090 TP2 FP8 weights+KV；含 per-config 命中/重算/吞吐表）。https://github.com/vllm-project/vllm/issues/53670'
+  behavior: 无 crash、无错误日志——纯性能静默失效：prefix 复用工作负载命中率与吞吐系统性损失，只有缓存计数器能暴露。与 6.144（物化策略根因）同族同症状（缓存活性），本条根因在**保守 eagle 标记 × 大对齐单元的保护粒度错配**——为 16-token 时代设计的按块保护在新对齐几何上被放大两个数量级。
+  trigger_surface: vLLM + hybrid GDN/Mamba 模型 + prefix caching + 任意 EAGLE 族 speculative_config（含 K=0 配置）+ 多轮/重复 prompt 负载
+  discovery: |-
+    2026-08-25 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

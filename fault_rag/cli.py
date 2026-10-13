@@ -22,7 +22,7 @@ def main(argv=None):
     s = sub.add_parser("search", help="hybrid retrieval over catalog entries")
     s.add_argument("query")
     s.add_argument("--repo", choices=["inference", "training"])
-    s.add_argument("--category", help="NUM / HW / cat1 / 1 / KV1 / neg_rejected ...")
+    s.add_argument("--category", help="subsystem (e.g. KV缓存) or old category: NUM / HW / cat1 / KV1 / neg_rejected ...")
     s.add_argument("--confidence", choices=["verified", "documented", "speculative"])
     s.add_argument("--trigger", help="inference 触发 tag, e.g. yes/partial/no")
     s.add_argument("--topk", type=int, default=8)
@@ -34,7 +34,7 @@ def main(argv=None):
     s.add_argument("--full", action="store_true",
                    help="include complete fields instead of summary")
 
-    l = sub.add_parser("lookup", help="exact id / snake_name / alias lookup")
+    l = sub.add_parser("lookup", help="exact id (INF-0044 / TRN-0001), old id (1.44 / HW.01), snake_name or alias")
     l.add_argument("query")
 
     r = sub.add_parser("related", help="walk cross-reference links of an entry")

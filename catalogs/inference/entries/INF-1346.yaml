@@ -1,0 +1,58 @@
+id: INF-1346
+legacy_ids:
+- '1.298'
+slug: ttmetal_tilize_transposed_nonsquare_face_heap_overflow_corrupt_roundtrip
+aliases: []
+title: tt-metal tilize 转置非方 face 越界读写堆、往返数据错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: tilize_utils.cpp 格式转换器
+  behavior: Tile 构造器接受非方 face 转置 tile，但四个转换器假设 face_H==face_W，循环边界越界读写 face 外；377-382 行边界检查打印 idx 后仍 memcpy 不拦截。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: heap 越界读写：ASan 捕获；无 ASan 时 glibc free() invalid next size abort 或往返数据静默错。仅 C++ API 的转置 tile × 非方 face 触发；方 face、非转置均正常，Python binding 不达此路径。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: 'false'
+  trigger_note: tt-metal C++ API + 转置 tile + 非方 face_shape
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/60244
+  kind: github_issue
+relations: []
+original:
+  mechanism: 转置分支的循环边界沿用方 face 假设；边界检查打印后不拦截。
+  source: 'tt-metal #60244（2026-10-12 open，ASan 双向溢出 + 全组合矩阵对照；main@3ba039a）。https://github.com/tenstorrent/tt-metal/issues/60244'
+  behavior: heap 越界读写（ASan 下捕获、否则 heap 元数据损坏 abort 或静默错数据）；非 LLM 推理主路径（自定义 face C++ API）。
+  trigger_surface: tt-metal C++ API + 转置 tile + 非方 face_shape（hw_specific）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（`Tile(tile_shape, face_shape, transpose_tile)` 构造器接受非方 face 的转置 tile（如 `Tile({16,32},{8,16},true)`），而 `tilize_utils.cpp` 四个转换器假设 `face_H == face_W`：swizzled↔nfaces 循环 `row < face_W, col < face_H` 越界读 face 外——**heap-buffer-overflow READ/WRITE**（ASan 捕获；无 ASan 时 glibc `free(): invalid next size`）；row-major 往返不闭合（数据错）；377-382 行边界检查打印 dst/src idx 后**仍然 memcpy**。CPU-only 确定性复现；32×32/16×16、16×32/16×16 转置、16×32/8×16 非转置全通过——触发精确钉在转置×非方 face 组合。Python Tile binding 只建默认方 face，C++ API 可达） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

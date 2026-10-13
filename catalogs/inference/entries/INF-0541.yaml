@@ -1,0 +1,53 @@
+id: INF-0541
+legacy_ids:
+- '6.148'
+slug: vllm_example_connector_token_keyed_external_kv_partition_drop
+aliases: []
+title: vLLM ExampleConnector 存储键丢隔离维度致跨租户 KV 复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: ExampleConnector 存储键派生
+  behavior: 外部存储键只由 prompt token bytes 派生，丢弃 lora_request、不用 block_hashes；prompt_embeds 请求无 token ids，对齐得 -16。HF3FS 连接子复制同一模式。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  detail: cache_salt 或 LoRA 不同的同 token 请求互相命中他人 KV（salt-y 请求拿到 salt-x 存的 48 token），返回基于他人缓存的结果且无报错；prompt_embeds 请求全部键到同一值，并向 scheduler 返回 -16 的负外部 token 计数。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + ExampleConnector/HF3FSKVConnector 类 token 重派生键连接子 + 多 salt/多 LoRA 租户或 prompt_embeds（CPU 单测可复现）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53495
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1301
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（ExampleConnector 从原始 prompt token bytes 重派生外部 KV 存储键，从不消费 `request.block_hashes`——cache_salt/LoRA/prompt_embeds 三个隔离维度同时失效：跨 salt/跨 adapter 复用他人 KV；embeds 请求对齐到 -16 负 token 计数） · Cov: `var:lmcache_cache_salt_isolation_missing` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`ExampleConnector` 的外部存储键只从 prompt token bytes 派生（`_generate_foldername_debug`），`build_connector_meta` 丢弃 `new_req.lora_request`，`request.block_hashes` 从不被消费：(a) cache_salt 不同的同 token 请求互相命中（A salt-x 存储后，B salt-y 得 48 token 三整块 A 的 KV）；(b) LoRA adapter 不同同样互相命中；(c) `prompt_embeds` 请求 `prompt_token_ids is None`，`align_to_block_size(-1,16) == -16`，全部 embeds 请求键到 `hash(b"")` 且向 scheduler 返回 -16 的**负外部 token 计数**。cache_salt 是文档化的多租户隔离机制（docs/usage/security.md 前缀缓存时序侧信道缓解），而本 connector 是 docs/features/disagg_prefill.md 指向的参考实现；`HF3FSKVConnector` 复制了同一重派生模式（#51748）。RFC #53194 的连接子一致性套件（PR #53769）即为此类设计；键于 block_hashes 的 `SimpleCPUOffloadConnector`/`OffloadingConnector` 三维全过。'
+  source: 'vLLM #53495 + 修复 PR #53496（2026-08-24 open，键存储于 block hashes；CPU-only 单测复现，conformance 套件分支）。https://github.com/vllm-project/vllm/issues/53495'
+  behavior: '**无 crash、静默跨租户 KV 复用**——安全隔离（cache_salt）与正确性隔离（LoRA）同时无声失效，返回基于他人 cache 的结果；embeds 路径还向调度器注入负计数。K9.10（LMCache cache_salt 隔离缺失）的连接子族变体：同一"键派生丢弃隔离维度"模式在参考实现中被复制传播。'
+  trigger_surface: vLLM + ExampleConnector/HF3FSKVConnector 类 token 重派生键连接子 + 多 salt/多 LoRA 租户或 prompt_embeds（CPU 单测可复现）
+  discovery: 2026-08-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

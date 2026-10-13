@@ -1,0 +1,61 @@
+id: INF-0823
+legacy_ids:
+- '8.39'
+slug: vllm_transformers_backend_drops_learnable_attention_sink
+aliases: []
+title: vLLM Transformers 后端静默丢弃 attention sink
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: Transformers 后端 s_aux 处理
+  behavior: Transformers modeling backend 收到以 s_aux 传入的 per-head attention sink 后不做处理，未把 sink 折入 softmax 分母，等价于静默丢弃 sink token。
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: GPT-OSS、GraniteSWA/GraniteMoeSWA、DeepSeek V4、MiMo-V2-Flash 等带 learnable sink 的模型走 Transformers backend 时无 crash，输出静默错误，上下文越长漂移越大。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；Transformers backend + 任何 learnable attention sink 模型（GPT-OSS / GraniteSWA / DeepSeek V4 / MiMo-V2-Flash）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52156
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（Transformers backend 未把 per-head attention sink 折入 softmax 分母 → sink token 被静默丢弃、输出错误） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '带 learnable attention sink 的模型（GPT-OSS、GraniteSWA/GraniteMoeSWA、DeepSeek V4、MiMo-V2-Flash 等）把 per-head sink 以 `s_aux` 参数传给 attention 接口，只有 attention 实现能把 sink 折入 softmax 分母；vLLM 的 Transformers modeling backend 接到 `s_aux` 后不处理——等价于**静默丢弃 sink token**，模型给出错误输出。#48270 曾因该 bug 为 Granite 专门新增 native `GraniteSWAForCausalLM` 类绕过；PR #52156 在 backend 层统一修复，使所有当前与未来 sink 模型在该 backend 上正确。'
+  source: 'vLLM PR #52156（2026-08-14 open），引 #48270。https://github.com/vllm-project/vllm/pull/52156'
+  behavior: 无 crash。sink 模型在 Transformers backend 下输出**静默错误**（上下文越长漂移越大）。属「模型特有参数在通用 backend 被静默丢弃」**新子签名**——接口契约（`s_aux`）存在但消费侧实现缺失。
+  trigger_surface: vLLM；Transformers backend + 任何 learnable attention sink 模型（GPT-OSS / GraniteSWA / DeepSeek V4 / MiMo-V2-Flash）
+  discovery: 2026-08-14 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 'uncertain 字段 cause.subsystem 模型定义 vs 算子/内核：原文“vLLM 的 Transformers modeling backend 接到 s_aux 后不处理”，修复 PR #52156 在 backend 层统一处理，即建模代码适配层（词表 模型定义 含建模代码），attention kernel 本身支持 sink。定为 模型定义。维持原判。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出内容
+        status: panel7

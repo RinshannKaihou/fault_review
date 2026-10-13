@@ -1,0 +1,50 @@
+id: INF-0236
+legacy_ids:
+- '1.237'
+slug: ttmetal_program_spec_cache_alias_primed_binding_freeze_first_match_misbind
+aliases: []
+title: ProgramSpec 缓存冻结别名绑定，后续调用错绑输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tt-metal
+    component: ProgramSpec 缓存绑定解析
+  behavior: 按 MeshTensor 地址 find_if 取首个匹配解析参数位置，别名调用使多个参数槽解析到同一索引，该绑定表被冻结进程序缓存条目，cache hit 时只刷新张量指针不重算绑定。
+effect:
+  objects:
+  - 数值结果
+  detail: 同进程先以别名调用（如 concat([x,x])）预热、再以不同张量调用同 spec 时，concat([a,b]) 返回 concat(a,a)；反序调用正确，结果依赖调用历史；多输入已移植 op 均暴露。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Metal 2.0 基座 ProgramSpec 概念 + 多输入 op + 同进程别名调用先于 distinct 调用（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57248
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（Metal 2.0 基座 `ProgramSpecFactoryConcept` 缓存命中路径**静默错绑别名输入张量**：`SpecBindingSupport::resolve_bindings`（`mesh_device_operation_adapter.hpp:892`）把每个 `TensorArgument` 按 `MeshTensor` 地址 `std::find_if` 映射到位置并取**首个**匹配——同一 tensor handle 出现在两个参数槽（别名调用）时两参数都解析到 index 0，且该索引表被**冻结进缓存条目**；后续同 spec 不同张量的调用 cache hit 复用陈旧绑定，读第一个张量两次。实测 `concat([x,x])` 预热后 `concat([a,b])` 返回 `concat(a,a)`；`concat([x,y,x])` 后 `concat([a,b,c])` 返回 `[a,b,a]`——只有别名槽陈旧、反序（distinct 先行）正确，**是否出错取决于历史调用顺序**。`CustomProgramSpecFactoryConcept` 路径不受影响；每个基座概念多输入已移植 op 结构性暴露（`repeat_interleave` 单 handle 多传、扩散引导 `concat([latents,latents])` 为典型触发）；concat 已有 op-local workaround，根因在共享 spec adapter。porting `ttnn.concat`（#54651）时发现） · Cov: `NEW`（程序缓存按地址绑定 × 别名参数折叠子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 缓存键的绑定解析阶段用"首个地址匹配"消歧参数位置——别名调用使两个形式参数解析到同一实参索引，错误索引表随缓存条目持久化；后续调用的 `refresh_tensor_args` 只刷新张量指针不重算绑定表。设备程序缓存（跨调用持久）× 别名折叠（调用内多槽同 handle）两个维度叠加。
+  source: 'tt-metal #57248（2026-09-21 open，含 Wormhole concat 双向复现（别名预热→distinct 错绑 / distinct 先行→正确）、resolve_bindings 代码引用、repeat_interleave/扩散引导暴露面分析）。https://github.com/tenstorrent/tt-metal/issues/57248'
+  behavior: 无 crash、无错误——**静默错值且依赖调用历史**：同进程内先别名后 distinct 的调用序列拿到"第二操作数被第一操作数替换"的结果，反序调用正确，使复现呈非确定性伪影。与 6.211（mm uuid 逐字缓存键碰撞拆引擎）构成跨层"缓存键/绑定退化"对：本条是设备程序缓存层、绑定粒度退化到地址首匹配。
+  trigger_surface: tt-metal Metal 2.0 基座 ProgramSpec 概念 + 多输入 op + 同进程别名调用先于 distinct 调用（hw_specific）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

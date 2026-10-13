@@ -1,0 +1,51 @@
+id: INF-0563
+legacy_ids:
+- '6.170'
+slug: trtllm_kvv2_suspend_retains_peft_adapter_device_ownership
+aliases: []
+title: TRT-LLM 挂起请求不释放 PEFT adapter 致资源死锁
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: tensorrt-llm
+    component: KVCacheV2Scheduler 挂起/恢复
+  behavior: _suspend_request() 挂起时只释放 KV 页，不调 PeftCacheManager.mark_request_done(pause=True)；恢复路径也缺 add_request_peft。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: PyTorch 后端 + PEFT/LoRA + 满载驱逐时，被挂起请求的 adapter 仍 device-active、页不可驱逐，另一 adapter 的 ensure_batch 无法从满 device cache 加载，形成资源死锁、吞吐塌缩；输出不受损。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM PyTorch 后端 + KVCacheV2Scheduler + PEFT/LoRA + 满载驱逐（MAX_UTILIZATION 或 victim eviction）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/18407
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（TRT-LLM PyTorch 后端 `KVCacheV2Scheduler` 的 `_suspend_request()` 挂起请求时释放 KV 页但**不调 `PeftCacheManager.mark_request_done(A, pause=True)`**——被挂起请求的 adapter 保持 device-active、页不可驱逐；后续另一 adapter 的 `ensure_batch` 无法从满 device cache 加载——**为缓解压力发起的挂起反而制造资源死锁面**） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: KV 挂起与 PEFT 生命周期是两个独立状态机，挂起转换只通知 KV 侧；恢复路径同样缺 `add_request_peft(req, True)`（生成恢复直接从 `_try_schedule_generation()` 返回、不经上下文 admission 路径）。mocked 状态机 harness（无权重无 GPU）对 main commit e53a70c0 断言两条转换均未被调用（0 times）；带两转换的聚焦补丁后 harness 双通过。代码内已有 TODO 记录缺失转换（scheduler_v2.py:1053-1065）。MAX_UTILIZATION 自驱逐与 victim 驱逐两模式都受影响。
+  source: 'TensorRT-LLM #18407（2026-08-29 open，含源码级 A/B harness 与回归测试）。https://github.com/NVIDIA/TensorRT-LLM/issues/18407'
+  behavior: 请求级/adapter 级资源死锁与调度能力退化（新 adapter 无法加载、吞吐塌缩），非输出损坏。属「**挂起/恢复只覆盖单一资源维度的生命周期泄漏**」新子签名：与 6.149（sleep level=1 静默损坏 LoRA 状态）同 LoRA 生命周期域但方向相反（本条是**泄漏不释放**、彼条是释放后**状态损坏**）——挂起语义的完整性（KV、PEFT、scheduler 三方原子性）是该域的系统性缺口。
+  trigger_surface: TRT-LLM PyTorch 后端 + KVCacheV2Scheduler + PEFT/LoRA + 满载驱逐（MAX_UTILIZATION 或 victim eviction）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

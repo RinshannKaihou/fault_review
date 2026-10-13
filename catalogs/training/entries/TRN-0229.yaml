@@ -1,0 +1,54 @@
+id: TRN-0229
+legacy_ids:
+- RL-RO.07
+slug: nucleus_truncation_is_bias
+aliases: []
+title: 截断采样 logprob 口径不一致致 IS ratio 偏置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: rollout/trainer logprob
+  behavior: top_p/top_k/min_p 截断采样时 vLLM 返回截断后重归一化分布的 logprob，trainer 重算全词表 log-softmax，温度对称处理而截断没有；AsyncGRPO 还直接拿它作 old_log_probs。
+effect:
+  objects:
+  - 训练信号
+  detail: 无 NaN、无 clip 迹象，IS ratio 带逐 token 恒负偏置，off-policy 校正系统性失真；AsyncGRPO 中策略未动时 coef_1 即等于幸存质量（top_p=0.7→0.7），负优势 token 的 clip 每步误触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/6789
+  kind: github_issue
+- url: https://github.com/huggingface/trl/issues/6945
+  kind: github_issue
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: top_p / top_k / min_p 截断采样时，vLLM 返回的是**截断后重归一化**分布上的 logprob，trainer 侧重算的是全词表 log-softmax。对幸存 token，rollout 侧 logprob 系统性高出 `-log(幸存概率质量)` → `log π_θ − log π_behaviour` 带一个**逐 token 恒负**的偏置，直接乘进 importance_sampling_ratio 与 per-token loss。温度是对称处理的（#4159 的修复），截断不是。
+  source: 'trl #6789（含两侧代码行号；指出另两个 RL 框架已修同问题、vLLM 原生修复已合未发版）。https://github.com/huggingface/trl/issues/6789 ；AsyncGRPO 实例（2026-08-28 补）：trl #6945——TRL 无条件给所有 vLLM server 强加 `--logprobs-mode processed_logprobs`（理由只适用于有 IS 修正的 trainer），而 `AsyncGRPOTrainer` **没有** IS 修正，直接拿 rollout logprob 当 PPO 分母 `old_log_probs`（`async_grpo_trainer.py:1113`）。同策略未动时 `coef_1` 即读出幸存质量 S：top_p=0.9→0.9、0.8→0.8、0.7→0.7（落入 clip 外），截断越强偏差越大，负优势 token 的 clip 每步都误触发；且 `raw_logprobs` 是**任何处理前**（温度/惩罚之前）的分布，换模式只是换成温度错配（评论区核 vLLM `v1/sample/sampler.py` 证伪「换 raw 即修」）。#6944 加了警告但未改 flag。https://github.com/huggingface/trl/issues/6945'
+  behavior: 无 NaN、无 clip 迹象；IS ratio 整体偏移，off-policy 校正系统性失真。与 RL-RO.01（数值核差）正交：这是**分布定义不一致**，同权重同 kernel 也存在。top_p<1 / top_k>0 / min_p 设了就中。
+  discovery: 2026-08-19 每日扫描
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 2/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

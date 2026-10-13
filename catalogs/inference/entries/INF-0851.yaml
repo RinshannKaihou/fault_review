@@ -1,0 +1,53 @@
+id: INF-0851
+legacy_ids:
+- '8.67'
+slug: trtllm_flashinfer_splitkv_scratch_stale_partials_nonfinite_merge
+aliases: []
+title: TRT-LLM split-KV workspace 残留致非有限注意力输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tensorrt-llm
+    component: split-KV workspace 分配与复用
+  behavior: 共享 FlashInfer workspace 用 torch.empty 分配未清零、运行前不重置；split-KV merge 读取 kernel 未写的 tile，混入早前 plan 残留 partials（LSE 可为 −inf）
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: TRT-LLM 使用 FlashInfer split-KV 注意力（paged prefill/decode、ragged prefill）并开 CUDA graph 时，batch 组合变化后间歇出现非有限（NaN/inf）注意力输出行；损坏内容取决于此前请求的计划形状历史
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: TRT-LLM + FlashInfer split-KV attention + CUDA graph + batch 组合变化（栈×计划序列触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/18755
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（TRT-LLM 共享 FlashInfer workspace（`torch.empty` 未清零）+ split-KV 注意力的 merge pass 可覆盖本 pass 注意力 kernel 未写的 tile——读回**早前不同形状 plan 的 partials**，其 log-sum-exp 可为 −inf，merge 出非有限注意力行；CUDA graph 下 batch 组合变化时已观测非有限输出） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 两条污染路径：(1) `torch.empty` 分配的 buffer 首次使用即 merge 到任意残留内存；(2) 计划间 tile 覆盖面变化使 merge 读取当前 kernel 未写的 extent——320 MB workspace 中早期 plan 的 `tmp_v/tmp_s` 残留。修复：分配时清零 + 每次 `wrapper.run()` 前只 reset 当前 plan 可寻址的窄范围（offset/size 取自 FlashInfer plan info）。
+  source: 'TensorRT-LLM PR #18755（2026-09-05，nvbugs 驱动；paged prefill/paged decode/ragged-prefill 三路径同修）。https://github.com/NVIDIA/TensorRT-LLM/pull/18755'
+  behavior: '**非有限注意力输出**（−inf LSE merge → NaN/inf 行）在 CUDA graph 复用计划变化时间歇显形——依赖历史计划序列的"记忆效应"损坏。与 6.190（graph 烤入旧地址）同为"复用工作区携带历史状态"族，本条在第三方 kernel 的 scratch workspace 层且显形为数值损坏而非内存错配。「**计划依赖的 workspace 残留**」新子签名：损坏内容由此前请求的形状历史决定。'
+  trigger_surface: TRT-LLM + FlashInfer split-KV attention + CUDA graph + batch 组合变化（栈×计划序列触发）
+  discovery: 2026-09-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

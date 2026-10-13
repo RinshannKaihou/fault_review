@@ -1,0 +1,60 @@
+id: INF-1292
+legacy_ids:
+- K9.1
+slug: kv_online_scale_calc_hybrid_gdn_corruption
+aliases: []
+title: 混合 GDN 模型在线计算 FP8 KV scale 得到垃圾值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: calculate-kv-scales 哑前向
+  behavior: --calculate-kv-scales 用一次哑前向在线派生每层 FP8 KV scale；在 GDN+Attention 混合架构上 GDN 层在该 pass 中带着未初始化的循环状态，统计出的 scale 为垃圾值。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 服务健康、无 error/warning，但生成出现幻觉输入、话题锁死重复乃至乱码；仅在启用 --calculate-kv-scales 且模型为 GDN+Attention 混合架构（Qwen3.5）时出现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/37554
+  kind: github_issue
+  resolved_from: 'vLLM #37554'
+relations: []
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`--calculate-kv-scales` 通过一次哑前向 pass（dummy forward pass）在线派生每层 FP8 KV 缩放系数。在混合 **Gated-DeltaNet + Attention** 架构（Qwen3.5）上，GDN 层在这次哑 pass 中带着**未初始化的循环状态（uninitialized recurrent state）**，于是从该 pass 统计出的每层 FP8 量化 scale 是垃圾值。结果是灾难性的静默损坏——幻觉出根本不存在的输入、话题锁死循环（topic-locked loops）、乱码——且全程**无任何 error 或 warning**。'
+  source: 'vLLM #37554（CLOSED 2026-03-19，"produces corrupted FP8 KV cache on hybrid GDN+Attention"）。GLM + Kimi 两份文档均收录。'
+  behavior: 服务进程健康、无异常日志，但生成内容出现幻觉输入、话题锁死重复、乃至纯乱码；只在启用 `--calculate-kv-scales` 且模型为 GDN+Attention 混合架构时出现。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: off-manifold——一个错误的**乘性** KV scale，且**局限在混合层带（layer band）**上。检测面：per-layer KV-norm 与注意力输出的 statistical / geometric 度量会在 GDN 层带上给出异常，而纯 attention 层保持干净，因此**深度剖面（depth profile）形状本身就是判别特征**；全局聚合的 cheap 度量（单一 logit 熵/最大 logit）容易漏检，因为缩放局部化后浅层与深层仍自洽。trajectory 族在层带入口处能看到一次台阶式位移。
+  repro: 单钩子实现——在 `layers` 带的**最大层**上挂 post-forward hook，prefill 时一次性把带内**每一层**已写入的 cached K 与 V 原地 `mul_(scale)`（默认 `scale=0.3`），长度不变故单钩子安全。诚实性说明：无 GDN 层的标准模型上，注入移植的是**后果**（连续层带上的垃圾乘性 KV scale），GDN 触发条件本身不可在标准模型上复现；且以一个共享 `scale` 代表逐层各异的垃圾 scale。带索引越界会导致 done-flag 未设而反复触发、静默复合成 `scale^2, scale^3, ...`，故实现里显式报错。
+  locus: eviction-compression
+  priority: high
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: KV缓存
+        status: panel7

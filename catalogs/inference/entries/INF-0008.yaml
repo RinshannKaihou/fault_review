@@ -1,0 +1,54 @@
+id: INF-0008
+legacy_ids:
+- '1.8'
+slug: sfpu_isclose_inf_nan_bitpattern_miscompare
+aliases: []
+title: SFPU isclose 把整型位模式当浮点比较致 Inf/NaN 误判
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ckernel_sfpu_isclose.h
+  behavior: Inf/NaN 修正分支用整型位模式 inf_bits 与 vFloat 比较，因 sfpi 无 (vFloat, int32_t) 重载也无 vFloat→vInt 转换，实际走 float >= 重载，把位模式当浮点量级比较。
+effect:
+  objects:
+  - 数值结果
+  detail: 在 +Inf/NaN 输入上 isclose 静默返回错误值，无 assert、无 NaN、无 crash；依赖 isclose 做 Inf/NaN 处理的上层算子（梯度裁剪、loss 监控、稳定性检查）在含异常值的张量上得到错误判定。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal，非 NVIDIA 环境
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/51220
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/51540
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off` · Cov: `NEW`（新子签名：硬件数学库原语静默错误值） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: Tenstorrent Wormhole/Blackhole SFPU 内核 `ckernel_sfpu_isclose.h` 的 Inf/NaN 修正分支声明 `constexpr int32_t inf_bits = 0x7F800000`（文档标注为"IEEE-754 abs(+inf)"），但比较语句 `v_if(a_abs >= inf_bits ...)` 走的是 **float `>=` 重载**而非位模式比较。`sfpi` 没有 `(vFloat, int32_t)` 重载，也没有 `vFloat→vInt` 转换，因此实际把**整型位模式当作浮点量级**来比。结果：在 +Inf/NaN 输入上 `isclose` **静默返回错误值**——无 assert、无 NaN、无 crash，就是错的数字。同一静态审计还发现了 Quasar `exp` 缺失范围保护，同属"硬件数学库静默错误值"签名。
+  source: 'tt-metal #51220（2026-07-27 open）、#51540（2026-07-29 open）、修复 PR #51537。https://github.com/tenstorrent/tt-metal/issues/51220 · https://github.com/tenstorrent/tt-metal/issues/51540'
+  behavior: 任何依赖 `isclose` 做 Inf/NaN 处理的上层算子（梯度裁剪、loss 监控、稳定性检查）在含异常值的张量上得到错误判定。报告者明确标注 "high-severity numerical defects, silently wrong value on a supported input range"。
+  trigger_surface: Tenstorrent TT-Metal，非 NVIDIA 环境
+  signature: infra_off 的**新子签名——"内核数值原语类型系统缺陷"**。编目第 4 类"数值/精度"覆盖的是**软件层**数值路径（激活溢出、归一化、累积误差），本条是**硬件 SFPU 内核比较原语本身因 C++ 重载解析陷阱返回静默错误值**。签名形态取决于上层算子的消费方式：若 `isclose` 的结果进入残差流或 attention 路径，则表现为 off-manifold 的几何离群；若仅用于控制流分支，则可能完全不在隐藏态里。该子签名在 2026-07-29 首次编目时为全新，2026-07-30 又衍生出 1.10（NaN-canonicalization）和 1.11（exp 溢出保护）两个同族新子签名。
+  repro: 不可软件复现——需要 Tenstorrent SFPU 硬件 + `sfpi` 编译器栈，通用软件栈无法复现该硬件原语。在通用 GPU（CUDA）上可用软件层面近似：写一个"故意把 Inf/NaN 位模式比较实现错"的 `isclose` 替身注入到 forward hook 中，但这模拟的是软件 bug 而非硬件原语缺陷。
+  discovery: 2026-07-29 每日扫描（daily_scan_2026-07-29.md），标注为新签名。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

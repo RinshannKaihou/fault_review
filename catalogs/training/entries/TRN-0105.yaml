@@ -1,0 +1,54 @@
+id: TRN-0105
+legacy_ids:
+- OPT.05
+slug: module_replacement_orphans_optimizer_params
+aliases: []
+title: DeepSpeed AutoEP 替换 MoE 模块后专家参数脱离优化器被冻结
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: AutoEP 替换后 param group 绑定
+  behavior: _configure_expert_parallel 先于优化器配置替换 MoE 模块且不重映射 param group；调用方自建优化器仍持旧 expert/router 张量，新 GroupedExperts 权重不在任何组。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: HF Trainer/Accelerate 在 ds_config 无 optimizer 块时的默认路径 + zero3_init_flag:true 下完全静默：attention/norm 正常训练、loss 正常下降，全部专家与 router 不更新，ckpt 中专家权重等于预训练原值。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8354
+  kind: github_pr
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8377
+  kind: github_pr
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `sft/rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed `_configure_expert_parallel` 在 `_configure_optimizer` **之前**替换全部 MoE 模块，中间无任何 param group 重映射。调用方自建优化器（HF Trainer / Accelerate 在 ds_config 无 optimizer 块时的默认路径）经 `torch.optim.Optimizer.__init__` 已把**旧 expert/router 张量**物化进 param groups；替换后的活 `GroupedExperts` 权重不属于任何 param group——**全部专家与 router 被静默冻结**。
+  source: 'DeepSpeed #8354（ZeRO-3 + autoep_size=2、一步 lr=0.1 实测：attention |Δ|=1.003e-1 moved，router/experts 全部 0.000e+0 FROZEN；优化器写进 ds_config 则全部 1.005e-1；无 zero.Init 的路径改显 AttributeError，zero3_init_flag:true 才是静默面）。https://github.com/deepspeedai/DeepSpeed/pull/8354 ；DeepSpeed PR #8377（2026-09-05 补，同一机制的 HF Trainer/Accelerate 路径：caller-built optimizer 惰性物化 param_groups → 替换后的专家参数无组可归 + 旧参数残留组内——HF 集成在 ds_config 无 optimizer 块时的默认分支即踩中，ZeRO-3 下同样全部专家冻结）。https://github.com/deepspeedai/DeepSpeed/pull/8377'
+  behavior: '`zero3_init_flag: true` 下**完全静默**——attention/shared expert/norm 正常训练、loss 正常下降，MoE 核心参数一动不动，ckpt 里专家权重=预训练原值。与 CKPT.03（加载侧 missing key 随机初始化）对偶：参数在模型里且值正确，但被优化器**遗忘**。SFT.07（LoRA 只挂 4/56 层）的「欠训练但曲线在动」同症状，机制在优化器绑定时机而非模块选择器。'
+  discovery: 2026-08-30 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

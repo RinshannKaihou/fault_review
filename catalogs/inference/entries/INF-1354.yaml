@@ -1,0 +1,66 @@
+id: INF-1354
+legacy_ids:
+- '8.101'
+slug: flashinfer_mla_fp8_q64_persistent_keepsab_tile_corruption
+aliases: []
+title: flashinfer Q64 KeepsAb FP8 内核随机 tile 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: Q64 PersistentKeepsAb 内核
+  behavior: numHeadsQ>32 时 selectSparseMlaGenerationKernel 选中 Q64 FP8 KeepsAb trtllm-gen 内核，其在特定 batch/KV 长度域产生随机 tile 级损坏。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: FP8 且 num_heads_q==64、批达数百行时，sparse MLA decode/extend 随机 (row, 16-head tile) 输出错值 + NaN/错 LSE，批越大命中率越高，无 crash；同输入 32-head×2、128 heads 或 BF16 均正确。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: FP8 sparse MLA + num_heads_q==64、批达数百行（含 DCP/TP 组合）；B300 复现，选择逻辑栈级通用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6389
+  kind: github_issue
+relations: []
+original:
+  mechanism: Q64 FP8 persistent KeepsAb trtllm-gen 内核在特定 batch/KV 长度域产生随机 tile 级损坏；报告含内核选择路径、干净对照内核清单与最小 repro 脚本（flashinfer-python 0.7.0.post1 B300 SM103；0.7.1/main 同 artifact 预计同病）。
+  source: 'flashinfer #6389（2026-10-12 open，64 vs 32×2 vs 128 vs BF16 四臂对照 + 内核名与 DEBUG 日志）。https://github.com/flashinfer-ai/flashinfer/issues/6389'
+  behavior: 无 crash——随机行/头 tile 输出错值与 NaN LSE，批越大命中率越高；下游不可预测。
+  trigger_surface: flashinfer trtllm-gen sparse MLA decode/extend + FP8 Q/KV + num_heads_q==64（含 DCP/TP 组合）（hw_specific：B300 复现，选择逻辑栈级通用）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（flashinfer `trtllm_batch_decode_with_kv_cache_mla` sparse MLA：FP8 + **64 query heads** 时选中 `…Q64Kv128PersistentKeepsAbForGen` 内核，批达数百行且 KV 短时**随机 (row, 16-head tile) 单元输出错值 + NaN/错 LSE**；同输入走两个 32-head 调用（选 SwapsAb 内核）、128 heads（选 2CTA KeepsAb）或 BF16 全部正确。选择逻辑 `selectSparseMlaGenerationKernel`（`numHeadsQ > 32` → KeepsMmaAb, tileSizeQ 64）在 main（2026-10-12）未变。命中任何 64 heads/KV head 的 sparse MLA decode/extend：DeepSeek-V3.2/GLM-5 在落到单 rank 64 头的 TP、以及收集 heads 的 context-parallel decode（sglang DSA DCP8 on GLM-5.3）；数千行 extend 批几乎每次 launch 都失败） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 数值异常
+    issue_unfixed:
+    - detail
+    uncertain:
+    - behavior

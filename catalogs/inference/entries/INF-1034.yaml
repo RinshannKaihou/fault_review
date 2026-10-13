@@ -1,0 +1,60 @@
+id: INF-1034
+legacy_ids:
+- '11.10'
+slug: sglang_top_logprobs_decode_text_collision_collapse
+aliases: []
+title: SGLang top_logprobs 以解码文本为键致高 rank 被覆盖
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: sglang
+    component: append_top_logprobs
+  behavior: append_top_logprobs 用解码后的 token 文本而非 token id 作 top_logprobs 字典的 key，两个 token id 解码为同一字符串时，后出现的低 rank 项覆盖高 rank 项。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: byte-fallback 分词器下多个 token id 解码为同一替换字符片段时，返回给客户端的 top_logprobs 中最高 rank 候选的 logprob 被低 rank 替换；主 token 正确，无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 主路径；概念可迁 vLLM，但原文复现需 SGLang
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-01'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/32387
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（top_logprobs 文本碰撞塌缩） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: SGLang `openai/utils.py` 的 `append_top_logprobs()` 用**解码后的 token 文本**（`token[2]`）而非 token id 作为每个位置 `top_logprobs` 字典的 key。`torch.topk` 返回按 logprob 降序排列的候选，故当两个不同 top-k token id 解码为**同一字符串**时，普通字典推导保留迭代顺序中最后出现的那个——**最高 rank 的 logprob 被低 rank 的静默替换**。这在 byte-fallback 分词器下常见：多个不同 token id 可各自解码为同一多字节 UTF-8 序列的替换字符片段。
+  source: 'SGLang #32387（2026-07-25 open PR）。组件 `openai/utils.py: append_top_logprobs`。修复：`setdefault` 保留首次（最高 rank）出现。https://github.com/sgl-project/sglang/pull/32387'
+  behavior: 无 crash、无 NaN。top_logprobs 响应中最高 rank 候选的 logprob 被低 rank 的静默替换——返回给客户端的概率数据错误，但主 token 正确。属「解码文本碰撞导致 top_logprobs 塌缩」新子签名，是 post-forward 输出构造层的静默正确性 bug。
+  trigger_surface: SGLang 主路径；概念可迁 vLLM，但原文复现需 SGLang
+  discovery: 2026-08-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: panel7
+      effect:
+        from: 输出分布
+        to: 输出内容
+        status: panel7

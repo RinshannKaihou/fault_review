@@ -1,0 +1,60 @@
+id: INF-0619
+legacy_ids:
+- '6.226'
+slug: ttmetal_gptoss_galaxy_host_sampled_structured_decode_first_token_garbage
+aliases: []
+title: tt-metal GPT-OSS 结构化输出 host 采样路径乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tt-metal
+    component: host-logits decode 变体路径
+  behavior: 根因待定；structured 请求被强制 host 采样，跑 host-logits decode 变体（每步回读全 padded-vocab logits），首选候选是该路径损坏，另有请求更替设备状态、EP 行分歧等候选。
+effect:
+  objects:
+  - 输出内容
+  detail: Galaxy 上 GPT-OSS-120B structured-output 测试三周未过闸（HT 90.6–96.9%、LL 15.6–37.5%）：失败样本 prefill 正确，自首个 decode token 起生成单词循环或空响应；同 build 的 device 采样 demo 正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal vLLM 插件 + GPT-OSS structured output + host-logits decode 变体（hw_specific：Galaxy）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56100
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（GPT-OSS-120B vLLM model tests 在 wh_galaxy_perf 上 structured-output 步骤**三周从未过闸**（HT 90.6–96.9%、LL 15.6–37.5%，`correct_rate==100.0` 门自 08-21 起 22 份日志全红）：每个失败样本都是 prefill 正确采样 `<｜channel|>` 之后、**首个 decode token 起生成垃圾**（`cosmos cosmos cosmos` 类单词循环，186–1022 token）；HarmonyError（"channel marker present but no channel value found"）只是信使——JSON grammar 在 final channel 出现前不 engage，垃圾是无约束文本。受控对照：同一 build、贪心 device 采样的 demo（prefill_128/batch128）在同期同 runner pool 完全连贯——损坏需要 structured 路径独有的东西；structured 请求强制 host 采样（`check_perform_device_sampling` 对 `has_structured_outputs` 返 False，tenstorrent/vllm#277），尽管 `sample_on_device_mode: all`，整个 structured 步骤跑 host-logits decode 变体（`trace_ids_decode[False]` + 每步全 padded-vocab logits 回读）。根因候选排序 H1（host-logits decode 路径）≥H2（请求更替设备状态）>H3（LL EP 行分歧——唯一自然解释部分流数百 token 后恢复连贯，SW 层 128 token 遗忘分叉）>H4（HT 行稀疏 padding combine）；无硬件无法定证。HT 失败几乎总在前 6 个被接纳请求（22/23 索引 ≤5）） · Cov: `NEW`（host-logits 回读 decode 路径专属损坏子签名） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '报告做了逐行静态审计排除（async-scheduling/host-sampling 顺序、bitmask 时序、prefill→decode 交接、KV 放置、MoE combine 的 zero-fill 排除 stale-L1），并给出最便宜判别实验（去 `sample_on_device_mode` 跑 plain benchmark / structured benchmark 加 `--no-structured-output`）。基准脚本的 "✅ Structured output passed" 是自身 echo 文本而非结果、垃圾流恰含 `{...}` 时 `correctness: true`——**测试假阳性掩盖链**。'
+  source: 'tt-metal #56100（2026-09-10 open，bug label，含 22 份 job 日志的样本级核验、受控对照与 H1–H4 候选排序）。https://github.com/tenstorrent/tt-metal/issues/56100'
+  behavior: '无 crash——structured 请求自首 token 起垃圾/空响应（HarmonyError 被流式生成器捕获后 `[DONE]`，客户端计为成功空文本）；同 build 的 device 采样路径干净。与 6.174（QSA+NEXTN decode graph 静默语义损坏）同属"graph/trace 变体专属损坏"，本条变体轴是 host-vs-device 采样路径且 #44746（per-user KV corruption with `sample_on_device_mode=all`）是其 device-sampled 姊妹症状（未编目，报告引用）。'
+  trigger_surface: tt-metal vLLM 插件 + GPT-OSS structured output + host-logits decode 变体（hw_specific：Galaxy）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 解码/采样。依据 rule 1：损坏只出现在 structured 请求被 check_perform_device_sampling 强制走 host 采样的 host-logits decode 变体上，同 build 的 device 采样路径干净；结构化输出与采样都属 解码/采样 功能域，原文 H1（host-logits decode 路径）排首位。运行时/执行（trace 变体）是通用层，按 rule 1 让位。visibility 我的独立判断为 静默错误，第一遍为 质量退化；输出是 cosmos 循环/空响应，并非“看似合理”，且是通过 correct_rate 测试门的通过率下降被观察到，维持 质量退化。保留意见：原文另记基准脚本 echo 文本导致的测试假阳性掩盖链（观测/评测/测试判定），属伴随缺陷，未单列。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

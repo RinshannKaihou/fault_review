@@ -1,0 +1,62 @@
+id: TRN-0222
+legacy_ids:
+- RL-KL.09
+slug: fp8_noise_clips_negative_tokens_out_of_trust_region
+aliases: []
+title: 全管线 FP8 噪声使负 advantage token 被 clip 屏蔽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: 通用
+    component: 全管线 FP8 下的 ratio clip
+  behavior: 训练侧与 rollout 侧 FP8 量化噪声逐级复合进 importance ratio，使其系统性偏移，负 advantage token 被不成比例地推出 trust region，梯度被错误归零
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  - 训练轨迹
+  detail: 无 crash、无 NaN；训练中期 entropy 涌现式激增并输出乱码，病态输出得不到惩罚且随训练累积；BF16 rollout + FP8 trainer 无此不稳定
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2609.22870
+  kind: arxiv
+relations: []
+original:
+  category: RL-KL
+  section: RL-KL
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 全管线 FP8 RL 中，训练侧与 rollout 侧各自的 FP8 量化噪声都进入 importance ratio，**逐级复合**后 ratio 系统性偏移——负 advantage token 的 ratio 被不成比例地推出 trust region（clip 上界），梯度被错误归零：病态输出**得不到惩罚**且随训练累积。表现为训练中期 entropy 涌现式激增 + 输出乱码。BF16 rollout + FP8 trainer（FP8-RL 栈）无此不稳定性——复合噪声是全管线 FP8 特有。缓解 = Calibrated Clipping：按高精度 BF16 分布对齐 FP8 clip 下界分位数并再平衡上界（8B–32B、GRPO/DAPO、多 scaling 粒度验证恢复至 BF16 基线水平）。
+  source: '"Towards Full Pipeline FP8 Reinforcement Learning for LLMs", arXiv:2609.22870（2026-09-19）。https://arxiv.org/abs/2609.22870'
+  behavior: 无 crash、无 NaN——entropy surge + 乱码输出这类「看似探索性崩溃」的症状，根因在**量化噪声 × clip 机制的符号不对称交互**：惩罚通道被静默关闭、奖励通道完好，策略单向漂移。与 RL-KL.03（entropy 塌缩到重复）表象同族但机制不同：那边是策略收敛动力学、这边是 clip 掩蔽负梯度；与 RL-RO.01（TIM：量化 rollout 的 logprob 偏差，TIS/MIS 校正对象）互补：TIS 校正 logprob **数值**、本条指出 ratio 进入**非线性 clip** 后校正残差被符号不对称放大——低精度栈设计需同时管校正与 clip 边界；与 RL-KL.07（k3 前向有限反向 NaN）同打击「梯度经有界算子后语义翻转」，差异在这边是确定性的方向偏置而非数值爆炸。
+  discovery: 2026-09-23 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem RL训练回路 vs 量化：定为 RL训练回路。原文缓解 Calibrated Clipping 改的是 clip 上下界（按 BF16 分布对齐分位数），量化方案本身不变；且「BF16 rollout + FP8 trainer 无此不稳定性」说明 FP8 量化是触发条件，出错环节是 importance ratio 的 clip（rule 6：触发条件不是对象）。独立判断时 effect 首项曾考虑 训练信号（ratio 偏移），但原文直接错误后果是「梯度被错误归零」，维持 梯度、训练轨迹。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 梯度
+        to: 训练信号
+        status: panel7

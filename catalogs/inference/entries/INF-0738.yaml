@@ -1,0 +1,51 @@
+id: INF-0738
+legacy_ids:
+- '7.65'
+slug: vllm_quark_identity_packed_modules_mapping_disables_layer_quant_config
+aliases: []
+title: vLLM Quark 恒等 packed 映射使逐层量化配置回退全局
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: Quark 逐层量化配置查找
+  behavior: Quark 两条配置查找路径把 shard_name == layer_name 当作“无 shard 信息”哨兵，恒等映射条目即使在 layer_quant_config 中有自身条目也回退 global_quant_config。
+effect:
+  objects:
+  - 模型权重
+  - 可用性/进度
+  detail: Quark 混合精度检查点 + 含恒等 packed_modules_mapping 的模型（plamo3/glm4_1v/molmo 等）：该层按全局 scheme 构建，无警告无日志，直到加载期 shape mismatch 报错；若两 scheme 张量形状相同则可能静默精度错配。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + Quark 量化 + `layer_quant_config`（per-layer scheme）+ 模型含恒等 `packed_modules_mapping` 条目（plamo3/glm4_1v/molmo 等）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54641
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（`packed_modules_mapping` 的**恒等条目**（模块映射到自身，如 `"gate_up_proj": ["gate_up_proj"]`——plamo3/glm4_1v/molmo 等 in-tree 模型的既有合法模式）被 Quark 两条配置查找路径一致解释为"无 shard 信息"：`shard_name == layer_name` → config=None → **静默回退 global_quant_config**——混合精度 checkpoint 的 per-layer scheme 被全局 scheme 替换，直到 weight load 才以 shape mismatch 显形，无警告无日志） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`quark.py` 的 `get_layer_quant_config_from_name` 与 `_find_matched_config` 都把 `shard_name == layer_name`（替换是无操作）当作"没有 shard 信息可用"的哨兵条件。对真融合条目（`fused_qkv_a_proj → [q_a_proj, kv_a_proj_with_mqa]`）该语义正确——子名确实不同、需逐个查；但恒等条目（模型作者用于声明"此模块不经受融合拆分"）的替换是 no-op，代码据此 conclude 无 layer 配置可查，即使 `layer_quant_config` 里**就存有该模块自身名字的条目**。结果：该层用 global scheme 构建量化层，混合精度 checkpoint（per-layer 不同 scheme）加载时 shape mismatch 才暴露。'
+  source: 'vLLM #54641（2026-08-31 open，rocm/quantization label，含代码路径分析、in-tree 恒等条目清单与 GLM-5.3-Flash Quark MXFP4 复现）。https://github.com/vllm-project/vllm/issues/54641'
+  behavior: 静默期无任何信号（无警告、无日志）——错误 scheme 的层正常构建，直到 load 期 shape mismatch **fail-loud**；若两个 scheme 的张量 shape 恰好相同则连 load 期都不报错（潜在静默精度错配）。属「**配置查找把'名字相同'与'无信息'混为一谈**」新子签名：与 7.58（mxfp4 runner else 吞 9 值 fail-late）同为"合法配置值落入未处理分支"，本条是恒等映射的语义歧义被哨兵条件吞掉。
+  trigger_surface: vLLM + Quark 量化 + `layer_quant_config`（per-layer scheme）+ 模型含恒等 `packed_modules_mapping` 条目（plamo3/glm4_1v/molmo 等）
+  discovery: 2026-08-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

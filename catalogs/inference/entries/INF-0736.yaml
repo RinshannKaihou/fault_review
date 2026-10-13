@@ -1,0 +1,56 @@
+id: INF-0736
+legacy_ids:
+- '7.63'
+slug: vllm_compressed_tensors_config_collapses_gdn_linear_attention_token_distinctness
+aliases: []
+title: vLLM 存在 CT 量化配置即令未量化 GDN 层丢失 token 区分度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: CT 配置下 GDN linear_attn 路径
+  behavior: 只要存在 compressed-tensors 量化配置（即使 GDN Linear 均为 UnquantizedLinearMethod），GDN linear-attention 层的包装或路径选择即被改变；具体机制原文未定位。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: hybrid GDN+MoE 模型换用 CT W4A16 配置后，Layer-0 linear_attn 输出 self-cosine 从 0.05 升至 0.78、范数正常，后续层坍塌；输出多语言重复 soup，无 crash、无 NaN；warmup 可过；fp8 配置正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid GDN+MoE 模型 + 任意 compressed-tensors config（组只须存在于模型；报告于 ROCm 但表示层机制栈无关）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54252
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`ambiguous`（hybrid GDN 线性注意力 + MoE 模型（Qwen4Exp/qwen3.8 类）只要模型上**存在** compressed-tensors quantization config——即使 CT 组只 targeting `RoutedExperts`、所有 GDN Linear 解析为 `UnquantizedLinearMethod`——GDN 层也会坍塌 hidden-state token 区分度：fp8 config 下正确、同权重换 CT W4A16 config 即多语言重复 soup；九阶段排除证明全部量化相关组件 byte/math-exact，故障是**表示层/路径选择层**的） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: fp8 → compressed-tensors W4A16（int4-g64/g32 对称 + group scales，标准 `weight_packed`/`weight_scale` 布局，与 llmcompressor 参考模型 byte-verified）转换后生成坍塌为重复 soup。逐层 hidden-state self-cosine 扫描：fp8 config 下 L0 入口 0.05、各层健康；CT config 下 L1 起升至 0.40–0.55、norm 膨胀至 5.5e8→2.3e10；**CT config + 专家路径 monkeypatch 置零**输出变干净 EOS 但 hidden state 仍坍塌（L0 0.49→L47 0.77）——证明 routed experts 不是原因。Layer-0 GDN `linear_attn` 输出在 distinct-token 输入上 self-cosine 0.78（入口 0.05）且幅度正常（norm 52）：方向坍塌 + 正常范数是"注意力读写同一 state slot 或无视 token 区分度"的签名。warmup batch（相同 dummy token）通过、真实 prefill 坍塌。
+  source: 'vLLM #54252（2026-08-28 open，gfx1151 ROCm 单卡 TP1，含九阶段排除实验与逐层 self-cosine 表；明示机制架构无关）。https://github.com/vllm-project/vllm/issues/54252'
+  behavior: '**无 crash、无 NaN**——输出为多语言重复 soup；短/warmup 冒烟可过、真实 prefill 崩坏。属「**量化 config 的存在性触发非量化路径行为改变**」新子签名：GDN linear-attention 层明明未被量化（ignore 列表内、UnquantizedLinearMethod），却因 CT config 的模型 wrap/路径选择改变 token 区分度——量化故障编目中罕见的"**未量化的层因量化 config 而损坏**"形态，检测须靠 hidden-state self-cosine 而非权重对拍。'
+  trigger_surface: vLLM + hybrid GDN+MoE 模型 + 任意 compressed-tensors config（组只须存在于模型；报告于 ROCm 但表示层机制栈无关）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 为 量化 vs 模型定义：原文 fp8 config 正常、同权重换 CT config 即坍塌，且“因 CT config 的模型 wrap/路径选择改变 token 区分度”——缺陷只出现在 CT 量化配置路径上，按 rules 功能域优先维持 量化。保留意见：原文未定位修复位置，若证实在 GDN 建模代码应改 模型定义。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,52 @@
+id: INF-0204
+legacy_ids:
+- '1.205'
+slug: ttmetal_quasar_batched_pack_tile_ignores_dfb_stride_entry_collapse
+aliases: []
+title: 批量 pack_tile 忽略 DFB stride 致 tile 塌缩丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: LLK get_output_tile_index
+  behavior: 批量 pack_tile 计算批内 tile 地址时每 tile 只推进 1 个 entry，未按 DFB 契约以 stride_size_tiles 步进，与消费端地址计算分歧。
+effect:
+  objects:
+  - 数值结果
+  detail: Quasar 上 STRIDED DFB 批量 pack_tile 时批内连续 tile 塌缩到同一偏移被覆写，N tile 只覆盖 ceil(N/S) 个槽，输出出现整块陈旧/缺失数据，无 crash；单 tile 打包不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Quasar + STRIDED DFB + 批量 reserve_back/pack_tile/push_back（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56194
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（Quasar 批量 `pack_tile`：`llk_pack_tile_api.h` 的 `get_output_tile_index` 对批内 tile 索引**每 tile +1 entry**，而消费端 `dfb_slot_cursor_offset_units` 按契约 **`entry += n*stride_size_tiles; offset += n*stride_size`** 除以 stride——两处对同一线性地址的计算分歧。STRIDED 访问模式（`stride_size_tiles>1`，文档化的合法模式）下批内连续 tile 塌缩到同一字节偏移：tile i 落在 `floor(i/S)*stride`，N tile 批只覆盖 `ceil(N/S)` 个不同槽、丢失 `1−ceil(N/S)/N` 的 tile。单 tile 打包不受影响——这正是至今未被发现的原因） · Cov: `NEW`（生产者/消费者地址步进契约分歧子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 公开 compute API `pack_tile(dst, dfb_id, output_tile_index)` 与 DFB 接口的 stride 契约未对齐；`dataflow_buffer_interface.h` 自带注释写明生产者应按 stride 步进 entry，llk 侧未遵守。
+  source: 'tt-metal #56194（2026-09-11 open，bug+Quasar label，含双源码位点对照、塌缩公式与"为何未被发现"分析）。https://github.com/tenstorrent/tt-metal/issues/56194'
+  behavior: 无 crash——strided DFB 上的批量打包**静默丢 tile**（塌缩覆写），输出张量出现整块陈旧/缺失数据。1.160（binary_ng program-cache key 漏 Alignment/Tile）之后"两处独立计算同一量且分歧"族新成员：本条在 L1 地址步进维度。
+  trigger_surface: tt-metal Quasar + STRIDED DFB + 批量 reserve_back/pack_tile/push_back（hw_specific）
+  discovery: |-
+    2026-09-11 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,57 @@
+id: INF-1261
+legacy_ids:
+- K5.5
+slug: dynamo_nixl_async_kv_overwrite_after_recv
+aliases: []
+title: Dynamo 自定义 NIXL 传输在接收后 KV 被覆写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: dynamo
+    component: 自定义 NIXL/NCCL KV 传输后端
+  behavior: decode 端接收 KV 之后远端 KV 内存仍被改动，疑为描述符/通知顺序问题或缓冲区生命周期竞态（写入落地前接收即被标记完成）；issue 被定性为自定义后端用法错误，根因未解决。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: decode 使用的最终 KV 与 prefill 发出的不一致，表现为与传输时序相关、不可复现的输出偏差（原文按机制推断）。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/ai-dynamo/dynamo/issues/1107
+  kind: github_issue
+  resolved_from: 'dynamo #1107'
+relations:
+- kind: var
+  target: INF-0870
+original:
+  category: KV5
+  section: KV §5 cross-node-transfer（跨节点传输：分离式 / 卸载 / RDMA）
+  meta: '`infra_off` · Cov: `var:8.85` · 触发 `no` · 置信度 `documented`'
+  mechanism: 在 Dynamo PD 分离中使用自定义 NIXL/NCCL 传输时，decode 端接收 KV 之后，远端 KV 内存被观察到发生了意外改变 → 最终 KV 与发送出去的内容不一致（描述符/通知的顺序问题，或缓冲区生命周期竞态：接收在写入真正落地之前就被标记为完成）。
+  source: 'ai-dynamo/dynamo #1107（closed；被定性为自定义后端的使用错误，根因未解决）。'
+  behavior: 源文档未给出独立的「行为效应」条目；按机制，decode 使用的 KV 与 prefill 发出的 KV 不一致，表现为不可复现的、与传输时序相关的输出偏差。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: off-manifold（infra_off）的值损坏，局限于被覆写的那个 block；本质上退化为块粒度的 `kv_corrupt`，因此可以直接沿用已实现的 `kv_corrupt` 检测路径。捕获者：geometric、trajectory、cheap（recompute-oracle 轴，同 8.85 `kv_corrupt` 的重算对照）。漏检者：若覆写内容恰好是另一段合法 KV，则幅度类 statistical 判据可能通过；只有块粒度的参考比对稳定可见。
+  repro: 直接复用已实现的 `kv_corrupt`（`make_kv_corrupt(L, j, mode, seed)`），把作用范围从单位置扩展为一个连续 block，模拟「一整块被事后覆写」。
+  locus: '`cross-node-transfer`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: TRN-0041
+legacy_ids:
+- PAR.13
+slug: liger_gate_skips_ddp_reducer_hooks
+aliases: []
+title: trl DPO/KTO 开 liger 时 DDP 梯度从不同步
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: trl
+    component: compute_loss liger 分支
+  behavior: 开 liger 时 compute_loss 在未包装模型上前向，仅 ZeRO-3/FSDP 走 redirect；plain DDP 下 DDP.forward 不执行，reducer hooks 早退、从不 all-reduce。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: 无 error/warning；2×H100 下 liger 开时 25/25 参数跨 rank 梯度不同，N 卡 DDP 退化为 N 个独立单卡跑，保存的 ckpt 只是 rank 0 的，收敛表象正常；分布式测试只断言 exit 0 而漏检。v1.10.0–v1.12.0 受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7245
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `sft` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'trl `DPOTrainer`/`KTOTrainer` 的 `compute_loss` 在 **unwrapped model** 上跑 loss，只对 ZeRO-3/FSDP 走 `_forward_redirection`——plain DDP 下两个条件都不成立，`DistributedDataParallel.forward()` 从不执行 → `Reducer::prepare_for_backward()` 不被调用 → `expect_autograd_hooks_` 保持 false，reducer 的 autograd hooks 全部早退、**从不 all-reduce**，每个 rank 保留本地梯度。触发门是 `use_liger_kernel=True`（依赖 liger-kernel 安装，恰好是 unwrap 的动机）；由修复 ZeRO-3 的 #6372 引入（此前传 wrapped model、DDP 正确），v1.10.0–v1.12.0 在内。2×H100 实测：liger 开 → 25/25 参数跨 rank 梯度不同（max_abs_diff 1.265e-01）；liger 关 → 0/25（Qwen3-0.6B 310/310 同结论）。分布式测试 `test_dpo` 参数化 `ddp` 但从不传 `--use_liger_kernel`，且只断言 exit 0——静默失同步恰好骗过。'
+  source: 'trl #7245（2026-09-16；最小 repro + GradProbe all-gather 对比；修复方向 = 复用 `kto_trainer.py:1322`/#7077 已有的 DDP-aware 条件 `is_fsdp_enabled or model is not unwrapped_model`）。https://github.com/huggingface/trl/issues/7245 ；维护者测量更正（2026-09-16/18 补，qgallouedec 评论）：KTO 本体走 `_ChunkedLogProbFunction` 吃 redirect 无碍；DPO 在 main 上加同 guard 会让每 rank 抛 `NotImplementedError`（`FusedLinearDPOFunction` 内部 `torch.func.grad_and_value` 不能在 `DistributedDataParallel.forward()` 里跑）——**DPO 需先等 #7243 迁到 chunked 路径**，迁移后同 guard 达 0/310 参数跨 rank 差异；KTO 侧 chunked logprob 本身不 all-reduce 是既有独立缺口'
+  behavior: 无 error、无 warning——N-GPU DDP 跑退化成 N 个独立单卡跑（各 `per_device_train_batch_size`），保存的 ckpt 只是 rank 0 的；收敛表象正常、有效数据量与多样本语义全部失效。与 PAR.09（CPU 类型串分桶跳过 allreduce）同症状面「梯度归约静默缺失」：那边是 ZeRO 分桶谓词失配、这边是 DDP reducer 生命周期被 unwrap 路径绕过——又是「fused/快捷路径绕过包装层」家族（cf. RL-KL.04/#7009 Liger 提前 return 丢 aux loss、#7062 vendored Liger 凿穿配置面）的第 6 个实例。
+  discovery: 2026-09-17 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

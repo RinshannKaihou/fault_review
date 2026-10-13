@@ -1,0 +1,61 @@
+id: INF-1275
+legacy_ids:
+- K6.10
+slug: reasoning_think_token_cache_pollution
+aliases: []
+title: reasoning 模式 think token 污染前缀缓存产生死 block
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: APC/radix 前缀缓存哈希链
+  behavior: 启用 reasoning parser 时 vLLM APC/SGLang radix 对所有发出 token（含 <think>）做哈希并链到父节点；下一轮按 API 惯例剥离 thinking，在共享问题后首个 block 偏离缓存链。
+effect:
+  objects:
+  - 性能/资源
+  detail: 第 1 轮答案的 KV 成为永久不可达的死 block，仍占用 pool 并参与 LRU 驱逐竞争；多轮 reasoning 会话前缀命中率持续下降，吞吐/延迟恶化，但输出正确。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: partial
+  trigger_review: false
+  trigger_note: KV 类：需具体缓存时序
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/39321
+  kind: github_issue
+  resolved_from: 'vLLM #39321'
+- url: https://github.com/sgl-project/sglang/issues/22373
+  kind: github_issue
+  resolved_from: 'SGLang #22373'
+- url: https://github.com/sgl-project/sglang/pull/23315
+  kind: github_pr
+  resolved_from: 'PR #23315'
+relations: []
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`n/a`（无隐藏态签名的结构性/资源故障） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 启用 reasoning parser 时，APC/radix 会对**所有**发出的 token 做哈希，包括 `<think>` 内容；由于链绑定在父节点上，下一轮（按 API 惯例剥离 thinking）会在共享问题之后的第一个 block 处偏离缓存链 → 第 1 轮答案的 KV 变成永久不可达的死 block，仍占用 pool 并参与 LRU 驱逐竞争。
+  source: 'vLLM #39321；SGLang #22373（修复 PR #23315 未核实）。'
+  behavior: 多轮 reasoning 会话的 prefix-cache 命中率持续下降、KV pool 被死 block 占满，吞吐/延迟恶化，但输出本身正确。
+  trigger_surface: KV 类：需具体缓存时序
+  signature: 间接/结构性——死 block 从不被读取，因此**既不在流形上也不离流形**：任何 geometric/spectral/trajectory/statistical/infotheoretic 度量都看不到它。唯一可观察通道是 cache 占用率 / 命中率遥测（radix 树存在不可达子树），属于本项目已记录的检测盲区。
+  locus: eviction-compression
+  priority: |-
+    low
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

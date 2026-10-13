@@ -1,0 +1,51 @@
+id: INF-0906
+legacy_ids:
+- '9.23'
+slug: vllm_kv_offload_reuses_blocks_across_rope_scaling_change
+aliases: []
+title: vLLM KV offload 缓存键缺 RoPE 配置致跨配置复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: OffloadingConnector 外部缓存键
+  behavior: OffloadingConnector + TieringOffloadingSpec 的外部缓存键不含 RoPE scaling/theta 等位置配置；RoPE 参数改变后同一 token 的 KV 语义已变，但键不变仍命中旧块。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 同模型同 offload 目录下把 rope_parameters.factor 由 1 改为 2 重启，新进程复用旧配置写入的 73 个 KV 文件，首个生成 token 即与空目录对照分歧（top-20 仅 3 个共同候选），且确定性复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + KV offload（CPU/filesystem tier）+ 改变 rope_parameters 后复用旧 offload 目录（config）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56311
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（vLLM Persistent KV offload：同一模型 + 同一文件系统 offload 目录下**改变 RoPE scaling**（`hf_overrides.rope_parameters.factor` 1→2）后，新进程静默复用旧配置写入的 KV 块——Qwen3-0.6B 固定 checkpoint/prompt/dtype/KV layout/parallelism，factor-2 进程读 factor-1 写的 73 个文件（1,168 cached tokens、133,955,584 bytes）后与空目录 factor-2 进程在**首个生成 token** 即分歧（`</think>` vs `L`），B shared 首步 top-20 只有 3 个共同候选、其中最大 logprob 差 4.06；B repeat 精确复现错果，A 的 73 文件全程 byte-identical。第六组对照（factor 2 对**自己正确生成的**缓存重启）与 B isolated 全部 48 token + logprob 全同——排除 factor-2 缓存自用问题，坐实**跨配置缓存键缺失**） · Cov: `NEW`（持久 KV 缓存键缺 positional 配置维度子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`OffloadingConnector` + `TieringOffloadingSpec`（512 MiB CPU tier + 文件系统二级 tier）的外部缓存键不包含 RoPE scaling/theta 等 positional 配置——位置编码参数改变时 KV 的语义完全改变（同一 token 位置编码不同），但键不变即命中。`VLLM_BATCH_INVARIANT=1` 下六组新鲜进程对照 + gist 完整脚本/固定 revision/结果表。'
+  source: 'vLLM #56311（2026-09-10 open，含六组对照实验矩阵与排除逻辑）。https://github.com/vllm-project/vllm/issues/56311'
+  behavior: 无 crash——**跨进程生命周期的静默上下文污染**：改 RoPE 配置（如拉长上下文调 factor）重启用旧目录的用户，首个 token 起输出错误且确定性复现。6.180（Responses prompt_cache_key 静默丢弃）与 6.169（LMCache 外部键丢 cache_salt）之后"缓存键维度缺失"族新成员：本条缺的是 **RoPE positional 配置**维度，且文件系统层使污染比内存 radix cache 更持久。
+  trigger_surface: vLLM + KV offload（CPU/filesystem tier）+ 改变 rope_parameters 后复用旧 offload 目录（config）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,52 @@
+id: INF-0884
+legacy_ids:
+- '9.1'
+slug: yarn_attention_scaling_missing
+aliases: []
+title: YaRN 遗漏 attention_scaling 温度因子
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: 通用
+    component: YaRN attention_scaling
+  behavior: YaRN 只应用了 NTK-by-parts 频率重缩放，注意力温度因子 attention_scaling 被遗漏或置为 1.0，q、k 未乘 sqrt(1/t)，旋转角与 logits 温度补偿不再匹配
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 文本仍然连贯，但长上下文检索能力下降，表现为微妙的质量漂移；各层注意力分布一致地变尖或变平，幅度小且无突变点
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: RoPE 相关配置
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2309.00071
+  kind: arxiv
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`model_on` · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: YaRN 由两部分构成——NTK-by-parts 的频率重缩放，以及一个注意力温度因子 t，满足 sqrt(1/t)=0.1*ln(s)+1，实现上通过把 q、k 同时乘以 sqrt(1/t) 而被"burned into RoPE"。故障是：只应用了频率重缩放，而 `attention_scaling` / attn-temperature 被遗漏或被置为 1.0。也就是说 RoPE 的旋转角按 YaRN 走了，但注意力 logits 的温度补偿没走，二者不再匹配。相关配置项即 Qwen2 的 `attention_scaling`。
+  source: Peng, Quesnelle, Fan, Shippole, "YaRN", ICLR 2024, https://arxiv.org/abs/2309.00071 。Qwen2 `attention_scaling` config。
+  behavior: 文本仍然连贯，但长上下文检索能力下降，表现为微妙的质量漂移。是一个很强的 perfect-disguise 候选故障。
+  trigger_surface: RoPE 相关配置
+  signature: 属于在流形（on-manifold）的几何位移：q/k 被旋转到略微错误的角度，同时注意力 logits 被整体缩放，于是各层的注意力概率分布一致地变尖或变平。对逐层 attention-entropy 做 spectral/trajectory 度量，或对 post-attention 隐状态做 geometric 偏差度量，会看到一个平滑的、层间一致的签名；q/k 的范数缩放还会留下可检测的激活幅度偏移。单纯的单层阈值型 geometric 检测器容易把它当作噪声漏掉，因为幅度小且无突变点。
+  repro: 直接改写 `self_attn.scaling` 属性，和/或改写 rotary 频率缩放系数，即可复现"只做频率缩放、不做温度补偿"的组合。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

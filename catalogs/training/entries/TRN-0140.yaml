@@ -1,0 +1,54 @@
+id: TRN-0140
+legacy_ids:
+- KER.09
+slug: triton_block_local_mask_oob_rope_write
+aliases: []
+title: MLA YaRN RoPE Triton kernel 掩码过宽致越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: megatron-lm
+    component: MLA YaRN RoPE Triton 掩码
+  behavior: RoPE apply 的四个 Triton kernel 用块内 head 坐标比较全局 head 数作边界掩码，pid_head>0 的块掩码过宽，head_num 不整除 BLOCK_H 时幻影 lane 在 bwd 越界写。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: head_num 非 2 的幂即触发：有分配 slack 时进程存活、下一 token 的 rope 切片与分配外内存被静默写坏，数百 step 后才出现与根因解耦的 NaN 或 illegal access；autotune 首次调用即执行越界。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7103
+  kind: github_issue
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `fused_mla_yarn_rope_apply.py` 四个 Triton kernel 的边界掩码用**块内** head 坐标（`tl.arange(0, BLOCK_H)`）去比**全局** head 数：`mask = local_off < head_num * stride`，正确条件应为 `pid_head * BLOCK_H + local_h < head_num`。`pid_head==0` 恰好正确、之后的块掩码恒过宽——最后一个不整除块的全部 lane 通过。`BLOCK_H` 在 {1..128} autotune，任何非 2 的幂 head_num 都存在 `head_num % BLOCK_H != 0` 的 tiling；现有单测全用 `num_heads=32` 所以漏网。bwd kernel 经同一掩码 `tl.store`：幻影 lane 是**写**不是读——内部 token 静默污染下一 token 的 head 0–3 rope 切片（与合法 writer 竞争），行尾 token 越界写到分配之外。`restore_value=["Q"]` 只恢复张量自身存储、救不回写到外面的部分；autotuner 首次调用把每个候选 tiling 都执行一遍，不安全配置无论胜出与否都已跑过。
+  source: 'Megatron-LM #7103（5 处掩码位点逐行定位；standalone 复现：head_num=12/BLOCK_H=8 时 4 条幻影 lane 落在 +128/+320/+512/+704；H100 `CUDA_LAUNCH_BLOCKING=1` 下无分配 slack 即 illegal memory access，有 slack 则静默污染后续内存——后者才是到达真实训练的形态）。https://github.com/NVIDIA/Megatron-LM/issues/7103'
+  behavior: 训练侧无 precursor：有分配 slack 时进程存活、内存被静默写坏，NaN 或 illegal access 在数百 step 后才出现且与根因完全解耦；autotune 基准 pass 首次调用即执行越界。与 KER.01/02（FA bwd 数值错）同为训练 kernel 静默错值，差异在这边是**内存安全边界错**而非浮点精度；测试盲区来自「只测 2 的幂 head_num」，autotune 依赖面与 NUM.07 共享。
+  discovery: 2026-09-08 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

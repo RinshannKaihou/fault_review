@@ -1,0 +1,58 @@
+id: INF-0581
+legacy_ids:
+- '6.188'
+slug: sglang_dsv4_kv_pool_mem_usage_metric_zero_missing_finalize
+aliases: []
+title: SGLang DeepSeek-V4 KV 内存用量指标恒为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: DSV4 KV 池 mem_usage 统计
+  behavior: DSV4 的 SingleKVPool/IndexerPool 分配缓冲后从不调 _finalize_allocation_log()，顶层 TokenToKVPool 也不聚合子池，mem_usage 停留在初始值 0。
+effect:
+  objects:
+  - 指标/日志
+  detail: SGLang 部署 DeepSeek-V4 族模型（任意配置）时 sglang:kv_cache_memory_usage_gb 恒报 0，推理正确、无报错；依赖该指标的 KV 内存监控、告警与容量规划全部失明。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + DeepSeek-V4 族模型（任意配置；指标消费者受影响）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/37852
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DeepSeek-V4 族 `sglang:kv_cache_memory_usage_gb` 恒报 **0**：`KVCache.__init__` 初始化 `mem_usage=0`，标准 MHA/GQA 池分配后调 `_finalize_allocation_log()` 填充，而 `DeepSeekV4SingleKVPool`/`DeepSeekV4IndexerPool` 分配缓冲**从不调用**、顶层 `DeepSeekV4TokenToKVPool` 也从不聚合 SWA/C4/C128/indexer/unified-KV/compression-state 子池——调度器直接导出该继承零到指标） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 子类不调用父类契约方法 + 顶层不聚合——经典"继承默认值漏初始化"；指标链（scheduler → allocator → pool.mem_usage）无人校验非零。
+  source: 'SGLang #37852（2026-09-03 open，main commit 54cadad 源级逐层分析）。https://github.com/sgl-project/sglang/issues/37852'
+  behavior: 无 crash、推理正确——**可观测性黑洞**：DSV4 部署的 KV 内存使用监控/告警/容量规划全部失明（报 0 不报错）；与 6.162（liveness monitor 伪 sentinel 杀健康引擎）同为监控面故障但方向相反（彼条误杀、本条漏报）。属「**遥测对新型池拓扑失效**」新子签名——对依赖该指标做 SDC/泄漏检测的部署是结构性盲点。
+  trigger_surface: SGLang + DeepSeek-V4 族模型（任意配置；指标消费者受影响）
+  discovery: |-
+    2026-09-03 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: 裁定：subsystem 由 观测/评测 改为 KV缓存。依据 rule 1 功能域优先和“修复要改哪里”：原文缺陷是 DeepSeekV4SingleKVPool/DeepSeekV4IndexerPool 分配后不调 _finalize_allocation_log()、顶层 DeepSeekV4TokenToKVPool 不聚合子池，修复必须改 KV 池类，且只出现在 DSV4 KV 池代码路径上；变错的是指标，已由 effect.objects=指标/日志 表达。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

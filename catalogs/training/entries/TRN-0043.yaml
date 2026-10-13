@@ -1,0 +1,53 @@
+id: TRN-0043
+legacy_ids:
+- PAR.15
+slug: bridge_wan_gather_default_grad_sums_tp_copies
+aliases: []
+title: Bridge Wan SP gather 默认 grad 模式致梯度 ×TP
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-bridge
+    component: Wan decoder SP gather
+  behavior: Wan decoder 的 SP gather 用默认 tensor_parallel_output_grad=True，backward 做 reduce-scatter，但各 TP rank 算同一完整 loss，相同梯度被求和。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 无 crash、无 NaN，forward 输出与 loss 下降正常；decoder 权重梯度恰为 TP 倍（TP=2 时范数 7.89 vs 3.94），有效学习率 ×TP，收敛动态随 TP 度不可比；H100 Wan recipe（TP=2、CP=4、SP）默认中招。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron-Bridge 的 Wan 扩散模型 decoder（wan_model.py:267，Bridge `34d8d4b8`）对 `gather_from_sequence_parallel_region(x)` 用**默认** `tensor_parallel_output_grad=True`——backward 变 reduce-scatter。但 Wan 在每个 TP rank 上计算**同一个完整 loss**，于是 backward 把 TP 份相同梯度**求和**：TP=2 时 decoder 权重梯度范数 7.8876387 而非 3.9438193（恰好 ×TP），forward 输出各 rank 一致（错值只在梯度）。H100 Wan perf recipe 用 TP=2、CP=4、SP——默认即中招。修复 = 该 gather 传 `tensor_parallel_output_grad=False`，并与模型逐参数 TP 梯度平均标志一起复核。报告时点尚未对 Bridge 单独开 issue（审计报告注明 to be filed）。
+  source: 'Megatron-LM #7452 Appendix B（2026-09-17；ezyang 审计；数值 + 修复 + recipe 暴露面）。https://github.com/NVIDIA/Megatron-LM/issues/7452'
+  behavior: 无 crash、无 NaN——**decoder 参数的有效学习率恒 ×TP**，forward 全对、loss 正常下降，唯一表象是 Wan decoder 收敛动态随 TP 度不可比。与 PAR.11（GTP 梯度 ×GTP/EGTP）/MOE.12（aux 梯度 ×TP/CP）同病「梯度恒乘并行组大小」的第 3 个实例，这边断点是 **SP gather 算子的 grad 模式默认值与「每 rank 全 loss」的模型写法不匹配」；与 LOSS.09（G 缩放漂移）同为「并行度旋钮静默改有效学习率」。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

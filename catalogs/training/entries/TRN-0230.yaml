@@ -1,0 +1,53 @@
+id: TRN-0230
+legacy_ids:
+- RL-RO.08
+slug: adapter_omitted_from_weight_sync
+aliases: []
+title: verl 异步 RL 的 LoRA adapter 从不进入权重同步
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: checkpoint_engine 权重同步
+  behavior: checkpoint_engine 后端非 naive 且 LoRA merge=False（默认）时，每次权重同步推送的都是冻结的 base model，训练中的 LoRA adapter 从不传输。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: '所有 async RL recipe 均受影响：rollout 整个 run 从初始策略采样，RL 循环被静默切断，错配随训练单调增长；loss 降、reward 动、grad_norm/entropy/ESS 看似合理且无警告。colocated（backend: naive）路径正常。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-21'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7495
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0227
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `var:moe_router_not_replayed` · 置信度 `documented`'
+  mechanism: 'verl disaggregated trainer/rollout（`rollout.checkpoint_engine.backend != "naive"`，即所有 async RL recipe）+ LoRA `merge=False`（默认）时，**每次权重同步推的都是冻结的 base model，LoRA adapter 从不传输**。rollout 引擎整个 run 从初始策略采样；训练侧为当前策略算 policy gradient，数据却永远来自初始策略——RL 循环被静默切断，mismatch 随训练单调增长。colocated 路径（`backend: naive`）正确：同配置、不同 mode。'
+  source: 'verl #7495（生产 verl 0.8.0：3 trainer + 1 rollout GPU、fully_async、Qwen3-4B + LoRA r32；0.8.0 与 main 相关代码 byte-identical）。https://github.com/verl-project/verl/issues/7495'
+  behavior: 训练「正常完成」——loss 降、reward 动、grad_norm/entropy/ESS 都看着合理、无任何警告。行为上是 RL-RO.01 的**极端形式**（rollout↔train 错配不随 off-policy 校正收敛，而是结构性钉死在 π₀），但机制上不是数值核差，是**同步载荷不完整**：训练的 adapter 根本没进同步路径。RL-RO.05 的对偶：那边是「该回放的不回放」，这边是「该同步的不同步」。
+  discovery: 2026-08-21 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

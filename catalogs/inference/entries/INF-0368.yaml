@@ -1,0 +1,56 @@
+id: INF-0368
+legacy_ids:
+- '5.21'
+slug: vllm_shm_broadcast_startup_wedge_models_endpoint_healthy
+aliases: []
+title: vLLM shm_broadcast 启动竞态致引擎死而 API 仍健康
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: shm_broadcast 启动期块分配
+  - subsystem: 调度/服务
+    stack: vllm
+    component: 引擎死亡后的 HTTP API server
+  behavior: 启动时 shm_broadcast 共享内存块饥饿约 60s 的竞态使 rank 0 worker 意外退出并 EngineDeadError；引擎已死时 HTTP server 仍照常启动并响应。
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: 8-rank TP + Ray 启动时 7 次中 5 次复现；受控试验中 2/3 次 GET /v1/models 返回 200 而生成已死，基于 models 端点的 readiness 检查报告健康，只有真实 completion 请求能暴露。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + Ray 多 rank TP 启动；间歇性（~70% 复现率，时序竞态）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53157
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（启动期 shm_broadcast 块饥饿竞态杀死 rank 0 后 HTTP API 仍存活——readiness 盲区：`/v1/models` 返回 200 而生成已死） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'vLLM v0.26.0 8-rank TP 部署（GLM-5.2-FP8，8×GB10，Ray executor，FLASHINFER_MLA_SPARSE_SM120，fp8_ds_mla KV）启动时 `shm_broadcast` 共享内存块饥饿 ~60s → `RayWorkerProc rank=[0] died unexpectedly`、`shm_broadcast.acquire_read` 抛 `RuntimeError: cancelled`、`EngineDeadError`。7 次启动 5 次复现；幸存实例连续 2 小时 40 个请求零故障——纯启动竞态而非运行时衰减。**最关键细节**：3 次受控试验中 2 次 HTTP server 照常启动、`GET /v1/models` 返回 200 而生成引擎已死——任何基于 models 端点的 readiness 检查都会把 wedged 引擎报告为健康，只有真实（鉴权）completion 请求才能暴露。'
+  source: 'vLLM #53157（2026-08-19 open，含 5/7 复现率与 readiness 盲区对照）。https://github.com/vllm-project/vllm/issues/53157'
+  behavior: 启动期 crash（EngineDeadError）或更糟的**僵尸服务**形态：API 活、生成死。对附录 C.6 服务栈活性盲区的直接实证——活性故障绕过全部输出正确性监控，唯有端到端生成探针可见。
+  trigger_surface: vLLM + Ray 多 rank TP 启动；间歇性（~70% 复现率，时序竞态）
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

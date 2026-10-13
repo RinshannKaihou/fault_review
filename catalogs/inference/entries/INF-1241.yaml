@@ -1,0 +1,64 @@
+id: INF-1241
+legacy_ids:
+- K3.4
+slug: offload_decode_block_index_desync
+aliases: []
+title: vLLM CPU 卸载解码块索引失步，重载后提供过期 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: CPU 卸载连接器 store 索引
+  behavior: _get_reqs_to_store 计算 num_blocks 时，解码期新块的哈希尚未进入 req.block_hashes，索引静默失败、_next_stored_block_idx 漂移，解码区 KV 从未被卸载
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: swap-in 重载之后，靠后的解码区位置被提供过期或缺失的 KV；源文档未单列外部症状
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/33864
+  kind: github_issue
+  resolved_from: 'vLLM #33864'
+- url: https://github.com/vllm-project/vllm/issues/35507
+  kind: github_issue
+  resolved_from: '#35507'
+- url: https://github.com/vllm-project/vllm/pull/25856
+  kind: github_pr
+  resolved_from: 'PR #25856'
+- url: https://github.com/vllm-project/vllm/pull/31341
+  kind: github_pr
+  resolved_from: 'PR #31341'
+relations: []
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: CPU 卸载连接器的 `_get_reqs_to_store` 用 `(num_computed_tokens + new_tokens) // offloaded_block_size` 计算 `num_blocks`，但解码阶段形成的块的哈希还没进入 `req.block_hashes`，索引因此静默失败、`_next_stored_block_idx` 发生漂移 → 解码阶段的 KV 从未被卸载，之后 swap-in 提供的是过期或缺失的 KV。
+  source: 'vLLM #33864（佐证 #35507、PR #25856、PR #31341）。'
+  behavior: 源文档未单列该字段；机制中记载的后果是重载（swap-in）之后服务的是过期/缺失的解码区 KV。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: '`infra_off` —— 一段连续的靠后（解码区）位置在重载边界之后回退到过期 KV，表现为轨迹不连续 / KV 相对重算参考的 delta 集中在尾部位置。与 K3.3 同理，过期 KV 的**值**是真实算过的（局部在流形上），错的是它与当前 token 序列的绑定，因此只有 recompute-oracle 轴与 trajectory 族的变化点检测能看见，纯 statistical 与 spectral 族漏检。'
+  repro: 方案：单钩子把尾部一段位置的 KV 替换为同一序列更早解码步的 KV（陈旧快照），保持值合法而绑定错误。属 partial：不模拟卸载/换入路径，只注入末态。
+  locus: block-slot-alloc
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

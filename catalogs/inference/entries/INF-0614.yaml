@@ -1,0 +1,55 @@
+id: INF-0614
+legacy_ids:
+- '6.221'
+slug: sglang_chunked_prefill_splits_encoder_region_negative_extend_num_tokens_crash
+aliases: []
+title: SGLang 分块 prefill 截入 encoder 区致计数为负崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: PrefillAdder、encoder 记账
+  behavior: 准入 PrefillAdder 不感知 encoder 区，截断点可落在其内；prepare_encoder_info_extend 仍无条件减去完整 encoder_len，使 extend_num_tokens 为负。
+effect:
+  objects:
+  - 可用性/进度
+  detail: encoder-decoder 模型（Whisper、mllama 等）开 chunked prefill，encoder 区大于剩余 chunk 预算或多请求并发挤占时，out_cache_loc 长度断言失败，scheduler SIGQUIT、服务器被杀。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + encoder-decoder 模型（Whisper/mllama 等）+ chunked prefill + encoder 区大于剩余 chunk 预算或并发挤占（other_stack：SGLang）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38627
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（encoder-decoder 模型（Whisper、Llama-3.2-Vision/mllama 等 `config.is_encoder_decoder==True`）在 chunked prefill 下：encoder token 以 `num_image_tokens` placeholder 前置，`ScheduleBatch.prepare_encoder_info_extend()` 对 encoder 尚未缓存的请求**无条件减去完整 encoder_len**（假设整段 encoder 区都在当前 prefill 步内）；而 chunked-prefill 准入路径 `PrefillAdder` **不知道 encoder 区**——请求放不进剩余 chunk 预算时截断到 `rem_chunk_tokens`，截断点可**落进 encoder 区内**（`trunc_len < encoder_len`）。此时该步只含 trunc_len 个 encoder token 却被减去整段 encoder_len → `extend_num_tokens` **为负** → `assert len(self.out_cache_loc) == self.extend_num_tokens` 炸 → scheduler 进程 SIGQUIT、服务器被杀） · Cov: `NEW`（分块准入与编码器记账的区段所有权错配子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`PrefillAdder`（通用 chunk 预算）与 `prepare_encoder_info_extend`（encoder 区整段假设）各自维护对同一段 token 的记账，二者对"截断可以切在哪"没有共享约束。触发于普通负载：多个 encoder-decoder 请求并发挤占 chunk 预算、或单个大 encoder 区（长音频/多图）超过剩余预算。'
+  source: 'SGLang #38627（2026-09-09 open，bug label，含断言位置代码、负值推导与两类触发路径分析）。https://github.com/sgl-project/sglang/issues/38627'
+  behavior: hard crash（AssertionError → SIGQUIT → 服务器死亡）——fail-loud 但由**普通并发负载**触发，且是 enc-dec 模型 chunked prefill 的必经路径。6.213（enc-dec cache manager 每步重复计回预算膨胀）之后 encoder-decoder 记账族第二例：本条在 chunk 准入维度且显形为负数计数崩溃而非预算虚增 OOM。
+  trigger_surface: SGLang + encoder-decoder 模型（Whisper/mllama 等）+ chunked prefill + encoder 区大于剩余 chunk 预算或并发挤占（other_stack：SGLang）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：逐项核对原文（PrefillAdder 不感知 encoder 区、截断落在 encoder 区内、prepare_encoder_info_extend 无条件减去完整 encoder_len、extend_num_tokens 为负、out_cache_loc 断言、SIGQUIT 杀服务器、Whisper/mllama、两类触发路径）均有依据。分类与独立判断一致：两处记账都在 SGLang scheduler 的准入/批构造代码，调度/服务 / sglang；可用性/进度；纯 fail-loud 崩溃，visibility 报错。behavior 只写原因、detail 只写触发与后果，长度合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

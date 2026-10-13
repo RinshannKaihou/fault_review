@@ -1,0 +1,58 @@
+id: TRN-0129
+legacy_ids:
+- ACT.08
+slug: tp_checkpoint_recompute_drops_fp8_autocast
+aliases: []
+title: Megatron 重算未重入 fp8_autocast 致梯度分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: megatron-lm
+    component: CheckpointFunction 重算上下文
+  behavior: tensor_parallel.checkpoint 的 backward 重跑被 checkpoint 的函数时已跳出前向的 fp8_autocast，旧实现只恢复 RNG 状态，区域内 TE 模块以 FP8 关闭状态重算。
+effect:
+  objects:
+  - 梯度
+  - 隐状态
+  detail: BF16 参数 + FP8 激活时重算静默跑 BF16、前向跑 FP8，梯度自 iteration 2 起与无 recompute 的 run 分叉且无报错；FP8 参数路径则报 AttributeError；--recompute-modules core_attn 或 gdn 触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7538
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0127
+original:
+  category: ACT
+  section: ACT
+  meta: 'stage: `pretrain` · Cov: `var:sar_recompute_skips_inplace_writes` · 置信度 `documented`'
+  mechanism: 'Megatron `tensor_parallel.checkpoint`（`CheckpointFunction`）的 `backward()` 在 autograd backward 内**重跑 checkpointed 函数**——此语境已跳出前向所处的 `fp8_autocast`，旧实现只恢复 RNG 状态。区域内的 TE 模块因此以 **FP8 关闭**的状态重算：FP8 参数下 TE 反量化权重、wgrad-fusion 绑定失败（`AttributeError: ''Tensor'' object has no attribute ''main_grad''`，crash 面）；**BF16 参数 + FP8 激活**下重算静默跑 BF16 而前向跑 FP8——**重算激活 ≠ 原前向激活，梯度静默错值**。受打击的调用点：直接调 `tensor_parallel.checkpoint` 的 `--recompute-modules core_attn`（attention.py / absorbed_mla.py）与 `--recompute-modules gdn`（GatedDeltaNet/KimiDeltaAttention）；block 级站点在 FP8 下路由到 `te_checkpoint`、`CheckpointWithoutOutput` 已自行重入 FP8 态。修复（PR #7538）= forward 记录 `FP8GlobalStateManager.is_fp8_enabled()` + recipe，backward 在 `fp8_autocast(enabled=True, fp8_recipe=<recorded>)` + `activation_recompute_forward(recompute_phase=True)` 下重算，与 `CheckpointWithoutOutput._recompute` / TE checkpoint 同法。'
+  source: 'Megatron-LM PR #7538（2026-09-21；1×GB200 mxfp8 TE 2.20 验证表：dev `7b2991228` 上 DeepSeek-V3.2-style GPT（dsa）FP8 参数 + selective `core_attn` recompute 在 iteration 1 crash；Qwen3.5 形 GDN 模型 `gdn` recompute vs 无 recompute **从 iteration 2 起分叉**、修复后 6 iteration 逐位一致；新增单测两条在 dev 全挂）。https://github.com/NVIDIA/Megatron-LM/pull/7538'
+  behavior: 两个可见面——FP8 参数路径 crash（易发现）；**BF16 参数 + FP8 激活路径无任何报错**：重算用高精度重放低精度前向，saved activations 语义错位、梯度从 step 2 起静默分叉，recompute on/off 的两次 run 不可比且无信号指向 recompute。与 ACT.05（partitioned recompute 参数表错位）/ACT.06（SAR 不重放 in-place 写）/ACT.02（selective recompute 漏存 RNG）同族「重算状态 ≠ 原前向」第 4 断点：那边丢参数表/副作用/随机数、这边丢 **autocast 精度上下文**；与 KER.11（op-fuser 只读全局 autocast）互补：那边 override 到不了 kernel、这边 region 语义到不了重算；与 ACT.07（offload reload 无排序边）同为「文档承诺的重算等价性未被代码兑现」。行为效应里的「iteration 2 分叉」与 HW 家族 SDC 表象相似但因果在代码。
+  discovery: 2026-09-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 梯度
+        status: unanimous

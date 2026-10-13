@@ -1,0 +1,53 @@
+id: INF-0633
+legacy_ids:
+- '6.240'
+slug: sglang_hierarchical_cache_host_tier_hit_gdn_mamba_wrong_output_other_pass_voice
+aliases: []
+title: SGLang host 层缓存命中后 hybrid GDN 模型答非所问
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HiCache host 层取回（GDN 状态）
+  behavior: hierarchical cache 从 host tier 取回时需同时恢复注意力 KV 与 GDN/Mamba 状态，host 路径的取回/重组或 state 绑定与 device 路径不一致，恢复出另一遍计算的状态。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: prefix 被 device pool 驱逐后从 host tier 命中时，byte-identical 请求输出流畅但答非所问（20/20 全错），cached_tokens 与 finish_reason 均正常；冷启动与 device 命中全对。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + hybrid GDN/Mamba 模型 + `--enable-hierarchical-cache` + prefix 驱逐后 host-tier 命中（other_stack）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39830
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0586
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang main（2929a399，2026-09-15）hybrid 线性注意力（GDN）模型 + `--enable-hierarchical-cache`：prefix 被 device pool 驱逐后从 **host tier** 恢复命中时，byte-identical 请求产出**不同且错误**的输出——无 crash、无警告、无会计异常：serve 按完整 `cached_tokens` 报告命中、`finish_reason=stop`、答案流畅——**只是不是对该 prompt 的回答**（20/20 host 命中全错，同 prompt 同进程 cold 10/10 与 device-pool 命中 10/10 全对）。同缺陷类已在 device 路径报告（#37836 已修、#39342、#31833），host 路径此前无报告） · Cov: `var:sglang_glm53flash_dsa_hicache_host_roundtrip_corruption_no_spec`（6.193 host 层恢复损坏族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: hybrid 模型的 hierarchical cache 在 host-tier 取回时需同时恢复注意力 KV 与 GDN/Mamba recurrent state 两类条目；host 路径的取回/重组（或 state checkpoint 绑定）与 device 路径不一致——恢复出的上下文属于另一遍计算（"另一个 pass 的声音"），提示状态被跨请求/跨轮串扰或陈旧 state 复用。
+  source: 'SGLang #39830（2026-09-16 open，含 10 prompt × cold/device/host 三腿对照表、HEAD pin 与 device 路径缺陷族谱系（#37836/#39342/#31833））。https://github.com/sgl-project/sglang/issues/39830'
+  behavior: 无 crash、无 NaN、缓存指标一切正常——host-tier 命中的回答内容错误但流畅（答非所问），是**最静默的跨请求上下文污染形态**；冷启动与 device 命中全对使问题仅在驱逐→host 恢复窗口显形。6.193（DSA HiCache host 往返损坏）之后 host 层族新成员：本条在 **hybrid GDN state 的 host 恢复**维度、20/20 确定性复现。
+  trigger_surface: SGLang + hybrid GDN/Mamba 模型 + `--enable-hierarchical-cache` + prefix 驱逐后 host-tier 命中（other_stack）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

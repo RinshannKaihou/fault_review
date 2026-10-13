@@ -1,0 +1,50 @@
+id: INF-0969
+legacy_ids:
+- '10.53'
+slug: hf_barthez_tokenizer_hardcoded_unigram_bpe_vocab_typeerror
+aliases: []
+title: transformers Barthez 硬编码 Unigram 致加载报错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: transformers
+    component: BarthezTokenizer.__init__
+  behavior: BarthezTokenizer 无条件构造 Unigram 且未声明 model 属性，而 moussaKam/barthez 实为 BPE；v5 原生格式转换把 dict vocab 直通 Unigram，merges 被丢。
+effect:
+  objects:
+  - 可用性/进度
+  detail: transformers v5 加载 moussaKam/barthez 时 fast/slow 路径均抛 TypeError（dict 非 Sequence），无 workaround，整模型不可用；v4.57.1 正常，测试只 pin 了 UNIGRAM 的 mbarthez。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: transformers v5 + moussaKam/barthez（BPE）BarthezTokenizer 加载（模型即触发；CPU 可复现）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48567
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（`BarthezTokenizer.__init__` 无条件构造 `Tokenizer(Unigram(self._vocab, unk_id=3))`，但 `moussaKam/barthez` 的 sentencepiece 模型是 **BPE**（`trainer_spec.model_type: BPE`，tokenizer.json vocab 为 dict + 114,917 merges）而同库 `mbarthez` 才是 UNIGRAM——v5 的 `convert_to_native_format`（#42563）把 checkpoint 自带 vocab 喂进硬编码 Unigram：`TypeError: argument ''vocab'': ''dict'' object is not an instance of ''Sequence''`，fast/slow 两条加载路径全崩且无 workaround；v4.57.1 两路径一致正常） · Cov: `NEW`（ tokenizer 类硬编码算法与 checkpoint 不匹配子签名） · 触发 `yes` · 置信度 `documented`'
+  mechanism: 共享文件名 `sentencepiece.bpe.model` 掩盖两个 checkpoint 用不同 spm 算法；类未声明 `model` 属性（对比 xlm_roberta/mbart），tokenizers 的 reshape 分支被跳过、dict 直通 Unigram、merges 只在 BPE 分支读取故也被丢。bisect：#42563（2025-12-09 加 convert_to_native_format）使其致命，#40936（引入硬编码 Unigram）时仍能加载。测试套件绿是因为只 pin 了 `moussaKam/mbarthez`（UNIGRAM 那个）。
+  source: 'transformers #48567（2026-09-06 open，bug label，含双 checkpoint proto 对照表、bisect 结论与 v4/v5 行为对照）。https://github.com/huggingface/transformers/issues/48567'
+  behavior: 加载即 TypeError（fail-loud）——但破坏面是 v4→v5 升级后**整模型不可用**（文档示例引用该 checkpoint）。新子签名「**tokenizer 类硬编码分词算法 ≠ checkpoint 实际算法**」：与 10.50（plain-text 路径丢 BOS/EOS）同为 transformers v5 tokenizer 回归域，本条在算法选择层；"测试只 pin 幸存变体"与 1.180（sweep 从不 exercise 谓词）共享测试有效性教训。
+  trigger_surface: transformers v5 + moussaKam/barthez（BPE）BarthezTokenizer 加载（模型即触发；CPU 可复现）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

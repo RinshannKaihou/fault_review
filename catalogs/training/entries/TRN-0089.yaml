@@ -1,0 +1,51 @@
+id: TRN-0089
+legacy_ids:
+- DATA.07
+slug: seqlen_packer_off_by_one_drops_last_sample
+aliases: []
+title: DeepSpeed batch_by_seqlens 差一错误，末样本永不入批
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: deepspeed
+    component: batch_by_seqlens 切片上界
+  behavior: batch_by_seqlens 贪心扩展切片时 range(batch_init + m, len(metrics), m) 的独占上界使 batch_end 取不到 len(metrics)，尾样本被当作“没数据了”而 break。
+effect:
+  objects:
+  - 训练样本流
+  detail: 无报错、训练曲线正常；sequence_picking_order 为 dataloader/seqlen 时同一尾样本每个 epoch 都被丢弃，为 random 时每个 epoch 丢不同样本。复现：seqlens=[1,2,3,4,5] 只产出样本 [0,1,2,3]。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8347
+  kind: github_pr
+relations: []
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `pretrain/sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed `batch_by_seqlens`（variable batch size 管线）按 token 上限贪心扩切片 packing，`range(batch_init + m, len(metrics), m)` 的独占上界使 `batch_end` 永远取不到 `len(metrics)`——能被尝试的最宽切片是 `metrics[batch_init:len-1]`，**数据集最后一个样本永远进不了任何 microbatch**；尾样本使 `batch_init == valid_batch_end`，被循环注释当「没数据了」正常 break。
+  source: 'DeepSpeed #8347（CPU 复现：`seqlens=[1,2,3,4,5], max_tokens=100` 只出样本 `[0,1,2,3]`；修复后新增单测 5 failed→5 passed；24 组模式 sweep 无重复 id、覆盖完整）。https://github.com/deepspeedai/DeepSpeed/pull/8347'
+  behavior: 无报错；`sequence_picking_order=dataloader/seqlen` 时同一尾样本每个 epoch 都被静默丢弃，`random` 时每 epoch 丢不同样本——数据覆盖缺口随 epoch 漂移。训练曲线完全正常。与 DATA.06（padding_free 边界恢复错）同为 packing 侧静默数据丢失，但本条在**批次构造算术**（off-by-one 切片边界），非边界推断。
+  discovery: 2026-08-30 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

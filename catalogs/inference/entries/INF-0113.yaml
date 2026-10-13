@@ -1,0 +1,50 @@
+id: INF-0113
+legacy_ids:
+- '1.114'
+slug: ttmetal_exp2_fp32_missing_overflow_guard_exponent_wraparound
+aliases: []
+title: ttnn.exp2 fp32 精确路径缺上溢 guard 致指数回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.exp2 fp32 精确路径
+  behavior: 以 2^round(x)·2^f 重构时只有下溢 guard（e<1→0）而缺上溢 guard；x≥128.5 时 e≥256，setexp 仅保留低 8 位致指数回绕，前一行已算出的 +inf 被覆盖丢弃。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32_dest_acc_en 下 x≥128.5 返回看似普通的有限值并静默传播（exp2(256)=1.0、exp2(255)=0.5），x∈[128,128.5) 返回 NaN，正确应为 +inf。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent SFPU + `ttnn.exp2` fp32-accurate 路径（fp32_dest_acc_en）+ x≥128（软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54054
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn.exp2 fp32-accurate 内核指数重构只有下溢 guard 无上溢 guard——x≥128.5 时 setexp 只留低 8 位**回绕成普通有限数**：exp2(256)=1.0、exp2(255)=0.5；[128,128.5) 出 NaN；正确的 +inf 在上一行已算出又被覆盖丢弃） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`_sfpu_exp2_fp32_accurate_` 以 `2^x = 2^round(x)·2^f` 重构：minimax 多项式算 `r = 2^f`，再 `setexp(r, e)`、`e = biased_exp(r) + round(x)`。`e < 1 → 0` 的下溢 guard 存在，上溢 guard **缺失**：x≥128.5 时 `e ≥ 256`，setexp 仅保留低 8 位 → 指数回绕，输出看似普通的有限数并静默传播；x∈[128,128.5) 时 `e == 255` + 非零尾数 → NaN。讽刺的是正确结果（`y *= inf`）在出错行之前一行已被算出又被覆盖。Bounty 后 de-scope（closed）。'
+  source: 'tt-metal #54054（2026-08-22 closed，含逐区间位型分析与被丢弃的 +inf 计算行）。https://github.com/tenstorrent/tt-metal/issues/54054'
+  behavior: 无 crash——溢出域返回**有限垃圾值**（最危险形态：普通数值静默传播）或 NaN。属「**指数重构半边 guard 缺失 → 指数域回绕**」新子签名：与 1.48/1.114 同 SFPU 指数重构族（xielu 是下溢 clamp 错误、本条是上溢 guard 整体缺失），回绕使溢出错误比 NaN 更难发现。
+  trigger_surface: Tenstorrent SFPU + `ttnn.exp2` fp32-accurate 路径（fp32_dest_acc_en）+ x≥128（软件 API 可触发）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,58 @@
+id: INF-1003
+legacy_ids:
+- '10.87'
+slug: vllm_llama3_json_tool_parser_streaming_swallows_leading_brace_plain_content
+aliases: []
+title: vLLM llama3_json 流式 parser 吞掉以 { 开头的正文
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: Llama3JsonToolParser 流式判定
+  behavior: extract_tool_calls_streaming 仅凭首字符是否为 { 或 <|python_tag|> 判定 tool call 且永不回退，而非流式先完整解析 JSON 再判 name 键。
+effect:
+  objects:
+  - 输出内容
+  detail: 流式下以 { 开头的普通回答返回 content=None 且零 tool call；空参数调用流式得 arguments=''；调用前有文字时流式把全部内容当 content。均 HTTP 200，与非流式结果不同。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + Llama 3.x `llama3_json` tool parser + tools + 流式 + 模型输出以 `{` 开头（config：API 形态 + 模型输出分布）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-26'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser 对生成文本的后处理）一类；暂取最接近的 调度/服务（API/前端）。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58824
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0958
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `Llama3JsonToolParser.extract_tool_calls_streaming` 仅凭首字符 `current_text.startswith("{")`（或 `<|python_tag|>`）判定 tool call 且**永不回退**——流式与非流式对同一输出三处分裂：(1) 以 `{` 开头的**普通回答**（JSON 答案、`{}`、`{"a": 1} is a dict`）：非流式返回 content、流式返回 `content=None` 且零 tool call——**模型整段回复在流式路径消失**；(2) 空参数调用：非流式 `arguments=''{}''`、流式 `arguments=''''`；(3) 调用前有文字（`Let me check. {"name": ...}`，含 `<|python_tag|>` 调用 detokenize 后形态）：非流式返回调用丢文字（文档化行为）、流式把含 JSON 的全部内容当 content 返回零调用。纯 parser 复现：CPU + tokenizer 即可，无 GPU/权重/服务器。修复 #58829（latch：缓冲对象完成解析且无 name/parameters/arguments 则全部 flush 为 content）已开源但未合并，社区审查指出 latch 翻转后不复位（同流后续真调用会被吞为 content）待回归测试） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42/10.75 parser 首标记假设族——本条在流式/非流式首字符判定维度：非流式有完整 JSON 解析兜底、流式只有首字符启发式） · 触发 `config` · 置信度 `verified`'
+  mechanism: 流式分支以首字符二分 content/tool-call 且无"后来证明不是调用"的回退路径；非流式分支先完整解析 JSON 再判 name 键。报告者附逐 token 三场景对照脚本（`unsloth/Llama-3.3-70B-Instruct` tokenizer，v0.30.0 与 main 复现）。
+  source: 'vLLM #58824（2026-09-26 open，含 parser-only 复现脚本、三场景流式/非流式行为矩阵；修复 PR #58829/#58826 讨论与 ParserEngine #51577 谱系）。https://github.com/vllm-project/vllm/issues/58824'
+  behavior: 无 crash、HTTP 200——**流式客户端丢失模型的整段回复**（以 `{` 开头的合法 JSON 回答在 agentic/结构化场景常见）；空参数调用拿到损坏的 arguments。10.42（通道终止符假设）、10.75（converter 尾参丢失）之后 parser 族新成员：**同一解析器流式/非流式判定算法不同**（首字符启发式 vs 完整 JSON 解析）使两 API 对同一生成给出不同结果——流式路径结构性地比非流式更激进地吞内容。
+  trigger_surface: vLLM + Llama 3.x `llama3_json` tool parser + tools + 流式 + 模型输出以 `{` 开头（config：API 形态 + 模型输出分布）
+  discovery: 2026-09-26 每日扫描。
+  回访（2026-09-27）: '#58824 新增 3 条评论（09-26）——neevmodh 开出 scoped 修复 #58829（latch：缓冲对象完成解析且无 name/parameters/arguments 即全部 flush 为 content）；he-yufeng 对读两份竞争修复（#58826 只修中途 MalformedJSON 分支、完成态仍丢）判定 **#58829 latch 形状正确**但指出 latch 翻转后不复位（同流 plain-JSON 先行 + 真 tool call 会被吞）与缺回归测试两缺口；neevmodh 已补三场景测试并文档化 latch 限制。PR 仍 open 未合并，判定与条目记载一致。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

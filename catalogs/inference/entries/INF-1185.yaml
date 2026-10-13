@@ -1,0 +1,51 @@
+id: INF-1185
+legacy_ids:
+- '13.17'
+slug: vllm_moe_skip_padding_router_inconsistency
+aliases: []
+title: 部分 MoE router 把 padding 行路由到真实 expert
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: BaseRouter 与各 router 实现
+  behavior: padding 仅在部分 fused top-k operator 中处理；DSV4 Triton、grouped top-k、custom 等 router 对 cudagraph/DP padding 行发射真实 expert ID。
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: 默认启用 VLLM_MOE_SKIP_PADDING 时，cudagraph/DP padding 行被当作真实 token 分派到 expert，执行本应跳过的工作，静默污染 expert 计算与 EPLB 映射；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 版本缺陷：可 pin 历史版本复现，需场景
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-02'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50757
+  kind: github_pr
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（MoE padding 契约跨 router 实现不一致） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: vLLM 的 `VLLM_MOE_SKIP_PADDING` 默认启用，但 padding 当前**仅在部分 fused top-k operator** 中处理。专门的 DSV4 Triton router、grouped top-k、custom router 及其他 router 实现因此可对 cudagraph/DP padding 行发射**真实 expert ID**，调度本应跳过的工作。padding 行被当作真实 token 路由到 expert → 污染 expert 计算与 EPLB 映射。修复：在 `BaseRouter` 层为无原生 padding 支持的 router 应用 padding 契约；padding-aware 的 fused router 可 opt-out 避免冗余 kernel；把 padding 处理 fuse 进 `dsv4_topk`（对 padding 行发射零权重与 `-1` expert sentinel）；在 routed-expert capture 与 EPLB mapping 前 mask。
+  source: 'vLLM #50757（2026-08-02 closed PR）。组件 MoE router 路径（`BaseRouter`、`dsv4_topk` 等）。https://github.com/vllm-project/vllm/pull/50757'
+  behavior: 无 crash、无 NaN。padding 行被部分 router 当真实 token 路由到 expert → 静默污染 expert 计算与负载均衡映射。属「MoE padding 契约跨 router 实现不一致 → padding 行误路由」新子签名，是模型图/架构层的 MoE dispatch 正确性 bug。
+  trigger_surface: vLLM 版本缺陷：可 pin 历史版本复现，需场景
+  discovery: 2026-08-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

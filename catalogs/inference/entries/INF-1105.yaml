@@ -1,0 +1,52 @@
+id: INF-1105
+legacy_ids:
+- '11.82'
+slug: sglang_dflash_anchor_first_checkpoint_layout_unvalidated_position_shift_acceptance_collapse
+aliases: []
+title: SGLang 不校验 DFLASH 布局约定致接受率坍塌
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: DFlashDraftConfig 布局解析
+  behavior: SGLang 假设 DFLASH drafter 为 1+N 布局且不校验，配置解析不读 query_zero_predicts_next 声明，anchor-first checkpoint 被按 1+N 解析，draft 全体位移一位。
+effect:
+  objects:
+  - 性能/资源
+  detail: Qwen3.8-Flash-Next + 官方 DeepSpec block7 drafter，8×A800 实测 47,411 步 accept length 1.06（同 checkpoint 在 vLLM 为 2.76–2.98）；服务健康、零警告，输出仍正确，只有接受率指标可见。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang + DFLASH speculative + anchor-first 约定导出的 drafter checkpoint（config：checkpoint 布局约定触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40144
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1100
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（SGLang 对 DFLASH draft checkpoint 的**块布局约定假设不校验**：生态存在 anchor-as-first-prediction（每位置都预测）与 1+N（位置 0 为 anchor/bonus、1..N 为 draft）两种约定，SGLang 假设后者。anchor-first 训练的 checkpoint 被静默按 1+N 服务 → **每个 draft token 位移一位**：服务器健康应答、接受率坍至 ~1.0（47,411 verify 步实测 accept length **1.0621** @4-token 窗口；同 checkpoint 卡片在 vLLM（尊重其训练布局）下 2.7562@block4 / 2.9837@block7）。元数据困境：speculators 的 `sample_from_anchor` 字段在该官方 checkpoint **根本不存在**（marker 检查也读不到）；但布局**有声明只是字段名 SGLang 不读**——上游 serving repo 的 override config `dflash_config.query_zero_predicts_next: true` 是 anchor-first 约定的显式陈述，`DFlashDraftConfig`（`dflash_utils.py:529-548`）无该字段、`parse_dflash_draft_config` 从不读取。Qwen3.8-Flash-Next + 官方 DeepSpec `dflash_block7_qwen38_flash_next`，8×A800） · Cov: `var:vllm_dspark_fillin_layout_checkpoint_missing_flag_silent_sub_one_percent_acceptance`（11.77 draft 布局元数据歧义族——跨栈姊妹对） · 触发 `config` · 置信度 `verified`'
+  mechanism: 布局约定的真值分散在多个互不兼容的元数据通道（缺失的 sample_from_anchor / 上游 override 的 query_zero_predicts_next / 无标记的 checkpoint），消费端无布局探测或校验时按自身假设静默解析——draft 全体位移一位、每位条件于错误上下文。
+  source: 'SGLang #40144（2026-09-18 open，含双约定对照表、47,411 步接受率实测 vs checkpoint 卡片 vLLM 数值、`dflash_utils.py` 行级引用与 override config 字段证据）。https://github.com/sgl-project/sglang/issues/40144'
+  behavior: 无 crash、无 NaN、零警告——draft 几乎全拒（acceptance ~1.0），推测解码退化为纯开销；**输出仍正确**（target 验证兜底）故精度评测不暴露，只有接受率指标可见。11.77（vLLM DSpark fill-in 布局缺旗标 <1% 接受）之后"布局歧义族"新成员：本条与 11.77 构成**同一生态元数据缺口在两个栈的各自显形**（vLLM 缺 marker 按默认错向解析 / SGLang 有声明字段不读），生态级修复应是显式布局探测或启动期接受率自检。
+  trigger_surface: SGLang + DFLASH speculative + anchor-first 约定导出的 drafter checkpoint（config：checkpoint 布局约定触发）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

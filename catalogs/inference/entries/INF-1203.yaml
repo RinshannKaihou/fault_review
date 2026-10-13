@@ -1,0 +1,58 @@
+id: INF-1203
+legacy_ids:
+- '13.35'
+slug: bug_attn_scale
+aliases: []
+title: attention 缩放系数错位致注意力分布过尖或过平
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: 通用
+    component: attn.scaling 缩放系数
+  behavior: attention 缩放系数被乘以错误倍数（factor 0.5–2.0，单层或全层），对应现实中把 1/sqrt(head_dim) 写成 1/head_dim，或 head_dim 配错导致缩放错位。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: factor>1 时注意力分布过尖、丢失上下文混合，factor<1 时过平、输出笼统；factor=2.0 明显劣化答案，factor=0.9 则可能几乎看不出来。计算确定、可重算、无 NaN，cheap 族全线漏检；单层呈 STEP、全层呈逐层累积。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: attn scale 倍数 hook/patch
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off` · Cov: `NEW`（本项目早期实测条目） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 把 attention 的缩放系数改错——对选定层做 `attn.scaling = attn.scaling * factor`，保存原值并在退出时还原。参数轴：`factor ∈ {0.5, 0.71, 0.9, 1.41, 2.0}`（0.9 为 perfect-disguise 候选，幅度小到可能落进盲区）× `layers ∈ {single, all}`。这是现实中把 `1/sqrt(head_dim)` 写成 `1/head_dim`、或 head_dim 配错导致缩放错位的直接抽象。
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。
+  behavior: '`factor > 1` 让 attention 分布过尖（近似 argmax，丢失上下文混合），`factor < 1` 让分布过平（近似均匀平均，输出变得笼统）；`factor = 2.0` 这类粗暴取值会明显劣化答案，`factor = 0.9` 则可能几乎看不出来。'
+  trigger_surface: attn scale 倍数 hook/patch
+  signature: '`infra_off`，且是**幅度可调**的 off-manifold 样本——`factor = 2.0` 时 geometric 族轻松命中，`factor = 0.9` 时预期滑向盲区，与 9.25 `bug_perfect_disguise` 构成"同一族内的强弱两端"。`layers: all` 与 `single` 的对照决定 trajectory 形状：单层是局部 STEP，全层是逐层累积的 GRADUAL。会漏检的是：cheap 族全线（确定性、可重算、无 NaN）；小 `factor` 下的 statistical 族（分布形状几乎不变，变的是 token 之间的混合权重）。'
+  repro: 最廉价的一类——只改一个 Python 属性（`self_attn.scaling`），无 hook、无权重拷贝，退出时按保存值还原。
+  相关条目: 编目中无以 `var:13.35` 挂靠的条目；相关但被判为 NEW 的有 **9.1 `yarn_attention_scaling_missing`**（"related to fault_rope + bug_attn_scale but combines both"）、**13.1 `bug_gemma_logit_softcap_missing`**（"closest is bug_attn_scale but softcap is a tanh clamp, structurally different"）、**13.4 `bug_attn_backend_eager_sdpa_flash`**（"bug_attn_scale changes the math, not the kernel"）。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    rewritten:
+    - detail
+    uncertain:
+    - effect
+    - visibility

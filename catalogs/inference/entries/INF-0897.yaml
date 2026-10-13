@@ -1,0 +1,56 @@
+id: INF-0897
+legacy_ids:
+- '9.14'
+slug: vllm_dynamic_ntk_negative_base_rope_nan
+aliases: []
+title: vLLM 动态 NTK 在服务长度低于训练长度时得复数 base 致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: 动态 NTK RoPE 缩放 base 计算
+  behavior: 动态 NTK 缩放项 inner=factor*served/trained-(factor-1) 未防守 served<trained 的负值，负底数分数幂得复数 base，cos/sin cache 转实 dtype 后为 NaN。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: nomic-embed-text-v1 以 --max-model-len 512 服务（训练长度 2048）时 embedding 输出全 NaN，却以 HTTP 200 静默返回、无 crash，下游检索/聚类全部失效。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；dynamic NTK scaling 模型（NomicBert 等）+ `--max-model-len` < 训练长度（config 级触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: effect_object 缺「嵌入/池化输出」：embedding 模型返回的向量不是生成 token/文本，暂归 输出内容
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52665
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（动态 NTK 缩放在 served_len < trained_len 时缩放项为负 → 负底数分数幂产生复数 effective_base → 复值 RoPE cache cast 到实 dtype 后 NaN embeddings 静默返回） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: vLLM 的 `DynamicNTKScalingRotaryEmbedding`（`dynamic_ntk_scaling_rope.py:53-66`）无条件计算 `inner = factor * served_max / trained_max - (factor-1)` 并取 `effective_base = base * inner ** (dim/(dim-2))`。当服务长度**低于**训练长度（nomic-embed-text-v1 以 `--max-model-len 512` 服务、`max_trained_positions=2048`）时 `inner = 2*512/2048 - 1 = -0.5`，负底数的分数幂产生**复数**（≈ -486.44 - 49.47j），cos/sin cache 值达 ~1.86e38，cast 到实数 dtype（复→实静默丢虚部/溢出）后 NaN。NTK 外推公式只在 served ≥ trained 时有意义，下推（served < trained）从未被考虑。附 CPU 最小复现脚本。
+  source: 'vLLM #52665（2026-08-17 open，NomicBert/nomic-embed-text-v1，torch 2.11.0+cu130）。https://github.com/vllm-project/vllm/issues/52665'
+  behavior: 无 crash。embedding 输出全 NaN **静默返回**（HTTP 200）——下游检索/聚类全部失效。属「外推公式零域外防守（served < trained 负缩放项）」**新子签名**：与 9.x 既有 NTK/YaRN 条目（缩放遗漏/错配）不同，本条是公式定义域边界本身被越过。
+  trigger_surface: vLLM；dynamic NTK scaling 模型（NomicBert 等）+ `--max-model-len` < 训练长度（config 级触发）
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 数值结果
+        to: 输出内容
+        status: unanimous

@@ -1,0 +1,56 @@
+id: INF-1254
+legacy_ids:
+- K4.7
+slug: pd_router_first_message_prefix_misroute
+aliases: []
+title: SGLang PD router 以首条消息做前缀匹配致误路由重算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: PD router 缓存感知前缀提取
+  behavior: cache-aware PD router 取 body.messages.first()（通常即 system prompt）做 radix 前缀匹配与 worker 选择，路由被共享 system prompt 主导，而非可复用的前缀。
+effect:
+  objects:
+  - 性能/资源
+  detail: 输出完全正确，但多轮请求被路由到不持有其 KV 的 worker 而被迫完整重算，重算 token 数与延迟升高；修复后前缀缓存命中率由 69% 升至 96%。需 P/D 分离部署。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/26263
+  kind: github_issue
+  resolved_from: 'SGLang #26263'
+- url: https://github.com/sgl-project/sglang/pull/27430
+  kind: github_pr
+  resolved_from: 'PR #27430'
+relations: []
+original:
+  category: KV4
+  section: KV §4 cross-request（跨请求，缓存键 / 汏染）
+  meta: '`model_on` · Cov: `NEW` · 触发 `no` · 置信度 `verified`'
+  mechanism: cache-aware 的 PD router 从 `body.messages.first()`（通常就是 system prompt）提取前缀文本，于是 radix 前缀匹配与 worker 选择被「共享 system prompt 的重叠」主导，而不是真正可复用的那段前缀；多轮请求因此被路由到一个并不持有其 KV 的 worker，被迫完整重算。
+  source: 'SGLang #26263（修复 PR #27430；cache-hit 69%→96%）。'
+  behavior: 输出完全正确（被正确重算），只有系统指标退化：前缀缓存命中率从 69% 提升到 96% 说明修复前有大量本可复用的前缀被浪费，重算 token 数与延迟随之升高。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: '**无**——隐藏态与健康前向逐位相同（这里标 `model_on` 是指状态严格留在健康流形上，而非模型吸收了扰动）。这是一条纯系统指标故障，检测面在前缀缓存命中率 / 重算 token 计数，任何隐藏态度量族（geometric / spectral / trajectory / statistical / infotheoretic / cheap）都必然漏检。源文档明确把它作为有据可查的**负例（盲区）**收录，用来界定本项目检测器的能力边界。'
+  locus: '`cross-request`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

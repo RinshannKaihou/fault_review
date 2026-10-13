@@ -1,0 +1,59 @@
+id: INF-0489
+legacy_ids:
+- '6.96'
+slug: vllm_triton_alignment_specialization_shared_cache_write_race_all_nan
+aliases: []
+title: causal_conv1d 对齐特化致 Triton 缓存竞态全 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: causal_conv1d 元数据指针特化
+  behavior: _causal_conv1d kernel 对逐标量读取、对齐性随 batch 布局翻转的元数据指针做 16 字节对齐特化，使 unaligned 变体必在推理期 JIT；多引擎并发写共享 cache 条目产生竞态。
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: 单节点表现为推理期 JIT 延迟尖峰；多节点共享 TRITON_CACHE_DIR 时损坏的编译二进制被静默加载，服务不 crash 但持续返回全 NaN（GRPO RL，6×GB200 实测）。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；hybrid GDN/Mamba（causal_conv1d）+ 多节点共享 `TRITON_CACHE_DIR`（竞态需多节点；JIT 延迟单节点即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52413
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（对齐 specialization 迫使推理期 JIT + 多节点共享 cache 目录写竞态 → 损坏二进制被静默加载） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`_causal_conv1d_fwd/update_kernel` 对 metadata 指针（`cache_indices_ptr`、`query_start_loc_ptr`、`conv_state_indices_ptr` 等）做 16-byte alignment specialization：(1) 这些数组逐标量读取，对齐特化零收益；(2) 它们是 per-step batch metadata 切片，对齐性随 batch 布局在运行时翻转；(3) warmup 张量新分配恒对齐 → unaligned 变体首次编译**必然发生在推理期**。多节点部署共享 `TRITON_CACHE_DIR` 时，多引擎并发写同一 cache 条目产生竞态，损坏的编译二进制被静默加载——GRPO RL（Nemotron-3-Super-120B，6×GB200 节点各 1 vLLM 引擎）实测**静默 all-NaN 输出**。修复（PR #52476）对 metadata 指针 `do_not_specialize`。'
+  source: 'vLLM #52413（2026-08-15 open）/ 修复 PR #52476（closed）。关联 #43009（latency spike）、#45631（jit_monitor）。https://github.com/vllm-project/vllm/issues/52413'
+  behavior: 单节点表现为推理期 JIT 延迟尖峰；多节点共享 cache 时升级为**静默 all-NaN 输出**（无 crash，服务继续返回 NaN）。属「kernel 特化键不稳定 × 共享编译缓存写竞态」**新子签名**——编译缓存完整性故障。
+  trigger_surface: vLLM；hybrid GDN/Mamba（causal_conv1d）+ 多节点共享 `TRITON_CACHE_DIR`（竞态需多节点；JIT 延迟单节点即触发）
+  discovery: |-
+    2026-08-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: 'subsystem 维持 算子/内核：修复 PR #52476 只改 vLLM causal_conv1d kernel 的特化（对元数据指针 do_not_specialize），多节点共享 TRITON_CACHE_DIR 的写竞态是触发条件；按“修复要改哪里”不归 编译器。审计：各事实（16-byte 对齐特化、推理期 JIT、6×GB200 GRPO、all-NaN）均有原文依据；NaN 显式→数值异常 合理，形式无问题。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

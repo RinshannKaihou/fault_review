@@ -1,0 +1,55 @@
+id: TRN-0124
+legacy_ids:
+- ACT.03
+slug: replay_graph_diverges_from_train_graph
+aliases: []
+title: Megatron CUDA graph 默认捕获范围被静默收窄
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: megatron-lm
+    component: CUDA graph attn 捕获范围
+  - subsystem: 重计算/卸载
+    stack: megatron-lm
+    component: mHC 重算管理器与 MLP tail 检查点
+  behavior: '#5841 把 [''attn''] 默认 capture range 从整个 _forward_attention 静默收窄为 layernorm+attention，新 gate 误拒旧配置；旧 replay 路径另有三处重算缺陷。'
+effect:
+  objects:
+  - 隐状态
+  detail: CUDA graph replay 的是另一段子计算，replay 图与训练图结构性分叉，无 NaN、无 crash，只有 golden values 对照才暴露；cuda_graph_modules=['attn'] 的默认配置即受影响，以前合法的配置被新 gate 误拒。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-21'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6661
+  kind: github_pr
+relations: []
+original:
+  category: ACT
+  section: ACT
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'Megatron #5841 给 mHC recompute 引入 attention-only CUDA graph split 时，**顺带改了默认 capture range**：`cuda_graph_modules == [''attn'']` 原本 capture 整个 `_forward_attention`，被静默收窄为 input-layernorm + self-attention；为新路径加的 gate 又 keyed on `''attn''`，range 在脚下被换掉后 gate 开始误拒以前合法的配置。同时旧全注意力 replay 路径本身带三个潜伏缺陷（recompute manager 够不到 MLP tail、overlap tail 缺 `pre_mlp_layernorm` checkpoint、`padding_mask` 未穿到 router 的 replay），使 **replay 图与训练图结构性分叉**。'
+  source: 'Megatron-LM PR #6661（修复：把 split 收进 `mhc_recompute_attn_cuda_graph_split` 开关、恢复默认全 range、修三个旧缺陷；GB200 验证）。https://github.com/NVIDIA/Megatron-LM/pull/6661'
+  behavior: 默认路径的图捕获范围与用户预期/历史行为不一致——CUDA graph replay 的是**另一段子计算**；无 NaN、无 crash，golden values 才暴露。与 ACT.01/ACT.02（重算侧 RNG/路由不一致）不同：错的是 **capture/replay 范围定义本身**，与数据依赖控制流无关。
+  discovery: 2026-08-21 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

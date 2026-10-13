@@ -48,9 +48,12 @@ class EntryTypeFilterTests(unittest.TestCase):
 
 
 class IndexedPointerIntegrationTests(unittest.TestCase):
+    POINTER = "INF-0920"   # legacy 10.4 chat_template_faults
+
     def test_lookup_preserves_pointer_with_explicit_type(self):
         rows = S.lookup("10.4")
         self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], self.POINTER)
         self.assertEqual(rows[0]["entry_type"], "pointer")
         self.assertFalse(rows[0]["neg"])
 
@@ -62,14 +65,14 @@ class IndexedPointerIntegrationTests(unittest.TestCase):
             topk=10,
             include_pointers=True,
         )
-        self.assertNotIn("10.4", {r["id"] for r in default})
-        self.assertIn("10.4", {r["id"] for r in included})
+        self.assertNotIn(self.POINTER, {r["id"] for r in default})
+        self.assertIn(self.POINTER, {r["id"] for r in included})
 
     def test_stats_separates_fault_pointer_and_negative(self):
         # Floor checks: vendored catalogs grow on every sync; the structural
         # invariant is that the three entry types stay separated.
         counts = S.stats()["by_entry_type"]
-        self.assertGreaterEqual(counts["fault"], 1404)
+        self.assertGreaterEqual(counts["fault"], 1600)
         self.assertGreaterEqual(counts["negative"], 14)
         self.assertEqual(counts["pointer"], 1)
 
@@ -79,10 +82,10 @@ class DuplicateNameIntegrationTests(unittest.TestCase):
 
     def test_lookup_marks_every_duplicate_name_result_as_ambiguous(self):
         rows = S.lookup(self.DUPLICATE)
-        self.assertEqual({r["id"] for r in rows}, {"6.28", "6.33"})
+        self.assertEqual({r["id"] for r in rows}, {"INF-0421", "INF-0426"})   # legacy 6.28 / 6.33
         for row in rows:
             self.assertTrue(row["name_ambiguous"])
-            self.assertEqual(row["same_name_ids"], ["6.28", "6.33"])
+            self.assertEqual(row["same_name_ids"], ["INF-0421", "INF-0426"])
 
     def test_unique_name_is_not_marked_ambiguous(self):
         row = S.lookup("HW.01")[0]
@@ -95,10 +98,27 @@ class DuplicateNameIntegrationTests(unittest.TestCase):
             {
                 "repo": "inference",
                 "name": self.DUPLICATE,
-                "ids": ["6.28", "6.33"],
+                "ids": ["INF-0421", "INF-0426"],
             },
             collisions,
         )
+
+
+class CategoryFilterTests(unittest.TestCase):
+    def test_subsystem_and_legacy_category_both_filter(self):
+        new = S.search("prefix cache stale KV reuse", topk=10, repo="inference", category="KV缓存")
+        self.assertTrue(new)
+        self.assertTrue(all(r["category"] == "KV缓存" for r in new))
+        old = S.search("prefix cache stale KV reuse", topk=10, repo="inference", category="cat6")
+        self.assertTrue(old)
+        # old-category semantics are kept unchanged for benchmark comparability: a numbered
+        # category also matches the KV section of the same number (cat6 -> cat6 and KV6)
+        self.assertTrue(all(r["legacy_category"] in ("cat6", "KV6") for r in old))
+
+    def test_rows_carry_legacy_ids_and_title(self):
+        row = S.search("topk single core ignores indices tensor", topk=3, mode="bm25", repo="inference")[0]
+        self.assertTrue(row["title"])
+        self.assertIsInstance(row["legacy_ids"], list)
 
 
 class BM25IntegrationTests(unittest.TestCase):

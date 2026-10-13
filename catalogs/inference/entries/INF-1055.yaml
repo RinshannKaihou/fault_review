@@ -1,0 +1,63 @@
+id: INF-1055
+legacy_ids:
+- '11.32'
+slug: vllm_stop_string_scope_crosses_reasoning_segment_truncates_cot
+aliases: []
+title: vLLM stop 串在 think 段内命中致 CoT 截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: V1 detokenizer stop 串判定
+  behavior: V1 detokenizer 把客户端 stop 串对整个输出流（含 reasoning 段）求值，未把作用域限定在 content 段，CoT 自然复述的 stop 串在 think 段内即命中终止。
+effect:
+  objects:
+  - 输出内容
+  detail: think-in-prompt 模板加客户端 stop 串（如 lm-eval 的 Question:）时，</think> 不出现，返回 content=None、finish_reason=stop；GSM8K n=50 有 8–15 条被截断，分数 0.66–0.84，抑制后 0.98。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V1；think-in-prompt 模板 + 客户端 stop 串（lm-eval 等 benchmark harness 默认携带）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52393
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（客户端 stop 串在整个输出流上求值 → think 段内命中 → CoT 被斩首、content=None） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 'think-in-prompt 模板（DeepSeek V4、Qwen3 风格）下生成从 `<think>` 段**内部**开始；V1 detokenizer 把客户端 `stop` 串对整个输出流（含 reasoning 段）求值，CoT 自然复述的 stop 串（如 lm-evaluation-harness 每请求发送的 `stop[:4]`，例如 `"Question:"`）在段内命中：`</think>` 永不出现、reasoning parser 无法闭合段，响应返回 `content: None` + `finish_reason: stop`。GSM8K n=50 temp 0.6 实测 8–15/50 响应被斩首（分数 0.66–0.84）；推理段内抑制 stop 后降至 1/50 null（0.98）。hosted 部署因把 stop 作用域限定在 content 段而免疫。'
+  source: 'vLLM #52393（2026-08-14 open）。V1 engine，`--tokenizer-mode deepseek_v4` + `--reasoning-config`（deepseek_v4 parser），模型无关（任何 think-in-prompt 模板）。https://github.com/vllm-project/vllm/issues/52393'
+  behavior: 无 crash。**CoT 被静默截断、content=None**——基准分数可掉 15–30 个点且 `finish_reason` 合法。post-forward **结构性盲点**（隐藏态监控原理上不可见）。属「stop 串作用域跨越推理段边界」**新子签名**。
+  trigger_surface: vLLM V1；think-in-prompt 模板 + 客户端 stop 串（lm-eval 等 benchmark harness 默认携带）
+  discovery: 2026-08-14 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: 改 解码/采样：detokenize 本身（token→文本）没有出错，错的是客户端 stop 串（生成终止条件）的作用域——原文 mechanism“V1 detokenizer 把客户端 stop 串对整个输出流（含 reasoning 段）求值”，且“hosted 部署因把 stop 作用域限定在 content 段而免疫”，修复是限定 stop 判定作用域，属解码控制；代码位于 detokenizer 只是位置。component 保留。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 输出解析
+        status: panel7
+    uncertain:
+    - visibility

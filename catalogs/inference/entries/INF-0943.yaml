@@ -1,0 +1,69 @@
+id: INF-0943
+legacy_ids:
+- '10.27'
+slug: sglang_reasoning_parser_pretoken_routing_nway_divergence
+aliases: []
+title: SGLang reasoning 标记判定与剥离条件不对称
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: sglang
+    component: reasoning 检测器基类
+  behavior: 检测器判定用 think_start_token in text（任意位置），剥离却用 startswith（仅开头），标记前内容落入缝隙；流式仅在整个 buffer 为标记前缀时识别部分标记。
+effect:
+  objects:
+  - 输出内容
+  detail: 任意 reasoning parser 下输出中起始标记前有内容（哪怕一个空格）时触发；同一字符串在 main 上有四种解析结果，reasoning/content 分桶随 chunk 边界变化，流式与 one-shot 不一致。无 crash。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；任意 reasoning parser + 标记前有内容（含单个空格）的输出
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-17'
+remarks: subsystem 缺“输出解析（reasoning/tool parser）”：解析器把生成文本切分为 content/reasoning/tool_calls，既非 detokenize 也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35083
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（think 起始标记前的文本被四种方式路由——判定「标记在文中任意处」、剥离「标记在开头」，流式又只认整 buffer 前缀） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`BaseReasoningFormatDetector` 判定 reasoning 块用 `think_start_token in text`（标记**在任意位置**），剥离却用 `while processed_text.startswith(think_start_text)`（标记**在开头**）——标记前的任何内容（哪怕一个空格/换行）落入缝隙。流式路径是镜像缺口：只有当**整个 buffer** 是标记前缀时才识别部分标记，携带内容先行的 chunk（`"Sure." + "<"`）清空 buffer、后续标记片段无处附着。同一字符串在 main 上有四种不同解析结果。'
+  source: 'SGLang #35083（2026-08-16 open，`--reasoning-parser qwen3` 复现）。https://github.com/sgl-project/sglang/issues/35083'
+  behavior: 无 crash。reasoning/content 的分桶依赖 chunk 边界与标记相对位置——流式与 one-shot 结果不一致、跨请求不可比。属「标记检测/剥离条件不对称 × 流式部分标记状态机」**新子签名**（与 10.20 muse_glimmer 截断丢弃同域，但根因是条件不对称而非双串匹配）。
+  trigger_surface: SGLang；任意 reasoning parser + 标记前有内容（含单个空格）的输出
+  discovery: 2026-08-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed:
+  - effect.visibility
+  note: visibility 改为 静默错误：原文机制是判定用 in、剥离用 startswith，“标记前的任何内容（哪怕一个空格/换行）落入缝隙”，one-shot 路径下即确定性错分 reasoning/content，无报错；流式与 one-shot 不一致是次要表现，已写在 detail。subsystem 维持 调度/服务（reasoning parser 属 API 输出解析，与 INF-0954 一致），vocab_gap 中“输出解析”缺口保留。
+  audit_issues:
+  - field: effect.visibility
+    type: 分类
+    detail: 主失效是 in/startswith 条件不对称导致的确定性静默错分，one-shot 下即发生；不可复现只是流式路径的次要表现，应取 静默错误
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: panel7
+      visibility:
+        from: 静默错误
+        to: 不可复现
+        status: panel7

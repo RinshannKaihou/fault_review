@@ -1,0 +1,63 @@
+id: INF-1231
+legacy_ids:
+- K2.1
+slug: llamacpp_context_shift_rope_kshift_corruption
+aliases: []
+title: llama.cpp context shift 致 RoPE 相位非均匀漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: llama.cpp
+    component: context shift cell delta
+  behavior: context shift 时对存活缓存键施加 RoPE K-shift 重新编号，但每个 cell 的 delta 只反映最后一次 shift，pos 与 delta 失同步，多次 shift 后各位置残留未修正的相位
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 长流式上下文中渐进丧失连贯、出现逐字重复式乱码；单次 shift 无碍，损坏随累积 shift 距离扩大，加 --no-context-shift 可消除
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: llama.cpp 专用
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/ggml-org/llama.cpp/issues/3825
+  kind: github_issue
+  resolved_from: 'llama.cpp #3825'
+- url: https://github.com/ggml-org/llama.cpp/issues/4097
+  kind: github_issue
+  resolved_from: '#4097'
+- url: https://github.com/ggml-org/llama.cpp/pull/13194
+  kind: github_pr
+  resolved_from: 'PR #13194'
+relations: []
+original:
+  category: KV2
+  section: KV §2 index-position（索引/位置）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `other_stack`⚠ · 置信度 `verified`'
+  mechanism: 发生 context shift 时，llama.cpp 对存活的缓存键施加一次 RoPE K-shift 来重新编号，但每个 cell 使用的 delta 只反映最后一次 shift，因此多次 shift 之后 RoPE 相位会**非均匀**漂移——每个位置残留的未修正相位正比于它存活过的 shift 次数。损坏程度随累积 shift **距离**（而非次数）扩大。
+  source: 'llama.cpp #3825（pos 与 delta 失同步）、#4097（累积距离）；SWA/mrope 路径通过 PR #13194 被硬性禁用。'
+  behavior: 长流式上下文中出现渐进式连贯性丧失、逐字重复式乱码；单次 shift 无碍，累加 shift 逐步漂向乱码；加 `--no-context-shift` 可消除。
+  trigger_surface: llama.cpp 专用
+  signature: '`infra_off`（受上下文长度/shift 次数门控，达到触发条件后就是结构性离流形）——**非均匀**的逐位置 RoPE 相位误差，区别于 `cache_position_off_by_one` 那种对 q 与 k 同时施加、经验证近乎 null 的**恒定**偏移（RoPE 是相对的，恒定偏移会抵消）。表现为 K 方向上的系统性角度偏移，以及相对重算参考的相对位置注意力 logits 错误；不同 key 段之间、以及 key 与 query 之间对「自己在哪」产生分歧。可捕获的是 geometric 族（K 沿 RoPE 频率轴的结构化旋转）与 trajectory 族（段边界处的 logits 不连续）；纯值分布类 statistical 会漏检，因为旋转不改变 K 的范数与逐维边缘分布。'
+  repro: '参考实现参数 `{L: 8, n_segments: 3, shift_step: 4}`。在 `model.model.layers[L]` 上挂 forward hook（沿用 kv_corrupt 的规范模式），prefill 后触发一次：把 prompt 的 T 个缓存位置切成 `n_segments` 个连续段（最旧在前），第 s 段按 `delta = +shift_step * (n_segments - 1 - s)` 重新旋转，最旧的段带最大未修正相位、最新的段为零；符号为正（因为每次 context shift 把存活者的真实位置往下移，漏掉的 shift 让老 cell 的内嵌相位偏高）。只重旋转 cached K，V 与所有 query 不动——这正是 K-shift 会破坏的部分。诚实近似：真实 bug 在流式服务中跨多次 shift 事件累积并污染每一层，这里在单层一次性注入累积末态且不真实驱逐 token；签名只能通过 decode 路径观察（prefill logits 在 hook 改缓存之前就算完了）。`n_segments < 2` 或 `shift_step == 0` 会在复现位置直接报错，因为那会退化成恒定偏移这个 near-null。'
+  locus: index-position
+  priority: high
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

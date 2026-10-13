@@ -1,0 +1,54 @@
+id: INF-0263
+legacy_ids:
+- '1.264'
+slug: ttmetal_matmul_reuse_tiny_a_tiles_blockfloat_b_multi_kblock_stale_reads
+aliases: []
+title: matmul Reuse 在矮 A tile 多 K 块时读陈旧数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: matmul Reuse 工厂多 K 块累加
+  behavior: Reuse 工厂在 A tile 高度<16、B 为 block-float 且 K 拆多块时，分块 K 累加路径读取未初始化/陈旧数据；验证器接受该配置（同条件下 mcast 配置被拒）。
+effect:
+  objects:
+  - 数值结果
+  detail: 满足 in0_block_w<Kt 时 PCC 降至 0.75 直至 −0.0035，错值随运行变化，复现输出见 NaN；单 K 块、bfloat16 B 或 32 行 A tile 均正确，按验证器指引选配置恰好落入坏路径。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn.matmul + MatmulMultiCoreReuseProgramConfig + A tile 高度 <16（如 4×32）+ bfloat8_b/bfloat4_b B + in0_block_w < Kt（hw_specific；单 K 块 / bfloat16 B / 32 行 tile 免疫）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58181
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0118
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal `MatmulMultiCoreReuseProgramConfig` 在 **A 使用短于 16 行的 tile（如 `ttnn.Tile((4,32))`）+ B 为 block-float（bfloat8_b）+ K 拆多块（`in0_block_w < Kt`）** 时输出错值：Wormhole n150 `256×256 @ 256×512`（Kt=8）实测 PCC——per_core_M=64：单 K 块 0.9999 / `in0_block_w=4` **0.7469** / `=1` **0.5611**；per_core_M=32：0.9999 / 0.7491 / **0.0016**；per_core_M=8：0.9999 / **-0.0007** / **-0.0035**（错值随运行变化、复现输出见 0.0046 与 NaN——指向**陈旧/未初始化数据读取**）。验证器**接受这些配置**：block-float B + `tile_h < 16` 时 mcast 配置被拒而 Reuse 恰是允许的那个；单 K 块正确、bfloat16 B 全对、32 行 A tile + bfloat8_b 全对；批 B（3 batch）同表 · Cov: `var:ttmetal_matmul_multicore_reuse_oversubscribed_block_silent_drop`（1.119/1.262 MatmulMultiCoreReuse 族——本条在 **A tile 高度 <16 × block-float B × 多 K 块**组合维度：验证放行而内核读陈旧数据，1.262 验证豁免谓词之后该族"通过验证 ≠ 内核正确"契约缺口又一方向） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 短 A tile + block-float B 的分块 K 累加路径读取未初始化/陈旧数据（错值随运行变化即其特征）；单 K 块与 bfloat16 B 免疫界定问题在多块部分和搬运与 block-float 解包的组合。修复方向：内核修复或验证拒绝 `in0_block_w < Kt` + 该组合。
+  source: 'tt-metal #58181（2026-09-28 open，Bad Outputs，含 per_core_M × in0_block_w PCC 矩阵、批 B 对照、可运行 repro 脚本与复现输出三行）。https://github.com/tenstorrent/tt-metal/issues/58181'
+  behavior: 无 crash——PCC 可至 **-0.0035**（完全无关输出）级**静默错值**，且该配置是 block-float B + 矮 tile 下**验证器唯一放行**的工厂（mcast 被拒、Reuse 被留）——用户按验证器指引恰好落进坏路径；1.119/1.262 之后 MatmulMultiCoreReuse 族新成员。
+  trigger_surface: tt-metal ttnn.matmul + MatmulMultiCoreReuseProgramConfig + A tile 高度 <16（如 4×32）+ bfloat8_b/bfloat4_b B + in0_block_w < Kt（hw_specific；单 K 块 / bfloat16 B / 32 行 tile 免疫）
+  discovery: 2026-09-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - title

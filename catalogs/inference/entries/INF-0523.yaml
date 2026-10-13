@@ -1,0 +1,56 @@
+id: INF-0523
+legacy_ids:
+- '6.130'
+slug: vllm_clip_pooling_mm_load_empty_prompt_embedding_collapse
+aliases: []
+title: vLLM CLIP pooling 文本 embedding 在混合负载下变空串
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: pooling 路径文本请求处理
+  behavior: pooling 路径的 text 请求处理被多模态批处理状态污染，疑似空 prompt 占位 embedding 被错误复用；具体根因 issue 仍 open。
+effect:
+  objects:
+  - 输出内容
+  - 跨请求/跨样本数据
+  detail: DFN5B-CLIP pooling 在持续图像批混合偶发 text 请求下，文本请求均返回空串 embedding（不同文本 cos=1.0），响应 200 良构，kNN 返回相同邻居；图像 embedding 与 /tokenize 正常，重启 pod 接流量即坏。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM pooling + CLIP 双编码器 + 持续多模态负载混合 text 请求（负载时序依赖）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: effect_object 希望有“池化/embedding 输出”：pooling 请求的最终向量既非生成文本也非中间张量，暂归 输出内容
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53091
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（持续多模态批处理负载下 pooling runner 的 completion 式文本请求全部退化为空串 embedding——200 正常返回，文本检索静默全灭） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: vLLM v0.11.2 `--runner pooling`（DFN5B-CLIP-ViT-H-14 双编码器，fp16，K8s 5 副本）在生产混合负载（持续唯一图像 embedding 批 + 偶发 text `input` 请求）下，completion 式文本请求输出**全部等于空串的 embedding**（受影响时 cos("voiture rouge","un chat noir dans la neige")=1.0000，健康基线 0.4651）。隔离证据：5 副本同坏；freshly restarted pod 一接生产流量即坏（排除状态累积/模型文件差异）；图像 embedding 与 `/tokenize` 始终正确（tokenizer 与视觉路径无辜）；单 pod 直连复现（排除 router）。缺陷锁定在 pooling 路径 text 请求处理被多模态批处理状态污染（疑似空 prompt 占位 embedding 被错误复用），具体根因 issue open 中。
+  source: 'vLLM #53091（2026-08-19 open，multi-modality label，含 cosine 对照表与逐项隔离）。https://github.com/vllm-project/vllm/issues/53091'
+  behavior: 无错误、响应 200 良构——所有文本查询的 kNN 返回相同邻居，依赖文本 embedding 的检索系统静默失效。输出**恒定**（非随机）使一致性检查类监控也漏检（向量内部自洽、L2 归一化正常）。
+  trigger_surface: vLLM pooling + CLIP 双编码器 + 持续多模态负载混合 text 请求（负载时序依赖）
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: subsystem 维持 调度/服务：原文锁定为 pooling 路径 text 请求被“多模态批处理状态污染”，词表 调度/服务 含“多模态输入预处理与缓存”；无证据指向设备执行层。保留意见：根因 issue 仍 open。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

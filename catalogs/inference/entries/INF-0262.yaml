@@ -1,0 +1,52 @@
+id: INF-0262
+legacy_ids:
+- '1.263'
+slug: ttmetal_binary_ng_rowmajor_mixed_float_dtypes_both_operands_at_operand_a_stride
+aliases: []
+title: binary_ng 行主序混合 dtype 共用 A 的 stride
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: binary_ng 行主序 reader 步长
+  behavior: 行主序 binary_ng 的 host 端只打包一个按 A 元素大小计算的 reader stride，reader 对两个 circular buffer 用同一字节偏移、长度与 L1 行距，未按 B 的元素大小缩放。
+effect:
+  objects:
+  - 数值结果
+  detail: bf16 与 fp32 混合（任一顺序）的行主序二元运算逐行错值：fp32 操作数行的后半被换成下一行前半；行/列/标量/混合广播均失败，同输入 TILE 布局正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn 行主序 binary_ng + 混合浮点 dtype（bf16×fp32 任一顺序）+ 行/列/标量/混合广播（hw_specific；TILE 布局免疫）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58078
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0220
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal 行主序 `binary_ng` 路径 host 端**只打包一个 reader stride，且按操作数 A 的元素大小计算**（`tile_hw * a.element_size()` 或行宽不足一 tile 时的对齐行宽）——每个行主序 reader 对**两个 circular buffer 用同一字节偏移/字节长度/L1 行距**。A、B 元素大小一致时正确；**混合浮点 dtype 时错误**：bf16 行 2 字节/元素、fp32 行 4 字节/元素，较宽操作数的行按较窄节距打包而 unpacker 按自己的元素大小消费——**fp32 行的后半成为下一行的前半**（`bf16+fp32` 实测 2×32：期望行 0 `[2,3,...,33]`，设备输出 `[2,3,...,17,2,3,...,17]`；行/列/标量/行列混合广播双 dtype 顺序全失败；同输入 TILE 布局正确——compute 与 writer 已按各自 tensor 格式处理） · Cov: `var:ttmetal_binary_ng_fused_activation_mixed_dtype_operand_unpack_bitfield_rotation`（1.221 binary_ng 混合 dtype 域——本条在**行主序数据搬运的单一 stride 打包**维度，不涉及 unpack 位域旋转） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: host 侧运行时参数记录（26 宽 reader runtime-arg record）只携带一个 stride，内核 reader 循环按该 stride 同时推进 A/B 两个 CB；修复为按各自 CB 推导元素大小、把 B 的偏移与 L1 pitch 按 B 的元素大小缩放（dtype 一致时两 pitch 恒等，broadcast fill 用 `FILL_TILE_WITH_FIRST_*_RM_B` 按 `b_dtype`）。
+  source: 'tt-metal #58078（2026-09-28 open，含 2×32 最小 repro、四种广播形态验证、TILE 布局对照与逐文件修复方案）。https://github.com/tenstorrent/tt-metal/issues/58078'
+  behavior: 无 crash——**混合浮点 dtype 行主序二元运算逐行错值**（fp32 操作数后半行系统性换成下一行前半），TILE 布局免疫使"tile 化后正确"掩盖行主序路径；1.221（fused 激活 unpack 位域旋转）之后 binary_ng 混合 dtype 族新成员：**数据搬运层的单一 stride 假设**。
+  trigger_surface: tt-metal ttnn 行主序 binary_ng + 混合浮点 dtype（bf16×fp32 任一顺序）+ 行/列/标量/混合广播（hw_specific；TILE 布局免疫）
+  discovery: 2026-09-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

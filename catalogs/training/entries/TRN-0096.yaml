@@ -1,0 +1,53 @@
+id: TRN-0096
+legacy_ids:
+- DATA.14
+slug: metric_flush_key_set_rank_local_contamination
+aliases: []
+title: GRPO/RLOO 指标 flush 按本地 key 集合聚合致混列/死锁
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: trl
+    component: GRPO/RLOO metric flush
+  behavior: metric flush 遍历本 rank 本地 pending key 集合并逐 key 调 collective，而 key 集合由条件触发的 reward 函数决定、随 rank 而异；对各 rank 均值再做未加权平均。
+effect:
+  objects:
+  - 指标/日志
+  - 可用性/进度
+  detail: key 仅单边存在时分布式死锁；各 rank key 集合不同时两条无关指标混进对方聚合；样本数不同时全局指标被触发频次加权。后两者无报错，reward/KL 曲线静默失真，训练 loss 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7310
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7382
+  kind: github_pr
+relations: []
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: trl GRPO/RLOO trainer 的 metric flush 遍历**本进程本地**的 pending key 集合并对每个 key 调 collective（`gather_object(self._pending_extra_logs[column])`、`accelerator.gather(local_mean)`）——各 rank 的 key 集合来自**条件触发的用户 reward 函数**（如「只在触发解析器/证明验证时 `log_metric`」），天然因 rank 而异。三种交错：① 某 rank 有 key、另一 rank 无 → 单边进 collective → 分布式死锁（活性面）；② 两个 rank 各持有不同 key 集合但同 step 都进循环 → `gather` 在不匹配的 key 上配对——**两条无关指标互相混进对方的聚合历史**；③ 都有 key 但样本数不同 → `gather(mean)` 之后再 mean 是**未加权平均 of means**，全局指标被各 rank 触发频次加权，系统性偏离真值。
+  source: 'trl #7310（2026-09-20；DDP/Accelerate 路径 flush 逻辑逐行分析 + 修复方案先行自证：跨 rank 同步 key 并集、`[sum, count]` 成对 gather 做精确加权归约、未触发列 `[None]` padding）。https://github.com/huggingface/trl/issues/7310 ；修复 PR trl #7382（2026-09-24 merge 关闭本 issue）。https://github.com/huggingface/trl/pull/7382'
+  behavior: '①是 hang（有信号）；②③**无 crash 无 warning**——logged metric 值静默错（混列 + 错权），reward 曲线/KL/reward-hacking 诊断的可信度被破坏。修复侧备注：`local_sum/local_count` 成对 gather 的加权均值属正确形状、但 `tot_cnt==0` 时除零守卫返回 0.0（把「全 rank 都没触发」记成 0 而非 NaN/缺失——低频指标的分母语义仍需看护）。与 OBS.09（gather_for_metrics 对已聚合标量无法去重 padding → 尾批偏置）同族「**指标聚合的 rank 几何假设破裂**」不同断点：那边假设行对齐、这边假设 **key 集合对齐**；与 RL-KL.04/OBS.06（KL/entropy/reward 指标路径不掩 padding）同理是「诊断仪表先于训练目标坏掉」——训练损失本身不受影响，正是 RL-RO/TIM 类故障依赖的观测面失准。2026-09-24 已修复关闭：PR #7382（各 rank flush 前用一次 `gather_object` 对 logged key 并集达成一致、未触发列以 `None` padding、每条指标贡献 `[sum, count]` 权衡均值——三种失效模式修复前在 2×H100 复现、merge 于 21:33 UTC）。'
+  discovery: 2026-09-21 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

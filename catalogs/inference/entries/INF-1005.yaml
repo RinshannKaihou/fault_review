@@ -1,0 +1,51 @@
+id: INF-1005
+legacy_ids:
+- '10.89'
+slug: vllm_chat_role_value_unvalidated_template_drops_whole_message_200
+aliases: []
+title: vLLM chat 接口不校验 role 取值，模板静默丢弃整条消息
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: chat_utils 消息渲染与 role 校验
+  behavior: /v1/chat/completions 对 message role 只校验类型不校验取值，chat template 无匹配分支时静默跳过该消息，渲染器也不检查非空消息是否渲染出空段。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: role 拼错（assistan）、大小写（USER）或自定义未覆盖时，HTTP 200、prompt_tokens 下降（如 39→23），该轮内容未进 prompt，模型仍自信作答；同请求在 /v1/messages 被正确 400。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.27.1/0.29.0（+main）`/v1/chat/completions` + 任意非法 role 字符串（拼错/大小写/自定义未覆盖）（config）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59090
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `/v1/chat/completions` 对 message `role` **只验类型不验取值**（`CustomChatCompletionMessageParam.role: Required[str]` 与 OpenAI typed params 的 Literal 并集使任意字符串通过）：chat template 不认识该 role 时**消息对 prompt 贡献为零**，请求照常 200 且给出流畅回答。Qwen3-0.6B（0.27.1 与 0.29.0 同）实测三轮对话中一个 role 拼错：`prompt_tokens` 39→23、错拼轮内容完全未达 prompt、HTTP 200；全 role 扫描——`user/assistant/system` 正常、`tool`→`<tool_response>`、`developer`→渲染为 system，而 **`wizard`/`assistan`（差一字母）/`USER`（大小写）/`bababoi`/空串/`<script>` 全部静默丢整条消息**（prompt 塌到 3 token `<|im_start|>assistant\n` 后模型自由联想）；`7`/`null`/`["user"]` 因类型错被 400（证明校验存在但只查类型）。对照路由：同请求 `/v1/messages` **正确 400**。根因是"允许自定义 role"特性（模板可自定义 role）的**未检查后果**——渲染器已遍历消息产出文本，"N 条非空消息进 → N 段出"是廉价后置条件却缺失） · Cov: `NEW`（chat 模板渲染静默丢消息子签名；与 10.78（Whisper 切点后残段词丢失）同属"合法输入经模板/解码后内容静默蒸发"域但本条在 **API 入参校验 × 模板 role 覆盖**交界面；与 6.201 系无校验接受不同——此处是**值域而非类型**未校验且错误后果为丢输入） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`role` 为任意 str 时模板 Jinja 无匹配分支即静默跳过该消息；修复不是拒绝未知 role（会破坏自定义 role 特性），而是"非空消息渲染出空段"时 400 或至少 warning——渲染器已持有全部所需信息。报告者附三路由对照表与可退出码复现脚本。'
+  source: 'vLLM #59090（2026-09-28 open，含全 role 扫描表（prompt_tokens 9/13/3 对照）、`/v1/messages` 400 对照、chat_utils.py 定位与修复方向）。https://github.com/vllm-project/vllm/issues/59090'
+  behavior: 无 crash——**一轮对话内容静默丢失、请求成功**：一字之差的 `usr`/`assistan` 或大小写 `USER` 即触发，模型对"从未被告知的内容"给出自信回答；跨路由行为不一致（`/v1/messages` 拒绝）证明这是缺陷而非契约。
+  trigger_surface: vLLM 0.27.1/0.29.0（+main）`/v1/chat/completions` + 任意非法 role 字符串（拼错/大小写/自定义未覆盖）（config）
+  discovery: 2026-09-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,56 @@
+id: INF-0492
+legacy_ids:
+- '6.99'
+slug: vllm_kimi_k3_multinode_tp_cudagraph_three_mode_corruption
+aliases: []
+title: Kimi-K3 多机 EFA TP 下 CUDA graph 静默输出损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: K3 MoE/KDA 路径 graph 捕获
+  behavior: 根因未定位。该拓扑禁用 FlashInfer fused all-reduce、collective 走 NCCL over EFA；报告者怀疑 K3 MoE/KDA 路径有捕获外分配的 buffer 在此路径上被触及。
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: TP16 双节点 B200 首请求即复现：FULL_AND_PIECEWISE 输出流利但语义随机、第 3 次请求 SIGSEGV；PIECEWISE 塌缩为单 token 重复；另一模式报 illegal memory access；enforce_eager 始终正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；Kimi-K3 + 多机 TP（无 NVSwitch/MNNVL、NCCL over EFA）+ 任意 cudagraph 模式
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52531
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（多机无 NVSwitch TP × CUDA graph 捕获 → 三种模式静默损坏/crash，eager 100% 正确） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 'TP16 双节点 B200（EFA 互联、无 NVSwitch/MNNVL）服务 Kimi-K3 时，任何 CUDA graph 捕获形式都产生损坏：该拓扑上 FlashInfer fused all-reduce 路径被禁用（#50386 的 latent-MoE stale-residual 修复不适用），collectives 走 NCCL over EFA。batch=1、prefix caching 关闭、无并发的首请求即复现。失败矩阵：`FULL_AND_PIECEWISE`（默认）→ 流利但语义随机的多语文本 + 第 3 次请求 host SIGSEGV（cuGraphLaunch / CUDAGraph::replay）；`PIECEWISE` → 确定性塌缩为单 token 重复（`@ @ @ ...`）；`VLLM_USE_BREAKABLE_CUDAGRAPH=0` → illegal memory access。`enforce_eager` 始终正确。TP8+PP2 仍复现。报告者怀疑 K3 MoE/KDA 路径中还有捕获外分配的 buffer（类似 #50386）在非 FlashInfer 路径上被触及。'
+  source: 'vLLM #52531（2026-08-16 open，labels: bug, kimi, k3）。8×B200×2，torch 2.13.0+cu130。https://github.com/vllm-project/vllm/issues/52531'
+  behavior: graph 模式下**确定性静默输出损坏**（塌缩/语义随机）或延迟 crash；eager 正确——性能代价 2.6 vs 85 tok/s 使 eager 不可作为生产 workaround。属「多机 TP 非 NVSwitch 拓扑 × graph 捕获 × 非 FlashInfer collective 路径」**新子签名**——CUDA graph 损坏家族中首个多机 EFA 拓扑实例。
+  trigger_surface: vLLM；Kimi-K3 + 多机 TP（无 NVSwitch/MNNVL、NCCL over EFA）+ 任意 cudagraph 模式
+  discovery: 2026-08-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: subsystem 维持 运行时/执行：原文“enforce_eager 始终正确”，同一 NCCL over EFA collective 在 eager 下无误，故障只在 CUDA graph 捕获下出现，报告者怀疑捕获外分配的 buffer；集合通信通道本身无证据有错。根因仍未定位。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

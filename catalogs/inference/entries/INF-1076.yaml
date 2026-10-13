@@ -1,0 +1,53 @@
+id: INF-1076
+legacy_ids:
+- '11.53'
+slug: vllm_dflash2_xgrammar_fsm_deterministic_draft_token_reject_retry_storm
+aliases: []
+title: vLLM DFlash2 结构化输出下 draft 确定性被拒重试风暴
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: DFlash2 draft 与 FSM 联动
+  behavior: DFlash2 在 grammar mask 下 draft 出 FSM 当前态不允许的 token 271；重试时 greedy drafter 确定性给出同一 token，drafter 分布未与 mask 联动，形成拒绝-重试循环
+effect:
+  objects:
+  - 性能/资源
+  - 指标/日志
+  detail: xgrammar response_format json_object 下固定 prompt 3/3 复现：单请求最多 7 个重试波、每波 2 条 Failed to advance FSM ERROR；HTTP 200、JSON 有效，但尾延迟升高、ERROR 日志淹没告警
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 'vLLM + DFlash2 spec decode + xgrammar `response_format: json_object`（固定 prompt 确定性复现）'
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-26'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53777
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1064
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（DFlash2 推测 drafter + xgrammar `json_object` 语法：同一 draft token（271）被 FSM **确定性**拒绝并反复重试（单请求最多 7 个重试波）——每次失败同一位置、ERROR 级日志刷屏；最终输出正确（HTTP 200、有效 JSON），但延迟尖峰 + 重试风暴） · Cov: `var:vllm_ngram_gpu_spec_decode_xgrammar_concurrent_500` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'DFlash2（2B drafter，经 #52816 合并）在结构化输出 grammar mask 下 draft 出的 token 271 不在 FSM 当前态的合法转移集内——`backend_xgrammar.py:168` "Failed to advance FSM" 后引擎重试该 draft 位置，drafter 再次给出同一 token（greedy draft 的确定性），形成确定性拒绝-重试循环直至退避/换路径成功。与 11.41（ngram_gpu + xgrammar 并发 500）同「drafter 候选 × grammar mask」族：grammar mask 假设 draft token 落在合法集内，drafter 的抽样分布未与 mask 联动。区别在后果形态：11.41 是并发下请求失败（500），本条是单请求确定性重试风暴（吞吐/延迟退化 + 日志污染，输出最终正确）。'
+  source: 'vLLM #53777（2026-08-25 open，Qwen3.8-27B-FP8 hybrid GDN + DFlash2 drafter、2×H100；3/3 紧循环复现、~7h 混流 20 次 ERROR）。https://github.com/vllm-project/vllm/issues/53777'
+  behavior: 无 crash、无输出损坏——**性能/可观测性级退化**：单请求重试波（每波 2 条 ERROR）推高尾延迟，ERROR 日志风暴污染告警通道（真实事故被淹没）。属 drafter×grammar 族的「确定性重试风暴」后果变体：正确性无损但 SLO 与日志信噪比受损。
+  trigger_surface: 'vLLM + DFlash2 spec decode + xgrammar `response_format: json_object`（固定 prompt 确定性复现）'
+  discovery: 2026-08-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

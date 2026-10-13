@@ -1,0 +1,67 @@
+id: INF-1272
+legacy_ids:
+- K6.7
+slug: trtllm_fp8_kv_reuse_scale_mismatch
+aliases: []
+title: TRT-LLM FP8 KV 复用时反量化 scale 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: tensorrt-llm
+    component: FP8 KV 复用路径的反量化 scale
+  behavior: FP8 量化 KV 下启用 block reuse 时，reuse 路径读回 FP8 存储的 K/V，其 per-tensor/per-block 反量化 scale 无法与新计算的 KV 一致往返，且大的 KV 离群值超出 FP8 范围。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 相同 query 的输出几乎完全错误且逐次运行都不同（非确定性）；FP16 下同一 reuse 路径输出正确。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/2699
+  kind: github_issue
+  resolved_from: 'TensorRT-LLM #2699'
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/4218
+  kind: github_issue
+  resolved_from: '#4218'
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`infra_off` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: 在 FP8 量化 KV 下启用 block reuse，会让相同的 query 产生几乎完全错误、且逐次运行都不同的输出，而 FP16 reuse 是正确的；reuse 路径读回 FP8 存储的 K/V，其 per-tensor/per-block 反量化缩放无法与新计算的 KV 一致地往返，且大的 KV 离群值超出 FP8 范围。
+  source: 'TensorRT-LLM #2699（#4218 是通用 FP8 漂移，被误归因到 reuse）。'
+  behavior: 相同输入的输出几乎完全错误且 run-to-run 变化（非确定性），FP16 下的同一 reuse 路径正确。
+  trigger_surface: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  signature: infra_off——量化损坏**局限于被复用的 KV block**：被复用前缀位置上的注意力离流形，逐通道误差呈重尾。可捕获：statistical 的重尾/峰度探针 + 按位置分段的误差定位；非确定性抖动探针（run-to-run 差异）与 recompute-oracle 轴天然对口。区分点：与均匀 FP8 漂移（`kv_cache_fp8_quantization_drift` 随 token index 单调增长）不同，本故障靠**前缀块局部化 + 存储/新算 scale 不匹配**识别。
+  repro: prefill 时一次性在层 L 上，对"被复用前缀"位置 `[0, floor(prefix_fraction*T))` 把 K 与 V 量化到 e4m3 风格栅格（scale = block absmax / 448），但用 `scale*(1+scale_error)` 反量化——一个局限于前缀块的乘性「存储 vs 新算」scale 失配；前缀边界之后的位置（"新计算"）保持精确。诚实近似：真实 bug 是 per-block（分页 64/128-token block）且 reuse 命中模式逐次变化，这里注入的是单层、单个确定性前缀"block"，e4m3 栅格是 `_e4m3_grid` 所述的固定尾数近似。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：事实（FP8 KV + block reuse、per-tensor/per-block scale 无法往返、离群值超 FP8 范围、run-to-run 变化、FP16 正确）均有原文依据；分类与独立判断一致（量化/tensorrt-llm；KV状态、输出内容；不可复现——原文'逐次运行都不同'）；形式与长度合规。未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

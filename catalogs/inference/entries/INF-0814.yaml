@@ -1,0 +1,53 @@
+id: INF-0814
+legacy_ids:
+- '8.30'
+slug: vllm_rocm_dspark_kv_cache_layout_overlap_silent_nan
+aliases: []
+title: vLLM ROCm KV 布局与混合模型 page pool 重叠致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: ROCm KV 布局、混合模型 page pool
+  behavior: ROCm KV 形状 (2, num_blocks, …) 让 K/V 分居两端，block b 跨两个不相邻半页，违反 page pool“block b 占 page b”协议，attention 与 Mamba state 页重叠。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: MI300 上混合模型 + DSpark 推测解码输出垃圾（GSM8K 0.20 vs 0.95）；持偶数 block id 的序列在首个 full-attention 层输入干净而输出 NaN，单个 NaN key 毒化整行 softmax 致文本塌缩；无 crash。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm（MI300）；混合模型（Mamba + full-attention + DSpark drafter）+ 共享 page pool
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51837
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（ROCm KV 布局 (2,num_blocks,...) 使 K/V 分居两端，block b 覆盖半页 b/2+半页 num_blocks/2+b/2→attention 与 Mamba state 解析到重叠字节→静默 NaN） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: MI300 上 DSpark 推测解码 + `RedHatAI/Qwen3.6-35B-A3B-NVFP4` 产出垃圾（GSM8K 0.20 vs 0.95）。混合模型在 full-attention、Mamba/GDN state 和 draft model 间共享单一 page pool。共享安全的唯一前提是每个组同意 block id b 占据 page b（字节 `[b*page_size, (b+1)*page_size)`）。**ROCm KV cache 布局违反该协议**：形状 `(2, num_blocks, block_size, num_kv_heads, head_size)` 使 K/V 分居分配两端，block b 实际覆盖半页 `b/2` 加半页 `num_blocks/2 + b/2`。Attention block 和 Mamba state 页面解析到**重叠字节**互相覆盖。损坏**静默**——第一层 full-attention 的输出显示干净输入但 4 个序列中 2 个输出 NaN，NaN 值位于有效上下文范围内。受影响序列恰好持有偶数 block id（匹配布局与 page size 的因子 2）。单个 NaN key 毒化整个 softmax row→退化 logits→文本塌缩。
+  source: 'vLLM #51837（2026-08-11 PR）。GPU MI300 gfx942。组件 ROCm KV cache layout / hybrid page pool sharing。https://github.com/vllm-project/vllm/pull/51837'
+  behavior: 无 crash。**静默 NaN 输出**——attention 层干净输入但 NaN 输出在有效上下文范围，文本塌缩为垃圾。属「跨厂商 KV cache 布局契约不一致→混合模型 page pool 重叠」**新子签名**——ROCm blocks-先布局与 NVIDIA/TRITON blocks 后布局在混合模型上的根本不兼容。
+  trigger_surface: vLLM ROCm（MI300）；混合模型（Mamba + full-attention + DSpark drafter）+ 共享 page pool
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

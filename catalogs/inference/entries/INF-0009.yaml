@@ -1,0 +1,54 @@
+id: INF-0009
+legacy_ids:
+- '1.9'
+slug: kernel_sync_semantic_silent_error
+aliases: []
+title: Triton 多 warpgroup 同步与内联汇编复制执行致静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: warpgroup_mma_wait 与内联汇编
+  behavior: warpgroup_mma_wait 被多 warpgroup 调用时不按多 warpgroup 同步，后续读到未完成的 MMA 结果；元素数少于线程数时 tl.inline_asm_elementwise 对每个复制元素各执行一次。
+effect:
+  objects:
+  - 数值结果
+  detail: Hopper/Blackwell 上手写多 warpgroup Triton 内核（含 vLLM/SGLang 自定义 attention/MoE kernel）可能静默产出错误值；带副作用的内联汇编（如 red.global.add）在不满 warp 的 tail 场景被重复累加。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: kernel/SDC：软件近似或最小 kernel 复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-29'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11047
+  kind: github_issue
+- url: https://github.com/triton-lang/triton/issues/11065
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off` · Cov: `NEW`（新子签名：编译器/运行时原语静默语义错误） · 触发 `partial` · 置信度 `documented`'
+  mechanism: '合并两条同一签名族的 Triton 编译器/运行时缺陷：（a）**triton #11047** — `warpgroup_mma_wait` 可被跨多 warpgroup 的代码调用，但它**不按多 warpgroup 同步**，导致"pernicious thread divergence that breaks the Triton programming model"。在 2-warpgroup Hopper NVMMADistributedLayout 内核上，MMA wait 在错误的线程范围上释放，后续读取读到**未完成的 MMA 结果**——静默错误值而非物理位翻转。（b）**triton #11065** — 当元素数 < 线程数（如 N=32 但 num_warps=4 → 4× 复制），`tl.inline_asm_elementwise` **每个复制元素都执行一次**而非每个逻辑元素一次。Triton 故意不暴露复制，因此带副作用（如 `red.global.add.u32`）的内联汇编会**对一个内存单元累加多次**，产生静默错误结果。两者同属"内核原语在合法但非显然配置下的静默错误值"签名。'
+  source: 'triton-lang/triton #11047（2026-07-25 closed）、#11065（2026-07-27 open）。https://github.com/triton-lang/triton/issues/11047 · https://github.com/triton-lang/triton/issues/11065'
+  behavior: Hopper/Blackwell 上手写 warpgroup Triton 内核（含 vLLM/SGLang 自定义 attention/MoE kernel）可能静默产出错误值；用 `inline_asm_elementwise` 写的 reduction/原子更新自定义内核在 tail（不满 warp）场景下静默错误。报告者强调是"pernicious"（隐蔽的）——无 crash、无 NaN、结果数字合理但错误。
+  trigger_surface: kernel/SDC：软件近似或最小 kernel 复现
+  signature: infra_off 的**新子签名——"内核同步语义静默错误"**。编目第 1 类"硬件/SDC"和扩展目录 GPU 类覆盖的是**物理故障**（ECC、rowhammer、磨损），本条是**编译器/运行时在合法 API 使用下的同步语义错误**——内核算出了一个静默错误值而非物理位翻转。签名形态取决于受影响的内核是否在 LLM 推理的 GEMM/attention 路径上：若在，则错误以"GEMM 结果系统性偏移"形式进入下游，可能表现为 statistical 族的 bulk-shift 或 trajectory 的 cos-drift；单帧 geometric 若偏移幅度小则可能漏检。
+  repro: 不可软件复现——需要 Triton 编译器 + Hopper warpgroup 执行模型，需真实 Hopper 执行环境才能复现 warpgroup 同步语义。可用软件层面近似：在一个自定义 GEMM hook 中故意模拟"MMA 结果未完成就读取"的效果（对部分输出通道施加小幅度有界扰动），但这模拟的是效果而非编译器根因。
+  discovery: 2026-07-29 每日扫描（daily_scan_2026-07-29.md），标注为新签名候选。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

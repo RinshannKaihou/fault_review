@@ -1,0 +1,60 @@
+id: INF-1262
+legacy_ids:
+- K5.6
+slug: lmcache_partial_retrieval_token_block_mismatch
+aliases: []
+title: LMCache 部分检索致 token/block 计数不符引擎崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: lmcache
+    component: retrieve 与 wait_for_save
+  behavior: 慢速或跨服务器链路上 retrieve() 返回的 token 少于预期（如 4980 个只回来 512 个），token 计数与 block 计数随之不一致。
+effect:
+  objects:
+  - 可用性/进度
+  - KV状态
+  detail: wait_for_save() 抛 AssertionError，引擎以 "Ref count of MemoryObj negative / Double free" 关闭退出；崩溃前已加载的那部分上下文是被截断的。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/LMCache/LMCache/issues/2204
+  kind: github_issue
+  resolved_from: 'LMCache #2204'
+relations: []
+original:
+  category: KV5
+  section: KV §5 cross-node-transfer（跨节点传输：分离式 / 卸载 / RDMA）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 在慢速 / 跨服务器链路上，`retrieve()` 返回的 token 数少于预期（例如 4980 个里只回来 512 个），token 计数与 block 计数随之不一致 → `wait_for_save()` 抛出 `AssertionError`，引擎以 "Ref count of MemoryObj negative / Double free" 关闭。
+  source: 'LMCache #2204。'
+  behavior: 引擎直接崩溃退出并报 "Ref count of MemoryObj negative / Double free"；在崩溃发生前，已加载的那部分上下文是被截断的。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: off-manifold（infra_off），签名锚定在**截断前沿**：第一个未送达位置处出现隐藏态范数 / attention mass 的不连续。捕获者：geometric（范数断点）、trajectory（前沿处的轨迹跳变）、cheap——其中最强的其实是结构性判据：block 数与 token 数不匹配可以直接当作检测器，不必看隐藏态。漏检者：平滑化的 spectral / statistical 汇总量会把单点断裂抹平。
+  repro: 前沿截断——单个 `self_attn` pre-hook，把 cached K/V 中位置索引大于截断点（如总长的 512/4980 处）的部分全部置零，制造一个锐利的位置断点；与 K5.1 的区别是这里的断点是单一位置前沿而非按层的字节边界切片。
+  locus: '`cross-node-transfer`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: KV状态
+        to: 可用性/进度
+        status: panel7

@@ -1,0 +1,53 @@
+id: INF-1349
+legacy_ids:
+- '6.281'
+slug: vllm_piecewise_cudagraph_split_moe_forward_stale_replay_address_silent_garbage
+aliases: []
+title: PIECEWISE cudagraph 重放 moe_forward 陈旧地址
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: PIECEWISE CUDA graph 捕获重放
+  behavior: FX 级 split 引入的中间张量（MoE 输出）捕获后被分配器复用，CUDA graph 重放时仍按捕获时的陈旧地址读写该中间张量，而非当前实际地址。
+effect:
+  objects:
+  - 输出内容
+  detail: splitting_ops 含 moe_forward 时，首个 token（prefill 不重放）正确，随后 decode 退化为重复垃圾；非 DEBUG 日志级别下完全静默，仅 VLLM_LOGGING_LEVEL=DEBUG 时 CUDAGraphWrapper 输入地址断言触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 非默认但文档可行的 splitting_ops 加入 moe_forward + PIECEWISE cudagraph + MoE 模型
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: 四臂对照闭合：stock PIECEWISE 10/10 匹配 eager；+moe_forward split 0/10；同 split 但 cudagraph_capture_sizes=[1]（永不重放）10/10；offload 与否无关。与 CUDA graph 契约族相关但维度为 split 中间张量地址稳定性。vLLM 0.30.0 sm_86，granite-3.0-1b-a400m，重复垃圾表现为 'Par Par Par …'。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61150
+  kind: github_issue
+relations: []
+original:
+  mechanism: PIECEWISE CUDA graph 按捕获时输入地址重放；FX 级 split 引入的中间张量（MoE 输出）由分配器复用，重放读到/写到陈旧地址。与 6.210（TMEM 时序）同为 CUDA graph 契约族，但本条在**split 中间张量地址稳定性**维度。
+  source: 'vLLM #61150（2026-10-12 open，granite-3.0-1b-a400m 四臂对照 + DEBUG 断言地址证据；0.30.0 sm_86）。https://github.com/vllm-project/vllm/issues/61150'
+  behavior: 无 crash——非 DEBUG 日志级别下引擎静默服务垃圾；首 token 正确使 spot-check 更难发现。
+  trigger_surface: vLLM 0.30 + PIECEWISE cudagraph + splitting_ops 含 moe_forward + MoE 模型（config，非默认 split 集但文档可行组合）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（vLLM `cudagraph_mode: PIECEWISE` 下把 `vllm::moe_forward`/`moe_forward_shared` 加入 `compilation_config.splitting_ops`：捕获分片的输出张量（MoE 输出）在重放时地址已变，图仍重放到**陈旧地址**——首个 token 正确（prefill 不重放），随后 decode 退化为 `Par Par Par …` 重复垃圾；无 DEBUG 时完全静默，`VLLM_LOGGING_LEVEL=DEBUG` 下 `CUDAGraphWrapper` 的输入地址断言才触发。对照实验闭合：stock PIECEWISE 10/10 匹配 eager、+moe_forward split 0/10、同 split 但 `cudagraph_capture_sizes=[1]`（永不重放）10/10、offload 与否无关） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

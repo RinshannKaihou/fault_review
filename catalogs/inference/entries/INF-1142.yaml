@@ -1,0 +1,51 @@
+id: INF-1142
+legacy_ids:
+- '12.26'
+slug: ttmetal_attn_res_weight_load_local_index_no_global_offset
+aliases: []
+title: tt-metal 多 rank 按本地层号加载 AttnRes 权重致取到他层
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: tt-metal
+    component: load_attn_res_weights 层索引
+  behavior: load_attn_res_weights 取 rank 本地层计数且不加偏移，而 tensorbin cache 与 checkpoint 按全局层索引键控；完备性检查只验名字存在，shape 又相同，错层请求不被拦截。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 多 rank 流水线（rank>1）下，持层 36..71 的 rank 请求 layers.0..35，用他人 query 正常跑完、输出看似合理，精度劣化且无错误警告；单 rank 不可见，同族验证习语使 PCC 校验误报。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal 多 rank 流水线 + per-layer 键控权重（Kimi-K3/DeepSeek 类 AttnRes；rank>1 即暴露，单 rank 永不可见）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54884
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（tt-metal `load_attn_res_weights` 取 rank-LOCAL 层计数且无偏移，而 tensorbin cache 与 checkpoint 均按**全局层索引**键控——rank 持层 36..71 却请求 `layers.0..35`：**每个请求的名字都存在**（cache 含全部 93 层）→ `check_cache_complete` 通过、shape 全同（每层一个 folded query）→ rank 用**另一个 rank 的 query** 正常起跑，无错误无警告） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '分片部署下 local 层号 ≠ 全局层号；权重请求命名空间（local）与存储命名空间（global）不一致。三重结构性失明：(1) 完备性检查验「请求的名字都在」而非「请求的名字是对的」；(2) shape 恒同使下游无异常；(3) 单 rank 部署 `first_layer_idx=0` 时 local=global 重合——既有测试套件按构造不可见。同族第三实例：`schedule.mla_layer_ids[:num_mla_layers]` 习语对每个 rank 都取前 N 个（rank-1 用 3/7/11 而非自己的层），把 rank-1 layer-15 KV slab 对 layer-3 golden 评分得 PCC 0.006（**验证面误报**）。修复：`first_layer_idx` 贯穿命名与 checkpoint fold（已在 feature/kimi-k3-prefill 修复并以「两 rank 请求窗口不相交」的 hardware-free 测试钉住）。伴生 #54892：`build_kv_chunk_table` 假设每层有 KV slab，hybrid 模型（24/93 全注意力层）触发 assert——与 PREFILL_MOCK_MIGRATION 拒绝多 rank 合流后，hybrid 模型**当前无任何可经 runner 端到端精度校验的配置**。'
+  source: 'tt-metal #54884（2026-08-29 open，Kimi-K3 2-rank bring-up 发现，已修于 feature 分支）。https://github.com/tenstorrent/tt-metal/issues/54884 · 伴生：#54892（hybrid KV 表 assert）、#54843（同族 local/global 混淆）'
+  behavior: 无 crash——**流水线 rank 静默用他人 query 权重跑完合理输出**（plausible model），精度劣化无任何加载期信号；同族验证面缺陷使 PCC 校验自身产出误报。属「**分片索引命名空间混淆 × 完备性检查验存在性不验正确性**」新子签名：与 12.22（interleaved 权重流双重 finalize）同多 rank 加载域，本条损坏静默且同时污染**故障面与验证面**——「名字存在」≠「名字正确」是分片加载检查的通用盲点。
+  trigger_surface: tt-metal 多 rank 流水线 + per-layer 键控权重（Kimi-K3/DeepSeek 类 AttnRes；rank>1 即暴露，单 rank 永不可见）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

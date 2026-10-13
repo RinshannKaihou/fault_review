@@ -1,0 +1,50 @@
+id: INF-0536
+legacy_ids:
+- '6.143'
+slug: vllm_xdrope_mm_metadata_strip_prefix_cache_hit_crash
+aliases: []
+title: vLLM XD-RoPE 模型前缀缓存命中时 grid 元数据被剥离致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: strip_covered_mm_data 豁免
+  behavior: strip_covered_mm_data 的元数据豁免只覆盖 M-RoPE（scheduler 只传 uses_mrope），XD-RoPE 模型计算位置所需的 image_grid_thw 在 prefix-cache 覆盖时被剥离。
+effect:
+  objects:
+  - 可用性/进度
+  detail: HunyuanOCR/HunyuanVL 等 XD-RoPE 模型开 prefix caching 时，相同 prompt 二次请求命中缓存即在 get_xdrope_input_positions 报 IndexError，EngineCore fatal、API server 关闭。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + XD-RoPE 多模态模型（HunyuanOCR 族）+ prefix caching + 相同 prompt 二次请求
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53456
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（strip_covered_mm_data 的元数据豁免清单只列 M-RoPE——XD-RoPE 模型同样依赖 CPU 侧 grid 元数据计算位置但不在豁免内：prefix-cache 命中后 grid dims 被剥离、`get_xdrope_input_positions` 索引越界 IndexError → EngineCore fatal → API server 进程关闭，单个坏请求终结整个服务） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`strip_covered_mm_data()` 丢弃 placeholder span 完全落在 prefix-cache 覆盖区内的多模态项张量数据，其 docstring 自述豁免：「M-RoPE 模型是例外：worker 从 CPU 侧元数据字段（grid dims）为整个 prompt 计算位置，故保留」。XD-RoPE 模型（HunyuanOCR/HunyuanVL）以**完全相同的方式**经 `get_xdrope_input_positions()` 读 `image_grid_thw` 计算位置，但 scheduler 只传 `uses_mrope` 标志——XD-RoPE 的 grid dims 被剥离，`MultiModalFeatureSpec.gather_kwargs()` 因 data 为 None 跳过该 feature，`image_grid_thw` 以空数组抵达 worker，而 `prompt_token_ids` 仍含 `image_start` token；循环遍历 `image_start_indices` 索引越界（`image_grid_thw[image_index]` IndexError）。**元数据豁免按位置编码家族名枚举而非按数据依赖判定**——新家族加入时清单即失效。'
+  source: 'vLLM PR #53456（2026-08-23 open，"[Bugfix] Keep grid dims for XD-RoPE models on a prefix-cache hit"，含插桩证据：首次请求 `grids=1` 正常、第二次命中前缀缓存 `grids=0` 即崩）。https://github.com/vllm-project/vllm/pull/53456'
+  behavior: crash（IndexError → EngineCore fatal → API server 关闭）——fail-loud 但**放大的 blast radius**：一个命中缓存的请求即可杀死整个服务进程。属「**元数据豁免清单不完备 × 新架构家族**」新子签名——与 10.34（DP 分片 grid 索引错位）同涉 `image_grid_thw` 生存期/语义，但本条缺陷在 scheduler 的豁免枚举而非分布式换算；且是「第二个相同请求才触发」的 prefix-cache 时序形态（与 K§4 cross-request 的缓存命中条件触发同形）。
+  trigger_surface: vLLM + XD-RoPE 多模态模型（HunyuanOCR 族）+ prefix caching + 相同 prompt 二次请求
+  discovery: 2026-08-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

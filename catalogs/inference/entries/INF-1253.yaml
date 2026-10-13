@@ -1,0 +1,57 @@
+id: INF-1253
+legacy_ids:
+- K4.6
+slug: lmcache_chunk_key_seed_role_mismatch
+aliases: []
+title: LMCache 调度与 worker 角色 chunk 键种子不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: lmcache
+    component: TokenDatabase chunk 键种子
+  behavior: SCHEDULER 与 WORKER 算 per-chunk 键时用了不同的 TokenDatabase 子类/init_none_hash 种子（种子根因为维护者假设），调度器认为已缓存的 chunk 在 worker 侧查不到
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: CacheBlend 的 compute_layer(0) 直接崩溃报 "Layer 0 not loaded"；非崩溃分支引擎照常出词，但实际用到的 chunk 与调度器记账不一致
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/LMCache/LMCache/issues/3229
+  kind: github_issue
+  resolved_from: 'LMCache #3229'
+relations:
+- kind: var
+  target: INF-0399
+original:
+  category: KV4
+  section: KV §4 cross-request（跨请求，缓存键 / 汏染）
+  meta: '`model_on` · Cov: `var:radix_kvcache_cross_contamination` · 触发 `partial` · 置信度 `documented`'
+  mechanism: SCHEDULER 与 WORKER 两个角色在计算 per-chunk 键时使用了不同的 `TokenDatabase` 子类 / 不同的 `init_none_hash` 种子；调度器汇报有 N 个 token 已缓存，而 worker 的 contains 检查在幸存 chunk 上失败。后果有两支：CacheBlend 的 `compute_layer(0)` 直接崩溃（"Layer 0 not loaded"），或者被检索/被跳过的 chunk 与调度器记账的 token 对不上。
+  source: 'LMCache #3229（种子这一根因是维护者的假设，非线级确认）。'
+  behavior: 崩溃分支报 "Layer 0 not loaded"；非崩溃分支下引擎照常出词，但实际用到的 chunk 与调度器认为的不一致。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: on-manifold 但与 prompt 不一致（model_on）——输出流畅、状态在健康流形内，却与真实前缀脱钩；只有相对 prompt 条件化参考做偏离比对才可见。捕获者：trajectory / geometric 的参考对齐比对、cheap（recompute-oracle）、以及结构性核对（调度器汇报的缓存 token 数 vs worker 实际加载的 chunk 数）。漏检者：所有无参考度量族；崩溃模式则完全没有隐藏态签名可评分（进程终止，无前向轨迹）。
+  repro: 按「chunk 记账错位」建模——把某个 chunk 的 cached K/V 整段丢弃或替换为相邻 chunk 的 K/V，同时保持序列长度记账不变，用单个 `self_attn` pre-hook 实现；崩溃分支不注入（无可评分状态）。
+  locus: '`cross-request`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

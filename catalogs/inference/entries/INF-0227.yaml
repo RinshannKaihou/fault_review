@@ -1,0 +1,60 @@
+id: INF-0227
+legacy_ids:
+- '1.228'
+slug: vllm_staged_write_tensor_apply_write_int32_row_offset_wraparound
+aliases: []
+title: vLLM StagedWriteTensor int32 行偏移回绕越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: _apply_write_kernel 行偏移
+  behavior: _apply_write_kernel 的行偏移 row_idx*row_stride 中 row_idx 为 int32 张量、row_stride 被 Triton 特化为 int32，乘积超过 2^31 时回绕为负偏移。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: max_model_len 约 ≥512k（如 1M、TP8 MI308X）时首个真实请求即令 8 个 TP worker 齐崩 Memory access fault，伪装成长上下文内核 bug；回绕后若仍落在同一 allocation 内则静默写坏其他行；<512k 上下文正常。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM V1/V2 `StagedWriteTensor`（KV/状态 staged write 路径）+ rows×stride(0) > 2^31（partial：需 ≥~512k 上下文或等价大分配）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57030
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（vLLM Model Runner V2 `buffer_utils.py` `_apply_write_kernel`：`row_ptr += row_idx * row_stride + start_idx`——`row_idx` 来自 int32 张量 `write_indices`、`row_stride` 为 host 标量（`self.gpu.stride(0)`）被 Triton 特化为 int32，乘法在 **int32** 中进行；`StagedWriteTensor` 的 rows×stride 一旦越过 2^31 即回绕为负偏移、kernel 越界写。Qwen4Exp/QSA hybrid `max_model_len=1_000_000`（TP8 MI308X，乘积 ~2.6e9）自 mid-September MRv2 分派后**每个引擎在首个真实请求上 8 个 TP worker 毫秒级齐崩** `Memory access fault by GPU node-N (Reason: Unknown)`——伪装成"长上下文内核 bug"；<512k 上下文全部正常。无模型 10GB 最小复现（ROWS=65536×COLS=40000=2.62e9）；修复 `row_idx.to(tl.int64) * row_stride` 一行已在 6 个生产副本（70 万 token 请求 + FULL decode graphs）验证稳定；`_zero_kv_blocks_kernel` 已有同款 int64 cast 先例。MULTI_GROUP 路径 `row_stride` 逐写取自 `output_strides` 张量，其 dtype 待确认否则同墙） · Cov: `NEW`（Triton 隐式 int32 标量特化乘法回绕越界写子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: Triton 对 host int 标量按"值可被 int32 表示"特化为 int32，张量索引乘法不自动提升——索引数学的溢出边界从 int64 地址空间静默收缩为 int32；`StagedWriteTensor` 大行数 × 大 stride 的设计点恰在 2^31 之上。
+  source: 'vLLM #57030（2026-09-15 open，rocm，含生产环境（1M 上下文全灭）叙述、无模型最小复现、一行修复 diff、6 副本生产验证与 MULTI_GROUP 次生风险标注）。https://github.com/vllm-project/vllm/issues/57030'
+  behavior: 双形态——(a) 回绕后命中不可映射页：illegal memory access / Memory access fault，8 worker 齐崩引擎死亡；(b) **回绕后仍落在同一 allocation 内：静默 scribble 到其他行**（报告者原文"the silent-corruption variant is the one that should keep people up at night"）。1.167（INT32_MIN 残差校正整数族）与 1.190（typecast 正溢出饱和）之后 int32 溢出族新成员：本条在**索引乘法回绕 → 越界写**维度、且是大上下文生产配置的必然触发。
+  trigger_surface: vLLM V1/V2 `StagedWriteTensor`（KV/状态 staged write 路径）+ rows×stride(0) > 2^31（partial：需 ≥~512k 上下文或等价大分配）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem=算子/内核（维持）：修复是 _apply_write_kernel 中 row_idx 转 int64 的一行改动，属 Triton kernel 索引算术；算子/内核 词条含“搬运算子”，而 运行时/执行 所列 program cache/CUDA graph/stream/分配器/driver/dispatcher 均不覆盖该缓冲写入 kernel；该 kernel 为通用 staged write，不专属某功能域（rule 1 不适用）。effect 维持 可用性/进度、数值结果；静默 scribble 是否跨请求原文未写，不推断。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect
+    - visibility

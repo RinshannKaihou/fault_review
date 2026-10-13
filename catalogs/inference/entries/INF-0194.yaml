@@ -1,0 +1,60 @@
+id: INF-0194
+legacy_ids:
+- '1.195'
+slug: sglang_triton_causal_conv1d_update_state_layout_triple_mishandle
+aliases: []
+title: SGLang causal_conv1d_update 回退核错读卷积状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: causal_conv1d_update 回退核
+  behavior: Triton fallback 按有效长度 width−1 读 conv_state 头部而非尾部窗口；声明 cache_seqlens_ptr 却从不读，按线性而非循环缓冲读写状态；width=5 被接受但只处理 width 2–4。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: conv_state 长于 width−1、使用循环缓冲游标或 width=5 时，Mamba/混合架构的 conv state 更新读到错误历史窗口，结果与 torch conv1d 参考不一致，无报错；JIT 内核测试不覆盖该 fallback。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Triton causal_conv1d_update fallback + oversized/circular conv state 或 width=5（other_stack：SGLang 主路径，机制可迁移 vLLM 同名 kernel）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38622
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0131
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（SGLang Triton `causal_conv1d_update` fallback 路径三重失效：(a) `conv_state.shape[-1] > width−1` 时内核按有效长度 width−1 假设**读头部条目而非尾部卷积窗**；(b) 声明了 `cache_seqlens_ptr` 但**从不读**——状态按线性缓冲而非循环缓冲读写（忽略 cache cursor）；(c) width=5 被包装层接受但实现只 load/处理 width 2–4 的权重——**错误结果而非拒绝**。JIT 内核测试不覆盖该 fallback 实现） · Cov: `var:ttmetal_concat_s2s_absolute_dim_rank_confusion_silent_wrong_data`（1.132 fallback 路径静默错数据族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: Triton fallback 是与 CUDA JIT 主路径独立维护的第二实现，状态布局语义（尾部窗口、循环游标）从未对齐；宽度支持范围无守卫。参考实现 `causal_conv1d_update_ref` 在 `test/registered/layers/mamba/test_causal_conv1d.py` 可复现三类对照。
+  source: 'SGLang #38622（2026-09-09 open，bug label，含 CUDA GPU 上三类最小复现与期望行为描述）。https://github.com/sgl-project/sglang/issues/38622'
+  behavior: 无 crash——**静默正确性失败**：Mamba/混合架构 conv state 更新读到错误历史窗口、循环缓冲语义丢失、width=5 给出与 `torch.nn.functional.conv1d` 不一致的结果。1.132（concat s2s fallback 静默错数据）之后"fallback 实现与主路径语义分歧"族新成员：本条在卷积状态布局维度且三错叠加。
+  trigger_surface: SGLang + Triton causal_conv1d_update fallback + oversized/circular conv state 或 width=5（other_stack：SGLang 主路径，机制可迁移 vLLM 同名 kernel）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem=算子/内核（维持）：三处错误都在 SGLang causal_conv1d_update Triton fallback 内核的读写与宽度处理，(c) width=5 与状态布局无关；KV缓存 词条指状态池的存储、分配、驱逐等管理逻辑，本条状态池本身无误，是内核读写它的方式错，按“修复要改哪里”归 算子/内核。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

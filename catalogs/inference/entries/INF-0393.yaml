@@ -1,0 +1,63 @@
+id: INF-0393
+legacy_ids:
+- '5.46'
+slug: sglang_dit_tp2_modulation_norm_sharded_as_ordinary_ffn_chroma_speckle
+aliases: []
+title: SGLang DiT 在 TP=2 下图像出现 speckle 噪点
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: sglang
+    component: DiT 调制/QK-norm 的 TP 切分
+  behavior: 待定（报告者假设）：Qwen-Image-2.1 单流 DiT 的 AdaLN 调制输出或 per-head QK-norm 状态被按普通 FFN 语义切分/all-reduce，部分和求和造成轻度保结构损坏；精确张量位点未定位。
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: --tp-size 2 时输出图像被致密多色 speckle 噪点覆盖（平滑区尤甚）、构图正确，TP=1 干净；vLLM-Omni 独立 TP 实现 TP=2 同样损坏。已排除 flash-attn、rank 互换、NCCL 精度与 offloader；无 crash。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang diffusion 路径 + `--tp-size 2`（其他 TP 度未测）+ Qwen-Image-2.1 类单流 norm/调制 DiT；vLLM-Omni TP=2 同构（other_stack）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-25'
+remarks: effect object 缺少“生成图像/多模态输出”，本条为 diffusion 图像损坏，暂用 输出内容（其描述只覆盖 token/文本/结构化输出）。
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/41192
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`ambiguous`（SGLang diffusion 服务路径 `--tp-size 2` 输出图像被**致密多色 chroma speckle 噪点**覆盖（平滑区域尤甚）、构图保持正确；同 prompt/配置 `--tp-size 1` 干净。跨引擎同构：vLLM-Omni 独立 TP 实现（PR #7759 分支）在 TP=2 呈**相同损坏**、单卡干净（对侧 vllm-project/vllm-omni#8135）。排除证据链：(1) flash-attn 自建 sm_120 换 sdpa 后 vLLM 侧损坏不变；(2) 两卡互换 rank 损坏不变；(3) NCCL 传输专项测试 bf16/fp16/fp32 all-reduce vs Gloo fp64 参考误差恰为正常舍入（fp32≈4e-8、fp16≈半 ULP、bf16≈1 ULP）、4096² 50 轮压力零 NaN/Inf；(4) 单卡同 offload flags 干净排除 offloader。假设（报告者）：Qwen-Image-2.1 单流联合 text+image attention + per-head QK-norm（zero-centered RMSNorm、fp32、weight+1）+ AdaLN 调制 MLP——若**调制输出或 norm 状态按普通 FFN 语义切分/all-reduce**，部分和求和恰好产生这种轻度保结构损坏） · Cov: `NEW`（DiT TP 分片把 per-head/调制的**不可切分状态当普通 FFN 切分**子签名；与 5.34 MiniCPM 局部 RMS 分母（attention 侧 norm×TP）同属"归一化×切分"交叉域但本条在调制/norm 状态维度且跨双引擎验证） · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 双独立引擎同构损坏 + NCCL 清白 + rank 交换不变，把根因收敛到两侧共享的"vLLM 式 parallel-layer 切分约定 × 该 DiT 的单流 norm/调制结构"交互；精确张量位点未定位（报告者提供 side-by-side PNG/像素差分图与 NCCL 测试脚本于请求）。混合异构卡（RTX 5070 Ti + 5070、均 sm_120、WSL2）环境。
+  source: 'SGLang #41192（2026-09-25 open，含复现命令、五重排除证据链、跨引擎同构引用与机制假设）。https://github.com/sgl-project/sglang/issues/41192'
+  behavior: 无 crash——TP=2 服务正常返回但**图像质量静默损毁**（致密 speckle）；单卡无对比基线时用户无从察觉。diffusion 输出域首个经双引擎交叉验证的 TP 数值损坏签名。
+  trigger_surface: SGLang diffusion 路径 + `--tp-size 2`（其他 TP 度未测）+ Qwen-Image-2.1 类单流 norm/调制 DiT；vLLM-Omni TP=2 同构（other_stack）
+  discovery: 2026-09-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 并行切分 + 质量退化：原文排除 NCCL、rank 互换、attention 后端与 offloader 后，把根因收敛到“parallel-layer 切分约定 × DiT 单流 norm/调制结构”，即 TP 切分逻辑把不可切分状态按普通 FFN 切分；精确张量未定位，behavior 已注明为报告者假设。图像 speckle 属质量损毁，取 质量退化。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出内容
+        status: panel7
+    uncertain:
+    - visibility

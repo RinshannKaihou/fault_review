@@ -1,0 +1,57 @@
+id: INF-1200
+legacy_ids:
+- '13.32'
+slug: vllm_dflash2_subclass_layer_override_shadowed_by_hardcode
+aliases: []
+title: vLLM DFlash2 draft 子类层覆盖被基类硬编码遮蔽致加载失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: DFlashQwen3Model 建层逻辑
+  behavior: 基类 DFlashQwen3Model 构造器硬编码 DFlashQwen3DecoderLayer 建层，子类 decoder_layer_cls 覆盖不生效，DFlash2 draft 被建成无局部卷积的普通 DFlash 层；属回归。
+effect:
+  objects:
+  - 可用性/进度
+  detail: vLLM 选用 DFlash2 draft 做推测解码即触发：权重加载在 layers.0.attention_conv 上抛 ValueError（无此模块或参数），draft 不可用；错误信息指向权重名而非遮蔽根因，需读完继承链才能定位。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + DFlash2 draft 模型（spec decode）——模型选择即触发
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53449
+  kind: github_pr
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（DFlash2Qwen3Model 声明 decoder_layer_cls 覆盖，但共享基类构造器硬编码基类层——子类覆盖被静默遮蔽，DFlash2 draft 被建成无卷积的普通 DFlash 层，加载期在继承链另一端的 attention_conv 张量上失败） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`DFlash2Qwen3Model` 声明 `decoder_layer_cls = DFlash2Qwen3DecoderLayer`，但共享的 `DFlashQwen3Model.__init__` 构建层时**硬编码** `DFlashQwen3DecoderLayer`——子类覆盖从不生效，DFlash2 draft 被静默构造为缺少局部卷积的普通 DFlash 层；权重加载随即在检查点中第一个 `layers.0.attention_conv` 张量上 `ValueError: There is no module or parameter named ''layers.0.attention_conv''`。该 indirection 由 #52816 引入、又被 #52560（Qwen3-Omni-DSpark）再次移除——**回归型缺陷**。修复（PR #53449）给基类显式 `decoder_layer_cls` 类属性并经其构造。错误信号（加载失败）与根因（构造器遮蔽）相距整个继承链。'
+  source: 'vLLM PR #53449（2026-08-23 open，"[Bugfix][Spec Decode] Restore decoder_layer_cls indirection so DFlash2 drafts load"；L40S + DFlash2 draft @ k=7 修复后 acceptance 7.98/8）。https://github.com/vllm-project/vllm/pull/53449'
+  behavior: crash 型（加载期 ValueError，draft 模型不可用——fail-loud，无静默损坏窗口）；但**错误消息指向权重名而非遮蔽根因**，归因成本高（需读完继承链才发现覆盖无效）。属「**硬编码构造 × 子类覆盖遮蔽**」新子签名——模型图构建域的 OOP indirection 静默丢失，与 12.22（交错权重流双重 finalize）同涉加载管线但本条根因在类层次结构而非权重流布局。
+  trigger_surface: vLLM + DFlash2 draft 模型（spec decode）——模型选择即触发
+  discovery: |-
+    2026-08-23 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 'cause.subsystem 维持 模型定义：缺陷是建模代码类层次构造错误（DFlashQwen3Model.__init__ 硬编码 DFlashQwen3DecoderLayer），修复 PR #53449 在基类加 decoder_layer_cls 类属性；rules 功能域优先针对 算子/内核、编译器、运行时/执行 等通用子系统，这里出错代码是模型类本身。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

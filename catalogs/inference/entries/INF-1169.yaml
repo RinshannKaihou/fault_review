@@ -1,0 +1,56 @@
+id: INF-1169
+legacy_ids:
+- '13.1'
+slug: bug_gemma_logit_softcap_missing
+aliases: []
+title: Gemma2/3 的 tanh logit softcap 缺失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: 通用
+    component: 注意力与 lm_head softcap
+  behavior: Gemma2/3 应在 softmax 前施加 tanh soft-capping（attn cap 50、lm_head cap 30）；实现省略此步，或把 Gemma2 路由到不支持 softcap 的 SDPA/flash 路径。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: '不崩溃，logits 无界、分布细微偏移，模型自信地答错或陷入重复；flash-attention #1016 报 Gemma2 走 flash 时 100% 随机输出。信号集中在最终隐藏态、注意力 logit 量级与 per-layer attention-entropy。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 实现 patch/错误配置
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/Dao-AILab/flash-attention/issues/1016
+  kind: github_issue
+  resolved_from: 'flash-attention #1016'
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: Gemma2/Gemma3 在 softmax **之前**施加 tanh soft-capping（attn cap = 50，lm_head cap = 30）：`logits = tanh(logits/cap)*cap`。省略它会让 logits 无界。关键在于 SDPA / FlashAttention **无法表达** softcap，所以任何把 Gemma2 路由到 raw SDPA/flash 的执行路径都会静默地丢掉这一步。
+  source: 'Unsloth `gemma2.py`（原文逐字："SDPA does not support softcapping"）；flash-attention #1016（Gemma2 上使用 flash 时 100% 随机输出）；HF gemma-2-9b-it discussion #9；HF blog "Welcome Gemma 2"。'
+  behavior: 细微的分布偏移 → 自信地给出错误答案或陷入重复；不崩溃。
+  trigger_surface: 实现 patch/错误配置
+  signature: 偏 on-manifold，但是**系统性**的。签名集中在 LM-head / 最终隐藏态以及注意力模式的能量分布上：缺失 softcap 会抬高 max attention-logit 的量级，并改变 per-layer 的 attention-entropy。作用于最终隐藏态的 statistical（per-layer attention-entropy / logit-magnitude）或 spectral 度量能抓到；中间层隐藏态只受到轻微影响，因此逐层 geometric 度量在浅层大概率漏检。
+  repro: 可软件复现（`yes`），单钩子即"移除 tanh soft-cap"这一步即可；需要 Gemma 系（带 softcap 的）模型——非 Gemma 架构本来就没有 softcap，无从移除。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - visibility

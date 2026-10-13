@@ -1,0 +1,58 @@
+id: INF-0173
+legacy_ids:
+- '1.174'
+slug: triton_interpreter_fma_fp32_double_rounding_fp64_intermediate
+aliases: []
+title: Triton interpreter fp32 FMA 双重舍入致结果分歧
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 解释器 create_fma
+  behavior: interpreter 的 create_fma 对 fp32 用 np.add(product, z, dtype=float64) 求和再 astype(float32) 两步舍入；fp64 精度足够的前提只对 fp16 成立。
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: TRITON_INTERPRET=1 下 tl.math.fma 精确值落在 fp32 半途点时与 compiled 的 fma.rn.f32 差 1 ULP（4097²+2⁻³⁰ 得 16785408.0，应为 16785410.0）；以 interpreter 作 golden 会把错值当基准。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Triton interpreter（TRITON_INTERPRET=1）+ tl.math.fma + fp32 + 半途点操作数（工具链触发；CPU 可复现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-06'
+remarks: subsystem 缺“解释器/参考执行器”类值：Triton interpreter 是 CPU 模拟执行路径，既非代码生成 pass 也非测试 harness，暂取最接近的 编译器。
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11610
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（interpreter 的 `create_fma` 把 fp32（与 fp16）经 fp64 中间量两步舍入：`np.add(product, z, dtype=float64).astype(float32)`——精确值恰落 fp32 半途点时 fp64 RN 先选错边再 cast，与 compiled 的单步 `fma.rn.f32` 分歧；#11424 的"fp64 精度足够"前提只对 fp16 成立） · Cov: `NEW`（interpreter 双舍入子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: fp16 全动态范围塞得进 fp64 尾数故 fp64 和精确；fp32 的积在 fp64 精确但 `product+z` 可精确落在两个 fp32 邻值正中——4097²=16785409 恰在 16785408/16785410 中点（该区间 fp32 ulp=2），z=2⁻³⁰ 低于该量级 fp64 半 ulp，第一步 RN 得 16785409.0、第二步 ties-to-even 选 16785408.0；真值在中点之上，正确结果 16785410.0（compiled 返回）。随机 sweep 找到第二个独立案例（整数尾数积落 fp32 中点 + 亚半途加数）。
+  source: 'triton-lang/triton #11610（2026-09-06 open，含推导与最小复现）；修复 PR #11611。https://github.com/triton-lang/triton/issues/11610'
+  behavior: 无 crash——interpreter 与 compiled 结果在半途点案例上静默分歧（1 ULP）。新子签名「**参考执行器自身数值缺陷**」：用 TRITON_INTERPRET=1 做 golden 对照的开发者会把 interpreter 错值当基准——测试基准层污染，比单个 kernel 错值更隐蔽。与 1.175 同日暴露 interpreter 数值语义第二例。
+  trigger_surface: Triton interpreter（TRITON_INTERPRET=1）+ tl.math.fma + fp32 + 半途点操作数（工具链触发；CPU 可复现）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 裁定 subsystem=编译器（维持）：修复落在 Triton interpreter 的 create_fma（Triton 工具链实现）；观测/评测 指测试 golden/容差/harness 本身，interpreter 被当 golden 使用造成的基准污染是影响，已由 effect.objects 的 测试判定 记录。vocab_gap 中“解释器/参考执行器”缺口保留供词表修订参考。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

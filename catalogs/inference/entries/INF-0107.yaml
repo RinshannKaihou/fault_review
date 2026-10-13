@@ -1,0 +1,55 @@
+id: INF-0107
+legacy_ids:
+- '1.108'
+slug: ttmetal_pow_bw_negative_base_composite_log_nan_inf
+aliases: []
+title: ttnn.pow_bw 负底数梯度经复合 log 路径变为 +inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.pow_bw 复合公式 backward
+  behavior: pow_bw 的 backward 以 exp(exponent·log(a)) 类复合公式实现，未特判负底数：负底数 log(a) 产生 NaN，并在 bf16 打包时坍缩为 +inf（0x7F80）。
+effect:
+  objects:
+  - 梯度
+  detail: exponent=2.0 时全部 32,639 个负有限 bf16 底数的梯度返回 +inf（正确值 2a 有限），与幅值无关；正底数精确，N300/P300 逐位一致；下游依赖该梯度的训练被污染。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent N300/P300；`ttnn.pow_bw` + 任意负底数 + 非零偶数 exponent（纯软件 API 层可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-26'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54439
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn.pow_bw 复合公式路径：负底数 log→NaN 在 bf16 pack 坍缩为 +inf——exponent=2.0 时全部 32,639 个负有限 bf16 底数梯度返回 +inf，而正确梯度 2a 处处有限；N300/P300 逐位一致，缺陷在复合公式层而非 SFPU） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`ttnn.pow_bw(grad, a, exponent)` 的 backward 以复合公式（`exp(exponent * log(a))` 类路径）实现：负底数 `log(a)` 产生 NaN，随后在 bf16 打包中坍缩为 `+inf`（位型 0x7F80）。exponent=2.0 全扫（65,536 个 bf16 底数 pattern）显示**每一个负有限底数**（32,639 个）都返回 +inf，与幅值无关；正底数全部精确，exponent=0.0 正确返回 0，NaN 底数不发散。两代硬件（N300/P300）逐位一致排除了 SFPU 实现差异——是公式组合次序本身把可表示的有限梯度（2a）变成了 inf。'
+  source: 'tt-metal #54439（2026-08-26 open，"ttnn.pow_bw returns +inf for every negative base, where the gradient is finite"，含全 sweep 附件链接）。https://github.com/tenstorrent/tt-metal/issues/54439'
+  behavior: 无 crash、无 NaN 上抛——梯度张量中所有负底数位置静默变为 +inf，下游任何依赖该梯度的量被污染（训练/微调发散或被裁剪出系统性偏差）。属「**复合公式次序 × 负域未特判**」新子签名：与 1.103（remainder 校正旁路）同 SFPU 数学函数族的负域/边界处理缺陷，但本条在公式组合层（log 复合）而非单次校正能力。
+  trigger_surface: Tenstorrent N300/P300；`ttnn.pow_bw` + 任意负底数 + 非零偶数 exponent（纯软件 API 层可触发）
+  discovery: 2026-08-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：分类与独立判断基本一致（算子/内核/tt-metal；梯度；+inf 属 数值异常）。effect.objects 只写 梯度 可接受（输出张量就是梯度）。各数字与原文一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

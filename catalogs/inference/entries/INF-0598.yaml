@@ -1,0 +1,53 @@
+id: INF-0598
+legacy_ids:
+- '6.205'
+slug: sglang_hybrid_mla_kv_read_before_hicache_loadback
+aliases: []
+title: SGLang MLA KV 读取未等 HiCache load-back
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HybridLinearKVPool 读路径
+  behavior: wrapper 包裹 MLATokenToKVPool 时禁用了内层的 HiCache load-back 等待，但 get_mla_kv_buffer() 转发读取前不做外层 wait，异步 load-back 未完成即读 MLA KV。
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  detail: hybrid MLA + HiCache host offload 下读到未完成传输的陈旧/零值 KV，注意力输出静默损坏；受控实验修复前 20/20 次读错；端到端服务中投影先跑留出时间，故间歇性显形。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + hybrid MLA + HiCache host offload + load-back 与读竞争（other_stack：SGLang；时序触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38217
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0586
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（`HybridLinearKVPool` 包裹 `MLATokenToKVPool` 时禁用内层"等待本层 HiCache load-back 完成"（hybrid wrapper 拥有同步），但 `get_mla_kv_buffer()` 转发读取时**不做外层 wait**——异步 load-back 未完成即读 MLA KV 数据） · Cov: `var:sglang_glm53flash_dsa_hicache_host_roundtrip_corruption_no_spec`（6.193 HiCache 往返族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 同步责任从内层移到 wrapper 后，wrapper 的读路径漏掉该责任。B300 两层 FP8 MLA cache + HybridLinearKVPool、16K token、page 64 的受控实验：备份数据到 host、清空 device buffer、启动异步 load-back 后立即读 layer 0——修复前 20/20 次读回错误数据，修复后 0/20。修复在读前等待对应层 load-back（含层 ID remap 前的正确层）+ CPU 回归测试记录 wait/read 顺序。
+  source: 'SGLang PR #38217（2026-09-06，memory-pool label，含 20 次对照实验）。https://github.com/sgl-project/sglang/pull/38217'
+  behavior: 无 crash——读到未完成传输的 KV（陈旧/零值），注意力输出静默损坏；端到端服务中 Q/后缀 KV 投影通常先跑、给 load-back 留了时间，故**间歇性显形**（最难归因的一类）。与 6.193（GLM-5.3-Flash HiCache 往返损坏）构成同族读写两侧：6.193 是 index buffer 不迁移，本条是数据 buffer 读早于写完成。
+  trigger_surface: SGLang + hybrid MLA + HiCache host offload + load-back 与读竞争（other_stack：SGLang；时序触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0927
+legacy_ids:
+- '10.11'
+slug: vllm_kimi_k3_close_marker_stream_leak
+aliases: []
+title: vLLM Kimi K3 流式路径把 turn 关闭标记泄漏进 content
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: Kimi K3 tool parser 流式路径
+  behavior: 流式 _extract_response_content 只在 tools open/response close 处停止 content，未像非流式路径那样剥离 <|close|>message<|sep|> 关闭标记。
+effect:
+  objects:
+  - 输出内容
+  detail: Kimi K3 流式且回合无 response close 时触发；客户端收到 Hello<|close|>message<|sep|> 而非 Hello，原始 XTL 标记进入用户可见 content，导致客户端解析错误；非流式正常，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；Kimi K3 + 流式 + 无 response close 的回合
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: subsystem 缺“输出解析（reasoning/tool parser）”：解析器把生成文本切分为 content/reasoning/tool_calls，既非 detokenize 也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51400
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（Kimi K3 turn-close 标记泄漏进流式 content） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 模型用 `<|close|>message<|sep|>` 关闭 Kimi K3 assistant turn。非流式 `_strip_response_content` 剥离该标记，但流式 `_extract_response_content` 仅在 `tools open`/`response close` 停止 content。无 `response close` 的回合把原始 XTL 标记流给客户端：`Hello<|close|>message<|sep|>` 而非 `Hello`。修复：把完整 `<|close|>message<|sep|>` 当 content stop，并加 partial-suffix hold-back 防跨 delta 分割泄漏。
+  source: 'vLLM PR #51400（2026-08-07 open）。修复 #51399。组件 Kimi K3 tool parser streaming path。https://github.com/vllm-project/vllm/pull/51400'
+  behavior: 无 crash、无 NaN。结构标记泄漏进用户可见 content→客户端解析错误/显示原始标记。属「流式与非流式解析路径的标记剥离不对称」签名——与已编目 tool parser 族同族，流式路径遗漏。
+  trigger_surface: vLLM；Kimi K3 + 流式 + 无 response close 的回合
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

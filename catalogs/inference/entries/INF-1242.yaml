@@ -1,0 +1,57 @@
+id: INF-1242
+legacy_ids:
+- K3.5
+slug: kv_pool_v_head_dim_undersize
+aliases: []
+title: SGLang KV 池按 K 维度分配 V，v_head_dim 不同时写错槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: get_size_per_token 尺寸计算
+  behavior: get_size_per_token() 按 head_dim 统一计算 K 与 V 的每 token 尺寸；v_head_dim≠head_dim 时 V 按 K 维度分配，set_kv_buffer 把 V 写进形状错误的槽
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  detail: 在 v_head_dim≠head_dim 的模型（MiMo V2.5）开启 HiCache 时触发；源文档未给出外部症状
+  visibility: 待定
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/26734
+  kind: github_issue
+  resolved_from: 'SGLang #26734'
+relations: []
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`token_to_kv_pool.get_size_per_token()` 按 `head_dim * head_num * layer_num * 2` 计算每 token 尺寸，隐含假定 K 与 V 共享 `head_dim`；对于 `v_head_dim != head_dim` 的模型（MiMo V2.5），V 被按 K 的维度分配，于是 `set_kv_buffer` 把 V 写进了形状错误的槽。'
+  source: 'SGLang #26734（MiMo V2.5 + HiCache）。'
+  behavior: 源文档未给出该字段。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: '`infra_off`，且带明确的 K/V 不对称：V 张量离流形而 K 完全干净——逐层可见 V 与 K 的损坏不对称，注意力输出范数暴涨而注意力**前**的状态保持干净。损坏覆盖整个 V 区域（所有位置），这与单位置的 `kv_corrupt` 是不同的空间形态。可捕获的是 geometric 族（注意力输出范数暴涨）与按 K/V 分解的探针；只看残差流输入侧的度量会完全漏检。'
+  repro: 方案：单钩子对某层缓存 V 施加「按错误 head_dim 重新 reshape + 截断/补零」的整体形变，K 保持不动，以复现 V 全域损坏 + K 干净的不对称。属 partial：标准架构的 `v_head_dim == head_dim`，错配必须人为构造。
+  locus: block-slot-alloc
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

@@ -1,0 +1,65 @@
+id: INF-1311
+legacy_ids:
+- K9.20
+slug: cudagraph_fullcachehit_skip_kv_transfer_sync
+aliases: []
+title: vLLM CUDA graph 在完整缓存命中时跳过 KV 传输同步
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 逐层异步 KV 传输同步
+  behavior: 完整缓存命中场景下 CUDA graph 重放跳过了 KV 传输同步，一个逐层异步 KV 操作未被等待，decode 读取尚未传输完成的 KV。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 跨节点 KV 传输且完整缓存命中时偶发输出错误，损坏集中在命中前缀段、后缀正常；因是竞态，复现依赖时序，服务无报错。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 跨节点/PD KV 传输
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/29608
+  kind: github_issue
+  resolved_from: 'vLLM #29608'
+- url: https://github.com/vllm-project/vllm/pull/31057
+  kind: github_pr
+  resolved_from: 'PR #31057'
+relations: []
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`infra_off` · Cov: `NEW (recovered)` · 触发 `no` · 置信度 `verified`'
+  mechanism: CUDA graph 重放在**完整缓存命中（full-cache-hit）**场景下**跳过了 KV 传输同步**——一个逐层（layerwise）异步 KV 操作没有被等待 → decode 读到尚未传输完成的 KV。修复方案是把该场景自动降级为 PIECEWISE cudagraph 模式。
+  source: 'vLLM #29608（CLOSED 2025-11-27）+ PR #31057（MERGED 2025-12-20）。*（该 issue 曾被回填代理误判为伪造，`gh` 已确认为真实。）*'
+  behavior: 在全命中路径上偶发输出错误，且因为是竞态，复现依赖时序；服务无报错。
+  trigger_surface: 跨节点/PD KV 传输
+  signature: '**cache-hit 前缀位置上的 off-manifold 过期（stale）KV**；cross-node × cudagraph 竞态。检测面：per-position 的 statistical KV-norm 与 geometric 偏移在命中前缀段可见（读到的是上一状态或未初始化内容）；因为损坏局限在前缀而后缀正常，**深度/位置剖面的分段差异**是关键判别信号。全局 cheap 度量与全序列平均的 spectral 度量会被正常后缀稀释。竞态性质使签名间歇出现，需要多次重复采样。'
+  repro: 单钩子于 cache 写入后把前缀命中段的 K/V 替换为"上一步的值"或未初始化值（模拟未完成传输的读取）；真实的 cudagraph 重放与异步 KV 传输需服务栈复现。
+  locus: control-flow
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 运行时/执行
+        status: panel7
+    uncertain:
+    - visibility

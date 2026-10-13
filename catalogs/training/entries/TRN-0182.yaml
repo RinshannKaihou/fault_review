@@ -1,0 +1,52 @@
+id: TRN-0182
+legacy_ids:
+- SFT.05
+slug: left_pad_scoring_uses_arange_positions
+aliases: []
+title: trl 左 pad 打分不传 position_ids，与采样位置分歧
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: 打分路径 position_ids 缺失
+  behavior: 左 pad batch 打分 logprob 时不传 position_ids，模型回落 torch.arange，pad 行位置整体平移；而 generate() 由 mask 推位置，采样与打分用两套位置。
+effect:
+  objects:
+  - 输出分布
+  - 训练信号
+  detail: 对 RoPE 模型无影响；对 ALiBi、学习式/绝对位置编码模型，左 pad 行 logprob 全错且偏移随 pad 宽度增长（gpt2 实测 max|Δlogp|=11.7）。OnlineDPO/XPO/Nash-MD 受影响、PPO 正确；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/6800
+  kind: github_issue
+relations: []
+original:
+  category: SFT
+  section: SFT
+  meta: 'stage: `sft/rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 左 padding batch 里做 logprob 打分时只传 `input_ids`+`attention_mask`、不传 `position_ids`，模型侧 fallback 到 `torch.arange` → 每个 padded 行的位置被整体平移 pad 数。关键非对称：`generate()` 从 mask 推 position（`cumsum-1`），打分侧用 arange——**采样与打分在两套位置上分歧**，而不是一致地错。
+  source: 'trl #6800（gpt2 左 pad 13 行实测：max|Δlogp|=1.17e1、序列 logprob 差 -34.0；RoPE 类（Qwen2-0.5B）与绝对位置类 delta 恰为 0；PPO 路径正确构造 position_ids，OnlineDPO/XPO/Nash-MD 均漏）。https://github.com/huggingface/trl/issues/6800'
+  behavior: 对 RoPE 是 no-op（这也是它长期潜伏的原因）；对位置敏感实现（ALiBi、学习式/绝对 position embedding）整个 batch 的左 pad 行 logprob 全错、偏移量随 pad 宽度增长。无 crash、无 NaN。与 RL-RO.01/RL-RO.07 不同：权重与分布定义都一致，错的是**喂进模型的位置索引**。
+  discovery: 2026-08-20 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

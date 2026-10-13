@@ -1,0 +1,57 @@
+id: INF-0962
+legacy_ids:
+- '10.46'
+slug: vllm_tool_choice_none_delegates_tool_shaped_content_silent_drop
+aliases: []
+title: vLLM tool_choice=none 仍删除工具形状 content
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: DelegatingParser 工具提取分支
+  behavior: enable_auto_tools 下 engine-based streaming parser 分支不检查 tool_choice 语义，tool_choice=none 时仍走消费检测文本的路径，返回解析剩余物而非模型原文。
+effect:
+  objects:
+  - 输出内容
+  detail: 开启 auto tool choice、用 glm45/glm47/qwen3_coder 等 engine-based parser 且 tool_choice=none 时，输出中 <tool_call>…</tool_call> 形状的文本被删、content 为 None，HTTP 200。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `--enable-auto-tool-choice` + 9 个受影响 parser + `tool_choice="none"` + 模型输出 tool-call 形状文本（config 组合即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-03'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser）：暂归 调度/服务 的 API/前端，但 parser 缺陷与请求调度、批处理无关，单列便于聚类
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55080
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0958
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（`tool_choice="none"` 时 `DelegatingParser._extract_tool_calls` 的 engine-based 分支返回**解析存活物而非模型原文**：`<tool_call>{...}</tool_call>` 形状的 content 被静默删除（`content=None`）——tool calling 已关、detector 的 consumed-text 输出本无关紧要，两个分支都应返回原文；受影响 parser：glm45/glm47/ling3/mimo/qwen3_coder/qwen3_xml（非流式 content→None），全量扫描加 mistral/kimi_k2/seed_oss——**每个受影响 parser 都有 `engine_based_streaming = True`**） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 假设致内容丢失族） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`enable_auto_tools=True` 下 engine-based streaming parser 分支在 tool_choice=none 时仍走"消费检测文本"路径——分支不检查 tool_choice 语义；tokenizer stub 即可 CPU 复现（缺陷在 dispatch 层非模型层）。与 10.44（数组非 object 条目丢弃有效邻居）同 parser 通道内容完整性域，本条是**用户显式关闭工具后内容仍被吃掉**（语义违反更直接：none 的含义就是"别动内容"）。'
+  source: 'vLLM #55080（2026-09-02 open，CPU-only tokenizer stub 复现 + 9 parser 受影响清单）。https://github.com/vllm-project/vllm/issues/55080'
+  behavior: 无 crash、HTTP 200——模型确实输出了 tool-call 形状内容但用户选择禁用工具时，**content 字段为 None**（信息静默蒸发）；对把 tool_call 文本当普通文本消费的客户端是直接丢数据。
+  trigger_surface: vLLM + `--enable-auto-tool-choice` + 9 个受影响 parser + `tool_choice="none"` + 模型输出 tool-call 形状文本（config 组合即触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

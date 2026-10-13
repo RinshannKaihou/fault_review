@@ -1,0 +1,55 @@
+id: INF-0774
+legacy_ids:
+- '7.101'
+slug: sglang_nvfp4_kv_reuses_checkpoint_fp8_calibrated_scale_as_global_scale
+aliases: []
+title: nvfp4 KV 误用 fp8 校准 scale 作全局 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: nvfp4 KV global scale 加载
+  behavior: maybe_remap_kv_scale_name() 无条件挂载 fp8 校准 k/v_scale，fp4 路径无一致性校验，fp8 scale（amax/448）被当作 NVFP4 global scale（amax/6）。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: --kv-cache-dtype nvfp4 服务携带 fp8 校准 k/v_scale 的 checkpoint 时，短 prompt 正常，长上下文 needle 检索塌缩（1/4，删去该 scale 后 4/4），答案退化为问题回声；启动日志无任何 scale 提示。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang + nvfp4 KV + 携带 fp8 校准 scale 的 checkpoint（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/42369
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_compressed_tensors_kv_scale_dropped
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（SGLang `--kv-cache-dtype nvfp4` 服务 `kv_cache_scheme: num_bits 8` 的 checkpoint（如 unsloth NVFP4 quant 携带 fp8 校准 `k/v_scale`）：32 个 `[1]` bf16 标量被原样加载并当作 NVFP4 **global scale** 消费（fp8 几何 amax/448 vs NVFP4 amax/6，~75× 失配→每条存储 K/V 系统性错 scale）。**单变量证明**：同机同日同 prompt，仅删这 64 字节（其余 bit-identical 22.5 GB checkpoint）长上下文 needle 1/4→4/4（d500 0/4→全对）；全程无一行日志提及 scale。2×RTX 5060 Ti TP2、0.5.21 wheel，确定性复现（跨 boot 逐字节）；与 #39942（fp8 KV scale 被丢——反向失败同盲区）互补） · Cov: `var:vllm_compressed_tensors_kv_scale_dropped`（7.52 KV scale 溯源缺失族——本条在 **scale 被错用而非丢弃**维度，跨量化几何错配） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`maybe_remap_kv_scale_name()` 无条件挂载 scale；fp4 路径无 checkpoint KV scheme 与运行时 dtype 的一致性校验。'
+  source: 'SGLang #42369（2026-10-03 open，64 字节单变量 A/B+机制源码走读（标注推断））。https://github.com/sgl-project/sglang/issues/42369'
+  behavior: 无 crash——短 prompt/工具/视觉正常，长上下文检索塌缩（答案退化为问题回声），boot 日志干净。
+  trigger_surface: SGLang + nvfp4 KV + 携带 fp8 校准 scale 的 checkpoint（config）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

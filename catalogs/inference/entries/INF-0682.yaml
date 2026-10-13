@@ -1,0 +1,63 @@
+id: INF-0682
+legacy_ids:
+- '7.9'
+slug: nvfp4_kv_block_scale_sm_arch_swizzle_mismatch
+aliases: []
+title: vLLM NVFP4 KV 的 V scale 在 SM120 布局错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NVFP4 KV 写入 V block scale
+  behavior: reshape_and_cache_nvfp4_kernel 不分架构按 SM100 的 4×4 swizzle 写 V scale，而 SM120 的 XQA decode 按线性 NHD stride 读取、无 de-swizzle。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 仅 SM120/SM121（如 RTX 5090）+ NVFP4 KV + XQA decode 触发：反量化 V 值错误，attention 输出偏离，表现为轻微精度退化到明显输出劣化；无 NaN、无 crash、无 shape error，SM100 上不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: NVFP4 多需新 arch + 特定 kernel
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/50084
+  kind: github_issue
+  resolved_from: 'vLLM #50084'
+- url: https://github.com/vllm-project/vllm/pull/50085
+  kind: github_pr
+  resolved_from: 'PR #50085'
+relations:
+- kind: var
+  target: INF-1325
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off` · Cov: `var:paged_kv_nhd_hnd_layout_axis_transpose` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: NVFP4（Blackwell 代微缩放 4 位格式）KV cache 的 `reshape_and_cache_nvfp4_kernel` 在写 K block scales 时使用线性布局，写 V block scales 时使用 SM100 `trtllm-gen` MHA 所需的 4×4 swizzle——**对所有 GPU 架构无条件执行**。在 SM100（B200）上这是正确的（producer 与 consumer 都是 swizzle）。但在 SM120/SM121（RTX 5090）上，NVFP4 KV 路由（FA2 prefill + FlashInfer XQA decode）通过**普通 NHD tensor strides** 消费 scale 张量，XQA CUDA 代码中**没有 V-scale de-swizzle** 步骤——swizzled producer 接到 linear consumer，所有张量 shape 正确故无 shape check 触发，但实际读到的 V block scale 是错位的。
+  source: 'vLLM #50084（2026-07-28，open）；修复 PR #50085。'
+  behavior: SM120 上 NVFP4 KV decode 路径（FlashInfer XQA）静默读取错位的 V block scales → 反量化 V 值错误 → attention 输出偏离但通常不崩溃。偏差程度取决于 V block scale 的 swizzle 模式与 linear 布局的差异在具体 tensor shape 下的叠加效果——可能表现为轻微精度退化到明显输出劣化，无 NaN、无 crash、无 shape error。
+  trigger_surface: NVFP4 多需新 arch + 特定 kernel
+  signature: infra_off，但**架构条件化**（仅 SM120/SM121 + NVFP4 KV + XQA decode 路径触发）。签名形态是 **V block scale 的 layout 错位**——与 `paged_kv_nhd_hnd_layout_axis_transpose`（K10.x，NHD vs HND 轴序不匹配）和 `trtllm_fp8_kv_reuse_scale_mismatch`（K§9，FP8 scale 不匹配）同类，但本条特化于 NVFP4 的 4×4 block-scale swizzle 与 linear 布局的混淆。可捕获：statistical 族的逐通道量化误差检测（V block scale 错位导致系统性 per-channel 偏置）；cheap 族的 recompute-oracle（用正确 layout 重算）。会漏检：geometric 距离度量（偏置幅度可能不足以推离流形）、以及 SM100 上完全不可见（架构不触发）。本条的新颖度有限——它是已编目 layout/scale 不匹配族在 NVFP4 精度格式上的又一个新实例，泛化价值在于补全精度格式覆盖谱。
+  repro: 不可软件复现——需要 SM120/SM121 GPU + NVFP4 量化 KV cache + FlashInfer XQA 内核，需 SM12x + FlashInfer 栈才能复现 NVFP4 block-scale swizzle。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: KV缓存
+        status: panel7

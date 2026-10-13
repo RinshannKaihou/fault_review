@@ -1,0 +1,53 @@
+id: TRN-0120
+legacy_ids:
+- OPT.20
+slug: stage0_fp16_hysteresis_config_dropped
+aliases: []
+title: ZeRO stage 0 fp16 丢弃 hysteresis 配置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: stage0 fp16 loss scaler
+  behavior: stage 0 fp16 的 loss scale 配置丢掉 delayed_shift 与 consecutive_hysteresis，_update_scale 也无 hysteresis 逻辑，每次溢出 scale 直接减半。
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  detail: 无 crash，stage 0 fp16 的 loss scale 衰减比配置快 hysteresis 倍，频繁溢出时 scale 提前触底、被跳过的 step 增多，有效训练步数静默缩水；同配置在 ZeRO 1/2/3 正常，跨 stage 对照的 scaler 动力学不可比。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8647
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0013
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `var:loss_scaler_swallows_overflow` · 置信度 `documented`'
+  mechanism: 'DeepSpeed **ZeRO stage 0** 的 fp16（无 `zero_optimization` 块或 `"stage": 0`）下，`fp16.hysteresis` 与 `fp16.consecutive_hysteresis` 被**静默丢弃**：`LossScaleConfig` 从 `dynamic_loss_scale_args()` 只拷贝 initial scale/window/minimum、丢 `delayed_shift` 与 `consecutive_hysteresis`，`FP16_Optimizer._update_scale` / `FP16_UnfusedOptimizer._update_scale` 里干脆没有 hysteresis 逻辑——**每次溢出 scale 直接减半**。同一配置在 ZeRO 1/2/3 走 `DynamicLossScaler` 则两个设置都被尊重。修复（PR #8647）= 两设置穿透 + 按 `DynamicLossScaler.update_scale` 语义应用 + 剩余 hysteresis 存进 stage 0 state dict（旧 ckpt 有 fallback）。'
+  source: 'DeepSpeed PR #8647（2026-09-23；`hysteresis=3, initial_scale_power=8` 四次溢出：before `[128,64,32,16]` vs after `[256,256,128,64]`（与 ZeRO 1/2/3 一致）；默认 `hysteresis=2` 此前在 stage 0 从未生效，修复后行为变化（对齐文档与 ZeRO 语义），四个既有 stage 0 溢出测试依赖「默认被忽略」而改为显式 pin；Apple M2 Pro CPU 验证）。https://github.com/deepspeedai/DeepSpeed/pull/8647'
+  behavior: '无 crash——stage 0 fp16 的 loss scale **衰减比配置承诺快 hysteresis 倍**：频繁溢出的 run scale 提前触底、被跳过的 step 比配置语义多，有效训练步数静默缩水；跨 stage 对比实验（stage 0 基线 vs ZeRO 1/2/3）的 scaler 动力学不可比。与 NUM.04（scaler 吞溢出）/OPT.06（stage 0 fp16 更新缩小）同族「stage 0 的 fp16 路径是二等公民」：那些条目打击 step 的执行/缩放，这边打击 **scaler 衰减策略本身的配置面**；与 #8393（stage 0 fp16 backward 不乘 scale）同路径不同 bug（PR 自述分列）。stage 0 恰是排查数值问题时的对照基线，基线的 scaler 语义失真污染对照。'
+  discovery: 2026-09-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

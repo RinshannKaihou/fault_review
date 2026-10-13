@@ -1,0 +1,52 @@
+id: TRN-0070
+legacy_ids:
+- CKPT.21
+slug: shard_filename_lexical_sort_loads_wrong_rank
+aliases: []
+title: DeepSpeed 流水线 ckpt 分片按字典序排序，加载错 rank
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: deepspeed
+    component: pipeline ckpt 读侧分片文件名排序
+  behavior: 分片文件名的 rank 字段只填充两位，并行度到 100 时溢出；两个读侧调用点把 glob 结果按字符串序排序后按 model-parallel rank 位置索引，model_100 落在 model_10 与 model_11 之间。
+effect:
+  objects:
+  - 模型权重
+  detail: 并行度 ≥100 的 pipeline ckpt resume/load 时 rank 11 加载 rank 100 的分片，形状匹配、无异常、无日志，相当于一次未声明的 TP 重排；下游微调从错误权重出发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8452
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0050
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `shared` · Cov: `var:expert_reshard_id_permutation` · 置信度 `verified`'
+  mechanism: DeepSpeed pipeline checkpoint 的分片文件名把 rank 字段填充到**两位**（`get_rank_repr`）；并行度到 100 时 pad 溢出，而两个读侧调用点（`PipelineModule.ckpt_layer_path_list`、`DeepSpeedEngine._get_all_ckpt_names`）把 glob 结果按**字符串序**排序后按 model-parallel rank **位置索引**（`MegatronSDLoader` 位置式消费、`get_merge_state_dicts`/`get_split_state_dict` 切连续 rank 区间）——`model_100` 字典序落在 `model_10` 与 `model_11` 之间：**rank 11 加载 rank 100 的分片**。形状仍匹配、无异常，权重就是错的。修复 = 读侧 `natural_keys` 数值排序（不 rename 磁盘格式，两位以内顺序不变）。写侧单测 `assert 100 == 11` 之前 fail 证实。
+  source: 'DeepSpeed PR #8452（2026-09-08；「这只在 TP/MP ≥100 时咬人，罕见所以 2021 年潜伏至今；但失败是静默的，而修复只是一个排序键」；「the failure this issue predicted」——上游 issue 早有预言）。https://github.com/deepspeedai/DeepSpeed/pull/8452'
+  behavior: 无 crash、无 shape mismatch、无日志——≥100 路并行的 pipeline ckpt resume/load 加载**另一 rank 的权重**，等价于一次未声明的 TP 重排；下游若 finetune 则从错权重出发，行为不可预期。与 CKPT.01（expert reshard 置换）同族：**rank↔分片的映射在格式转换/读取层被静默置换**；差异在这边根因是文件名字典序 vs 数值序（纯 IO 契约），且门槛明确（并行度 ≥100）。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

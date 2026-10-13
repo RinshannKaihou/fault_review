@@ -1,0 +1,56 @@
+id: INF-0458
+legacy_ids:
+- '6.65'
+slug: sglang_dsa_topk_cicc131_drops_nonprimary_ranks
+aliases: []
+title: CUDA 13.1+ cicc 误编译 DSA top-k 致输出置零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cuda
+    component: cicc 编译 TopKCluster
+  behavior: phase-3 把 DSMEM 与 shared::cta 两个目的合并为单指针后，cicc 13.1+ 在 sm_90a 上错误 lowering 该分支，丢弃非 primary rank 输出，tmp_out 留零。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: DeepSeek-V4 DSA decode 用 CUDA 13.1–13.3 构建时触发（同 H200 上 12.9/13.0 正确）；phase 3.5 把零拷到正确地址，512 槽中 383 槽错，下游解引用错误 KV 索引而非法访存崩溃（#33835），或静默输出错误。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang；DSV4 DSA decode + CUDA toolkit 13.1+（任意 sm_90a H200）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34167
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DSA top-k v2 在 CUDA 13.1+ cicc 静默丢弃非 primary rank 输出→tmp_out 留零→phase 3.5 拷零到正确 DSMEM 地址） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'DeepSeek-V4 DSA decode 的 fused small-batch cluster kernel `TopKCluster::forward` phase-3 scatter 目的上提：`cur_out = is_primary ? problem.out : smem->tmp_out`。`problem.out` 可为 `shared::cluster`(DSMEM) alias，`smem->tmp_out` 为 `shared::cta`。合并成单指针变量后 **cicc 13.1+ 在 sm_90a 上 mis-lower block-local 分支**，静默丢弃每个非 primary rank 的 staged output→`tmp_out` 留零→phase 3.5 忠实拷零到正确 DSMEM 地址。slot-diff（vs 12.9 build）：512 槽中 129 正确、一个 383 槽 bad run（7 个 peer 的贡献），primary 的 0–60 与 handle_tie 的 444–511 正确。read-back 仪器确认机制：13.3 下 7 个 peer 的 `tmp_out[0]==0` vs 12.9 下有效索引。**触发器是 CUDA toolkit 版本而非 GPU arch**：同源同硬件（H200 sm_90a）12.9/13.0 正确、13.1/13.2/13.3 错误。已排除 enable_smem_spilling/`__restrict__`/地址空间/volatile load/memory ordering。是 #33835 非法内存访问的根因。'
+  source: 'SGLang PR #34167（2026-08-09 open）。根因 #33835。组件 `TopKCluster::forward` phase-3。https://github.com/sgl-project/sglang/pull/34167'
+  behavior: 取决于下游——sparse attention 解引用 garbage KV 索引→非法内存访问 crash（#33835），或静默错误输出。属「**编译器版本触发静默数值损坏**」**新子签名**——同源同硬件仅 toolkit 版本不同决定正确/错误，最危险的隐式触发器。
+  trigger_surface: SGLang；DSV4 DSA decode + CUDA toolkit 13.1+（任意 sm_90a H200）
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 编译器/cuda：原文“cicc 13.1+ 在 sm_90a 上 mis-lower block-local 分支”“触发器是 CUDA toolkit 版本而非 GPU arch”，同源同硬件 12.9/13.0 正确，缺陷在 NVCC 代码生成；SGLang PR 是规避改写。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

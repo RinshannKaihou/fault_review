@@ -1,0 +1,54 @@
+id: INF-0916
+legacy_ids:
+- '9.30'
+slug: vllm_qwen3_omni_mrope_offset_double_counts_modality_start_token_all_multimodal_requests
+aliases: []
+title: vLLM Qwen3-Omni M-RoPE 位置误读 offset 多一格
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: Qwen3-Omni M-RoPE 位置装配
+  behavior: get_mrope_input_positions 把 PlaceholderRange.offset（首个 pad token）误当模态起始索引，每个媒体项多发一个 bos 槽位，M-RoPE 位置比 token 跨度长一格。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: stock chat template 下无报错，但每个图/音/视频请求从首个 pad token 起 M-RoPE 位置全部偏移一位，grounding 与多模态理解静默退化、输出仍流畅；模板以媒体项结尾时抛 Position ids length mismatch。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM v0.30.0 + Qwen3-Omni（Thinker MoE）+ 任一多模态请求（image/audio/video；stock 模板即触发静默形态）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58902
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: §3.8 输入层故障（tokenizer / 模板 / RoPE）
+  meta: '`infra_off`（vLLM `Qwen3OmniMoeThinkerForConditionalGeneration.get_mrope_input_positions` 误读 `PlaceholderRange.offset`：prompt 替换机制只替换 pad token，`offset` 指向第一个 `<|image_pad|>`、模态起始 token（`<|vision_start|>`/`<|audio_start|>`）已被前段文本覆盖——函数却把 `offset` 当模态起始索引、**每个媒体项多发一个 bos 槽位**，组装出的 M-RoPE 位置比实际 token 跨度**长一格**。双显形：stock chat template（媒体后有文本）时多余槽位被尾部文本静默吸收——**无报错但首个 pad token 起全部 M-RoPE 位置偏移一位，所有多模态请求（图/音/视频）位置全错**；模板以媒体项结尾时一致性守卫 raise `RuntimeError: Position ids length mismatch`。音频/视频分支同构 off-by-one，audio-in-video 共享该结构。免 GPU/免权重最小复现在链接 PR 的合成输入单测（6 token 序列 `PlaceholderRange(offset=1, length=4)` 发出 7 个位置）） · Cov: `NEW`（Qwen M-RoPE 位置装配 off-by-one——与 9.16/9.17（SGLang fused kernel 数值错）同任务域但机制独立：本条是 vLLM 侧位置 id 装配层的 offset 契约误解，位置 id 本身逐位错） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`PlaceholderRange.offset` 的契约（pad 区起点）与函数假设（模态起点）相差一个模态标记 token；修复 PR #58890 删冗余 bos 槽并修各分支 `st` 前进量，使输出位置数恒等于 seq_len、audio-in-video 值结构与 Qwen2.5-Omni HF 行为一致。'
+  source: 'vLLM #58902（2026-09-27 open，含 offset 语义推导、双症状形态、免模型单测描述与修复 PR #58890（open 未合并））。https://github.com/vllm-project/vllm/issues/58902'
+  behavior: 无 crash（stock 模板）——**每个多模态请求的 M-RoPE 位置系统性错位一位**：视觉/音频 grounding、多模态理解质量静默退化，输出仍流畅；只有自定义结尾模板才 fail-loud。9.17（SGLang fused kernel 数值错）之后 Qwen M-RoPE 族新成员：本条在 **vLLM 位置装配的 offset 契约误解**维度，位置 id 本身逐位错而非融合 kernel 内部错——两栈各自独立地破坏"位置 id 精确"这一前提。
+  trigger_surface: vLLM v0.30.0 + Qwen3-Omni（Thinker MoE）+ 任一多模态请求（image/audio/video；stock 模板即触发静默形态）
+  discovery: 2026-09-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

@@ -1,0 +1,64 @@
+id: TRN-0069
+legacy_ids:
+- CKPT.20
+slug: v1_trainer_esi_force_save_unwired
+aliases: []
+title: verl V1 trainer 丢失 ESI 强制保存，配置静默无效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: verl
+    component: V1 trainer 保存条件（ESI）
+  behavior: V1 trainer 的保存条件只有 last-step 与 save_freq 整数倍，从不调用 should_save_ckpt_esi；V0 等路径已实现的 ESI force-save 在 V1 迁移时丢失。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: trainer.esi_redundant_time 配置被接受、run 正常推进且无报错；容量块在两个 save_freq tick 之间到期被抢占后，才发现 ckpt 停在最近 tick，整个未落盘窗口内的 step 作废。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7757
+  kind: github_issue
+- url: https://github.com/verl-project/verl/issues/7820
+  kind: github_issue
+- url: https://github.com/verl-project/verl/issues/7815
+  kind: github_issue
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: verl V1 trainer（`trainer.use_v1=true`，`ppo_trainer.yaml` 默认）的保存条件只有 last-step / `save_freq` 整数倍，从不 import `should_save_ckpt_esi`、不跟踪 `max_steps_duration`——文档化的 `trainer.esi_redundant_time`（Volcengine MLP / SageMaker 容量块到期前 force-save 的缓冲窗口）在默认 trainer 上是**静默 no-op**。V0、Ray SFT、experimental separation、fully-async 四条路径都实现了 ESI force-save，V1 迁移时丢了。容量块在两个 `save_freq` tick 之间到期时，preemption 丢掉的不只是「进行中的 step」而是整个未落盘窗口。
+  source: 'verl #7757（代码对照：V0 `ray_trainer.py` 的 `esi_close_to_expiration` 条件 vs V1 `trainer_base.py` 的两条件 save；配置 `save_freq=100 / esi_redundant_time=30 / total_training_steps=3` + 到期时间戳落在非 tick 步，实测无 force-save 日志、无 `global_step_*` 写出）。https://github.com/verl-project/verl/issues/7757 ；verl #7820（2026-09-12 补：同族 worker 进程组配置——`actor_rollout_ref.nccl_timeout` / `critic.nccl_timeout` 自 #6067 起被 `engine_workers.py:88` 的硬编码 `timeout_second=None` 短路，7 个官方示例脚本设置死键、`megatron_critic.yaml` 文档还主动教用户调大；grep 证实只剩 dataclass 字段与 docstring，无任何读取）。https://github.com/verl-project/verl/issues/7820 ；verl #7815（2026-09-13 补：#7820 的独立 issue 正文——dead key 从 #6067（2026-05 合入）起存在，7 个官方示例脚本设死键；修复 PR #7820 于 2026-09-10 开出，把超时线程进 worker 进程组构造）。https://github.com/verl-project/verl/issues/7815 ；2026-09-15 补：#7815 已随 commit 2083eeb 修复关闭（closed completed 2026-09-14）。'
+  behavior: 无报错；配置项被接受、resolve 正常、run 正常推进——被抢占后才发现 ckpt 停在最近 tick，租约成本换来的冗余窗口没有兑现任何保护。与 CKPT.07（死配置参数静默 no-op）同形：**契约在配置面存在、在执行面缺席**，差异是这条的代价按真实训练进度计（窗口内全部 step 作废）；与 CKPT.15（异步 ckpt worker 异常被吞）互补：那边是保存动作失败被瞒，这边是保存决策根本不发生。
+  discovery: 2026-09-09 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 性能/资源
+        to: 可用性/进度
+        status: unanimous
+      visibility:
+        from: 性能退化
+        to: 静默错误
+        status: unanimous

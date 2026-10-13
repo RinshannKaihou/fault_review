@@ -112,6 +112,65 @@ class EmbeddingHashTests(unittest.TestCase):
         self.assertEqual(parse.embedding_hash(text), parse.embedding_hash(text))
 
 
+class YamlIndexTextTests(unittest.TestCase):
+    """Accepted composition (2026-10-13 YAML switch): narrative-only embedding,
+    BM25 adds legacy ids / old category / title but not the other structured fields."""
+
+    ENTRY = """id: TRN-9001
+legacy_ids:
+- HW.99
+slug: example_fault
+title: 标题词条
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 硬件
+    stack: 硬件
+    component: 组件词条
+  behavior: 原因摘要词条
+effect:
+  objects:
+  - 梯度
+  detail: 影响摘要词条
+  visibility: 静默错误
+labels:
+  stage: [pretrain]
+  confidence: documented
+evidence:
+- url: https://example.org/x
+original:
+  category: HW
+  mechanism: 机制叙述词条
+  behavior: 表现叙述词条
+"""
+
+    def _entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "TRN-9001.yaml"), "w", encoding="utf-8") as f:
+                f.write(self.ENTRY)
+            entries = parse.parse_yaml_entries(d, "training")
+        self.assertEqual(len(entries), 1)
+        return entries[0]
+
+    def test_embedding_text_is_narrative_only(self):
+        text = parse.embed_text(self._entry())
+        self.assertIn("category HW", text)
+        self.assertIn("机制叙述词条", text)
+        self.assertIn("表现叙述词条", text)
+        for structured in ("标题词条", "原因摘要词条", "影响摘要词条", "组件词条"):
+            self.assertNotIn(structured, text)
+
+    def test_bm25_text_adds_title_and_legacy_id_only(self):
+        from fault_rag.index import bm25_text
+
+        text = bm25_text(self._entry())
+        for wanted in ("TRN-9001", "HW.99", "标题词条", "机制叙述词条"):
+            self.assertIn(wanted, text)
+        for structured in ("原因摘要词条", "影响摘要词条", "组件词条"):
+            self.assertNotIn(structured, text)
+
+
 class TrainingBoundaryTests(unittest.TestCase):
     def test_fenced_rules_and_headings_stay_in_multiline_field(self):
         for fence in ("```", "~~~"):

@@ -1,0 +1,57 @@
+id: INF-1336
+legacy_ids:
+- K10.25
+slug: fp8_attn_query_scale_defaults_to_kscale
+aliases: []
+title: FP8 查询缺 q_scale 时默认取 k_scale 致 logit 偏置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FP8 查询 q_scale 默认值
+  behavior: 查询也走 FP8 量化而未提供 q_scale 时，vLLM 直接令 q_scale := k_scale；Q 与 K 取值范围不同，每个 QK^T logit 都被错误缩放，属读取侧缩放错误。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: 仅 Q 也走 FP8 时出现：attention logit 系统性偏置，softmax 温度实质改变，输出偏硬或偏软且无告警；存储的 K/V 与参考一致。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/25047
+  kind: github_issue
+  resolved_from: 'vLLM #25047'
+relations: []
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 当查询也被 FP8 量化而没有提供 `q_scale` 时，vLLM 直接令 `q_scale := k_scale`。Q 与 K 的取值范围本来就不同，于是每个 QK^T logit 都被错误缩放。这是**读取侧**的错误缩放，与所有 KV *存储*侧的缩放故障在机制上不同。
+  source: '`gh`：vLLM #25047 + llm-compressor #1294（"Q Scaling factor for FP8 KV Cache?"）。'
+  behavior: FP8 查询路径下 attention logit 出现系统性偏置，softmax 温度实质被改变，输出偏硬或偏软而无告警。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: 受 dtype 门控（只在 Q 也走 FP8 时出现），属 ambiguous。签名是 **FP8 查询被吸附到 K 的网格 → 系统性 QK^T logit 偏差**：statistical（注意力熵/温度整体位移）与 infotheoretic 最敏感，因为偏差是系统性而非随机的；geometric 上隐状态偏离温和且方向一致，可能被误判为温和量化漂移（model_on 类）。区分要点在于误差**只在读取侧**——存储的 K/V 与参考一致，recompute-oracle 对比可定位。
+  repro: partial——在 `self_attn.q_proj` 输出钩子上，用**K 的** absmax 推出的 scale 对 Q 做 e4m3 伪量化（而非 Q 自己的范围），复现读取侧错误缩放；vLLM 的 FP8 attention kernel 不复现。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

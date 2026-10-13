@@ -1,0 +1,52 @@
+id: INF-0423
+legacy_ids:
+- '6.30'
+slug: sglang_qwen3vl_deepstack_input_dropped_bcg_replay
+aliases: []
+title: SGLang BCG 回放丢弃 Qwen3-VL DeepStack 输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: sglang
+    component: Prefill BCG replay 输入槽拷贝
+  behavior: Prefill breakable CUDA graph（BCG）replay 未把请求专属的 input_deepstack_embeds 复制进稳定的 graph input slot，该 slot 保留默认零值。
+effect:
+  objects:
+  - 隐状态
+  - 输出分布
+  - 输出内容
+  detail: Qwen3-VL-8B-Instruct（H200、BF16、greedy）走 BCG 时请求正常完成，但与 eager 仅前 7 个 token 相同、最大 logprob 差 1.154；bcg_normal 与 bcg_zero_deepstack 差 0.000。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用；Qwen3-VL + BCG（breakable CUDA graph）prefill
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-05'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33726
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（breakable CUDA graph replay 丢弃请求专属多模态中间张量 → 静默正确性退化） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: Qwen3-VL 通过 `input_deepstack_embeds` 把中间视觉特征传到选定语言模型层（DeepStack）。但 SGLang 的 Prefill breakable CUDA graph (BCG) replay **未把该请求专属张量复制进稳定的 graph input slot** → 正常 BCG 执行时该 slot 保留默认（零）→ BCG 表现得像**显式 zero-DeepStack 运行**而非 eager 执行。请求仍成功完成（**静默正确性问题**，无 crash）。A/B 实验：修复前 `bcg_normal` vs `eager_normal` 仅前 7 token 相同、max abs logprob diff **1.154**；修复后 15 token 相同、diff 0.071。更关键：修复前 `bcg_normal` ≡ `bcg_zero_deepstack`（diff 0.000），证明 DeepStack 输入被完全丢弃。
+  source: 'SGLang PR #33726（2026-08-05 open）。环境：`Qwen/Qwen3-VL-8B-Instruct`，H200，BF16，greedy。https://github.com/sgl-project/sglang/pull/33726'
+  behavior: 无 crash、无 NaN。多模态视觉中间特征在 BCG 路径被静默丢弃 → 输出语义漂移（logprob diff ~1.15），但语法仍流畅、请求成功完成。属「breakable CUDA graph replay 丢弃请求专属中间张量 → 静默正确性退化」新子签名。与 K8.7 / 6.x CUDA-graph 静态缓冲问题同族，但对象是**多模态 DeepStack embeds**（请求专属、非 paged KV）。
+  trigger_surface: SGLang 专用；Qwen3-VL + BCG（breakable CUDA graph）prefill
+  discovery: 2026-08-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

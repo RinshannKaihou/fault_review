@@ -1,0 +1,52 @@
+id: INF-0201
+legacy_ids:
+- '1.202'
+slug: ttmetal_moreh_norm_backward_pinf_ninf_ub_cast_zero_or_garbage_gradients
+aliases: []
+title: moreh_norm_backward 对 p=±inf 无特判致梯度归零或垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: moreh_norm_backward p 特判
+  behavior: backward 工厂对 p=±inf 无特判（forward 有），把 p、p−1 直接送入取整/小数拆分函数：static_cast<uint32_t>(±inf) 为 UB，decimal=inf−inf 得 NaN。
+effect:
+  objects:
+  - 梯度
+  detail: ttsim bf16 确证：p=+inf 时 argmax 元素梯度全为 0.0，部分非 max 元素带高至 1.5e38 或 inf 的垃圾；p=−inf 时非 argmin 元素残留非零梯度，最大达全 dy 幅度；无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal moreh_norm_backward + p=±inf（hw_specific；机制可迁移任何"forward 特判极值、backward 不判"的算子对）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56248
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0177
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.operations.moreh.norm_backward` 接受任意 float `p`，而匹配的 forward `moreh_norm` 对 `p=±inf/0` 有显式特判；backward 工厂无特判，把 `p` 与 `p−1` 直接喂 `get_floored_p_and_decimal_and_p_is_negative()`——`static_cast<uint32_t>(±inf)` 是 UB、`decimal = inf−inf = NaN`。ttsim bf16 确证：`p=+inf` 时 **argmax 元素梯度全部返回 0.0**（期望 dy 广播到 argmax 位）、部分非 max 元素带高至 1.5e38/inf 的垃圾；`p=−inf` 时 argmin 梯度正确但**非 argmin 元素残留非零梯度**（期望 0），最大到全 dy 幅度） · Cov: `var:ttmetal_norm_backward_zero_slice_singular_reciprocal_nan`（1.178 moreh_norm 参数域未守卫族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: forward/backward 工厂对参数域的守卫不对称——forward 特判 `IS_ZERO`/`MINUS_INF`，backward 无对应分支，浮点极值进入整数转换路径触发 UB 与 NaN 传播。
+  source: 'tt-metal #56248（2026-09-11 open，bug+community label，含 ttsim 逐行复现、4 形状×2 维×2 阶的 8 格误差矩阵）。https://github.com/tenstorrent/tt-metal/issues/56248'
+  behavior: 无 crash——**梯度静默错误**（关键位归零或垃圾值），训练侧信号损毁。1.178（norm_backward 零切片 NaN）之后 moreh 族新成员：本条在 p=±inf 参数域、前/后向守卫不对称维度。
+  trigger_surface: tt-metal moreh_norm_backward + p=±inf（hw_specific；机制可迁移任何"forward 特判极值、backward 不判"的算子对）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

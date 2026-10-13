@@ -1,0 +1,54 @@
+id: INF-0256
+legacy_ids:
+- '1.257'
+slug: ttmetal_expm1_log1p_minus_zero_signed_zero_lost_reconstruction_gate
+aliases: []
+title: ttnn.expm1/log1p 对 −0.0 输入返回 +0.0 丢失零符号
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU expm1、log1p 内核
+  behavior: accurate 路径下 expm1 在 j=0 时跳过重建门，返回值 r·s+u 中 +0.0 与 −0.0 相加销毁零符号且无恢复步骤；log1p 首句 u=a+1.0 即丢失输入零符号；WH/BH 双副本相同。
+effect:
+  objects:
+  - 数值结果
+  detail: −0.0 输入经 expm1/log1p 返回 +0.0（IEEE 与 torch 为 −0.0），+0.0 输入一致，fp32/bf16 同病；依赖 signbit 的下游（1/x→±inf、atan2、区间边界）出现符号级分歧，数值容差门恒绿。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.expm1`/`ttnn.log1p` accurate 路径 + −0.0 输入（fp32/bf16 同病；hw_specific：默认 SFPU 路径）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57847
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/57848
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0250
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（SFPU accurate 路径 `ttnn.expm1(-0.0)`/`ttnn.log1p(-0.0)` 返回 **+0.0**，IEEE 754 定义 `expm1(±0)=±0`、`log1p(±0)=±0`，torch 返回 **−0.0**。expm1：`_sfpu_expm1_` 的 `j=rint(a·log2e)` magic-add 得 j=0，`j != 0.0f` 重建门**跳过**，返回值由 `r = r·s + u` 构成——`f = j·(−ln2)+a = −0.0` 但 `s = f·f = +0.0`，`+0.0 + (−0.0) = +0.0`（RNE 下零符号被销毁）且无任何步骤恢复；log1p：`u = a + 1.0f` 首句即 `−0.0+1.0 = +1.0` 丢符号，`m = t−1.0 = +0.0`、多项式每项含 m 故 +0.0。WH/BH 双副本逐行相同（同行号）。判决对照：`+0.0` 输入两侧一致（分歧仅在负零）） · Cov: `var:ttmetal_fmod_remainder_exact_zero_loses_dividend_sign`（1.251 ±0.0 位域语义族——本条在 expm1/log1p 重建门/首句加法维度；与 #57538（已修 #57554）、#57714 同类，issue 自证构成第四、五例） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 来源为无设备的内核 IEEE replay（C++ 逐位复现内核输出：`−0.0 → +0.0`，控制值全对）；两内核修复各一句（重建门/首句保留输入零符号），WH/BH 双副本。
+  source: 'tt-metal #57847（expm1）、#57848（log1p）（均 2026-09-25 open，Bad Outputs，含位级对照表与双 arch 代码行）。https://github.com/tenstorrent/tt-metal/issues/57847 ; https://github.com/tenstorrent/tt-metal/issues/57848'
+  behavior: 无 crash——负零输入（下溢负积/负商的常态产物）经 expm1/log1p 后符号丢失；以 signbit 分支的下游（`1/x`→±inf、atan2、区间边界）产生符号级分歧。数值容差门恒绿（+0.0==−0.0）。1.246/1.251 之后 ±0.0 族第五、六例，首次覆盖**超越函数重建门跳过**与**首句加法吞符号**两个新位点。
+  trigger_surface: tt-metal + `ttnn.expm1`/`ttnn.log1p` accurate 路径 + −0.0 输入（fp32/bf16 同病；hw_specific：默认 SFPU 路径）
+  discovery: 2026-09-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

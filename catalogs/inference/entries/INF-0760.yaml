@@ -1,0 +1,60 @@
+id: INF-0760
+legacy_ids:
+- '7.87'
+slug: flashinfer_moe_routing_enum_missing_sqrtsoftplus_wrong_expert_selection_risk
+aliases: []
+title: flashinfer fp4 MoE 路由枚举缺 sqrtsoftplus
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: flashinfer
+    component: fp4 MoE RoutingMethodType
+  behavior: trtllm_fp4_block_scale_moe 以封闭的 RoutingMethodType 枚举硬编码路由评分，不含 DeepSeek-V4.1 的 sqrtsoftplus；接口不拒绝不支持的 scoring，按所传枚举执行。
+effect:
+  objects:
+  - 输出分布
+  - 可用性/进度
+  detail: SGLang 传 DeepSeekV3 时触发误导性 topkGroup<=4 assert；若用户改传其它 method 绕开，内核按错误评分函数静默为每个 token 选错专家，输出分布漂移且无报错。B200 4×TP4 环境报告。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: flashinfer trtllm_fp4_block_scale_moe + DeepSeek-V4.1（sqrtsoftplus scoring）经 SGLang/internal-routing 路径（config）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5190
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（flashinfer `trtllm_fp4_block_scale_moe` 的内部路由按固定 `RoutingMethodType` 枚举（10 种）打分，全部为 softmax/sigmoid/top-k 组合；DeepSeek-V4.1 的 `scoring_func=sqrtsoftplus`（config.json：384 专家 top-6、noaux_tc、routed_scaling_factor=1.5）**不在任何枚举值内**。SGLang 现传 `RoutingMethodType.DeepSeekV3` 触发误导性 `topkGroup<=4` assert（把不支持 scoring 误诊为分组配置问题）；若用户为绕开 assert 改传其它 method，内核将**按错误的评分函数静默选择不同专家**——正确性 bug 而非配置不匹配。当前唯一安全路径是 routed 变体（外部预算 expert 路由，损失 deferred finalize）。B200 4×TP4 环境报告） · Cov: `NEW`（融合 MoE 路由枚举不可表达新评分函数：错误 method 静默选错专家子签名） · 触发 `config` · 置信度 `documented`'
+  mechanism: 路由评分函数以封闭枚举硬编码于融合内核；模型侧新评分函数（sqrtsoftplus）无对应值，接口层不拒绝不支持的 scoring 而是接受一个"最接近"的枚举并静默执行错误语义。
+  source: 'flashinfer #5190（2026-09-13 open，needs-triage label，含 10 枚举评分对照表、DSV4.1 config 摘录与误导性 assert 症状分析）。https://github.com/flashinfer-ai/flashinfer/issues/5190'
+  behavior: 当前为 fail-loud assert（误导性报错指向 topkGroup）；**潜在静默形态**是用户改传错误 method 后每个 token 被路由到错误专家——输出分布漂移、无任何错误。7.69（ModelOpt NVFP4 w13 gscale 失配 warn-then-use）之后"量化栈配置失配静默使用"族新成员：本条在路由评分枚举维度、错误面为专家选择而非数值精度。
+  trigger_surface: flashinfer trtllm_fp4_block_scale_moe + DeepSeek-V4.1（sqrtsoftplus scoring）经 SGLang/internal-routing 路径（config）
+  discovery: |-
+    2026-09-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 输出分布
+        status: panel7
+    uncertain:
+    - visibility

@@ -1,0 +1,55 @@
+id: INF-1297
+legacy_ids:
+- K9.6
+slug: prefix_cache_hash_collision_no_validation
+aliases: []
+title: 前缀缓存哈希碰撞缺 token 校验而复用错误 KV 块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: openvino-genai
+    component: 前缀缓存哈希碰撞处理
+  behavior: 不同 token 序列哈希到同一前缀缓存键时，代码缺少 token 级校验（源码留有 TODO），直接复用该键下的 KV 块；属真正的哈希碰撞而非哈希输入不完整。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 受害请求的输出带上另一条无关请求的前缀语义，表现为答非所问或内容串台，无报错；发生概率取决于哈希碰撞率，极难复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/openvinotoolkit/openvino.genai/issues/3722
+  kind: github_issue
+  resolved_from: 'OpenVINO GenAI #3722'
+relations: []
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`infra_off` · Cov: `NEW` · 触发 `config`⚠ · 置信度 `verified`'
+  mechanism: '不同的 token 序列若哈希到同一个前缀缓存键，会静默复用**错误的 KV 块**——代码在碰撞发生时缺少 token 级验证，源码里留着 `// TODO: add tokens validation in case of hash collision`。需与 `vllm_apc_dirty_block_hash`（非满块哈希导致的脏块）区分：那是哈希输入不完整，**这里是真正的哈希碰撞**。'
+  source: 'OpenVINO GenAI #3722（CLOSED 2026-04-16，"Hash collision in prefix KV cache silently reuses wrong KV block"）。'
+  behavior: 受害请求的输出带上另一条完全无关请求的前缀语义，表现为答非所问或内容串台；发生概率取决于哈希碰撞率，极难复现。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: '**cross-request KV 污染**——受害者前缀位置的 K/V 与另一序列匹配，而不是与自身上下文匹配。检测面：这正是 signature-cosine / cross-orthogonality 族（签名余弦矩阵）的目标——被污染前缀的隐藏态方向会与捐赠序列的签名高度对齐，与受害者自身上下文的一致性下降。geometric 族（前缀-后缀一致性）可见；单请求内的 statistical / cheap 度量可能完全看不出，因为捐赠 KV 本身是"另一条序列的健康 KV"，数值上无任何离群。这是"数值健康但语义错位"的典型 infra_off。'
+  repro: 强制两个 prompt 共享同一块哈希 → 在前缀位置提供捐赠者（donor）序列的 K/V。单钩子做法：先跑一遍捐赠 prompt 缓存其前缀 K/V，再在受害 prompt 的前向中于 cache 写入后把前缀段替换为捐赠者的 K/V。
+  locus: cross-request
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0940
+legacy_ids:
+- '10.24'
+slug: vllm_minimax_m3_mxfp8_streaming_tool_call_early_stop
+aliases: []
+title: vLLM MiniMax-M3 流式 tool call 被提前终止
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: minimax_m3 流式解析状态机
+  behavior: streaming 路径对 reasoning→tool-call 转换处理有误：reasoning/tool 双 parser 的流式状态机在边界处提前判停。
+effect:
+  objects:
+  - 输出内容
+  detail: MiniMax-M3 MXFP8 + tools + stream:true 且推理较长后决定调用工具时触发；reasoning 通道关闭后 SSE 立即以空 delta + finish_reason=stop 结束，tool_calls 为空；同 payload 非流式正常，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM streaming；MiniMax-M3 MXFP8 + minimax_m3 reasoning/tool parser + tools + stream
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-17'
+remarks: subsystem 缺“输出解析（reasoning/tool parser）”：解析器把生成文本切分为 content/reasoning/tool_calls，既非 detokenize 也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52613
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（MiniMax-M3 MXFP8 streaming + tools：reasoning 关闭后本应 tool call 处生成静默终止，非流式同 payload 正常） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'MiniMax-M3（ModelOpt MXFP8、MarlinMxfp8 Marlin 后端）在 `stream: true` + tools 请求中，当推理内容较长/较犹豫后决定调用工具时，SSE 流在 reasoning 通道关闭后立即停止：空 delta + `finish_reason=stop`，tool call 不出现。同 payload 非流式成功 → 缺陷在 streaming 路径对 reasoning→tool-call 转换的处理（reasoning/tool 双 parser 的流式状态机在边界处提前判停）。'
+  source: 'vLLM #52613（2026-08-16 open，bug/quantization）。4×H200，vLLM 0.27.0。https://github.com/vllm-project/vllm/issues/52613'
+  behavior: 无 crash、无报错。流式客户端**静默丢失工具调用**（模型「决定调用工具」的证据留在 reasoning 里、tool_calls 为空、以 stop 收尾）——非流式正常使问题更隐蔽。属「streaming × reasoning→tool-call 状态机提前终止」**新子签名**。
+  trigger_surface: vLLM streaming；MiniMax-M3 MXFP8 + minimax_m3 reasoning/tool parser + tools + stream
+  discovery: 2026-08-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

@@ -27,7 +27,14 @@ def top_ids(res):
 
 
 def cats(res):
-    return {r["category"] for r in res}
+    # semantic category checks accept either taxonomy: the old Markdown category kept on migrated
+    # entries (e.g. RL-ADV, cat6, KV3) or the current subsystem (e.g. KV缓存)
+    return {c for r in res for c in (r.get("legacy_category"), r["category"]) if c}
+
+
+def keys(row):
+    """Current id plus every old Markdown id the entry carries."""
+    return {row["id"], *row.get("legacy_ids", [])}
 
 
 # 1. index counts -----------------------------------------------------------
@@ -49,20 +56,23 @@ check("entry types: fault >= 1404, negative >= 14, pointer == 1",
       str(st["by_entry_type"]))
 
 idx = S.get_index()
-bad_categories = []
+bad_ids, bad_categories = [], []
 for e in idx.entries:
     if e["neg"]:
         continue
-    if e["repo"] == "inference":
-        expected = ("KV" + e["id"][1:].split(".")[0]
-                    if e["id"].startswith("K")
-                    else "cat" + e["id"].split(".")[0])
-    else:
-        expected = e["id"].rsplit(".", 1)[0]
-    if e["category"] != expected:
-        bad_categories.append((e["repo"], e["id"], e["category"], expected))
-check("all catalog categories follow entry ID grammar",
-      not bad_categories, str(bad_categories[:5]))
+    if not e["id"].startswith({"inference": "INF-", "training": "TRN-"}[e["repo"]]):
+        bad_ids.append((e["repo"], e["id"]))
+    legacy = (e.get("legacy_ids") or [None])[0]
+    if legacy:
+        if e["repo"] == "inference":
+            expected = ("KV" + legacy[1:].split(".")[0] if legacy.startswith("K")
+                        else "cat" + legacy.split(".")[0])
+        else:
+            expected = legacy.rsplit(".", 1)[0]
+        if e.get("legacy_category") != expected:
+            bad_categories.append((e["id"], legacy, e.get("legacy_category"), expected))
+check("entry ids use the repo namespace (INF-/TRN-)", not bad_ids, str(bad_ids[:5]))
+check("legacy categories follow the old ID grammar", not bad_categories, str(bad_categories[:5]))
 check("regular faults all have confidence",
       all(e.get("confidence") for e in idx.entries
           if e.get("entry_type") == "fault"))
@@ -72,13 +82,13 @@ r = S.lookup("HW.01")
 check("lookup HW.01", len(r) == 1 and
       r[0]["name"] == "training_sdc_unhealthy_node_optima_shift")
 r = S.lookup("minp_typical_misconfig")
-check("lookup alias -> 11.5", any(x["id"] == "11.5" for x in r))
+check("lookup alias -> legacy 11.5", any("11.5" in x["legacy_ids"] for x in r))
 r = S.lookup("10.4")
 check("lookup pointer 10.4 is explicit and non-negative",
       len(r) == 1 and r[0]["entry_type"] == "pointer" and not r[0]["neg"])
 r = S.lookup("vllm_prefix_cache_silent_noop_mamba_gdn_hybrid")
 check("duplicate snake name is explicit",
-      {x["id"] for x in r} == {"6.28", "6.33"} and
+      {x["id"] for x in r} == {"INF-0421", "INF-0426"} and
       all(x["name_ambiguous"] for x in r),
       str([(x["id"], x.get("same_name_ids")) for x in r]))
 
@@ -128,12 +138,12 @@ benchmark_cases = [
 for query, kwargs, expected_ids in benchmark_cases:
     res = S.search(query, topk=5, **kwargs)
     check(f"labelled retrieval: {sorted(expected_ids)} in top5",
-          bool(expected_ids & {x["id"] for x in res}), str(top_ids(res)))
+          any(expected_ids & keys(x) for x in res), str(top_ids(res)))
 
 # 4. filters ----------------------------------------------------------------
 res = S.search("bf16 mixed precision", topk=5, repo="training", category="NUM")
 check("filter repo=training category=NUM",
-      bool(res) and all(r["repo"] == "training" and r["category"] == "NUM"
+      bool(res) and all(r["repo"] == "training" and "NUM" in (r["category"], r.get("legacy_category"))
                         for r in res), str(top_ids(res)))
 
 res = S.search("silent data corruption", topk=5, confidence="verified")
@@ -150,8 +160,8 @@ check("BM25 zero-hit query returns no fabricated rows", res == [], str(res))
 
 # 5. related ----------------------------------------------------------------
 rel = S.related("HW.05")
-check("related HW.05 -> cross link to inference 1.6",
-      any(r["repo"] == "inference" and r["id"] == "1.6" for r in rel),
+check("related HW.05 -> cross link to inference 1.6 (INF-0006)",
+      any(r["repo"] == "inference" and "1.6" in keys(r) for r in rel),
       str([(r["repo"], r["id"], r.get("link_kind")) for r in rel]))
 
 # 6. latency ----------------------------------------------------------------

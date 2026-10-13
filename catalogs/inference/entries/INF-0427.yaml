@@ -1,0 +1,52 @@
+id: INF-0427
+legacy_ids:
+- '6.34'
+slug: vllm_encoder_decoder_cache_slot_release_non_idempotent
+aliases: []
+title: vLLM 编码器-解码器缓存槽位每步重复释放致预算静默失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: 编码器缓存 free_encoder_input
+  behavior: allocate 每请求只跑一次，_free_encoder_inputs 每步调用 free_encoder_input，后者无引用守卫累加 num_free_slots；get_cached_input_ids 无条件返回全部 id。
+effect:
+  objects:
+  - 性能/资源
+  detail: Whisper/Voxtral 等 encoder-decoder 模型在首个 decode step 之后，num_free_slots 每步被重复计入，编码器缓存预算静默停止执行；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；encoder-decoder 模型（Whisper/Voxtral）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51228
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（slot release 每步重复计入 → 编码器预算静默失效） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: encoder-decoder 模型（Whisper/Voxtral），`EncoderDecoderCacheManager.allocate()` 每请求运行**一次**（encoder scheduling 在后续每步短路，`scheduler.py:1528-1542`，`num_computed_tokens > 0`）。但 `Scheduler._free_encoder_inputs()` 从 `update_from_output` **每步**运行（`scheduler.py:1795-1796`），其 enc-dec 分支（`scheduler.py:2144-2148`）在 `num_computed_tokens > 0` 时调用 `free_encoder_input()`。两件事使该 per-step 调用非幂等：(1) `free_encoder_input()` 无条件计入 `num_free_slots`，无引用守卫（基类检查 `self.cached`）；(2) `get_cached_input_ids()` 无条件返回 `set(range(len(request_mm_features)))`。
+  source: 'vLLM PR #51228（2026-08-06 open）。https://github.com/vllm-project/vllm/pull/51228'
+  behavior: 无 crash、无 NaN。编码器缓存预算在首个 decode step 后**静默停止执行**（`num_free_slots` 每步重复计入）。属「per-step 非幂等释放 → 资源预算静默失效」新子签名。
+  trigger_surface: vLLM 主路径；encoder-decoder 模型（Whisper/Voxtral）
+  discovery: 2026-08-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

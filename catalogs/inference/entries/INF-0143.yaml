@@ -1,0 +1,51 @@
+id: INF-0143
+legacy_ids:
+- '1.144'
+slug: ttmetal_conv_depthwise_activation_guard_term_missing_silent_drop
+aliases: []
+title: depthwise conv 守卫漏掉 activation，激活被静默丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: is_1d_depthwise_conv 守卫
+  behavior: is_1d_depthwise_conv 守卫排除了 has_bias，却漏掉同样不能融合的 activation，致带 activation 无 bias 的 conv 进入不处理 activation 的专用内核。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 带 activation 且无 bias 的 1D depthwise conv 拿到前激活输出（ReLU 类恒等直通），无报错；以 depthwise conv 为主干的 MobileNet/ConvNeXt 类架构特征图系统性漂移。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.conv1d`/1D-depthwise `conv2d` + conv_config.activation 且无 bias（软件算子选择即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-02'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55272
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`is_1d_depthwise_conv` 守卫排除 `has_bias`（专用内核不能融合 bias）却**漏掉 activation**——带 activation 无 bias 的 depthwise conv 落到零 activation 处理的 `compute_depthwise_conv1d`；host 仍计算 `pack_relu`、构建并附上 SFPU activation defines，但该内核 compile-time args 到 index 12 截止——defines 全部死码；conv 目录无 `unary_chain`/`apply_activation` 兜底（不同于 ttnn.matmul 的回退设计）——activation 不在任何地方被应用且无报错） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 守卫的 `!has_bias` 项因"专用内核不能融合 bias"而存在，同样不能融合 activation 却无对应项；只有通用路径（conv_bmm_tilize.cpp）实现 SFPU activation。host 侧 build/attach 成功制造融合生效的假象（死 defines 伪装）。
+  source: 'tt-metal #55272（2026-09-02 open，守卫/工厂/内核三处 grep 证据齐备）。https://github.com/tenstorrent/tt-metal/issues/55272'
+  behavior: 无 crash——activation 被静默丢弃（ReLU 类变体恒等直通），conv+activation 融合用户拿到前激活输出；MobileNet/ConvNeXt 类以 depthwise conv 为主干的架构系统性特征图漂移。属「**守卫缺项路由到不能融合的内核 + host 死 defines 伪装**」新子签名：与 1.137/1.138 同日的第三例契约违反，本条在守卫层。
+  trigger_surface: tt-metal + `ttnn.conv1d`/1D-depthwise `conv2d` + conv_config.activation 且无 bias（软件算子选择即触发）
+  discovery: 2026-09-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

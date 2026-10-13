@@ -1,0 +1,52 @@
+id: INF-0815
+legacy_ids:
+- '8.31'
+slug: vllm_kv_block_zeroing_only_full_attention_fp8_swa_stale_data
+aliases: []
+title: vLLM KV 块清零漏掉 FP8 滑窗页致 acceptance 塌缩
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KVBlockZeroer 清零范围
+  behavior: KV 清零对混合 Mamba/混合精度 cache 启用，但 scheduler 只上报 full/MLA block 类型、worker zeroer 只处理 full-attention 组，回收的 FP8 滑窗页残留旧数据。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 性能/资源
+  detail: Kimi-K3 DSpark drafter SWA GQA（FlashInfer/TRTLLM-gen）上，后续 GSM8K batch 的 acceptance length 从约 4.8 渐进塌缩、准确率退化；强制 FlashAttention 或 BF16 KV 则稳定，无 crash。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；混合模型 + FP8 sliding-window KV cache + block 回收（needs_kv_cache_zeroing）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51749
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（KV block zeroing 只处理 full-attention 组，回收的 FP8 sliding-window 页面残留旧数据→acceptance length 塌缩） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`KVCacheConfig.needs_kv_cache_zeroing` 对混合 Mamba 和混合精度 cache 启用，但 scheduler 只报告 full/MLA block 类型的精确 allowlist、worker zeroer 只处理 full-attention 组。回收的 FP8 sliding-window 页面因此**残留旧数据**。Kimi-K3 DSpark drafter SWA GQA（FlashInfer/TRTLLM-gen）上观察到 acceptance length 从接近 4.8 在后续 GSM8K batch 上**塌缩**。强制 FlashAttention 或 BF16 KV cache 保持稳定。修复：从 `AttentionSpec` 派生每个 cache 的物理 block 维度/stride/page span，而非假设 full-attention 布局。'
+  source: 'vLLM #51749（2026-08-11 PR）。组件 `KVBlockZeroer` / `AttentionSpec`。Kimi-K3 DSpark drafter SWA GQA。https://github.com/vllm-project/vllm/pull/51749'
+  behavior: 无 crash、无 NaN。推测解码 acceptance length **渐进性塌缩**（4.8→更低），GSM8K accuracy 退化。属「block 回收清理的 type allowlist 不全→混合精度/混合架构页面残留→推测解码退化」**新子签名**——stale KV 数据的渐进性退化效应。
+  trigger_surface: vLLM；混合模型 + FP8 sliding-window KV cache + block 回收（needs_kv_cache_zeroing）
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

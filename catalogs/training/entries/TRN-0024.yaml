@@ -1,0 +1,59 @@
+id: TRN-0024
+legacy_ids:
+- NUM.15
+slug: training_args_env_leak_sticky_bf16_precision
+aliases: []
+title: TrainingArguments 环境变量泄漏使 fp32 配置沿用 bf16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 配置/参数
+    stack: transformers
+    component: TrainingArguments 混精环境变量
+  behavior: transformers<5 的 TrainingArguments 把混精写进进程级环境变量，下次实例化再读回作默认值，bf16=False 与未设置不可区分；旧版 accelerate 未显式传参时也回落读该变量。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: 同进程先建 bf16 配置（TRL 默认 bf16=True）后，bf16=False 的 trainer 或 bare Accelerator 静默继承 bf16 autocast，评测/打分/第二阶段误差约 1e-4、易被当噪声；trl CI 实测 1709/2200 元素 mismatch。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-22'
+remarks: subsystem 希望有「训练配置/精度策略」：缺陷是训练参数把混精决定经进程环境泄漏给后续配置，不属于设备调度执行，暂选最接近的 运行时/执行。
+evidence:
+- url: https://github.com/huggingface/trl/issues/7320
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7321
+  kind: github_pr
+relations: []
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `sft/rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: transformers <5 的 `TrainingArguments.__post_init__` 把 mixed precision 作为**进程级环境变量**（`ACCELERATE_MIXED_PRECISION`）发布，并在下一次实例化时把**同一变量读回作默认值**：`bf16=False` 与「未设置」在该路径不可区分——一个 bf16 值**从此无法被后续配置清除**（只能被显式 `fp16=True`/`bf16=True` 覆盖）。TRL 配置默认 `bf16=True`（`base_config.py:105`），于是同进程里**第一个** trainer 把整个 worker 进程钉在 bf16；之后任何 `bf16=False` 的 trainer / bare `Accelerator` 在 transformers<5 + accelerate 旧版（不显式传 `mixed_precision`、回落读环境变量）组合下**静默继承 bf16 autocast**。trl CI 实测（维护者 root-cause）：chunked logps 路径自管 autocast 跑 bf16、full-logits 路径（未 `train()`、model 未被 prepare、forward 无 autocast 包装）跑 fp32——同测试两路径精度分叉，1709/2200 元素 mismatch、最大绝对差 8.1e-4（bf16 投影舍入、超 fp32 容差两个量级）、逐位确定（非顺序敏感）。transformers v5 显式传参构造 `Accelerator`、不再写环境变量。
+  source: 'trl #7320（closed；albertvillanova 2026-09-21 root-cause：transformers 4.56.2 `training_args.py` L1867-1873 的发布/读回 + accelerate 1.4.0 `state.py` L866-874 的环境变量回落；明确「测试外真实影响面」= 同进程第二配置或 bare Accelerator：notebook 重跑、bf16 训练后接 fp32 阶段、in-process sweep——单 run 脚本拿到自己配置的精度）。https://github.com/huggingface/trl/issues/7320 ；修复 PR trl #7321（`Restore ACCELERATE_MIXED_PRECISION between tests`，已 merge——修复形状是测试侧 autouse fixture 清理进程态，transformers v5 上游已结构性移除该泄漏）。https://github.com/huggingface/trl/pull/7321'
+  behavior: 无 crash、无 NaN——**显式请求 fp32 的阶段被静默换成 bf16 autocast**：评测/打分/第二阶段拿到的是低精度前向，误差 1e-4 量级、被普遍当作数值噪声。生产暴露面（维护者划定）：同进程多配置工作流（bf16 训练 → fp32 评测/sweep/notebook cell 重跑）；RL 管线里 policy/reference 模型若经不同构建路径（一方被 prepare、一方没有）也可能踩到同型 autocast 不对称。与 NUM.02（bf16/fp16 RL 引擎 mismatch）同族「精度选择的进程级粘性」：那边是两引擎显式配置不同、这边是**环境变量把一个配置的决定泄漏给后续全部配置**；与 KER.06（torch.compile 冻结 float kwarg）同为「首次调用的状态钉死后续语义」，断点一个在编译期常量、一个在进程环境；与 NUM.09（混精 cast 扫过量化参数）同为「dtype 决策越过了配置声明的边界」。
+  discovery: 2026-09-22 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 配置/参数
+        status: unanimous

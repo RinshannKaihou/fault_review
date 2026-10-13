@@ -1,0 +1,57 @@
+id: INF-1339
+legacy_ids:
+- K10.28
+slug: lowbit_pertensor_key_quant_breaks_output
+aliases: []
+title: llama.cpp q4_0/q5_0 KV 量化粒度不足致 GLM 输出破坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: llama.cpp
+    component: q4_0/q5_0 KV cache 量化
+  behavior: q4_0/q5_0 的 KV 量化按张量粒度，无法容纳键上按通道分布的离群值；该机制嫁接自 KIVI 论证，issue 未确凿指向此原因。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: GLM 在 q8_0 KV 下正常，切到 q4_0/q5_0 后输出明显破坏，呈 bit 宽阈值效应；量化误差集中在键通道，值接近参考。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/ggml-org/llama.cpp/issues/19036
+  kind: github_issue
+  resolved_from: 'llama.cpp #19036'
+relations:
+- kind: var
+  target: INF-1267
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `var:kivi_key_perchannel_outlier_granularity` · 触发 `partial` · 置信度 `documented`'
+  mechanism: llama.cpp 中 q4_0/q5_0 的 KV 量化会破坏 GLM 输出，而 q8_0 正常——按张量（per-tensor）的量化粒度无法容纳键上按通道（per-channel）分布的离群值。机制层面嫁接自 KIVI 的按通道键量化论证。
+  source: '`gh`：ik_llama.cpp #1142；llama.cpp #19036 *（保留意见：issue 记录了该行为，但未确凿指向此原因——KIVI 机制为嫁接）*。'
+  behavior: 同一模型在 q8_0 KV 下正常，切到 q4_0/q5_0 后输出明显破坏，呈 bit 宽度阈值效应。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: 受 dtype/bit 宽门控（q8_0 无签名、q4_0/q5_0 有），属 ambiguous。签名是**键通道集中的量化误差，值接近参考**——这一 K/V 不对称是与逐 token 型 fp8 漂移相区分的关键：spectral（键的通道协方差被离群通道主导后失真）与 statistical（逐通道误差分布高度偏斜）可捕获；对 K/V 不做区分的 geometric 全局偏离度量会把它误当作普通量化漂移（model_on）而漏判严重性。
+  repro: partial——对该层缓存的 **K** 施加按张量的低 bit 伪量化（4/5 bit，单一 scale），而 V 保持不变或用更高 bit，复现"键通道离群值被按张量网格压碎"；llama.cpp 的 q4_0/q5_0 块结构不精确复现。
+  locus: eviction-compression
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

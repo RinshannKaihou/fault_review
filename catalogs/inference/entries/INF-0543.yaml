@@ -1,0 +1,52 @@
+id: INF-0543
+legacy_ids:
+- '6.150'
+slug: vllm_swa_store_skip_eagle_tail_plus_one_starvation
+aliases: []
+title: vLLM offload SWA 存储跳过与 eagle 查找差 1 致零命中
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV offload 的 SWA 存储跳过逻辑
+  behavior: _build_store_jobs 按非 eagle 查找窗口只存每段末尾 tail 个 SWA 块，而 _lookup 对 eagle 未验证组要求 tail+1 个连续块，存储侧不变式与 eagle 查找窗口差 1。
+effect:
+  objects:
+  - 性能/资源
+  detail: KV offloading + hybrid SWA + eagle/MTP 推测解码组配齐时，eagle SWA 组每个请求恒为 0 命中并传播为整请求零命中；offload 计数器 bytes out 持续增长、bytes in 恒为零，卸载收益归零且存储无限增长，无报错无警告。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + KV offloading + hybrid SWA + eagle/MTP 推测解码组（配齐即触发；计数器可观测）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-26'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53951
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0530
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（OffloadingConnector 的 SWA store-skip 优化只保留每 alignment 段 trailing `tail` 块，而 eagle 组的 lookup 要求 `tail+1` 连续块（未验证尾块用后即弃）——writer 存 `tail`、reader 要 `tail+1`，合格运行在数学上不存在：eagle SWA 组对每个请求永远 0 命中，KV 无限写入 offload 层永不读回） · Cov: `var:vllm_kv_offload_supply_demand_contract_drift` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`_build_store_jobs` 按「段内只有 trailing `tail = sliding_window_size_in_blocks` 块可被 `_sliding_window_lookup` 命中」跳过 SWA 块存储（DeepSeek V4 100K 上下文省 ~78% 存储）；但 `_lookup` 对 `is_eagle_unverified` 组把 `required_window` 从 `sliding_window_size_in_blocks` 加 1（eagle 尾块持有未验证 token、验证后丢弃）再在命中数上减 1。存储侧不变式以非 eagle lookup 为准，eagle 组的 `tail+1` 请求永不满足 → `num_hit_blocks == 0 → return 0` 把零命中传播到整个请求。DGX Spark GB10 ×2、DeepSeek-V4-Flash（1 full-attention + 4 SWA 组，其一为 eagle）；上游 main 代码未修改。'
+  source: 'vLLM #53951（2026-08-26 closed as completed，anemll dspark-vllm-gx10 fork 报告、代码同上游；附两侧代码行引用）。https://github.com/vllm-project/vllm/issues/53951'
+  behavior: '**无 crash、无警告**——offload 计数器只显示 bytes out 持续增长、bytes in 恒零；eagle 组的已卸载 KV 永远不被读回（正确性无损但卸载收益归零 + offload 存储无限增长）。6.137（offload supply/demand 契约漂移）的 eagle 变体：与 6.143–6.147 的 hybrid「(n−1) 边界」族同构——**优化假设的查询窗口与真实查询窗口差 1**，差 1 即从部分命中变为全空。'
+  trigger_surface: vLLM + KV offloading + hybrid SWA + eagle/MTP 推测解码组（配齐即触发；计数器可观测）
+  discovery: 2026-08-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

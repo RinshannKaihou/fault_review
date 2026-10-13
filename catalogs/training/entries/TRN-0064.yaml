@@ -1,0 +1,53 @@
+id: TRN-0064
+legacy_ids:
+- CKPT.15
+slug: parallel_ckpt_reader_swallows_shard_errors
+aliases: []
+title: ms-swift 并行 ckpt reader 吞掉 shard 读取异常
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: ms-swift
+    component: 并行 ckpt reader patch
+  behavior: 并行 ckpt reader patch 中 concurrent.futures.wait() 只等 worker 不取结果，读 shard 的异常被吞掉，reader 无条件返回成功的 torch.futures.Future。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: dcp.load() 报成功，未加载的 tensor 停在 sentinel 值；resume「成功」后训练从 sentinel/旧值出发静默跑偏，无 crash 无日志。缺数据文件或注入 corrupted shard 异常均被吞。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10045
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0054
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `shared` · Cov: `var:dist_ckpt_strictness_assume_ok` · 置信度 `documented`'
+  mechanism: ms-swift 的 Megatron 并行 ckpt reader patch 里 `concurrent.futures.wait()` 只等 worker 不取结果——读 shard 的异常（缺数据文件、shard 损坏）被吞掉，reader 无条件返回 successful `torch.futures.Future`：`dcp.load()` 报成功，未加载的 tensor 停在 sentinel 值。修复 = wait 后逐 worker 取 result，把异常以 `CheckpointException` 传给 caller。
+  source: 'ms-swift PR #10045（已合并；CPU DCP save/load + `MCORE_READER_MAX_WORKERS=2` 复现：缺第二个 tensor 数据文件时旧代码 load 成功、tensor 保持 sentinel；注入 `RuntimeError(''corrupted shard'')` 同样被吞）。https://github.com/modelscope/ms-swift/pull/10045'
+  behavior: resume「成功」但部分权重从未从盘上读入——训练从 sentinel/旧值出发静默跑偏，无 crash 无日志。与 CKPT.05（strictness 吞 unexpected key）同为加载器「自报成功」家族：那边吞键、这边吞异常；与 CKPT.03（missing key 随机初始化）下游同型。
+  discovery: 2026-09-06 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

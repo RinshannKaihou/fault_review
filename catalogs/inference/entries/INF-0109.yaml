@@ -1,0 +1,55 @@
+id: INF-0109
+legacy_ids:
+- '1.110'
+slug: vllm_xpu_battlemage_persistent_vram_state_corruption_token0
+aliases: []
+title: vLLM XPU 并发 decode 后持久损坏，输出全为 token 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: W4A16 内核（head_dim 256）
+  behavior: 根因未定位：持续并发 decode 后，权重或持久 workspace 等长寿命 VRAM 状态疑被原地损坏；两张物理卡复现排除单卡硬件故障，head_dim 256 × W4A16 内核组合可疑。
+effect:
+  objects:
+  - 输出内容
+  detail: Arc Pro B70 上 Qwen3.8-27B W4A16 持续并发 decode 数小时（或 12 并发 10 分钟）后输出全变 token 0（“!”），HTTP 200、健康检查与 dmesg 正常；负载清空后新请求仍坏，重启重载权重才恢复；生产 30 小时命中 4 次。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM XPU + Arc Pro B70（Battlemage）+ W4A16 + head_dim 256 27B + 持续并发 decode（hw_specific；时序依赖）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53480
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（W4A16 27B（head_dim 256）在 Intel Arc Pro B70 上持续并发 decode 后**长寿命 VRAM 状态（权重或持久 workspace）被原地损坏**——全部输出坍缩为 token 0（"!"）；负载回落后新请求仍坏，引擎重启（权重重载）才恢复；HTTP 200、finish_reason=length、零 dmesg、/v1/models 正常） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: vLLM XPU nightly（0.21.1.dev18）单卡 Arc Pro B70（Battlemage）服务 Qwen3.8-27B W4A16（compressed-tensors group 128）：持续并发 decode 数小时后（曾 10 分钟内被 12 并发混合流量触发）输出退化为只发 "!"（token 0）。损坏**持久**：负载清空后 fresh 单请求仍只出 token 0，直到重启；重启即完全恢复（权重重载）——指向权重或持久 workspace 这类长寿命 VRAM 状态被原地毒化，而非 per-request 状态。every-token-0 签名提示 logits 坍缩为 NaN/零（argmax 退化为 index 0）。两张不同物理卡（VFIO passthrough）复现排除单卡硬件故障；同硅上 head_dim 128 的 14B/8B 兄弟模型连续数周评分负载零损坏——head_dim 256 × W4A16 内核组合可疑。生产 30 小时命中 4 次。
+  source: 'vLLM #53480（2026-08-23 open，含 4 次生产命中时间线、双卡复现与 head_dim 对照）。https://github.com/vllm-project/vllm/issues/53480'
+  behavior: '**无 crash、静默且持久**的输出损坏——健康信号全绿（200/容器健康/模型列表正常），损坏跨请求存活直到重启。与 7.56（同硅 AutoRound int4 并发 garbage，瞬态、请求级）构成 Battlemage XPU 并发损坏家族：本条持久 VRAM 状态、彼条并发门控瞬态。属「**并发触发后存活的持久 VRAM 状态损坏**」新子签名（SDC 形态但软件内核可疑）。'
+  trigger_surface: vLLM XPU + Arc Pro B70（Battlemage）+ W4A16 + head_dim 256 27B + 持续并发 decode（hw_specific；时序依赖）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: cause.subsystem 维持 量化：根因未定位，原文唯一的指向是“head_dim 256 × W4A16 内核组合可疑”，按 rule 功能域优先（缺陷只出现在量化路径时选 量化）取 量化。保留意见：若后续定位到 head_dim 256 的 attention kernel 本身，应改 算子/内核。effect.objects 维持 输出内容（logits 坍缩原文只是“提示”）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

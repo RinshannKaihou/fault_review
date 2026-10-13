@@ -1,0 +1,51 @@
+id: INF-0370
+legacy_ids:
+- '5.23'
+slug: sglang_dflash_mamba_state_cache_silent_concurrency_cap_misread_as_bandwidth
+aliases: []
+title: SGLang DFLASH 下 Mamba 状态池静默把并发钳到 2
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: Mamba state 池容量与并发钳制
+  behavior: hybrid KDA + DFLASH 下每请求需 1+D 个 Mamba state slot，内存紧张时推导的 max_mamba_cache_size 过小，调度器据此静默压低有效并发，仅打 info 日志。
+effect:
+  objects:
+  - 性能/资源
+  - 指标/日志
+  detail: GLM-5.3-Flash + DFLASH（D=5）在 2×DGX Spark TP2 上 --max-running-requests 8 被接受、/get_server_info 报 8，实际并发仅 2；c8 吞吐 47.3 vs 修正后 80.3 tok/s，平台期易被误读为带宽上限。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + hybrid KDA/Mamba 模型 + DFLASH/EAGLE 类推测解码 + 静态内存紧张（大权重/小 VRAM）（config 组合即可触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36889
+  kind: github_issue
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（hybrid-KDA 模型 + DFLASH 推测解码下每请求需 `1 + num_draft_tokens` 个 Mamba state slot，静态内存紧张时派生的 `max_mamba_cache_size` 远低于 `max_running_requests × (1+D)`——调度器**静默把有效并发压到 2**，仅一条 info 级日志；`--max-running-requests 8` 照常接受、`/get_server_info` 报 8，吞吐曲线平坦极易被误读为硬件带宽天花板） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: GLM-5.3-Flash（34 层 KDA）+ `--speculative-algorithm DFLASH`（D=5）在 2× DGX Spark（GB10，TP2，320B NVFP4 权重相对 VRAM 偏大）下：`max_mamba_cache_size` 解析为 10 slot → 每请求 5 slot（1+D）→ 有效并发被压到 2，但仅打 info 日志 `max_running_requests is capped to 2 by the mamba state cache (max_mamba_cache_size=10, 5 state slots per request.)`。c-sweep 实测 c8 时 47.3 vs 修正后 80.3 tok/s（+75%）、c12 时 48.8 vs 85.4——整个吞吐平台期是配置钳制而非带宽极限。修正方式：`--max-mamba-cache-size 40 --mamba-ssm-dtype bfloat16 --mem-fraction-static 0.90`（bf16 ssm 减半 per-slot 成本，单流解码代价约 6% accept-length 损失）。报告者称已在一份公开 recipe 中把该平台误读为带宽天花板发布。
+  source: 'SGLang #36889（2026-08-28 open，含 c-sweep 吞吐对照表与修复 flag 组合）。https://github.com/sgl-project/sglang/issues/36889'
+  behavior: '**无 crash、无输出损坏、无 WARNING**——服务一切"看起来正常"（并发上限被接受、server_info 报配置值），唯独吞吐被静默钳制在远低于硬件能力的水平；唯一痕迹是一行 info 日志。属「**推测解码派生资源需求的静默并发钳制**」新子签名：活性/容量类故障（C.6 族），与 6.136（hidden-states KV budget 高估启动拒绝——该条 fail-loud、本条 fail-silent）构成 Mamba state 预算的两个极端。'
+  trigger_surface: SGLang + hybrid KDA/Mamba 模型 + DFLASH/EAGLE 类推测解码 + 静态内存紧张（大权重/小 VRAM）（config 组合即可触发）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

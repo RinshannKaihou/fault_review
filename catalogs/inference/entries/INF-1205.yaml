@@ -1,0 +1,60 @@
+id: INF-1205
+legacy_ids:
+- '13.37'
+slug: bug_rmsnorm_eps
+aliases: []
+title: RMSNorm eps 读错数量级致激活沿深度被压缩
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: 通用
+    component: RMSNorm variance_epsilon
+  behavior: RMSNorm 的 variance_epsilon 被设成异常大的值（健康值约 1e-6，最大取 1.0），对应从配置文件读错一个数量级。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: rsqrt(var+eps) 被 eps 主导，受影响 norm 之后的隐状态整体缩小并沿深度累积；eps=1.0 时输出显著劣化，eps=1e-3 在多数层上则可能几乎无感。余弦类与对整体缩放不变的谱度量会漏检。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: rmsnorm eps patch
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off` · Cov: `NEW`（本项目早期实测条目） · 触发 `yes` · 置信度 `documented`'
+  mechanism: 把 RMSNorm 的 `variance_epsilon` 设成异常大的值（健康值通常为 1e-6，网格最大取 1.0，即 6 个数量级的放大）。按 `where` 收集 norm 对象：各层 `input_layernorm` / `post_attention_layernorm`，或最终 `model.norm`——逐个保存并覆写，退出时还原。注意配置与实现之间的取值名映射必须显式核对，否则会静默退化为 no-op（见复现方式）。
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。
+  behavior: '`eps` 增大等于对归一化后的激活整体缩小（`rsqrt(var + eps)` 被 eps 主导），`eps = 1.0` 时该 norm 几乎变成一个恒定缩小算子，输出显著劣化；`eps = 1e-3` 在多数层上则可能几乎无感——是"从配置文件里读错一个数量级"的经典抽象。'
+  trigger_surface: rmsnorm eps patch
+  signature: '`infra_off`，形态是**沿深度累积的幅度压缩**：受影响 norm 之后的所有隐状态整体缩小，geometric 族的 `hidden_norm_distribution`（direction=`high`，但此处是往低走）与 Mahalanobis 都能命中大 eps；trajectory 族看到范数随深度的增长曲线被压平。会漏检的是：任何**对尺度不敏感**的度量——余弦类（`layerwise_cosine_drift` 在纯缩放下几乎不变）、以及标准化后再算的 spectral 族（`effective_rank` 对整体缩放不变），这使它成为"必须保留幅度信息"的反例。'
+  repro: 只改属性（`norm.variance_epsilon`），无 hook、无权重拷贝；注意 `where` 取值的名称映射，否则会得到一条看起来"完全无信号的故障"，实则根本没注入。
+  相关条目: 编目中无 `var:13.37` 条目；**13.2 `bug_prenorm_postnorm_swap`** 与 **13.3 `bug_final_norm_missing`** 均被判为 NEW，Coverage 明确写 "bug_rmsnorm_eps only perturbs epsilon"（前者换的是 norm 的**位置**，后者是**整体省略** `model.norm`）。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7
+    rewritten:
+    - detail

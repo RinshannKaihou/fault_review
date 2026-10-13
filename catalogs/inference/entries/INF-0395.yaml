@@ -1,0 +1,55 @@
+id: INF-0395
+legacy_ids:
+- '6.2'
+slug: vllm_multimodal_cachekey_collision
+aliases: []
+title: vLLM 多模态前缀缓存 key 忽略图像且缺租户隔离
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 前缀缓存 key 与租户隔离
+  behavior: prefix/radix cache 的 key 只 hash 文本 token、忽略多模态输入（或用截断 SHA256 + NCHF），且 radix/APC 缺少租户隔离，相同文本 + 不同图片/租户共用 key 而复用错误 KV。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 多模态或共享前缀负载下静默、间歇地产生「错图/错租户」输出；文本 token 的隐状态计算本身正确，只是 cross-attention 读到错误的图像或序列 KV；缺少租户隔离还构成跨租户侧信道。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 特性路径：需对应模型/版本 pin + 场景构造
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/20261
+  kind: github_issue
+  resolved_from: 'vLLM #20261'
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`model_on` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: prefix/radix cache 的 key 只 hash 了 TEXT token 而忽略多模态输入（或使用了截断的 SHA256 + NCHF），于是「相同文本 + 不同图片/不同租户」得到相同的 key → 复用了错误的 KV。本条为 MERGED 条目，合并的子故障为：(a) prefix-cache ignores image（前缀缓存 key 不含图像内容）；(b) radix/APC no per-tenant isolation（radix/APC 缓存缺少按租户隔离，构成 cross-tenant side-channel 跨租户侧信道）。
+  source: 'vLLM #20261; NDSS 2026 "Cache Me, Catch You"; NDSS 2025 "I Know What You Asked"。'
+  behavior: 在多模态或共享前缀的工作负载上产生「错图 / 错租户」的输出。静默、间歇。
+  trigger_surface: vLLM 特性路径：需对应模型/版本 pin + 场景构造
+  signature: 关系型（relational）—— 文本 token 的隐状态计算本身正确，属于合法 embedding，只是 cross-attention 读到了陈旧/错误的图像或序列 KV，因此判定为 model_on。只能靠对 cross-modal KV block 的关系性度量捕获；**基于文本 token 几何的隐藏态检测器（geometric/spectral）原理上漏检**。替代检测手段：cache key 必须覆盖多模态输入的审计、按租户隔离的缓存命名空间、以及绕过缓存的重算对拍。
+  repro: 不适用（多模态 / 服务栈专有），纯文本单模型路径无对应复现位置。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - detail

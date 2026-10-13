@@ -1,0 +1,53 @@
+id: INF-1208
+legacy_ids:
+- '13.40'
+slug: vllm_mtp_predictor_quant_config_inheritance_pack_quantized_target_dense_bf16_draft_load_fail
+aliases: []
+title: vLLM MTP draft 继承 target 量化配置致密集分片加载崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: MTP predictor 量化配置继承
+  behavior: MTP 层沿用 target 的 quant_config 建为 pack-quantized；既有 workaround 仅覆盖 modelopt_fp4/GPTQ dynamic，不覆盖 MTP 留密集却未列入 ignore 的情形。
+effect:
+  objects:
+  - 可用性/进度
+  detail: vLLM v0.30 以 mtp 推测解码、target 为 compressed-tensors pack-quantized 且 MTP head 为密集 BF16 分片时，启动加载确定性崩溃（ValueError：无 fc.weight）；错误只报缺模块名，无诊断指引。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM v0.30 + compressed-tensors pack-quantized target + 密集 BF16 MTP 分片 + mtp speculative config（config：checkpoint 形态+spec 组合）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58807
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1157
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（`--speculative-config ''{"method":"mtp",...}''` 在 target checkpoint 为 **compressed-tensors pack-quantized**、MTP head 以**密集 BF16** 独立分片（`model-mtp-bf16.safetensors`、15 个 `mtp.*.weight` 纯净名）提供时**加载期崩溃**：`Qwen3_5MultiTokenPredictor.__init__` 从 **target 的** `vllm_config.quant_config` 构造 `fc`/decoder 层——loader 期待 packed 参数名（`weight_packed`）而 checkpoint 提供密集名 → `ValueError: There is no module or parameter named ''fc.weight''`（`models/utils.py _load_module`）。文件内已有两条同族 workaround 均不覆盖 compressed-tensors：`modelopt_fp4`（fc 存 BF16 未列 exclude，PR #38650）与 GPTQ `dynamic -:mtp` 模式（全 MTP 层不量化）；本 checkpoint 量化器把 MTP head 留密集却**未写进 `ignore` 列表**（ignore 只含 visual/linear_attn/lm_head）——vLLM 按 target 配置把 MTP Linears 建 pack-quantized、密集名无法解析。确定性启动崩溃（v0.30.0 官方镜像、`--load-format dummy` 无关）） · Cov: `var:sglang_glm5_next_mtp_skip_guard_raw_name_language_model_prefix_bypass_mtp_weights_into_main_model`（12.41 MTP/检查点结构错配族——本条在量化配置继承维度：target 量化配置被无差别套到密集 draft 结构；issue 自证为 #51581 DFlash2 `.weight` 切片同族 cousin） · 触发 `config` · 置信度 `documented`'
+  mechanism: dense-draft-on-quantized-target 家族的第三种量化器形态（ModelOpt FP4 / GPTQ dynamic 已有 workaround、compressed-tensors pack-quantized 无）：检测路径可从 safetensors index 的纯 `mtp.*.weight` 名或独立 bf16 MTP 分片判定，镜像既有两条 workaround 建 MTP 为不量化。
+  source: 'vLLM #58807（2026-09-25 open，含崩溃栈、checkpoint 三重证据（config.json ignore 列表/index 15 张量名/独立分片）、两条既有 workaround 对照与修复提案）。https://github.com/vllm-project/vllm/issues/58807'
+  behavior: fail-loud 加载崩溃（引擎不到运行期）——非静默错值；收录在**结构模式**：量化配置继承自 target 是 draft 加载的默认假设，第三种量化格式缺口使"量化器合法输出的 checkpoint"在 vLLM MTP 路径不可服务，且 ignore 列表不完整时无诊断指引（错误只报缺模块名）。
+  trigger_surface: vLLM v0.30 + compressed-tensors pack-quantized target + 密集 BF16 MTP 分片 + mtp speculative config（config：checkpoint 形态+spec 组合）
+  discovery: 2026-09-25 每日扫描。
+  回访（2026-09-27）: '#58807 新增 1 条评论（09-27 he-yufeng）——已认领修复：检测读 checkpoint safetensors index 的实际 tensor 名（`mtp.*` 是否带 `weight_packed` 等量化后缀）决定 predictor 整体量化与否，镜像 GPTQ dynamic/modelopt_fp4 先例；单文件 checkpoint 无 index 保持现行为；PR 将附红绿测试。修复在途，判定不变。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

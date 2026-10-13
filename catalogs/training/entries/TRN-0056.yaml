@@ -1,0 +1,75 @@
+id: TRN-0056
+legacy_ids:
+- CKPT.07
+slug: dead_or_shadowed_arg_silent_noop
+aliases: []
+title: 配置参数声明未消费或被硬编码覆盖而静默无效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 配置/参数
+    stack: ms-swift
+    component: mtp_shared_weights 死参数
+  behavior: 参数声明后从未被消费（死参数）或被硬编码覆盖：ms-swift --mtp_shared_weights 无 consumer；verl 用硬编码 value_model 覆盖 critic model_type；另有多个同型键。
+effect:
+  objects:
+  - 模型权重
+  - 性能/资源
+  detail: 无报错、无日志差：ms-swift 训出 N 层独立 MTP 权重而非部署用的单层重复 drafter；verl 自定义 critic 引擎静默退回 stock；SP、FSDP2、router replay 等设置静默不生效，曾被误读成显存容量问题。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-19'
+remarks: subsystem 缺「配置/参数管线」：死参数与被硬编码覆盖的参数横跨 MTP 结构、critic 引擎、router replay、SP、FSDP 策略、chat template 等多个功能域，按首个实例归 模型定义 不能代表整条。
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/9936
+  kind: github_issue
+- url: https://github.com/verl-project/verl/issues/7460
+  kind: github_issue
+- url: https://github.com/verl-project/verl/issues/7463
+  kind: github_issue
+- url: https://github.com/verl-project/verl/issues/7462
+  kind: github_issue
+- url: https://github.com/verl-project/verl/issues/7476
+  kind: github_issue
+- url: https://github.com/huggingface/trl/issues/6791
+  kind: github_issue
+- url: https://github.com/verl-project/verl/pull/7597
+  kind: github_pr
+- url: https://github.com/verl-project/verl/issues/7662
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0055
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `pretrain/rl` · Cov: `var:config_default_swallows_cli_override` · 置信度 `documented`'
+  mechanism: CKPT.06 的同族变体——配置面上的参数**声明了但从未被消费**（死参数），或被内部硬编码默认值**覆盖**（shadowed），两种都静默无效。实例一：ms-swift `--mtp_shared_weights` 全库只有定义行、无任何 consumer，用户以为在训部署对齐的单层重复 MTP drafter，实际得到 N 层独立权重（serving 引擎从不执行这些层）。实例二：verl `critic.model.model_type` 在 resolved config 里正确，`RayPPOTrainer.init_workers()` 构造 TrainingWorkerConfig 时用硬编码 `value_model` 覆盖，`EngineRegistry.new()` 静默选回 stock 引擎。
+  source: 'ms-swift #9936（pip download + grep 全库复现）。https://github.com/modelscope/ms-swift/issues/9936 ；verl #7460（sentinel model_type 复现）。https://github.com/verl-project/verl/issues/7460 ；同族新实例（2026-08-20）：verl #7463 `actor.router_replay.mode` 是死 key，worker 只读 `actor.{megatron,veomni}.router_replay.mode`，官方 Ascend 文档指向死 key，官方路径设 R3 也静默 `disabled`，`experimental/separation` 还从死 key 读 R2/R3 冲突分支。https://github.com/verl-project/verl/issues/7463 ；verl #7462 critic 批处理键从未复制进 TrainingWorkerConfig（`use_dynamic_bsz`/`ppo_micro_batch_size_per_gpu`），v1 trainer 另用错误的赋值目标覆盖 token budget，文档键 `forward_max_token_len_per_gpu` 从未被读。https://github.com/verl-project/verl/issues/7462 ；verl #7476 `ulysses_sequence_parallel_size` 对 Qwen3.5 静默不生效（per-rank 激活仍全长），allocator snapshot 才发现。https://github.com/verl-project/verl/issues/7476 ；trl #6791（2026-08-21 补）：dict 型 config 字段（如 `--dataset_kwargs ''{"skip_prepare_dataset": true}''`）无法从 CLI 设置——`HfArgumentParser._parse_dataclass_field` 只特判 list，dict 落入通用分支被当成标量，CLI 上游限制让「跳过数据集预处理」这类开关只能进 `model_init_kwargs`，误用即静默不生效。https://github.com/huggingface/trl/issues/6791 ；verl #7597（2026-08-30 补）：嵌套 `actor.fsdp_config.strategy` 冲突值在 main 上静默丢弃——真源是顶层 `actor.strategy`，嵌套写法（#7540 报告命令即用）看起来设了 FSDP2、实际跑 FSDP1，19 个声称 FSDP2 的官方 launcher 同样踩中。https://github.com/verl-project/verl/pull/7597 ；verl #7662（2026-09-02 补）：`multi_turn.use_inference_chat_template`（文档推介为「rollout 对齐生产推理」的开关）与默认 `strict` 的 `multi_turn.tokenization_sanity_check_mode` 唯一运行时消费者都在 `AsyncRolloutRequest`——该类在 main 上仅被测试引用，活跃 agent-loop 路径不读这两个键，设置后无行为变化也无警告；文档推荐的 sanity check 同样实际不跑。https://github.com/verl-project/verl/issues/7662'
+  behavior: 无报错、无日志差。ms-swift 侧训出的 MTP 结构与部署结构错位；verl 侧自定义 critic 引擎静默退化。同 CKPT.06：错在构建期，加载侧检查救不回。#7476 实例：SP 无效被误读成显存容量问题，浪费整簇排查。
+  discovery: 2026-08-19 每日扫描（实例三/四/五 2026-08-20 补）
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 配置/参数
+        status: panel7
+    uncertain:
+    - effect

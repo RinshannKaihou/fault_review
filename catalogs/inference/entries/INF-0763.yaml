@@ -1,0 +1,52 @@
+id: INF-0763
+legacy_ids:
+- '7.91'
+slug: sglang_w8a8_block_fp8_matmul_triton_unsupported_k_tile_silently_wrong
+aliases: []
+title: block FP8 Triton matmul 缺 tile 整除守卫致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: block FP8 Triton tile 守卫
+  behavior: w8a8_block_fp8_matmul_triton 不校验 scale 块（32）与 BLOCK_SIZE_K（64）的整除关系，静默接受手工 BK64 配置，一个 K tile 跨两个 scale 块只应用一个尺度。
+effect:
+  objects:
+  - 数值结果
+  detail: block_size=[32,32] 输入配手工 BLOCK_SIZE_K=64 时，H200 确定性示例 512 个输出元素全为 64 而非 288（BK32 正确）；量级貌似正常，无 NaN、无 assert。默认由 tuner 选配置的服务路径不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang + w8a8_block_fp8 Triton matmul + 手动 BLOCK_SIZE_K=64 + block_size=[32,32]（partial：非默认调优路径；H200 实测）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39626
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0731
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（SGLang `w8a8_block_fp8_matmul_triton`（python/sglang/kernels/ops/quantization/fp8_kernel.py）对 `block_size=[32,32]` 量化的输入**静默接受**手工指定的 `BLOCK_SIZE_K=64` tile 配置并返回错误结果：确定性示例中 512 个输出元素全部为 **64 而非 288**（BK32 正确）。官方 tuner 会过滤该组合，但内核本身无 tile/K 块整除性守卫——手动提供配置（性能调优/移植场景）即中招） · Cov: `var:sglang_mxfp4_moe_runner_dispatch_else_swallow_nine_backends_fail_late`（7.58 量化内核配置守卫缺失族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: block-FP8 的 scale 块（32）与 kernel K tile（64）整除关系未被校验——BK64 tile 跨两个 scale 块只应用一个尺度，输出系统性错误；错误值为"合理量级"（64 vs 288）不触发 NaN/inf，无 assert。
+  source: 'SGLang #39626（2026-09-15 open，含 H200 确定性复现（三组调用 BK64=64/BK32=288 稳定）、上游模块 commit 定位与"官方 tuner 过滤、手动配置无守卫"影响域界定）。https://github.com/sgl-project/sglang/issues/39626'
+  behavior: 无 crash、无 NaN——输出元素全错但量级貌似正常（可被小容差评测误判为"精度损失"）；默认服务路径（tuner 选配置）不受影响，手工调优/移植配置静默中招。7.58（mxfp4 runner else 吞 9 值 fail-late）之后量化内核配置守卫族新成员：本条在 **tile/scale 块整除性**维度、错误呈"安静的正确量级"。
+  trigger_surface: SGLang + w8a8_block_fp8 Triton matmul + 手动 BLOCK_SIZE_K=64 + block_size=[32,32]（partial：非默认调优路径；H200 实测）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

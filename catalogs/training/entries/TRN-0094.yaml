@@ -1,0 +1,60 @@
+id: TRN-0094
+legacy_ids:
+- DATA.12
+slug: sp_shard_cuts_causal_lm_labels
+aliases: []
+title: AutoSP 切 labels 丢边界监督，分片 loss 等权平均
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: AutoSP labels 序列分片
+  - subsystem: 损失计算
+    stack: deepspeed
+    component: AutoSP 分片 loss 聚合
+  behavior: AutoSP 按序列维切 input_ids 时对 shift-by-one 的 labels 朴素同维切分，每片丢最后一个 token 的监督并在边界错位；各分片独立 mean 后等权平均，忽略各片有效 token 数。
+effect:
+  objects:
+  - 训练信号
+  - 训练样本流
+  detail: SP>1 时无 crash：每个分片边界丢监督、边界 token 监督错位、分片 loss 加权错值，预训练 loss 带结构性 bias，与 SP=1 基线不可比。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8457
+  kind: github_pr
+relations: []
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `pretrain/sft` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'DeepSpeed AutoSP（序列并行编译路径）按序列维切分 `input_ids`，但 causal-LM 的 labels 是 `input_ids` 的 **shift-by-one**——序列分片边界处，本片的 label[t+1] 属于**下一片**的 token：朴素按同维度切 labels 使每个分片**丢失最后一个 token 的监督**并在边界制造跨片错位监督；且各分片独立 `cross_entropy(reduction=''mean'')` 再对分片等权平均，忽略各片有效 token 数（ignore_index 掩码量不同）。修复（PR #8457）= 定位 `labels` 的 shifted 依赖链、对 shifted label 节点按 `make_contiguous` 正确重切 + `aggregate_loss` 按 valid-token 计数全局归约；同时对不可表达配置（class-weighted / 非 mean reduction / sharded key dim 的 attention mask）从「静默错值」改为 fail-fast。PR 描述明言修复对象是「silently dropping tokens or entering invalid collectives」。'
+  source: 'DeepSpeed PR #8457（2026-09-08；AutoSP 编译器正确性：跨 sequence-shard 边界保留 causal-LM 目标 + 按有效 token 数聚合分片 loss + 校验 mesh/头数布局）。https://github.com/deepspeedai/DeepSpeed/pull/8457'
+  behavior: 无 crash——每个 SP 边界丢监督 + 边界 token 监督错位 + 分片 loss 加权错值，SP>1 的预训练 loss 带结构性 bias，与 SP=1 基线不可比。与 DATA.07（变长 packing off-by-one 丢尾样本）同族：**数据切分边界 vs 目标对齐契约**的 off-by-one；与 LOSS.08（mean-of-means 归约）共享「分片/分批独立归一再等权平均」的病根；与 PAR.08（AutoTP 漏插 collective）互为 AutoSP/AutoTP 编译路径对偶的同类覆盖缺口。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 训练样本流
+        to: 训练信号
+        status: panel7

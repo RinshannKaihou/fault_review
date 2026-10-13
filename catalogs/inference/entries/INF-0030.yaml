@@ -1,0 +1,65 @@
+id: INF-0030
+legacy_ids:
+- '1.30'
+slug: ttmetal_fpu_reduce_10bit_mantissa_truncation_topk_tiebreak
+aliases: []
+title: FPU reduce 截断尾数致 tie-break argmax 选错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: greedy tie-break 索引归约
+  behavior: tie-break 用 float32 ttnn.min 求并列最大值的最低全局 index；FLOAT32 min 走 FPU reduce 路径，源寄存器截到 10-bit 尾数，100k 量级词表 index 被舍入成不存在的值。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 存在并列最大值时，后续 eq() 匹配不到任何 index、winner mask 全零，argmax 静默返回 position 0 而非最低全局 index 的候选，影响采样与 top-k 选择；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal，FPU reduce 路径；非 NVIDIA 环境
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-05'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/pull/52177
+  kind: github_pr
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（FPU reduce 路径截断源寄存器到 10-bit mantissa → 索引比较静默失败 → 错误 argmax） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: Tenstorrent 上 `_adjust_values_for_tiebreak` 用 `ttnn.min(masked_idx_float32, dim=3, keepdim=True, sub_core_grids=scg)` 在并列最大值中找最低 global index。但 `ttnn.min` 对 FLOAT32 张量走 **FPU reduce 路径**（只有 int32 与 opt-in accurate fp32 mean 走 SFPU，见 `reduction/generic/device/common.hpp` 的 `use_sfpu_reduce_path`）。FPU 把源寄存器截断到 **10-bit mantissa**，所以 100k 量级的词表 index 回来被舍入到一个**不等于任何实际 index 的值**。后续 `eq()` 匹配不到任何东西 → winner mask 全零 → argmax 退回 array position 0 而非最低全局 index 候选。修复：tie-break 的 index reduce 改用 int32（而非 float32）。
+  source: 'tt-metal PR #52177（2026-08-05 closed，reland of #50687 reverted by #52088）。组件：`ttnn.reduce group` / greedy tie-break index reduce。https://github.com/tenstorrent/tt-metal/pull/52177'
+  behavior: 无 crash、无 NaN。top-k / argmax 在存在并列（tie）时静默返回错误候选（position 0 而非最低全局 index），影响采样、top-k 选择等依赖 tie-break 正确性的路径。属「FPU reduce mantissa 截断 → 索引比较静默失败 → 错误 argmax」新子签名——硬件 reduce 路径精度限制导致的静默数值/选择错误。
+  trigger_surface: Tenstorrent TT-Metal，FPU reduce 路径；非 NVIDIA 环境
+  discovery: 2026-08-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 解码/采样。原文修复是“tie-break 的 index reduce 改用 int32”，改的是调用方 _adjust_values_for_tiebreak（greedy tie-break），而 FLOAT32 走 FPU reduce 是 ttnn.min 的既定路径（原文引 use_sfpu_reduce_path），算子本身不改；按 rule 1 功能域优先，缺陷只在 greedy 采样 tie-break 路径上。保留意见：原文未写明该函数所在模块。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 算子/内核
+        status: unanimous
+      effect:
+        from: 输出内容
+        to: 数值结果
+        status: unanimous

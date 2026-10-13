@@ -1,0 +1,50 @@
+id: INF-0199
+legacy_ids:
+- '1.200'
+slug: ttmetal_loss_preallocated_output_repurposed_as_unreduced_intermediate
+aliases: []
+title: ttnn.mse_loss/l1_loss 把预分配输出当作未归约中间结果
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: tt-metal
+    component: loss_function 预分配输出处理
+  behavior: SUM/MEAN 归约模式下把 optional_output_tensor 直接转发给 ttnn::subtract 作逐元素输出，sum/mean 另分配新 tensor 作返回值，未把归约结果写回预分配输出。
+effect:
+  objects:
+  - 训练信号
+  detail: 预分配归约后标量形状时 subtract 形状失配直接 crash；预分配全输入形状时调用方 tensor 里是未归约的逐元素平方/绝对差，无警告，读该 tensor 的训练循环拿错误 loss 反传；两形态均确定复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn.mse_loss/l1_loss + SUM/MEAN 归约 + 预分配 output_tensor（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56295
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.mse_loss`/`ttnn.l1_loss` 的 `reduce_mode` 为 SUM/MEAN 时，`optional_output_tensor` 参数被**直接转发给 `ttnn::subtract`** 作为 elementwise 输出而非最终归约结果：调用方预分配归约后标量形状（`[1,1,32,32]`）→ subtract 形状失配致命 crash；预分配全输入形状 `[B,C,H,W]` → subtract 把**未归约的逐元素平方/绝对差**写进调用方的输出 tensor，而 `ttnn::sum`/`ttnn::mean` 另分配新 tensor 作返回值——调用方手里拿的是静默中间差值，永远等不到归约后的 loss。双形态均 100% 确定复现、无警告） · Cov: `NEW`（预分配输出被挪用为中间缓冲、返回值与输出 tensor 分叉子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`ttnn/cpp/ttnn/operations/loss/loss.cpp` 的 `loss_function` 未在归约分支先做 elementwise 差再 copy 回 `output_tensor`；正确契约应为返回值与预分配输出一致（经 `ttnn::copy`）。'
+  source: 'tt-metal #56295（2026-09-11 open，bug+community label，含双形态最小复现脚本与源码位点）。https://github.com/tenstorrent/tt-metal/issues/56295'
+  behavior: 形态 1 fail-loud crash；形态 2 **无 crash 静默 SDC**——调用方读走逐元素差值当作 loss（均值/求和语义完全丢失），训练循环拿错误 loss 反传。1.184（unary 预分配形状守卫自比较）之后"预分配输出契约"族新成员：本条是输出被当中间缓冲复用、且返回值/输出双轨分叉。
+  trigger_surface: tt-metal ttnn.mse_loss/l1_loss + SUM/MEAN 归约 + 预分配 output_tensor（hw_specific）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

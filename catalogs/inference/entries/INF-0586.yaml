@@ -1,0 +1,55 @@
+id: INF-0586
+legacy_ids:
+- '6.193'
+slug: sglang_glm53flash_dsa_hicache_host_roundtrip_corruption_no_spec
+aliases: []
+title: SGLang HiCache 往返未恢复 DSA index 缓冲致生成损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HiCache 往返 DSA index 缓冲
+  behavior: HiCache 往返只恢复 KV 与 recurrent state，不备份/恢复 DSA target+draft index 缓冲；prefix-cache 分裂落在压缩组内时，不同后缀共享的压缩 index 行互相覆写。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: SGLang + GLM-5.3-Flash（DSA）开启 --hicache-size/--hicache-ratio 后，命中 host 往返 prefix 的请求静默生成损坏：掉 tool call、退化重复循环，cache 却报恢复成功；关闭 EAGLE/MTP 仍复现，只影响部分请求。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + GLM-5.3-Flash（DSA）+ `--hicache-size`/`--hicache-ratio`（host offload 开启即暴露）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38031
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_kv_offload_days_uptime_block_not_found_crash
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（GLM-5.3-Flash（DSA 打包 KV / `DSATokenToKVPool`）+ HiCache host 层卸载：prefix 经 device→host→device 往返后生成被损坏——**掉 tool call、退化重复循环**；**推测解码不是必要条件**（EAGLE/MTP 全关仍复现）——HiCache 单独即坏） · Cov: `var:vllm_kv_offload_days_uptime_block_not_found_crash`（6.184 offload 往返损坏族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: DSA 打包 KV（token 打包/稀疏索引布局）在 host tier load-back 路径上未被正确处理——回到 device 的 packed KV 与元数据/索引不一致，注意力读到错位内容。与 6.184（vLLM KV offload 数天 uptime 后 block-not-found crash）同为 offload 往返正确性，本条**无 crash、纯语义损坏**且 DSA 特有打包布局是新的失败面。
+  source: 'SGLang #38031（2026-09-04 open，8×H100 TP8，含 spec on/off 对照实验）。https://github.com/sgl-project/sglang/issues/38031 · 根因定位+修复 PR #38212（2026-09-06：HiCache 往返不备份/恢复 DSA target+draft index buffers——KV 与 recurrent state 恢复但选 token 的 index 缓冲不恢复，attention 选错 prompt 片段而 cache 报恢复成功；第二缺陷：prefix-cache 分裂落在压缩组内时不同后缀共享压缩 index 行互相覆写；报告者 8×H100 生产负载验证通过）'
+  behavior: 无 crash——**命中 host 往返 prefix 的请求静默生成损坏**（工具调用消失/重复退化）：损坏只影响部分请求（取决于缓存命中路径），A/B 对照困难；"投机解码关闭就好了"的排除实验是定位关键。offload 族从 crash 显形（6.184）扩展到语义损坏显形。
+  trigger_surface: SGLang + GLM-5.3-Flash（DSA）+ `--hicache-size`/`--hicache-ratio`（host offload 开启即暴露）
+  discovery: |-
+    2026-09-04 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

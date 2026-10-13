@@ -1,0 +1,62 @@
+id: INF-0076
+legacy_ids:
+- '1.77'
+slug: ttm_interleaved_to_sharded_dispatch_cache_hash_domain_wider_than_params
+aliases: []
+title: interleaved_to_sharded 缓存命中沿用错误 stride
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tt-metal
+    component: interleaved_to_sharded
+  behavior: dispatch cache 自定义 hash 以 padded_shape 为键，但 RM 分支的行单元数由 logical shape 计算；op 无 runtime args override，cache 命中后不重新应用。
+effect:
+  objects:
+  - 数值结果
+  detail: padded shape 相同而 logical shape 不同的两次 dispatch 合法命中同一 cache 项（validator 不约束 logical=padded），第二次静默沿用第一次的 row stride，数据布局被错读，无 crash、无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal；`interleaved_to_sharded` + 同 padded_shape 不同 logical_shape 的两次 dispatch
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/53196
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（dispatch cache hash 键域宽于参数域且命中后不重放 RTA → 静默错误 row stride） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`interleaved_to_sharded` 的 dispatch cache 自定义 hash 以 `padded_shape()` 为键，但 RM 分支的 `num_units_per_row`/`num_units_height` 实际从 `input.logical_shape()[-1]` 与 `logical_volume()` 计算（program_factory.cpp:125-127）；该 op 是指针修补（pointer-patching）且无 override，cache 命中后不会重新应用这些 runtime arguments。唯一 validator 只约束 output=input 的 shape、不约束 logical=padded——于是 padded shape 相同而 logical shape 不同的两次 dispatch 合法碰撞，第二次**静默沿用第一次的 row stride** 运行。'
+  source: 'tt-metal #53196（2026-08-14 open，cache correctness bug / Metal 2.0 port blocker）。https://github.com/tenstorrent/tt-metal/issues/53196'
+  behavior: 无 crash、无报错。logical shape 不同但 padded shape 相同的连续 dispatch 中后者拿到错误 row stride → **静默数据布局错读**。属「kernel cache 键域 ⊃ 参数域且无 RTA 重放」**新子签名**——与 vLLM 6.x 的 cache-key 不完备同构，但发生在硬件 op dispatch 层。
+  trigger_surface: tt-metal；`interleaved_to_sharded` + 同 padded_shape 不同 logical_shape 的两次 dispatch
+  discovery: |-
+    2026-08-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 算子/内核。按“修复要改哪里”：原文指出的两处缺陷（以 padded_shape 为键的自定义 hash、无 override 不重放 runtime args，program_factory.cpp:125-127）都在 interleaved_to_sharded 这个 op 自己的代码里，program cache 机制本身无误；词表 算子/内核 含 layout/sharding 搬运算子。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 运行时/执行
+        status: panel7

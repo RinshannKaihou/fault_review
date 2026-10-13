@@ -1,0 +1,69 @@
+id: INF-1280
+legacy_ids:
+- K8.3
+slug: beam_reorder_cache_index_dim_mismatch
+aliases: []
+title: 混合模型 beam search 按 beam 重排 KV 时维度不匹配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: transformers
+    component: Lfm2 混合 cache 的 beam 重排
+  behavior: beam search 每步用 index_select(0, beam_idx) 按 beam 重排各层 KV；Lfm2 的 conv 层与注意力层交错，各层 cache 不是统一的 [batch,...] 张量，重排维度不匹配。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  - 输出内容
+  detail: 混合模型上 beam search 直接 IndexError 崩溃；若在错误维度或缺 beam 轴的层上静默重排，某个 beam 会沿用另一 beam 的历史继续生成，输出前后语义断裂。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/42257
+  kind: github_issue
+  resolved_from: 'transformers #42257'
+relations: []
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: beam search 每步通过 `key_cache[layer].index_select(0, beam_idx)` 按 beam 重新索引 KV；对混合模型（Lfm2：conv/short-conv 层与注意力层交错），每层 cache 不是统一的 `[batch,...]` 张量，因此 beam 维的 `index_select` 越界（`IndexError`）。通用隐患：在错误维度上重排、或在缺少 beam 轴的层上重排，会崩溃，或**静默地**把错误的 KV 重排进某个 beam 槽。
+  source: 'transformers #42257（`modeling_lfm2.py:216`，v4.57.1）。'
+  behavior: 混合模型上 beam search 直接 `IndexError` 崩溃；静默变体下某个 beam 继续用另一个 beam 的历史生成，输出前后语义断裂。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: infra_off——per-beam 的离流形不连续：某个 beam 的隐藏态路径在重排后突然跳到另一个 beam 的轨迹上。可捕获：trajectory 族的跳变检测，以及 cross-orthogonality / 签名余弦族（受害 beam 的签名与"捐赠" beam 对齐）。会漏检：单序列聚合指标——必须按 beam 维分开看才有信号。
+  repro: '`generate(num_beams=2)` + 在最后一个 decoder layer 上的 forward hook（with_kwargs；该 hook 点上所有层都已追加当前步的行），在每个 **decode** 步（`hidden_states` seq len == 1）且 batch 维 > 1 时，对所有层的 `pkv.layers[i].keys` / `.values` 就地施加**反转的 batch 顺序**（即错误的 `beam_idx`）：每个 beam 的 KV 静默变成另一个 beam 的。等长就地改动对全 cache 安全，不改变长度。**已记录的 batch == 1 空操作**：单序列路径下反转即恒等，因此该故障只在 `model.generate(num_beams=2)`（或任意 batched decode）下被激发。'
+  locus: control-flow
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - effect.objects
+  note: 'visibility 维持 报错：原文唯一实证（transformers #42257）是 IndexError 崩溃，静默串 beam 是''通用隐患''描述。effect.objects 由 [KV状态, 输出内容] 改为 [KV状态, 可用性/进度, 输出内容]：实证后果是 beam search 崩溃中断，应列 可用性/进度 以与 visibility=报错 对应。subsystem=KV缓存 与独立判断一致。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 解码/采样
+        status: panel7
+    uncertain:
+    - visibility

@@ -1,0 +1,50 @@
+id: INF-0719
+legacy_ids:
+- '7.46'
+slug: vllm_triton_blockfp8_ktile_scale_oob_pair
+aliases: []
+title: vLLM Triton 量化 GEMM K-tile 越界读与跨组错 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: Triton 量化 GEMM K-tile 处理
+  behavior: (1) GPTQ/AWQ MoE Triton 内核权重 load 缺 k_mask，K 非整块时末次迭代越界读；(2) block-FP8 W8A8 GEMM 每 K tile 只取一个 scale，块长不整除 group_k 时选错。
+effect:
+  objects:
+  - 数值结果
+  detail: 路径 1 因 scale 被 mask 为 0 数值恰好抵消，目前无症状但为潜伏越界读；路径 2 仅在非默认 autotune 配置（BLOCK_SIZE_K > group_k）下触发，跨两个量化组的 tile 用错 scale，数值静默出错；当前默认配置未触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；GPTQ/AWQ MoE（路径 1）+ block-FP8 W8A8（路径 2，需非默认 BLOCK_SIZE_K > group_k 的 autotune 配置）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52576
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（Triton 量化 GEMM 双缺陷：fused_moe_kernel_gptq_awq 权重 load 无 k_mask 越界读 + w8a8_triton_block_scaled_mm 单 scale-per-K-tile 在 BLOCK_SIZE_K 不整除 group_k 时选错 scale） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 两个被量化 MoE serving 使用的 Triton GEMM 对 K tile 处理错误，且各自的 sibling 代码路径已正确：(1) `fused_moe_kernel_gptq_awq` 在 K 非 BLOCK_SIZE_K 倍数时构建了 `k_mask` 并作用于 scale 与两个 zero-point load，但**权重 load 本身不带 mask** → 最后一次 K 迭代读越过权重张量末端（OOB 读）；数值上因 scale 被 mask 为 0 而恰好抵消——这是内存安全 bug 而非数值 bug（sibling `fused_moe_kernel` 对同一 load 做了 mask）。(2) `_w8a8_triton_block_scaled_mm` 按 `(k*BLOCK_SIZE_K)//group_k` 每 K tile 读**单个** scale pair，仅当 `BLOCK_SIZE_K | group_k` 时正确；无任何强制检查，且默认 config 上方注释把要求写反（"BLOCK_SIZE_K must be divisible by block_size[1]"——恰是会出错的配置）。fused-MoE launcher 对此做了 clamp（`BLOCK_SIZE_K = min(BLOCK_SIZE_K, min(block_shape))`），该路径没有。当前 shipped defaults 恰在安全范围内所以未爆。
+  source: 'vLLM #52576（2026-08-17 open）。https://github.com/vllm-project/vllm/issues/52576'
+  behavior: (1) 无症状（数值被抵消）但为潜伏 OOB——未来调度/编译变化可转成真实损坏；(2) 非默认 BLOCK_SIZE_K 配置下跨两个量化组的 tile 用错 scale → 数值静默错误。属「量化内核 K-tile 边界双缺陷（越界读 + 组跨界错 scale）」**新子签名**——sibling 路径正确恰恰说明这是移植/配置面缺口而非原理未知。
+  trigger_surface: vLLM；GPTQ/AWQ MoE（路径 1）+ block-FP8 W8A8（路径 2，需非默认 BLOCK_SIZE_K > group_k 的 autotune 配置）
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

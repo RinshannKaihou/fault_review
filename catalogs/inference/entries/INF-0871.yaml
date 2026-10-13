@@ -1,0 +1,56 @@
+id: INF-0871
+legacy_ids:
+- '8.87'
+slug: ttmetal_gemma4_12b_tp8_warmup_trace_nkv1_doubled_sliding_block_step1_divergence
+aliases: []
+title: Gemma4 TP8 warmup trace 固化错误滑窗几何致发散
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tt-metal
+    component: sliding 块计数、warmup 页表
+  behavior: 12B 在 TP=8 下 nkv_local=1，sliding block 块数被按 2 倍计入，warmup 捕获的 trace 固化该几何；warmup 还用全零 page table，reset_batch 仅 step 0 传入
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: vLLM warmup + hybrid-KV 服务路径下 decode 从第 2 步起与参考完全发散（step0 PCC 0.9995，之后约 0.06），输出单字或空响应、gpqa 0 分，无 crash；非 warmup 的 text_demo_v2 正常，31B 不触发
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + vLLM hybrid-KV + Gemma4-12B + TP=8（nkv_local=1）+ warmup trace 捕获（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56577
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0844
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（tt-metal/vLLM hybrid-KV 路径 + Blackhole P150x8 + gemma-4-12B-it TP=8：decode trace 在 **warmup 期间捕获**时，decode 从**第 2 步起**与参考完全发散（step 0 PCC 0.9995、step 1+ PCC≈0.06、输出与参考不相关——`"The capital of France is"` → `"11"`、r1_gpqa_diamond 全空 0 分）。可分离的双缺陷：(A) warmup 用**全零 page table** 捕获（所有层绑 block 0），补 `torch.arange` 后 step 0 从 PCC −0.068 修复到 0.9995（真实 `TTModelRunner.warmup` 同样全零，非测试专用；与 #46432 相关）；(B) 本条主体——(A) 修掉后 step 1+ 仍发散：`reset_batch=True` 只在 step 0 传入（恰是唯一正确的一步）。几何根因：12B 在 TP=8 下 `nkv_local=1`，sliding block 的块数按 **2 倍**计入（31B 头数整除 8 不触发）；SDPA decode 几何实测定位） · Cov: `var:ttmetal_gemma4_wh_length_gated_deterministic_garbled_100k`（8.60 Gemma4 滑窗 decode 几何族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: warmup 捕获的 trace 固化了错误的 per-layer 几何（nkv_local=1 时 sliding block 计数被加倍）与全零 page table 绑定；step 0 因 reset_batch 重置状态而幸免，后续步骤消费 warmup 固化的错误几何。12B 特异性由 KV 头数整除性门控（31B nkv 整除 8 → 不中招）。
+  source: 'tt-metal #56577（2026-09-14 open，含 (A)/(B) 分离实验、逐步 PCC 表、SDPA 几何对照表、tt_transformers baseline 复现与 text_demo_v2 对照）。https://github.com/tenstorrent/tt-metal/issues/56577'
+  behavior: 无 crash——服务输出退化文本（单字回答/空响应）、gpqa 0 分；`text_demo_v2.py`（非 warmup 路径）完全连贯，使缺陷只在 vLLM warmup + hybrid-KV 服务路径显形。8.60（Gemma4 WH 长度门控 garble）之后 Gemma4 滑窗 decode 族新成员：本条在 **TP 整除性 × warmup trace 固化**维度、首步正确后续全崩的签名。
+  trigger_surface: tt-metal + vLLM hybrid-KV + Gemma4-12B + TP=8（nkv_local=1）+ warmup trace 捕获（hw_specific）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

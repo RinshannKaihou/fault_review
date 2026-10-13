@@ -1,0 +1,56 @@
+id: INF-1008
+legacy_ids:
+- '10.92'
+slug: vllm_derender_logprob_token_strings_stripped_sentencepiece_leading_space_dict_collision
+aliases: []
+title: vLLM derender logprob token 丢前导空格致键碰撞
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: derender token 字符串转换
+  behavior: derender 用 convert_tokens_to_string 做单 token 转换，剥掉 Metaspace ▁ 前导空格，与引擎路径 convert_ids_list_to_tokens 的结果不一致。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: SentencePiece tokenizer 下 derender 的 top_logprobs 里 ▁true 与 true 键碰撞、静默丢一个候选；text_offset 每遇前导空格 token 偏一位；chat derender 的 token/bytes 亦不符。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM main + SentencePiece 系 tokenizer + `/v1/completions/derender` 或 chat derender 的 logprob/token 字符串（config）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59241
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `/derender` 端点的 logprob token 字符串经 `resolve_token_id_placeholder`（`convert_ids_to_tokens` → `convert_tokens_to_string([tok])`）**丢失 SentencePiece 前导空格**（Metaspace `▁` 被剥）：`▁true`/`▁x` 引擎路径（`convert_ids_list_to_tokens`，#48674 已修）给 `'' true''`/`'' x''`、derender 给 `''true''`/`''x''`——两路径对同一 token 不一致。后果：`/v1/completions/derender` 的 `top_logprobs` 是 `dict[str, float]`，**`▁true` 与 `true` 两个不同 token 的键碰撞、一个候选被静默丢弃**（#48674 症状在 derender 复活）；`text_offset` 按 `len(token)` 构建、每个前导空格 token 漂移一位；chat derender 的 `token`/`bytes` 与对应 completion chunk 不匹配） · Cov: `NEW`（derender 端点 token 字符串规范化缺口子签名；与 #59043/#59089（derender 首空格丢失/尾字节 U+FFFD，09-28 留观）同 derender 特性域——本条是其 logprob 键碰撞/offset 漂移面，有引擎路径正确实现可对照，达编目门槛） · 触发 `config` · 置信度 `verified`'
+  mechanism: derender 用 `convert_tokens_to_string`（单 token、剥 Metaspace）而引擎用 `convert_ids_list_to_tokens`（保留前导空格）；修复即换用同一 helper。
+  source: 'vLLM #59241（2026-09-29 open，tokenizer-only 复现（llama-tokenizer）、`▁x`/`▁true` 双路径对照与 #48674 关联）。https://github.com/vllm-project/vllm/issues/59241'
+  behavior: 无 crash——**derender logprob 候选静默合并丢一**（dict 键碰撞）与 text_offset 逐前导空格漂移：依赖 derender logprob 的评测/蒸馏管线拿到偏移错位的概率表；engine 路径正确使同一请求两端点不一致。
+  trigger_surface: vLLM main + SentencePiece 系 tokenizer + `/v1/completions/derender` 或 chat derender 的 logprob/token 字符串（config）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 输出分布
+        to: 输出内容
+        status: panel7

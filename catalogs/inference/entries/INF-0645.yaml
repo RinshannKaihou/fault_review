@@ -1,0 +1,52 @@
+id: INF-0645
+legacy_ids:
+- '6.252'
+slug: vllm_partial_block_kv_event_parent_hash_never_emitted_chain_unreconstructable
+aliases: []
+title: vLLM partial 块 KV 事件引用从未上报的 parent hash
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: BlockPool partial 块 KV 事件
+  behavior: 满块事件按 block_size（1536）发布，而哈希链按 hash_block_size（128）步进，中间哈希节点从未发事件，partial 块的 BlockStored 却引用 128 粒度的父 hash。
+effect:
+  objects:
+  - KV状态
+  detail: 开 KV cache events 且 block_size≠hash_block_size 时，1800-token 请求只发 H1536 与 H1792 两个事件，H1792 的 parent H1664 悬空，外部消费者无法重建前缀链，复用退化或错判；服务本身无信号。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + enable_kv_cache_events + block_size ≠ hash_block_size 的部分块请求（config：外部消费者启用即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-22'
+remarks: effect object 缺“对外事件流/接口契约”类值：变错的是发给外部消费者的 KV 事件流，暂用最接近的 KV状态
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58119
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0613
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM KV cache events 对 **partial block** 发出的 `BlockStored` 事件可引用**从未上报的 parent_block_hash**：1800-token 请求（block 1536 + 128 粒度哈希步进）只发 `H1536`（满块）与 `H1792`（末 partial 块）两个事件，`H1792.parent = H1664` 悬空——外部消费者（LMCache 类 offload/复用组件）**无法重建前缀链**，`H1792` 在链中位置不可 decipher；单元级直接驱动 `BlockPool.cache_full_blocks`+`cache_partial_block` 复现） · Cov: `var:sglang_blockstored_kv_event_cache_salt_undecodable_public_types`（6.220 KV 事件对外契约缺陷族——载荷不可解码 vs 链结构不完整） · 触发 `config` · 置信度 `verified`'
+  mechanism: 满块事件按 block_size（1536）发布而哈希链按 hash_block_size（128）步进——两个粒度不一致使中间哈希节点（H1664）从未获得事件，partial 事件却引用 128 粒度的父。事件流隐含契约（"每个 parent 必先出现"）在 block_size ≠ hash_block_size 时被结构性破坏；与 6.250（引擎解析 match unit 不达 worker）同属哈希粒度多权威源族：本条在**对外事件流**维度。
+  source: 'vLLM #58119（2026-09-22 open，含 1800-token 数值例、H1536→H1664→H1792 链图、`test_partial_kv_event_parent_is_reconstructable` 单元复现代码）。https://github.com/vllm-project/vllm/issues/58119'
+  behavior: 无 crash、生成正常——**外部 KV 消费者静默失能**：依赖事件流重建前缀链的组件（外部缓存、审计、复用判定）在混合 block/hash 尺寸配置下拿到不可解链，前缀复用退化或错判；服务本身无任何信号。
+  trigger_surface: vLLM + enable_kv_cache_events + block_size ≠ hash_block_size 的部分块请求（config：外部消费者启用即触发）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

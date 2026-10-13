@@ -1,0 +1,57 @@
+id: INF-0701
+legacy_ids:
+- '7.28'
+slug: vllm_gemma4_nvfp4_fp8_kv_blackwell_fa_version_selection_mismatch
+aliases: []
+title: Gemma-4 fp8 KV 后端选择与运行时 FA 版本不一致致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: FlashAttention 后端选择与版本解析
+  behavior: 选择时不带 local-attention 信息解析 FA 版本，SM100+fp8 KV 得 FA4 而选 FLASH_ATTN；运行时带该信息，head_size=256 降为不支持 fp8 KV 的 FA2。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Gemma-4 NVFP4 + fp8 KV cache 在 Blackwell SM100 上 warmup 崩溃，报 FlashAttention only support fp16 and bf16 data type；0.26 同配置选 TRITON_ATTN 正常服务。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；Gemma-4 NVFP4 + fp8 KV cache + Blackwell SM100 + sliding-window local attention
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51828
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（后端选择与运行时解析不同 FA 版本→fp8 KV 在 FA2 上不支持→warmup 崩溃） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: Gemma-4 31B NVFP4 + fp8 KV cache 在 Blackwell（SM100）上的后端选择和运行时用不同 context 解析 FlashAttention 版本：(1) **选择**——`FlashAttentionBackend.supports_combination()` 调用 `flash_attn_supports_kv_cache_dtype()` **不带** local-attention 信息，`get_flash_attn_version()` 在 SM100 + fp8 KV 上解析 FA4→`FLASH_ATTN` 被选中。(2) **运行时**——`FlashAttentionImpl.__init__` 用 `get_flash_attn_version(..., requires_local_attention=sliding_window is not None)`，对 head_size=256 + local attention 降级 FA4→FA2。FA2 不支持 fp8 KV→warmup 时 `FlashAttention only support fp16 and bf16 data type`。0.26 中同配置选 TRITON_ATTN 且正常服务。
+  source: 'vLLM #51828（2026-08-11 open）。修复 PR #51849。GPU Blackwell SM100，Gemma-4 NVFP4。https://github.com/vllm-project/vllm/issues/51828'
+  behavior: crash（warmup 时 dtype 错误）。属「后端选择与运行时的 FA 版本解析 context 不一致→fp8 KV 在不支持的后端上崩溃」**新子签名**——选择和运行时的 context 不对称。
+  trigger_surface: vLLM；Gemma-4 NVFP4 + fp8 KV cache + Blackwell SM100 + sliding-window local attention
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 为 算子/内核 vs 量化：rules“触发条件不是对象”——fp8 KV 只是触发条件，出错代码是 FlashAttentionBackend.supports_combination 解析 FA 版本时不带 local-attention 信息（原文 mechanism (1)），属 FlashAttention 后端（词表 算子/内核 含 FlashAttention），维持 算子/内核。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

@@ -1,0 +1,52 @@
+id: INF-0893
+legacy_ids:
+- '9.10'
+slug: sglang_multimodal_draft_extend_mrope_oob_access
+aliases: []
+title: SGLang 多模态 draft-extend mRoPE 位置数不足致越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: sglang
+    component: _compute_mrope_positions
+  behavior: 多模态 extend 分支的 fallback 调用 decode 形状的 _expand_mrope_from_input，每请求只产 1 个 position，而 draft-extend 需要 extend_seq_len 个。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Qwen3-VL + EAGLE3 在首个 batch>1 的 draft-extend 崩溃：fused Triton mRoPE kernel CUDA illegal memory access，forward_native 报 shape mismatch；单请求正常，真实流量才崩。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；多模态（Qwen3-VL）+ EAGLE3 推测解码 + draft-extend batch>1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34154
+  kind: github_pr
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（多模态 draft-extend 每个 extended token 只产 1 个 mRoPE position → fused Triton mRoPE 越界 / native shape mismatch） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: Qwen3-VL target + EAGLE3 draft 在首个携带非平凡 batch 的 draft-extend 崩溃。`ForwardBatch._compute_mrope_positions` 为 forward pass 有 `sum(extend_lens) = batch_size * num_draft_tokens` token 的 draft-extend 产 `batch_size` 个 mRoPE position→rotary embedding 索引越过 position tensor 末端：fused Triton mRoPE kernel 越界 CUDA illegal memory access，`forward_native` shape mismatch。链路：`mm_input.mrope_positions` 仅跨原始 prompt；draft-extend 时 `prepare_for_extend_to_fill_draft_kvcache` 设 `prefix_lens = seq_lens`（已越过 prompt）→prompt 切片为空→fallback 运行；fallback 调 decode-shaped `_expand_mrope_from_input` 返回单 position，但 extend 需 `extend_seq_len` 个。单请求正常（服务器看似健康），真实流量才崩。修复：在 `_compute_mrope_positions` 的多模态 extend 分支把 fallback 展宽到 `extend_seq_len` 个连续 position。
+  source: 'SGLang PR #34154（2026-08-09 open）。#34152。组件 `ForwardBatch._compute_mrope_positions`。https://github.com/sgl-project/sglang/pull/34154'
+  behavior: crash（fused kernel CUDA illegal memory access）或 shape mismatch（native）。属「多模态 mRoPE position 计算在推测解码 extend 路径形状不匹配」签名——mRoPE 与推测解码交互新子签名。
+  trigger_surface: SGLang；多模态（Qwen3-VL）+ EAGLE3 推测解码 + draft-extend batch>1
+  discovery: |-
+    2026-08-09 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

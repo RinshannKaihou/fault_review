@@ -1,0 +1,70 @@
+id: INF-1266
+legacy_ids:
+- K6.1
+slug: quantized_cache_first_token_sink_quantized
+aliases: []
+title: QuantizedCache 立即量化首个 sink token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: QuantizedCache 全精度残差窗口
+  behavior: QuantizedCache 本应保留近期 token 的全精度残差窗口、只量化更旧的 token，实现却立即量化了第一个 token（attention sink），与 sink/近期保全精度的做法相反。
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: 准确率损失集中在 sink token 上并在长生成中累积：Llama-3.2-3B WikiText-2 2-bit ppl 损坏 12.22 vs 修复 11.46。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/35185
+  kind: github_issue
+  resolved_from: 'transformers #35185'
+- url: https://github.com/huggingface/transformers/pull/35760
+  kind: github_pr
+  resolved_from: 'PR #35760'
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`model_on` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `yes` · 置信度 `verified`'
+  mechanism: '`QuantizedCache` 本应保留一个近期 token 的全精度残差窗口、只量化更旧的 token，但实现立即量化了**第一个 token**；由于第一个 token 是 attention sink，量化它会不成比例地劣化准确率——恰好与 KV 量化最佳实践（sink/近期保全精度、旧 token 才量化）相反。'
+  source: 'transformers #35185；PR #35760（源文档记：appears still open）。'
+  behavior: 准确率损失集中在 sink token 上（Llama-3.2-3B WikiText-2 2-bit ppl：损坏 12.22 vs 修复 11.46），并在长生成过程中累积。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: model_on——**局限于位置 0** 的 K/V 上的在流形量化噪声，模型仍能吸收，只是 sink 的保真度被破坏。逐位置量化误差 / sink 保真度指标（statistical + cheap 的 per-position 误差探针）显示位置 0 误差很大而更靠后位置的残差误差约为 0，正是健康残差策略的**倒置**；全局幅值类 geometric 指标会漏检，因为只有单个位置被扰动。若 sink 被量化到近乎摧毁，签名会向 `attn_sink_eviction_collapse` 的注意力熵坍缩靠拢。
+  repro: 与 `_ctx_kv_corrupt` 相同的 DynamicCache 访问模式；在 prefill 时一次性地在层 L 上**只**对位置 0 的 K 行与 V 行做 fake-quant（对称 absmax `bits`-bit 栅格，每行一个 scale，`bits ∈ [2,8]`）。诚实近似（injector docstring 自述）：真实 bug 命中 QuantizedCache 的每一层并使用 HQQ / quanto 分组量化，此处是单层、单 scale 的 absmax 近似；只能通过 decode 路径（`extract._decode_path`）翻转的 token 观察到。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 subsystem=量化。缺陷是 QuantizedCache 的全精度残差窗口策略（哪些 token 量化）写反，属量化方案；与 INF-1244/1272/1296 的 KV 量化条目同口径归 量化。其余字段与独立判断一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: KV缓存
+        status: unanimous

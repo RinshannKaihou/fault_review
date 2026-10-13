@@ -1,0 +1,63 @@
+id: INF-1090
+legacy_ids:
+- '11.67'
+slug: vllm_glm53_nonflash_mtp_draft_noise_pos0_acceptance_2pct
+aliases: []
+title: vLLM GLM-5.3 非 Flash MTP draft 接受率灾难性偏低
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: GLM-5.3 MTP proposer
+  behavior: 根因未定位：eager+MTP-1 排除 CUDA graph/dispatch，损坏在 proposer 自身；嫌疑：DSA sparse-indexer draft 迭代状态或 FP8 block-scale 下的 draft 权重
+effect:
+  objects:
+  - 输出分布
+  - 性能/资源
+  detail: 官方 FP8、B300×8 TP8 + MTP：重复文本 pos-0 接受率 ≤2.4%（健康 60–80%），低于随机文本（0.62–0.94% vs 8.69–8.85%）；吞吐比无 spec 低 29–41%，输出正确；双 nightly、双后端恒定复现
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + GLM-5.3（非 Flash）+ MTP + B300/sm_103（模型×平台组合触发；eager 亦复现）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55605
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1086
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（GLM-5.3（非 Flash，官方 FP8 checkpoint，B300×8 TP8）+ `--speculative-config.method mtp`：draft acceptance 灾难性低——**最大可预测性的重复文本上 pos-0 接受率 ≤2.4%**（健康 MTP 头 60-80%），且**重复文本比随机文本还差**（0.62-0.94% vs 8.69-8.85%，对任何功能 draft 头都是反向签名）；吞吐 -29~41%；非 MTP 输出质量全配置正常；eager + MTP-1 行排除 CUDA-graph/dispatch/多层重跑效应——**损坏在 proposer 自身**；两 nightly（dev380/dev455）、双 attention 后端（FLASHMLA_SPARSE/FLASHINFER_MLA_SPARSE）恒等复现） · Cov: `var:vllm_qwen38_flash_next_mtp_episodic_zero_acceptance_repetition_collapse`（11.63 acceptance 塌零族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: draft 解析为 `DeepseekV32MTPModel`（target 为 `GlmMoeDsaForCausalLM`）；checkpoint 验证 MTP 张量齐全（eh_proj/enorm/hnorm，`index_share_for_mtp_iteration:true` 被检测）。嫌疑集中在非 Flash GLM-5.3 路径的 DSA sparse-indexer draft 迭代状态或 FP8 block-scale 下的 draft 权重处理。参照系：#55239 修复了 GLM-5.3-**Flash** 同症状类（ROCm spec verification 行 mis-dispatch），修复后 62.7% 加权接受——说明该家族可达健康水平；但本条 eager 模式仍坏，指向非 dispatch 因素。#55357（Qwen 族 0% acceptance）同 window 报告。
+  source: 'vLLM #55605（2026-09-06 open，含五组合证据矩阵、checkpoint 验证与双 nightly/双后端对照）。https://github.com/vllm-project/vllm/issues/55605'
+  behavior: 无 crash、输出正确（verify 环兜底）——**spec 加速静默倒挂**（吞吐比无 spec 更差 29-41%）+ draft 头实质输出噪声。「重复文本 worse than random」是功能判别性证据（任何真 draft 在重复文本上接受率应最高）——该签名可直接用作监控器：acceptance × 文本可预测性交叉异常即 proposer 级故障。11.63（Qwen3.8-Flash-Next episode 式塌零）之后 acceptance 塌零族第三例：本条是**持续型**（非 episode）、跨后端/图模式恒定。
+  trigger_surface: vLLM + GLM-5.3（非 Flash）+ MTP + B300/sm_103（模型×平台组合触发；eager 亦复现）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem（解码/采样 vs 量化）：维持 解码/采样。原文用 eager + MTP-1 排除了 CUDA graph 与 dispatch，结论是“损坏在 proposer 自身”。FP8 block-scale 下的 draft 权重处理只是两个嫌疑之一，另一个是 DSA sparse-indexer 的 draft 迭代状态，两者都在推测解码 proposer 内；且非 MTP 输出在所有配置下都正常，按 rule 1 取 解码/采样。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 性能/资源
+        to: 输出分布
+        status: panel7

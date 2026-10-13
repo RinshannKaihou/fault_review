@@ -1,0 +1,60 @@
+id: INF-0610
+legacy_ids:
+- '6.217'
+slug: vllm_dual_instance_concurrent_start_device_delta_memory_misattribution
+aliases: []
+title: vLLM 同卡并发启动两实例时显存 profiling 误记他进程分配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: Worker 可用显存 profiling
+  behavior: Worker.determine_available_memory 用整设备 free-memory 差值推导本实例 non-torch 内存，无法区分本进程与 profiling 窗口内他进程的分配；分配方向无任何检测。
+effect:
+  objects:
+  - 性能/资源
+  - 可用性/进度
+  detail: '同 GPU 同时启动两个实例时 KV cache 静默缩水（如 4.72→1.84 GiB），或算出负值以 ValueError: No available memory for the cache blocks 启动失败、报错误导指向 gpu_memory_utilization；顺序启动正常。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + 同 GPU 多实例并发启动（yes：部署时序即触发；顺序启动/显式 KV 预算可避开）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55827
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0529
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（同一 GPU 上**同时启动两个 vLLM 实例**（常见的小 ASR + aligner + LLM 栈）：`Worker.determine_available_memory` 用整设备 free-memory 差值推导本实例 non-torch 内存——profiling 窗口内**其它进程的任何分配都被记到本实例头上**；实测 Qwen3-ASR-1.7B + Qwen3-ForcedAligner-0.6B：顺序启动 KV 4.72/2.82 GiB，同时启动 1.84/**−3.21 GiB → `ValueError: No available memory for the cache blocks`**；RTX 6000 Ada 同形态（10.82/6.50 → 9.01/−0.01）；反向路径（他进程释放）已有 assert 守卫，**分配方向完全无检测**——KV 静默缩水或以指向 `gpu_memory_utilization` 的误导报错失败） · Cov: `var:vllm_hidden_states_kv_budget_overestimate_startup_reject`（6.136 容量记账失真族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: '`mem_utils.py` 的 `MemorySnapshot` 基于 `torch.cuda.mem_get_info` 整设备读数做差值，无法区分「本进程分配」与「窗口内他进程分配」；建议修复为 `torch.cuda.memory_reserved()` + NVML `nvmlDeviceGetComputeRunningProcesses` 的本进程 usedGpuMemory。`--kv-cache-memory-bytes` 显式预算可绕过 profiling。'
+  source: 'vLLM #55827（2026-09-08 open，含三启动时序 × 双 GPU 型号实测表与 NVML 修复建议；注意与 tt-metal #55827 撞号、不同仓库）。https://github.com/vllm-project/vllm/issues/55827'
+  behavior: 两种显形——**静默 KV cache 缩水**（4.72→1.84 GiB，服务降容量运行无警告）或启动失败且报错指向错误参数；多实例共卡部署（ASR/aligner/LLM 组合）的常见时序即触发。6.136 之后容量记账族新成员：失真源从「估算高估」变为「他进程分配误记」。
+  trigger_surface: vLLM + 同 GPU 多实例并发启动（yes：部署时序即触发；顺序启动/显式 KV 预算可避开）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 性能退化
+        to: 静默错误
+        status: panel7
+    uncertain:
+    - subsystem

@@ -1,0 +1,58 @@
+id: TRN-0104
+legacy_ids:
+- OPT.04
+slug: global_clip_rescales_corrupted_grad_norm
+aliases: []
+title: 全局 clip_grad_norm 把损坏梯度重缩放回阈值，抹掉幅值证据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: 全局 clip_grad_norm
+  behavior: clip_grad_norm 只看整体 L2 范数，把被抬高范数的损坏梯度（如 PAR.05 的 2^N 倍 expert 梯度）按 clip_coef 重缩放回阈值，不校验方向与逐参数幅值，不触发 skipped iteration。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: clip 开启时 grad_norm 图正常、skipped iterations=0（实测 ×2^16 expert 梯度被重缩放）；N≤~64 时幅值假的更新持续写入权重，N=128 时范数溢出为 inf、clip_coef≈0，run 零梯度空转。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/6660
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0102
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `var:grad_clip_absorbs_sdc_spike` · 置信度 `documented`'
+  mechanism: 全局 clip_grad_norm 只看整体 L2 范数：任何把范数抬高（或抬翻溢出）的梯度损坏都会被统一的 `clip_coef` **静默重缩放回 clip 阈值**，方向不校验、逐参数幅值不校验、skipped-iteration 不触发。PAR.05（2^N 梯度翻倍）是该机制的精确放大器：N≤~64 时 `2^N` 倍损坏梯度被 clip 归一后照常 step——「方向对、幅值假」的更新持续打进权重；N=128 时范数溢出为 inf，clip_coef≈0，run 变成零梯度空转。
+  source: 'Megatron-LM #6660（实测 clip 把 ×2^16 的 expert 梯度统一重缩放掉，`number of skipped iterations = 0`；clip 关闭时同 run 表面收敛）。https://github.com/NVIDIA/Megatron-LM/issues/6660'
+  behavior: clip 开着时梯度损坏的幅值证据被抹掉，只有范数溢出（N 大或损坏更猛）才可见；grad_norm 图「正常」不等于梯度没坏。与 OPT.02 同族（clip 吃掉尖峰），不同面：OPT.02 是单步尖峰被吃，本条是**持续性幅值损坏被常态化重缩放**，且放行与清零两个 regime 之间隔着一次 fp32 溢出。
+  discovery: 2026-08-20 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 优化器。依据：原文主体是“全局 clip_grad_norm 只看整体 L2 范数…静默重缩放回 clip 阈值，方向不校验、逐参数幅值不校验、skipped-iteration 不触发”，条目指向的修补面是 clip 逻辑；PAR.05 的 2^N 梯度翻倍被原文称为“该机制的精确放大器”，是另一条目的独立故障（触发源），不是本条的缺陷所在。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

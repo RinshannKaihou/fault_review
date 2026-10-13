@@ -1,0 +1,60 @@
+id: INF-1334
+legacy_ids:
+- K10.23
+slug: fp8_kv_missing_or_default_scale_silent_corruption
+aliases: []
+title: FP8 KV 的 scale 被过滤或取默认值致 KV 量化失真
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FP8 KV scale 加载过滤与默认缩放
+  behavior: 两条路径令 KV 在错误网格上量化：FP8 MoE 检查点的 k_scale/v_scale 在加载时被过滤、回落为 1.0；e5m2 路径使用默认单位缩放，小幅值 K/V 落入格式近零粗糙区。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 启用 FP8 KV cache 后输出质量无声下滑，配置与日志一切正常、无告警；KV 幅值落在格式粗糙区时才显著，KV 被吸附到与取值范围无关的固定网格。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/25047
+  kind: github_issue
+  resolved_from: 'vLLM #25047'
+- url: https://github.com/vllm-project/vllm/issues/41343
+  kind: github_issue
+  resolved_from: '#41343'
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `config` · 置信度 `documented`'
+  mechanism: MERGED——两条路径都让 KV 在**错误的网格**上被量化：(a) FP8 MoE 检查点的 `.k_scale`/`.v_scale` 在加载时被过滤掉，默认回落为 1.0；(b) e5m2 路径使用默认的单位缩放。没有任何重缩放去利用 FP8 的动态范围，小幅值 K/V 落进格式的粗糙近零区，被吸附到与实际取值范围无关的固定绝对网格上。**文档内重叠标注 ⚑§9**：本条与 §9 的 FP8 簇是同一现象的不同来源侧（此处为 issue 侧的加载过滤/默认缩放），全文档 102 条扣除这 3 处重叠后约为 **99 个不同机制**。
+  source: '`gh`：vLLM #25047（E4M3 MoE 加载过滤，NEW 部分）+ #41343（e5m2，与 §9 重叠）。'
+  behavior: 启用 FP8 KV cache 后输出质量无声下滑，配置与日志一切正常，没有任何告警。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: 量化类扰动通常被模型吸收（model_on），但此处受 dtype/路径与实际 KV 取值范围双重门控——KV 幅值落在网格粗糙区时才显著，故判为 ambiguous。签名是 **KV 被吸附到固定网格，无视取值范围**：statistical（量化残差的离散化结构、次正规下溢导致的零值比例）最直接，cheap 侧的 recompute-oracle 可确认；geometric 的整体偏离量级仅略高于运行时噪声底、不显著，容易漏检。
+  repro: prefill 时在层 L 一次性把缓存的 K 与 V 以**单位缩放**经由 torch 原生 cast 走一遍**真实的 float8 网格**（`t.cpu().to(torch.float8_e5m2 | float8_e4m3fn).to(torch.float32)`；已验证 torch 2.12.1 CPU 支持，无需尾数截断回退）。`fmt` 选 "e5m2"（2 尾数位，#41343 中 vLLM 的默认 dtype）或 "e4m3"（3 尾数位，#25047 的 MoE 加载过滤情形）。预期签名：单层整个 cache 上均匀的相对舍入误差（e5m2 约 2^-3 / e4m3 约 2^-4），外加次正规下限以下的 flush-to-zero；仅通过解码 token 翻转可观测。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

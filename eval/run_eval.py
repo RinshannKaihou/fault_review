@@ -13,7 +13,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 
-METRIC_NAMES = ("recall_at_5", "mrr_at_10", "ndcg_at_10")
+METRIC_NAMES = ("recall_at_5", "recall_at_10", "mrr_at_10", "ndcg_at_10")
 ALLOWED_MODES = {"hybrid", "dense", "bm25"}
 ALLOWED_FILTERS = {
     "repo", "category", "confidence", "trigger", "include_neg",
@@ -38,8 +38,8 @@ def metrics_for_ranking(ranked, relevant, recall_k=5, rank_k=10):
         raise ValueError("relevant set must not be empty")
     ranked = _dedupe_ranked(ranked)
 
-    recall_hits = sum(key in relevant for key in ranked[:recall_k])
-    recall = recall_hits / len(relevant)
+    recall = sum(key in relevant for key in ranked[:recall_k]) / len(relevant)
+    recall_at_rank_k = sum(key in relevant for key in ranked[:rank_k]) / len(relevant)
 
     reciprocal_rank = 0.0
     for rank, key in enumerate(ranked[:rank_k], start=1):
@@ -61,9 +61,30 @@ def metrics_for_ranking(ranked, relevant, recall_k=5, rank_k=10):
 
     return {
         "recall_at_5": recall,
+        "recall_at_10": recall_at_rank_k,
         "mrr_at_10": reciprocal_rank,
         "ndcg_at_10": ndcg,
     }
+
+
+def resolve_legacy_ids(cases, corpus_keys, legacy_map):
+    """Map labels written with old Markdown ids (e.g. inference 1.44) to the entry that now carries them.
+
+    legacy_map: {(repo, legacy_id): (repo, current_id)} from the index. Labels that already name a
+    corpus entry are left alone, so the same cases run unchanged on Markdown- and YAML-built indexes.
+    """
+    corpus_keys = set(corpus_keys)
+    out = []
+    for case in cases:
+        case = dict(case)
+        case["relevant"] = [
+            item if (item.get("repo"), item.get("id")) in corpus_keys
+            else {**item, "id": legacy_map.get((item.get("repo"), item.get("id")), (None, item.get("id")))[1],
+                  "label_id": item.get("id")}
+            for item in case.get("relevant", [])
+        ]
+        out.append(case)
+    return out
 
 
 def validate_cases(cases, corpus_keys):
@@ -185,6 +206,8 @@ def check_report(report, baseline=None, regression_tolerance=0.02):
 
     if baseline is not None:
         for name in METRIC_NAMES:
+            if name not in baseline["aggregate"]:      # older baselines predate recall_at_10
+                continue
             drop = baseline["aggregate"][name] - aggregate[name]
             if drop > regression_tolerance + 1e-12:
                 failures.append(
@@ -217,6 +240,8 @@ def main(argv=None):
     parser.add_argument("--output", help="write the passing report to this path")
     parser.add_argument("--check", help="compare against a checked-in baseline")
     parser.add_argument("--min-cases", type=int, default=36)
+    parser.add_argument("--no-gate", action="store_true",
+                        help="only measure (e.g. the independent blind set, whose negative tag differs)")
     args = parser.parse_args(argv)
 
     from fault_rag.index import get_index
@@ -228,6 +253,8 @@ def main(argv=None):
         )
     idx = get_index()
     corpus_keys = {(e["repo"], e["id"]) for e in idx.entries}
+    legacy_map = {(e["repo"], old): (e["repo"], e["id"]) for e in idx.entries for old in e.get("legacy_ids", [])}
+    cases = resolve_legacy_ids(cases, corpus_keys, legacy_map)
     validate_cases(cases, corpus_keys)
     report = evaluate_cases(cases)
 
@@ -235,7 +262,7 @@ def main(argv=None):
     if args.check:
         with open(args.check, encoding="utf-8") as f:
             baseline = json.load(f)
-    gate_failures = check_report(report, baseline=baseline)
+    gate_failures = [] if args.no_gate else check_report(report, baseline=baseline)
     report["quality_gate"] = {
         "passed": not gate_failures,
         "failures": gate_failures,

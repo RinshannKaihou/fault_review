@@ -1,0 +1,50 @@
+id: INF-0531
+legacy_ids:
+- '6.138'
+slug: vllm_tiering_cascade_hit_pending_key_permanent_drop
+aliases: []
+title: vLLM tiering 级联丢弃 HIT_PENDING key 致超时重算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: tiering 级联、prepare_store
+  behavior: cascade 只保留 lookup 为 HIT 的 key；在途的 HIT_PENDING 被 prepare_store 排除、被 cascade 丢弃，scheduler 又推进 chunk 索引越过它，无路径再供给。
+effect:
+  objects:
+  - 性能/资源
+  detail: prefix 命中而写入在途时，P2P producer 腿上无该 kv_request_id 下的 parked 条目，peer 等满 _LOAD_TIMEOUT_S 后全量重算；输出正确、无 crash，表现为 +30s 超时与重算开销。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM PD 多层 offload + tiering cascade + prefix 命中写入在途时序
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53062
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（cascade 只保留 lookup==HIT 的 key——HIT_PENDING（在途写入）被三处代码合力折叠成永久缺失：prepare_store 排除、cascade 丢弃、scheduler 越过 chunk，peer 烧满 30s 后重算） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`TieringOffloadingManager._cascade_existing_blocks_to_request_level_tiers` 只保留 primary-tier `lookup` 为 `HIT` 的 key。`HIT_PENDING`（key 已存在于 primary tier、写入仍在途）被**永久丢弃**：`prepare_store` 因其"已存在"而排除 → `complete_store` 从不级联它；cascade 因其"不可读"而丢弃；scheduler 随即推进 `next_stored_chunk_idx` 越过该 chunk——**再无任何路径重新供给**。P2P producer 腿上无任何 parked 在其 `kv_request_id` 下的条目，peer 等尽 `_LOAD_TIMEOUT_S` 后全量重算。修复（PR #53329）把 `HIT_PENDING` 语义从 "never" 改为 "not yet"：park 到请求上、每步从 `on_schedule_end()` 重试一次、有 parked 时阻止请求 finalize；park 有界无超时（写失败经 `complete_store(success=False)` 解析为 MISS、成功解析为 HIT）。'
+  source: 'vLLM #53062（2026-08-20 open）+ 修复 PR #53329（2026-08-21 open）。https://github.com/vllm-project/vllm/issues/53062'
+  behavior: 无 crash、输出正确（重算兜底）。P2P 消费腿的 +30s 超时 + 全量重算。属「**三态查找的第三态（pending）被两态逻辑吞噬**」新子签名—— HIT/MISS 二值假设系统性丢弃在途状态；与 6.137（契约漂移）同弱点不同实例（该 PR 明言二者独立发现）。
+  trigger_surface: vLLM PD 多层 offload + tiering cascade + prefix 命中写入在途时序
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

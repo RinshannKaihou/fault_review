@@ -1,0 +1,70 @@
+id: INF-0869
+legacy_ids:
+- '8.86'
+slug: sglang_torch_native_backend_noncausal_sliding_window_mask_hardcoded_causal
+aliases: []
+title: TorchNative 后端滑窗掩码硬编码因果，encoder 退化为全注意力
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: sglang
+    component: TorchNative 后端滑窗掩码构造
+  behavior: _make_sliding_window_mask 把滑窗掩码硬编码为因果式，无非因果分支；forward_extend 只在 causal=True 时启用滑窗，causal=False 的 encoder 路径完全绕过滑窗
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  - 隐状态
+  detail: causal=False 的双向滑窗 encoder（如 ModernBERT 族 ettin-encoder）在长序列下静默回退为全局注意力，embedding 与 HuggingFace 参照实质分歧、质量下降，无 crash、无警告
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + TorchNativeAttnBackend + 非因果（encoder）滑窗模型 + 长上下文（other_stack）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-14'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39300
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0835
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（SGLang `TorchNativeAttnBackend` 把滑窗注意力掩码**硬编码为因果**：`(k_pos <= q_pos) & (k_pos >= q_pos − sliding_window_size)`，且 `forward_extend` 仅在 `causal=True` 时启用滑窗——encoder 架构（`causal=False` 的双向滑窗，如 ModernBERT 族 ettin-encoder）应使用 `|q_pos − k_pos| <= sliding_window_size` 掩码，实际**静默回退到全局全注意力**：长序列 embedding 与 HuggingFace 参照产生实质数值分歧。修复 PR #39298（`_make_sliding_window_mask` 加 `causal` 参数默认 True 向后兼容、SDPA extend/decode 路径传播、移除 extend 的 causal 前置）；jhu-clsp/ettin-encoder-17m CPU float32 对 HF 验证（修复后 cosine=1.000/MSE=0）） · Cov: `var:sglang_cpu_amx_extend_forced_causal_mask_bidirectional`（8.51 因果性假设静默反转子签名族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 掩码构造以 decoder-only 因果约定硬编码，非因果分支不存在；`forward_extend` 的滑窗启用条件再叠加 `causal=True` 门，encoder 路径完全绕过滑窗逻辑。
+  source: 'SGLang #39300（2026-09-13 open，含双向 vs 因果掩码公式对照、ModernBERT 场景与修复 PR #39298 的 HF 平行验证数据）。https://github.com/sgl-project/sglang/issues/39300 · 修复：PR #39298'
+  behavior: 无 crash、无警告——encoder 模型的长上下文表示**静默偏离参照实现**（token 全局 attends 而非局部窗口），embedding 质量退化且与 HF 不一致；对下游检索/重排任务是无声的精度损失。8.51（CPU AMX extend 恒 causal mask）之后"因果性假设静默反转"族新成员：本条在滑窗掩码维度、TorchNative 后端。
+  trigger_surface: SGLang + TorchNativeAttnBackend + 非因果（encoder）滑窗模型 + 长上下文（other_stack）
+  discovery: |-
+    2026-09-14 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '裁定 subsystem：取 算子/内核。原文缺陷位于 SGLang TorchNativeAttnBackend 的 _make_sliding_window_mask 与 forward_extend 滑窗启用条件，修复 PR #39298 改的也是后端 SDPA extend/decode 路径；词表 模型定义 中的“attention mask 构造”指建模代码里的 mask，本条模型代码无误、错在注意力后端实现。其余字段维持原判。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 模型定义
+        status: panel7
+      effect:
+        from: 数值结果
+        to: 输出内容
+        status: panel7

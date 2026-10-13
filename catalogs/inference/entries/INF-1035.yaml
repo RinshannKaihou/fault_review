@@ -1,0 +1,55 @@
+id: INF-1035
+legacy_ids:
+- '11.11'
+slug: sglang_mimo_toolcall_streaming_silent_text_drop
+aliases: []
+title: SGLang MiMo 流式 tool call 解析静默丢文本
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: sglang
+    component: MiMoDetector 流式增量解析
+  behavior: current_tool_id>0 后文本被持续缓冲，stream 结束时从不清空 buffer；<tool_call> 被增量切分时，no-marker 分支把 buffer 当 normal text flush 并清空。
+effect:
+  objects:
+  - 输出内容
+  detail: 流式模式下最后一个 tool call 之后的文本（解释、总结）永远不被发出；标记被切分时整个 tool call 识别失败，原始 markup 作为 content 流给用户。one-shot 与 chunked 差异测试可暴露。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-02'
+remarks: 希望增加 subsystem「输出解析」：tool-call/reasoning parser 等把模型输出解析为结构化响应的服务层后处理，既非请求调度也非分词/模板，暂归 调度/服务
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/33186
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（流式输出构造层静默丢文本） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: SGLang 的 `MiMoDetector.parse_streaming_increment` 在流式模式下有两个静默数据丢失路径：(1) 当 `current_tool_id > 0`（已解析过一次 tool call）时，后续文本被永久缓冲（`return StreamingParseResult(normal_text="")` 持续），两次 tool call 之间的文本只在下一个 `<tool_call>` 到达时才 flush，**最后一个 tool call 之后的文本（解释、总结）永远不会被 flush**——流式 serving 路径从不在 stream 结束时清空 detector buffer。(2) 当 `<tool_call>` 标记被增量切分时，no-marker 分支把整个 buffer 当 normal text flush 并清空，标记永远无法被识别 → 整段原始 markup 作为 content 流给用户。差异测试 `detect_and_parse`（one-shot）vs `parse_streaming_increment`（chunked）可暴露。
+  source: 'SGLang #33186（2026-08-01 open）。组件 `srt/fu...` 的 `MiMoDetector.parse_streaming_increment`。https://github.com/sgl-project/sglang/issues/33186'
+  behavior: 无 crash、无 NaN。流式模式下最后一个 tool call 之后的文本（解释、总结）静默丢失；被切分的 bot-token 标记使整个 tool call 识别失败、原始 markup 流给用户。属「流式输出构造层 buffer 未在 stream 结束清空 → 静默丢文本」新子签名，是 post-forward 输出构造层的静默正确性 bug。
+  trigger_surface: SGLang 专用
+  discovery: 2026-08-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

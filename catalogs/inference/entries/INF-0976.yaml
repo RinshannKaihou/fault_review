@@ -1,0 +1,57 @@
+id: INF-0976
+legacy_ids:
+- '10.60'
+slug: vllm_tool_parser_nonstreaming_truncation_drops_post_tool_call_text
+aliases: []
+title: vLLM 非流式 tool parser 丢弃工具调用之后的文本
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: hermes/deepseekv3 非流式解析
+  behavior: 非流式 extract_tool_calls 取 tool-call 起始 token 之前的文本作 content 后不再恢复，丢弃其后文本；流式实现会发出 post-tool 文本，两路径语义未对齐。
+effect:
+  objects:
+  - 输出内容
+  detail: 模型在 tool call 后继续生成文本时，非流式请求（含 /v1/messages 非流式转换）静默丢失该文本（如丢 It is 30 degrees.），流式请求正常返回，同一 generation 两种交付模式内容不一致。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + deepseekv3/hermes tool parser + 非 streaming 请求 + 模型在 tool call 后继续生成文本（yes）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-10'
+remarks: subsystem 缺「输出解析（tool/reasoning parser）」：parser 既非分词/模板也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56263
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0958
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM tool parser 的**非 streaming** `extract_tool_calls` 在 tool-call 起始 token 处截断 content 后**永不恢复**：DeepSeek-V3 parser 取 `<｜tool▁calls▁begin｜>` 之前的文本为 content，hermes parser（`hermes_tool_parser.py:109`）同样 `content = model_output[:find(tool_call_start_token)]`——而两者的 streaming 实现都把 post-tool 文本作为 content delta 发出（`deepseekv3_tool_parser.py:248`）。CPU-only 复现（无 GPU 无权重、仅 tokenizer 下载）：同一 MODEL_OUTPUT，streaming 逐 token 解出 `let me check the weather.It is 30 degrees.`，非 streaming 丢 `It is 30 degrees.`；下游 `/v1/messages` 的 `messages_full_converter`（非 streaming）永远看不到该文本，`message_stream_converter`（streaming）在 tool_use 块后发 text 块——**同一 generation 两种交付模式内容不一致**） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 通道终止符假设族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 非 streaming 路径把"tool call 之后的文本不属于 content"当作隐式假设实现为截断；streaming 路径的增量状态机无此假设。两种模式由不同代码路径维护，语义从未对齐。
+  source: 'vLLM #56263（2026-09-10 open，含 CPU-only 双模式对照复现脚本与两处 parser 源码位点）。https://github.com/vllm-project/vllm/issues/56263'
+  behavior: 无 crash——非 streaming 客户端（OpenAI API 兼容路径）**静默丢失 tool call 之后的模型文本**；streaming 用户看到、非 streaming 用户看不到同一内容。10.42（Kimi-K3 parser 通道终止符假设丢 tool call）之后"parser 终止符/边界假设"族新成员：本条在 stream vs non-stream 模式分歧维度（丢失的是文本而非 tool call）。
+  trigger_surface: vLLM + deepseekv3/hermes tool parser + 非 streaming 请求 + 模型在 tool call 后继续生成文本（yes）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

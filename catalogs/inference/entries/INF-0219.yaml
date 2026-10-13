@@ -1,0 +1,52 @@
+id: INF-0219
+legacy_ids:
+- '1.220'
+slug: ttmetal_topk_nan_sign_magnitude_bit_order_minus_nan_drops_out_of_topk
+aliases: []
+title: ttnn.topk 按位模式排序致 −NaN 掉出 top-k
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.topk SFPU 排序网络比较器
+  behavior: SFPU local-sort/merge 网络把浮点按原始位模式的 (sign, magnitude) 当整数键排序，未实现 IEEE 全序、无 NaN 分支，−NaN 因符号位被排在 −inf 之下。
+effect:
+  objects:
+  - 数值结果
+  detail: largest=True 且行内含 −NaN 时，NaN 静默掉出 top-k，返回值与索引集合全错（torch.topk 把 NaN 排最前），无 crash；+NaN 场景因位序巧合与 torch 一致，偶发 +NaN 测试无法发现；bf16 与 fp32 索引排列相同。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal 0.78.0 + ttnn.topk + 输入含 NaN（尤其 −NaN）lane（hw_specific；数值触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56626
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.topk`（0.78.0 wheel）的 SFPU local-sort/merge 网络对 value lane 按**原始位模式的 (sign, magnitude)** 排序、**无 NaN case**：NaN 按 mantissa 位参与排序——`+NaN`（0x7FC0…）排在 +inf 之上（largest=True 时碰巧与 torch.topk 一致）、**`−NaN`（0xFFC0…）排在 −inf 之下**（低于一切有限值）。largest=True、k=16、1..64 行含一个 −NaN 时：NaN **整条静默掉出 top-k**——16/16 值与 16/16 索引全部错误（torch.topk 把 NaN 排最前）；仅符号位不同的两个 NaN 落在行两端。bf16 与 fp32 的**索引排列相同**（bf16 返回值另被冲刷为 inf——#51557/#54381/#56414 已知 packer 族，非本条主题）。op 自带文档与注册 golden 就是 `torch.topk` 仍静默分歧） · Cov: `NEW`（NaN 按位排序致 top-k 元素集错误子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 排序网络的比较器把浮点位模式当 (sign, magnitude) 整数键，未实现 IEEE 全序（NaN 应视作大于一切有限值）；−NaN 的符号位使其落入序列底端，largest=True 的截断窗正好把它切掉——返回的是**不同的元素集合**而非仅编码差异。
+  source: 'tt-metal #56626（2026-09-15 open，Bad Outputs，含 fp32/bf16 双精度对照、op 契约与 golden 定义引用、#51557/#54381/#56414 族界分说明）。https://github.com/tenstorrent/tt-metal/issues/56626'
+  behavior: 无 crash、无 NaN 外溢信号——含 −NaN lane 的 top-k 静默丢元素（索引集合全错），下游 routing/检索/采样拿到错误候选集；+NaN 场景与 torch 一致纯属位序巧合，使该缺陷在偶发 +NaN 测试下不可见。1.151（argmax NaN 语义）之后归约/排序维度新成员：本条损坏的是**离散选择操作的集合语义**。
+  trigger_surface: tt-metal 0.78.0 + ttnn.topk + 输入含 NaN（尤其 −NaN）lane（hw_specific；数值触发）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - detail

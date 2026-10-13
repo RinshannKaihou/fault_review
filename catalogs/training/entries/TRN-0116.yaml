@@ -1,0 +1,55 @@
+id: TRN-0116
+legacy_ids:
+- OPT.16
+slug: mixed_dtype_grad_list_single_multi_tensor_launch
+aliases: []
+title: 混 dtype 梯度共用一次 multi_tensor 调用致范数错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: clip_grads 梯度范数与裁剪
+  behavior: 把 bf16 decoupled_grad 与 keep-in-fp32 参数的 fp32 梯度放进同一 TE multi_tensor launch 求范数/裁剪，kernel 按首张量 dtype 派发读全部张量。
+effect:
+  objects:
+  - 梯度
+  - 指标/日志
+  detail: precision-aware optimizer + bf16 梯度 buffer 下：bf16 梯度排前时 fp32 梯度被按 2 字节读，grad norm 与 clip 系数静默错值；fp32 排前时首次求范数即 illegal memory access crash，易误诊为通信故障。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7338
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7279
+  kind: github_pr
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'Megatron `--use-precision-aware-optimizer` + bf16 梯度 buffer（`grad_reduce_in_fp32=False`、`main_grads_dtype=bf16`）下，bf16 参数暴露 bf16 `decoupled_grad`，而 `mark_keep_in_fp32` 的原生 fp32 参数（DeepSeek-V4 hyper-connection alpha/bias、`ape`、`attn_sink` 一类）持有 fp32 梯度。`get_grad_norm_fp32` / `clip_grad_by_total_norm_fp32` 把两种 dtype 塞进**同一个** TE `multi_tensor` launch——kernel 按**列表首张量**的 dtype 派发、按该元素大小读全部张量：fp32 在前时 bf16 张量越界读出 illegal memory access（crash 面）；**bf16 在前时 fp32 梯度被按 2 字节读——静默算出垃圾 norm/clip，不 crash**。`assert grad.dtype in (float32, bfloat16)` 放行混 dtype 但从不分组。修复 = 按 dtype 分组各跑一次 kernel、范数平方累加后单次 all-reduce（collective 数与同质列表语义完全一致）；实测分组 `{''float32'': 7, ''bfloat16'': 295}`，DeepSeek-V4-Pro SFT（TP1/PP32/EP8）32/64 节点正常训练。已知非 TE #2918（int32 numel 溢出）。'
+  source: 'Megatron-LM #7338（crash 站点 `CUDA_LAUNCH_BLOCKING=1` 定位到 `clip_grads.py:114`；修复已验证；oncall 建议转 TE 仓库跟踪，2026-09-15）。https://github.com/NVIDIA/Megatron-LM/issues/7338 ；归属裁决 + 修复 PR（2026-09-17 补）：NVIDIA oncall 一度建议转 TE 仓库，报告者以「混 dtype 列表由 MCore `clip_grads.py` 自己拼装、TE kernel 按首张量 dtype 派发是其文档化契约」反驳；Connor-XY 09-16 裁定留在 Megatron-LM——norm 与 scalar/tensor 双裁剪路径均缺 dtype 分组，draft 修复 #7279 按 dtype 分组并保持 collective 顺序不变。https://github.com/NVIDIA/Megatron-LM/pull/7279 ；PR #7279 生产验证（2026-09-18 补）：linmuchuiyang 在 DeepSeek-V4-Pro（~1.6T MoE）full-param SFT、32 节点 ×8 H100、TP1/PP32/EP8、bf16 梯度 buffer + CPU-offload precision-aware optimizer 上验证 head `333ecc95`——原 crash 路径干净运行，grad norm 与其自研 dtype 分组 workaround 一致（#7338 评论区）。'
+  behavior: 两种截然不同的可见面由**列表顺序**决定：fp32 梯度排前 → 首 `get_grad_norm_fp32` 即 NCCL illegal memory access（fail-fast，易误诊为通信故障）；bf16 梯度排前 → 混 dtype 梯度范数/clip 系数静默错值，grad norm 曲线照常打印但数值无意义，clip 保护面失效。与 OPT.09（clip 判据按优化器类型）/OPT.13（clip 范数跨不相交专家取平均）同族：**裁剪路径的 dtype/所有权几何假设被打破**；与 NUM 家族 cast 类不同：那边是数值精度转换错、这边是 kernel dispatch 按 dtype 分组缺失；`grad_reduce_in_fp32=True` 可回避但梯度 buffer 翻倍（12.7B 专家桶 +23.6 GiB，H100 80GB PP32 下 OOM）。
+  discovery: 2026-09-16 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

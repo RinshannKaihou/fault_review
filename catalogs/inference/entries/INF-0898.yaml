@@ -1,0 +1,57 @@
+id: INF-0898
+legacy_ids:
+- '9.15'
+slug: sglang_session_mrope_table_partial_slice_crash
+aliases: []
+title: SGLang session 续聊 M-RoPE 位置表切片无防护致引擎崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: sglang
+    component: M-RoPE 位置表切片（fill_from）
+  behavior: session 续聊第二请求的 mm-input M-RoPE 位置表与静态 buffer 注册尺寸不一致，cuda_graph_buffer_registry.fill_from 对其做 partial slice 时没有边界防护。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Qwen3.5-family 模型 session 第二请求（任意模态、CUDA graph 开或关）在 torch._foreach_copy_ 处抛 RuntimeError（1842 vs 1816），全部 TP scheduler 退出，在飞请求全部失败。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；Qwen3.5-family M-RoPE 模型 + session continuation 第二请求（任意模态）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35482
+  kind: github_issue
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（session 续聊第二请求对 mm-input M-RoPE 位置表做未防护 partial slice，新旧表尺寸不匹配在共享 buffer loader `_foreach_copy` 崩掉全部 TP scheduler） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'Qwen3.5-family 多模态模型上扩展 session（`/generate` + `session_params: {id, rid}`）的第二请求使 scheduler 在 `cuda_graph_buffer_registry.py:52` 的 `torch._foreach_copy_(group_dsts, group_srcs)` 崩溃：mm-input M-RoPE 位置表的 partial slice 产出 1842 与 1816 不匹配的张量（dim 1）——session 增量位置表与静态 buffer 注册尺寸不一致且**无边界防护**。复现矩阵 4/4：native/streaming session、prefill CUDA graph on/**off**（eager 路径 `eager_runner.load_batch` 同一 copy）、甚至**纯文本第二请求也崩**——排除 mm payload 与 CUDA-graph runner，缺陷在共享 `cuda_graph_buffer_registry.fill_from` 的未防护切片。全部 TP scheduler 退出（SIGQUIT → kill_process_tree），在飞请求全部被拖死。'
+  source: 'SGLang #35482（2026-08-19 open，Qwen3.5-family；同 pod 无状态流量健康、mamba radix cache 前缀复用正常）。https://github.com/sgl-project/sglang/issues/35482'
+  behavior: crash（RuntimeError → 引擎整体死亡，非静默）。属「session 增量状态 × 静态 buffer 尺寸不一致未防护」**新子签名**——与 9.12（mRoPE 维度展平）同为 mRoPE 表处理缺陷，本条在 session 生命周期边界且 fail-loud。
+  trigger_surface: SGLang；Qwen3.5-family M-RoPE 模型 + session continuation 第二请求（任意模态）
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 位置编码
+        to: 运行时/执行
+        status: unanimous

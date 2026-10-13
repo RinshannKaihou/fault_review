@@ -1,0 +1,58 @@
+id: INF-1267
+legacy_ids:
+- K6.2
+slug: kivi_key_perchannel_outlier_granularity
+aliases: []
+title: KIVI：key cache 按 token 量化的粒度错配致准确率坍缩
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: KV cache key 量化粒度
+  behavior: key cache 存在持续的大幅离群通道（value 没有），本应按 channel 量化；按 token/按 tensor 量化 key 时少数离群通道主导每个 token 的取值范围，压垮其余通道分辨率并破坏 QK^T。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 低 bit KV + per-token key 粒度下推理任务准确率急剧坍缩（Llama-2-7B GSM8K 13.50→5.76）；改回 per-channel 后仅下降约 2%。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2402.02750
+  kind: arxiv
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`infra_off` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `yes` · 置信度 `documented`'
+  mechanism: key cache 存在持续存在的大幅离群**通道**（value 没有这一性质），因此 key 必须按 channel 量化、value 按 token 量化。把 key 按 token / 按 tensor 量化，会让少数离群通道主导每个 token 的取值范围，压垮其余通道的分辨率并破坏 QK^T——这是**粒度不匹配**，而不是 FP8 舍入漂移。
+  source: KIVI arXiv:2402.02750（ICML'24）。
+  behavior: 在低 bit KV + per-token key 粒度下推理任务准确率急剧坍缩（Llama-2-7B GSM8K 13.50→5.76）；改回 per-channel 后仅下降约 2%。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: infra_off——离群通道被压平后 key 落在特定通道上离流形。可捕获：statistical 族的逐通道 key 幅值 / 峰度异常，以及 QK attention-logit 分布扭曲；spectral 族可见 key 子空间被少数通道支配后的能量重分配。会漏检：全局 geometric 幅值/范数指标（总能量几乎不变）与 trajectory 平滑度指标。签名受输入门控——只有离群通道占比高的 token 才明显离流形。
+  repro: prefill 时一次性在层 L 上**只**对 KEY 做**错误粒度**的 fake-quant：对每个位置 t 用一个覆盖全部 (kv_head, channel) 的对称 absmax `bits`-bit scale（即 per-token）；value 保持不动（按 KIVI，value 的量化粒度不是失效轴）。诚实近似：KIVI 的基线是带全精度残差窗口的 group-wise per-token 量化，这里用的是最粗的 per-token 变体（一个 scale 横跨 2 个 KV head × 64 通道）且只作用于单层，以最大化「离群通道压垮其他通道」的机制，而非复刻 KIVI 的精确消融。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

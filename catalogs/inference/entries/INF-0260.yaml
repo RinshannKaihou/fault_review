@@ -1,0 +1,55 @@
+id: INF-0260
+legacy_ids:
+- '1.261'
+slug: ttmetal_dflash_shard_argmax_dealloc_freed_buffer_view_rows1
+aliases: []
+title: dFlash 单行 _shard_argmax 读取已释放 buffer
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tt-metal
+    component: dFlash 草稿 _shard_argmax
+  behavior: rows==1 时 ttnn.reshape 返回与 sel_u 共享设备 buffer 的视图，紧接着 sel_u.deallocate(True) 绕过共享引用检测强制释放该 buffer，返回的视图指向已释放内存。
+effect:
+  objects:
+  - 输出内容
+  detail: 开启 GEMMA4_DFLASH_SHARD_ARGMAX=1、TP>1 且 drafter 仅 1 行时，选出的 draft token id 来自已释放内存，内容随后续分配时序漂移（最小重现中被 7 填充），无报错；verify 调用（≥2 行）与默认配置不受影响。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + Gemma4 dFlash + `GEMMA4_DFLASH_SHARD_ARGMAX=1` + TP>1 + 单行 drafter 批（hw_specific：非默认开关）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-26'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57989
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal Gemma4 dFlash drafter `_shard_argmax` 在 `rows==1` 时 `ttnn.reshape` 返回与 `sel_u` **共享设备 buffer 的视图**（`buffer_address()` 相等；rows≥4 时 reshape 拷贝故无害），紧接着 `sel_u.deallocate(True)` **强制释放该 buffer**——返回的 draft id 从已释放内存读出，后续分配覆写（最小重现：4 个 32×32 int32 分配后 ids 被 7 填充）。触发面：`GEMMA4_DFLASH_SHARD_ARGMAX=1` + TP>1 + 单 drafter 行（`GEMMA4_DFLASH_BLOCK=2` 的 drafter 路径或 B=1、K1=2 批处理）；verify 调用 ≥2 行免疫、默认配置不中） · Cov: `NEW`（reshape 视图别名 × 强制 deallocate 生命周期断裂子签名） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`deallocate(True)` 绕过共享引用检测（非强制版会跳过仍有 tensor 引用的 buffer）；报告者附 buffer_address 相等性证明与免模型最小重现（无 GPU 权重即复现 freed-memory 读）。修复方向：延后释放或改非强制释放。'
+  source: 'tt-metal #57989（2026-09-26 open，Bad Outputs，含 buffer 别名证明、rows∈{1,4} 对照重现与可达配置枚举）。https://github.com/tenstorrent/tt-metal/issues/57989'
+  behavior: 无 crash、无报错——分片 argmax 选出的 draft token id **来自已释放内存**：内容依赖后续分配时序（垃圾/陈旧值），失败形态不可复现地漂移。与 1.237（ProgramSpec 缓存别名预热绑定冻结）构成 reshape/缓存**别名生命周期**对：本条在设备 buffer 强制释放维度，且是 spec draft 路径上第一个 UAF 形态。
+  trigger_surface: tt-metal + Gemma4 dFlash + `GEMMA4_DFLASH_SHARD_ARGMAX=1` + TP>1 + 单行 drafter 批（hw_specific：非默认开关）
+  discovery: 2026-09-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+        status: panel7

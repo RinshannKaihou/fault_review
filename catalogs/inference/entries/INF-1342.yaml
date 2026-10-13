@@ -1,0 +1,79 @@
+id: INF-1342
+legacy_ids:
+- K10.31
+slug: gemini_gcs_object_mutation_stale_context_cache
+aliases: []
+title: Gemini 显式上下文缓存不追踪 GCS 对象变更致用旧 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: gemini-api
+    component: 显式上下文缓存的缓存 id 失效
+  behavior: 显式上下文缓存按 TTL（默认 60 分钟）存储内容的 KV，缓存 id 不追踪可变内容；TTL 内源 GCS 对象被改动后，缓存资源仍指向由过期字节算出的 KV。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 用户更新源文件后继续提问，回答仍基于编辑前版本，最长持续一个 TTL 且无任何提示；隐状态完全健康，只有对比一次全新重算才能检测。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: 其他服务栈/API
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 来源：ai.google.dev/gemini-api/docs/caching（原文警告）。
+relations: []
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`model_on` · Cov: `NEW` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: 显式上下文缓存（explicit context caching）以 TTL（默认 60 分钟）存储内容的 KV；在 TTL 内改动源 GCS 对象，缓存资源仍指向由**过期字节**算出的 KV，因为缓存 id 并不追踪可变内容。服务端于是用旧文档的 KV 前缀回答关于新文档的问题。
+  source: 来源：ai.google.dev/gemini-api/docs/caching（原文警告）。
+  behavior: 用户更新了源文件后继续提问，模型的回答仍基于编辑前的版本，最长可持续一个 TTL 周期且无任何提示。
+  trigger_surface: 其他服务栈/API
+  signature: 这是最纯粹的 model_on / "perfect disguise" 情形——KV 本身是**健康输入的健康编码**，只是编码的是错误的输入。隐状态完全在流形上，geometric/spectral/trajectory/statistical/infotheoretic **全族漏检**。签名（若被静默提供）只体现为"KV 前缀编码的是编辑前的文档"，**只能相对一次全新重算才可检测**——即 cheap 族的 recompute-oracle 轴（同 8.85 `kv_corrupt` 的重算对照；前提：记录 batch 组成的 bitwise 重算）是唯一通道，这与 `bug_perfect_disguise`（9.25）的判定一致。
+  repro: partial——用 prompt A 做 prefill 得到 KV，随后把输入 token 换成 prompt A'（A 的小改版）继续解码，即"KV 来自旧字节、查询来自新字节"；API 侧的 TTL / 缓存资源生命周期需服务侧复现。
+  locus: api-prompt-cache
+  priority: |-
+    low
+    `gqa_head_group_repeat_vs_interleave_mismap`（全层签名，GQA 在现代模型上无处不在）、
+    `sepllm_separator_set_tokenizer_mismatch_segment_drop`（覆盖空洞签名）、
+    `paged_kv_nhd_hnd_layout_axis_transpose`（干净的轴置换钩子）、
+    `fp8_attn_pv_longctx_accumulation_collapse`（长度单调漂移），外加可复现的
+    `cachedattention_truncation_stale_positional_kv_reuse`、`fp8_kv_missing_or_default_scale_silent_corruption`、
+    `fp8_kv_frozen_calibration_miscalibration`、`ollama_context_shift_nkeep_zero_sink_bos_drop`。
+    第二轮更广泛的扫描：54 个原始候选 → 32 → **31 个确认**（18 个 NEW，13 个 VARIANT-OF）。所有
+    GitHub 引用的 issue/PR **经 `gh` 核实为真实**。新增两个此前缺失的 locus：**layout-backend（布局/后端）**
+    与 **api-prompt-cache（API 级 prompt 缓存）**。
+    **自我纠正**：该工作流自我纠正了 **3 处误引用**——弃用 ollama #5303（`ollama_context_shift_nkeep_zero_sink_bos_drop`
+    改引 #2805、#3176）、flashinfer #1353（`paged_kv_last_page_len_zero_at_page_boundary` 改引
+    FlashInfer append/kv_layout 文档）、trtllm #10966；并**拒绝了 1 个候选**
+    `trtllm_partial_block_copy_on_reuse_contamination`——所引文档*反驳*了该机制。
+    **文档内重叠（⚑§9）**：上文三个 FP8 条目（`fp8_attn_pv_longctx_accumulation_collapse`、
+    `fp8_kv_missing_or_default_scale_silent_corruption`、`fp8_kv_frozen_calibration_miscalibration`）
+    从其他 issue 重新推导出 §9 的 FP8 簇，是同一现象的不同来源侧（修复 PR 侧 vs issue 侧）。
+    全文档原始总计 102 条，扣除这 3 处 §9/§10 FP8 重叠后为 **约 99 个不同的 KV-cache / 注意力缓存
+    故障机制**；全文档新颖度约 65 个 NEW 机制、约 34 个已有/已实现 id 的变体。
+    （原文此处按旧判定基准的「约 19 个 `injectable=yes`」计数已作废；
+    按 vLLM/CUDA 重估的分布见滚动汇总的**触发**行。）
+    # 附录
+    本附录不含故障条目，只收录支撑材料：编号编目与 K* 扩展的覆盖关系、
+    已知缺口与盲点、被拒/降级候选的负结果记录、以及术语对照与引用可信度说明。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

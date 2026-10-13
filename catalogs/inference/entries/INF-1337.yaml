@@ -1,0 +1,57 @@
+id: INF-1337
+legacy_ids:
+- K10.26
+slug: mlx_rotating_kvcache_swa_prefix_trim_break
+aliases: []
+title: mlx-lm RotatingKVCache 修剪忽略环形回绕致读错位 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: mlx-lm
+    component: RotatingKVCache 前缀修剪
+  behavior: SWA 的环形 RotatingKVCache 无法修剪到公共前缀；不安全变体按逻辑长度修剪而忽略环形回绕，回绕后物理槽索引不等于逻辑位置模窗口长度，解码读到过期或位置错误的窗口条目。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 仅不安全变体且在回绕之后出现：多轮会话中指代错乱、出现陈旧内容；安全路径（整块抹除重算）只表现为前缀复用完全失效。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: AMD/Apple 路径，非本环境
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/ml-explore/mlx-lm/issues/980
+  kind: github_issue
+  resolved_from: 'mlx-lm #980'
+relations:
+- kind: var
+  target: INF-1232
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `var:swa_sliding_cache_premature_roll` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: SWA 的环形 `RotatingKVCache` 无法被修剪到公共前缀。安全路径的做法是整块抹除并重算（零复用，只损失性能）；不安全的变体按逻辑长度修剪而忽略环形回绕，于是解码会注意到过期的 / 位置错误的窗口条目。故障只存在于不安全变体。
+  source: '`gh`：mlx-lm #980。'
+  behavior: 安全路径下表现为前缀复用完全失效（纯性能损失）；不安全变体下多轮会话中出现指代错乱与陈旧内容。
+  trigger_surface: AMD/Apple 路径，非本环境
+  signature: 只有回绕之后才出现，属长度门控的 ambiguous；签名（仅不安全变体）为**回绕后物理槽索引 ≠ `(logical pos mod W)`**，本质是索引错位型 infra_off。trajectory（回绕点处的突变）与 geometric（错位段的流形偏离）可见；由于被读到的是"真实但错位"的 KV，其范数与谱都健康，statistical/spectral 易漏检。安全路径（零复用）对隐藏态无任何签名，任何度量都应判为健康。
+  repro: partial——模拟环形缓存：维护窗口 W，超过后按 `pos mod W` 覆盖写，再在修剪时按逻辑长度而非物理槽切片，制造 `物理槽 ≠ logical pos mod W` 的错位；mlx-lm 的 `RotatingKVCache` 实现本身属 mlx 栈，此处仅为 PyTorch 类比。
+  locus: eviction-compression
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

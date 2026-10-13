@@ -1,0 +1,51 @@
+id: INF-0271
+legacy_ids:
+- '1.272'
+slug: vllm_vendored_fla_chunk_o_gate_loaded_unmasked_before_exp_nan_propagation
+aliases: []
+title: vLLM 内置 FLA chunk_o 先 exp 后 mask 致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: vendored chunk_o.py 内核
+  behavior: vendored chunk_o.py 把 token mask 计算移到 USE_G 块之后，gate 以 boundary_check 无 other 加载并先于 mask 被 exp，未定义 lane 值进入输出累加器。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: GDN/线性注意力模型在 chunked prefill 产生部分边界 chunk 时，该路径输出可被 NaN/inf 静默污染（而非有限错值）；上游 fla 同块先算 mask 并以 other=0.0 加载。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + GDN/linear-attention 模型 + chunked prefill 产生部分边界 chunk（config）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59404
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（vLLM vendored `third_party/flash_linear_attention/ops/chunk_o.py` 相对上游 `fla-org/flash-linear-attention` 的关键分叉：token mask `o_t/m_t` 被移到 `USE_G` 块**之后**计算，gate 以 `boundary_check` 无 `other` 加载后**先于任何 mask 被 `exp`**——部分边界 chunk 中未定义 lane 的值（含 pairwise 差 `exp(b_g[:,None]-b_g[None,:])` 混合有效/无效 lane）直接进入输出累加器；上游同块先算 mask 并以 `mask=m_t, other=0.0` 加载） · Cov: `NEW`（vendored 副本丢 mask+fill 且把 mask 计算移到使用之后的子签名） · 触发 `config` · 置信度 `documented`'
+  mechanism: '`tl.load` block pointer 越界 lane 值未定义，须先 mask 再消费；vendored 副本把 exp 消费提前到 mask 存在之前。源码双侧逐行对照完整（vLLM main `fb91712b` vs upstream）。'
+  source: 'vLLM #59404（2026-09-30 open，含双侧源码对照与修复方向）。https://github.com/vllm-project/vllm/issues/59404'
+  behavior: 无 crash——chunked prefill 部分边界 chunk 的 GDN/linear-attention 路径输出可被 NaN/inf 静默污染（而非 wrong-but-finite）。
+  trigger_surface: vLLM + GDN/linear-attention 模型 + chunked prefill 产生部分边界 chunk（config）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

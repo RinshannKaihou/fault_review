@@ -1,0 +1,53 @@
+id: INF-1095
+legacy_ids:
+- '11.72'
+slug: vllm_pp_spec_mamba_align_stale_idx_mapping_wrong_block_state_copy
+aliases: []
+title: vLLM PP+spec 下 mamba align 用陈旧映射拷错状态块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: mamba align 块表索引
+  behavior: PP>1 时 align 内核拿到 pp_size 步前的 idx_mapping，却用来索引 T−1 batch 的 block table，recurrent state 被拷到错误的物理 mamba 块
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: PP>1 + spec + hybrid Mamba/GDN 且批组成变化时，仅 rank 0..pp−2 受影响：8×3090 TP2 PP4 k=3 混合 4 路并发出现 NaN logits，945K RULER 召回 12/20、14/20（spec off 16/20）；单请求不触发
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + PP>1 + spec decode + hybrid Mamba/GDN + 并发批组成变化（partial：拓扑 × spec × 并发组合）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55951
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1087
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（vLLM PP>1 + 推测解码（MTP/EAGLE 类 proposer）+ hybrid Mamba/GDN 模型：mamba align postprocess 用**batch 行**索引 block table，而它收到的 `idx_mapping` 属于 **pp_size 步之前**的 batch——两步间 batch 组成变化（请求完成/新请求准入）时，recurrent（GDN/conv）state 被拷贝到**错误的物理 mamba 块**（可能是存活邻居的、或已释放重分配的）；下游 GDN 递归/MoE 产出 **NaN logits 或静默错 token**；8×RTX 3090 TP2 PP4 spec k=3 1M 上下文：混合 4 路并发 NaN logits + 945K RULER 召回 12/20、14/20（spec off 16/20）；仅 rank 0..pp−2 受影响；修复=按 req 经 slot 索引请求序持久表，零额外成本） · Cov: `var:vllm_mamba_spec_context_stale_batch_mapping_poisons_state`（11.64 陈旧 batch 映射毒化状态族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`execute_model()` 的 `update_pp_decode_requests()` 弹出 pp_size 步前的 FIFO 项并传其 `idx_mapping` 给 align 内核，但内核用它索引的是 **T−1 batch 的 gathered block table**——两个时间层的映射交叉使用；PP 流水使映射延迟 pp_size 步而 block table 只延迟 1 步，错位窗口=批组成变化概率 × pp_size。'
+  source: 'vLLM #55951（2026-09-08 open，含 model_runner 代码路径、RULER 召回对照、SPEC=0 消融与已验证修复）。https://github.com/vllm-project/vllm/issues/55951'
+  behavior: NaN logits（fail-visible）与静默召回损失并存；单请求永不触发（无重排）、SPEC=0 不受影响——**只在多请求 × spec × PP 的组合窗口显形**，与 11.64（spec context 陈旧 batch 映射毒化 recurrent state）同族、新增 **PP 流水延迟维度**。
+  trigger_surface: vLLM + PP>1 + spec decode + hybrid Mamba/GDN + 并发批组成变化（partial：拓扑 × spec × 并发组合）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

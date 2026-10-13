@@ -1,0 +1,64 @@
+id: TRN-0240
+legacy_ids:
+- RL-RO.18
+slug: vllm_sleep_resume_corrupts_rollout_weights
+aliases: []
+title: vLLM sleep/resume 周期损坏 verl rollout 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: vLLM sleep/resume 周期
+  behavior: colocated 模式默认 free_cache_engine=true，每次 weight sync 前后对 vLLM 执行 sleep(level=1)/resume，resume 重建的权重与刚同步的权重不一致；具体根因原文未定位。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  - 训练信号
+  detail: verl 0.8.0/vllm 0.28.0 从第二次 update_weights 起 rollout 输出变成多语言乱码，reward 与 advantage 全零且无报错，外观像 reward collapse；关闭 free_cache_engine 后 0 损坏。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7904
+  kind: github_issue
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'verl colocated 模式下 `free_cache_engine=true`（**默认值**）让每次 weight sync 前后对 vLLM engine 执行 `sleep(level=1)` / `resume`——sleep 释放 weights/KV 显存、resume 重建。verl 0.8.0 + vllm 0.28.0：从**第二次 `update_weights` 起**，rollout 输出退化为多语言 token 乱码（真实词表 token 的 CJK/西里尔/阿拉伯文混合）；逐 step 归因：gs=0（初始 val）0/60 损坏 → gs=1 0/32 → gs=2 **32/52 全损坏**、最终 greedy val 全 0 分。五重排除链：发送端 merged 权重 vs 手工 HF merge 396 张量 0 超 1e-3；接收端 `_update_weights` 收到的权重与发送端 dump **逐 key max diff 0.0**；vLLM 磁盘/内存加载路径单独重放 + 8 并发两段生成 96 utterances 零损坏；LoRA delta 本身 ~1e-6 无辜；唯一剩余变量 `free_cache_engine`——关掉后同训练 0 损坏、reward 健康（E/A 非零 78%）。损坏发生在 sleep/resume 周期内部（resume 重建的权重 ≠ 刚同步的权重），与 ms-swift PR #7017（GRPO sleep/wake 乱码修复）现象一致。verl 0.9.0 同路径字节级相同、默认仍 true。'
+  source: 'verl #7904（2026-09-17；Qwen3-8B bf16 + LoRA r=64 merge=true、GRPO n=4 多轮 agent loop、A100-80GB 单卡；逐步归因表 + 双 config 对照）。https://github.com/verl-project/verl/issues/7904'
+  behavior: 无 error、无 warning——rollout 静默变成乱码、reward 全零，**外部表象 = 「GRPO reward collapse」**（报告者自述被该表象骗了数轮调试）；训练侧 advantage 全 0、策略无学习信号但 job 绿。与 RL-RO.17（encoder cache 漏清）同族「weight sync 后 rollout engine 状态陈旧/损坏」，差异在这边打击 **sleep/resume 生命周期本身**（权重级、非缓存级）、且是默认配置；与 RL-RO.16（verl Mooncake completion slot 不 drain）同为 verl 引擎生命周期管理的静默正确性缺口；「表象是 reward collapse」的伪装面与 RL-RWD 家族诊断陷阱同型。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 重计算/卸载 vs 运行时/执行：定为 重计算/卸载。原文五重排除链证明发送端与接收端 _update_weights 权重逐 key max diff 0.0（同步本身无误），损坏发生在 sleep(level=1) 释放权重→resume 重建 的周期内，属参数卸载/重建；按 rule 1 功能域优先，不选通用的 运行时/执行。独立判断时曾考虑 RL训练回路（权重同步），因同步已被排除而放弃。stack：原文未把根因定位到 vllm 代码（关掉 verl 的 free_cache_engine 即消失，verl 0.9.0 同路径仍默认 true），维持 verl；保留意见：真实修复点可能在 vLLM sleep 实现。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 重计算/卸载
+        to: RL训练回路
+        status: panel7
+    uncertain:
+    - visibility

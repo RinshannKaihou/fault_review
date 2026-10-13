@@ -1,0 +1,61 @@
+id: INF-0317
+legacy_ids:
+- '4.1'
+slug: fp_reduction_order_nondeterminism
+aliases: []
+title: FP 归约顺序随 batch/kernel/拓扑变化致 temp=0 输出不确定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: split-K matmul 等归约 kernel
+  behavior: FP 加法不满足结合律，归约顺序随 batch shape（split-K/stream-K 切分）、kernel 选择（auto-tuner）、TP all-reduce 拓扑和 chunked-prefill 重排而变。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: 同一 prompt 在 temp=0 下跨 run、跨负载、跨 batch 得到不同 greedy token，benchmark 分数抖动，偶有完全发散的 completion；vLLM 开 VLLM_BATCH_INVARIANT=1 在约 44 并发下仍有 logprob 差异。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: bf16/fp16 累加路径 dtype 对照
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/
+  kind: other
+- url: https://arxiv.org/abs/2506.09501
+  kind: arxiv
+relations: []
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`ambiguous`（跨 run 的一个分布，单次 pass 各自 on-manifold） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: MERGED 条目，合并 5 个子故障：(1) temperature0 greedy nondeterminism；(2) batch-invariance split-K matmul；(3) trt/deepspeed batch kernel nondeterminism；(4) vLLM batched-kernel nondeterminism；(5) fp16 QK accumulation order。共同根因是 FP 加法不满足结合律，而 reduction order 会随以下因素改变：batch shape（split-K / stream-K matmul 的切分）、kernel selection（cuDNN/TensorRT auto-tuner）、TP all-reduce topology、以及 chunked-prefill 的 token 重排。结果是同一个 prompt 在 temp=0 下跨 run / 跨负载 / 跨 batch 得到不同的 greedy token。
+  source: 'He & Thinking Machines Lab, "Defeating Nondeterminism in LLM Inference", https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/ （max-abs-diff ~1669 的 matmul 例子）。Yuan et al., arXiv:2506.09501 。vLLM #23138, #5898, #17759 。TRT-LLM #1336 。DeepSpeed #7500 。vLLM #51187（2026-08-05 每日扫描补充：`VLLM_BATCH_INVARIANT=1` 在 ~44 序程并发下仍非确定性，max logprob delta 4.69e-02，token id 不变只 logprob 动；`--max-num-seqs=8` 干净——揭示 batch-invariant 模式在高并发下并非充分保证）。'
+  behavior: 同一 prompt、temp=0，跨次运行给出不同的 greedy token；benchmark 分数抖动；偶尔出现完全发散的 completion。
+  trigger_surface: bf16/fp16 累加路径 dtype 对照
+  signature: 单次 pass 是 ON-manifold 的、各自都"没毛病"，签名只作为 RUN-TO-RUN variance 浮现。运行时批不变性噪声底本身就是这一类的经验签名 —— 也就是说，第 4 类不是待检测的目标，而是检测阈值必须站上去的地板。把 FP 噪声当作健康的单帧 geometric 度量会 MISS 它；有效信号是跨重复 / 跨 batch 的发散（reproducibility oracle、batch=1 vs batch=B 对比），落在 cheap 与 statistical 族而非 geometric 族。这是最典型的"论文级盲区"数值故障：任何声称的故障签名若幅值不显著高于此地板，就无法与它区分。
+  repro: yes。两条路径：其一，在同一 token 上比较 batch=1 与 batch=B 的隐状态（无需注入，直接是 batch-invariance 检查）；其二，用 forward hook 改变归约顺序（例如把一次大 matmul 拆成不同切分再相加）来主动制造 reduction-order 差异，fp32 下幅值约在 1e-4 量级（栈相关，需实测）。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 数值结果
+        to: 输出内容
+        status: unanimous

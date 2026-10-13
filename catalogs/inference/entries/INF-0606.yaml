@@ -1,0 +1,53 @@
+id: INF-0606
+legacy_ids:
+- '6.213'
+slug: vllm_encoder_decoder_cache_manager_per_step_double_free_budget_inflation
+aliases: []
+title: vLLM encoder-decoder 缓存每步重复释放致空槽虚增与超额接纳
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: encoder-decoder 缓存释放记账
+  behavior: 调度器每个 decode 步释放请求全部 encoder inputs，get_cached_input_ids 恒返回全部 id，free_encoder_input 缺引用计数守卫，无条件累加 num_free_slots。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: Whisper 类 ASR 服务中，对 E 个 embedding 的输入 num_free_slots 每个 decode 步虚增 E（100 槽 5 步后读数 300）；can_allocate 据此超额接纳并发 encoder prefill，运行期 OOM 或分配冲突 crash。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + encoder-decoder 模型 + 并发 encoder 输入（config：架构即触发，负载放大）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55733
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0529
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（encoder-decoder 模型（Whisper 类 ASR）V1 调度：`Scheduler._free_encoder_inputs` 对 `num_computed_tokens>0` 的请求**每个 decode 步**释放其全部 cached encoder inputs，而 `EncoderDecoderCacheManager.get_cached_input_ids` 每次调用**恒返回全部 input ids**（同 input 每步重复 free）、`free_encoder_input` 无基类那套引用计数守卫、无条件 `num_free_slots += num_encoder_embeds`——对 E 个 embedding 的输入，`num_free_slots` **每个 decode 步虚增 E**（+请求结束再 +E）：纯记账单测 100 槽预算 5 步后读数 300；准入闸门 `can_allocate` 按虚增空槽放行 → 调度器超额接纳并发 encoder-decoder prefill → 运行期真 OOM/crash） · Cov: `var:vllm_hidden_states_kv_budget_overestimate_startup_reject`（6.136 容量记账失真族） · 触发 `config` · 置信度 `verified`'
+  mechanism: 子类覆盖 free 路径时丢掉了基类 `EncoderCacheManager.free_encoder_input` 的引用计数保护（非幂等 free × 每步重入）；`get_cached_input_ids` 的返回语义（全部 vs 仍持有）与调用方假设（释放仍持有的）错位。GPU-free 纯 Python 复现（main 58ad1f3b91）：allocate 100→60，5 步 ×40，finish +40，读数 300 而非 100。
+  source: 'vLLM #55733（2026-09-07 open，bug label，含无 GPU 复现脚本、`scheduler.py:1951`/`encoder_cache_manager.py:400-415` 定位与预期/实测对照）。https://github.com/vllm-project/vllm/issues/55733'
+  behavior: 记账层静默失真 → 运行期 fail-late（超额接纳后真 OOM 或分配冲突 crash）；Whisper 类 ASR 服务的 admission control 完全失真。6.136（hidden-states 预算高估启动拒绝）之后容量记账族新成员：本条方向相反（**空槽虚增 → 超额接纳**）且随 decode 步数线性恶化——长生成会话下失真无界增长。
+  trigger_surface: vLLM + encoder-decoder 模型 + 并发 encoder 输入（config：架构即触发，负载放大）
+  discovery: 2026-09-07 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

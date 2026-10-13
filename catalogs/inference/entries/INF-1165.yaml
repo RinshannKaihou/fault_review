@@ -1,0 +1,51 @@
+id: INF-1165
+legacy_ids:
+- '12.49'
+slug: vllm_legacy_fused_moe_lora_kernel_unconditionally_casts_operands_to_bf16
+aliases: []
+title: vLLM legacy fused MoE LoRA 内核无条件转 bf16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: legacy fused MoE LoRA 内核
+  behavior: legacy 内核 _fused_moe_lora_kernel 硬编码把两个操作数 cast 到 bfloat16 再做 tl.dot，不保留原生 dtype；本为 ROCm 类型推断的 workaround，被泛化为无条件。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: fp16 MoE + LoRA 在 fully_sharded=True 或 max_lora_rank>128 时走该内核，乘加尾数从 10-bit 截到 7-bit，输出质量静默劣化；rank≤128 非分片的 one-shot 内核保留原生 dtype，两路径精度不同、难诊断。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + fp16 MoE + LoRA（fully_sharded 或 rank>128）（config）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59920
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（vLLM legacy 双内核 `_fused_moe_lora_kernel`（`fully_sharded=True` 或 `max_lora_rank>128` 时使用）无条件把两操作数 cast 到 `bfloat16`（`accumulator += tl.dot(a.to(tl.bfloat16), b.to(tl.bfloat16))`）——**fp16 MoE 模型的 LoRA 乘加精度从 10-bit 尾数静默截到 7-bit**（注释自认 cast 为 ROCm 类型推断兼容，但硬编码 bf16 而非原生 dtype；one-shot 内核（rank≤128 非分片）保留原生 dtype——同模型两条路径精度不同使 discrepancy 难诊断）） · Cov: `NEW`（内核 dtype 硬编码降精度子签名） · 触发 `config` · 置信度 `documented`'
+  mechanism: ROCm 类型推断 workaround 过度泛化为无条件 cast。
+  source: 'vLLM #59920（2026-10-04 open，含两路径源码对照与修复方向）。https://github.com/vllm-project/vllm/issues/59920'
+  behavior: 无 crash——fp16+LoRA 分片/高秩路径输出质量静默劣化。
+  trigger_surface: vLLM + fp16 MoE + LoRA（fully_sharded 或 rank>128）（config）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

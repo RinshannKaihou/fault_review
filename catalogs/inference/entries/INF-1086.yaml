@@ -1,0 +1,60 @@
+id: INF-1086
+legacy_ids:
+- '11.63'
+slug: vllm_qwen38_flash_next_mtp_episodic_zero_acceptance_repetition_collapse
+aliases: []
+title: vLLM Qwen3.8-Flash-Next+MTP 偶发接受率归零与重复
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: PLE short-conv 内核索引加载
+  behavior: 'PR #55467 定位：PLE short-conv kernel 把带步幅的 state_indices 列视图当连续加载，prefill 行 r≥1 落入 request 0 的 spec 块，conv state 被覆写'
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 性能/资源
+  detail: NVFP4 + MTP(k=3) + SM120 偶发持续数小时的 episode：acceptance 跌到 0、吞吐 66 vs 健康 95–135 tok/s、thinking 内无尽重复（一请求烧满 1M token），随后自愈；同镜像 Gemma 4 同签名
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM + Qwen3.8-Flash-Next/QSA+GDN + MTP + SM120（模型+平台组合；episode 触发条件未定位）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55357
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0571
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（Qwen3.8-Flash-Next（qwen4_exp / QSA+GDN hybrid，NVFP4）+ MTP（k=3）偶发**spec 状态发散 episode**：per-window draft acceptance 跌到精确 **0**（~2,000 drafted / 0 accepted）、生成钉死 1-token/step 地板（66 vs 健康 95–135 tok/s）、thinking block 内无尽重复循环（一请求 4h57m 烧满 1M-token 窗口）；episode 持续数小时后自愈；**跨模型指纹**——同镜像同 MTP 配置的 Gemma 4 26B（NVFP4）同日以相同签名挂掉 garbage probe ⇒ 根因指向引擎构建层而非模型权重） · Cov: `var:sglang_nextn_draft_acceptance_uptime_decay_zero_restart_heals`（6.178 acceptance 塌零族） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: draft/verify 状态在某个触发点（uptime/负载模式未知）发散后 acceptance 归零且不自然恢复——draft 模型与 target 的 KV/状态基线分歧使 verify 永拒；与 6.178（SGLang NEXTN 24h 慢衰减）同为 acceptance 塌零，本条是**vLLM 栈、episode 式（数小时窗）**且带跨模型证据：两个架构无关 checkpoint 同构建同签名基本排除权重/分词器因素。
+  source: 'vLLM #55357（2026-09-04 open，SM120、bf16 KV、nightly `73029d4`，含吞吐对照与 Gemma 4 交叉证据）。https://github.com/vllm-project/vllm/issues/55357 · 根因定位 PR #55467（2026-09-05：PLE short-conv kernel 把带步幅的 `state_indices` 列视图当连续加载——prefill 行 r≥1 落入 request 0 的 spec checkpoint 块，conv state 被其 spec 步覆写，第二 token 起全 garbage、acceptance ~9%；无 spec 干净、spec decode 行在前也干净）'
+  behavior: 无 crash——**吞吐塌 2× + 输出质量塌方**（重复循环到 max_tokens）叠加且随时间漂移；监控上 acceptance length 指标是唯一直接信号（编目正面对"post-forward 盲点"：输出质量监控看不到吞吐损失）。与 6.178 构成跨栈（SGLang/vLLM）同签名对，提示 MTP 状态管理是该范式的系统性薄弱点。
+  trigger_surface: vLLM + Qwen3.8-Flash-Next/QSA+GDN + MTP + SM120（模型+平台组合；episode 触发条件未定位）
+  discovery: 2026-09-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: 'uncertain 字段 cause.subsystem（算子/内核 vs KV缓存）：维持 算子/内核。原文根因 PR #55467 写明是“PLE short-conv kernel 把带步幅的 state_indices 列视图当连续加载”：状态池的分配与映射没错，错在 kernel 读索引的方式，与先例 INF-0194（causal_conv1d 回退核读写状态 → 算子/内核）一致；spec decode 的状态布局按 rule 6 是触发条件。审计：title/component/behavior/detail 中的数字（66 vs 95–135 tok/s、k=3、SM120、1M token、Gemma 4 交叉证据）都有原文依据；effect 三项（KV状态、输出内容、性能/资源）原文都有，未发现问题。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

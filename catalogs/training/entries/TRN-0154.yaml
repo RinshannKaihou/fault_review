@@ -1,0 +1,54 @@
+id: TRN-0154
+legacy_ids:
+- MOE.05
+slug: expert_bias_buffer_dropped_on_replacement
+aliases: []
+title: DeepSpeed AutoEP 替换 MoE 模块时静默丢路由偏置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: deepspeed
+    component: AutoEP 模块替换的路由偏置迁移
+  behavior: AutoEP 迁移 e_score_correction_bias 时要求其为 nn.Parameter 且挂在 gate 下，而多数模型族存为 nn.Buffer 或挂在其他位置，两个判定缺陷叠加使偏置未被迁移。
+effect:
+  objects:
+  - 模型权重
+  - 隐状态
+  detail: 无报错、无警告、loss 照降；替换后 top-k 选择偏置归零，专家选择退回未训练的均衡态，表现像换了一批专家。DeepSeek-V3 系 ckpt + ZeRO-3 + AutoEP 即触发，transformers 5.15.1 的 22 个模型族中 20 个中招。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8358
+  kind: github_issue
+relations: []
+original:
+  category: MOE
+  section: MOE
+  meta: 'stage: `sft/rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed AutoEP 替换 MoE 模块时迁移 `e_score_correction_bias`（DeepSeek-V3 aux-loss-free 路由的 top-k **选择项**偏置）要求 `isinstance(..., nn.Parameter)`——transformers 5.15.1 里 22 个声明该张量的模型族有 **18 个存成 `nn.Buffer`**（含全部 DeepSeek/GLM/MiniMax/Nemotron 变体），另有 4 族挂在 `gate` 以外位置（block 直挂 / `moe_statics` / `router`），两个独立缺陷叠加使 **20/22 族替换后静默丢偏置**，专家选择退回未训练的均衡态（gating 权重本身不受影响，变的只是选哪些专家）。
+  source: 'DeepSpeed #8358（transformers 全模型族普查表 + meta-device 无需真实权重的最小检查脚本：DeepSeek-V3.2 打印 `Tensor -> AutoEP would DROP it`；8×H200 复现；另注 `supports_expert_bias=False` 的 preset 意味着训练中也不更新该偏置）；修复 #8369（parser 记录 bias owner 实际路径，替换时按原样保留 Parameter/buffer 及持久性，`gate`/block/`router`/`gate.moe_statics` 位置全覆盖；真实 Transformers 5.15.1 `DeepseekV3MoE` 验证路由选择一致、单卡全 MoE forward 最大绝对差 0.0）。https://github.com/deepspeedai/DeepSpeed/issues/8358'
+  behavior: 无报错、无警告、loss 照降——路由偏置归零后专家选择系统性错位，行为像「换了一批专家」（MOE.02 症状），但根因是**模块替换时的张量类型/位置判定**而非 id 排列错位。任何 DeepSeek-V3 系 checkpoint + ZeRO-3 + AutoEP 即中招。
+  discovery: 2026-08-30 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

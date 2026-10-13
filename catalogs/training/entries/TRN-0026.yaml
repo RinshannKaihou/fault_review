@@ -1,0 +1,55 @@
+id: TRN-0026
+legacy_ids:
+- NUM.17
+slug: onecycle_rebuilds_betas_hardcodes_beta2
+aliases: []
+title: DeepSpeed OneCycle 把 beta2 硬编码为 0.99
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: OneCycle 动量初始化（betas）
+  behavior: OneCycle 在 cycle_momentum=True（默认）时于构造和每次 step() 把各 param group 的 betas 整对重建为 (mom, 0.99)，配置的及 per-group 的 beta2 被无条件替换。
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  detail: 无 crash、无 warning、无日志：默认配置用 1Cycle 的 run 从构造起即以不同的二阶矩系数训练，momentum 窗口与方差衰减速率偏移，训练曲线无异常；repro 中 betas (0.9,0.999) 初始化后变 (0.8,0.99)。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8750
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8751
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0112
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `shared` · Cov: `var:scheduler_override_rewrites_group_lr_bounds` · 置信度 `documented`'
+  mechanism: 'DeepSpeed `OneCycle`（`runtime/lr_schedules.py`）在 `cycle_momentum=True`（默认）下 `_initialize_momentum` 把每个 param group 的 `betas` **整对重建**为 `(mom, 0.99)`：构造时和**每次** `step()` 都执行——用户配置的 `betas[1]`（Adam/AdamW 默认 0.999）被无条件替换为硬编码 0.99，per-group beta2 同时丢失。对照 `torch.optim.lr_scheduler.OneCycleLR` 只替换 `betas` 首元素——语义本应只 cycle `betas[0]`。修复 PR #8751 = 保留各组原 beta2。'
+  source: 'DeepSpeed #8750（2026-10-05；纯 Python CPU repro：before `(0.9, 0.999)` → after init `(0.8, 0.99)`、after step `(0.89, 0.99)`；master `a77aeb6`）。https://github.com/deepspeedai/DeepSpeed/issues/8750 ；修复 PR #8751（截至 2026-10-10 open）。https://github.com/deepspeedai/DeepSpeed/pull/8751'
+  behavior: 无 crash、无 warning——凡以默认 `cycle_momentum=True` 使用 1Cycle 的 run 从 scheduler 构造起就**用与配置不同的二阶矩系数**训练：momentum 加权窗口与方差衰减速率双双偏移，训练曲线无异常。与 OPT.12（`--override-opt-param-scheduler` 用全局实参覆写 per-group LR bounds）同族「**scheduler 越权重写 optimizer 超参**」：那边打 LR 分组、这边打 momentum/beta2 整对；两处都无任何日志提示超参已被换。二阶矩行为差异的端到端任务影响未实测（10-09 曾以「无实测」留观，本轮凭「配置被静默替换且每次 step 重写」的机制确凿性收录为 documented）。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: INF-0117
+legacy_ids:
+- '1.118'
+slug: ttmetal_kda_invert_doubling_cancellation_collapse
+aliases: []
+title: KDA 倍增展开求逆在 bf16 中间量下灾难性相消
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: KDA invert_doubling 求逆
+  behavior: UT 变换求逆由 Horner（30 次 matmul）改为倍增展开 (I+N)(I+N²)…(I+N¹⁶)；显式幂中间量在真实 chunk 上达 O(1e2) 而结果 ≤1，bf16 舍位下灾难性相消吃掉全部有效位。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: Kimi-K3 真实权重下 68/69 层 KDA 输出与 torch 参考不相关（layer 1 PCC 0.696），数值合法、幅度正常，有限性检查全部漏检；仅 N 下溢≈0 的 layer 0 通过；CI 合成数据 ‖N‖ 小时测不出。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Kimi-K3 KDA 路径 + 真实权重（68/69 层处于该衰减区间；CI 合成数据若 ‖N‖ 小则全部漏检）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/54813
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（KDA `prepare_chunk_recurrence` 的 UT 变换求逆从 Horner（30 matmul）换成倍增展开 `(I-N)^-1=(I+N)(I+N²)(I+N⁴)(I+N⁸)(I+N¹⁶)`——显式幂中间量 N²..N¹⁶ 在 Kimi-K3 真实 chunk（‖N‖∞ 中位 2.4、达 17）上 O(1e2) 而待求逆 ≤1：**灾难性相消吃掉全部有效位**，68/69 KDA 层输出与自身 torch 参考不相关） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`prepare_chunk_recurrence.cpp` 的 `invert_doubling` 以倍增展开替换 Horner 路径（8 vs 30 tile matmul），内核注释自认 fp32 稳定性"is expected to improve … must be validated empirically"。设备端 `t_inv` 对 fp64 参考的 max abs error 达 6–26（LoFi/HiFi2 × fp32_dest_acc 双向均无效）；torch 同一真实 N 对照：doubling fp32 误差 0.00052，但 **bf16 舍位中间量**下 doubling 误差 12.99 vs Horner 0.0023。唯一幸存的 layer 0（PCC 0.99997）恰因衰减快到 N 下溢 ~0（t_inv≈I）——它是 tell 而非 counter-example；layer 1 PCC 0.696，8x4×5120 规模 −0.0047，2 层堆栈对 vLLM trace −0.0016。#53508 的一部分；伴生 #54839 记录让该缺陷穿透全部既有测试的 5 个覆盖盲区。'
+  source: 'tt-metal #54813（2026-08-29 open，单卡 Blackhole 真实权重，含逐层 PCC 表 / fp64 参考 / 同 N torch 对照）。https://github.com/tenstorrent/tt-metal/issues/54813'
+  behavior: '**无 crash、无 NaN**——输出与参考不相关（PCC≈0）但数值合法、幅度正常，有限性检查全部漏检。属「**数学等价重构在低精度中间量下的灾难性相消**」新子签名：fp32 下精确的恒等式不是 bf16 舍位硬件上的正确性证据；输入分布（衰减幅度）决定哪些层中招——layer 0 通过会让分层验证得出错误结论。'
+  trigger_surface: tt-metal Kimi-K3 KDA 路径 + 真实权重（68/69 层处于该衰减区间；CI 合成数据若 ‖N‖ 小则全部漏检）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

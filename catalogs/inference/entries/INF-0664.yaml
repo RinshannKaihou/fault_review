@@ -1,0 +1,55 @@
+id: INF-0664
+legacy_ids:
+- '6.271'
+slug: vllm_cutlass_fp8_moe_padding_routes_minus1_wrong_expert_first_token_offset
+aliases: []
+title: vLLM CUTLASS MoE 把 −1 哨兵计入专家 offset
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: moe_permute 专家 offset 计算
+  behavior: 默认 VLLM_MOE_SKIP_PADDING=1 下 padding 行被写成 topk_ids=−1，CUTLASS MoE 分组未排除该哨兵，moe_permute 算错 expert_first_token_offset。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 单请求小批服务时真实 token 被送入错误专家，MoE 输出静默错值；128 专家 top-4 fp8 模型首 token 即坍塌（'Yes' p=0.90→'\n' p=0.997）；批量请求、triton/marlin 后端、enforce-eager、关 CUDA graph 均正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + CUTLASS fp8 MoE + CUDA graph padding（默认）（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59686
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_dspark_graph_padded_rows_flow_into_dsv4_topk_routing_ima
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM CUTLASS fp8 MoE（CutlassExpertsFp8）：批内含 padding token 时 `VLLM_MOE_SKIP_PADDING=1`（默认）使 router 写 `topk_ids=-1`，CUTLASS 路径据此算错 per-expert offset——**真实 token 被送进错误专家的权重**。128 专家 top-4 fp8 模型单请求服务首 token 即可坍塌（''Yes'' p=0.90 → ''\n'' p=0.997）且输出漂移；批量请求、triton/marlin 后端、enforce-eager、关 CUDA graph、`VLLM_MOE_SKIP_PADDING=0` 均正确（0.29.0/0.30.0/main 47de9d4 同错）。免权重秒级复现：`moe_permute` 对含 −1 的 topk_ids 算出错误 `expert_first_token_offset`） · Cov: `var:vllm_dspark_graph_padded_rows_flow_into_dsv4_topk_routing_ima`（6.233 padding 行污染路由族——本条在 **−1 哨兵进入 offset 记账**维度且为静默错值而非 IMA） · 触发 `config` · 置信度 `verified`'
+  mechanism: CUDA-graph padding 行的 −1 哨兵未被 CUTLASS 分组逻辑排除，专家边界错位。
+  source: 'vLLM #59686（2026-10-01 open，最小复现+多后端对照+用户可见效应）。https://github.com/vllm-project/vllm/issues/59686'
+  behavior: 无 crash——小批（单请求）服务 MoE 输出静默错值；56/224 专家模型较低频同中。
+  trigger_surface: vLLM + CUTLASS fp8 MoE + CUDA graph padding（默认）（config）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

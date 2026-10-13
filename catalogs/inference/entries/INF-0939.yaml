@@ -1,0 +1,57 @@
+id: INF-0939
+legacy_ids:
+- '10.23'
+slug: trtllm_qwen_toolcall_eot_prefix_separator_missplit
+aliases: []
+title: TRT-LLM Qwen3 eot 与分隔符前缀重叠致流式内容被吞
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: tensorrt-llm
+    component: 基础流式 tool parser
+  behavior: Qwen3 的 eot_token 与 tool_call_separator（换行）共享前缀，调用完成后保留的 eot 被误判为新工具调用的开始，parser 滞留在 JSON/tool 分支并 buffer 住后续内容。
+effect:
+  objects:
+  - 输出内容
+  detail: TRT-LLM 流式 serving 中 Qwen3 完成工具调用后继续生成文本时触发；无 crash，客户端只收到 tool call，其后的助手文本滞留 buffer 不下发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM 流式 serving；Qwen3 工具调用 + 工具调用后继续生成文本
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-16'
+remarks: subsystem 缺“输出解析（reasoning/tool parser）”：解析器把生成文本切分为 content/reasoning/tool_calls，既非 detokenize 也非请求调度，暂归 调度/服务（API/前端）
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/17748
+  kind: github_pr
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（eot_token 以 tool_call_separator 开头 → 完成调用后保留的 eot 被误当新调用起点，后续内容被吞） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '基础流式 parser 中，工具调用的 end-of-tool token 若与 tool-call separator 共享相同前缀文本则误分裂：Qwen3 的 `tool_call_separator` 是 `"\n"`、`eot_token` 是 `"\n</tool_call>"`——一次调用完成后保留的 eot token 被误判为**另一个工具调用的开始**，parser 滞留在 JSON/tool 分支，把后续助手内容 buffer 住不下发。修复（PR #17748，fixes #17740）在 eot 与 separator 前缀重叠时正确区分。'
+  source: 'TensorRT-LLM PR #17748（2026-08-15 closed merged，fixes #17740）。https://github.com/NVIDIA/TensorRT-LLM/pull/17748'
+  behavior: 无 crash。工具调用之后的**助手文本内容在流式中静默不下发**（滞留 buffer）——客户端只收到 tool call、收不到后续回答。属「分隔符与终止符前缀重叠 × 流式状态机误转移」**新子签名**。
+  trigger_surface: TRT-LLM 流式 serving；Qwen3 工具调用 + 工具调用后继续生成文本
+  discovery: |-
+    2026-08-16 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

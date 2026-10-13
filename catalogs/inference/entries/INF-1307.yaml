@@ -1,0 +1,70 @@
+id: INF-1307
+legacy_ids:
+- K9.16
+slug: mtp_prefixcache_kv_pollution_acceptance_collapse
+aliases: []
+title: vLLM 前缀缓存 + MTP 推测解码组合下用被污染的前缀 KV 做验证
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 前缀缓存与 MTP 草稿验证的前缀 KV 共享
+  behavior: '前缀缓存与 MTP 推测解码组合时，被接受的 token 是相对错误共享或被污染的前缀 KV 做的验证；已合并的调度器修复 #51113 未覆盖 hybrid Mamba/GDN 场景。'
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 性能/资源
+  detail: 两开关单独启用均正常，组合后准确率降约 20%；多轮下草稿接受率坍缩到 0、吞吐坍缩、输出成乱码；hybrid Mamba/GDN 模型上部分响应退化为 !!!! 或空 completion，v0.28.0 仍复现。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/43559
+  kind: github_issue
+  resolved_from: 'vLLM #43559'
+- url: https://github.com/vllm-project/vllm/issues/36872
+  kind: github_issue
+  resolved_from: 'vLLM #36872'
+- url: https://github.com/vllm-project/vllm/issues/53912
+  kind: github_issue
+  resolved_from: 'vLLM #53912'
+- url: https://github.com/vllm-project/vllm/pull/51113
+  kind: github_pr
+  resolved_from: '#51113'
+relations: []
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 前缀缓存 + **MTP**（multi-token prediction）推测解码组合——被接受的 token 是相对于错误共享/被污染的前缀 KV 做的验证 → 约 **20%** 准确率下降；在**多轮**场景下草稿接受率坍缩到 **0**，输出退化为乱码。两个开关单独启用各自无碍，只有组合起来才"变笨（gets dumber）"。
+  source: 'vLLM #43559（OPEN 2026-05-25，前缀缓存 + MTP 约 20% 下降）；vLLM #36872（OPEN 2026-03-12，推测解码下乱码 + 吞吐坍缩）；vLLM #53912（OPEN 2026-08-26，v0.28.0 上仍复现——#43559 被关闭后合并的调度器修复 #51113 未覆盖：hybrid Mamba/GDN + MTP + prefix caching 下部分响应退化为重复标点 `!!!!` 或空 completion，证明该缺陷**仍开放**）。'
+  behavior: 准确率下降约 20%、吞吐同时坍缩（接受率归零意味着投机全废）、多轮后输出成乱码；单开关回归测试全部通过。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: 在**草稿-验证边界**处呈 on/off-manifold 混合——被污染的前缀 KV 本身可能数值健康（属于另一序列），但验证路径与目标路径的表示不一致。族判为 ambiguous：签名只在"前缀缓存命中 × MTP 启用 × 多轮"三重条件下出现。检测面：**接受率坍缩本身是最强的行为信号（behavioral tell）**，比任何隐藏态度量都廉价可靠；隐藏态侧则依赖 cross-request 签名余弦（污染部分）与草稿/目标两条路径的表示一致性比对。单路径 geometric/spectral 度量在早期轮次会给出健康判定。
+  repro: 单钩子以"前缀段 K/V 替换为捐赠者 K/V"（同 K9.6）近似污染部分；接受率坍缩需要真实的 draft-verify 循环，单模型 solo 路径无法复现，只能覆盖污染的隐藏态后果。
+  locus: control-flow
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 KV缓存。原文“被接受的 token 是相对于错误共享/被污染的前缀 KV 做的验证”，变错的是前缀缓存共享出去的 KV；MTP 推测解码是组合触发条件（rule：触发条件不是对象）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

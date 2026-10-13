@@ -1,0 +1,53 @@
+id: INF-0604
+legacy_ids:
+- '6.211'
+slug: vllm_mm_uuid_verbatim_cache_key_cross_item_staleness_engine_teardown
+aliases: []
+title: vLLM 多模态 uuid 逐字作缓存键，跨 item 碰撞服错内容或拆引擎
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: 多模态 uuid 缓存键
+  behavior: 无 hash factors 时把客户端提供的多模态 item uuid 逐字用作 P0 processor cache 与 encoder-output cache 的唯一键，未将 uuid 绑定到首次缓存的 payload。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 可用性/进度
+  detail: 同 uuid 不同内容复用时：处理后长度匹配则模型静默消费错误 item 的特征、输出合理但错；长度不匹配则 _merge_multimodal_embeddings 抛异常，V1 拆掉整个引擎树（DP8 部署全灭）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + 多模态 uuid 复用 + 跨 item 碰撞（客户端使用模式触发；同长度碰撞静默、异长度碰撞 fatal）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55549
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-1301
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（客户端提供的多模态 item `uuid` 在无 hash factors 时被**逐字用作唯一缓存键**（P0 processor cache 与引擎侧 encoder-output cache 两层）——没有任何东西把 uuid 绑定到它首次缓存的 payload：同 uuid 不同 bytes 复用（processed 长度匹配时 merge 成功、模型消费**错误 item 的内容**，全程无错；长度不匹配时 `_merge_multimodal_embeddings` 抛异常、V1 **tear down 整个引擎树**）） · Cov: `var:lmcache_cache_salt_isolation_missing`（外部缓存键隔离族） · 触发 `config` · 置信度 `documented`'
+  mechanism: DP8 内部 LB 部署中两条工具路径从重叠 id 空间为同一音频片段的不同长度切片 mint uuid（#55547）：缓存的 10s item 特征（138 token）被服务给 spliced 638 占位槽的请求，8 引擎 + 8 API server 服务中全灭。修复把 uuid 绑定到 O(1) 内容判别器（audio 采样数/图像像素数/视频帧×像素）：`hash_kwargs(model_id, modality, mm_uuid, mm_content_size)` blake3 摘要——不同大小 payload 得不同键（fatal 类不可达），同内容去重保留；**同长度不同内容的静默类仍在**（需内容验证，uuid 特性刻意回避）。
+  source: 'vLLM PR #55549（fixes #55547，2026-09-06，含两级缓存机制分析、DP8 事故叙述与 fatal/silent 双类划分）。https://github.com/vllm-project/vllm/pull/55549'
+  behavior: 双显形——(a) 长度匹配碰撞：**静默服错内容**（错误音频/图像的特征进入模型，输出"合理但错"）；(b) 长度不匹配：异常向上撕裂**整棵引擎树**（单请求错误放大为全服务不可用）。lmcache_cache_salt_isolation_missing（token-only 外部键）之后外部缓存键隔离族新成员：本条键空间是**客户端控制的 uuid**，碰撞可由部署侧 id 管理失误制造。
+  trigger_surface: vLLM + 多模态 uuid 复用 + 跨 item 碰撞（客户端使用模式触发；同长度碰撞静默、异长度碰撞 fatal）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

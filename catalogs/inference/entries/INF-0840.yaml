@@ -1,0 +1,56 @@
+id: INF-0840
+legacy_ids:
+- '8.56'
+slug: vllm_rocm_glm53flash_kpool_block_size_advertising_mismatch_self_overwrite
+aliases: []
+title: vLLM ROCm kpool 索引器块大小声明错配致 KV 自覆写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: kpool 索引器 block size 声明
+  behavior: ROCm 上 indexer 声明支持任意 16 倍数，640 被当作原生块而不建 kernel 粒度 block table；slot_mapping 与 gather 按页寻址却查 spec-block id，5× 过订阅。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 8×MI350X 上 GLM-5.3-Flash（index_kpool=4、block_size=640）4096 个 pool 条目写进 864 个 slot、79% 索引键错误；文本仍流畅但长上下文 recall 退化，temp=0 不可复现，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm + GLM-5.3-Flash kpool 索引器 + `index_kpool=4`/`block_size=640`（hw_specific；同构误报模式对其他后端声明普遍成立）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54359
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（ROCm 上 kpool 稀疏索引器**静默覆写自己的 KV cache**：`get_supported_kernel_block_sizes()` 声明「任意 16 倍数」→ 对齐器选择（640）被当作原生支持、`blocks_per_kv_block==1`、**不建 kernel 粒度 block table**——但内核按 32-state 页寻址（640 tok = 5 页）：`slot_mapping` 与 gather 内核都用页大小寻址而 block table 存 spec-block id，**5× 过订阅**——4096 pool 条目写进 864 个 slot（79% 索引键错误），文本仍流畅、temp=0 不可复现） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`indexer.py` 中 `return [1, MultipleOf(16)] if is_rocm() else [64]`——CUDA 声明恰 [64] 使 `BlockTable.use_hybrid_blocks=True` 建 kernel 粒度表；ROCm 的宽声明让 640 被误当原生。DeepGEMM/AITER paged-MQA 读 32-state 页 × `tokens_per_state==index_kpool==4` = 128 token 页；存储块 640 = 5 页。`storage_kernel_block_size` 拆分意图在 `attention.py` 有文档化标识符但**树中无处实现**。修复对照（8×MI350X 实测）：distinct slots written 864→4096、duplicated rows @256 3488→0、block table 零项 99→0、宽度 205→1025(=205×5)；层散列定位分歧恰起于 layer 3 首个 sparse-attention 层，q/gate_score/ape/pre-pool k 均 bit-identical。与 #40018（修复 #43781 已在树）不同缺陷。'
+  source: 'vLLM #54359（2026-08-29 open，8×MI350X gfx950 ROCm 7.2.3 TP8，含修复前后逐项对照表）。https://github.com/vllm-project/vllm/issues/54359'
+  behavior: '**无 crash——流畅文本 + 长上下文 recall 退化 + temp=0 不可复现**（损坏依赖分配器给出的物理块）。属「**能力声明与寻址粒度失配**」新子签名：后端自报支持的粒度直接改变 block table 构建策略，错误声明静默改变写读寻址；修复判据是 slot 去重计数而非输出质量——又一例"输出质量探测不出的 KV 结构损坏"。'
+  trigger_surface: vLLM ROCm + GLM-5.3-Flash kpool 索引器 + `index_kpool=4`/`block_size=640`（hw_specific；同构误报模式对其他后端声明普遍成立）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

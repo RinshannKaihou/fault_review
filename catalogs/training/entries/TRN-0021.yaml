@@ -1,0 +1,53 @@
+id: TRN-0021
+legacy_ids:
+- NUM.12
+slug: bf16_reward_rounds_away_group_baseline
+aliases: []
+title: BF16 reward 在组统计前被舍入，GRPO 组基线被抹平
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: 组统计 reward dtype 继承
+  behavior: 组 advantage 统计直接继承 reward dtype，BF16 reward model 输出在组中心化前已被舍入，组内差小于 BF16 ULP 时基线被舍入掉：[1,1,1,1.0078125] 得≈[0,0,0,2]。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: 使用 BF16 reward model 时无 crash，组内小幅 reward 差被抹平，GRPO 组相对信号劣化为阶跃（全零或放大），PPO 梯度改变、细粒度偏好学习静默失效；integer reward 在组统计/分数惩罚下失败，FP16 常数组可产生 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1334
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0011
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `rl` · Cov: `var:bf16_vs_fp16_rl_engine_mismatch` · 置信度 `verified`'
+  mechanism: OpenRLHF grouped advantage（GRPO/PPO 组统计）直接继承 reward 张量的 dtype：**BF16 reward model** 的输出先于组中心化被舍入——`[1, 1, 1, 1.0078125]` 的组归一化 advantage 得到 ≈`[0, 0, 0, 2]` 而非 `[-0.5, -0.5, -0.5, 1.5]`（组内差 < BF16 ULP，基线被舍入掉），PPO 梯度随之改变；integer reward 在组统计/分数惩罚下直接失败；FP16 常数组可产生 NaN。修复 = 组统计前把 reward 提升到 ≥FP32（保留 FP64 输入），复用既有 logged-reward 同步。验证：92 测试全过（六种估计器、多种 dtype 含 FP64、常数组、分数惩罚、参照 PPO 梯度）+ CPU 上以真实 OpenRLHF reward head + 随机初始化 tiny BF16 Llama 对 float64 算术参照吻合。
+  source: 'OpenRLHF PR #1334（2026-09-11；BF16 RM 的组基线舍入实例 + 修复）。https://github.com/OpenRLHF/OpenRLHF/pull/1334'
+  behavior: 无 crash——BF16 RM 下组内小幅 reward 差被舍入抹平：GRPO 的组相对信号**劣化为阶跃**（要么全零要么放大），细粒度偏好学习静默失效；混合 dtype 管线（RM bf16、trainer fp32）最脆弱。与 NUM.02（bf16/fp16 RL 引擎 mismatch）同族：**RL 管线 dtype 边界的精度契约**，这边打击点在 reward→advantage 的组统计入口；与 RL-ADV.01（组 std=0 零学习）症状相似但根因不同：那边统计上真无差、这边**有差被舍入掉**。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

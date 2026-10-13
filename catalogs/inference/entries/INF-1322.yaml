@@ -1,0 +1,73 @@
+id: INF-1322
+legacy_ids:
+- K10.11
+slug: radix_prefix_reuse_overmatch_or_boundary_stale
+aliases: []
+title: 前缀复用过度匹配或复用过期边界块致跨请求 KV 串味（合并）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tgi
+    component: RadixTrie::find 与边界块复用
+  behavior: (a) TGI RadixTrie::find 返回父节点/过度递归，报告出过长的共享前缀；(b) SGLang 在 prefix_len == block_size 时复用过期边界块；均使接缝后 KV 与当前请求不对应。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  - 输出内容
+  detail: 高缓存命中率场景下偶发内容串味，生成中掺入另一请求前缀的语义，且随流量模式而不可复现。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: KV 子系统场景构造
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/text-generation-inference/pull/3067
+  kind: github_pr
+  resolved_from: 'TGI PR #3067'
+- url: https://github.com/sgl-project/sglang/issues/22819
+  kind: github_issue
+  resolved_from: 'SGLang #22819'
+relations:
+- kind: var
+  target: INF-0399
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`infra_off` · Cov: `var:radix_kvcache_cross_contamination` · 触发 `partial` · 置信度 `documented`'
+  mechanism: MERGED——本条合并两个子故障：(a) `RadixTrie::find` 返回父节点 / 过度递归，报告出比实际更长的共享前缀，于是当前请求复用了并不属于它的那段 KV；(b) SGLang 中 `prefix_len == block_size` 时复用了一个过期的边界块。两者都让前缀/块接缝之后的 KV 与当前请求的真实 token 不对应。
+  source: '`gh`：TGI PR #3067（"Fix two edge cases in RadixTrie::find"）；SGLang #22819。'
+  behavior: 高缓存命中率场景下偶发的内容串味——生成中掺入另一请求前缀的语义，且随流量模式而不可复现。
+  trigger_surface: KV 子系统场景构造
+  signature: 复用他请求 KV 是 infra_off。签名是**前缀/块接缝处的离散注意力跳变**：trajectory（沿 token 轴的位置突变）与 geometric（接缝后位置的流形偏离）可见；由于污染的 KV 本身是"另一段真实文本"的健康 KV，其范数与谱统计都正常，statistical/spectral 容易漏检——这类"健康但错位"的污染最终要靠 cheap 族的 recompute-oracle 确认（前提：记录 batch 组成的 bitwise 重算或 batch-invariant kernels）。
+  repro: partial——prefill 后把 cache 前 `p` 个位置的 K/V 替换为另一条 prompt 的对应行（"过度匹配的共享前缀"），或替换恰好一个 block_size 边界块（"过期边界块"）；radix trie 本身需 vLLM/SGLang 栈复现。
+  locus: cross-request
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '维持 KV缓存 / tgi：两子故障在不同栈，component 首项 RadixTrie::find 属 TGI（首个来源 PR #3067），sglang 子故障写在 behavior 中。visibility 维持 不可复现（原文“随流量模式而不可复现”）。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: KV状态
+        to: 跨请求/跨样本数据
+        status: panel7
+    uncertain:
+    - visibility

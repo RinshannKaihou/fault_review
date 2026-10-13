@@ -1,0 +1,54 @@
+id: INF-0720
+legacy_ids:
+- '7.47'
+slug: vllm_blockfp8_tp_subblock_shard_load_fail
+aliases: []
+title: vLLM block-FP8 检查点在 TP 分片小于量化块时加载崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: block-FP8 TP 分片子块 padding
+  behavior: block-FP8 线性层加载缺通用的 K、N 维子块 padding：rank 本地 K=64 不被 block_k=128 整除即拒绝；merged-column 本地 N 小于 block_n 时 scale 加载越界。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Qwen3.6-35B-A3B-FP8 在 TP8（8×H100）下每 rank K 分片仅 64，加载期报 ValueError；仅 pad K 后又在 load_merged_column_weight 越界报错；显式选 Marlin 后端同样失败。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；block-FP8 checkpoint + TP 分片 < 量化块（Qwen3.6-35B-A3B-FP8 TP8 等）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52997
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1134
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（block-FP8 checkpoint 在 TP 分片小于量化块（K=64 < block_k=128、N 分片 < block_n=128）时加载崩溃——子块 padding 缺通用解） · Cov: `var:vllm_compressed_tensors_fp8_parallel_lm_head_partition_metadata_uninitialized` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'Qwen3.6-35B-A3B-FP8（expert intermediate width 512）在 TP8（8×H100）下每个 rank 只拥有 64 元素的 K 分片，而其 block-FP8 checkpoint 用 128×128 量化块——暴露两个维度的 exact sub-block 情形：row-parallel K 的 rank-local K=64 只占 block_k=128 的一半（`ValueError: Weight input_size_per_partition = 64 is not divisible by weight quantization block_k = 128`）；仅 pad K 后又在 merged-column N 分片路径失败（rank-local N < block_n=128，未 pad 的物理布局导致 `BlockQuantScaleParameter.load_merged_column_weight` 越界：`start(4)+length(1) exceeds dimension size(4)`）。需要通用的 K-and-N 子块 padding 方案（物理存储 pad 但不改 checkpoint offset 与逻辑输出），而非 Qwen 特判。'
+  source: 'vLLM #52997（2026-08-19 open，8×H100，torch 2.13.0+cu130，flashinfer 0.6.17；Marlin linear/MoE 显式后端同样失败）。https://github.com/vllm-project/vllm/issues/52997'
+  behavior: crash（加载期 ValueError/RuntimeError，fail-loud 非静默）。属「TP 分片粒度 × 块量化布局整除性」已知族的 exact sub-block 双维度实例（12.18 是同族的 metadata 未初始化面）——高 EP/TP + 细粒度专家模型组合会越来越多踩中。
+  trigger_surface: vLLM；block-FP8 checkpoint + TP 分片 < 量化块（Qwen3.6-35B-A3B-FP8 TP8 等）
+  discovery: |-
+    2026-08-19 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -18,7 +18,7 @@ class RetrievalMetricTests(unittest.TestCase):
             [("inference", "1.1"), ("training", "HW.01")],
             {("inference", "1.1")},
         )
-        self.assertEqual(got, {"recall_at_5": 1.0, "mrr_at_10": 1.0,
+        self.assertEqual(got, {"recall_at_5": 1.0, "recall_at_10": 1.0, "mrr_at_10": 1.0,
                                "ndcg_at_10": 1.0})
 
     def test_multiple_relevant_documents_use_binary_ndcg(self):
@@ -37,7 +37,7 @@ class RetrievalMetricTests(unittest.TestCase):
             [("inference", "1.1")],
             {("training", "HW.01")},
         )
-        self.assertEqual(got, {"recall_at_5": 0.0, "mrr_at_10": 0.0,
+        self.assertEqual(got, {"recall_at_5": 0.0, "recall_at_10": 0.0, "mrr_at_10": 0.0,
                                "ndcg_at_10": 0.0})
 
     def test_duplicate_ranked_id_does_not_consume_an_extra_rank(self):
@@ -173,6 +173,25 @@ class QualityGateTests(unittest.TestCase):
     def test_passing_report_has_no_failures(self):
         baseline = self._report(recall=0.90)
         self.assertEqual(check_report(self._report(recall=0.89), baseline), [])
+
+
+class RecallAtTenAndLegacyLabelTests(unittest.TestCase):
+    def test_recall_at_10_counts_ranks_six_to_ten(self):
+        from eval.run_eval import metrics_for_ranking
+        ranked = [("inference", f"x{i}") for i in range(7)] + [("inference", "gold")]
+        got = metrics_for_ranking(ranked, {("inference", "gold")})
+        self.assertEqual(got["recall_at_5"], 0.0)
+        self.assertEqual(got["recall_at_10"], 1.0)
+
+    def test_legacy_labels_resolve_to_current_ids(self):
+        from eval.run_eval import resolve_legacy_ids
+        cases = [{"relevant": [{"repo": "inference", "id": "1.44"}, {"repo": "inference", "id": "NEG-INF-C6"}]}]
+        corpus = {("inference", "INF-0044"), ("inference", "NEG-INF-C6")}
+        legacy = {("inference", "1.44"): ("inference", "INF-0044"), ("inference", "1.70"): ("inference", "INF-0044")}
+        out = resolve_legacy_ids(cases, corpus, legacy)
+        self.assertEqual([r["id"] for r in out[0]["relevant"]], ["INF-0044", "NEG-INF-C6"])
+        self.assertEqual(out[0]["relevant"][0]["label_id"], "1.44")
+        self.assertEqual(cases[0]["relevant"][0]["id"], "1.44")          # input not mutated
 
 
 if __name__ == "__main__":

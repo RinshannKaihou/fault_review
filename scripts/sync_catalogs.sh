@@ -1,28 +1,54 @@
 #!/usr/bin/env bash
-# Sync vendored catalog snapshots from the live catalog repos, rebuild the
-# index, and run the retrieval quality gate. Maintainer-side only: requires
-# read access to the live repos. Does NOT commit — git actions stay manual.
+# Sync vendored catalog snapshots from the live catalog repos, rebuild the index,
+# and run the retrieval quality gate. Maintainer-side only: requires read access
+# to the live repos. Does NOT commit — git actions stay manual.
+#
+# Since the 2026-10-13 cut-over the fault entries are the upstream structured
+# catalogs (catalog/entries/*.yaml + catalog/id_registry.tsv). Negative docs are
+# unchanged: training rejected.md / blindspots.md, and appendix C/D of the frozen
+# inference Markdown master (no longer updated upstream).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Live source locations; override via env when the catalog repos move.
-SRC_INF="${FAULT_RAG_SRC_INFERENCE:-/workspace/inference_error_review/FAULT_MASTER_REFERENCE.zh.md}"
-SRC_TR_DIR="${FAULT_RAG_SRC_TRAINING:-/workspace/training_error_review/catalog}"
+# Live repo roots; override via env when the catalog repos move.
+SRC_INF="${FAULT_RAG_SRC_INFERENCE_REPO:-/workspace/inference_error_review}"
+SRC_TR="${FAULT_RAG_SRC_TRAINING_REPO:-/workspace/training_error_review}"
 
-for f in "$SRC_INF" "$SRC_TR_DIR/FAULT_MASTER_REFERENCE.zh.md" \
-         "$SRC_TR_DIR/rejected.md" "$SRC_TR_DIR/blindspots.md"; do
+for f in "$SRC_INF/catalog/entries" "$SRC_INF/catalog/id_registry.tsv" "$SRC_INF/FAULT_MASTER_REFERENCE.zh.md" \
+         "$SRC_TR/catalog/entries" "$SRC_TR/catalog/id_registry.tsv" \
+         "$SRC_TR/catalog/rejected.md" "$SRC_TR/catalog/blindspots.md"; do
     [ -r "$f" ] || { echo "sync_catalogs: cannot read $f" >&2; exit 1; }
 done
 
-install -m 0644 "$SRC_INF" catalogs/inference/FAULT_MASTER_REFERENCE.zh.md
-install -m 0644 "$SRC_TR_DIR/FAULT_MASTER_REFERENCE.zh.md" catalogs/training/FAULT_MASTER_REFERENCE.zh.md
-install -m 0644 "$SRC_TR_DIR/rejected.md"  catalogs/training/rejected.md
-install -m 0644 "$SRC_TR_DIR/blindspots.md" catalogs/training/blindspots.md
-echo "snapshots updated under catalogs/"
+sync_entries() {   # src_repo dst_dir
+    local tmp
+    tmp="$(mktemp -d)"
+    cp -a "$1/catalog/entries/." "$tmp/"
+    rm -rf "$2/entries"
+    mkdir -p "$2"
+    mv "$tmp" "$2/entries"
+    chmod 0755 "$2/entries"
+    find "$2/entries" -type f -exec chmod 0644 {} +
+    install -m 0644 "$1/catalog/id_registry.tsv" "$2/id_registry.tsv"
+}
+sync_entries "$SRC_INF" catalogs/inference
+sync_entries "$SRC_TR" catalogs/training
+install -m 0644 "$SRC_INF/FAULT_MASTER_REFERENCE.zh.md" catalogs/inference/FAULT_MASTER_REFERENCE.zh.md
+install -m 0644 "$SRC_TR/catalog/rejected.md"  catalogs/training/rejected.md
+install -m 0644 "$SRC_TR/catalog/blindspots.md" catalogs/training/blindspots.md
+
+{
+    echo "# upstream commits of this snapshot (written by scripts/sync_catalogs.sh)"
+    for r in "$SRC_INF" "$SRC_TR"; do
+        echo "$(basename "$r") $(git -C "$r" rev-parse HEAD) $(git -C "$r" log -1 --format=%cI) entries=$(ls "$r/catalog/entries" | grep -c '\.yaml$')"
+    done
+} > catalogs/SOURCES.txt
+echo "snapshots updated under catalogs/:"
+cat catalogs/SOURCES.txt
 
 ./fault-rag reindex
-python3 eval/run_eval.py --cases eval/cases.jsonl --check eval/baseline.json
+python3 eval/run_eval.py --cases eval/cases.jsonl --check eval/baseline.json > /dev/null
 
 echo
 echo "quality gate passed. Next steps:"

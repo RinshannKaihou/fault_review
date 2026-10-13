@@ -1,0 +1,51 @@
+id: INF-0517
+legacy_ids:
+- '6.124'
+slug: sglang_mooncake_shared_ssd_path_multi_rank_kv_corruption
+aliases: []
+title: SGLang 多 rank 共用 Mooncake SSD 路径致 KV 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: MooncakeStore SSD 卸载路径
+  behavior: MooncakeStore 把同一 ssd_offload_path 传给每个 rank 的 Mooncake client，而 LOCAL_DISK bucket 层假设一目录一 client，无跨 client 互斥或命名空间隔离。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: TP8 + HiCache L3 卸载到 Mooncake bucket backend 时各 rank 的 KV 对象静默互相覆盖，命中率正常但恢复内容错误，生成质量不可预测退化；无 crash、无错误日志；重启后无法区分对象所属 rank。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；HiCache L3 + Mooncake LOCAL_DISK/bucket backend + TP>1 共享 ssd_offload_path
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35484
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（多 TP rank 共享同一 Mooncake ssd_offload_path 目录，违反 LOCAL_DISK bucket tier 一目录一客户端假设 → KV 数据静默损坏 + 跨重启恢复歧义） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`MooncakeStore` 把同一个 `ssd_offload_path` 传给**每个 rank** 的 embedded Mooncake client，但 Mooncake 的 LOCAL_DISK（bucket）存储层假设一个目录只属于一个 client（`mooncake-store/src/storage_backend.cpp` 的 bucket 管理无跨 client 互斥/命名空间隔离）。TP8 的 8 个 rank 并发读写同一 bucket 目录 → KV 对象静默互相覆盖/损坏；重启后哪些对象属于哪个 rank 无法区分（恢复歧义）。环境：SGLang main + DeepSeek-V4-Flash MLA TP8 + HiCache L3 → Mooncake bucket backend。修复 PR #31926 已存在但此前无 tracking issue、CI 被 run-ci label 阻塞。'
+  source: 'SGLang #35484（2026-08-19 open，作为 PR #31926 的 tracking issue + rationale）。https://github.com/sgl-project/sglang/issues/35484'
+  behavior: 无 crash、无错误日志。L3 卸载的 KV 数据静默损坏——命中率统计正常但恢复的 KV 内容错误，生成质量不可预测退化；跨重启后恢复语义歧义。属「共享存储路径 × 多客户端假设冲突」**新子签名**——与 6.70（Mooncake request-id ABA 泄漏）、6.13（disconnect 孤儿 KV）同为 Mooncake 集成缺陷但根因在**外部存储层客户端假设**而非 SGLang 记账。
+  trigger_surface: SGLang；HiCache L3 + Mooncake LOCAL_DISK/bucket backend + TP>1 共享 ssd_offload_path
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

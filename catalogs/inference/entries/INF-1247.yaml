@@ -1,0 +1,66 @@
+id: INF-1247
+legacy_ids:
+- K3.10
+slug: vllm_flexattention_paged_kv_offset_int32_overflow
+aliases: []
+title: vLLM FlexAttention 分页 KV 块偏移 int32 溢出回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: FlexAttention 块偏移打包
+  behavior: FlexAttention 后端把 paged K/V 的 block offset 打包为 int32，num_gpu_blocks 大到偏移超过 2**31 时回绕，指向无效地址或错误的合法 block
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 可用性/进度
+  detail: 高显存卡（H800/H200/B200）加大 KV 池（长上下文）使 num_gpu_blocks 逼近阈值时触发：回绕到无效地址则崩溃，落到错误的合法 block 则读错位 KV、静默输出错误
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 特性路径：需对应模型/版本 pin + 场景构造
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/50427
+  kind: github_issue
+relations: []
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`infra_off`（崩溃 **或** 静默错误 KV 寻址） · Cov: `NEW`（新子签名：KV 地址算术整数溢出） · 触发 `partial` · 置信度 `documented`'
+  mechanism: vLLM FlexAttention 后端把 paged K/V 的 block offset 打包成 **int32**。当 `num_gpu_blocks ≥ 2**31 / (block_size · 2 · num_kv_heads · head_size)` 时 offset **回绕**（wrap around）。取决于回绕后值落入的地址是否映射：若映射到无效地址则**崩溃**；若映射到**错误的合法 block**则**静默读取错误 block 的 KV**——attention 用到损坏/错位的缓存，产出静默错误输出。
+  source: 'vLLM #50427（2026-07-30 open，H800 ×8，PyTorch 2.11）。https://github.com/vllm-project/vllm/issues/50427'
+  behavior: 高显存卡（H800/H200/B200）+ 大 KV 池（长上下文）随 `num_gpu_blocks` 趋近触发阈值。结果是崩溃或**静默错误输出**（attention 读到错位 KV）——无 crash 的情形最难检测。
+  trigger_surface: vLLM 特性路径：需对应模型/版本 pin + 场景构造
+  signature: infra_off 的新子签名——"**KV 地址算术整数溢出**"。与 RoPE int32 回绕、GQA shape int32 溢出同属更大类。静默情形下 attention 读取错位 block，错误以"系统性 KV 错位"进入下游，表现为 off-manifold 几何离群（若错位 block 与正确 block 差异大）或近噪声底（若恰好相邻）。
+  repro: 不可软件复现——需要大 KV 池（多卡高显存）+ FlexAttention 后端。
+  locus: block-slot-alloc
+  priority: medium
+  discovery: 2026-07-30 每日扫描，标注为新签名候选。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：title/component/behavior/detail 的事实（int32 打包、2**31 阈值、H800/H200/B200、崩溃或静默读错位 block）均可在原文找到；分类与独立判断一致（算子/内核/vllm，FlexAttention 后端地址算术；KV状态 含映射关系；静默错误）；behavior 只写原因，detail 只写影响，长度合规。未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+        status: unanimous

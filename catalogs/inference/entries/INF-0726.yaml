@@ -1,0 +1,58 @@
+id: INF-0726
+legacy_ids:
+- '7.53'
+slug: vllm_cutlass_fp8_kernel_pre_sm89_ungated_autoselect
+aliases: []
+title: vLLM CUTLASS FP8 内核未查算力，pre-Ada 上被自动选中
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: CUTLASS FP8 kernel 能力门控
+  behavior: CUTLASS FP8 linear kernel 的 is_supported() 只查平台为 CUDA、不探测算力，而底层能力检查拒绝 SM89 以下；CUDA 候选列表中 CUTLASS 排在 Marlin 之前。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: pre-SM89 GPU（A100、30 系及更早）运行 FP8 模型时 CUTLASS 赢得自动选择且无法回退，走不支持路径，结果为 crash 或错误计算（视 CUTLASS 内部行为）；移除 VLLM_TEST_FORCE_FP8_MARLIN 后该路径变为可达。
+  visibility: 待定
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + pre-SM89 NVIDIA GPU + FP8 模型（A100/30 系及更早）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53376
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（CutlassFP8ScaledMMLinearKernel.is_supported 只查平台不查算力——pre-Ada GPU 上赢得自动选择后下游无法恢复；移除 force-fallback 环境变量后可达） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '`CutlassFP8ScaledMMLinearKernel.is_supported()` 只检查平台为 CUDA、**从不探测算力**——而 `cutlass_scaled_mm_supports_fp8()` 拒绝一切低于 SM89 的平台（SM89 还要求 CUDA 12.4+，SM90+ 要求 CUDA 12.0+）。`_POSSIBLE_FP8_KERNELS[PlatformEnum.CUDA]` 把 CUTLASS 排在 Marlin 之前，故 pre-Ada GPU 上 CUTLASS **赢得自动选择且下游无法恢复**。该缺陷在某 commit 移除 `VLLM_TEST_FORCE_FP8_MARLIN`（改用 linear_backend/moe_backend 开关）后变为可达。修复（PR #53376）在 `is_supported` 中加入 capability probe 门控。'
+  source: 'vLLM PR #53376（2026-08-21 open，"[Bugfix] Gate CUTLASS FP8 linear kernel on SM89+"）。https://github.com/vllm-project/vllm/pull/53376'
+  behavior: pre-Ada GPU（SM80/A100 及更早）上 FP8 linear 走不支持路径——crash 或错误计算（视 CUTLASS 内部行为），且自动选择机制使**用户无从干预**（排名优先 + 无 fallback）。属「**kernel 能力门控缺失于分发矩阵**」新子签名：`is_supported` 与底层真实能力检查（supports_fp8 probe）脱钩，自动选择在能力外平台静默胜出。
+  trigger_surface: vLLM + pre-SM89 NVIDIA GPU + FP8 模型（A100/30 系及更早）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 数值结果
+        status: panel7
+    uncertain:
+    - visibility

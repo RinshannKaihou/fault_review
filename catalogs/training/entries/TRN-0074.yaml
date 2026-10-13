@@ -1,0 +1,50 @@
+id: TRN-0074
+legacy_ids:
+- CKPT.25
+slug: mfsdp_ckpt_stage_local_layer_keys_pp_resize
+aliases: []
+title: Megatron MFSDP ckpt 用局部层号，PP 变更后层错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: megatron-lm
+    component: MFSDP state_dict 层键
+  behavior: TransformerBlock 按 stage 局部索引注册层，仅 sharded_state_dict 加全局偏移；MFSDP adapter 把保存用 state dict 别名到普通 state_dict，其元数据不含层位。
+effect:
+  objects:
+  - 模型权重
+  detail: fsdp_dtensor ckpt 以 PP=1 保存、PP=2 加载时 strict DCP load 成功，但后续 stage 都被第一阶段的层填充，训练照常进行，loss 不一定立刻异常；4-MLP 复现输出 max err 1.0328。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `TransformerBlock` 在本地 `ModuleList` 里按 **stage 局部索引**（`decoder.layers.0..n-1`）注册层，只有 `sharded_state_dict`（transformer_block.py:782，offset 在 837）加上全局层号偏移；MFSDP adapter 把 `state_dict_for_save_checkpoint` 别名到普通 `state_dict`（mcore_fsdp_adapter.py:304），其 DTensor 元数据只描述 TP/DP 分片、不含层位。于是 MFSDP `fsdp_dtensor` ckpt 在 **PP=1 存、PP=2 加载**（Bridge MFSDP 文档明确支持该 resize）时：strict DCP load **成功**，但 stage 1 恢复的是 layers 0..n-1（第一阶段的层）而不是自己的 3–4——每个后续 stage 被第一阶段的层静默填充。4-MLP repro：输出 `[1.4989,1.6989,1.8989,2.0989]` 变 `[0.4661,0.6661,0.8661,1.0661]`（max err 1.0328）；换全局命名 exact 恢复。修复 = MFSDP state-dict key 加 pipeline 层偏移（或走 `sharded_state_dict`）、修复前拒绝 PP 不匹配加载。
+  source: 'Megatron-LM #7452（2026-09-17；finding 12，231 行 CPU/Gloo repro 含/不含真实 MFSDP buffer manager 双验证；Llama3-70B B300 recipe 用 MFSDP PP=1 暴露面确认）。https://github.com/NVIDIA/Megatron-LM/issues/7452'
+  behavior: load 无报错、strict 校验绿——**每个 PP stage 训练第一阶段层的复制**，权重系统性错位但训练完全正常地跑下去；loss 不一定立刻异常（各 stage 内部一致）。与 CKPT.03（reshard 错位）/ CKPT.21（两位 pad 字典序错 rank）同族「load 成功 + 内容错位」，差异在这边是**key 语义域错误**（局部层号当全局层号）而非分片几何；「adapter 用普通 state_dict 别名绕开 sharded 契约」与 CKPT.05（非 sharded 路径丢 reshard 元数据）同型。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

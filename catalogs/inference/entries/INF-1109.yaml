@@ -1,0 +1,50 @@
+id: INF-1109
+legacy_ids:
+- '11.86'
+slug: vllm_thinking_token_budget_forced_end_prefix_realign_repetition_loop_at_exhaustion
+aliases: []
+title: vLLM thinking budget 耗尽时强制结束错位致重复循环
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: thinking budget 强制结束逻辑
+  behavior: 强制 end 序列全部进入尾部后 prefix-match 移位、end_prefix_len 重算为 0，每步重新强制首个 end token；forced/natural end 不同时早退守卫失效。
+effect:
+  objects:
+  - 输出内容
+  detail: 使用 thinking_token_budget 且 forced/natural end 配置不同时，生成恰在预算耗尽点坍塌为逐字重复直至 max_tokens，无日志；RTX PRO 6000 Blackwell 生产部署确定性复现。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `thinking_token_budget` + forced/natural end 配置不同 + 预算耗尽（config：单参数触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58390
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（vLLM `thinking_token_budget` 生成在**预算耗尽点精确坍塌进重复循环**：forced end 序列完整进入尾部后 prefix-match 对齐移位、`end_prefix_len` 被重算为 0，内核**永久重复强制序列的第一个 token**；distinct forced/natural-end 配置下 `last_start <= last_end` 早退永不触发——预算边界处确定性死循环。RTX PRO 6000 Blackwell 生产部署实测、确定性复现；根因已定位（社区 PR #58402：尾部已含完整 `reasoning_end_token_ids` 序列时释放强制、附 GPU 回归测试）） · Cov: `NEW`（预算强制解码状态机重对齐子签名；与 11.61（MRV2+MTP thinking budget 失联跑飞）同为 thinking-budget 族但方向相反——本条是**边界处死循环**而非预算失效） · 触发 `config` · 置信度 `verified`'
+  mechanism: token-budget 强制结束机制用 prefix-match 定位已强制的 end 序列前缀；一旦完整 end 序列进入滑动尾部，匹配窗口移位使前缀长度归零、强制状态机重启到序列首 token——每步都"重新强制第一个 end token"，生成器无法推进；早退守卫的比较条件（`last_start <= last_end`）在 forced/natural-end 配置不同时恰好不满足，守卫失效。
+  source: 'vLLM #58390（2026-09-23 open，含确定性复现、根因分析（end_prefix_len 重算为 0）与修复 PR #58402（释放条件守卫 + GPU 回归测试））。https://github.com/vllm-project/vllm/issues/58390'
+  behavior: 无 crash——**预算耗尽点生成质量坍塌为逐字重复循环**直至 max_tokens：烧尽输出预算、产出不可用文本；触发点确定（恰在 budget 边界），无日志；依赖 thinking budget 的生产 agent 在长思考请求上系统受害。
+  trigger_surface: vLLM + `thinking_token_budget` + forced/natural end 配置不同 + 预算耗尽（config：单参数触发）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

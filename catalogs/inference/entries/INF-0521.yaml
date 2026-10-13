@@ -1,0 +1,51 @@
+id: INF-0521
+legacy_ids:
+- '6.128'
+slug: vllm_prefill_shape_misdispatch_spec_cudagraph_gdn_state_loss
+aliases: []
+title: 3-token prefill 误判为 decode 致 GDN 状态丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: _is_uniform_decode 形状判据
+  behavior: _is_uniform_decode 纯按形状判定，MTP k=2 时 3-token 首次 prefill 被误判为 decode、派入 spec FULL cudagraph，GDN recurrent-state 写被跳过。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: MTP k=2 + Qwen3-Next/Qwen3.5-MoE 等 hybrid GDN 模型下，3-token prompt（如“中国的首都是”）首步即毒化请求，后续 decode 从零状态产出确定性垃圾输出，draft 接受率坍塌；无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + spec decode（MTP k=2）+ 恰为 1+k token 的 prompt + hybrid GDN 模型；确定性触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53051
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（prefill 因 token 计数恰等于 uniform-decode 形状被误派发进 spec-decode FULL cudagraph——hybrid GDN 全部 recurrent-state 写被跳过，后续 decode 从零状态产出确定性垃圾） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '`GPUModelRunner._is_uniform_decode` 是纯形状检查（`max_num_scheduled_tokens == uniform_decode_query_len && num_tokens == max_num_scheduled_tokens * num_reqs`）。MTP `num_speculative_tokens=2` 时 `uniform_decode_query_len=3`，**任意 3-token prompt** 的首次 prefill 即满足形状判据 → 被误分类为 uniform decode、派发进为 spec-decode 捕获的 FULL cudagraph；GDN metadata 正确识别该步为 prefill，但持久缓冲路径下 hybrid 模型（Qwen3-Next/Qwen3.5-MoE GDN 层）的 recurrent-state 写被静默跳过 → 后续每步 decode 从零初始状态计算。报告者以 GDN state pool 的 per-block 校验和完成根因定位并验证一行逻辑修复。'
+  source: 'vLLM #53051（2026-08-19 open，含逐块校验和根因分析）。https://github.com/vllm-project/vllm/issues/53051'
+  behavior: 无 crash——确定性垃圾输出 + draft 接受率坍塌。触发面荒谬地宽：3-token prompt（如"中国的首都是"）即从第一步毒化请求。「形状启发式派发 × 状态化层（GDN/Mamba）」新子签名：纯形状判据把"该写状态"的步骤误判为"只读状态"的步骤。
+  trigger_surface: vLLM + spec decode（MTP k=2）+ 恰为 1+k token 的 prompt + hybrid GDN 模型；确定性触发
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: TRN-0209
+legacy_ids:
+- RL-ADV.07
+slug: singleton_group_vectorized_zero_path
+aliases: []
+title: verl rloo_vectorized 将单样本组 advantage 清零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: rloo_vectorized 单样本组掩码
+  behavior: 向量化版用 loo * (c > 1) 把单样本组行乘成 0，而标量版 if response_num > 1 让其保留原始分数；等价测试断言每组 ≥2 样本，恰好绕开该情形
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: rollout.n=1 时 advantage 全零，RLOO run 无报错、无 NaN、指标齐全但永远不学习；过滤后只剩一条的 ragged 组中，幸存样本同样拿不到梯度
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/7581
+  kind: github_pr
+- url: https://github.com/verl-project/verl/issues/7793
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0203
+original:
+  category: RL-ADV
+  section: RL-ADV
+  meta: 'stage: `rl` · Cov: `var:grpo_group_std_zero` · 置信度 `documented`'
+  mechanism: verl `rloo` 与 `rloo_vectorized` 文档声明可互换、等价测试也绿，但对**单样本组**行为相反：标量版 `if response_num > 1` 让 singleton 保留原始分数（GRPO 同约定：mean=0/std=1 归一后原分数存活）；向量化版 `loo * (c > 1)` 把这些行**乘成 0**。`rollout.n == 1` 时每组都是 singleton → advantage 全零张量、策略无梯度；过滤后组内只剩一条幸存样本的 ragged 组同样中招。
+  source: 'verl #7581（等价测试 `_make_group_index` 断言每组 ≥2 样本，**恰好绕开唯一不存在 leave-one-out baseline 的组规模**；修复 `torch.where(c > 1, loo, scores)`，红→绿 3 failed→30 passed）。https://github.com/verl-project/verl/pull/7581 ；verl #7793（2026-09-10 补：同机制的独立 issue——overlong/dynamic filtering 把组内滤到只剩一条时，向量化版末尾 `* (c > 1)` 把 advantage 乘成 0，标量版 `id2mean = 0` 分支让幸存样本保留原始分数；报告者验证多样本组的 leave-one-out 代数两边等价，仅 singleton 分歧行为，与 GRPO singleton 约定 mean=0/std=1 一致的是标量版）。https://github.com/verl-project/verl/issues/7793'
+  behavior: 无报错、无 NaN；`n=1` 的 RLOO run「正常训练但永远不学习」——advantage 恒 0 下 loss 仍有限、指标齐全。#7793 面向**过滤后**的 ragged singleton：模型对被过滤路径之外的幸存 rollout 也拿不到梯度。与 RL-ADV.01（组内无对比零信号）同族，但机制在**向量化掩码错杀非退化组**：分数本可用，被实现乘没了；`n` 从不与估计器选择做校验。
+  discovery: 2026-08-30 每日扫描（#7793 来源 2026-09-10 补）
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0447
+legacy_ids:
+- '6.54'
+slug: sglang_overlap_batch_freed_while_forward_reads
+aliases: []
+title: SGLang overlap 调度在 forward 仍读时释放张量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: sglang
+    component: overlap 调度器的张量生命周期
+  behavior: _forward_isolation 退出时丢掉 forward 内重绑的 input_ids/out_cache_loc 唯一引用；mix_running_indices 在 forward 流仍读时被释放。
+effect:
+  objects:
+  - 输出内容
+  detail: overlap 调度配推测解码（Spec-V2/EAGLE）时触发；缓存分配器把已释放块分给同流重分配，造成 in-range 损坏，server 无 crash 继续运行但发出错误 token。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；overlap scheduling + 推测解码（Spec-V2/EAGLE）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34076
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（overlap 调度器在 forward stream kernel 仍读取时释放 batch tensor——两处 use-after-free） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 两处缝隙。**缝隙1**——`_forward_isolation` exit restore 丢弃 mid-forward 重绑定的 tensor：Spec-V2 worker（如 `eagle_prepare_for_verify`）在 forward 内重绑 `input_ids`/`out_cache_loc` 到新 tensor，`finally:` restore 丢弃这些 rebound tensor 的唯一 Python 引用，而 forward-stream 已入队 kernel 可能仍读。现有 pin（`record_batch_in_overlap` pin pre-forward 值；`extra_keep_alive_refs` pin verify batch）不覆盖此窗口。**缝隙2**——`mix_running_indices` 在 forward stream kernel 仍读时释放。两处均静默 in-range 损坏：缓存分配器把释放块给同流重分配。
+  source: 'SGLang PR #34076（2026-08-08 open）。组件 overlap scheduler / `_forward_isolation`。https://github.com/sgl-project/sglang/pull/34076'
+  behavior: 无 crash。server 继续运行发错误 token——**完全静默** in-range 损坏。属「overlap 调度器并发释放与 forward stream 生命周期不匹配」签名——use-after-free 的新并发子模式。
+  trigger_surface: SGLang；overlap scheduling + 推测解码（Spec-V2/EAGLE）
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 运行时/执行：缺陷本质是 forward stream kernel 仍在读时张量被释放（跨 stream 生命周期 + 缓存分配器重分配），词表 运行时/执行 明列 stream/同步、内存分配器；overlap 调度器在此承担执行流水，而非请求调度策略。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

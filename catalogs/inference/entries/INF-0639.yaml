@@ -1,0 +1,53 @@
+id: INF-0639
+legacy_ids:
+- '6.246'
+slug: transformers_dynamic_cache_offloading_hybrid_gdn_state_roundtrip_wrong_logits
+aliases: []
+title: transformers 缓存卸载往返损坏 GDN 状态致 logits 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: DynamicCache 卸载 GDN 状态
+  behavior: DynamicCache offloading 路径对 linear_attention 层 recurrent/conv state 的 CPU 卸载→读回往返引入数值损坏：prefill 写入一致，坏在读回。
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: hybrid GDN 模型开 offloading=True 时，prefill 与关闭时逐位一致，首次 cache 复用起 logits max_abs_diff 达 2.12 并逐步放大（第 3 步 17.4），argmax 从第 1 步分歧，确定性复现；单步验证全绿。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers ≥5.17 + hybrid GDN/线性注意力模型 + `DynamicCache(offloading=True)` + 第二次及以后 forward（config：单开关触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48947
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0633
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（transformers 5.17.0 `DynamicCache(config=model.config, offloading=True)` 在 hybrid Gated-DeltaNet + attention 模型（Qwen3.8-27B，48/64 linear_attention + 16/64 full_attention，bf16/sdpa）上**首次 cache 复用即 logits 错值**：第一次 forward（prefill）与 `offloading=False` **逐位一致**（max_abs_diff 0.0）；第一个复用调用的 max_abs_diff 已达 **2.12**（base top-1 logit ≈6.2 量级，远超 bf16 舍入 ~1e-2）、逐步复合放大（第 3 步 17.4）、**argmax 从第 1 步起分歧**、确定性可复现（非 run-to-run 噪声，重跑数字相同）。文档声明 offloading 只改变 cache 张量**所在位置**不应改变数值结果；报告者定位到 linear_attention 层的 recurrent/conv state 经 CPU offload 往返损坏（未进一步定位具体张量）。显存/速度方向正常（峰值显存降低、decode 慢 4–6×，均为 CPU offload 预期方向）掩盖了正确性破坏） · Cov: `var:sglang_hierarchical_cache_host_tier_hit_gdn_mamba_wrong_output_other_pass_voice`（6.240 host 层往返损坏族） · 触发 `config` · 置信度 `verified`'
+  mechanism: hybrid 模型 cache 同时含注意力 KV 与 GDN recurrent/conv state 两类条目；offloading 路径对 linear_attention 层状态的存取/恢复在首次真正跨设备搬移（第二调用）时引入数值损坏——损坏在**第二次调用才显形**说明 prefill 写入本身一致、坏在读回（offload→load 往返）。
+  source: 'transformers #48947（2026-09-19 open，含精确最小复现（随机 ids、logits_to_keep、逐步 max_abs_diff/argmax_match 输出）与"第一个复用调用"边界界定）。https://github.com/huggingface/transformers/issues/48947'
+  behavior: 无 crash、无 NaN——贪心解码从第 1 个生成 token 起即分叉且偏差指数复合；由于 prefill 步逐位正确，常规单步验证全绿，只有多步生成才暴露。6.240（SGLang hierarchical host tier 命中后 GDN/Mamba 输出错值）之后 host/offload 往返损坏族在**第三栈（transformers 原生 DynamicCache）**的显形：三个栈三个实现（SGLang hierarchical、vLLM connector、HF offloading）在同族模型上各自踩中 GDN 状态往返——指向 hybrid 状态管理的通用难点而非单栈缺陷。
+  trigger_surface: transformers ≥5.17 + hybrid GDN/线性注意力模型 + `DynamicCache(offloading=True)` + 第二次及以后 forward（config：单开关触发）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

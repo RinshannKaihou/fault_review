@@ -1,0 +1,52 @@
+id: INF-0010
+legacy_ids:
+- '1.10'
+slug: bf16_nan_canonicalization_silent_inf
+aliases: []
+title: tt-metal bf16 NaN 经设备 op 被静默改写为 Inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn 设备 op 的 bf16 NaN 传播
+  behavior: bfloat16 NaN 经过任何设备 op（包括不做算术也不转格式的 to_layout、neg、abs、typecast）都被改成同符号 Infinity，返回途中 NaN 传播语义被静默改变。
+effect:
+  objects:
+  - 数值结果
+  detail: 依赖 NaN 作控制信号的上层算子（梯度裁剪、稳定性检查、稀疏激活门控的 NaN 屏蔽）在 Tenstorrent 上失效，控制流分支判错；host round-trip 与 ttnn.clone 能保留 NaN。无 crash、无 assert。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: kernel/SDC：软件近似或最小 kernel 复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-30'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/51557
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off` · Cov: `NEW`（新子签名：dtype NaN-canonicalization 静默错误） · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'Tenstorrent `bfloat16` 的 NaN 不经过任何 device op 后无法存活——即使是**不执行算术也不做格式转换**的 op（`ttnn.to_layout`、`ttnn.neg`、`ttnn.abs`、`ttnn.typecast(x, bfloat16)`）都把 NaN 变成同符号的 **Infinity**。host round-trip 和 `ttnn.clone` 能保留值，说明 NaN 到达设备时完整、在返回途中被破坏。报告者构建了一个 build 使**全部 254 个 bf16 NaN 编码**在这些 op 上**比特精确存活**、全部 65024 个常规编码不变、无可测性能影响——证明这不是必然的硬件限制。本条 subsumes #31406（open since 2025-10-29）。本质是 dtype 的 NaN 传播语义在数据搬运路径上静默改变（NaN→Inf），属于"**dtype NaN-canonicalization 静默错误**"签名。'
+  source: 'tt-metal #51557（2026-07-30 open）。https://github.com/tenstorrent/tt-metal/issues/51557'
+  behavior: 任何依赖 NaN 作为控制信号（梯度裁剪、稳定性检查、稀疏激活门控的 NaN 屏蔽）的上层算子在 Tenstorrent 上失效——NaN 被静默替换为 Inf，控制流分支判错。无 crash、无 assert，结果数字合理但语义错误。
+  trigger_surface: kernel/SDC：软件近似或最小 kernel 复现
+  signature: infra_off 的新子签名——"dtype NaN-canonicalization 静默错误"。与 1.8（SFPU isclose 位模式比较）同属"硬件数学库静默错误值"族，但本条根因在 **dtype 通过搬运 op 的 NaN 传播语义缺陷**而非比较原语。若受影响 op 的输出进入残差流或 attention，NaN→Inf 的替换会让下游数值发散（Inf 参与运算），表现为 off-manifold 几何离群；若仅用于控制流，则可能完全不在隐藏态里。
+  repro: 不可软件复现——需要 Tenstorrent 设备 + `ttnn` 栈。通用 GPU 上可用软件层面近似：在 forward hook 中把 NaN 输入静默替换为 Inf，但这模拟的是软件 bug 而非硬件 dtype 语义缺陷。
+  discovery: 2026-07-30 每日扫描，标注为新签名。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

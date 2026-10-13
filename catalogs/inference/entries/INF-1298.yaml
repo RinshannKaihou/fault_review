@@ -1,0 +1,60 @@
+id: INF-1298
+legacy_ids:
+- K9.7
+slug: prefix_cache_kv_block_use_after_free
+aliases: []
+title: KV 块分配器在驱逐压力下 use-after-free
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV 块分配器驱逐路径
+  behavior: KV 块分配器在驱逐压力下存在 use-after-free（TOCTOU 竞态）：块仍被引用时即被释放并重新分配。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 高负载下偶发输出错乱或内容串台，注意力读到已释放内存或另一序列的 KV；低负载复现不出。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/37076
+  kind: github_issue
+  resolved_from: 'vLLM #37076'
+relations: []
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`infra_off` · Cov: `NEW` · 触发 `config`⚠ · 置信度 `verified`'
+  mechanism: KV 块分配器在**驱逐压力（eviction pressure）**下出现 use-after-free（TOCTOU 竞态）——一个块在仍被引用时被释放并重新分配，于是注意力读到的是已释放的内存或另一条序列的 KV。
+  source: 'vLLM #37076（CLOSED 2026-03-14，"Potential use-after-free in KV block allocator under eviction pressure"）。（第一轮已正确指出 #37076 与"同一步注册"bug 是不同故障。）'
+  behavior: 高负载下偶发的输出错乱或内容串台；低负载复现不出，属于压力相关的偶发静默故障。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: '**块边界处的 off-manifold KV**。检测面：per-position 的 statistical KV-norm 离群（读到已释放的垃圾内存时）+ cross-request 签名余弦（读到另一序列的合法 KV 时）——两种后果的签名强度差异很大，前者数值离群明显、后者只在跨请求余弦上可见。geometric 族在块边界处有阶跃。触发受驱逐压力/并发门控，故生产环境中签名间歇出现；一旦触发即为硬 off-manifold。'
+  repro: 单钩子于 cache 写入后，把某个连续块区间的 K/V 替换为（a）随机/未初始化数值或（b）另一条序列的 K/V，两种变体分别对应 UAF 的两类后果。
+  locus: block-slot-alloc
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：事实（驱逐压力、TOCTOU use-after-free、读到已释放内存或另一序列 KV、高负载偶发、低负载复现不出）均有原文依据；分类与独立判断一致（KV缓存/vllm；KV状态、跨请求/跨样本数据；静默错误）；形式与长度合规。未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

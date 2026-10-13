@@ -1,0 +1,60 @@
+id: INF-1229
+legacy_ids:
+- K1.1
+slug: vllm_cascade_attn_missing_sink
+aliases: []
+title: vLLM cascade 注意力漏传 sink，softmax 分母错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: flash_attn cascade 路径
+  behavior: cascade attention 的共享前缀 pass 与后缀 pass 都没有传入学到的 sink 张量，经 merge_attn_states/LSE 合并后的 softmax 分母缺少 sink 项
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 开启 prefix caching 走 cascade 路径且模型带 attention sink（GPT-OSS）时出现：GPT-OSS-20B 的 MMLU-Pro 约 0.68→0.58，并出现退化的重复循环；非 cascade 路径正常
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM cascade attention 路径；需开启对应 backend/模型
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/26203
+  kind: github_issue
+  resolved_from: 'vLLM PR #26203'
+relations: []
+original:
+  category: KV1
+  section: KV §1 value-corruption（值损坏）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: cascade attention（共享前缀 pass + 后缀 pass，通过 `merge_attn_states`/LSE 合并）从未把学到的 sink 张量传入任何一个子 pass，因此对带 attention sink 的模型（GPT-OSS）而言，合并后的 softmax 分母是错的。该路径只在 prefix caching 启用 cascade 时才被走到，所以故障是被服务配置门控的，而不是常开的。
+  source: 'vLLM PR #26203（修复把 sink 加入 cascade 路径，约 `flash_attn.py:795`）。'
+  behavior: GPT-OSS-20B 的 MMLU-Pro 在开启 prefix caching 时约 0.68→0.58；退化的重复循环只在 cascade 路径上出现，非 cascade 路径不出现。
+  trigger_surface: vLLM cascade attention 路径；需开启对应 backend/模型
+  signature: '`ambiguous` —— 签名只在「prefix caching 触发 cascade 路径 × 模型带 learned sink」这一组合下出现；一旦触发则表现为 infra_off：缺失的 sink 过度加权非 sink token，导致注意力熵坍缩、受影响层的注意力后残差范数被抬高，且 cascade 与非 cascade 之间的差距随前缀长度扩大。可捕获的是 statistical 族（注意力熵、残差范数离群）与 geometric 族（相对非 cascade 参考的方向偏离）；trajectory 族的逐层平滑度会漏检（每层的偏移是同向的、平滑的），cheap 族除非并发变化改变 cascade 命中率，否则也看不到。'
+  repro: 无 learned sink 的标准模型上只能做「softmax 分母缺项」的近似：在目标层 self-attn 的输出 hook 上，按缺失 sink 质量对应的比例 `(Z+e^s)/Z` 重新放大并归一化注意力输出，模拟分母少算一项。因此可软件复现性为 partial：能复现分母错误带来的熵坍缩，但复现不了真实的 prefix/suffix 两段式合并结构。
+  locus: value-corruption
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 subsystem=算子/内核。缺陷是 cascade attention 子 pass 未传入 sink 张量（修复在 flash_attn.py 约 795 行的 cascade 路径），属注意力后端计算；prefix caching 只是让 cascade 路径被走到的触发条件（rule 6），出错代码不是 KV 存储/分配/前缀缓存管理逻辑，故不按功能域归 KV缓存。其余字段与独立判断一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

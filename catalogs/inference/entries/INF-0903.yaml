@@ -1,0 +1,57 @@
+id: INF-0903
+legacy_ids:
+- '9.20'
+slug: hf_transformers_rope_tf32_integer_position_truncation_b200
+aliases: []
+title: RoPE 角度 matmul 走 TF32 截断 2048 以上位置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: transformers
+    component: RoPE forward 角度 matmul
+  behavior: RoPE 角度用 fp32 matmul（inv_freq @ position_ids），禁用 autocast 不阻止 TF32；精度为 high 时 TF32 的 10 位尾数把大于 2048 的整数位置截断（2049→2048）。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: B200（sm_100）上 set_float32_matmul_precision("high")、batch>1 且上下文超过 2048 token 时 RoPE 角度大错，长上下文输出静默退化；A100 或 batch=1 不触发，Llama/Qwen/Mistral 共用此路径。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers（4.5x）+ Blackwell（B200/sm_100 已证，其它 arch 可能）+ `set_float32_matmul_precision("high")`（或等效 allow_tf32）+ batch>1 + 上下文 > 2048 token（Llama/Qwen/Mistral 全家共用代码路径）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48428
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0318
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（`Qwen3RotaryEmbedding.forward`（Llama/Qwen2/3/Mistral 等共用路径）的 `freqs = inv_freq.float() @ position_ids.float()` 是 fp32 matmul——外层 `torch.autocast(enabled=False)` 只强制 dtype、**不控制乘法后端**：`torch.set_float32_matmul_precision("high")` 下 B200（batch>1）dispatch 到 TF32 GEMM，TF32 的 10-bit 尾数只能精确表示整数到 2^11=2048，**position_ids 2049 被截断为 2048**，RoPE 角度大错；A100 不复现（不同 dispatch）） · Cov: `var:tf32_matmul_truncation` · 触发 `config` · 置信度 `verified`'
+  mechanism: autocast 禁用只保证算子输入输出是 fp32，不约束 cuBLAS 是否选 TF32 tensor-core kernel；`"high"` 精度设定放行 TF32。RoPE 角度计算把**整数 position_id 放进 matmul**——TF32 截断对连续值是精度损失，对整数 >2048 是**离散跳变**（2049→2048），角度误差随位置放大。修复二选一：局部 `torch.backends.cuda.matmul.allow_tf32_ctx(False)` 包住角度计算，或改逐元素乘法（`position_ids.T * inv_freq.T`）从根上避开 matmul。同源独立报告：thinking-machines-lab/batch_invariant_ops#23（相同 RoPE 损坏与误差量级）、ByteDance-Seed/VeOmni#959。
+  source: 'transformers #48428（2026-08-31 open，bug label，B200 sm_100 复现 + A100 对照 + 双修复验证）。https://github.com/huggingface/transformers/issues/48428'
+  behavior: 无 crash——**长上下文（position > 2048）输出静默退化**，且具 arch 依赖性（B200 触发、A100 不触发）与 batch 依赖性（batch>1 才走 TF32 路径）：同代码跨硬件/跨 batch 行为分歧，归因极难。4.2（tf32_matmul_truncation）已知 TF32 尾数截断，本条是其**在位置编码维度的新显形面**——整数语义（position_id）对精度截断的敏感度远高于一般连续激活，2048 恰好是常见上下文长度边界内的值域。
+  trigger_surface: transformers（4.5x）+ Blackwell（B200/sm_100 已证，其它 arch 可能）+ `set_float32_matmul_precision("high")`（或等效 allow_tf32）+ batch>1 + 上下文 > 2048 token（Llama/Qwen/Mistral 全家共用代码路径）
+  discovery: |-
+    2026-08-31 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

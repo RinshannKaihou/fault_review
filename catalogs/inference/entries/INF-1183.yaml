@@ -1,0 +1,53 @@
+id: INF-1183
+legacy_ids:
+- '13.15'
+slug: vllm_rocm_kimi_k3_correction_bias_fp32_downcast_on_load
+aliases: []
+title: Kimi-K3 路由偏置在 ROCm 加载时被降为 BF16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: AMD 路由 correction bias
+  behavior: AMD 模型在环境 BF16 dtype 下构造 e_score_correction_bias 参数，标准 weight loader 把 checkpoint 中的 FP32 值拷入 BF16 存储，低位在加载时即永久丢失。
+effect:
+  objects:
+  - 模型权重
+  - 隐状态
+  detail: ROCm/AMD 上服务 Kimi-K3 时，grouped top-k 的 correction bias 精度永久受损，后续 AITER upcast 无法恢复，MoE 路由静默偏移；无 crash、无 NaN，与 NVIDIA 实现不一致。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: AMD/Apple 路径，非本环境
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-02'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/50761
+  kind: github_pr
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off`（关键参数加载时静默降精度） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 'Kimi-K3 checkpoint 把 `e_score_correction_bias` 存为 **FP32**，且 AMD router 已发射 FP32 logits。但 AMD 模型当前在**环境 BF16 模型 dtype** 下构造 correction-bias 参数，于是标准 weight loader 把 FP32 checkpoint 拷进 **BF16 存储**。后续 AITER 运行时的 upcast **无法恢复被丢弃的低位**——BF16 截断在加载瞬间已永久丢失精度。这与 NVIDIA 实现（及 DeepSeek 的合并修复 #23640）不一致。修复：在 weight loading **之前**把该小参数建在 FP32，保留 checkpoint 精度，匹配 router-logit 契约。'
+  source: 'vLLM #50761（2026-08-02 closed PR）。环境：ROCm/AMD，`moonshotai/Kimi-K3`。关联追踪 issue #50682。https://github.com/vllm-project/vllm/pull/50761'
+  behavior: 无 crash、无 NaN。FP32 correction bias 在加载时被静默降为 BF16，post-load upcast 无法恢复低位 → grouped top-k 的 correction bias 精度永久受损 → MoE 路由静默偏移。属「FP32 关键参数在加载时被静默降精度，post-load upcast 无法恢复」新子签名，是模型图/架构层的数值正确性 bug（参数 dtype 契约违反）。
+  trigger_surface: AMD/Apple 路径，非本环境
+  discovery: 2026-08-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

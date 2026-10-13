@@ -1,0 +1,58 @@
+id: INF-1259
+legacy_ids:
+- K5.3
+slug: pd_disagg_dside_page_reuse_stale_kv
+aliases: []
+title: PD 分离 decode 端页复用早于 KV 落地致读到过期 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: decode 端 KV 页释放与分配
+  behavior: （源 issue 未确认的假设机制）decode 端经 Mooncake RDMA 收 KV，已完成请求释放的页可能在新请求入站传输落地前分配给它，调度器读到回收页上的过期字节；bootstrap_room 元数据匹配，故无告警。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 跨请求/跨样本数据
+  detail: 输出随请求计数渐进坍缩为乱码：准确率从第 1–50 个请求约 94–96% 降到第 151 个以后 25–41%，损害跨请求累积；重启 PD 可恢复。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: speculative
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/23020
+  kind: github_issue
+  resolved_from: 'SGLang #23020'
+relations:
+- kind: var
+  target: INF-0399
+original:
+  category: KV5
+  section: KV §5 cross-node-transfer（跨节点传输：分离式 / 卸载 / RDMA）
+  meta: '`infra_off` · Cov: `var:radix_kvcache_cross_contamination` · 触发 `no` · 置信度 `speculative`'
+  mechanism: decode 节点通过 RDMA（Mooncake）接收 KV。当一个已完成的请求释放其 KV 页时，新请求可能在其入站传输**落地之前**就被分配到那些物理页 → decode 调度器从被回收的页上读到过期字节；由于元数据（`bootstrap_room`）是匹配的，整个过程静默无告警，并且跨请求累积。
+  source: 'SGLang #23020（open；page-reuse 竞态只是 4 个未确认假设之一）。'
+  behavior: 随请求计数渐进坍缩为乱码：准确率从第 1-50 个请求的约 94-96% 掉到第 151 个请求以后的 25-41%；重启 PD 可恢复。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: off-manifold（infra_off）——decode 位置的一个子集上带有过期/外来 KV，比例沿序列与请求序号累积增长。捕获者：trajectory（累积型漂移，是本项目 trajectory 族最擅长的形状）、geometric（受污染位置的逐位置余弦下降）、cheap（recompute-oracle；以及「请求序号 vs 偏离度」的单调关系本身就是一个廉价判据）。漏检者：单请求快照式的 statistical / spectral——早期请求几乎无异常，签名只在长时间运行的分布尾部显现。置信度为 speculative：源 issue 未确认此机制为根因。
+  repro: 随机子集污染——用单个 `self_attn` pre-hook，把 cached K/V 中一个随机位置子集替换成先前另一条 prompt 捕获的 K/V（「回收页上的过期字节」），污染比例作为参数随「请求序号」增大，以复现渐进坍缩曲线。
+  locus: '`cross-node-transfer`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

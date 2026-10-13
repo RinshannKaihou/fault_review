@@ -1,0 +1,56 @@
+id: INF-1144
+legacy_ids:
+- '12.28'
+slug: vllm_unload_lora_adapter_frontend_only_engine_state_leak
+aliases: []
+title: vLLM unload_lora_adapter 只删前端名单、引擎未卸载
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: unload_lora_adapter 接口
+  behavior: unload_lora_adapter 只删前端 lora_requests 条目并记“Removed LoRA adapter”日志，从不调用 AsyncLLM.remove_lora；Rust 前端同样只删名称。
+effect:
+  objects:
+  - 性能/资源
+  - 输出内容
+  detail: 调用 /v1/unload_lora_adapter 返回成功，adapter 仍驻留 worker GPU slot/CPU cache 直到 LRU 逐出，显存不释放；“已卸载”的 adapter 可能仍在服务，同名 reload 时新旧权重竞争。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM OpenAI server + `/v1/unload_lora_adapter`（API 调用即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54839
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: vllm_sleep_wake_lora_adapter_state_corruption
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（`POST /v1/unload_lora_adapter` 只在前端 `del lora_requests[lora_name]` 并打日志"Removed LoRA adapter"——**从不调 `AsyncLLM.remove_lora`**：adapter 仍驻留 worker GPU slot/CPU cache 直到 LRU 逐出；名称槽位即时释放 + 引擎态滞留的组合使 unload 后同名 reload 行为错乱（多 worker/多卡下前端名单与引擎实态分裂）） · Cov: `var:vllm_sleep_wake_lora_adapter_state_corruption`（6.149 控制面与引擎 LoRA 状态不同步族） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`OpenAIServingModels.unload_lora_adapter` 只动前端 dict；`AsyncLLM.remove_lora` 存在且离线 `LLM` API 在用，但 `entrypoints/` 下无人调用——Rust 前端同样只做名称删除。结果：显存/CPU 占用不释放（直到 `max_loras` LRU 挤出）、"已卸载"的 adapter 可能仍在服务、名称复用时新旧权重竞争。'
+  source: 'vLLM #54839（2026-09-01 open，main c0adee9231、Qwen3-0.6B + `--enable-lora` + `VLLM_ALLOW_RUNTIME_LORA_UPDATING=1`、含前端代码引用与 Rust 前端对照）。https://github.com/vllm-project/vllm/issues/54839'
+  behavior: 无 crash——**API 语义谎言**：返回成功 + 日志确认，实际引擎未卸载；显存泄漏式占用 + adapter 生死状态不可信。属「**前端确认 ≠ 引擎执行**」：6.149（sleep/wake 损坏 LoRA 状态）的主动操作面同族——本条是显式的 unload 操作本身不达引擎。
+  trigger_surface: vLLM OpenAI server + `/v1/unload_lora_adapter`（API 调用即触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem
+    - effect

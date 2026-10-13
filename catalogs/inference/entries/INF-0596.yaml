@@ -1,0 +1,52 @@
+id: INF-0596
+legacy_ids:
+- '6.203'
+slug: vllm_arc_offload_t2_only_reclaim_store_atomic_failure
+aliases: []
+title: vLLM ARC KV 卸载只扫 T2 致 store 失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: CPU KV offload ARC 驱逐
+  behavior: T1 低于自适应目标时只扫描 T2，T2 无合格候选（pin/保护/耗尽）即返回 None，把偏好序实现成硬性单侧，不回退 T1 中的可驱逐条目。
+effect:
+  objects:
+  - 性能/资源
+  detail: T2 条目受 pin/保护压力或在 batch 中途耗尽时，尽管 T1 有足够可驱逐条目，store 仍原子性失败；CPU offload 吞吐间歇塌陷、KV 驻留 GPU 加重显存压力，失败报给调用方但根因不可见。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + CPU KV offload + T2 pin/保护压力 + batch 中途（负载模式触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55461
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（CPU KV offload 的 ARC 驱逐在 T1 低于自适应目标时只扫 T2，T2 无合格候选（pin/保护/耗尽）即返回 None——明明有足够可驱逐条目（T1 侧），store 仍原子性失败；可发生在 batch 中途） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'ARC 的自适应目标使驱逐偏好 T2（近期频繁侧），但实现把"T2 无候选"当作整体失败而非回退 T1；T2 条目被 pin/保护或 batch 处理中途状态耗尽时，T1 的可驱逐存量被无视。修复在 T2 耗尽后回退合格 T1 条目，保持偏好序与原子失败语义（PR #55461，含 6 个参数化回归用例）。'
+  source: 'vLLM PR #55461（2026-09-05）。https://github.com/vllm-project/vllm/pull/55461'
+  behavior: offload 写入失败（fail-loud 到调用方，但根因不可见）——CPU offload 吞吐间歇塌陷、KV 驻留 GPU 加速显存压力。与 6.166（hybrid branch LRU 压力静默坍塌）同为缓存替换策略实现域，本条是「**替换算法的偏好序被实现成硬性单侧**」：ARC 双侧设计的单侧化。
+  trigger_surface: vLLM + CPU KV offload + T2 pin/保护压力 + batch 中途（负载模式触发）
+  discovery: |-
+    2026-09-05 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

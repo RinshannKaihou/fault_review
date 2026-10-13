@@ -1,0 +1,56 @@
+id: INF-0467
+legacy_ids:
+- '6.74'
+slug: vllm_deepseek_v4_fused_qnorm_rope_kv_insert_large_batch_invisible_alloc_crash
+aliases: []
+title: vLLM DSV4 融合 kv-insert 算子大 batch 致崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: DSV4 融合 kv-insert 算子
+  behavior: DeepSeek-V4 的 fused qnorm/rope/kv-insert 算子在运行时临时分配显存（new_empty），该分配绕过 memory profiler，大 batch 下分配失败
+effect:
+  objects:
+  - 可用性/进度
+  detail: --max-num-batched-tokens 设为 24576/32768 时，初始化、readiness 检查与单请求均正常，真实流量组装大 batch 持续几分钟后 EngineCore 崩溃（EngineDeadError），易漏到生产。H100 TP=4、fp8 KV + MTP。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；DeepSeek-V4 + `--max-num-batched-tokens` ≥ 24576 + fused qnorm/rope/kv-insert + fp8 KV
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51743
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（`--max-num-batched-tokens` ≥ 24576 在大 batch 下 fused qnorm/rope/kv-insert op 分配对 memory profiler不可见→EngineCore 崩溃） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`--max-num-batched-tokens` 设为 24576 或 32768 时，`_fused_qnorm_rope_kv_insert`（`fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert`）在持续负载几分钟后致命崩溃 EngineCore。**危险**：引擎初始化干净、通过 readiness 检查、单请求正确——只有在真实流量组装大 batch 时才崩溃，很可能到达生产未被发现。分配对 memory profiler 不可见（`new_empty` 失败）。H100-80GB TP=4，DSV4-Flash fp8 KV + MTP-1 spec decode + cudagraph FULL_AND_PIECEWISE。'
+  source: 'vLLM #51743（2026-08-11 open）。组件 `deepseek_v4/attention.py` `_fused_qnorm_rope_kv_insert`。https://github.com/vllm-project/vllm/issues/51743'
+  behavior: crash（EngineCore fatal，`EngineDeadError`）。单请求正常→生产前不易发现。属「fused kernel 的临时分配绕过 memory profiler→大 batch 下 OOM 不可见」**新子签名**——融合算子分配的不透明性。
+  trigger_surface: vLLM；DeepSeek-V4 + `--max-num-batched-tokens` ≥ 24576 + fused qnorm/rope/kv-insert + fp8 KV
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: subsystem 维持 算子/内核：原文组件即 `_fused_qnorm_rope_kv_insert` 融合算子，meta 称“融合算子分配的不透明性”，缺陷是该算子内部 new_empty 临时分配绕过 profiler；融合了 qnorm/rope/kv-insert 多个功能，不专属单一功能域。审计：title/component/behavior/detail 各事实（24576/32768、EngineDeadError、H100 TP=4、fp8 KV、MTP）均有原文依据，分类与形式无问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,59 @@
+id: INF-0174
+legacy_ids:
+- '1.175'
+slug: triton_interpreter_sum_integer_bitpattern_addition_loses_nan
+aliases: []
+title: Triton interpreter 对 bf16/fp8 求和吞掉 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 解释器 ReduceOps.sum
+  behavior: interpreter 把 bf16/float8 张量存为原始无符号整数位模式，ReduceOps.sum() 直接对该整数数据 np.sum 后再重解释为 bf16，归约在错误的数据表示上执行。
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: bf16/float8 输入含 NaN 时，interpreter 的 tl.sum 静默返回有限值而非 NaN，compiled 路径则正确传播 NaN；CPU 即可复现，以 interpreter 作黄金基准会被误导。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Triton interpreter + tl.sum + bf16/float8 输入含 NaN（工具链触发；CPU 可复现）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: subsystem 缺“解释器/参考执行器”类值：Triton interpreter 是 CPU 模拟执行路径，既非代码生成 pass 也非测试 harness，暂取最接近的 编译器。
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11604
+  kind: github_issue
+relations:
+- kind: var
+  target_raw: ttmetal_argmax_comparator_nan_semantics_dtype_split
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（interpreter 把 bfloat16/float8 张量存为原始无符号整数位模式（numpy 无原生支持），`ReduceOps.sum()` 直接对该整数数据 `np.sum`——NaN 位模式（bf16 0x7fc0）被当普通整数求和、溢出结果重解释为 bf16，静默产出有限值而非 NaN；compiled 路径正确传播 NaN） · Cov: `var:ttmetal_argmax_comparator_nan_semantics_dtype_split`（1.151 NaN 语义域） · 触发 `partial` · 置信度 `verified`'
+  mechanism: '存储表示（整数位模式）泄漏进计算语义：归约在错误的数据表示上整体执行。与 #10697/#10699（argmin/argmax 的 NaN 比较语义冻结）根因不同——#10699 未触碰 `_sum_combine`/`ReduceOps.sum`。修复 PR #11605。'
+  source: 'triton-lang/triton #11604（2026-09-06 open，含 bf16 NaN 输入最小复现：compiled NaN vs interpreter 有限值）。https://github.com/triton-lang/triton/issues/11604'
+  behavior: 无 crash——interpreter 静默吞 NaN（返回错误有限值）。与 1.174 构成「interpreter 数值语义不可作黄金基准」双子签名对：一个双舍入错值、一个吞 NaN；共同教训是 interpreter 与 compiled 的 dtype 表示路径不对称（bf16/fp8 无 numpy 原生支持走位模式旁路）。
+  trigger_surface: Triton interpreter + tl.sum + bf16/float8 输入含 NaN（工具链触发；CPU 可复现）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed: []
+  note: 裁定 subsystem=编译器（维持），理由同 INF-0173：缺陷在 Triton interpreter ReduceOps.sum 实现，基准污染已由 测试判定 记录。审计：位模式存储、np.sum 后重解释为 bf16、compiled 正确传播 NaN、CPU 可复现，均有原文依据；返回有限值无 NaN 显露 → 静默错误 正确。未发现问题。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

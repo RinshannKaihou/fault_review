@@ -1,0 +1,67 @@
+id: INF-1239
+legacy_ids:
+- K3.2
+slug: vllm_apc_samestep_uninitialized_block_read
+aliases: []
+title: vLLM APC 同一步命中未写入的满块，读到无效前缀 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: cache_full_blocks 注册时机
+  behavior: 同一步内 cache_full_blocks 在 GPU 前向写入 KV 之前，就把新分配的满块插入 APC 哈希表；同一步稍后的 get_cached_block 命中该块，把未初始化/清零或邻居序列的显存当作有效前缀 KV 读取。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 开启 APC 且同一步内有请求命中刚注册的块时，第一个共享前缀边界块携带清零或另一条序列的 KV；对输出的外部可见影响原文未给出。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: vLLM 配置/后端/缓存开关可构造对照
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/37152
+  kind: github_pr
+  resolved_from: 'vLLM PR #37152'
+- url: https://github.com/vllm-project/vllm/issues/37076
+  kind: github_issue
+  resolved_from: 'issue #37076'
+relations:
+- kind: var
+  target: INF-0394
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`infra_off` · Cov: `var:vllm_apc_dirty_block_hash` · 触发 `config`⚠ · 置信度 `documented`'
+  mechanism: 同一步内的 `cache_full_blocks` 在 GPU 前向写入其 KV **之前**，就把新分配的满块插入 APC 哈希表；同一步稍后的 `get_cached_block` 命中这个刚注册的块，把未初始化/清零（或邻居序列的）GPU 显存当作有效前缀 KV 读取。上游用 `_blocks_registered_this_step` 加守卫修复。
+  source: 'vLLM PR #37152（issue #37076 是一个*不同*的驱逐 bug，上游配对有误）。'
+  behavior: 源文档未给出该字段。
+  trigger_surface: vLLM 配置/后端/缓存开关可构造对照
+  signature: '`infra_off` —— 第一个共享前缀边界块携带离流形 KV（未初始化/清零，或另一条序列的内容）。可捕获的是 geometric 族的逐位置 KV 范数离群（清零分支）与跨请求 KV 余弦（邻居分支，在块边界处计算）；trajectory 族的全局平滑度会漏检，因为异常集中在一个块宽度内。注意「清零」分支的签名与 K3.1 同形（零 K/V），区分靠的是位置——这里在共享前缀边界块，K3.1 在缓冲区尾部。'
+  repro: 方案：单钩子在 prefill 后把前缀边界处一个 block_size 宽度的 KV 行整体清零（未初始化分支），或替换为同 batch 中另一条序列对应位置的行（邻居分支）。属 partial：单进程路径没有 APC 哈希表与同步时序，只能复现读到坏块的末态。
+  locus: block-slot-alloc
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 待定
+        to: 静默错误
+        status: unanimous

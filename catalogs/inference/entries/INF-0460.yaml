@@ -1,0 +1,51 @@
+id: INF-0460
+legacy_ids:
+- '6.67'
+slug: sglang_chunked_prefill_final_abort_commit_race
+aliases: []
+title: SGLang 末块 prefill abort 竞态暴露 1 个 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: overlap 循环 abort 与结果提交
+  behavior: abort 在末块 EXTEND 启动后、延迟结果提交前到达：结果处理在消费 pending finish 前已 append token；overlap 循环先调度下一 batch 再处理结果，缺 admission guard。
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: chunked prefill+overlap 调度下请求被 abort 时触发；无 crash，被取消请求先暴露 1 个 token 再以 abort 结束，pending-finish 请求进入乐观 decode，KV watermark 与 decode slot 多分配一个。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；chunked prefill + overlap 调度 + 请求 abort
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34153
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`ambiguous`（final chunked-prefill abort 在 EXTEND 启动后结果提交前到达→取消请求暴露 1 token 后 finish:abort） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: abort 可在 final chunked-prefill `EXTEND` 启动后、其延迟结果提交前到达。两个需保护的提交边界：(1) `abort_request()` 置 `req.to_finish=FINISH_ABORT()`，但 prefill 结果处理器先前 append 了 sampled token 与 token 派生元数据（在 `update_finish_state()` 消费 pending finish 之前）；(2) CUDA/HIP overlap loop 中调度下一 batch 发生在处理延迟 final-prefill 结果之前→无 admission guard 时 pending-finish prefill 请求可进入乐观 decode、增 `decode_batch_idx`/KV committed watermark、分配额外 decode slot 后结果才丢弃。
+  source: 'SGLang PR #34153（2026-08-09 open）。#34149 / #34112。组件 scheduler overlap loop + abort。https://github.com/sgl-project/sglang/pull/34153'
+  behavior: '无 crash。取消请求暴露 1 token 然后 `finish_reason: abort`；KV committed watermark 与 decode slot 多分配一个。属「overlap 调度下 abort 与延迟结果提交竞态」签名——调度器并发安全新子签名。'
+  trigger_surface: SGLang；chunked prefill + overlap 调度 + 请求 abort
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

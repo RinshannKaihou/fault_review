@@ -1,0 +1,57 @@
+id: INF-0631
+legacy_ids:
+- '6.238'
+slug: vllm_rocm_pd_disagg_remote_prefilled_sparse_mla_decode_cudagraph_garbage
+aliases: []
+title: vLLM ROCm PD 远端 prefill 请求 graph 解码出垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: decode CUDA graph 路径
+  behavior: 根因未定位到单点；KV 传输已证 bit-exact，故障收窄到 CUDA graph 捕获/replay 的元数据或 buffer 生命周期对 remote-prefilled KV 布局的某项假设不成立，eager 路径不经过该假设。
+effect:
+  objects:
+  - 输出内容
+  detail: ROCm 2×MI300X 1P1D（MoRIIO WRITE、fp8 KV）下 remote-prefilled 请求在任一 decode CUDA graph 模式输出重复垃圾，本地 prefill 请求与 eager 正常；只能全局关 decode CUDA graph 规避。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM 0.28.0 ROCm + PD 分离（MoRIIO WRITE）+ DSA sparse-MLA 模型 + decode CUDA graph（other_stack：ROCm 分离拓扑；机制可迁移任何"graph 捕获假设远端 KV 布局"的栈）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57064
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM 0.28.0 ROCm + 2×MI300X（gfx942）+ MoRIIOConnector（WRITE 模式，block_size=1，fp8 KV）1P1D WideEP DP8/EP8：**remote-prefilled** 请求的 decode 在**任何** CUDA graph 模式（FULL/PIECEWISE/FULL_AND_PIECEWISE）下输出退化重复垃圾（`locklocklock…`/`!!!`）；`DECODE_CUDAGRAPH_MODE=NONE`（eager）同栈解码连贯。隔离已排除：KV 传输内容逐层 **bit-exact**（producer==consumer 字节、含 sparse-indexer k_cache）、MoRI 版本、MoRI-EP combine 修复（#56073/ROCm mori#475，本拓扑走 IntraNode）、decode metadata 本地 vs 远端字节一致、MTP 开关无关；colocated（非分离）与 vLLM v0.27.1 不触发） · Cov: `NEW`（PD 远端 KV × CUDA graph replay 交互子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 未定位到单点（报告者完成传输→decode 全路径逐级 instrumentation 后收窄到"graph 捕获路径对 remote-prefilled KV 的某项假设不成立"）——数据面已被证清白，故障在 CUDA graph 捕获/replay 的元数据或 buffer 生命周期与远端 KV 布局的交互；eager 路径不经过该假设故免疫。
+  source: 'vLLM #57064（2026-09-15 open，ROCm+Attention+KV Connector label，含 AMD harness 复现命令、双模型（GLM-5.3-FP8/GLM-5.1-FP8，GlmMoeDsa DSA sparse-MLA）与完整排除矩阵）。https://github.com/vllm-project/vllm/issues/57064'
+  behavior: 无 crash——远端 prefill 请求的 decode 全程重复 token 垃圾墙，本地 prefill 请求正常；唯一缓解是全局关闭 decode CUDA graph（性能代价）。6.160（FlashInfer sm120 NVFP4+fp8KV graph IMA）与 6.174（QSA+NEXTN decode graph 静默语义损坏）之后"CUDA graph × 量化/远端 KV 交互"族新成员：本条在**PD 分离远端 KV** 维度、ROCm 栈、数据面 bit-exact 证清白。
+  trigger_surface: vLLM 0.28.0 ROCm + PD 分离（MoRIIO WRITE）+ DSA sparse-MLA 模型 + decode CUDA graph（other_stack：ROCm 分离拓扑；机制可迁移任何"graph 捕获假设远端 KV 布局"的栈）
+  discovery: |-
+    2026-09-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 运行时/执行。依据原文“数据面已被证清白，故障在 CUDA graph 捕获/replay 的元数据或 buffer 生命周期与远端 KV 布局的交互”：KV 传输内容逐层 bit-exact、decode metadata 本地与远端字节一致，KV缓存（存储/传输管理）已被排除；PD 分离远端 prefill 是触发条件，按 rule 6 subsystem 归出错代码段（CUDA graph 捕获/replay = 运行时/执行）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

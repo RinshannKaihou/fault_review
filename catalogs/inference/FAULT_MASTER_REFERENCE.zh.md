@@ -1,3 +1,5 @@
+> ⚠️ **本文件已于 2026-10-13 冻结，不再更新。** 编目真源已迁至结构化条目 `catalog/entries/*.yaml`（写入与查询用 `tools/catalog_tool.py`，字段见 `catalog/SCHEMA.md`；浏览用 `views/CATALOG.zh.md`、`views/fault_catalog.csv`）。本文件条目与新编号的对照见 `catalog/id_registry.tsv`。
+
 # LLM 推理故障模式总参考（Master Fault Reference）
 
 > **本文档是什么**：本项目全部已编目故障模式的**单一自包含参考**。此前故障散落在三份互不重叠的文件里
@@ -33,7 +35,13 @@
 
 ---
 
-## 滚动汇总（共 1252 条，逐条解析自本文档正文，非人工计数）
+## 滚动汇总（共 1362 条，逐条解析自本文档正文，非人工计数）
+
+> 2026-10-12 更新（当日第二次扫描）：合并每日扫描 2026-10-12 晚间轮的发现（15 个新子签名 + 5 个已知类别变体 = **20 条新增**，1342 → 1362；扫描窗口 created:>=2026-10-12（当日早轮 commit `251ce97` 02:28 UTC 后新建 issue），与早轮窗口 created:>=2026-10-05 的重叠区间条目按早轮判定跳过；含早轮"下轮优先"清单 2 项补录：1.295 F32 sharded concat TF32 截断（#59530）、1.296 update_cache num_users>32 OOB 写（#59824）——早轮预测 var:1.266 族经正文实读改判独立机制。分布：第 1 类 +6（1.295 concat F32 sharded TF32 截断 NEW、1.296 update_cache pad 行越界写 var:8.96、1.297 bfp exp_a 下溢膨胀 NEW、1.298 tilize 非方 face 转置 heap 溢出 NEW、1.299 单行 sort 哨兵并列泄 pad index var:1.23、1.300 sig-figs 字符串比较器假匹配 var:1.234）、第 6 类 +4（6.281 PIECEWISE cudagraph split moe_forward 陈旧重放地址 NEW、6.282 NIXL lease 过期释放×在途读跨请求串答 NEW、6.283 PD 共享前缀自动缓存跨请求内容污染 NEW、6.284 MooncakeStoreConnector 丢次级 KV 视图 NEW）、第 8 类 +2（8.100 nvfp4 KV BLNHC writer/reader stride 分裂 var:8.53、8.101 flashinfer MLA FP8 Q64 persistent KeepsAb 随机 tile 损坏 NEW）、第 9 类 +2（9.34 sglang-mm u32 回绕 M-RoPE 错位 NEW、9.35 DSV4.1-Flash 多轮命中钉死 11520 NEW）、第 10 类 +5（10.109 Qwen3-VL 帧数重写 4 帧摘要+错时间戳 NEW、10.110 E/PD 交接丢时间戳 token mRoPE 错位 NEW、10.111 Anthropic system 非文本块静默丢 NEW、10.112 reasoning parser 吃参数内字面 `</think>` var:10.42、10.113 Phi-3 remote code 随机权重垃圾 NEW）、第 12 类 +1（12.53 MTP draft 不继承 --revision NEW）。观察：**nvfp4 KV 布局契约族第三站**——8.100（BLNHC token-major 下 writer 内部公式与 reader 实际 stride 双向错位、自建 buffer round-trip 测试结构性失明）与 8.53（HND 形状反转）、49012/6.277 同族延续"测试视图窄化 × 真实 allocator 布局"主线；**跨请求内容泄漏三连发**（6.282 lease 竞态串答、6.283 PD prefix cache 串扰 46/48、6.275 早轮 ZMQ 重绑）覆盖三种独立机制，均为 HTTP 200 零告警；**Qwen3-VL 视频管线双缺陷同日暴露**（10.109 帧数/fps 单位制错配、10.110 分离交接 mRoPE 无校验切片）；**验证面"报告成功≠权重到达"**（10.113 remote code 零 mismatch 报告下 130 参数随机、demo 恒绿）与 12.46 成对；tt-metal 审计批 5 条（1.297/1.298/1.299/1.300 + 1.296）中 4 条 verified 级 CPU-only/实机确定性复现。来源更正（回访）：9.29 补充 transformers #49519 本体根因坐实（setter 整体替换丢 rope_theta，PR #49515 修复中；vLLM/SGLang 为下游放大，判定不变）；6.261（SGLang #41617）仍 open、修复 PR #41767 仍 open；tt-metal #59530 仍 open（修复 PR #59639 open）、#59824 仍 open。不收录（摘要）：vLLM #61157（GLM hybrid-SSM+MTP 并发拐点深上下文退化——#58454/#58368 修复后仍复现、取证详尽但机制未定位、无合成复现，强留观下轮优先）、#61281（Mamba align 边界状态块中途释放致次轮全量重算——无 GPU/模型纯管理器级复现、主影响性能（重 prefill），留观其正确性面）、#61239（FlashInfer metadata builder 异步调度竞态 IMA/hang——#57214 起 pinned workspace 覆写，crash/hang 面主导留观）、#61144（MI300X SR-IOV VF READ XGMI 崩溃——fail-loud）、#61252（Ministral 3 启动失败 closed——fail-loud）、#61170（audio filesize 边界拒绝——fail-loud）、#61131（CPU 无 Triton slot-mapping 陈旧签名——fail-loud、CPU 域）、sglang #43765（aiter 移除 pa_decode_sparse 致 import 失败——fail-loud 依赖域）、#43929（bench_serving 计数——工具域）、#43874（ComfyUI 插件 14 bug 打包帖——待单项证据整批留观）、#43888（计费 u32 回绕——计费元数据域）、#43741（fp8 KV crash QSA——fail-loud）、triton 窗口 0 命中、flashinfer #6391（fast_decode_plan 采纳 host 元数据 IMA——拒绝面/防御缺失，无静默错值证据留观）、#6344/#6347/#6350/#6354/#6348（CI/测试基建）、transformers #49540（tp_plan DTensor 混用 fail-loud）、#49516（T5 性能回退——性能）、#49513（LayoutLM SDPA 拒绝 closed）、#49510（auto_map 远程加载）、TRT-LLM #20170（NVRTC uv 环境 fail-loud）、#20169/#20168（EAGLE-3 延迟——性能）、#20126（IPv6 括号地址——部署域）、tt-metal #60338（mesh trace 挂起）、#60294（concat 挂起——hang 域）、#60286/#60285/#60277（Quasar 实验性 API 窄域）、#60342 已编目 10.113、#60241（LLK 硬件条件静态审计留观）、#60249（1D mcast 校验用 device grid——校验面弱触发留观）、#60247（matmul bias shape 校验漏逻辑 h——**候选**，h∈(1,M) padding 行入输出真实、PR #59819 在途，合并量控制留观下轮优先）、#60246 已编目 1.300、#60243（FreeListOpt OOM 泄漏——资源治理域）、#60318/#60319/#60321/#60325（MiniMax-M3 batching 工作项）、#60347（CI 超时）、#60252-#60256（squad-plan 重构批）。arxiv 9 组查询全部 200 有效（引号短语+AND；SDC/bit-flip/KV corruption/numerical correctness/soft error/wrong output 及 4 组窄化变体），命中全部已编目或已判（SProbe/JITterFlip/2601.19912/2609.16742 等），无新编目。GitHub Search API 当日（晚间轮）11 组查询全部有效、分页完整（fetched==total 逐组核对：6/4/0/11/0/7/11/8/0/21/6/5——其中 3 组 0 命中为窄查询无匹配非失效；初次执行误发 2 组无 cutoff 查询已作废重发），无限速 403；core REST 触顶 403 后全部正文改经 GitHub HTML 内嵌 JSON 与 search 快照补齐（14 个 issue 全文深读），来源状态核对经 search API 单号查询完成 3 项回访。
+
+> 2026-10-12 更新：合并每日扫描 2026-10-12 的发现（25 个新子签名 = **25 条新增**，1317 → 1342；扫描窗口 created:>=2026-10-05，与 10-09 扫描重叠区间条目全部按既有判定跳过。含 10-09 未覆盖清单 4 个强候选的全部补录：6.273 TRT fp8 cross-KV 池 overrun、1.291 group_norm fp32 DEST、1.292 WH reduce F16→F32、1.294 xielu 零交叉）。分布：第 1 类 +4（1.291 group_norm fp32 DEST half-sync subblock 越容 NEW、1.292 WH reduce F16→F32 MAX/标量全错 NEW、1.293 BH where bf16 谓词×fp32 数值位型重解释 NEW、1.294 xielu fp32 负分支零交叉相消 NEW）、第 4 类 +1（4.31 flashinfer RoPE e5m2 参考实现 clamp 448 NEW）、第 6 类 +8（6.273 TRT fp8 cross-KV 池 overrun IMA/静默错 token NEW、6.274 Qwen3.8-27B NVFP4+DFlash2 前缀命中单 token 循环 NEW、6.275 SGLang 并发启动 ZMQ port+42 静默重绑跨实例串答 NEW、6.276 SGLang hybrid GDN+DFLASH+grammar 整批 token-0 坍塌 NEW、6.277 SGLang NVFP4 HiCache host pool 元素/字节几何 draft KV 全坏 NEW、6.278 flashinfer fmha_v2 prefill 计数器污染共享 workspace XQA decode NEW、6.279 vLLM SM120 Apertus-70B FP8 v0.25.1 输出退化 NEW、6.280 SGLang GDN cutedsl decode state pool 转置 K==V 掩盖 NEW）、第 7 类 +4（7.108 flashinfer b12x MXFP4 E8M0 尺度偏置 BF16 subnormal NEW、7.109 flashinfer mm_mxfp8 非连续 out 无视 stride NEW、7.110 flashinfer trtllm-gen context NVFP4 KV head_dim=256 V scale 漏 interleave NEW、7.111 vLLM DFlash2 fp8 draft ignored_layers 全局别名缺失 NEW）、第 9 类 +1（9.33 tt-metal fused QK rope cos/sin 分片 core 集错配 NEW）、第 10 类 +5（10.104 GLM4 MoE literal_eval 逗号标量→JSON 数组 NEW、10.105 Harmony parser commentary 前缀滤掉答案头 NEW、10.106 deepseekv3 detector 贪心末分隔符丢首 tool call NEW、10.107 /v1/images/edits mask 声明不读 NEW、10.108 ComfyUI cond 键碰撞换 T5 上下文 NEW）、第 12 类 +2（12.51 Qwen3-ASR realtime session.update 静默丢 prompt/language NEW、12.52 update_weights_from_disk 参数声明无消费 NEW）。观察：**FP4/MXFP4 解码链的 scale 语义错误集中爆发**——7.108（E8M0 解码恒乘 2^-119、真实 checkpoint 字节 100–130 正中 BF16 subnormal 陷阱）、7.110（V scale stage offset 漏 ×4 token interleave）、6.277（host pool 元素 vs 字节）——同一量化格式的 scale 寻址在三个独立栈各有空洞；**共享缓冲/共享状态池的隐式契约**成为新主线（6.278 两内核族对同一 workspace 的零初始化契约相反、6.280 K==V 使转置静默、6.275 port+42 重绑使请求跨实例串答）；**"声明但不读"契约缺口**（12.52 API 参数无消费者、10.107 mask 上传无读取方）与"校验只查数量不查集合"（9.33）延续"校验存在但校验错对象"谱系。来源回访：8.96（tt-metal #59561）仍 open、姊妹 #59824（num_users>32 OOB 写侧）为独立子签名留观下轮优先；core REST 额度当日大部分用于新候选正文深读（37 次成功，中途触顶 403 一次后恢复），10-09 合并条目的约 200 来源与 3 个旧 open 长期来源（6.261/10.87/4.27）评论级复查未执行（search 快照确认无 state 翻转）。不收录（摘要）：vLLM #61117（CPU rejection sampler 接受 -1 placeholder——机制清晰含内核级 repro 但 CPU 无 Triton 构建非主路径，强留观）、#60160（Qwen3.8-27B-FP8 MI355X 高并发坍塌——8.99 同模型同栈 SGLang 侧姊妹并入语境不占号）、#61027（CPU MXFP4 AMX 门拒 EPYC fail-loud）、#60860（DSV4.1-Flash 长 decode 崩溃域）、#61069（GB10 日级批量崩溃）、#60928（非输出 rank 异常 desync 治理域）、SGLang #4298（flashinfer B300 2-CTA UTCBAR 线程级延迟注入 sticky error——非天然触发崩溃面留观）、#6112（GB300 autotune 跨进程不一致——性能/复现域）、#43146（reasoning_enabled 读侧规则不镜像——呈现层过滤域）、#43116（ComfyUI 丢首图后参考图——同插件族留观下轮）、tt-metal #59530（F32 HEIGHT_SHARDED 宽 concat TF32 截断——**强候选**，root cause 定位 UnpackToSrc vs UnpackToDest 且姊妹工厂正确实现并存、预计 var:1.266 族，本日合并量控制未编目下轮优先）、#59824（update_cache num_users>32 OOB 页——8.96 写侧姊妹、下轮优先）、#59761/#59930（pow/logit 精度议题——LLK 精度域留观）、#60023/#59663（窄域维持）、TRT-LLM #20083（Ray NcclEP 1-rank communicator——编排域留观）、transformers #49497（ZeRO-3 每 rank 全量读——训练侧）。arxiv 6 组查询全部 200 有效，1 新论文 2609.38477（seed-based 量化安全加固——防御方法论文不收录）、2610.06251（HQQ 早停——量化方法评估不收录），其余命中全已编目或已判。GitHub Search API 当日 8 组查询全部有效、分页完整（fetched==total 逐组核对：30/98/31/3/7/3/37/14，incomplete=false 逐组核验）、无限速 403、无 Validation Failed；core REST 37 次调用成功（`--http1.1`，中途触顶一次约 10 min 后恢复，3 个正文改经 search 单号查询补齐）。
+
+> 2026-10-09 更新：合并每日扫描 2026-10-09 的发现（37 个新子签名 + 28 个已知类别变体 = **65 条新增**，1252 → 1317；上次扫描为 09-29，本窗口 created:>=2026-09-29 覆盖 **10 天空窗**（09-29 扫描执行 23:40 UTC commit `8345d1f` 后创建的 407 个 issue/PR 全部新判定；与 09-29 窗口 created:>=2026-09-22 的重叠区间条目按既有判定跳过））。分布：第 1 类 +19（1.272 vendored FLA chunk_o gate 无 mask 先 exp NaN 传播 NEW、1.273 TRT GroupRMSNorm 共享内存竞态+one-warp 不归一化 NEW、1.274 TRT convert_type 返回局部数组视图悬垂 NEW、1.275 triton argmax reshape 重排 value 不重排 index var:1.151、1.276 triton bf16 常量 to_string 截 6 位小数 NEW、1.277 triton loop-carry 同值初值漏检 NEW、1.278 triton FuseNestedLoops flatten 外层 carry 内层推进 var:1.127、1.279 logaddexp bf16 近零符号翻转 222k ULP NEW、1.280 digamma LUT 拟合域外（负轴全域+正微小值）var:1.126、1.281 fp32→bf16 helper NaN 分类丢失穷举 var:1.266、1.282 Quasar typecast Int32 SM/2SC 误解 var:1.267、1.283 sum/mean fp32 RM W>256 NEW、1.284 embedding TILE indices 批>1 只对 batch0 NEW、1.285 erf/erfc/i1/gelu NaN→有限值 var:1.197、1.286 sharded softmax padding 入行和 var:1.269、1.287 trace 回放覆写捕获后分配 NEW、1.288 WH matmul unpack MOP 前 8 tile 外隔次错 NEW、1.289 dst_full_sync 校验放行错 subblock var:1.119、1.290 BH custom matmul Bfp2_b plain path 无关输出 NEW）、第 4 类 +3（4.28 Qwen3.6 hybrid GDN 多序列 run-to-run 非确定 var:4.12、4.29 TRITON_MLA chunked prefill 批不变违约 var:4.17、4.30 BI 冷 cache import 顺序漏包裹 NEW→var:4.17）、第 6 类 +9（6.264 V2 抢占更新先于 connector 回调 NEW、6.265 P2P store 超时解钉在途传输报成功 NEW、6.266 LHBNC offload 只搬 head0/layer0 var:6.258、6.267 GLM-5.2-FP8 前缀命中空 content 乱语 NEW、6.268 DSV4-Flash 前缀复用 tool-call 失败 replica 局部（机制未知）NEW、6.269 DSV4-Pro long-prefill-threshold 小 chunk 自信错答 NEW、6.270 SGLang GPU JPEG 解码覆写在读内存 NEW、6.271 CUTLASS fp8 MoE padding −1 offset 错专家 var:6.233、6.272 RecoverSSM 恰块边界提交未写块 var:6.259）、第 7 类 +7（7.101 SGLang nvfp4 KV 错用 fp8 校准 scale 64 字节单变量证明 var:7.52、7.102 Marlin int8 激活负 scale 按 uint16 读 var:7.62、7.103 Exllama/RDNA3 group%32 静默错 var:12.45、7.104 TRT nvfp4 global scale >8192 非倍数 NEW、7.105 flashinfer MXFP8 E8M0 字节 0 归零 NEW、7.106 SGLang W4A16 PPL 9.98 vs 6.05 NEW、7.107 grouped_topk >8 组不评分 NEW）、第 8 类 +5（8.95 FA2 NVFP4 KV head_dim=64 SM120 错 var:8.53、8.96 update_cache fp32 毒化邻 31 行 NEW、8.97 fill_cache 跨头边界写错 head 页 NEW、8.98 ROCm kpool always_select_tail 只保不完整尾池 var:8.83、8.99 ROCm AITER fp8 高并发坍塌 var:8.54）、第 9 类 +2（9.31 Nomic rotary_scaling_factor 被忽略 var:9.18、9.32 SGLang get_rope_config 造 rope_theta=10000 var:9.29 跨栈姊妹）、第 10 类 +11（10.93 xgrammar 组合子旁约束关键字静默放开 var:10.64、10.94 request 级 chat_template_kwargs 丢全部图像 NEW、10.95 Olmo3 尾 delta 子串缓冲永不 flush NEW、10.96 InternLM2 action_start 后丢正文+流式丢字符 var:10.42、10.97 DeepSeek 多行 JSON/xLAM 嵌套/Olmo3 换行三 parser 批 var:10.42、10.98 glm47 stray tool_call 吞流 var:10.42、10.99 dots parser 忽略 init tools+FunctionTool 500 var:10.42、10.100 SGLang detector 参数改型批 var:10.69、10.101 deepseek_r1 reasoning 流式 BPE 字形 NEW、10.102 SGLang LLAMA2 role 按序号奇偶 NEW、10.103 xgrammar 控制 token 入 JSON 字符串截断答案 var:10.47）、第 11 类 +3（11.91 CPU top-p 内核丢必留 token NEW、11.92 eagle_prepare_inputs PP 下溢串线 NEW、11.93 TRT beam search processor 收 slot 列表 NEW）、第 12 类 +5（12.46 WeightCacheKey 只哈希 header ipc_cache 服务错 checkpoint NEW、12.47 PEFT patterns/未实现特性静默忽略 var:12.42、12.48 MiMoV2MTP 丢 fp8 KV scale draft unit scale var:7.52、12.49 legacy fused MoE LoRA 无条件 bf16 cast NEW、12.50 GPT-OSS mixed LoRA gate/up 切片布局错 NEW）、第 13 类 +1（13.42 transformers MetalLinear 3D 批>1 仅首行正确 NEW）。观察：**10 天空窗带来迄今最大单轮合并**，三条主线——①**跨栈同机制姐妹对再现**：9.29/9.32（RoPE base 静默替换 vLLM/SGLang）、7.52 族在 7.101/12.48 两端（KV scale 丢弃 vs 错用）、10.42 parser 族单轮 +5 站点；②**"校验存在但校验错对象"形态扩张**：7.107（组数≤32 被接受但内核只评 8 组）、10.93（unsupported 检查只盯 allOf≥2 而 xgrammar 真缺陷在组合子×约束共存）、1.282（golden 与内核共享同错假设）；③**缓存/复用路径继续是静默损坏主产区**：6.266–6.269 四条全在复用路径（offload 回读、prefix cache、chunk 边界），12.46 把"键窄于身份"推进到权重内容寻址。来源更正（回访）：6.262（vLLM #59104）closed/completed 10-05、修复 PR #59105 同刻 merged（合并≠已发布，判定不变）；6.259 修复 PR #55601 已 merged（10-07）；7.100（SGLang #41569）closed/completed 10-01、修复 PR #41668 同刻 merged；6.260（SGLang #41494）closed/completed 10-05（修复 PR 未逐一核实，机制记录不变）；1.269（tt-metal #58495）closed/completed 10-06（bounty 完成确认）；6.261（SGLang #41617）仍 open，09-29 评论确认 #41281 合并后 main 仍复现。不收录（摘要）：vLLM #59381（Qwen3.5-35B merged SFT H20 间歇 NaN——环境特定无根因留观）、#59415/#59551（Intel B70 TP gibberish——第三方 GPU 无诊断留观）、#59642（Qwen3.8 disagg MTP 0% 接受 closed——11.63 族新实例、根因未定，语境跟踪不占号）、#59907（优先级调度 pytest 五败——调度域留观）、#60124（MultiConnector 静默禁用 hybrid manager 后 Nixl 拒绝传输——拒绝面 fail-loud 留观）、#59457（ARM CPU W4A8 乱码——无根因留观）、#59756（Qwen4Exp 加载失败 fail-loud）、#59867（NVFP4+MTP draft 打包 crash fail-loud）、#60560（DFlash2 HMA 接受率 −5.5pp——纯性能）、#60685（EPLB 计数错位——均衡性/性能域）、#60537（/v1/messages 提升系统消息——API 语义+前缀缓存性能留观）、#59449（routed experts 观测元数据 closed）、#59671（报告者自行关闭未证实）、#59828（CPU 采样缓冲别名 closed——11.51 族语境补充不占号）、SGLang #41939（NVFP4 TP4 推理循环——无根因留观）、#42749（CI GSM8K 门回归 closed——7.99 族语境）、#42465/#42508（死锁/abort fail-loud）、#43324（−1 哨兵别名+OOB crash——crash 面主导留观）、#42981（AMD fp8e4m3fnuz 溢出转换分歧——CI 单测域、内核数值面真实待 e2e 证据留观）、#43157（thinker dtype 被抹——dtype 回退面弱证据留观）、triton #12038（gfx1151 重 spill 错值 closed——同 #12061 interpreter 域外、待修复版本核实留观）、#12061（TRITON_INTERPRET 调试器 bf16 位型错——仅解释器域留观）、flashinfer #5966（attention sink wrapper×NVFP4 不可用——拒绝面）、#5878（top_k/min-p 输出行索引 OOB——11.83 同机制重复报告，并入该条语境不占号）、tt-metal #58670（xielu 负分支零交叉——窄域 op 留观）、#59848（group_norm fp32 ≥5 tile 错统计——同日证据充分可后续补录）、#59700/#60119（custom_mm 单列转置错 tile——窄触发留观）、#59177（fmod/remainder 大比值——1.251 族语境留观）、#59914（program-cache 六 op 陈旧值——审计帖整批待单项运行时证据沿判例留观）、#59826/#59829/#59845-#59849（upsample/norm/untilize 族——closed 快照、待修复版本核实）、#59126 外的 LLK 审计系列（#58755/#58770/#58771/#58794/#58588 等含具体行为描述但未读正文/无运行时验证——沿静态审计判例整批留观）、transformers #49324（Qwen3_5 映射类错 closed——留观）、TRT-LLM #19861（fp8 cross-KV 池 overrun IMA/静默错——**实为强候选**，正文已读：pool<2× 需求时 IMA **或落入其他映射内存时静默错 token**，L4 e2e 复现齐备——归入第 6 类编号待补录，本日因合并量已大记入未覆盖清单）、#19913（XGrammar 版本升级修复——上游已修）。arxiv 6 组查询全部 200 有效，全部命中已编目或已判（SProbe=2609.19743/TrainSDC/SCOUT/LLM-PRISM/JITterFlip/UEP/RangeGuard/BARE-AI=2605.11202 已编目；Bittensor fuzzing 2605.11202 已编目为 K 系来源；Nexus/Moment-KV/Contiguity 等方法论文不收录），无新编目。GitHub Search API 当日 11 组查询全部有效、分页完整（fetched==total 逐组核对：75/78/30/6/8/9/18/151(100+51)/56/0/213(100+100+13)，incomplete=false 逐组核验）、无限速 403、无 Validation Failed；core REST 24 次调用全部成功（`--http1.1`：18 次来源回访快照 + 6 次评论/PR 深查；额度 60 制内）。
 
 > 2026-09-30 编目勘误（非新发现，不改写历史日报）：6 条变体条目 `Cov` 的 `var:` 目标 slug 在编目中无对应条目（09-24 起每日扫描凭记忆拼写，致变体关联无法解析），按各条 `Cov` 括注与当日扫描汇总已写明的目标 ID 改为目标条目真实名称：1.250 → 1.190、1.254 → 1.231、1.262 / 1.264 → 1.119、1.263 → 1.221、13.40 → 12.41。仅更正目标名，判定、置信度、NEW/var 计数与条目总数不变。
 
@@ -143,13 +151,13 @@
 
 || 轴 | 分布 |
 ||---|---|
-|| **族（Family）** | `infra_off` **1083** · `model_on` **71** · `ambiguous` **94** · `n/a` **2**（K 层资源/结构性条目） · 历史条目家族标签特例（`hw_specific`，1.58）**1** · 源文档未给出（10.4）**1** |
-|| **触发（vLLM/CUDA）** | `config` **268+6⚠** · `other_stack` **211+25⚠** · `partial` **245** · `hw_specific` **327** · `yes` **122** · `no` **23** · `n/a` **22+1⚠** · 非标标签 **2**（5.25 `ncclCommWindowRegister`、6.162 `shutdown()`） |
-|| **置信度** | `documented` **711** · `verified` **534** · `speculative` **6** · 源文档未给出（10.4）**1** |
-|| **覆盖（Cov）** | `NEW` **902** · `var:x` **347** · `rationale` / `baseline` / `existing` **3** |
+|| **族（Family）** | `infra_off` **1193** · `model_on` **71** · `ambiguous` **94** · `n/a` **2**（K 层资源/结构性条目） · 历史条目家族标签特例（`hw_specific`，1.58）**1** · 源文档未给出（10.4）**1** |
+|| **触发（vLLM/CUDA）** | `config` **316+6⚠** · `other_stack` **225+25⚠** · `partial` **254** · `hw_specific` **366** · `yes` **122** · `no` **23** · `n/a` **22+1⚠** · 非标标签 **2**（5.25 `ncclCommWindowRegister`、6.162 `shutdown()`） |
+|| **置信度** | `documented` **794** · `verified` **561** · `speculative` **6** · 源文档未给出（10.4）**1** |
+|| **覆盖（Cov）** | `NEW` **975** · `var:x` **384** · `rationale` / `baseline` / `existing` **3** |
 
-> **可直接动手的是未标 ⚠ 的 `config` + `yes` = 390 条（31.2%），再加 `partial` 共 635 条（50.7%）**；
-> `no` + `hw_specific` = 350 条（28.0%），其中 `hw_specific` 仅表示需特定硬件，不等同于不可复现。`other_stack`（210+25⚠ 条）指原报告主路径或依赖栈非本项目默认路径，需按条目触发面复核。
+> **可直接动手的是未标 ⚠ 的 `config` + `yes` = 427 条（32.4%），再加 `partial` 共 676 条（51.3%）**；
+> `no` + `hw_specific` = 376 条（28.5%），其中 `hw_specific` 仅表示需特定硬件，不等同于不可复现。`other_stack`（240+25⚠ 条）指原报告主路径或依赖栈非本项目默认路径，需按条目触发面复核。
 >
 > **32 条带 `⚠` 标记的条目为待复核**（25 条 `other_stack`、6 条 `config`、1 条 `n/a`）——触发标签继承自旧环境评估，机制通常可迁移但需逐条核对**触发面**与**复现方式**字段。
 >
@@ -159,7 +167,13 @@
 
 ## 目录
 
-**编号编目（1138 条，1.1–15.10）** — 15 类真实世界故障调研（含 14 条本项目早期实测条目）
+**编号编目（1248 条，1.1–15.10）** — 15 类真实世界故障调研（含 14 条本项目早期实测条目）
+
+> 2026-10-12 更新（晚间轮）：新增 20 条（第 1 类 +6、第 6 类 +4、第 8 类 +2、第 9 类 +2、第 10 类 +5、第 12 类 +1），1228 → 1248。
+
+> 2026-10-12 更新：新增 25 条（第 1 类 +4、第 4 类 +1、第 6 类 +8、第 7 类 +4、第 9 类 +1、第 10 类 +5、第 12 类 +2），1203 → 1228。
+
+> 2026-10-09 更新：新增 65 条（第 1 类 +19、第 4 类 +3、第 6 类 +9、第 7 类 +7、第 8 类 +5、第 9 类 +2、第 10 类 +11、第 11 类 +3、第 12 类 +5、第 13 类 +1），1138 → 1203。
 
 > 2026-09-27 更新：新增 5 条（第 1 类 +1、第 6 类 +1、第 9 类 +1、第 10 类 +1、第 13 类 +1），1110 → 1115。
 
@@ -254,19 +268,19 @@
 
 || 类 | 主题 | 条数 |
 ||---|---|---|
-|| 1 | 硬件 / 静默数据损坏（SDC） | 270 |
+|| 1 | 硬件 / 静默数据损坏（SDC） | 299 |
 || 2 | GPU 显存故障（HBM/GDDR ECC、rowhammer、磨损） | 3 |
 || 3 | 比特翻转攻击与定向权重篡改（BFA 家族） | 20 |
-|| 4 | 数值 / 精度 / 不确定性（**本项目的噪声底**） | 27 |
+|| 4 | 数值 / 精度 / 不确定性（**本项目的噪声底**） | 31 |
 || 5 | 分布式 / 多 GPU / 并行推理 | 46 |
-|| 6 | 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM） | 263 |
-|| 7 | 量化（PTQ / 低位 / FP8 / 微缩度） | 100 |
-|| 8 | KV 缓存 / 注意力机制故障 | 94 |
-|| 9 | 位置编码 / RoPE 配置故障 | 30 |
-|| 10 | 分词器 / 对话模板故障 | 92 |
-|| 11 | 解码 / 采样故障（多为 post-forward **结构性盲点**） | 89 |
-|| 12 | 权重 / 适配器 / 检查点加载故障 | 45 |
-|| 13 | 模型图 / 架构配置故障 | 41 |
+|| 6 | 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM） | 284 |
+|| 7 | 量化（PTQ / 低位 / FP8 / 微缩度） | 111 |
+|| 8 | KV 缓存 / 注意力机制故障 | 101 |
+|| 9 | 位置编码 / RoPE 配置故障 | 35 |
+|| 10 | 分词器 / 对话模板故障 | 113 |
+|| 11 | 解码 / 采样故障（多为 post-forward **结构性盲点**） | 92 |
+|| 12 | 权重 / 适配器 / 检查点加载故障 | 53 |
+|| 13 | 模型图 / 架构配置故障 | 42 |
 || 14 | 长上下文能力失效（model_on — 健康模型盲点） | 8 |
 || 15 | 幻觉 / 忠实性 / 对齐（检测器已验证的信号） | 10 |
 
@@ -3111,7 +3125,7 @@
 
 - **机制**：融合小核路径（`softmax/device/kernels/attention/compute/softmax.cpp`）应用用户 mask 后未对最终 tile 消费 `MASK_PADDED_DATA`；大张量 masked kernel 已有正确实现可对照。
 - **来源**：tt-metal #58495（2026-09-29 open，$750 bounty，含宽度集 17/50/197/1001、行和 0.04–0.98 实测范围、修复范围与验收标准）。https://github.com/tenstorrent/tt-metal/issues/58495
-- **行为效应**：无 crash——**注意力 softmax 概率质量静默漏进 padding 列**：行和最低 0.04 意味有效 token 只分得 4% 概率、causal 注意力输出整体塌缩；非 32 倍数 seq 宽度（可变长批处理常态）命中。
+- **行为效应**：无 crash——**注意力 softmax 概率质量静默漏进 padding 列**：行和最低 0.04 意味有效 token 只分得 4% 概率、causal 注意力输出整体塌缩；非 32 倍数 seq 宽度（可变长批处理常态）命中。 回访（2026-10-09）：issue #58495 已 closed/completed（10-06），维护者确认 bounty 完成并启动支付——修复合并与发布版本待核。
 - **触发面**：tt-metal + scale_mask_softmax 族融合小核 + 非 32 倍数逻辑宽度 + 用户/causal mask（hw_specific；plain softmax、对齐宽度免疫）
 - **发现来源**：2026-09-29 每日扫描。
 
@@ -3136,6 +3150,296 @@
 - **发现来源**：2026-09-29 每日扫描。
 
 
+
+### 1.272 `vllm_vendored_fla_chunk_o_gate_loaded_unmasked_before_exp_nan_propagation`
+
+`infra_off`（vLLM vendored `third_party/flash_linear_attention/ops/chunk_o.py` 相对上游 `fla-org/flash-linear-attention` 的关键分叉：token mask `o_t/m_t` 被移到 `USE_G` 块**之后**计算，gate 以 `boundary_check` 无 `other` 加载后**先于任何 mask 被 `exp`**——部分边界 chunk 中未定义 lane 的值（含 pairwise 差 `exp(b_g[:,None]-b_g[None,:])` 混合有效/无效 lane）直接进入输出累加器；上游同块先算 mask 并以 `mask=m_t, other=0.0` 加载） · Cov: `NEW`（vendored 副本丢 mask+fill 且把 mask 计算移到使用之后的子签名） · 触发 `config` · 置信度 `documented`
+
+- **机制**：`tl.load` block pointer 越界 lane 值未定义，须先 mask 再消费；vendored 副本把 exp 消费提前到 mask 存在之前。源码双侧逐行对照完整（vLLM main `fb91712b` vs upstream）。
+- **来源**：vLLM #59404（2026-09-30 open，含双侧源码对照与修复方向）。https://github.com/vllm-project/vllm/issues/59404
+- **行为效应**：无 crash——chunked prefill 部分边界 chunk 的 GDN/linear-attention 路径输出可被 NaN/inf 静默污染（而非 wrong-but-finite）。
+- **触发面**：vLLM + GDN/linear-attention 模型 + chunked prefill 产生部分边界 chunk（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.273 `trtllm_group_rmsnorm_smem_init_race_and_onewarp_path_never_normalizes_input1`
+
+`infra_off`（TRT-LLM `groupRmsNormKernels.cu` 两缺陷并存：①共享内存初始化竞态使输出膨胀——warp 归约和丢失（`group_rms_norm_base` 64×[1536,512] 输入 397,748/397,774 次调用错、例 0.0262 vs 0.0187；heuristic 回退同内核同错）；②one-warp large-batch 路径**从不归一化 input 1**（`group_rms_norm_large_batch` 2048×[256,256] 第二输入 401,268/401,268 全错、例 2448.0 vs 1.19）。A100 实测 120 s 循环 harness 对同 bf16 输入的 fp64 参照；1.2.1 wheel 与 main `b031dbe` 设备内核一致） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：①多 warp 写共享统计的初始化竞态；②large-batch 单 warp 循环漏掉第二个输入的 rsqrt 归一化。
+- **来源**：TensorRT-LLM #19955（2026-10-08 open，含 fp64 参照 harness、逐调用错计数与错值样例）。https://github.com/NVIDIA/TensorRT-LLM/issues/19955
+- **行为效应**：无 crash——组归一化输出静默错值（最高千倍级），消费该 norm 的模型图精度静默退化。
+- **触发面**：TRT-LLM PyTorch backend + `torch.ops.trtllm.group_rms_norm_*`（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.274 `trtllm_convert_type_returns_tensor_viewing_local_array_dangling`
+
+`infra_off`（TRT-LLM 设备侧 helper `util_convert_type`（moe_cute_util.cuh）与 `flash::convert_type`（flashMLA utils.h）把转换结果存进**函数局部 `frag`** 后 `make_rmem_ptr(&frag)` 返回其视图——返回即悬垂，读取为 UB。nvcc 下读陈旧寄存器值"碰巧能用"；clang -O3 下消费链被 DCE：SwiGLU 与其喂入的 MMA 被整体删除、内核 store 没人写过的寄存器（bf16 32x128x64 SwiGLU 实例 SASS 计数 HMMA/LDSM/F2FP/FMUL nvcc 96/64/12/72 vs clang 64/40/0/48，单行修复后恢复 96/64/12/72）。两个活调用点：fused MoE epilogue 与 flash_fwd_mla splitkv combine） · Cov: `NEW`（返回局部视图的设备 helper 悬垂子签名；同文件 `convert_type_out` 按引用输出正确、注释自认该 hazard 未修） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：寄存器碎片生命周期超出函数作用域；编译器优化日程决定是"陈旧值"还是"空计算"。
+- **来源**：TensorRT-LLM #19943（MoE 路径，含 SASS 三方对照）+ #20035（flashMLA 同缺陷，2026-10-07/09 open）。https://github.com/NVIDIA/TensorRT-LLM/issues/19943 、https://github.com/NVIDIA/TensorRT-LLM/issues/20035
+- **行为效应**：nvcc 构建下静默读陈旧值；clang 构建（如 flashinfer-jit 某些路径）下输出为未写寄存器垃圾。
+- **触发面**：TRT-LLM fused MoE / flashMLA 内核 + 编译器选择（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.275 `triton_argmax_reshape_ravel_flip_allow_reorder_permutes_value_not_index`
+
+`infra_off`（triton `tl.argmax/tl.argmin`（`return_indices=True`）归约 `(value,index)` 对：value 来自 `tl.reshape/ravel/flip` 时 `CombineReshapeReducePatterns` 标记 reshape `allow_reorder`，value 可被重排而 index（`tl.arange`）不重排——返回索引静默指向错误 lane） · Cov: `var:ttmetal_argmax_comparator_nan_zero_sign_semantics_dtype_split`（1.151 argmax 索引语义族——本条在**优化 pass 重排 value 不重排 index**维度，与 NaN/±0 语义无关） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：`allow_reorder` 只承诺 value 语义不变，不承诺 lane 位置；索引归约依赖 lane 位置。
+- **来源**：triton #12099（2026-10-04 closed，含最小复现与机制 TL;DR）。https://github.com/triton-lang/triton/issues/12099
+- **行为效应**：无 crash——依赖 argmax 做 gating/检索的 kernel 静默选错元素。
+- **触发面**：triton + reshape/ravel/flip 后接 argmax/argmin indices（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.276 `triton_bf16_scalar_constants_cut_to_6_decimals_by_to_string`
+
+`infra_off`（triton `get_bf16` 以 `std::to_string`（固定 6 位小数）打印 float 再解析文本构造 bf16 常量：超过 6 位小数的常量被**截断而非舍入到 bf16**——`tl.full([16],1e-8,tl.bfloat16)` 与 `x_bf16*1e-8` 得 0、`1.5e-6` 得 2e-6） · Cov: `NEW`（常量构造路径精度截断子签名） · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：十进制文本中转丢尾数；正确做法是位级舍入到 bf16。
+- **来源**：triton #12102（2026-10-04 closed，根因定位+复现）。https://github.com/triton-lang/triton/issues/12102
+- **行为效应**：无 crash——小幅度 bf16 常量（衰减系数、epsilon）静默归零或偏 2×，下游数值静默漂移。
+- **触发面**：triton bf16 标量常量（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.277 `triton_loop_carry_detection_skips_prev_cur_same_initial_value`
+
+`infra_off`（triton `CodeGenerator._find_carries` 以**一次 dry run 后比较 IR 值**决定循环 iter_args，而非"值是否可能跨迭代变化"：`prev = cur` 起始同值时 `prev` 不进 iter_args，循环体保留 pre-loop 值——carry 静默丢失） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：同值 IR 判等误判"不变"；正确判据是可变性分析。
+- **来源**：triton #12104（2026-10-04 open，含最小复现）。https://github.com/triton-lang/triton/issues/12104
+- **行为效应**：无 crash——依赖状态递推的 kernel（滑动统计、递归滤波）静默用初值。
+- **触发面**：triton for/while 循环 + 同值初始化 carry（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.278 `triton_fuse_nested_loops_flatten_advances_outer_carry_on_inner_iterations`
+
+`infra_off`（triton `FuseNestedLoops` `flatten=True` 把外层 loop-carried 索引在**内层迭代**上推进——扁平化后外层索引按总迭代步进而非仅外层边界步进） · Cov: `var:triton_fuse_nested_loops_nondominating_assume_miscompile`（1.127 FuseNestedLoops miscompile 族第三站点：非支配 assume / 空动态内层 / flatten 外层 carry） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：扁平化变换未区分内/外层边界对 carried 变量的更新时机。
+- **来源**：triton #12192（2026-10-09 open）。https://github.com/triton-lang/triton/issues/12192
+- **行为效应**：无 crash——多展循环地址/索引静默错位。
+- **触发面**：triton `tl.range(flatten=True)` 嵌套循环携带索引（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.279 `ttmetal_logaddexp_bf16_sign_flip_222k_ulp_near_zero`
+
+`infra_off`（`ttnn.logaddexp/logaddexp2` bf16 路径在真值近零处**翻转符号**且偏差最高 **222k ULP**） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：log-sum-exp 域近零相消路径的 bf16 实现错误（详情见 issue 数值表）。
+- **来源**：tt-metal #58669（2026-10-01 open，Bad Outputs）。https://github.com/tenstorrent/tt-metal/issues/58669
+- **行为效应**：无 crash——logaddexp 消费链（损失/概率合并）静默错值带符号翻转。
+- **触发面**：ttnn.logaddexp* bf16（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.280 `ttmetal_digamma_lut_extrapolation_outside_fitted_domain_negative_axis_and_tiny_positive`
+
+`infra_off`（`ttnn.digamma` SFPU piecewise-rational LUT 仅拟合 `[0.01,102]` 且**无负轴分支**：①全部负输入（两极点之间数学上良定义、torch 返回正常有限值）由拟合式裸外推——bf16 路径 −1.5 返 +4.15（5.9×，应 +0.70）、−2.5 返 −0.26（**符号反**）；②正数 `0<x<1.2125e-4` 段 0 外推：1e-7 返 +2.01e7（符号翻、3.0e7 ULP）、`digamma(0)` 返 +6.68e6（应 −inf）。#59462 以 IEEE fp32 逐 op 舍入复刻 kernel LUT 系数对照高精度参照（无 Tenstorrent 卡、控制组拟合域内 0 ULP 吻合 bf16 golden）；#58682 独立给出负轴表。与 #51128（正值低于拟合下限饱和 −337671.9，已编目 1.33 族语境）互补：**负轴全域 + 正数微小值域均未处理**） · Cov: `var:ttmetal_digamma_fp32_shared_log_body_precision_floor`（1.126 digamma 精度族——本条把缺口从"拟合域内精度下限"扩到**拟合域外的未守卫外推**） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：LUT 无域守卫、无反射公式；erf/erfc 同文件都有 clamp 守卫而 digamma 只有 `x>102` 渐近分支。
+- **来源**：tt-metal #58682（2026-10-01）+ #59462（2026-10-06，含断点 x=1.2125e-4 与 ULP 表）。https://github.com/tenstorrent/tt-metal/issues/58682 、https://github.com/tenstorrent/tt-metal/issues/59462
+- **行为效应**：无 crash——负/微小正输入的 digamma 静默错值错符号；golden 测试 `test_digamma_multigammaln` 的 2-ULP 门槛在 x<1.2125e-4 失效。
+- **触发面**：ttnn.digamma bf16/fp32 输入超出 [0.01,102]（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.281 `ttmetal_fp32_to_bf16_helpers_lose_nan_classification_exhaustive`
+
+`infra_off`（设备侧 `fp32_to_bf16` / `fp32_to_bf16_truncate`（`bfloat16.h` 生产头文件）对全部 16,777,214 个 fp32 NaN 位型穷举：RNE 路径 **131,072** 个 NaN 编码变非 NaN（quiet NaN 0x7fff8000→−0/+0、signaling NaN→+Inf——舍入进位带进高位 / 截断丢弃唯一非零尾数位）；独立 C++20 宿主测试复现、无需硬件） · Cov: `var:ttmetal_datamovement_fp32_to_bf16_cast_truncates_rtz_vs_typecast_rne_split`（1.266 fp32→bf16 转换语义族——本条在 **NaN 分类丢失**维度：有限化而非舍入偏置） · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：舍入加法可进位越过指数域；截断可丢弃 NaN/Inf 区分位。
+- **来源**：tt-metal #59126（2026-10-03 open，穷举扫描+独立测试）。https://github.com/tenstorrent/tt-metal/issues/59126
+- **行为效应**：无 crash——NaN 静默变 ±0/±Inf，上游 NaN 传播诊断链与 NaN-mask 语义被破坏。
+- **触发面**：tt-metal 设备 fp32→bf16 转换 helper（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.282 `ttmetal_quasar_generic_typecast_int32_sign_magnitude_vs_twos_complement`
+
+`infra_off`（Quasar 通用 typecast 路径 `_calculate_typecast_arith_sfp_rows_` 把 Int32 当**sign-magnitude** 处理，而 L1/Dest 原生 Int32 是 two's complement：Int32→Float32 与 Float32→Int32 的负值输出 −2³¹ 级垃圾；专用 Int32→Float16_b 内核（#56911）先做 2SC→SM 转换正确。测试未捕获因 `test_sfpu_compute.cpp` 本身按 sign-magnitude 打包 Int32——golden 与内核共享同一错误假设。emu-quasar 单测：SM 输入 PASS/2SC 输入 FAIL） · Cov: `var:ttmetal_datamovement_int_float_dtype_conversions_bit_reinterpretation_garbage`（1.267 int↔float 转换位语义族——本条在**符号编码误解**维度且 golden 同错） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：负数编码约定（2SC vs SM）在转换 kernel 与测试基建中同时选错。
+- **来源**：tt-metal #59016（2026-10-02 open，含 PASS/FAIL 矩阵）。https://github.com/tenstorrent/tt-metal/issues/59016
+- **行为效应**：无 crash——含负 Int32 的类型转换静默垃圾；Int32→Int16/UInt16/UInt8 未检查。
+- **触发面**：Quasar typecast Int32↔float（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.283 `ttmetal_ttnn_sum_mean_fp32_rowmajor_w_gt_256_wrong`
+
+`infra_off`（`ttnn.sum/ttnn.mean` 对 **fp32 ROW_MAJOR 输入且 W>256** 返回错误结果） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：宽行 fp32 row-major 归约路径错误（见 issue）。
+- **来源**：tt-metal #58695（2026-10-01 open，Bad Outputs）。https://github.com/tenstorrent/tt-metal/issues/58695
+- **行为效应**：无 crash——宽 fp32 归约静默错值。
+- **触发面**：ttnn.sum/mean fp32 ROW_MAJOR W>256（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.284 `ttmetal_ttnn_embedding_tile_layout_indices_batch_gt1_only_batch0_correct`
+
+`infra_off`（`ttnn.embedding` indices 为 **TILE 布局**且 rank 3/4、首维 >1（如 `[B,1,1,S]`）时仅 batch 0 查表正确：batch 1..B−1 每 token 取权重第 0 行或 tile padding 残留值；输出形状正常、无报错。ROW_MAJOR indices 正确。根因：tilized indices 工厂假设 `B*S` 折叠，而 TILE 输入保留原 shape 未被 reshape/校验（校验只对 ROW_MAJOR 跑）） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：`EmbeddingsTilizedIndicesProgramFactory` 对 TILE 布局跳过 reshape 与 shape 校验，按扁平索引寻址。
+- **来源**：tt-metal #59133（2026-10-03 open，含三步定位链）。https://github.com/tenstorrent/tt-metal/issues/59133
+- **行为效应**：无 crash——embedding 查表整批（除 batch 0）静默错值，形状正确不可见。
+- **触发面**：ttnn.embedding TILE indices batch>1（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.285 `ttmetal_unary_special_functions_map_nan_to_finite_values_family`
+
+`infra_off`（ttnn 一元特殊函数把 NaN 输入静默映射为**看似正常的有限值**：`ttnn.erf` 返 ±1.0（SFPSWAP min/max 按位排序把 +NaN 当 >+Inf，clamp(+NaN,10)=+10 后走 erf(+10) 指令流）、`ttnn.erfc` 返有限值（erfc(5)≈2.4e-12）、`ttnn.i1` 返有限值（i1(88.5)≈1.15e37）、`ttnn.gelu` 负 NaN 返 0——WH 与 BH 一致；上游 NaN 被"洗白"成普通数，破坏 NaN 传播诊断与 NaN-mask 语义） · Cov: `var:ttmetal_softmax_sfpu_exp_sanitize_swallows_nan_inf_uniform_or_zero`（1.197 NaN 吞噬族——本条把面从 softmax exp 扩到 erf/erfc/i1/gelu 四个 unary 特殊函数） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：SFPSWAP 比较器按符号幅值位排序 NaN 而非 unordered；两处 clamp 均中招。
+- **来源**：tt-metal #59184（erf）+ #59185（erfc）+ #59186（i1）+ #59247（gelu），2026-10-04/05 open。https://github.com/tenstorrent/tt-metal/issues/59184
+- **行为效应**：无 crash——NaN 静默有限化，上游缺陷被掩盖。
+- **触发面**：ttnn erf/erfc/i1/gelu NaN 输入（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.286 `ttmetal_sharded_softmax_tile_padding_in_row_sum_non32_last_dim`
+
+`infra_off`（sharded softmax 全族（`softmax_in_place`/`scale_mask_softmax_in_place`/`scale_causal_mask_hw_dims_softmax_in_place`）在末维非 32 倍数时把 tile-padding 列计入行和：[1,1,64,100] height-sharded 实测行和 **0.73–0.79**（应 1；interleaved 同数据 0.994–1.008），24/24 配置组合（bf16/fp32_dest、numeric_stable 开关）全部泄漏，min row sum 最低到 0；同数据的 interleaved 路径正确） · Cov: `var:ttmetal_fused_scale_mask_softmax_tile_padding_participates_in_denominator_non32_widths`（1.269 tile padding 入分母族——本条把面从融合小核扩到**sharded softmax 程序配置全族**） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：sharded reader 不对末维 padding 列施加隐式 −inf mask。
+- **来源**：tt-metal #59818（2026-10-08 open，Blackhole 模拟器，含 24 配置矩阵）。https://github.com/tenstorrent/tt-metal/issues/59818
+- **行为效应**：无 crash——sharded 注意力概率质量静默漏入 padding（causal 场景概率几乎全丢）。
+- **触发面**：ttnn sharded softmax + 末维非 32 倍数（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.287 `ttmetal_trace_replay_overwrites_buffers_allocated_after_capture`
+
+`infra_off`（ttnn trace 捕获后中间 buffer 被释放但每次 `execute_trace` 仍写其捕获期地址：**捕获之后分配且落入该区域的任何设备 buffer 在每次回放被静默覆写**。MiniMax-H3 4x8 BH Galaxy 实测：per-timestep adaLN 调制表缓存开启后生成样本与无缓存管线差 12.6 dB PSNR（all-miss 路径 bit-exact）；逐块检查定位覆写发生在 traced audio decode 阶段之后，覆写块集合对给定分配历史确定。docstring 已警告但无强制） · Cov: `NEW`（trace 地址逃逸子签名） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：trace 只持有输入输出张量，中间地址按捕获期快照回写，与后续分配重叠。
+- **来源**：tt-metal #59645（2026-10-07 open，含 32 shard 逐块比对 instrumentation）。https://github.com/tenstorrent/tt-metal/issues/59645
+- **行为效应**：无 crash——回放期静默破坏共存张量（本例为音频/视频质量退化）。
+- **触发面**：ttnn trace + 捕获后同区域分配（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.288 `ttmetal_wormhole_matmul_unpack_mop_covers_first_8_streamed_tiles_9to16_wrong`
+
+`infra_off`（Wormhole LLK matmul unpack config context 1 的 MOP 只覆盖**前 8 个 streamed tiles**：单方向 9–16 tile 的 full sync block **每隔一次调用**得到错误结果（重复调用时第二次起错——状态残留）；姊妹 #59769 同文重报） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：unpack MOP 流式覆盖计数不足，>8 tile 块依赖前次调用残留状态。
+- **来源**：tt-metal #59125（2026-10-03）+ #59769（2026-10-08 重复报告）。https://github.com/tenstorrent/tt-metal/issues/59125
+- **行为效应**：无 crash——特定 tile 数的 matmul 隔次调用静默错值。
+- **触发面**：Wormhole LLK matmul 9–16 streamed tiles 单方向（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.289 `ttmetal_dst_full_sync_en_validation_admits_subblocks_kernels_compute_wrong`
+
+`infra_off`（`dst_full_sync_en` 下 matmul 校验放行内核实际算错的 subblock 尺寸：2D/1D/Reuse 三工厂与 `all_gather_minimal_matmul_async`（+quasar mcast_1d）均中招（#60162/#60165/#60170/#60181 四重复报告）；`minimal_matmul` 主报告含错值证据） · Cov: `var:ttmetal_matmul_multicore_reuse_oversubscription_silent_tile_drop`（1.119 MatmulMultiCoreReuse"验证放行 ≠ 内核正确"契约族——本条在 **dst_full_sync 使能维度的 subblock 校验缺口**） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：校验谓词未覆盖 full-sync 使能时的合法 subblock 约束。
+- **来源**：tt-metal #59689（2026-10-07 open）+ #60162/#60165/#60170/#60181（2026-10-09 重复/姊妹）。https://github.com/tenstorrent/tt-metal/issues/59689
+- **行为效应**：无 crash——特定 subblock 配置 matmul 静默错值，校验不拦。
+- **触发面**：tt-metal matmul + dst_full_sync_en + 特定 subblock（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.290 `ttmetal_blackhole_custom_matmul_bfp2_b_plain_path_unrelated_output`
+
+`infra_off`（Blackhole LLK custom matmul：**Bfp2_b 权重走 plain path 计算与乘积无关的输出**，而 Bfp4_b/Bfp8_b 权重与压缩路径的 Bfp2_b tile 均正确——同 op 内仅该组合坏） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：Bfp2 解码在 plain 路径的实现错误（见 LLK 审计报告）。
+- **来源**：tt-metal #58785（2026-10-01 open，LLK 审计系列含逐路径对照）。https://github.com/tenstorrent/tt-metal/issues/58785
+- **行为效应**：无 crash——Bfp2_b 量化的 custom matmul 输出静默垃圾。
+- **触发面**：Blackhole custom matmul + Bfp2_b 权重 plain path（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 1.291 `ttmetal_group_norm_fp32_dest_subblock_over_4_tiles_halfsync_wrong_stats`
+
+`infra_off`（`ttnn.group_norm` fp32 DEST（fp32 输入或 bf16 输入 + `fp32_dest_acc_en=True`）+ interleaved 输入：mcast/no-mcast 工厂把通道 subblock 取 `get_max_subblock(block_wt, 8)`，而 fp32 DEST 在 half-sync 模式只有 4 tile 容量——**一组跨 ≥5 channel tile（C/G≥160）起确定性错值**（C=1024 时 max err 1.00 vs 正确配置 0.011；`dst_full_sync_en=True` 或 `use_welford=True` 正确、≤4 tile/组正确；sharded 工厂已有 `fp32_dest_acc_en && !dst_full_sync_en ? 4 : 8` 正确封顶，interleaved 两工厂漏掉） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：subblock 容量谓词与 DEST 格式的 half-sync tile 上限不匹配，compute kernel 单次 `tile_regs_acquire` 请求 5–8 个 fp32 tile。
+- **来源**：tt-metal #59848（2026-10-08 open，逐 C 值误差表 + sharded 工厂正确守卫对照）。https://github.com/tenstorrent/tt-metal/issues/59848
+- **行为效应**：无 crash——宽组 group_norm 归一化统计静默错值且随组宽增长。
+- **触发面**：tt-metal + group_norm + fp32 DEST + interleaved + 每组 ≥5 channel tile（config）
+- **发现来源**：2026-10-12 每日扫描（10-09 未覆盖清单补录）。
+
+### 1.292 `ttmetal_wormhole_reduce_f16_in_f32_out_max_and_scalar_paths_wrong`
+
+`infra_off`（Wormhole B0 reduce：**Float16 输入 + Float32 输出**（fp32 Dest 累加）组合下 Row/Column/Scalar MAX 全错（golden 1.10 → 6e4–3e14 量级）、Scalar Sum/Average 错（630.0 → 0.01），Row/Column Sum/Average 同格式正确；Float16→Float16/Bfp8_b、Float32→Float16 组合的 MAX 正确——触发面为 F16 SrcA × fp32 Dest 配对。CI `test_reduce.py` 从未参数化 Float16 输入格式，40 failed/32 passed 全部为漏测面） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：LLK reduce 对 F16 源 + fp32 Dest 的格式对未做正确处理（报告含逐 tile shape 失败矩阵；非近期回归，main 位点复算 bit-exact）。
+- **来源**：tt-metal #60008（2026-10-09 open，附 run_test 命令与 golden→device 样值对照）。https://github.com/tenstorrent/tt-metal/issues/60008
+- **行为效应**：无 crash——MAX/标量归约静默返回错误量级值。
+- **触发面**：Wormhole + reduce + Float16 输入 + Float32 输出（hw_specific）
+- **发现来源**：2026-10-12 每日扫描（10-09 未覆盖清单补录）。
+
+### 1.293 `ttmetal_blackhole_where_bf16_predicate_fp32_values_bit_reinterpret_garbage`
+
+`infra_off`（Blackhole `ttnn.where(predicate, true, false)`：**bf16 predicate + fp32 数值**混合组在 65,503–65,536/65,536 lane 输出垃圾（样例 −1.1258 → 2.2e-22，predicate 位型被按数值位重解释后选择错误分支）；全 bf16 或全 fp32 组每 lane 正确，四种 predicate 形状（无广播/列/标量/行）均复现） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：混合 dtype where 的 predicate 读取路径把 bf16 predicate 位当 fp32 语义消费（1.0 → 2.2e-22 暗示指数域错位）。
+- **来源**：tt-metal #60223（2026-10-11 open，p100a main `6024ed40f33` 单卡复现 + 逐形状 lane 计数表）。https://github.com/tenstorrent/tt-metal/issues/60223
+- **行为效应**：无 crash——混合精度 where 几乎全 lane 静默错值。
+- **触发面**：Blackhole + ttnn.where + bf16 predicate + fp32 values（hw_specific）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 1.294 `ttmetal_xielu_fp32_negative_branch_zero_crossing_cancellation`
+
+`infra_off`（`ttnn.xielu` FLOAT32 输出负分支在自身零交叉 x* 附近 catastrophic cancellation：分支 `alpha_n*(exp(x)-1-x)+0.5*x` 两操作数 MAD 相消 1,000–21,000×，exp 近似残差（~1e-7 rel）主导答案——fp32 输入最坏 53.6% 相对误差（x* 附近 ULP 无界）、默认 alpha_n=0.8 下 bf16 量化点最坏 326 ULP、alpha_n=1.0 下 2,816 ULP；bf16 输出（≤0.55 bf16 ULP）掩盖该缺陷，binding 对 FLOAT32 无精度警示） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：多项式分支在自身零点附近未切换到消相消形式；与 1.118/1.251 的相消族区别在于零点是 op 自身引入而非输入极端值。
+- **来源**：tt-metal #58670（2026-10-01 open，逐 alpha_n 扫描表 + float64 spec 对照）。https://github.com/tenstorrent/tt-metal/issues/58670
+- **行为效应**：无 crash——负半轴零交叉邻域静默高相对误差，fp32 输出无界。
+- **触发面**：tt-metal + xielu + FLOAT32 输出（config）
+- **发现来源**：2026-10-12 每日扫描（10-09 未覆盖清单补录）。
+
+### 1.295 `ttmetal_concat_f32_height_sharded_width_tf32_truncation_via_unpacktosrc`
+
+`infra_off`（`ttnn.concat([a, b], dim=-1)` FLOAT32 TILE 输入且 **L1 HEIGHT_SHARDED** 时选中 `ConcatS2STiledProgramFactory`：compute kernel 转置途经 tile，FLOAT32 工厂开了 32-bit Dest 但把三个 buffer 的 unpack mode 全设 `UnpackToSrc`——tile 经 SrcA 被**截断为 TF32**（低 13 位尾数丢弃），8192 元素 8190 错（-11.258398→-11.2578125，与 TF32 截断参考 bit-exact 相等）；DRAM/L1 interleaved 同调用逐位正确；姊妹工厂 `transpose_wh_sharded_program_factory.cpp` 对 FLOAT32 用 `UnpackToDest` 是正确实现并存。测试盲区：`test_sharded_concat` 只参数化 bfloat16/int32/uint32、`test_concat_fp32_last_dim_mantissa_not_truncated` 只覆盖 interleaved。ttsim Blackhole 复现，机制非模拟器特定、硅上待确认。修复 PR #59639 open（#59634 closed 前身）） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：纯数据搬运作（concat）在 FLOAT32+sharded 组合下误经 SrcA unpack 路径；与 1.249（TF32 SrcA 截断）共享 SrcA 10-bit 尾数截断机制，但触发面在 sharded concat 工厂选择。10-12 扫描已标记"强候选、预计 var:1.266 族"——实读后定为本条独立机制（unpack mode 差错而非 dtype= 转换缺失）。
+- **来源**：tt-metal #59530（2026-10-09 open，逐 memory config 对照 + TF32 参考逐位相等证明 + 根因 UnpackToSrc vs UnpackToDest 源码定位）。https://github.com/tenstorrent/tt-metal/issues/59530
+- **行为效应**：无 crash——height-sharded FLOAT32 宽 concat 全元素静默 TF32 截断。
+- **触发面**：tt-metal + ttnn.concat dim=-1 + FLOAT32 TILE + L1 HEIGHT_SHARDED（hw_specific；ttsim 复现、硅上待确认）
+- **发现来源**：2026-10-12 每日扫描（10-12 扫描"下轮优先"补录，正文本日深读）。
+
+### 1.296 `ttmetal_update_cache_num_users_gt32_tile_pad_rows_walked_oob_dram_write`
+
+`infra_off`（`ttnn.update_cache` UPDATE 路径（multi-core factory）：batch size（num_users）**>32 且非 32 倍数**（如 48——普通服务形状）时，输入 tilize 到 64 行高，writer 按 `num_batched_heads × min(32, Bcache)` 逐 user 行走、只在 `b == B`（padded 高）re-base cache_id，无任何钳制——padding 行 48..63 被当真实 user 写到 `cache_id = user*cache_batch_num_tiles + …`，**超出 cache 张量页数的 NOC 写入**（worked example：Bcache=48 时 pad users 写 page 12288..16129，全部 ≥ cache_total 12288）。无 TT_FATAL 无 assert；cache **内部**值全对、损坏落在**外部** DRAM——表现为后续运行中无关张量的莫名损坏。校验只查 `cache.padded_shape[0] <= input.padded_shape[-2]` 与 batch_offset，无 %32 约束。8.96（update_cache fp32 毒化邻 31 行，同 op #59561）的**写侧姊妹**） · Cov: `var:ttmetal_update_cache_fp32_corrupts_31_neighbouring_rows_of_updated_position`（8.96 update_cache 损坏族——同 op 同 KV cache 基础设施，但 8.96 是 cache 内相邻行 fp32 精度毒化（数值面）、本条是 num_users tile padding 行越界写 cache 外 DRAM（地址面），失效维度正交） · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：user 行计数取 padded 输入高、user 每块行数冻结 min(32,Bcache)、无 Bcache 钳制三者叠加；源码行级定位（main@e495861 复核未变）+ 逐数字 worked example 闭合因果。
+- **来源**：tt-metal #59824（2026-10-12 前窗口 open，全源码推导 + worked example；10-12 扫描"下轮优先"标记，本日补录）。https://github.com/tenstorrent/tt-metal/issues/59824
+- **行为效应**：无 crash——cache 外 DRAM 静默损坏，波及同 run 无关张量，极难归因。
+- **触发面**：tt-metal + ttnn.update_cache + num_users>32 且非 32 倍数（hw_specific）
+- **发现来源**：2026-10-12 每日扫描（10-12 扫描"下轮优先"补录，正文本日深读）。
+
+### 1.297 `ttmetal_bfp_pack_exp_a_underflow_hidden_bit_inflates_to_2pow_minus15`
+
+`infra_off`（host 块浮点打包 `convert_u32_to_bfp<..., is_exp_a=true>`：指数下溢分支 `se<0` 时清 mantissa 后**无条件追加 hidden 1**（`(1<<23)|mantissa` 在分支之后），下溢元素编码为 1.0×2^(0−15)=3.05e-5 而非 0——`get_max_exp` 同样把共享指数钳到 0，一整行小值解码为 ±2^-15；1e-6 → 3.052e-05（30× 膨胀）、−1e-6 → −3.052e-05。exp-B（`_b`，默认 BFLOAT8_B/BFLOAT4_B）路径无恙。CPU-only 确定性复现（逐函数拷贝自 blockfloat_common.cpp，无设备）；修复一行（se<0 分支 return 0）） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：hidden-bit 添加位置在 underflow 分支之后；与 1.27（subnormal flush）同属块浮点下溢语义族，本条在 host 打包侧。
+- **来源**：tt-metal #60245（2026-10-12 open，逐 is_exp_a×输入值解码表 + 源码定位；main@3ba039a 2026-10-11）。https://github.com/tenstorrent/tt-metal/issues/60245
+- **行为效应**：无 crash——exp-A 模式 Bfp8/4/2 打包的微小值静默膨胀 30×+（1e-6 量级），非默认格式（默认 exp-B 不受影响）。
+- **触发面**：tt-metal host 打包 pack_as_bfp*_tiles + is_exp_a=true（hw_specific：host 代码，任何产品）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 1.298 `ttmetal_tilize_transposed_nonsquare_face_heap_overflow_corrupt_roundtrip`
+
+`infra_off`（`Tile(tile_shape, face_shape, transpose_tile)` 构造器接受非方 face 的转置 tile（如 `Tile({16,32},{8,16},true)`），而 `tilize_utils.cpp` 四个转换器假设 `face_H == face_W`：swizzled↔nfaces 循环 `row < face_W, col < face_H` 越界读 face 外——**heap-buffer-overflow READ/WRITE**（ASan 捕获；无 ASan 时 glibc `free(): invalid next size`）；row-major 往返不闭合（数据错）；377-382 行边界检查打印 dst/src idx 后**仍然 memcpy**。CPU-only 确定性复现；32×32/16×16、16×32/16×16 转置、16×32/8×16 非转置全通过——触发精确钉在转置×非方 face 组合。Python Tile binding 只建默认方 face，C++ API 可达） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：转置分支的循环边界沿用方 face 假设；边界检查打印后不拦截。
+- **来源**：tt-metal #60244（2026-10-12 open，ASan 双向溢出 + 全组合矩阵对照；main@3ba039a）。https://github.com/tenstorrent/tt-metal/issues/60244
+- **行为效应**：heap 越界读写（ASan 下捕获、否则 heap 元数据损坏 abort 或静默错数据）；非 LLM 推理主路径（自定义 face C++ API）。
+- **触发面**：tt-metal C++ API + 转置 tile + 非方 face_shape（hw_specific）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 1.299 `ttmetal_single_row_sort_padding_value_tie_returns_out_of_range_indices`
+
+`infra_off`（`ttnn.sort` Single Row Single Core 工厂（padded 宽 ≤2048，非 2 幂宽 sort 全走此工厂）：sort 维 pad 到 2 幂时用应排最后 的哨兵值（float 的 ±inf / uint16 的 0/65535）——**输入自身含该值时真实元素与 padding 并列**，`stable=False` 按位置破并列使 padding 元素（index ≥ n）混入返回行：实测 n=100 descending 时 128 个越界 index、n=1000 时 768 个（全 padding 混入）；**values 全对、只有 indices 错**，任何下游 gather/scatter 用这些 index 即 OOB 读。MultiCore DRAM 工厂同病已被 #58600 修复（#53326），Cross Core 工厂用 index-aware 比较器无恙） · Cov: `var:ttmetal_sort_bf16_integer_collapse_nondeterministic_index`（1.23 ttnn.sort 损坏族——同为 sort op 返回索引损坏，但 1.23 是 bf16 整数值坍塌、本条是 padding 哨兵值与真实值并列把 pad index 泄入返回值） · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：哨兵填充假设输入不含哨兵值；非稳定排序按位置破并列使 pad 赢过等值真实元素。哨兵=±inf/0/极值均为合法输入值。
+- **来源**：tt-metal #60262（2026-10-12 open，四配置 × 计数表 + 逐工厂修复状态对照；WH N150 实机）。https://github.com/tenstorrent/tt-metal/issues/60262
+- **行为效应**：无 crash——sort values 正确而 indices 含 ≥n 越界值，下游索引消费静默 OOB。
+- **触发面**：tt-metal + ttnn.sort(stable=False) + 非 2 幂宽 ≤2048 + 输入含 dtype 哨兵极值（hw_specific）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 1.300 `ttmetal_equal_within_n_sig_figs_asymmetric_string_compare_false_match`
+
+`infra_off`（测试工具 `equal_within_n_sig_figs`（bfloat16.cpp:178）逐字符比较 `std::to_string` 输出：前导 '0'/'.' 只按 **a 的字符串**跳过同一索引进 b——`0.5` vs `5.5` 跳过 a 的 "0." 后 '5'=='5' 判真、反向 5.5 vs 0.5 判假（不对称）；`to_string` 固定 6 位小数使一切 <1e-6 的值互等；n 位未达即返回 true。当前唯一消费者 SFPU exponential 测试因输出 ≥1 未中招，但任何 <1 值复用可放过错值。CPU-only 四断言确定性复现） · Cov: `var:ttmetal_reduction_goldens_factory_drops_scalar_kwarg_300pct_pcc_1`（1.234 验证面"比较器恒绿"族——同为验证工具自身缺陷使错值通过，但 1.234 是 golden 吞参数、本条是字符串比较器语义错） · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：字符串化比较 + 单侧前导字符跳过 + 短路 true。
+- **来源**：tt-metal #60246（2026-10-12 open，四组 false-match 断言 + 消费者影响面分析；main@3ba039a）。https://github.com/tenstorrent/tt-metal/issues/60246
+- **行为效应**：无 crash——测试基础设施静默放过 <1 的错值（当前无活中招测试，潜伏验证盲点）。
+- **触发面**：tt-metal 测试工具 + 值域 <1 的数值断言（hw_specific：test utility）
+- **发现来源**：2026-10-12 每日扫描。
 
 ## §3.2 权重位翻转（持久静默权重损坏）
 
@@ -3674,6 +3978,47 @@
 - **行为效应**：无 crash——**开启 speculative 后首 greedy token 即可与 AR 不同**（prefill 编译期分歧，非 KV 损坏非 sampler 缺陷）；temp=0 输出跨服务模式分叉使"AR 基线 vs spec 加速"对拍失效。4.26 之后 Inductor autotune 非确定族新成员：**跨模式（AR/spec）而非跨 rank**。
 - **触发面**：vLLM V2 spec（DFlash2/DSpark drafter）+ Qwen3 系 BF16 + torch.compile RMSNorm autotune + greedy（config；对齐 launch 配置即复原）
 - **发现来源**：2026-09-28 每日扫描。
+
+
+### 4.28 `vllm_qwen36_hybrid_gdn_multisequence_logprobs_nondeterministic_run_to_run`
+
+`infra_off`（vLLM 0.30.0 Qwen3.6-35B-A3B（hybrid GDN+MoE）：单 prompt 独跑 bit-reproducible，但**同一 batch-of-two 重复提交两次 logprobs 差至 0.168**、单 prompt 与批内版本差至 0.198（20 prompts 实测表）；决策式用法中同 prompt 批内评分使 272 真实 prompts 的 10–17% 所选选项改变。批效应在 prefix caching off、`max_num_batched_tokens=32768`、`--gdn-prefill-backend triton`、`enforce_eager`、fp32/bf16 mamba cache、bf16 checkpoint 下均在；`max_num_seqs=1` 时精确 0.0。另有 `enable_return_routed_experts` 下两 identical 请求约 40% (token,layer) 路由与单请求版不同（token 0 起，两副本彼此一致）——疑 per-request capture 错位，可能独立问题。根因内核未定位（候选：默认 config 的 Triton fused MoE、GDN chunked prefill varlen、FA2 varlen）） · Cov: `var:sglang_vlm_greedy_cross_build_near_tie_flip_worker_nondeterminism`（4.12 多序列路径非确定族——本条在 **run-to-run 非确定**（非仅 batch-variant）维度且附路由层证据） · 触发 `config` · 置信度 `documented`
+
+- **机制**：多序列路径存在跨运行非确定的内核（未定位）；单序列路径确定。
+- **来源**：vLLM #59764（2026-10-02 open，20-prompt 四向对照+272 生产 prompts 决策翻转测量）。https://github.com/vllm-project/vllm/issues/59764
+- **行为效应**：无 crash——批内评分/温度 0 输出随批组成与运行历史静默变化。
+- **触发面**：vLLM 0.30.0 + Qwen3.6 hybrid GDN + 多序列同 step（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 4.29 `vllm_triton_mla_batch_invariant_violated_under_chunked_prefill`
+
+`infra_off`（`VLLM_BATCH_INVARIANT=1` 下 MLA 模型输出随 prefill 分块改变：DeepSeek-V2-Lite/V3.1 的 TRITON_MLA chunked-prefill 位一致性测试失败（单 prompt 仅改 token 预算：131 chunk 时 selected-token logprobs 首步差 ~1e-3、decode 第 9 步起 token 翻转；max|delta|=8.9e-2），三次新进程同失败；enforce_eager 仍失败（非 CUDA graph/compile 触发）；疑点 `_compute_prefill_context` 的 `merge_attn_states` LSE 重缩放非结合（未逐层定位）。CI 对该模型只跑 needle 测试不跑 chunked-prefill 测试） · Cov: `var:vllm_batch_invariant_matmul_self_test_violated_and_tf32_leak`（4.17 batch-invariant flag 失效族——本条在 **TRITON_MLA 分块合并非确定**维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：cached context 分块分别 attend 后 LSE 合并，非 bitwise 结合；分块边界由调度决定故输出依赖批组成。
+- **来源**：vLLM #60007（2026-10-05 open，含隔离实验表与 CI 覆盖缺口）。https://github.com/vllm-project/vllm/issues/60007
+- **行为效应**：无 crash——batch-invariant 承诺下 chunked prefill 输出仍随调度分块静默变化。
+- **触发面**：vLLM + VLLM_BATCH_INVARIANT=1 + TRITON_MLA + chunked prefill（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 4.30 `vllm_batch_invariant_cold_model_info_cache_leaves_attention_unwrapped_in_graphs`
+
+`infra_off`（`VLLM_BATCH_INVARIANT=1` 时 `VllmConfig.__post_init__` 自动启用 breakable cudagraph，但冷 model-info cache 下 `attention.py` 先被 import、`@eager_break_during_capture` 在使能前解析——attention op 未包裹即被捕获进 CUDA graph，以捕获期 FlashAttention 参数回放：默认调度下 16-token prefill 错（`max_num_seqs=16` 时 2–16 token prefill 错、24/32/33+ 正确；错例含 prefix-cache 重算尾与 chunked-prefill 尾）；进程内引擎与**默认多进程 LLM 引擎**（fork 自已 import 的进程）均中招，`vllm` CLI（spawn）免疫。#53293 只修了 Ray worker 的同类 import 顺序） · Cov: `var:vllm_batch_invariant_matmul_self_test_violated_and_tf32_leak`（4.17 batch-invariant flag 失效族——本条在 **import 顺序决定 flag 是否生效**维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：decorator 在模块 import 时求值，配置使能晚于 import；fork 继承未包裹函数。
+- **来源**：vLLM #59940（2026-10-04 open，公开 API 最小复现+影响面矩阵）。https://github.com/vllm-project/vllm/issues/59940
+- **行为效应**：无 crash——短 prefill 在 BI 模式下静默错 token，无警告。
+- **触发面**：vLLM + VLLM_BATCH_INVARIANT=1 + 冷 model-info cache + 进程内/多进程 LLM（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 4.31 `flashinfer_rope_fp8_e5m2_reference_clamps_at_e4m3_max_448`
+
+`infra_off`（flashinfer RoPE + FP8 quantize trace 模板 `_q()` 对任意 `quantize_dtype` 恒 `clamp(-448.0, 448.0)`：请求 e5m2 时超 448 的量级被截到端点、e5m2 表示范围（±57344）被静默压缩 128×；CUDA 内核 `cvt.rn.satfinite.e5m2x2` 按各自格式饱和本就正确、triton `quant.py` 已有 dtype 分派正确形式——**错在 trace/reference 侧**，且三个 rope correctness 测试从不传 `quantize_dtype`（默认 e4m3fn 路径唯一被测）；#4202 曾修同构 rmsnorm_quant e5m2 clamp 448） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：参考实现 clamp 常量硬编码 e4m3 上限、未随 quantize_dtype 分派；与内核行为分歧使以 trace 为 golden 的校验失真。
+- **来源**：flashinfer #6173（2026-10-07 open，源码级对照 + CPU 逐字节验证）。https://github.com/flashinfer-ai/flashinfer/issues/6173
+- **行为效应**：e5m2 RoPE+KV 量化路径动态范围静默压缩；trace 校验基准错误。
+- **触发面**：flashinfer + rope_quantize_fp8 + float8_e5m2（config）
+- **发现来源**：2026-10-12 每日扫描。
 
 
 ## 第 5 类 · 分布式 / 多 GPU / 并行推理
@@ -6825,7 +7170,7 @@
 
 - **机制**：6.204 的 mamba state 索引播种缺陷经 prefix 命中路径显形为 spec verify 全拒——恢复的 recurrent state 与 drafter 重算状态不对应，draft token 恒被拒；修复 PR #55601（改用 `cache_config.mamba_block_size` 播种）当前 **open 未合并**（本轮 core REST 核实 state=open/merged=False，3 条评论），v0.30.0 发布带病。
 - **来源**：vLLM #58894（2026-09-27 open，Jetson AGX Orin SM8.7 v0.30.0，含双重启日志对照、命中瞬间 metrics 转换摘录、7+ 分钟 0% 持续观察；twu3202/he-yufeng/报告者三方评论收窄）。https://github.com/vllm-project/vllm/issues/58894
-- **行为效应**：无 crash（Orin 形态）——**spec decoding 静默失效为纯开销**：throughput 掉到 ~35 tok/s 级、acceptance 永久 0%；x86 形态则 fail-loud IMA。6.204 之后该族显形谱系补全：**同一 mamba state 边界错配在同一版本内既可崩引擎也可无声废掉 drafter**——acceptance 指标是唯一线索，与 12.35（量化 drafter 0% 接受）共享"accept-len 恒 1"观测面但根因完全不同（缓存状态错位 vs 权重量化）。
+- **行为效应**：无 crash（Orin 形态）——**spec decoding 静默失效为纯开销**：throughput 掉到 ~35 tok/s 级、acceptance 永久 0%；x86 形态则 fail-loud IMA。6.204 之后该族显形谱系补全：**同一 mamba state 边界错配在同一版本内既可崩引擎也可无声废掉 drafter**——acceptance 指标是唯一线索，与 12.35（量化 drafter 0% 接受）共享"accept-len 恒 1"观测面但根因完全不同（缓存状态错位 vs 权重量化）。 回访（2026-10-09）：修复 PR #55601 已 merged（10-07，core REST 核实 merged=true）——未确认含修复的发布版本，条目判定不变。
 - **触发面**：vLLM v0.30.0（≤#55601 合并）+ Qwen3.5/hybrid GDN + DFlash2 draft + `--enable-prefix-caching` + 前缀命中（config：组合即触发，v0.29.0 免疫）
 - **发现来源**：2026-09-27 每日扫描。
 
@@ -6835,7 +7180,7 @@
 
 - **机制**：未逐行定位（0 评论、无 triage 响应）；报告者以三引擎对照把缺陷域收窄到 SGLang k-pool lightning-indexer 路径（fp8 key cache + fp8 打分 + top-2048 选择），fp8 方法本身被 vLLM 同法正确排除。环境：4×H200 TP4、CUDA graph on。
 - **来源**：SGLang #41494（2026-09-28 open，含双失败案例表（可无文件核对 的 needle key/gold/output 四元组）、4K/8K/16K 聚合准确率、三引擎同参数对照、dtype workaround 半效记录与版本双复现）。https://github.com/sgl-project/sglang/issues/41494
-- **行为效应**：无 crash——**16K 级长上下文抽取任务静默错值**（引用原句但数字错，模型自述"找不到 magic number"），8K 以下基本正常使阈值下测试全绿；NIAH 数字精度是该任务唯一直接观测面。
+- **行为效应**：无 crash——**16K 级长上下文抽取任务静默错值**（引用原句但数字错，模型自述"找不到 magic number"），8K 以下基本正常使阈值下测试全绿；NIAH 数字精度是该任务唯一直接观测面。 回访（2026-10-09）：issue #41494 已 closed/completed（10-05）——closed 不自动证明修复已发布，机制记录不变。
 - **触发面**：SGLang v0.5.20+/main + GLM-5.3-Flash fp8 + DSA k-pool indexer + ≥16K 上下文（config；`--dtype bfloat16` 部分缓解、vLLM/transformers 同输入正确）
 - **发现来源**：2026-09-28 每日扫描。
 - **回访补记（2026-09-29）**：SGLang #41494 出现首条机制定位评论（liaoruoxue，09-29）——**`kpool_topk_transform.cuh` 的 32 KB staging 区容纳 8192 候选索引，threshold bin 溢出时超额候选被静默丢弃**（无 clamp、无二次扫描），needle-bearing 精确边界项进不了 top-K；`index_kpool=4` 下溢出域约自 **16,388 history tokens** 起——与 4K=100%/8K=95%/16K=55% 的准确率悬崖精确吻合。评论者已在生产 serving 上运行 exact-key multi-round rescan 修复头文件（同 #37625 语义），A/B 显示 rescan 无性能代价（TTFT p95 3.637s vs 3.721s）。vLLM 对照解释补齐：其 selector 无 threshold-bin 快路径故正确。**条目机制由"未逐行定位"升级为"kernel 级定位（staging 截断）+ 第三方独立复现（8×RTX PRO 5000 Blackwell TP8）+ 修复已验证"**，判定与分类不变。
@@ -6846,7 +7191,7 @@
 
 - **机制**：owned_kv_len 封顶假设"prompt 之后的内容不在 tree 中"（`cache_protected_len <= len(origin_input_ids)`），retract-重 prefill 打破该假设；报告者给出两条独立双释放路径（overalloc 释放 + 非对齐尾释放）的逐步推导与 `alloc()` 同槽两请求后果链。
 - **来源**：SGLang #41617（2026-09-29 open，含代码引用（#22373 owned_kv_len 封顶、reset_for_retract 不重置）、双路径推导与 free list/radix 双持有后果分析）。https://github.com/sgl-project/sglang/issues/41617
-- **行为效应**：无 crash——**同一 KV slot 被两个请求写入**后的静默跨请求上下文污染（6.163 谱系的最底层成因形态之一）；available_size 超池与断言被跳过使运营面完全不可见。
+- **行为效应**：无 crash——**同一 KV slot 被两个请求写入**后的静默跨请求上下文污染（6.163 谱系的最底层成因形态之一）；available_size 超池与断言被跳过使运营面完全不可见。 回访（2026-10-09）：仍 open；09-29 报告者评论确认 #41281 合并后 main 仍复现（finish/二次 retract 与 4 个 page_size=4 用例双释放），一行 owned_kv_len 修复验证有效。
 - **触发面**：SGLang + `--strip-thinking-cache` + retraction（长负载回退）+ radix cache（other_stack；不开 strip-thinking-cache 或无 retract 免疫）
 - **发现来源**：2026-09-29 每日扫描。
 
@@ -6856,7 +7201,7 @@
 
 - **机制**：drafter query 窗口（N+1）与调度器预留（N）差一；越界 slot 映射经未初始化的 block table 尾部解析到陈旧块号。修复 PR #59105（`test_dspark_lookahead_covers_query_window`）。
 - **来源**：vLLM #59104（2026-09-28 23:36 UTC 创建（昨日扫描 commit 后）、含 synthetic CUDA repro、分配边界测试红绿对照与 #59105 修复 PR）。https://github.com/vllm-project/vllm/issues/59104
-- **行为效应**：无 crash——**drafter 越界写覆盖其他请求的 target KV**：受害请求输出重复畸形（生成期实际观察）；与 6.163（高压跨请求上下文污染）同后果但成因是预留量算错而非缓存键碰撞。
+- **行为效应**：无 crash——**drafter 越界写覆盖其他请求的 target KV**：受害请求输出重复畸形（生成期实际观察）；与 6.163（高压跨请求上下文污染）同后果但成因是预留量算错而非缓存键碰撞。 回访（2026-10-09）：issue #59104 已 closed/completed（10-05），修复 PR #59105 同刻 merged——合并不等于已发布版本含修复，判定与置信度不变。
 - **触发面**：vLLM + DSpark speculative（`sample_from_anchor=false` checkpoint）+ 调度预留 N < drafter 写窗 N+1（partial：需 spec + 特定 anchor 模式 checkpoint）
 - **发现来源**：2026-09-29 每日扫描。
 
@@ -6871,6 +7216,216 @@
 - **发现来源**：2026-09-29 每日扫描。
 
 
+
+### 6.264 `vllm_v2_runner_preemption_updates_overwrite_pages_before_connector_callback`
+
+`infra_off`（vLLM V2 runner `execute_model()` 在 `ActiveKVConnector.pre_forward()` 调用 `handle_preemptions()` **之前**已执行 `update_requests()`——后者可清零新分配 KV 块或做 COW 块拷贝；异步 save 仍在读旧物理页时，connector 在回调内等待也无法保护旧内容（覆写已提交）。确定性 CPU 复现（mock backend + page-reuse sentinel，无需 GPU）：恢复修复 commit 后 4 failed/1 passed，主树全绿——回调顺序违约是可复现的结构性数据损坏窗口，非已观测的输出损坏） · Cov: `NEW`（KVConnector 回调顺序契约违约子签名） · 触发 `partial` · 置信度 `documented`
+
+- **机制**：期望顺序 `handle_preemptions → request-state 更新/清零/COW → metadata/forward`，实际前两步互换。
+- **来源**：vLLM #59409（2026-09-30 open，含 mock 复现与修复 commit 链接）。https://github.com/vllm-project/vllm/issues/59409
+- **行为效应**：异步 save（offload/transfer）读取中的页可被覆写——潜在静默 KV 损坏窗口；零 token step 同样需要回调先于更新。
+- **触发面**：vLLM V2 runner + KV connector 异步 save + 抢占/驱逐（partial）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.265 `vllm_p2p_kv_offload_store_timeout_unpins_slots_under_inflight_transfer_reports_success`
+
+`infra_off`（P2P kv_offload tier `_timeout_pending_store_jobs` 把超 30 s 的 store job 判失败并解钉主槽，但该 job 可能**已挂在运行中的 RDMA 传输上**：传输继续读、槽可被复用覆写、传输完成后 `_settle_xfer_jobs` 因 job 已移除而跳过——round 以 `TransferDoneMsg(success=True)` 收尾，消费者从传输期间可能被覆写的块解码（静默 KV 损坏；触发需 >30 s 慢传输，如降级 RDMA 路径）。#59329 只处理了尚未 fetch 的 parked 块） · Cov: `NEW`（超时清理与在途传输生命周期错转子签名） · 触发 `partial` · 置信度 `documented`
+
+- **机制**：超时 sweep 不检查 `_inflight` 归属；成功回报与实际数据完整性脱钩。
+- **来源**：vLLM #59569（2026-10-01 open，代码评审+完整因果链+两种修复方向）。https://github.com/vllm-project/vllm/issues/59569
+- **行为效应**：无 crash——慢传输场景消费者静默解码被覆写块，结果错而非错。
+- **触发面**：vLLM P2P kv_offload + >30 s 传输（partial）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.266 `vllm_lhbnc_native_cpu_offload_stride_heuristic_offloads_head0_layer0_only`
+
+`infra_off`（`VLLM_KV_CACHE_LAYOUT=LHBNC` + native CPU offload：`register_kv_caches` 按"block stride < page size 即 packed"的启发式把 LHBNC（stride=N*C、page=H*N*C，**packed 的反面**）误判为 packed——每块只 offload `block_stride` 字节 = layer 0 的 head 0（GPU→CPU 字节 12.9 GB→33.5 MB，1/384）；回读命中时输出 gibberish（`_1401401010…`）、块仍计为 stored+hit、无告警。A100 + DeepSeek-R1-Distill-Qwen-14B 三步复现（驱逐后重发同 prompt）） · Cov: `var:vllm_simplecpu_offload_misaligned_explicit_block_size_write_only_offload`（6.258 offload 布局/粒度误解族——本条在**stride 启发式误分类布局**维度） · 触发 `other_stack` · 置信度 `verified`
+
+- **机制**：LHBNC 头跨层分布使 stride 与 page 关系与 packed 假设相反；#51718 起改用 stride 比较后引入。
+- **来源**：vLLM #60004（2026-10-05 open，e2e 三步复现+字节计量对照）。https://github.com/vllm-project/vllm/issues/60004
+- **行为效应**：无 crash——显式 LHBNC 用户 offload 命中后静默 gibberish；仅显式 env 才达此路径。
+- **触发面**：vLLM + VLLM_KV_CACHE_LAYOUT=LHBNC + native CPU offloading（other_stack）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.267 `vllm_glm52_fp8_prefix_cache_reuse_empty_content_incoherent_reasoning`
+
+`infra_off`（GLM-5.2-FP8 TP8 + fp8_e4m3 KV + prefix caching：同一 ~43k-token 请求重复发送，前 N 次（冷 prefill）正确，**命中 prefix cache 后返回 `content: null` + 无条理多语 reasoning + `finish_reason:"stop"`**、无 traceback；给唯一前缀强制冷 prefill 则 0/50 失败——触发面是前缀缓存复用而非长度/解析/权重/MTP） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：fp8 KV + prefix reuse 路径的静默损坏（根因未定位；报告含可复现脚本与 0/50 对照）。
+- **来源**：vLLM #60494（2026-10-07 open）。https://github.com/vllm-project/vllm/issues/60494
+- **行为效应**：无 crash——缓存命中请求静默返回空正文+乱语 reasoning，HTTP 200。
+- **触发面**：vLLM + GLM-5.2-FP8 + fp8 KV cache + prefix caching + 重复长 prompt（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.268 `vllm_dsv4_flash_prefix_cache_reuse_tool_call_format_failures_replica_local`
+
+`infra_off`（DeepSeek-V4-Flash v0.27.1（fp8 KV+prefix caching+MTP）生产 ~3 周观察：tool-call 格式失败**集中于前缀缓存复用请求且 replica 局部**（同请求集两 replica 同刻 0/35 vs 17/19）；命中形状强相关——仅 ~3.6k 共享头命中+40–70k 未命中后缀失败率 63%，>30k 命中+短后缀 23%；`cache_salt` 专用命名空间把失败 44/55→0/37（但实验设计与命中形状/块来源/replica 状态三变量混杂，未隔离机制）。"缓存头块漂移"假设经日志检验**不成立**（重算后 10 min 内读取仍 33/82 失败）。机制未知，报告如实列出观察、混杂与下一步实验） · Cov: `NEW`（前缀缓存复用 × 输出格式的未定位静默失败面子签名） · 触发 `config` · 置信度 `documented`
+
+- **机制**：未知；可见偏差始于 `</think>` 后首 token（内部状态分歧点更早）。
+- **来源**：vLLM #59926（2026-10-04 open，生产数据+混杂变量自述）。https://github.com/vllm-project/vllm/issues/59926
+- **行为效应**：无 crash——命中缓存的 agentic 请求以非 DSML 语法输出 tool call 导致丢失（0.01%–52% 分窗口）。
+- **触发面**：vLLM v0.27.1 + DSV4-Flash + fp8 KV + prefix caching + MTP + thinking（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.269 `vllm_dsv4_pro_long_prefill_threshold_small_chunks_confident_wrong_long_context`
+
+`infra_off`（DeepSeek-V4-Pro 0813（6×B300、1M ctx、fp8 KV、mxfp4 indexer、deep_select）+ `--long-prefill-token-threshold=256`：>~380k token 长 prompt **自信地答错**（flat 文档 5 问检索：404k 起部分错、1,033k 全错——同一 code 复用于五个仓库名/名字回显为 code；992k prose 部分垃圾输出）；**去掉该 flag（其余全同）至 1.03M 全对**、无任何报错，冷 prefill 还更快（992k：150–170 s vs 245 s）。同代 V4.1-Flash 在 0.31.0 带 flag 通过（注意 #57951 后 lone request 跳过 cap，单请求测试不锻炼该路径）。疑点 DeepSeek-V4 compressor/sparse-attention 状态跨小 prefill chunk 边界（未定位）；top-k 后端与 indexer dtype 排除实验均不改善） · Cov: `NEW`（小 chunk 长上下文配置静默损坏子签名） · 触发 `config` · 置信度 `documented`
+
+- **机制**：未定位；单 flag A/B 因果闭合（flag 是唯一变量）。
+- **来源**：vLLM #60905（2026-10-09 open，flat+prose 双测试矩阵与排除实验）。https://github.com/vllm-project/vllm/issues/60905
+- **行为效应**：无 crash——长上下文检索精度随长度静默坍塌，输出流畅自信。
+- **触发面**：vLLM 0.30.0 + DSV4-Pro + --long-prefill-token-threshold=256 + >380k prompt（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.270 `sglang_gpu_jpeg_decode_overwrites_memory_queued_gpu_work_still_reads`
+
+`infra_off`（SGLang GPU JPEG 解码可**覆写仍在被排队 GPU 工作读取的内存**——解码与在途消费间的写读竞态，多模态图像数据静默损坏） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：解码输出 buffer 生命周期与异步消费 kernel 未同步（见 issue）。
+- **来源**：SGLang #43075（2026-10-08 open）。https://github.com/sgl-project/sglang/issues/43075
+- **行为效应**：无 crash——多模态输入图像静默损坏。
+- **触发面**：SGLang 多模态 + GPU JPEG decode（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.271 `vllm_cutlass_fp8_moe_padding_routes_minus1_wrong_expert_first_token_offset`
+
+`infra_off`（vLLM CUTLASS fp8 MoE（CutlassExpertsFp8）：批内含 padding token 时 `VLLM_MOE_SKIP_PADDING=1`（默认）使 router 写 `topk_ids=-1`，CUTLASS 路径据此算错 per-expert offset——**真实 token 被送进错误专家的权重**。128 专家 top-4 fp8 模型单请求服务首 token 即可坍塌（'Yes' p=0.90 → '\n' p=0.997）且输出漂移；批量请求、triton/marlin 后端、enforce-eager、关 CUDA graph、`VLLM_MOE_SKIP_PADDING=0` 均正确（0.29.0/0.30.0/main 47de9d4 同错）。免权重秒级复现：`moe_permute` 对含 −1 的 topk_ids 算出错误 `expert_first_token_offset`） · Cov: `var:vllm_dspark_graph_padded_rows_flow_into_dsv4_topk_routing_ima`（6.233 padding 行污染路由族——本条在 **−1 哨兵进入 offset 记账**维度且为静默错值而非 IMA） · 触发 `config` · 置信度 `verified`
+
+- **机制**：CUDA-graph padding 行的 −1 哨兵未被 CUTLASS 分组逻辑排除，专家边界错位。
+- **来源**：vLLM #59686（2026-10-01 open，最小复现+多后端对照+用户可见效应）。https://github.com/vllm-project/vllm/issues/59686
+- **行为效应**：无 crash——小批（单请求）服务 MoE 输出静默错值；56/224 专家模型较低频同中。
+- **触发面**：vLLM + CUTLASS fp8 MoE + CUDA graph padding（默认）（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.272 `vllm_recoverssm_align_exact_block_boundary_commits_state_to_unwritten_block`
+
+`infra_off`（RecoverSSM align 模式把最终提交 state 写入 `floor(x/B)` 列，而 align 路径其余部分用 `ceil(x/B)−1`——verify 步恰在块边界全接受时，state 提交到本请求**从未写过的块**，下一步从该块读 recurrent/conv state 为垃圾或他人 state（新 Mamba 块不清零 #56524）。fork 上实测（GLM-5.3 KDA 走 Kimi-K3 RecoverSSM、4 并发 28–34k prompt、4000 输出）：未打补丁+spec 10–11/16 输出损坏（症状：若干 token 后 mid-word 丢上下文再单 token 重复到 max_tokens）；`ceil−1` 两行修复后 0/16。两处站点：`recoverssm.py:287` 与 `gpu/model_states/recoverssm.py:97`） · Cov: `var:vllm_dflash2_prefix_cache_hit_permanent_acceptance_zero_hybrid_mamba_state_boundary_misregistration`（6.259 hybrid mamba state 块边界错配族——本条在 **floor vs ceil−1 恰边界提交**维度且直接产生垃圾输出） · 触发 `partial` · 置信度 `verified`
+
+- **机制**：两套列号约定仅在 x 为 B 整倍数时分歧，恰是全接受 verify 步。
+- **来源**：vLLM #59933（2026-10-04 open，边界分析源自 Morrowmake/glm53-flash-cmp170hx-recipe#7，含修复 diff 与 16 输出对照）。https://github.com/vllm-project/vllm/issues/59933
+- **行为效应**：无 crash——spec decode 下块边界处生成静默退化为重复 token 流。
+- **触发面**：vLLM + RecoverSSM（Kimi-K3/GLM-5.3 KDA）+ align + spec（partial）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 6.273 `trtllm_pytorch_fp8_cross_kv_pool_overrun_ima_or_silent_wrong_tokens`
+
+`infra_off`（TRT-LLM PyTorch backend encoder-decoder + `KvCacheConfig(dtype="fp8")`：cross-attention KV 池容量按 fp8 尺寸计算但访问按 bf16 步长越池——**池 < 2× 在飞需求时进程 IMA 崩溃或（越界访问落入其他映射内存时）静默返回错误 token 无任何错误**；同池尺寸默认 dtype 正常。L4 + flan-t5-base e2e：483-token prompt + 24 块池即崩、32 块池可解但错 token 面仍在；1.3.0rc29 与 1.4.0rc0.dev 均复现） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：cross-KV 池 sizing 与 fp8 dtype 的字节步长不一致（block 数按需求算出但每块访问宽度按 bf16）。
+- **来源**：TensorRT-LLM #19861（2026-10-05 open，池尺寸日志行 + 双镜像双版本复现）。https://github.com/NVIDIA/TensorRT-LLM/issues/19861
+- **行为效应**：池余量充足时掩盖、不足时 IMA 或静默错 token——同一配置随负载在崩溃与静默损坏间漂移。
+- **触发面**：TRT-LLM PyTorch backend + encoder-decoder + fp8 KV cache（config）
+- **发现来源**：2026-10-12 每日扫描（10-09 未覆盖清单补录）。
+
+### 6.274 `vllm_qwen38_27b_nvfp4_dflash2_prefix_cache_hit_single_token_loop`
+
+`infra_off`（Qwen3.8-27B NVFP4 + DFlash2 drafter + prefix caching：第三次请求起（prompt 从缓存块续起）模型输出**单 token（`duct`）无限重复**、drafter 接受恒 0（acceptance length 1.00）；前两次（冷 prefill）正常；v0.29.0 同五请求全对、v0.30.0/0.31.0 引入。隔离表：PR #57128（MambaManager 命中修复）不救、gdn-prefill-backend triton 不救、linear-backend cutlass/marlin 不救、`disable_eagle_block_drop=true` 更糟（冷请求即坏）） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：0.30.0 起 prefix 命中 × spec-decode 状态恢复路径的静默损坏（具体内核未定位；报告者排除矩阵完整）。
+- **来源**：vLLM #60174（2026-10-06 open，29 评论、31k–67k token 真实 agent 会话重放 + 五因子隔离表）。https://github.com/vllm-project/vllm/issues/60174
+- **行为效应**：无 crash——长会话前缀命中后输出完全退化、spec 加速归零。
+- **触发面**：vLLM ≥0.30.0 + Qwen3.8-27B NVFP4 + DFlash2 + prefix caching（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.275 `sglang_concurrent_start_zmq_rebind_port_plus_42_routes_requests_to_other_instance`
+
+`infra_off`（SGLang 并发启动两实例且 scheduler port 冲突：worker 侧 `get_zmq_socket(bind=True)` 绑定失败后**静默重试 port+42**（仅日志一行），客户端/HTTP/metrics/disagg orchestrator 仍连配置端口——**请求被送达并执行于先占端口的另一实例**：输出写入错误实例的 output file、或对端已退出时本实例永久等待。`settle_port` 只在 parse 时刻查空闲，窗口内被占即触发；默认 `5555+randint(0,100)` 下多任务同启 ~3/40 命中） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`
+
+- **机制**：bind 重试策略把"端口被占"降级为"换端口继续"，而所有对端连接按静态配置端口发起——端点身份与进程身份解耦。
+- **来源**：SGLang #43731（2026-10-11 open，双实例日志对照 + 3/40 并发启动统计）。https://github.com/sgl-project/sglang/issues/43731
+- **行为效应**：无 crash——跨实例请求串答（拿到别的模型/会话的结果）或无限挂起。
+- **触发面**：SGLang + 并发多实例启动 + scheduler/master 端口冲突（partial）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.276 `sglang_hybrid_gdn_dflash_grammar_traffic_batchwide_token0_loop_collapse`
+
+`infra_off`（hybrid GDN + `--speculative-algorithm DFLASH` + grammar 约束流量（tools+tool_choice required）在场时：**整批运行中请求（含无 grammar 的纯文本请求）一步坍塌为 token id 0 无限重复**直到 max_tokens、spec verify 继续执行但 accept 率三步内 0.48→0.00、无错误无 crash；新准入请求健康，触发条件离开批次后自愈。两次生产事故：v0.5.20 一实例 ~12% 流量乱语 5 天、v0.5.19 一实例 1.5h 自愈（非 0.5.20 回归）；半可靠复现 ~30%/轮） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：grammar bitmask × spec-decode 批状态交互污染整批 logits 路径（根因未定位；生产 trace + 复现轮次齐备）。
+- **来源**：SGLang #43514（2026-10-10 open，两次生产事故 + accept 率三步 trace）。https://github.com/sgl-project/sglang/issues/43514
+- **行为效应**：无 crash——整批请求静默输出垃圾 token 流、spec 加速归零，持续到批次换代。
+- **触发面**：SGLang + hybrid GDN + DFLASH + grammar 约束流量（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.277 `sglang_nvfp4_hicache_host_pool_element_vs_byte_geometry_draft_kv_garbage`
+
+`infra_off`（NVFP4 KV + `--enable-hierarchical-cache --hicache-io-backend kernel --hicache-write-policy write_through`：host pool 行几何按 device **元素**数而非字节数计算（NVFP4 device 行 packed 2 元素/字节）——大常驻前缀逐出到 L2 host 池再回载后 **spec decode 静默永久失效**：`spec_accept_length` 钉 1.00（健康 2.0–3.0）、target 输出字节精确正确只有恢复的 draft KV 是垃圾、吞吐反降 25%（draft 税零收益）、`/flush_cache` 不恢复、仅重启可愈。生产 3h 常规流量触发（137k-token 请求推池至 0.86）+ cycle 0 确定性 3/3 复现；on-engine 探针 + 离线字节精确合成定罪） · Cov: `NEW` · 触发 `config` · 置信度 `verified`
+
+- **机制**：`pool_host/mha.py` 以 device 元素计数推 host 行数，无 FP4-aware host pool；回载块几何错位使 draft KV 全坏而 target 校验掩盖。
+- **来源**：SGLang #43239（2026-10-08 open，Qwen3.8-27B NVFP4 TP2 + NEXTN 确定性复现）。https://github.com/sgl-project/sglang/issues/43239
+- **行为效应**：无 crash——MTP 增益静默归零且负收益，输出正确性不受影响（纯性能面但属缓存几何静默损坏）。
+- **触发面**：SGLang + NVFP4 KV + hierarchical cache + kernel io-backend + spec decoding（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.278 `flashinfer_fmha_v2_prefill_leaves_counters_shared_workspace_poisons_xqa_decode`
+
+`infra_off`（SM90/SM120 `trtllm_fmha_v2_prefill` 把 tile_id_counter（ctas_per_head>1 时含 barrier/lock counters）放在 `workspace_buffer` 开头，launch 前 memset 清零但内核原子递增后**留下非零值**；`trtllm_batch_decode_with_kv_cache`（XQA）把同一 workspace 前 8 MB 当"必须零初始化"的 semaphore 区——**同引擎共享 workspace 时每次 prefill 后的首个 decode 静默产生错误注意力输出**。SGLang 已 workaround（给 fmha_v2 传 `workspace[8MB:]` 切片）；vLLM 侧共享 workspace 的 trtllm 路径同暴露） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`
+
+- **机制**：两个内核族对同一缓冲区的初始化契约相反（一个"离开时非零"、一个"进入时必须零"），共享 workspace 的服务引擎默认组合即触发。
+- **来源**：flashinfer #6151（2026-10-06 open，`fmha_v2_run.cu`/`decode.py` 逐行定位 + H200 独立 repro）。https://github.com/flashinfer-ai/flashinfer/issues/6151
+- **行为效应**：无 crash——prefill 后首个 decode 注意力输出静默错误。
+- **触发面**：flashinfer trtllm fmha_v2 prefill + XQA decode 共享 workspace（SM90/SM120，partial）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.279 `vllm_sm120_apertus_70b_fp8_v0_25_1_output_degeneration_rollback_recovers`
+
+`infra_off`（SM120（RTX PRO 6000 Blackwell）+ Apertus-70B FP8-dynamic（W8A8 compressed-tensors）+ vLLM 0.25.1：**temp=0 非流式直接请求即不连贯重复文本直到 length 上限**（HTTP 200、FINISH_REASON=length）；同 checkpoint 同硬件 v0.22.1 完全正常（含应用层算术题）。栈：CutlassFP8ScaledMM + FLASHINFER 注意力 + FlashInfer top-p/top-k 采样 + Inductor 编译 + FULL_AND_PIECEWISE graph——版本回归强证据、具体内核未定位） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：0.22.1→0.25.1 间引入的静默输出退化（未定位；回滚二分证据完整）。
+- **来源**：vLLM #61100（2026-10-11 open，双镜像 sha 对照 + 最小复现请求）。https://github.com/vllm-project/vllm/issues/61100
+- **行为效应**：无 crash——全量生成质量静默退化。
+- **触发面**：vLLM 0.25.1 + SM120 + Apertus-70B FP8（hw_specific）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.280 `sglang_gdn_cutedsl_decode_state_pool_transposed_k_equals_v_masks`
+
+`infra_off`（GDN 模型 `--linear-attn-decode-backend cutedsl`：#20283 起 GDN state pool 与 Triton 内核统一为 `[N, HV, V, K]` 布局，CuTe DSL decode 内核仍按 `[N, HV, K, V]` 读写——**K==V（Qwen3.5 为 128）无形状错误，每步读转置 state → 全量垃圾输出**（"What is the capital of France?" → `The. be Ha人 II`）；默认 Triton 后端正确；两内核对照测试 `test_cutedsl_gdn_precision` 自 #20436 起被 skip。解释 #22472（B200 v0.5.10 同症状 closed for inactivity）） · Cov: `NEW` · 触发 `config` · 置信度 `verified`
+
+- **机制**：布局约定变更未同步到 cutedsl 内核；方阵维度使形状校验天然失效。
+- **来源**：SGLang #43331（2026-10-09 closed，Qwen3.5-4B 双后端对照复现）。https://github.com/sgl-project/sglang/issues/43331
+- **行为效应**：无 crash——cutedsl 后端全量垃圾；closed 不证明修复已发布。
+- **触发面**：SGLang + GDN 模型 + cutedsl decode 后端（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.281 `vllm_piecewise_cudagraph_split_moe_forward_stale_replay_address_silent_garbage`
+
+`infra_off`（vLLM `cudagraph_mode: PIECEWISE` 下把 `vllm::moe_forward`/`moe_forward_shared` 加入 `compilation_config.splitting_ops`：捕获分片的输出张量（MoE 输出）在重放时地址已变，图仍重放到**陈旧地址**——首个 token 正确（prefill 不重放），随后 decode 退化为 `Par Par Par …` 重复垃圾；无 DEBUG 时完全静默，`VLLM_LOGGING_LEVEL=DEBUG` 下 `CUDAGraphWrapper` 的输入地址断言才触发。对照实验闭合：stock PIECEWISE 10/10 匹配 eager、+moe_forward split 0/10、同 split 但 `cudagraph_capture_sizes=[1]`（永不重放）10/10、offload 与否无关） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：PIECEWISE CUDA graph 按捕获时输入地址重放；FX 级 split 引入的中间张量（MoE 输出）由分配器复用，重放读到/写到陈旧地址。与 6.210（TMEM 时序）同为 CUDA graph 契约族，但本条在**split 中间张量地址稳定性**维度。
+- **来源**：vLLM #61150（2026-10-12 open，granite-3.0-1b-a400m 四臂对照 + DEBUG 断言地址证据；0.30.0 sm_86）。https://github.com/vllm-project/vllm/issues/61150
+- **行为效应**：无 crash——非 DEBUG 日志级别下引擎静默服务垃圾；首 token 正确使 spot-check 更难发现。
+- **触发面**：vLLM 0.30 + PIECEWISE cudagraph + splitting_ops 含 moe_forward + MoE 模型（config，非默认 split 集但文档可行组合）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.282 `vllm_nixl_lease_expiry_releases_blocks_under_inflight_read_cross_request_kv_substitution`
+
+`infra_off`（vLLM NixlConnector pull 流：producer 在 `kv_lease_duration` 到期时**无条件**释放请求 KV 块——不管 consumer 的远端 READ 是否在途/即将发起；consumer 侧块描述符无内容/身份绑定，读到的字节可能已是**复用后的其他请求内容**并直接送入模型。确定性复现：SIGSTOP 拖住 decode 33.6s 超过默认 30s lease → producer 释放并复用槽位 → 恢复后 decode 输出延续**他请求**内容，5/5（lease=1 时 5/5）；producer 有事后告警日志但字节已被消费，部分运行连告警都不触发；NIXL 兼容检查只比 layout hash，不校验内容身份） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：lease 过期策略以"到期时间"而非"读完成"为释放条件；无内容校验的块描述符使释放-复用-读取竞态静默串答。与 6.265（P2P 超时解钉）同族不同站：本条在 1P1D NIXL lease 生命周期。
+- **来源**：vLLM #61229（2026-10-12 open，10 次试验 + 三组干净对照；v0.30.0 Qwen2.5-0.5B 1P1D UCX）。https://github.com/vllm-project/vllm/issues/61229
+- **行为效应**：无 crash、无错误——decode 输出延续其他请求的内容（跨请求串答）；GC/长步/调度停顿即可自然触发。
+- **触发面**：vLLM NixlConnector 1P1D + kv_lease_duration 过期 + decode 停顿（GC/调度）超过 lease（other_stack；默认 30s）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.283 `vllm_pd_shared_prefix_autocaching_cross_request_contamination`
+
+`infra_off`（vLLM NIXL PD 分离 + 默认 prefix caching：不同无关会话共享长公共前缀（如同一 Claude Code 系统提示）时，响应**间歇性包含其他请求的内容**（跨请求上下文串扰）；HTTP 200、服务端零告警。可脚本复现：48 顺序请求 46 个返回他人 canary 代码，并发 128 时 122/128；prefill 与全部 decode 节点 `--no-enable-prefix-caching` 后串扰消失。注：报告环境 PR #57662（#57661 修复）未合并） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：共享前缀 KV 复用路径在 PD 分离拓扑下把 A 请求的会话内容泄漏进 B 请求（具体机制未定位——#57662 是否覆盖待查）；与 6.275（ZMQ 重绑串答）同为跨请求内容泄漏族，本条在 prefix-cache×PD 维度。
+- **来源**：vLLM #61160（2026-10-12 open，1P2D/2P1D 拓扑 + canary 复现器 + 关闭对照；DeepSeek-V4.1-Flash DSpark H100×8 TP8 v0.31.0 main@db9527a）。https://github.com/vllm-project/vllm/issues/61160
+- **行为效应**：无 crash——**不同用户的会话互相串答**（模型"记得"他人文件名/指令），生产级隐私与正确性事故面；无任何服务端信号。
+- **触发面**：vLLM NIXL PD 分离 + 默认 prefix caching + 长共享前缀流量（other_stack；关闭 prefix caching 即消失）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 6.284 `vllm_mooncake_store_connector_drops_secondary_kv_views_corrupted_loadback`
+
+`infra_off`（vLLM MooncakeStoreConnector store worker 把 list 值层缓存 reduce 成 `cache[0]`：观测配置中层提供同存储不同 offset 的 `[K, V]` 视图——物理 buffer 注册覆盖全存储但**传输 layout 丢掉 V**；save/lookup/load 全部成功无错，fresh consumer 消费后生成**损坏输出**。tuple 值则直接断言失败；单张量缓存不走该分支） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：`cache[0]` 折叠多视图张量；与 6.258/6.266（offload 只搬部分视图/层）同族——"多视图 KV 的传输侧只取第一个视图"。建议修复保留全部 list/tuple 视图，干净池验证恢复正确输出。
+- **来源**：vLLM #61208（2026-10-12 open，Qwen3.8-27B TP2 LBNHC Ascend 910B2，15,360 token 加载成功后输出损坏）。https://github.com/vllm-project/vllm/issues/61208
+- **行为效应**：无 crash——外部缓存 load 全链路成功后静默生成损坏内容（V 缺失）。
+- **触发面**：vLLM + MooncakeStoreConnector + list 值多张量层缓存（Ascend 观测，机制在通用路径）（other_stack）
+- **发现来源**：2026-10-12 每日扫描。
 
 ## 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
 
@@ -7926,9 +8481,120 @@
 
 - **机制**：override 只看 `quant_method` 字符串；修复为 SM100 + `moe_a2a_backend=none` 时按 `is_fp4_experts` 走 `flashinfer_mxfp4`，保留普通 FP8 默认/显式选择/a2a 配置的现有解析。报告者附双架构回归测试（未打补丁失败、打补丁通过）；SM100 启动/精度/吞吐验证 pending。
 - **来源**：SGLang #41569（2026-09-28 open，含 GPU 启动失败日志、免 GPU 选择层最小复现脚本、config.json 证据链与 #40448/#40722 谱系）。https://github.com/sgl-project/sglang/issues/41569
-- **行为效应**：主形态 fail-loud（启动 kernel dtype check）——非静默错值；收录价值在**结构模式**：同一 checkpoint 内 dense/routed 量化格式异构、顶层标签（fp8）窄于实际载荷（MXFP4 experts），自动选择读标签即错——与 12.41（前缀守卫按原始名绕过）同属"按名字而非按实际结构分派"域，静默形态风险在选择层被下游 check 拦住时消除、check 后移即静默。
+- **行为效应**：主形态 fail-loud（启动 kernel dtype check）——非静默错值；收录价值在**结构模式**：同一 checkpoint 内 dense/routed 量化格式异构、顶层标签（fp8）窄于实际载荷（MXFP4 experts），自动选择读标签即错——与 12.41（前缀守卫按原始名绕过）同属"按名字而非按实际结构分派"域，静默形态风险在选择层被下游 check 拦住时消除、check 后移即静默。 回访（2026-10-09）：issue #41569 已 closed/completed（10-01）、修复 PR #41668 同刻 merged（janbernloehr 09-30 开出）——机制记录不变。
 - **触发面**：SGLang + MiMo-V2 混合量化 checkpoint（fp8 标签 + mxfp4 experts）+ SM100 + moe_runner_backend=auto（hw_specific；显式 runner 选择免疫）
 - **发现来源**：2026-09-28 每日扫描。
+
+
+### 7.101 `sglang_nvfp4_kv_reuses_checkpoint_fp8_calibrated_scale_as_global_scale`
+
+`infra_off`（SGLang `--kv-cache-dtype nvfp4` 服务 `kv_cache_scheme: num_bits 8` 的 checkpoint（如 unsloth NVFP4 quant 携带 fp8 校准 `k/v_scale`）：32 个 `[1]` bf16 标量被原样加载并当作 NVFP4 **global scale** 消费（fp8 几何 amax/448 vs NVFP4 amax/6，~75× 失配→每条存储 K/V 系统性错 scale）。**单变量证明**：同机同日同 prompt，仅删这 64 字节（其余 bit-identical 22.5 GB checkpoint）长上下文 needle 1/4→4/4（d500 0/4→全对）；全程无一行日志提及 scale。2×RTX 5060 Ti TP2、0.5.21 wheel，确定性复现（跨 boot 逐字节）；与 #39942（fp8 KV scale 被丢——反向失败同盲区）互补） · Cov: `var:vllm_compressed_tensors_kv_scale_dropped`（7.52 KV scale 溯源缺失族——本条在 **scale 被错用而非丢弃**维度，跨量化几何错配） · 触发 `config` · 置信度 `verified`
+
+- **机制**：`maybe_remap_kv_scale_name()` 无条件挂载 scale；fp4 路径无 checkpoint KV scheme 与运行时 dtype 的一致性校验。
+- **来源**：SGLang #42369（2026-10-03 open，64 字节单变量 A/B+机制源码走读（标注推断））。https://github.com/sgl-project/sglang/issues/42369
+- **行为效应**：无 crash——短 prompt/工具/视觉正常，长上下文检索塌缩（答案退化为问题回声），boot 日志干净。
+- **触发面**：SGLang + nvfp4 KV + 携带 fp8 校准 scale 的 checkpoint（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 7.102 `vllm_marlin_int8_activation_negative_group_scales_read_as_uint16`
+
+`infra_off`（Marlin **int8-activation** 路径（`VLLM_MARLIN_INPUT_DTYPE=int8`）：`marlin_act_int8_process_scales` 用 `s.max()`（非 `abs().max()`）归一化并落 `int16`，CUDA 内核以 `reinterpret_cast<uint16_t*>` 读——**任一负 group scale 被读成大正数**（4096 组 50.8% 负：kernel 视图 [1,65535] vs 真值 [−4086,4096]，例 −0.0225→+1.3，倍数 min 15/median 95.8/max 65535；反量化权重误差达典型幅度的 170×）。对称 int4 导出（AutoRound 对称模式约半数组为负）整体半数组垃圾——仍加载、仍运行、仍"benchmark 正常"。CPU 数值演示+双侧源码定位（marlin_utils.py:544 / marlin_template.h:1129），精确修法（abs().max()+有符号读）误差 1.91e-05） · Cov: `var:sglang_gptq_marlin_moe_bf16_scale_dtype_and_tp_descact_w2_sharding_nan`（7.62 Marlin scale 位型族——本条在 **激活 scale 的符号位重解释**维度） · 触发 `config` · 置信度 `verified`
+
+- **机制**：int16 位型经 uint16 读出后符号位变幅值；归一化未取绝对值使负值必然存在。
+- **来源**：vLLM #59403（2026-09-30 open，CPU 数值闭合演示+源码行号+三修法对照）。https://github.com/vllm-project/vllm/issues/59403
+- **行为效应**：无 crash——约半数 group 的激活缩放静默错百倍，输出质量静默塌缩而服务面全绿。
+- **触发面**：vLLM + VLLM_MARLIN_INPUT_DTYPE=int8 + num_groups>1 + 含负 scale checkpoint（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 7.103 `vllm_exllama_rdna3_w4a16_group_size_not_multiple_32_silent_wrong_output`
+
+`infra_off`（Exllama GPTQ GEMM/reconstruct（4/8-bit）、RDNA3 W4A16 dense 与 fused-MoE 内核按 32 步进走 K，`group_size % 32 != 0` 时量化组边界切换错位——**静默错值**（CUDA sm_120 RTX 5060 与 ROCm gfx1100 双平台复现）。诚实范围：作者不知任何 group_size=16 的公开 INT4 GPTQ/compressed-tensors checkpoint（常见 32/64/128），属防御性正确性缺口：配置今天被接受且静默错，而非已知模型损坏） · Cov: `var:vllm_wna16_moe_partial_group_size_repeat_interleave_shape_mismatch_704_128`（12.45 非整除 group-size 族——本条在 **kernel 内 K 步进假设**维度且为静默错值而非加载失败） · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：K 每 32 元素切换 quant scale，非 32 倍数组在块尾读错组。
+- **来源**：vLLM #60608（2026-10-08 open，#59783 讨论续篇，双平台复现+范围自述）。https://github.com/vllm-project/vllm/issues/60608
+- **行为效应**：无 crash——非 32 倍数 group_size 的 W4A16 推理静默垃圾。
+- **触发面**：vLLM Exllama/RDNA3 W4A16 kernel + group_size%32≠0（other_stack）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 7.104 `trtllm_calculate_nvfp4_global_scale_wrong_above_8192_nonmultiple_hidden`
+
+`infra_off`（`torch.ops.trtllm.calculate_nvfp4_global_scale`：hidden >8192 且非 8192 倍数时，CTA 处理多 token 起 per-token scale 错——`getMaxAbs`（内含 `blockReduceMaxV2` 的 `__syncthreads()`）被放进 per-thread 循环，线程发散下归约失效。[512,12288] 309/512 token scale 错（例 28.0 应 42.0）、[256,28672] 101–114/256 错；[512,8192]/[1024,4096] 0 错（各 ~91 万次调用全量 fp64 参照核验）。launcher 只检查 `n%256==0`；内核 1.2.1 wheel 与 main `b031dbe` 一致） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：块归约原语含栅障，置于发散循环内 UB。
+- **来源**：TensorRT-LLM #19954（2026-10-08 open，A100 全量对照 harness）。https://github.com/NVIDIA/TensorRT-LLM/issues/19954
+- **行为效应**：无 crash——宽隐藏维 NVFP4 量化 per-token scale 静默错→量化误差增大。
+- **触发面**：TRT-LLM + hidden>8192 非 8192 倍数 + 该 op（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 7.105 `flashinfer_cute_dsl_mxfp8_e8m0_scale_byte_zero_zeros_nonzero_blocks`
+
+`infra_off`（`flashinfer.mxfp8_quantize(backend="cute-dsl")`：E8M0 scale 字节 0 表示 **2^−127**（非零），量化应用有限逆 scale 2^127；CuTe-DSL inverse-scale helper 对该编码显式返回零——**非零且精确可表示的 BF16 值整块变零**。GB200、flashinfer 0.6.18、最小复现全为正常 BF16 值（排除下流因素）；main `4634068` 同款零覆写未跑） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：scale 编码 0 被当零 scale 而非最小指数。
+- **来源**：flashinfer #5996（2026-10-03 open，最小复现+编码语义分析）。https://github.com/flashinfer-ai/flashinfer/issues/5996
+- **行为效应**：无 crash——微小幅度激活/权重块静默归零。
+- **触发面**：flashinfer MXFP8 CuTe-DSL 后端 + 触发 scale 字节 0 的块（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 7.106 `sglang_compressed_tensors_w4a16_int4_serving_quality_degraded_vs_vllm`
+
+`infra_off`（SGLang 0.5.19–0.5.21 服务 Qwen3.8-27B compressed-tensors W4A16（int4 对称 group128）**质量劣化**：wikitext PPL 9.98 vs 同 checkpoint vLLM 6.05——跨引擎同权重对照把缺陷钉在 SGLang 侧反量化/内核（未逐层定位）） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：未定位（W4A16 dequant/内核路径，PPL 级证据）。
+- **来源**：SGLang #42917（2026-10-07 open，双引擎 PPL 对照）。https://github.com/sgl-project/sglang/issues/42917
+- **行为效应**：无 crash——量化服务质量静默劣化（PPL +65%），输出仍流畅。
+- **触发面**：SGLang 0.5.19–0.5.21 + compressed-tensors W4A16 int4（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 7.107 `vllm_grouped_topk_multigroup_kernel_scores_only_first_8_groups`
+
+`infra_off`（vLLM `grouped_topk` 多组路径八 warp 内核每 warp 评分一组：**>8 组时第 9 组起从不被评分**、返回错误专家（144 专家 9 组：期望 [136..143] 实得 [120..127]；9/16/32 组各 20/20 失败、4/8 组正确；`smemGroupScores` 8 槽且 warp0 对 `laneIdx<numGroup` 越界读）。biased MoE router 默认把 ≤32 组都送到该算子；报告者不知 >8 组的 released checkpoint。修复（多组路径限 8 组容量、更大组数走 fallback）源码构建 100/100 全对） · Cov: `NEW` · 触发 `config` · 置信度 `verified`
+
+- **机制**：warp 数=组数假设未随组数上限（32）扩展。
+- **来源**：vLLM #60752（2026-10-09 open，A100 复现+修复验证）。https://github.com/vllm-project/vllm/issues/60752
+- **行为效应**：无 crash——>8 组 MoE 路由静默选错专家（当前无已知发布 checkpoint 触发）。
+- **触发面**：vLLM grouped_topk + n_group>8（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 7.108 `flashinfer_b12x_w4a16_mxfp4_e8m0_scale_bias_bf16_subnormal_weights`
+
+`infra_off`（b12x W4A16 实验路径 BF16 激活 × MXFP4（`fp4_e8m0_k32`）：FP4 unpack（`v*2^-126`）× E8M0 解码（`2^(e-120)`）× MMA（`mul.bf16x2`）使每个非零权重恒乘 `2^-119`、epilogue 以 `2^119` 全局补偿——**E8M0 scale 字节 <121 时 MMA 权重落 BF16 subnormal**（乘积入 FP32-subnormal 失精度或消失）、**<114 时 FP4 0.5 被刷为零**（110 时除 ±6 外全部归零）；真实 MXFP4 checkpoint 的 scale 字节分布 ~100–130 正中陷阱。无 NaN/Inf、聚合 cos 可保持 0.99999——现有测试与精度门不可见。MiMo 等模型受影响；RTX 5080/RTX PRO 6000 SM120 + vLLM 服务路径复现） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：逐步数值表把真实权重映射到 `true_weight * 2^-119`；补偿常数只在 121≤e≤247（中心 ~2^57，无真实 checkpoint 使用）窗口内正确。
+- **来源**：flashinfer #6316（2026-10-11 open，逐步指令级数值表 + 真实 checkpoint 字节分布）。https://github.com/flashinfer-ai/flashinfer/issues/6316
+- **行为效应**：无 crash——低 scale 字节行的专家贡献静默消失（部分或全部），精度门不可见。
+- **触发面**：flashinfer b12x W4A16 + BF16 激活 + MXFP4 + scale 字节 <121（hw_specific）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 7.109 `flashinfer_mm_mxfp8_noncontiguous_out_ignores_strides_overwrites_neighbors`
+
+`infra_off`（`mm_mxfp8` 对非连续 `out`（cutlass/cute-dsl/**auto 默认**后端）：内核按紧凑 row-major `M×N` 从 `out.data_ptr()` 写入、无视真实 stride——**结果 garbage（cos ~0.001）且越界覆写 out 之外内存**（如列切片的相邻列）；无任何布局检查。cudnn 后端正确处理任意 stride；列主序视图 cutlass/cute-dsl 静默错、auto 偶发 ValueError） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`
+
+- **机制**：输出布局契约（假设连续）未校验也未适配；256×1536×1024 复现含邻列覆写证明。
+- **来源**：flashinfer #6210（2026-10-07 open，四后端 × 四布局结果矩阵 + 复现脚本）。https://github.com/flashinfer-ai/flashinfer/issues/6210
+- **行为效应**：无 crash——非连续输出静默垃圾 + 邻接内存损坏。
+- **触发面**：flashinfer mm_mxfp8 + 非连续 out + cutlass/cute-dsl/auto（partial）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 7.110 `flashinfer_trtllm_gen_context_nvfp4_kv_head_dim256_v_scale_missing_interleave`
+
+`infra_off`（trtllm-gen **context（prefill）** 内核 NVFP4 KV cache head_dim=256（如 Qwen3.5）：V scale 的 stage offset `128/16=8` 按 **linear** 应用、漏掉 ×4 token interleave——每 head 上半（dims 128–255）使用 dims 32–159 的 scale，**每次 prefill 注意力输出损坏**（长上下文 MRCR/prompt NLL 显著劣化）。KV 写入（reshape_and_cache_flash）、同 cache 的 decode 内核、head_dim 64/128 均正确；K scale 是 linear 的不受影响。以错误寻址构造的参考与内核输出吻合到 FP8 底噪（err 0.043）——缺陷钉死） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`
+
+- **机制**：V scale 分 stage 寻址的 token interleave 因子缺失（SM100 B200 复现，vLLM nvfp4 KV prefill 路径）。
+- **来源**：flashinfer #6310（2026-10-10 open，逐 token block 寻址分析 + 错误参考模型吻合证明）。https://github.com/flashinfer-ai/flashinfer/issues/6310
+- **行为效应**：无 crash——head_dim=256 NVFP4 KV 的全部 prefill 静默错注意力，长上下文精度劣化。
+- **触发面**：flashinfer trtllm-gen context kernel + NVFP4 KV + head_dim=256 + SM100（hw_specific）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 7.111 `vllm_dflash2_fp8_draft_ignored_layers_global_alias_missing_throughput_collapse`
+
+`infra_off`（vLLM DFlash2 draft 模型的 fp8 `modules_to_not_convert`（45 项，checkpoint-local 层号）需全局层号别名，`_add_global_draft_layer_exclusions` 只补 `exclude_modules`（compressed-tensors）不补 `ignored_layers`（Fp8Config）——**分组卷积 kernel projection 被建成 fp8 线性、bf16 权重载入 fp8 参数**（loader warning 可见）；target 逐 token 校验保输出正确，但 acceptance 4.3→1.03、decode 吞吐 210→46 tok/s（nightly 回归，9 月版正常）。外部给 draft config 加 `layers.{i+start}` 别名 workaround 复测恢复 4.48） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`
+
+- **机制**：量化排除清单的属性名在两套 quant config 间分裂，全局层号别名只覆盖其一。
+- **来源**：vLLM #61003（2026-10-10 open，ROCm gfx1201 复现 + 修复建议 + workaround 红绿对照）。https://github.com/vllm-project/vllm/issues/61003
+- **行为效应**：无 crash——draft 架构被静默改型（conv→linear），spec 增益崩塌；输出由 target 校验保真。
+- **触发面**：vLLM + DFlash2 draft + fp8 量化 draft checkpoint（partial）
+- **发现来源**：2026-10-12 每日扫描。
 
 
 ## §3.5 长上下文（prompt 级标签）
@@ -8902,6 +9568,76 @@
 - **发现来源**：2026-09-26 每日扫描。
 
 
+### 8.95 `flashinfer_fa2_nvfp4_kv_prefill_wrong_head_dim64_sm120_sm121`
+
+`infra_off`（flashinfer FA2 NVFP4 KV prefill 在 head_dim=64 于 SM120/SM121 错值——与 #4748（SM80，closed as not planned 无修复）同症状，本报告在当前版本复现并收窄触发条件） · Cov: `var:vllm_nvfp4_kv_cache_hnd_layout_probe_inverted_silent_corruption`（8.53 NVFP4 KV 族——本条在 **head_dim=64 内核正确性**维度） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：见 issue（head_dim=64 路径内核缺陷，复现于 GB10/SM121 当前 release）。
+- **来源**：flashinfer #5965（2026-10-02 open，含 #4748 关联与触发收窄）。https://github.com/flashinfer-ai/flashinfer/issues/5965
+- **行为效应**：无 crash——NVFP4 KV + head_dim=64 prefill 输出静默错。
+- **触发面**：flashinfer FA2 + NVFP4 KV + head_dim=64 + SM120/121（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 8.96 `ttmetal_update_cache_fp32_corrupts_31_neighbouring_rows_of_updated_position`
+
+`infra_off`（`ttnn.update_cache`/`experimental.paged_update_cache` 对 **FLOAT32 cache** 写 1 个 token 静默劣化同 32 行 tile block 的其余 31 行：行 0–4/6–31 变 bf16 截断（8192 元素 2762 个越更新行变化，例 1.00390625→1.0），块外行保持精确；`fp32_dest_acc_en=True` 时变 TF32 截断；同张量 `fill_cache` 精确） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：update 路径中间精度按输出 tile 格式物化再写回，污染邻行（见 issue 复现脚本）。
+- **来源**：tt-metal #59561（2026-10-06 open，23 位尾数探针复现；#59660 为其重复已 closed）。https://github.com/tenstorrent/tt-metal/issues/59561
+- **行为效应**：无 crash——fp32 KV cache 逐 token 更新静默损失邻行精度。
+- **触发面**：ttnn.update_cache/paged_update_cache + FLOAT32 cache（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 8.97 `ttmetal_fill_cache_multihead_work_straddles_head_boundary_wrong_head_pages`
+
+`infra_off`（interleaved cache + 多 KV head 时 `ttnn.fill_cache` 在 core 分块范围**跨越 head 边界**处把 head h+1 的 token 写进 head h 的页区间、head h+1 的真实页从未写入——静默 KV 损坏、无报错。源码自认假设被违反：`// TODO: For interleaved and kv_heads > 1, we assert…`——**承诺的 assert 不存在**；work 按 head-major 枚举、`split_work_to_cores` 可跨头切分） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：head-major 工作枚举与 core 均分不对齐；writer 只按 Wt 步进不知道头边界。
+- **来源**：tt-metal #58683（2026-10-01 open，含源码行号与 TODO 引证）。https://github.com/tenstorrent/tt-metal/issues/58683
+- **行为效应**：无 crash——多 head prefill 填充静默写错 head 页，检索/注意力基于错位 KV。
+- **触发面**：ttnn.fill_cache + interleaved + kv_heads>1 + 块范围跨头（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 8.98 `vllm_glm53flash_rocm_kpool_always_select_tail_covers_only_incomplete_pool`
+
+`infra_off`（GLM-5.3-Flash kpool sparse indexer（ROCm aiter 路径）：`always_select_tail=True` 只保证 ≤3 token 的**不完整尾池**入选，完整 recent 池与其他候选竞争 top-k、可排在 `index_topk=2048` 截断之外——长 prompt 下尾部上下文检索**非确定失败**（block table 正确）。强制最后 128 池（512 token、25% 预算）入选修复全部失败长度至 256K 满上下文。Strix Halo gfx1151 TP2 AWQ-W4A16 v0.31.0.dev 实测，needle+decoy 探针） · Cov: `var:vllm_glm53flash_rocm_indexer_block_table_granularity_mismatch_kpool_generic_slotmap`（8.83 GLM kpool 选择族——本条在 **选择策略对尾部池无保证**维度而非寻址错误） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：tail 保证语义只覆盖 incomplete pool；complete recent pools 参与全局竞争。
+- **来源**：vLLM #59741（2026-10-02 open，TL;DR+探针+修复验证）。https://github.com/vllm-project/vllm/issues/59741
+- **行为效应**：无 crash——长上下文尾部信息检索非确定丢失，输出流畅但答错。
+- **触发面**：vLLM + GLM-5.3-Flash + ROCm aiter kpool + 长上下文（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 8.99 `vllm_rocm_qwen38_27b_fp8_aiter_accuracy_collapse_high_concurrency`
+
+`infra_off`（Qwen3.8-27B-FP8（TP4 MI355X）：高并发下准确率坍塌，`VLLM_ROCM_USE_AITER=1` 触发、关闭 AITER 恢复正常——并发相关的 ROCm AITER fp8 注意力/GEMM 路径静默精度坍塌（根因未定位，A/B 因果清晰）） · Cov: `var:vllm_dsv4_flash_fp8_mi300x_length_smooth_degradation`（8.54 ROCm FP8 精度退化族——本条在 **并发维度**而非长度维度） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：未定位；AITER on/off 单变量对照。
+- **来源**：vLLM #60160（2026-10-06 open）。https://github.com/vllm-project/vllm/issues/60160
+- **行为效应**：无 crash——高并发服务输出质量静默坍塌。
+- **触发面**：vLLM + ROCm MI355X + FP8 + VLLM_ROCM_USE_AITER=1 + 高并发（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 8.100 `vllm_nvfp4_kv_writer_reader_stride_split_token_major_blnhc_all_context_garbage`
+
+`infra_off`（vLLM nvfp4 KV-cache：C++ 写内核 `reshape_and_cache_nvfp4_dispatch` 以内部 head-major 公式推导 head/token 数据 stride 与 data|scale 分区，而 reader `nvfp4_split_data_scale` 按实际张量 stride × `data_dim/full_dim` 切——QSA 后端布局解析取 `supported_kv_cache_layouts()[0]` = **BLNHC（token-major）**时 writer 的落点与 reader 的读点系统性错位，**每次 K/V 写入（含 block scale）都落在错误字节**且 reader 忠实读回垃圾。**任何上下文长度都乱**（短 prompt 亦然）：算术/常识题全错、253k token NIAH 检索 0/N。静默：无异常、无 crash、无 Xid、无 AER，服务保持在线返回貌似合理的 token 流。**测试盲区机制**：任何自建 `torch.zeros([B,H,N,C])` contiguous/head-major buffer 的 round-trip 测试自洽通过——token-major 页只有真实 allocator 才产生） · Cov: `var:vllm_nvfp4_kv_cache_hnd_layout_probe_inversion`（8.53 nvfp4 KV 布局契约族——同为 writer 布局假设 × 物理布局分歧且单元测试视图窄化致盲，但 8.53 是 HND 物理形状反转子单测逻辑视图混淆、本条是 BLNHC token-major 布局下 writer/reader 公式分裂，触发面从 FlashInfer HND 调用方扩到 QSA 后端默认布局） · 触发 `config` · 置信度 `documented`
+
+- **机制**：writer 内部公式与 reader 实际 stride 缩放只在 head-major 物理页上一致；token-major 布局由引擎布局解析器对 QSA 后端默认选中。写入与读出双向错位使损坏 100% 覆盖。
+- **来源**：vLLM #61225（2026-10-12 open，含根因源码定位 + NIAH 0/N + 静默性清单；v0.30.0 SM120 RTX PRO 5000 ×2 TP2+EP Qwen3.8-Flash-Next-NVFP4）。https://github.com/vllm-project/vllm/issues/61225
+- **行为效应**：无 crash——全上下文长度不连贯输出，确定性常识检查全败，needle 检索 0 命中；服务健康视图完全正常。
+- **触发面**：vLLM 0.30 + `--kv-cache-dtype nvfp4` + QSA 路径模型（Qwen3.8-Flash-Next）+ 默认 BLNHC 布局（config，引擎默认组合）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 8.101 `flashinfer_mla_fp8_q64_persistent_keepsab_random_16head_tile_corruption`
+
+`infra_off`（flashinfer `trtllm_batch_decode_with_kv_cache_mla` sparse MLA：FP8 + **64 query heads** 时选中 `…Q64Kv128PersistentKeepsAbForGen` 内核，批达数百行且 KV 短时**随机 (row, 16-head tile) 单元输出错值 + NaN/错 LSE**；同输入走两个 32-head 调用（选 SwapsAb 内核）、128 heads（选 2CTA KeepsAb）或 BF16 全部正确。选择逻辑 `selectSparseMlaGenerationKernel`（`numHeadsQ > 32` → KeepsMmaAb, tileSizeQ 64）在 main（2026-10-12）未变。命中任何 64 heads/KV head 的 sparse MLA decode/extend：DeepSeek-V3.2/GLM-5 在落到单 rank 64 头的 TP、以及收集 heads 的 context-parallel decode（sglang DSA DCP8 on GLM-5.3）；数千行 extend 批几乎每次 launch 都失败） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：Q64 FP8 persistent KeepsAb trtllm-gen 内核在特定 batch/KV 长度域产生随机 tile 级损坏；报告含内核选择路径、干净对照内核清单与最小 repro 脚本（flashinfer-python 0.7.0.post1 B300 SM103；0.7.1/main 同 artifact 预计同病）。
+- **来源**：flashinfer #6389（2026-10-12 open，64 vs 32×2 vs 128 vs BF16 四臂对照 + 内核名与 DEBUG 日志）。https://github.com/flashinfer-ai/flashinfer/issues/6389
+- **行为效应**：无 crash——随机行/头 tile 输出错值与 NaN LSE，批越大命中率越高；下游不可预测。
+- **触发面**：flashinfer trtllm-gen sparse MLA decode/extend + FP8 Q/KV + num_heads_q==64（含 DCP/TP 组合）（hw_specific：B300 复现，选择逻辑栈级通用）
+- **发现来源**：2026-10-12 每日扫描。
+
 ## §3.4 过度量化
 
 ## 第 9 类 · 位置编码 / RoPE 配置故障
@@ -9176,6 +9912,56 @@
 - **复现方式**：用 `rotary_emb` 的 forward pre-hook 即可；不改权重、不改 forward 签名，退出只需移除 hook。注意必须用**相邻对调**而非常数偏移，否则得到的是 null。
 - **相关条目**：`var:9.25` → **8.4 `cache_position_off_by_one`**（Coverage 写 "VARIANT-OF:bug_perfect_disguise / fault_rope offset"，并给了独立的 cache-indexing id；该条也记录了 family 张力——`bug_perfect_disguise` 被标 model_on，而其 cache-plumbing 兄弟被标 off-manifold）。多条目录条目（**1.3**、**3.1**、**3.4**、**5.1**、**8.3**）在描述自己的签名时直接以 `bug_perfect_disguise` 为参照系。
 
+### 9.31 `vllm_nomic_pooling_default_rope_despite_rotary_scaling_factor_2`
+
+`infra_off`（vLLM native Nomic 后端：checkpoint 携带 `rotary_scaling_factor=2`、`max_trained_positions=2048`，但生效配置为 `rope_type="default"` 无 scaling——4096 token 输入返回有限但**实质性偏离参考实现**的 embeddings（min token cosine 0.9007 vs 显式 Dynamic NTK factor 2 的 0.99999；8192 处 0.984）。未修改基线即复现（#60164 验证中发现），FP32 双侧、token-ID 相等断言前置） · Cov: `var:hf_nested_rope_parameters_layer_types_misparse_pollution`（9.18 transformers v5 rope 参数迁移族——本条在 **scaling_factor 被 default rope_type 忽略**维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：effective rope 配置未把 rotary_scaling_factor 映射为 NTK scaling。
+- **来源**：vLLM #60165（2026-10-06 open，含双参考对照表）。https://github.com/vllm-project/vllm/issues/60165
+- **行为效应**：无 crash——超 trained 长度的 embedding 检索质量静默退化。
+- **触发面**：vLLM native Nomic 后端 + >2048 token 输入（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 9.32 `sglang_get_rope_config_fabricates_rope_theta_10000_per_layer_type_configs`
+
+`infra_off`（SGLang `get_rope_config` 对 transformers-v5 per-layer-type rope 配置**凭空造 `rope_theta=10000`**——与 9.29（vLLM 侧 hf-overrides 通道静默换 base）构成跨栈姊妹：同一"v5 rope 参数结构转换丢/造字段"机制在两栈各自独立发生） · Cov: `var:vllm_hf_overrides_rope_scaling_dict_replaces_rope_parameters_wholesale_drops_rope_theta`（9.29 跨栈姊妹——本条在 SGLang config 解析通道） · 触发 `config` · 置信度 `documented`
+
+- **机制**：per-layer-type 配置解析回退默认 theta 而非继承 checkpoint 值。
+- **来源**：SGLang #43158（2026-10-08 open）。https://github.com/sgl-project/sglang/issues/43158
+- **行为效应**：无 crash——受影响 checkpoint 的 RoPE base 静默改变，长上下文质量退化、输出仍流畅（同 9.29 症状谱）。
+- **触发面**：SGLang + transformers v5 per-layer-type rope 配置模型（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 9.33 `ttmetal_fused_qk_rope_cos_sin_shard_core_set_mismatch_cross_user_rotation`
+
+`infra_off`（tt-metal fused QK rope（`rotary_embedding_llama_fused_qk`）：cos/sin/trans_mat 由 `RotarySetup` 按 `2*batch` 行填充 core 集（P300 上 11 宽），而 Q/K 由 `to_qk_fused_memory_config` 落 8 宽行——**布局分歧处用户被别人的 cos/sin 旋转或读到不含 cos 的 L1**；validate 只查 `trans_mat_num_cores >= q+k` 数量与 batch 维度、从不校验 core 集合一致性） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：两个布局函数对同一 device grid 的行宽假设不同；校验存在但校验的是数量不是集合（延续"校验错对象"主线）。
+- **来源**：tt-metal #59969（2026-10-09 open，models/tt_transformers 路径分析）。https://github.com/tenstorrent/tt-metal/issues/59969
+- **行为效应**：无 crash——分歧 core 上的用户每步用错旋转表，位置编码静默错。
+- **触发面**：tt-metal tt_transformers + fused QK rope + 分片布局（hw_specific）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 9.34 `sglang_mm_token_layout_u32_wrap_2p32_multimodal_prompt_mrope_corruption`
+
+`infra_off`（SGLang Rust 多模态扩展 `sglang-mm` 的 `apply_layout` 把每个媒体项位置报为 u32 `(start, end)`，而展开后的 prompt 全长是 i64——多模态占位符展开后 ≥2^32 token 时 u32 回绕；回绕对 `(start, end)` 流入 Qwen-VL M-RoPE 计算，其边界守卫 `start < st || end >= len` 用**真实 64 位长度**校验**回绕后**的 pair，检查通过，图像 M-RoPE 坐标写进位置表约 2^32 token 之前的位置——位置表静默错位/媒体错位，无 crash 无报错。CPU 侧预处理即可复现（无需 GPU），入口可从 Rust server 多模态 worker 的 qwen_vl 家族到达；下界无钳制：驱动只查媒体项数与字节数，服务端上下文长度检查在其后） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`
+
+- **机制**：`token_layout.rs` 的 `as u32` 截断 × 64 位 input_ids；M-RoPE 守卫对回绕值与真实长度比较恒真。与 1.228（int32 行偏移回绕）同为索引宽度契约族，本条在多模态布局通道且自含源码级 repro。
+- **来源**：SGLang #43857（2026-10-12 open，main@62ff466 自建扩展 2^32+67 token 最小复现 + 源码行定位）。https://github.com/sgl-project/sglang/issues/43857
+- **行为效应**：无 crash——M-RoPE 位置表静默错位、媒体错置、输出错；触发需 ≥4G token 的极端 prompt（容量外但无入口校验拦截）。
+- **触发面**：SGLang Rust 多模态 worker + qwen_vl 家族 + 展开后 ≥2^32 token 请求（other_stack）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 9.35 `sglang_dsv41_flash_multiturn_prefix_hit_pinned_11520_system_prompt_boundary`
+
+`infra_off`（SGLang DeepSeek-V4.1-Flash（dsv4 + DSPARK）：服务数小时后长 agentic 会话每轮命中**恒定 11,520 cached token**（45×256 页 = 恰系统提示长度）、60–80K 会话前缀逐轮全量重 prefill，状态持续不恢复；池占用 0.00（容量驱逐排除）、命中字节稳定在系统提示边界（divergence point 紧随其后）。GLM-5.3-Flash 同机同 relay 同客户端正常多轮命中——客户端侧原因（#35129 的 cch= 变异/任务列表快照）排除；无 hierarchical cache（HiCache 驱逐风暴排除）。机制未定位：为何首 chunk 命中跨轮不增长（早段运行正常、后钉死），DSPARK/FlashMLA 混合 KV 池交互为疑点） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：未知——现象面完整（逐轮命中日志、GLM 对照、池占用、与 #35129 三成因的显式排除），首 chunk 命中不随会话增长的根因待上游。主要影响为性能（每轮重 prefill 60K+ token），任务质量间接退化（无输出损坏证据），按"前缀复用契约失效"收录留观其正确性面。
+- **来源**：SGLang #43738（2026-10-12 open，连续轮次命中日志 + GLM-5.3-Flash 对照 + 三成因排除）。https://github.com/sgl-project/sglang/issues/43738
+- **行为效应**：无 crash——多轮会话前缀复用坍塌到系统提示，TTFT 逐轮恶化；正确性面未见静默错值。
+- **触发面**：SGLang + DeepSeek-V4.1-Flash + DSPARK + 长多轮 agentic 会话（other_stack；GLM 同栈不中）
+- **发现来源**：2026-10-12 每日扫描。
+
 ## §3.8 输入层故障（tokenizer / 模板 / RoPE）
 
 ### 9.26 `fault_rope`
@@ -9216,6 +10002,7 @@
 
 - **机制**：`hf_overrides` 的 setattr 语义 × v5 `rope_scaling`→`rope_parameters` 整体替换转换的交互：dict 替换后仅含 scaling 键；`get_rope` 的 10000 默认值在架构无 per-file 默认时静默生效。报告者附 300 模型 config 级普查（vLLM 自身 ModelConfig 构建）与结果表/脚本链接。
 - **来源**：vLLM #58675（2026-09-25 open，含 NLL/GSM8K 双对照、config.json vs hf_overrides 通道对照、top300 普查表与复现脚本链接；0 评论）。https://github.com/vllm-project/vllm/issues/58675
+  - **2026-10-12 补充来源（transformers 本体根因坐实）**：transformers #49519（2026-10-12 open，CPU-only 最小复现：对已初始化 config 赋值 v4 风格 `rope_scaling` 直接整体替换 `rope_parameters` 丢 `rope_theta`，保存重载回退构造默认 10000；PR #49515 修复使 45 项 RoPE 测试全过——**上游 setter 本体缺陷**，vLLM/SGLang（#41227，GSM8K 161→106/200）皆为该 setter 的下游放大；9.29/9.32 判定不变，根因面上收至 transformers 侧）。https://github.com/huggingface/transformers/issues/49519
 - **行为效应**：无 crash——**模型静默以错误 RoPE base 服务**：长上下文外推能力损坏、输出流畅但答案系统性错误；对 YaRN 类用户（模型卡文档化路由）是"照文档操作即中招"。9.18 之后 transformers v5 RoPE 迁移族在**启动参数注入通道**的首例，且首次给出大规模模型面普查。
 - **触发面**：vLLM（0.30 系列）+ transformers v5 + `--hf-overrides` 传 `rope_scaling` + 模型文件直传 rope_parameters 的架构（config：一行 override 即触发；config.json 内同值无恙）
 - **发现来源**：2026-09-25 每日扫描。
@@ -10185,6 +10972,216 @@
 
 
 
+### 10.93 `vllm_xgrammar_combinator_beside_constraint_keywords_silent_unenforced`
+
+`infra_off`（vLLM 结构化输出 `auto` 后端选择：#59061 的 unsupported-feature 检查只有一条组合子规则（`allOf` 列表 ≥2），**组合子与约束关键字同节点共存**的 schema（xgrammar #858 实际 mishandle 的情形：anyOf/oneOf/单支 allOf 旁有 type/properties/required）仍走 xgrammar——xgrammar 丢邻近关键字、schema 编译为等价 `{}` 的 any-JSON 规则，**约束静默不生效无任何错误**（两个 schema 实测：xgrammar 接受全部 9 个非法实例，guidance（本应 fallback）拒绝全部）。无 GPU 纯 schema 编译复现，main `049507aa`） · Cov: `var:vllm_xgrammar_multibranch_allof_silently_unenforced_no_fallback`（10.64 xgrammar 静默不强制族——本条把缺口从"多支 allOf 漏检"扩到 **auto 分派谓词与 xgrammar 真实缺陷域错配**） · 触发 `config` · 置信度 `documented`
+
+- **机制**：backend 选择谓词（allOf≥2）不覆盖 xgrammar 实际 mishandle 的形态（组合子+同节点约束关键字，mlc-ai/xgrammar#858 修复 #859 仍 open）。
+- **来源**：vLLM #60237（2026-10-06 open，双后端对照脚本）。https://github.com/vllm-project/vllm/issues/60237
+- **行为效应**：无 crash——结构化输出请求的 schema 静默全放开，非法 JSON 200 返回。
+- **触发面**：vLLM auto 结构化输出 + 组合子与约束关键字同节点 schema（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.94 `vllm_request_level_chat_template_kwargs_silently_drops_all_images`
+
+`infra_off`（vLLM 0.30.0 /v1/chat/completions：请求携带**任意** request-level `chat_template_kwargs`（即使与 server default 完全相同的 no-op 值）时该请求**全部图像被静默丢弃**——prompt_tokens ~20 vs ~276，渲染 prompt 只含文本，模型答"没有图像"，200 OK 无告警；同 payload 去掉 kwargs 正常。Gemma-4-26B-A4B NVFP4、1 或 3 张图、enable_thinking true/false 均同） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：request-level kwargs 合并路径绕过/破坏多模态输入绑定（见 issue 双 payload 对照）。
+- **来源**：vLLM #59876（2026-10-03 closed 但机制记录完整，含 A/B 复现）。https://github.com/vllm-project/vllm/issues/59876
+- **行为效应**：无 crash——多模态请求静默退化为纯文本，模型如实报告无图。
+- **触发面**：vLLM + 多模态 + request-level chat_template_kwargs（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.95 `vllm_olmo3_reasoning_buffer_never_flushes_final_submarker_delta`
+
+`infra_off`（vLLM Olmo3 reasoning parser 流式：`string_overlap` 把**包含**（而非仅前缀重叠）当重叠——恰为 `<think>`/`</think>` 子串的 delta（"think"、"in"、">"…）被缓冲；生成若结束于此类 delta，缓冲文本**永不 emit**（流结束无人 flush）。复现：chunks 末尾 "think" 丢失，非流式 `extract_reasoning` 返回全内容） · Cov: `NEW`（流式 marker 缓冲无终态 flush 子签名） · 触发 `config` · 置信度 `documented`
+
+- **机制**：overlap 判定过宽（containment≠prefix overlap）+ 缺 EOS flush。
+- **来源**：vLLM #60340（2026-10-07 open，解析器级最小复现）。https://github.com/vllm-project/vllm/issues/60340
+- **行为效应**：无 crash——流式 reasoning/content 末尾静默丢词，非流式完整（两路径分裂）。
+- **触发面**：vLLM + olmo3 reasoning parser + 流式 + 尾 delta 为 marker 子串（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.96 `vllm_internlm2_tool_parser_drops_content_after_action_start_and_streaming_chars`
+
+`infra_off`（vLLM InternLM2 tool parser 两缺陷：①流式/非流式遇 `<|action_start|>` 后无 `<|plugin|>` 跟随时**丢弃其后全部 content**；②流式 function arguments 丢字符） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 tool parser 丢内容族——本条在 InternLM2 通道假设维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：状态机进入 action 态后无回退路径；流式增量处理丢字符。
+- **来源**：vLLM #60341（2026-10-07 open）+ #60348（流式字符，closed）。https://github.com/vllm-project/vllm/issues/60341
+- **行为效应**：无 crash——正文与参数静默丢失。
+- **触发面**：vLLM + internlm2 tool parser（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.97 `vllm_tool_parser_batch_multiline_json_nested_args_and_newline_corruption`
+
+`infra_off`（vLLM tool parser 批量缺陷三件：①DeepSeek-V3 parser 对**跨多行 JSON arguments** 的 tool call 返回空（#60342）；②xLAM 流式 parser 丢嵌套超两层 的参数并在字符串内 `}` 处截断（#60343）；③Olmo3 parser 破坏含换行的字符串参数并丢跨行 call（#60421）——同日同作者批量审计，均静默丢/坏 tool call） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 族——本条在多行/嵌套 JSON 载荷维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：各 parser 的增量 JSON/括号深度处理不支持多行与深嵌套。
+- **来源**：vLLM #60342、#60343、#60421（2026-10-07 open）。https://github.com/vllm-project/vllm/issues/60342
+- **行为效应**：无 crash——合法 tool call 静默丢失或参数损坏。
+- **触发面**：vLLM + deepseek_v3/xlam/olmo3 tool parser + 多行或嵌套参数（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.98 `vllm_glm47_streaming_parser_stray_tool_call_token_swallows_rest_of_stream`
+
+`infra_off`（vLLM glm47 流式 parser：正文出现零散 `<tool_call>` token（prose 中合法出现）后**吞掉剩余整条流**——包括其后真正的 tool call） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 族——本条在"误入 tool 态无逃逸"维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：开标记进入 tool 态后无 prose 回退。
+- **来源**：vLLM #60703（2026-10-08 open）。https://github.com/vllm-project/vllm/issues/60703
+- **行为效应**：无 crash——流式响应在 stray 标记后静默截断。
+- **触发面**：vLLM + glm47 parser + 流式 + 正文含 <tool_call> 字样（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.99 `vllm_dots_tool_parser_ignores_init_tools_and_functiontool_attribute_error`
+
+`infra_off`（vLLM DotsToolParser：①构造时传入的 `tools` 被 `request.tools is None` 场景忽略——`_known_tool_names` 为空使全部合法 `<dots_function_call>` 被当普通文本静默丢弃；②Responses API `FunctionTool` 无 `.function` 属性 → AttributeError 500（fail-loud 面）） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 族——本条在工具来源双通道不一致维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：parser 只读 request.tools 一途；Responses API 工具形状未适配。
+- **来源**：vLLM #60865（2026-10-09 open）。https://github.com/vllm-project/vllm/issues/60865
+- **行为效应**：静默面为 tool call 全丢（tools=None 时）；Responses API 下 500。
+- **触发面**：vLLM + dots tool parser（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.100 `sglang_detector_argument_value_coercion_ignores_declared_schema_type_batch`
+
+`infra_off`（SGLang function-call detector 参数值改写批（#42778/#42765/#42764 同类第五至七站点）：①PoolsideV1Detector 只识别裸标量 `"type"`——`{"type":["string","null"]}`/anyOf 拼写的可空字符串被 `json.loads` 强转，raw 字符串参数静默变 int/float/bool/list/None（`"123"`→123）；②dots detector `null` 文本→JSON null、任意非 true 布尔→false；③Muse Glimmer 对每个值无 schema 查询直接 `json.loads`（引号丢失、对象变 dict）；④Qwen3CoderDetector 带空白布尔值静默翻 false） · Cov: `var:sglang_qwen3_coder_detector_duplicated_parameter_tag_regex_truncates_overwrites`（10.69 detector 参数处理族——本条在**值强制转换无视声明类型**维度，CPU 级复现） · 触发 `config` · 置信度 `documented`
+
+- **机制**：coercion 先于/独立于 schema type 查询执行。
+- **来源**：SGLang #43149、#43017（含 dots+Muse Glimmer）、#43153（2026-10-08 open，同批）。https://github.com/sgl-project/sglang/issues/43149
+- **行为效应**：无 crash——字符串型工具参数被静默改型（"123"→123、"null"→null），下游工具调用语义漂移。
+- **触发面**：SGLang + poolside_v1/dots/muse_glimmer/qwen3_coder detector + 字符串型参数（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.101 `vllm_deepseek_r1_reasoning_streaming_deltas_raw_bpe_glyphs_nonascii`
+
+`infra_off`（vLLM `--reasoning-parser deepseek_r1` + streaming：reasoning delta 以**字节级 BPE token glyphs**（未解码 UTF-8）发出，非 ASCII（CJK）输出损坏；同流 `delta.content` 正确、非流式正常——仅 reasoning 通道的增量解码缺失） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：reasoning 流式增量路径跳过 UTF-8 增量解码器。
+- **来源**：vLLM #59738（2026-10-02 open，v0.21.0 复现含 curl 输出对照）。https://github.com/vllm-project/vllm/issues/59738
+- **行为效应**：无 crash——非 ASCII reasoning 文本静默乱码。
+- **触发面**：vLLM + deepseek_r1 reasoning parser + 流式 + 非 ASCII（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.102 `sglang_conversation_llama2_style_role_tags_from_index_parity_not_role`
+
+`infra_off`（SGLang `sglang.srt.parser.conversation` LLAMA2 风格模板从**消息序号奇偶**推导 role 标签而非消息自身 role——role 序列非常规交替时模板渲染静默错位） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：以位置替代语义 role 的假设在多轮/纠错对话破裂。
+- **来源**：SGLang #43155（2026-10-08 open）。https://github.com/sgl-project/sglang/issues/43155
+- **行为效应**：无 crash——prompt 渲染的对话结构静默错（user/assistant 标签互换）。
+- **触发面**：SGLang + LLAMA2 conversation 风格 + 非交替 role 序列（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.103 `vllm_xgrammar_lets_control_tokens_into_json_strings_muse_glimmer_truncates_answer`
+
+`infra_off`（vLLM xgrammar 后端允许模型控制 token（`<|eom|>`/`<|start|>`/`<|message|>` 等）进入 JSON 字符串内；muse_glimmer tool parser 随后把答案**静默截断**——结构化输出与 parser 两层契约错配叠加） · Cov: `var:vllm_xgrammar_pattern_minlength_drops_length_bound`（10.47 xgrammar 约束失效族——本条在**控制 token 逃逸进字符串载荷**维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：grammar 未把保留控制 token 排除出字符串域；parser 遇即截断。
+- **来源**：vLLM #60580（2026-10-08 open）。https://github.com/vllm-project/vllm/issues/60580
+- **行为效应**：无 crash——JSON 字符串答案被静默截断。
+- **触发面**：vLLM + xgrammar + muse_glimmer parser（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 10.104 `sglang_glm4_moe_parse_arguments_literal_eval_comma_scalar_to_json_array`
+
+`infra_off`（SGLang GLM4 MoE detector `parse_arguments` 的 Strategy 3 走 `ast.literal_eval`：含逗号的标量参数被解析成 Python tuple 再序列化为 JSON 数组——`parse_arguments("1,000", "number")` → `((1,0), True)`、工具收到 `[1, 0]`；`"a","b"` 同理） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：literal_eval 对裸逗号表达式天然返回 tuple，无标量回退路径。
+- **来源**：SGLang #43147（2026-10-08 open，GLM4 MoE tool call 端到端复现）。https://github.com/sgl-project/sglang/issues/43147
+- **行为效应**：无 crash——千分位/逗号标量参数静默变成数组，工具侧语义改变（1,000 → [1,0]）。
+- **触发面**：SGLang + glm4_moe detector + 含逗号参数的 tool call（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.105 `sglang_harmony_parser_commentary_prefix_filter_deletes_answer_head`
+
+`infra_off`（SGLang `HarmonyParser`：工具调用后进入 "filter commentary filler" 状态，该状态下 stripped/lower 后为 `"commentary"` **前缀**的 normal 事件被静默丢弃且不再重发——流式答案首 chunk 恰为 `"c"`/`"Co"`/`"comment"`（及空串）时**答案开头被静默删除**（`stream([head, "Co", "mpare prices.", ...])` → `"mpare prices."`)） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：前缀匹配用作通道判定在任意 chunk 边界上不可判定，状态机无缓冲回退。
+- **来源**：SGLang #43156（2026-10-08 open，最小流式复现双对照）。https://github.com/sgl-project/sglang/issues/43156
+- **行为效应**：无 crash——post-tool-call 流式答案开头静默丢失（chunk 边界概率性）。
+- **触发面**：SGLang Harmony parser + 流式 + 工具调用 + 首 chunk 前缀命中（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.106 `sglang_deepseekv3_detector_greedy_last_sep_match_drops_first_tool_call`
+
+`infra_off`（SGLang `--tool-call-parser deepseekv3`：detector 模式 `(.*)<｜tool▁sep｜>` 贪心从**最后一个**分隔符匹配——一个流增量含两个完整 tool call 时只发第二个（`tool_index` 0），**第一个永不达客户端**；`_coalesce_streaming_chunks` 把积压 chunk 合成单增量或大 `--stream-interval` 下必现） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：贪心量词 + 单增量多调用无迭代扫描。
+- **来源**：SGLang #43523（2026-10-10 open，detector 单元级复现）。https://github.com/sgl-project/sglang/issues/43523
+- **行为效应**：无 crash——并行/连续 tool call 的首个调用静默丢失。
+- **触发面**：SGLang deepseekv3 detector + 流式积压/大 stream-interval + 同增量多 tool call（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.107 `sglang_images_edits_mask_upload_accepted_never_read_inpainting_ignored`
+
+`infra_off`（SGLang `POST /v1/images/edits` 声明并接收 `mask` 上传（`image_api.py`），但 handler 从不读取——**发送 mask 的请求 200 返回并按全图无掩码编辑执行**，调用方无法感知 mask 被忽略；SGLang 自家 ComfyUI 集成（`server_api.py` 附 mask）正在触发） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`
+
+- **机制**：API 契约声明与实现脱节（"声明但不读"形态，与 12.52 同谱系）。
+- **来源**：SGLang #43409（2026-10-09 open，curl 复现 + 代码检索证明无读取方）。https://github.com/sgl-project/sglang/issues/43409
+- **行为效应**：无 crash——inpainting 请求静默退化为全图编辑。
+- **触发面**：SGLang /v1/images/edits + mask 上传（partial）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.108 `sglang_comfyui_cond_key_shape_scalar_collision_swaps_t5_context`
+
+`infra_off`（SGLang ComfyUI 插件 `SGLDiffusionExecutor._cond_key`：conditioning 键 = shape + `prompt_embeds[0]` 首尾标量——Flux 下 `prompt_embeds[0]` 是 pooled CLIP-L y（仅首 77-token chunk）而 **T5 上下文从不入键**：两个共享前 ~75 CLIP token 的 prompt（或同 clip_l 不同 t5xxl 文本）键碰撞，**第二个 prompt 的 T5 上下文被静默替换为第一个**；Qwen-Image-Edit 下同文不同参考图（image_latent 也不入键）同样碰撞。真实 CLIP-L 权重 KSampler 双 prompt 采样全程复现） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：缓存键窄于载荷身份（pooled 标量对 T5 全上下文）——与 12.46"键窄于身份"同主线在扩散执行器侧的实例。
+- **来源**：SGLang #43107（2026-10-08 closed，Flux/Qwen-Image-Edit 双场景复现 + bind_comfyui_session 记录）。https://github.com/sgl-project/sglang/issues/43107
+- **行为效应**：无 crash——碰撞条件下生成以错误 conditioning 执行；closed 不证明修复已发布。
+- **触发面**：SGLang ComfyUI 插件 + Flux/Qwen-Image-Edit + 共享 CLIP 前缀/同文异 latents（other_stack）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.109 `trtllm_qwen3vl_total_num_frames_rewrite_fps_misresample_4frame_summary_wrong_timestamps`
+
+`infra_off`（TensorRT-LLM `Qwen3VLInputProcessorBase._preprocess` 把 `video_metadata.total_num_frames` 重写为 `len(vd.frames)` 但不重算 `fps`：IO 层已抽帧的 clip（如 10s/24fps/240 帧解码为 40 帧）使 HF `Qwen3VLVideoProcessor` 相信视频只有 40/24≈1.67s——类默认 `fps=2, min_frames=4` 下只采样 `int(40/24*2)=3→4` 帧（**无论 clip 多长恒为 4 帧摘要**，30s clip 同样 4 帧）；且 `<t seconds>` 时间戳 token 按重写后的帧数/源 fps 计算，被压缩 decoded/source 比例（真实 0/3.3/6.7/10s 变成 0.3/1.4s）。这是默认路径：调用方不传 `do_sample_frames/num_frames/fps` 时 `_decide_do_sample_frames` 自动开启采样；`do_sample_frames=False` 完全正确，证明帧本身无恙、纯元数据不一致） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：帧数重写与源 fps 的单位制不匹配；默认路径意图对齐 HF 类默认反而引入分歧。rc25 与 main@760a584（2026-10-12）代码相同。
+- **来源**：TensorRT-LLM #20141（2026-10-12 open，CPU-only HF processor 复现 + 帧数/时间戳双后果定量）。https://github.com/NVIDIA/TensorRT-LLM/issues/20141
+- **行为效应**：无 crash——默认配置下视频输入静默退化为 4 帧摘要 + 错误时间戳，模型对视频时序理解系统性错误。
+- **触发面**：TensorRT-LLM（Dynamo 后端聚合多模态/LLM API）+ Qwen3-VL + 视频输入 + 默认采样路径（other_stack）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.110 `trtllm_qwen3vl_epd_handoff_drops_timestamp_tokens_mrope_misalignment`
+
+`infra_off`（TensorRT-LLM 多模态 E/PD 分离交接（`MultimodalEncoder`→`DisaggregatedParams`→`LLM.generate_async`）：PD 侧重建的 prompt 缺少 per-frame-group 时间戳 token 与 `<|vision_start|>/<|vision_end|>` 标记，而 encoder 侧发来的 mRoPE position ids/deltas 按聚合路径布局生成——PD 侧**不做任何检查地按自己更短的 prompt 长度切片**，视觉 token 位置与 decode 期 mRoPE delta 错位；无错误，输出前几个 token 即偏离聚合路径、模型失去时间感但帧内容仍可识别） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：分离路径的 prompt 布局与聚合路径分歧，且 mRoPE 张量长度无契约校验。与 10.109 同模型同周暴露 Qwen3-VL 视频管线两处独立静默错。
+- **来源**：TensorRT-LLM #20138（2026-10-12 open，合成视频 LLM API 复现 + 聚合/分离输出对照；rc25 与 main 同码）。https://github.com/NVIDIA/TensorRT-LLM/issues/20138
+- **行为效应**：无 crash——分离部署下视频问答输出偏离正确结果、时间感丢失。
+- **触发面**：TensorRT-LLM MultimodalEncoder E/PD 交接 + Qwen3-VL 视频输入（other_stack；LLM API 路径，trtllm-serve 协议尚不载多模态 handle）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.111 `vllm_anthropic_messages_system_drops_nontext_blocks_silently`
+
+`infra_off`（vLLM Anthropic `/v1/messages` 兼容层 `_convert_system_message()` 只 append text 块：请求 schema 接受 system 字段的 content block 列表（含 `image` 块），转换时非文本块被**静默丢弃**——请求 200 成功，但图像系统提示从未进入 prompt；`count_tokens` 的 token 计数也随之低估。无错误无警告） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：schema 宽松接受 + 转换器只处理 text 类型；未支持类型既不拒绝也不告警。与 10.89（role 只验类型）同属"入口校验只覆盖部分载荷"谱系，本条在 Anthropic 兼容层的 system 块维度。
+- **来源**：vLLM #61172（2026-10-12 open，text-only vs text+image count_tokens 对照复现）。https://github.com/vllm-project/vllm/issues/61172
+- **行为效应**：无 crash——含图像等非文本系统块的请求静默丢失该块，模型行为与用户意图偏离；计费/上下文估计同步低估。
+- **触发面**：vLLM /v1/messages Anthropic 兼容端点 + system 字段含 image 等非文本块（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.112 `vllm_qwen_reasoning_parser_strips_literal_think_marker_in_tool_args`
+
+`infra_off`（vLLM Qwen3.8 双 parser 串联（`qwen3_coder` tools + `qwen3` reasoning）：reasoning parser 剥离流中 `</think>` 时**不区分 tool 参数内部的字面 `</think>`**——工具参数文本 `alpha <think>literal</think> omega` 中的闭合标记被 reasoning 层先行吃掉，tool parser 收到的参数已损坏；实测 92 请求 harness 复现，打补丁后通过。同 issue 另两缺陷：reasoning cutoff 报告不正确、多 tool call 时 tool result 与 call 的配对错序——三处均有修复方案讨论归属上游） · Cov: `var:vllm_kimi_k3_parser_channel_terminator_assumption_tool_call_silent_drop`（10.42 parser 族——同为 parser 层对分隔符的通道假设侵蚀载荷，但 10.42 族是 tool parser 自身终点假设、本条是 reasoning parser 与 tool parser **串联边界**上字面标记被上游层消费） · 触发 `config` · 置信度 `documented`
+
+- **机制**：reasoning parser 全局扫描 `</think>` 无上下文感知；两 parser 串联无"参数内字面标记透传"契约。
+- **来源**：vLLM #61206（2026-10-12 open，双 GPU 部署调查 + 固定串回放 harness + 分步补丁验证；NVIDIA vLLM 26.09 镜像 Qwen3.8-27B-NVFP4）。https://github.com/vllm-project/vllm/issues/61206
+- **行为效应**：无 crash——含字面 think 标记的工具参数被静默破坏（标记消失），工具调用语义改变。
+- **触发面**：vLLM + qwen3_coder/qwen3 双 parser + enable_thinking + 工具参数含字面 `</think>`（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 10.113 `ttmetal_phi3_trust_remote_code_silent_random_weights_garbage_passing_demo`
+
+`infra_off`（tt-metal `models/tt_transformers` 对 Phi-3-mini-128k-instruct 强制 `trust_remote_code_hf = True`：在 pin 的 transformers 5.12.1 下，checkpoint 的 remote `modeling_phi3.py` 加载报告**零 missing/unexpected/mismatched key**，但 **130 个参数保持随机初始化**（token embedding、LM head、全部 32 层 linear——仅 RMSNorm 匹配）；双设备（Wormhole N150/Blackhole P150）官方 accuracy demo 输出 `extextext…` 垃圾而 demo 仍报 `1 passed`（不校验生成文本）。原生 Phi-3 类（trust_remote_code=False）加载正确、去除强制项后双设备恢复连贯输出；HF-only 无硬件复现：remote 类 embedding/LM head std 恰为 initializer_range 0.0200（随机初始化指纹）） · Cov: `var:vllm_fast_start_weight_cache_key_hashes_only_safetensors_headers_ipc_cache_serves_wrong_checkpoint`（12.46 "加载链路报告成功但权重未真正加载"族——同为静默错误权重服务且报告面干净，但 12.46 是缓存键窄化、本条是 remote code 加载路径的 key 匹配假象） · 触发 `other_stack` · 置信度 `verified`
+
+- **机制**：remote modeling 类与 checkpoint 的 key 空间对齐假象——零告警不等于权重到达；demo 以 pass 计数不校验输出使门禁恒绿。std=initializer_range 是随机初始化的可判别指纹。
+- **来源**：tt-metal #60342（2026-10-12 open，双设备复现 + HF-only std 对照 + 修复验证）。https://github.com/tenstorrent/tt-metal/issues/60342
+- **行为效应**：无 crash——随机权重生成垃圾文本，accuracy demo 通过（门禁失明）。
+- **触发面**：tt-metal tt_transformers + Phi-3-mini-128k + pinned transformers 5.12.1（other_stack）
+- **发现来源**：2026-10-12 每日扫描。
+
 ## 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
 
 ### 11.1 `degeneration_repetition_loop`
@@ -11116,6 +12113,37 @@
 
 ---
 
+### 11.91 `vllm_cpu_apply_top_k_top_p_triton_drops_tokens_top_p_must_keep`
+
+`infra_off`（vLLM CPU 构建（`VLLM_TARGET_DEVICE=cpu`，`HAS_TRITON` true 走 triton-cpu 3.8.0）`apply_top_k_top_p_triton` 可**丢 top-p 必须保留的 token**（精确参照 `apply_top_k_top_p_pytorch` 对照：8-token 行 token 6 携 7.5% 概率质量被丢、行和 0.925<0.95；400 shuffled Zipf 行 400/400 kept-set 不同；514,800 seeded 行扫描 V≤4096 时 0–4% 行差、k=3/p=0.9 时单个被丢 token 携 1.3–11.5% 质量）。**到达引擎**：tiny Llama+自定义 logits processor，4000 单 token 请求 token 6 采样数 V2=0/V1=0（top_p=0.95）vs 精确分布 ~300（top_p=1.0 时 278/328 正常）。既有测试只比 kept 计数不比 kept 集合且 V≥1024） · Cov: `NEW`（top-p 截断内核边界条件错子签名） · 触发 `other_stack` · 置信度 `verified`
+
+- **机制**：triton top-p 累计质量边界的包含性判断错（见 issue Cause 节）。
+- **来源**：vLLM #59785（2026-10-02 closed（当日快照）但机制与引擎级复现完整，多个 main commit 复现）。https://github.com/vllm-project/vllm/issues/59785
+- **行为效应**：无 crash——top-p 采样分布静默偏移（被丢 token 概率质量最高 11.5%）。
+- **触发面**：vLLM CPU backend + top_p（other_stack）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 11.92 `vllm_eagle_prepare_inputs_index_underflows_past_query_start_pp_spec_decode`
+
+`infra_off`（vLLM `eagle_prepare_inputs_padded_kernel` 的 `index_to_sample = q_last_tok_idx - num_rejected_tokens` 无下界：query 无 bonus-token 行时（PP>1 下调度器可只排 draft token）索引下溢——首请求负索引越界 gather、后续请求落进**前一请求的行**静默串线采样 token，损坏其后每步 decode；CPU 实现（spec_decode_utils.cpp）同式同错。单元级 reproducer（免模型）：两请求全拒时 emit `[-1, 1]`） · Cov: `NEW`（spec prepare 索引无下界子签名） · 触发 `partial` · 置信度 `documented`
+
+- **机制**：bonus 行缺席时公式前提不成立，未钳制。
+- **来源**：vLLM #60897（2026-10-09 open，GPU/CPU 双后端复现）。https://github.com/vllm-project/vllm/issues/60897
+- **行为效应**：无 crash（后续请求）——跨请求采样 token 静默串线。
+- **触发面**：vLLM + PP>1 spec decode + query 仅 draft 行（partial）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 11.93 `trtllm_beam_search_logits_processors_receive_per_slot_lists_not_hypotheses`
+
+`infra_off`（TRT-LLM PyTorch backend beam search：logits processor 收到的是**静态 slot 的 token 列表**而非各 beam 的 hypothesis——两 beam 同源于第二候选时 processor 对错误谱系施加 steering（2-beam TinyLlama 复现：step1 两 beam 均为 B 子代后 step2 收到的 token_ids 与 beam 假设不符）） · Cov: `NEW`（beam 槽位 vs 假设谱系错位子签名） · 触发 `hw_specific` · 置信度 `documented`
+
+- **机制**：静态 admission-width 布局下 slot↔hypothesis 映射未随 beam 消亡/重生维护。
+- **来源**：TensorRT-LLM #19902（2026-10-06 open，含 steering 复现脚本）。https://github.com/NVIDIA/TensorRT-LLM/issues/19902
+- **行为效应**：无 crash——依赖 logits processor 的引导（ban/boost token）作用于错误 beam 谱系，输出静默偏离意图。
+- **触发面**：TRT-LLM PyTorch backend + beam search + logits processor（hw_specific）
+- **发现来源**：2026-10-09 每日扫描。
+
+
 ## 第 12 类 · 权重 / 适配器 / 检查点加载故障
 
 ### 12.1 `wrong_dtype_cast_bf16_as_fp16`
@@ -11594,6 +12622,86 @@
 
 ---
 
+### 12.46 `vllm_fast_start_weight_cache_key_hashes_only_safetensors_headers_ipc_cache_serves_wrong_checkpoint`
+
+`infra_off`（vLLM Fast Start `WeightCacheKey.checkpoint` 只哈希各 shard **文件名+safetensors header**（tensor 名/dtype/shape/offset，无权重值）：同架构同布局的两个本地 checkpoint（基模与其 fine-tune、step_0 vs step_100）**同 key**——daemon 持 A 时引擎以 `--load-format ipc_cache` 起 B，daemon 校验无不匹配字段即服务 A 的张量：引擎从不读 B 盘、CLI/API `model` 字段显示 B、双方零警告。e2e 复现：q（Qwen3-0.6B）与 q_mod（仅 norm.weight 清零、header 未动）——无 daemon 各自输出正确（q_mod 输出 `!!!!`），daemon 持 q 时 q_mod 引擎输出 q 的 'Paris…'。docs 承诺 fingerprint 覆盖 "checkpoint content" 与 "Safe fallback"，均未兑现） · Cov: `NEW`（缓存键窄于内容身份子签名） · 触发 `config` · 置信度 `verified`
+
+- **机制**：身份哈希缺数据摘要；布局相同即碰撞。
+- **来源**：vLLM #59647（2026-10-01 open，完整 e2e 三步复现+daemon 日志）。https://github.com/vllm-project/vllm/issues/59647
+- **行为效应**：无 crash——ipc_cache 用户静默服务错误 checkpoint 的权重（微调版本混用）。
+- **触发面**：vLLM + vllm preload daemon + ipc_cache + 同布局多 checkpoint（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 12.47 `vllm_peft_helper_ignores_rank_alpha_patterns_and_unimplemented_features_serves_wrong_adapter`
+
+`infra_off`（vLLM `PEFTHelper` 两缺陷同类：①`rank_pattern`/`alpha_pattern` 被读取后丢弃，所有模块统一 `lora_alpha/r` 缩放——PEFT 文档推荐 MoE experts 用 `rank_pattern={experts: r//num_experts}` 并指向 vLLM serving，OLMoE-1B-7B（64 experts）实测 held-out PPL：PEFT 10.06 / vLLM 11.28（base 13.09），**vLLM 丢失 adapter 约 40% 增益**；把各模块缩放折叠进 lora_B 后 vLLM 恢复 10.06（②`from_dict` 只留已知键，未实现的 PEFT 特性静默加载静默错输出——`_validate_features` 只拒 DoRA/modules_to_save）） · Cov: `var:sglang_lora_adapter_use_rslora_flag_ignored_alpha_over_r_served_as_scaling`（12.42 LoRA 配置字段被忽略族——本条在 pattern 字段与未知特性两维度，跨栈同机制第三站点） · 触发 `config` · 置信度 `verified`
+
+- **机制**：adapter_config.json 的 per-module 缩放与特性面在 serving 侧静默坍缩为全局标量/已知子集。
+- **来源**：vLLM #59799（2026-10-02 open，OLMoE PPL 对照+折叠验证）+ #60223（2026-10-06 open，其他字段同类）。https://github.com/vllm-project/vllm/issues/59799
+- **行为效应**：无 crash——受影响 adapter 静默以错误缩放/缺特性服务，质量退化无告警。
+- **触发面**：vLLM + PEFT LoRA（rank_pattern/alpha_pattern 或未实现特性）（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 12.48 `vllm_mimo_v2_mtp_loader_drops_fp8_kv_scales_draft_falls_back_unit_scale`
+
+`infra_off`（vLLM `MiMoV2MTP.load_weights` 在三种命名族下全部丢弃 FP8 KV cache scale（llm-compressor 融合名 `qkv_proj.k_scale` 命不中 guard 落到裸 `continue`；ModelOpt per-projection 名被 stacked mapping 改写后同样失配；deprecated `.kv_scale` 直落）——scale 保持 −1.0 哨兵、`process_weights_after_loading` 重置 1.0，**每个 draft 层以 unit scale 量化/反量化 cache**，输出有限、唯一痕迹是可被误读为 checkpoint 问题的启动 warning。主模型两变体（Flash 手写 loader 调 `maybe_remap_kv_scale_name` / Pro 走 AutoWeightsLoader+mapper）均正确——MTP draft 是缺口。CPU harness 逐字运行 loader（commit 41cffa9af0，合成 checkpoint k_scale=12.5）验证） · Cov: `var:vllm_compressed_tensors_kv_scale_dropped`（7.52 KV scale 丢弃族——本条在 **MTP draft 加载器缺 mapper**维度） · 触发 `config` · 置信度 `documented`
+
+- **机制**：#43167 把 mapper 集中进 AutoWeightsLoader 时，手写 loader 的 MiMoV2MTP（#40967/#41905 进入）从未有过 scale 处理。
+- **来源**：vLLM #60333（2026-10-07 open，三命名族机制+CPU harness）。https://github.com/vllm-project/vllm/issues/60333
+- **行为效应**：无 crash——spec draft 的 fp8 KV 以错误 scale 运行，接受率/输出质量静默退化。
+- **触发面**：vLLM + MiMo-V2(+Omni) MTP + fp8 KV scale checkpoint（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 12.49 `vllm_legacy_fused_moe_lora_kernel_unconditionally_casts_operands_to_bf16`
+
+`infra_off`（vLLM legacy 双内核 `_fused_moe_lora_kernel`（`fully_sharded=True` 或 `max_lora_rank>128` 时使用）无条件把两操作数 cast 到 `bfloat16`（`accumulator += tl.dot(a.to(tl.bfloat16), b.to(tl.bfloat16))`）——**fp16 MoE 模型的 LoRA 乘加精度从 10-bit 尾数静默截到 7-bit**（注释自认 cast 为 ROCm 类型推断兼容，但硬编码 bf16 而非原生 dtype；one-shot 内核（rank≤128 非分片）保留原生 dtype——同模型两条路径精度不同使 discrepancy 难诊断）） · Cov: `NEW`（内核 dtype 硬编码降精度子签名） · 触发 `config` · 置信度 `documented`
+
+- **机制**：ROCm 类型推断 workaround 过度泛化为无条件 cast。
+- **来源**：vLLM #59920（2026-10-04 open，含两路径源码对照与修复方向）。https://github.com/vllm-project/vllm/issues/59920
+- **行为效应**：无 crash——fp16+LoRA 分片/高秩路径输出质量静默劣化。
+- **触发面**：vLLM + fp16 MoE + LoRA（fully_sharded 或 rank>128）（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 12.50 `vllm_gptoss_mixed_moe_lora_format_gate_up_slice_layout_mismatch_silent_wrong`
+
+`infra_off`（vLLM GPT-OSS `enable_mixed_moe_lora_format=True`：fused gate/up LoRA 切两片后内核按**连续区域**写 delta（`[Δgate0..n, Δup0..n]`），而 GPT-OSS 基座 GEMM 输出是**交错布局**（需 `[Δgate0, Δup0, …]`）——delta 加到错误通道再进 SwiGLU-OAI，shape 全程合法、静默错推理。默认 3D wrapper 单融合切片的 lora_B 已保交错布局故免疫。公开 adapter（gpt-oss-20b-lora-text2sql）复现脚本齐备） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：双切片写布局与交错基座布局不一致。
+- **来源**：vLLM #60811（2026-10-09 open，含布局图与 repro.py）。https://github.com/vllm-project/vllm/issues/60811
+- **行为效应**：无 crash——mixed format LoRA 推理静默错误。
+- **触发面**：vLLM + GPT-OSS + enable_mixed_moe_lora_format=True + LoRA（config）
+- **发现来源**：2026-10-09 每日扫描。
+
+### 12.51 `vllm_qwen3_asr_realtime_session_update_silently_drops_prompt_and_language`
+
+`infra_off`（vLLM `/v1/realtime`（Qwen3-ASR）：`session.update` 事件只读 `model`——**客户端随会话发送的 `prompt`（上下文系统轮）与 `language`（assistant 前缀强制）被静默丢弃**，而 REST `/v1/audio/transcriptions` 同两参数生效；realtime 硬编码 chat 模板不走 `get_generation_prompt()`，客户端无任何错误。LiveKit 语音 agent 场景 per-call 领域词/姓名上下文全部丢失） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：`SessionUpdate` 协议模型只有 model 字段；buffer_realtime_audio 无 per-session 选项通道（API 声明/消费契约缺口）。
+- **来源**：vLLM #61026（2026-10-10 open，REST vs realtime 双路径对照 + main 复现）。https://github.com/vllm-project/vllm/issues/61026
+- **行为效应**：无 crash——实时 ASR 会话的上下文与语言控制静默失效（识别质量退化，非生成损坏）。
+- **触发面**：vLLM /v1/realtime + Qwen3-ASR + session.update prompt/language（config）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 12.52 `sglang_update_weights_from_disk_params_declared_never_consumed`
+
+`infra_off`（SGLang `/update_weights_from_disk` 四个 API 参数（`is_async`/`keep_pause`/`token_step` 请求字段 + `num_paused_requests` 响应字段）：**声明、文档化（sglang_for_rl.mdx）且全树无任何读取方**（git grep 证明仅剩声明与文档行）；响应字段由生产者硬编码 0 并一路透传到 HTTP/gRPC——调用方收到恒 0 的"暂停请求数"；DP>1 时返回 per-rank 零列表而文档类型为 int。RL 训练侧对异步语义/暂停行为/记账的依赖全部落空且不可见） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**："声明但不读"契约缺口——API 面与实现面脱节，无版本曾消费过这些字段。
+- **来源**：SGLang #42544（2026-10-05 open，逐参数声明/文档/读取方三方对照表）。https://github.com/sgl-project/sglang/issues/42544
+- **行为效应**：无 crash——训练循环对权重更新同步性/暂停计数的假设静默落空（如误判更新已完成、记账恒零）。
+- **触发面**：SGLang /update_weights_from_disk + RL 训练客户端依赖文档语义（other_stack）
+- **发现来源**：2026-10-12 每日扫描。
+
+### 12.53 `vllm_mtp_draft_ignores_target_revision_loads_default_branch`
+
+`infra_off`（vLLM `method=mtp` speculative config 的 draft `ModelConfig` 用 `revision=self.revision`（默认 None）：draft 继承 target 的 `model` 与 `quantization` 却**不继承 `--revision`**——从非默认分支加载 target（如 `--revision pre-final`）时 draft config/权重从仓库**默认分支**加载，revision 不匹配可致启动 `ZeroDivisionError`（n_predict 解析为 0）；0.29 正常、0.31.0 回归。显式在 speculative config 里传 revision 可绕过——静默面在于 draft 可能在无 crash 的配置下直接用默认分支权重服务（本报告以 crash 形态呈现，静默错误权重风险为推断、待单独证据） · Cov: `NEW` · 触发 `config` · 置信度 `documented`
+
+- **机制**：`SpeculativeConfig.__post_init__` 对 MTP（draft=target checkpoint）只复制 model/quantization 不复制 revision/code_revision。
+- **来源**：vLLM #61197（2026-10-12 open，ZeroDivisionError 堆栈 + 显式 revision 绕过验证；0.31.0 vs 0.29 回归对照）。https://github.com/vllm-project/vllm/issues/61197
+- **行为效应**：报告形态为启动 crash（fail-loud）；draft 权重身份与 target revision 脱钩的静默错误权重风险未证实，留观。仅按 draft 配置继承缺口编目。
+- **触发面**：vLLM 0.31 + MTP speculative + `--revision` 非默认分支 checkpoint（config）
+- **发现来源**：2026-10-12 每日扫描。
+
 ## 第 13 类 · 模型图 / 架构配置故障
 
 ### 13.1 `bug_gemma_logit_softcap_missing`
@@ -12038,6 +13146,17 @@
 - **行为效应**：无 crash——teacher forcing 评估（BLEU/翻译基准）拿到的分布与自回归推理不一致，训练侧若用作 logprob 目标同样污染；用户可见症状仅为翻译质量下降且无诊断线索。13.27（GPT2 encoder_attention_mask 硬编码 None）之后掩码丢失族新成员：本条是 **SDPA 迁移回归**形态（单 flag 语义下沉后子类失传），与 10.86（Gemma1 GELU 守卫移除）同属"重构 PR 静默改变激活/掩码语义"谱系。
 - **触发面**：HF transformers v5.15.0+（≤main）+ UMT5 系（google/umt5-*，AutoConfig 无 model_type 需显式类加载）+ teacher-forced 前向（config：版本回归）
 - **发现来源**：2026-09-27 每日扫描。
+
+### 13.42 `hf_transformers_metal_linear_wrong_outputs_rows_after_first_3d`
+
+`infra_off`（transformers MetalLinear（Apple MPS 后端）对 3D 输入**只有第 0 个 batch 行正确**，其后每行输出错——批维>1 的 3D 线性层在 Metal 路径静默错值） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`
+
+- **机制**：Metal 线性内核 3D 批维寻址错误（见 issue）。
+- **来源**：transformers #49337（2026-10-06 open）。https://github.com/huggingface/transformers/issues/49337
+- **行为效应**：无 crash——MPS 上批式 3D 线性前向静默错值。
+- **触发面**：transformers + Apple Metal + 3D 输入 batch>1（other_stack）
+- **发现来源**：2026-10-09 每日扫描。
+
 
 ## 第 14 类 · 长上下文能力失效（model_on — 健康模型的盲点）
 

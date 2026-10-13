@@ -1,0 +1,62 @@
+id: TRN-0193
+legacy_ids:
+- SFT.16
+slug: teacher_model_rebuilt_fp32_default_attn_mismatch
+aliases: []
+title: trl SDFT/SDPO teacher 回落 fp32 与默认 attn
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: trl
+    component: SDFT/SDPO teacher 构建参数
+  behavior: policy 以实例传入时 model_init_kwargs 为空，create_model_from_path 重建 teacher 时回落 float32 与默认 attention 实现，未继承 student 的设置。
+effect:
+  objects:
+  - 训练信号
+  - 输出分布
+  detail: teacher 与 student 从 step 0 起 dtype/attention 双重不一致（如 policy bf16+eager → teacher fp32+sdpa），KL/JSD 蒸馏信号系统性偏差、随 SDPA 后端漂移，fp32 teacher 多占显存；日志无提示。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7618
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7597
+  kind: github_pr
+relations:
+- kind: var
+  target_raw: distillation_teacher_dtype_mismatch_jsd_sign_flip
+original:
+  category: SFT
+  section: SFT
+  meta: 'stage: `sft` · Cov: `var:distillation_teacher_dtype_mismatch_jsd_sign_flip` · 置信度 `verified`'
+  mechanism: 'trl SDFT/SDPO 在 policy 以**实例**传入时，`model_init_kwargs` 为空——`create_model_from_path` 从路径重建 teacher 时回落默认 `dtype="float32"` 与默认 attention 实现：teacher 与 student 从 step 0 起 dtype/attn 双 mismatch（fp32 teacher 还多占内存）。同库 PR #7597（2026-10-09 merge）已为 DPO/KTO/GRPO/RLOO 的 **reference model** 修了同型代码（`setdefault` 从实例反射 dtype/attn），但 SDFT/SDPO 的 teacher 分支未跟进——修复 #7616/#7619（build teacher with student''s dtype and attn）在途。'
+  source: 'trl #7618（2026-10-09；CPU tiny-model repro：policy bf16+eager → teacher fp32+sdpa；同型 #7597 repro：DPO step-1 loss 0.6472 vs 期望 ln2=0.6931，修复后 0.6931、Qwen3-8B DPO 1×B300 吞吐 +16%/内存 168→142GB）。https://github.com/huggingface/trl/issues/7618 ；同型修复先例 https://github.com/huggingface/trl/pull/7597'
+  behavior: 无 crash——蒸馏目标从第一步就对着一个**精度与 attention 实现都不同**的 teacher 计算：KL/JSD 信号系统性偏差、蒸馏结果随「哪个后端实现 SDPA」漂移，日志无任何 mismatch 提示。与 NUM.13（ms-swift GKD student FP32/teacher BF16 混精 logits 致 JSD 符号翻转）为**跨栈同机制**（`var:`）：那边显式混精配置进 loss、这边 fallback 默认值隐式造成；与 RL-RO.23/24（精度意图只落一侧）同族「双模型分支的精度假设不闭包」，差异是这边打击 teacher 侧而非 rollout 侧。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 输出分布
+        to: 训练信号
+        status: panel7
+    uncertain:
+    - subsystem

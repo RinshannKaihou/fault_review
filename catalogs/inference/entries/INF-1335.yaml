@@ -1,0 +1,57 @@
+id: INF-1335
+legacy_ids:
+- K10.24
+slug: fp8_kv_frozen_calibration_miscalibration
+aliases: []
+title: vLLM FP8 KV 单批冻结校准低估范围致离群值截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: calculate-kv-scales 冻结校准
+  behavior: --calculate-kv-scales 从一次哑 pass 派生冻结的每层 KV 缩放；单批次校准低估解码时真实动态范围，之后超出范围的离群 token 被截断到饱和平台。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 短输出正常，长序列后段开始质量下滑，是否发生强烈依赖 prompt 的数值分布；K/V 幅值在截断阈值处堆积成尖峰。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/37554
+  kind: github_issue
+  resolved_from: 'vLLM #37554'
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`--calculate-kv-scales` 从一次哑（dummy）pass 派生出冻结的每层缩放；单批次校准低估了解码时真实的动态范围，之后出现的离群 token 因超出该范围而被截断到饱和平台。**文档内重叠标注 ⚑§9**：与 §9 的 `kv_online_scale_calc_hybrid_gdn_corruption` 为**同一 issue**，此处取的是可在标准稠密模型上注入的部分——范围低估导致的截断，而非 GDN 触发路径；三处 ⚑§9 重叠扣除后全文档约 **99 个不同机制**。'
+  source: '`gh`：vLLM #37554 *（与 §9 `kv_online_scale_calc_hybrid_gdn_corruption` 为同一 issue；可复现的部分是范围低估导致的截断，而非 GDN 触发）*。'
+  behavior: 短输出正常，长序列后段开始出现质量下滑，且是否发生强烈依赖 prompt 的数值分布。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: 受长度与 prompt 数值范围门控，属 ambiguous。签名是**序列后段的 token 被截断到饱和平台**——statistical（K/V 幅值分布在阈值处堆积成尖峰）与 trajectory（沿序列位置的阶跃式误差起点）配合最有效；geometric 只在截断真的发生时才有响应，未触发时退化为温和量化漂移，属漏检区。
+  repro: prefill 时在层 L 一次性触发：只用前 `floor(calib_fraction*T)` 个位置计算冻结缩放（`scale = 校准窗 absmax / 448`），再用该冻结缩放对**全部**位置做 e4m3 式伪量化，并 clamp 到 ±448*scale——对校准后离群值的截断正是本故障的要点。诚实说明：是否真的发生截断**依赖 prompt**——Qwen 的键携带一个位置 0 的巨大 sink 离群值，它总是落在校准窗内，所以 K 很少被截断；截断这一臂主要由 V（无 sink 离群）以及后段 token 超出前段范围的 prompt 承担。什么都没被截断时，故障退化为冻结缩放的 e4m3 舍入漂移（仍非零，但签名更弱）。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,51 @@
+id: INF-0727
+legacy_ids:
+- '7.54'
+slug: hf_finegrainedfp8_modules_to_not_convert_wrapper_prefix_mismatch
+aliases: []
+title: transformers FP8 排除表前缀失配，bf16 模块被转 fp8
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: transformers
+    component: FineGrainedFP8 排除表匹配
+  behavior: FineGrainedFP8 的 modules_to_not_convert 按多模态 wrapper 路径书写，text-only 加载时模块名缺 language_model 段，前缀匹配全部落空；已有键重映射不作用于排除表。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: AutoModelForCausalLM 加载 Qwen3.8-Flash-Next-FP8 时，应保 bf16 的 PLE 投影、hyper-connection mixer、linear-attn 模块被无 scale cast 到 fp8；加载零报错、无警告，仅生成质量下降。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers + FineGrainedFP8 多模态 checkpoint + AutoModelForCausalLM text-only 加载（一行加载代码即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-26'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48349
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（FineGrainedFP8 的 `modules_to_not_convert` 携带多模态 wrapper 路径（`model.language_model.layers...`），text-only 加载（AutoModelForCausalLM）时模块命名为 `model.layers...` → 排除模式全部失配，厂商指定保 bf16 的模块（PLE 投影、hyper-connection mixer、linear-attn conv/in_proj）的 bf16 权重被**无 scale 静默 cast 到 fp8**——数值损坏，加载零报错） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`Qwen/Qwen3.8-Flash-Next-FP8` 的 `quantization_config.modules_to_not_convert` 以多模态 wrapper 层级写路径；经 `AutoModelForCausalLM` 实例化时 text stack 名字空间不同（无 `language_model` 段），字符串前缀匹配全部落空。FineGrainedFP8 quantizer 随后把 checkpoint 中实为 BF16、且在排除表内的模块照常转换：bf16 权重直接 cast 到 fp8 **不带任何 scale**，值被截断损坏。transformers 已有 checkpoint 键重映射逻辑（wrapper ↔ text-only）却不作用于排除表；修复方向为前缀归一化或后缀段匹配。下游一个 dtype mismatch 碰巧使其暴露，否则纯质量退化无信号。'
+  source: 'transformers #48349（2026-08-26 open，transformers 5.16.0.dev0；day-0 bring-up 发现，附三处本地补丁验证；模型库交叉报告 Qwen/Qwen3.8-Flash-Next-FP8/discussions/2）。https://github.com/huggingface/transformers/issues/48349'
+  behavior: '**无 crash、静默质量损坏**——被误转模块的输出系统性偏差，仅表现为生成质量下降（无加载错误、无 dtype 警告）。属「**排除表命名空间与实例化名字空间脱钩**」新子签名：与 12.23（Chunk 不等分）同为 v5 动态加载域，但本条是量化配置语义在跨命名空间加载时静默失效；与 7.55 同日构成「量化承诺（排除/回退）与实现脱钩」对。'
+  trigger_surface: transformers + FineGrainedFP8 多模态 checkpoint + AutoModelForCausalLM text-only 加载（一行加载代码即触发）
+  discovery: 2026-08-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

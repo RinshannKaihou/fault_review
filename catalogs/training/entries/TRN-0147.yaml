@@ -1,0 +1,64 @@
+id: TRN-0147
+legacy_ids:
+- KER.16
+slug: triton_int32_offset_wraparound_oob_rw
+aliases: []
+title: DeepSpeed Triton int32 偏移回绕为负致越界读写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: deepspeed
+    component: swiglu/AutoEP Triton 偏移
+  behavior: swiglu 与 AutoEP fused kernel 用 int32 算元素偏移，元素数超 2^31 时回绕为负；掩码 offsets<n_elements 不拒绝负偏移，kernel 对张量起始前的内存 load/store。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 元素数 >2^31（bf16 即 >4 GiB 张量，MoE 大 hidden 或长序列可达）时触发；本报告 repro 表现为 CUDA illegal memory access，若负偏移落在合法映射区则静默写坏别的张量、读取侧把垃圾当梯度。现有单测规模过小未覆盖。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8590
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0140
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `shared` · Cov: `var:triton_block_local_mask_oob_rope_write` · 置信度 `documented`'
+  mechanism: DeepSpeed Triton kernel 用 int32 算元素偏移：`swiglu_triton.py`（#8244 引入，fwd L38-40 / bwd L53-55）`offsets = pid * BLOCK_SIZE + arange`，`n_elements > 2^31` 时 `pid*2048` 在 `pid=1,048,576` 处溢出为**负数**，而掩码 `offsets < n_elements` **不拒绝负偏移**——mask 放行，kernel 对**张量起始之前**的内存 load+store（bf16 输入 1.25×2^31 元素时越界窗 4.0→3.0 GiB 在张量前方）。`autoep_fused_token_ops.py`（#8326，opt-in `combine_impl="fused_weighted_sum"` 路径）`token * out_stride`（stride=hidden）同型：tokens×hidden > 2^31 即溢出（expert-row 地址已 int64，只有 token 乘积中招）。触发阈值=元素数>2^31（bf16 即 >4 GiB 张量；MoE 大 hidden / 长序列可行）。
+  source: 'DeepSpeed #8590（2026-09-18；swiglu 是 GroupedExperts 默认路径；`program_id` 转 int64 修复后 2^31 以下 bitwise 相同、kernel 耗时不变）。https://github.com/deepspeedai/DeepSpeed/issues/8590 ；2026-09-19 补：修复 PR DeepSpeed #8591（`Use int64 program ids in the SwiGLU and AutoEP fused restore Triton kernels`）已于 2026-09-19 04:02 UTC merge（merge commit `bb5c23e0255c`），#8590 同刻 closed completed。'
+  behavior: 两侧可见面：CUDA illegal memory access（本报告 repro）或**负偏移落进合法映射区时静默读写错位内存**（KER.09 的 H100 观察同型：有分配 slack 则静默污染、无 slack 才 crash）——写入侧打坏**别的张量**、读取侧把垃圾当梯度。与 KER.09（Triton 掩码用块内坐标漏全局边界）同族「Triton 边界/寻址算术错」第 2 个实例，断点不同：那边 mask 域错（局部 vs 全局坐标）、这边**偏移量本身溢出回绕 + mask 不查负数**；与 NUM.07（autotune 非确定）无共享根因但同处「现有单测规模太小漏网」的测试盲区。
+  discovery: 2026-09-19 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - effect.visibility
+  note: visibility 改 报错：原文“CUDA illegal memory access（本报告 repro）”是实际复现的现象，静默错位读写是依负偏移是否落进合法映射区的条件性后果、引 KER.09 类比；词表 报错 说明“仅在伴随静默后果时出现”正对应此情形。静默面已写在 detail。subsystem 算子/内核 维持（通用的 Triton 寻址算术缺陷，非路由逻辑）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 报错
+        to: 静默错误
+        status: unanimous

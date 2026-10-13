@@ -1,0 +1,52 @@
+id: INF-0612
+legacy_ids:
+- '6.219'
+slug: sglang_unified_radix_backuped_stub_prefix_never_queries_l3
+aliases: []
+title: SGLang backuped stub 前缀从不查询 L3
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: backuped stub 锚定路径
+  behavior: 对 backuped-only stub 节点，prefetch 路径视其跨度为已匹配而不发存储查询，load-back 路径因 stub 无 host 索引拒绝该跨度，两路径语义矛盾。
+effect:
+  objects:
+  - 性能/资源
+  detail: 前缀 KV 被 L1/L2 双双驱逐但存储备份已完成后，重发同前缀时全量重算 prefill、L3 命中率静默归零、TTFT 退化；结果正确；flush_cache 或重启后同请求可命中 L3。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + UnifiedRadixCache + HiCache + 双层驱逐后重访问（other_stack：驱逐压力 + 前缀重发即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38452
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0530
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang UnifiedRadixCache + HiCache：前缀 KV 被 L1/L2 双双驱逐但**存储备份已完成**时，树节点以 backuped-only stub 存活；重发同前缀时 (a) prefetch 路径把 stub 跨度视为「已匹配」**不发存储查询**、(b) load-back 路径因 stub 无 host 索引拒绝该跨度——**数据明明在 L3 却全量重算 prefill**；`flush_cache` 或引擎重启后同请求能命中 L3（空树 → root 锚定全前缀 prefetch 正常），证明存储读路径本身健康、只有 stub 锚定路径坏） · Cov: `var:vllm_kv_offload_supply_demand_contract_drift`（6.137 分层缓存契约漂移族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 两条路径对「backuped stub」的语义假设矛盾：prefetch 认为它可满足（视为已匹配）、load-back 认为它不可用（无索引拒绝）——同一对象在两个消费者处的契约定义分裂；`file` 与 `mooncake` 双后端复现证明失效在树层而非后端。
+  source: 'SGLang #38452（2026-09-08 open，含 336-token 阈上复现脚本、驱逐时序关键步骤与 flush 对照）。https://github.com/sgl-project/sglang/issues/38452'
+  behavior: 无 crash——**驱逐-重访问工作负载下 L3 命中率静默归零**（TTFT/prefill 计算全额回退，分层的全部收益消失）；因重算结果正确，纯粹性能/成本故障、无质量信号。6.137（supply/demand 契约漂移）之后契约分裂族在 L3 存储层的新实例。
+  trigger_surface: SGLang + UnifiedRadixCache + HiCache + 双层驱逐后重访问（other_stack：驱逐压力 + 前缀重发即触发）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

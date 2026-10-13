@@ -1,0 +1,51 @@
+id: INF-0138
+legacy_ids:
+- '1.139'
+slug: ttmetal_matmul_bias_softplus_epilogue_drops_beta_reciprocal
+aliases: []
+title: matmul softplus epilogue 丢 beta 参数致阈值下归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: bias+SOFTPLUS epilogue 参数
+  behavior: matmul/linear 的 bias+SOFTPLUS epilogue 不转发 activation_param2（beta_reciprocal）；host 已正确计算该参数，其余工厂均推送，唯 bias epilogue 丢失。
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: 阈值以下的 softplus 输出恰为 0，非线性段整段归零，gating/Mamba 类融合用户静默损坏；nightly 用大 K 随机输入，PCC 0.994931 对阈值 0.994 通过，atol/rtol 过松，测试分布放行了该 bug。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `matmul/linear` bias + SOFTPLUS 融合（软件算子选择即触发；可见性取决于前激活分布）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-02'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55266
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（matmul/linear 融合 bias + SOFTPLUS epilogue 不转发 `activation_param2`（beta_reciprocal）——阈值以下 softplus 输出**恰为 0**；host 正确计算 param2（`matmul_utilities.hpp:313-329`）且每个工厂按名推送，唯 bias epilogue 丢失；nightly PCC 门以 0.994931 对 0.994 阈值**以 0.0009 之差通过**——测试分布放行结构归零 bug） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 'nightly 用 K=4096/8192 的 `torch.randn`：matmul 输出 std≈64/90 对默认 threshold=20，~40% 元素线性直通且幅值数百、主导 PCC；被归零的元素幅值均小、对 PCC 贡献近零；配套 atol=0.008*K/rtol=2.5*K 松到不约束任何东西。对同分布建模坏内核（y>20 ? y : 0）对 torch golden 的 PCC=0.994931，与 nightly 实测一致——假阴性被定量复现。'
+  source: 'tt-metal #55266（2026-09-02 open，含 nightly run 编号、PCC 建模推导与分布修复建议）。https://github.com/tenstorrent/tt-metal/issues/55266'
+  behavior: 无 crash——softplus 的非线性段（softplus 与 0/x 差异最大处）整段归零；gating/Mamba 类门融合用户静默损坏。方法论警示「**阈值 × 分布联合假阴性**」：大 K 随机分布使 PCC 祝福结构性 bug——与 1.105（容差回退假阳性）方向互补的经验对偶。
+  trigger_surface: tt-metal + `matmul/linear` bias + SOFTPLUS 融合（软件算子选择即触发；可见性取决于前激活分布）
+  discovery: 2026-09-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

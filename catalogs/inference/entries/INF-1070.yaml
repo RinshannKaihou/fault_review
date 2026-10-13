@@ -1,0 +1,51 @@
+id: INF-1070
+legacy_ids:
+- '11.47'
+slug: vllm_mtp_maxlen_skip_zero_draft_ids_overlimit
+aliases: []
+title: vLLM MTP 超限 skip 返回全零 draft ID
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: MTP drafter 超限 skip 路径
+  behavior: 序列超过 drafter max_model_len 时，skip 路径返回全零 token ID 而非零条 draft，scheduler 当作真实 draft 送 verify；资格检查还用 batch 级 max_seq_len。
+effect:
+  objects:
+  - 性能/资源
+  - 指标/日志
+  detail: 上下文超过 drafter 上限（如 115k 输入 vs 80k 限制）时输出正确，但 verify 恒拒绝，SpecDecoding 指标报 0% 接受、易被误读为 drafter 质量差；同 batch 内短请求也被一并停掉推测。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V1；speculative-config max_model_len + 超限上下文请求（同批短请求受连坐）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52756
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（MTP drafter 超限 skip 路径返回全零 token ID 而非零条 draft → scheduler 当真 draft 去 verify（恒 0% 接受）；batch 级 max_seq_len 门控使一条超限序列停掉全批推测） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: vLLM 0.27.1 起 `SpeculativeConfig.max_model_len` 被 V1 legacy GPU model runner 消费；序列超过 drafter 上限时，skip 路径返回 shape `[num_requests, num_speculative_tokens]` 的**全零 token ID** 而非对这些请求返回零 draft。scheduler 把零当作真实 draft ID 交给 target verify → 恒拒绝；metrics 连续报 drafted tokens 0% 接受。且资格检查用 batch-wide `common_attn_metadata.max_seq_len`——一条超限序列（如 115k input vs 80k drafter limit）使同 GPU batch 内所有本可推测的短请求一起停推测。
+  source: 'vLLM #52756（2026-08-18 open，v0.27.1，Qwen3.8-27B-FP8 sm_120；#52258 为 runtime check 引入前奏）。https://github.com/vllm-project/vllm/issues/52756'
+  behavior: 无 crash、输出正确。静默性能回退（无谓 verify 开销）+ SpecDecoding 指标失真（0% 接受被误读为 drafter 质量问题）；batch 级门控把单请求超限放大为全批退化。属「skip 语义返回哨兵值而非空集 × batch 级门控粒度错」新实例。
+  trigger_surface: vLLM V1；speculative-config max_model_len + 超限上下文请求（同批短请求受连坐）
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

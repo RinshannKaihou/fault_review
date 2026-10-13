@@ -1,0 +1,63 @@
+id: INF-0611
+legacy_ids:
+- '6.218'
+slug: sglang_hicache_backup_thread_dies_on_backend_exception_leak
+aliases: []
+title: SGLang HiCache 备份线程遇后端异常即死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HiCache 备份线程异常边界
+  behavior: backup_thread_func（含 HybridCacheController 覆盖）只捕获 queue.Empty，后端写页抛出的任何异常都会杀死 daemon 线程；batch_set 软失败也不回传失败信息。
+effect:
+  objects:
+  - 性能/资源
+  - 指标/日志
+  detail: 任一存储后端（Mooncake/NIXL/3FS/file 等）一次写页异常后，备份操作永远滞留 backup_queue、不再写 L3，host 内存永不释放直至池耗尽；无日志指向死线程，hicache_* 指标仍显示备份在途。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + HiCache 任意存储后端的一次异常（other_stack：单次后端错误即永久失效）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38428
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0531
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang HiCache `backup_thread_func`（含 `HybridCacheController` 覆盖）只捕获 `queue.Empty`：存储后端写页时抛出的**任何异常**（I/O 错误、超时、Mooncake/NIXL/3FS/HF3FS/file 后端的畸形响应）逃出循环杀死 daemon 线程——此后 (a) 每个备份操作**永远滞留 `backup_queue`** 不再写 L3；(b) `ack_backup_queue` 永不排空 → `entry.release_host()` 永不执行、**host 内存永不释放**；(c) 唯一可见症状是很久之后的 host 池耗尽，无一行日志指向死掉的 backup 线程，`hicache_*` 指标照常上报「备份在途」） · Cov: `var:vllm_tiering_cascade_hit_pending_key_permanent_drop`（6.138 分层缓存后台路径静默失效族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 异常边界只覆盖「队列空」这一正常路径，后台 worker 的全部真实失败模式（后端异常）落在边界外；`batch_set` 返回 False 的软失败路径 acked 的 `StorageOperation` 也不携带失败信息——两层失败通道都不传递状态。
+  source: 'SGLang #38428（2026-09-08 open，含 backup_thread_func 源码引用与三级后果链分析）。https://github.com/sgl-project/sglang/issues/38428'
+  behavior: 无即时 crash——**L3 写入静默停摆 + host 内存单调泄漏**的双重缓释故障；指标仪表盘持续显示健康（备份「在途」），实际备份通道已死。6.138（HIT_PENDING 永久丢弃）之后分层缓存后台静默失效族新成员：本条失效单元是**整条备份线程**而非单个键。
+  trigger_surface: SGLang + HiCache 任意存储后端的一次异常（other_stack：单次后端错误即永久失效）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：分类与独立判断基本一致（KV缓存 / sglang，HiCache 分层缓存备份；性能退化）。effect.objects 第一遍为 [性能/资源, 指标/日志]，独立判断第二项曾为 可用性/进度；原文只说“唯一可见症状是很久之后的 host 池耗尽”，未描述耗尽后服务中断，而 hicache_* 指标照常上报“备份在途”有原文明确依据，故维持第一遍。behavior/detail 事实均有原文依据，长度合规。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 性能退化
+        to: 静默错误
+        status: panel7

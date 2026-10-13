@@ -1,0 +1,60 @@
+id: INF-1260
+legacy_ids:
+- K5.4
+slug: trtllm_reuse_block_evict_before_kvtransfer
+aliases: []
+title: TRT-LLM PD 分离 block reuse 在 KV 发送前驱逐块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tensorrt-llm
+    component: reuse 树驱逐与异步 CacheSender
+  behavior: 开启 enable_block_reuse 时 prefill 侧经 UCX 调度异步 CacheSender，executor 却视请求已完成，抢先把其 block 从 reuse 树驱逐，sendSync 找不到该 block。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: 4P1D UCX 部署下两种表现：发送根本未发生时请求死锁挂起；槽位已被重新分配时 decode 侧静默使用过期或外来的前缀 KV。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/12542
+  kind: github_issue
+  resolved_from: 'TensorRT-LLM #12542'
+relations: []
+original:
+  category: KV5
+  section: KV §5 cross-node-transfer（跨节点传输：分离式 / 卸载 / RDMA）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `no` · 置信度 `documented`'
+  mechanism: P/D 分离中开启 `enable_block_reuse` 时，prefill 侧通过 UCX 调度一个异步 `CacheSender`，但 executor 循环把该请求当作已完成，抢先把这些 block 从 reuse 树中驱逐；随后 `CacheSender::sendSync` 找不到该 block（`kvCacheUtils.h:84` 处的 `TLLM_CHECK`）→ 要么发送根本没发生（死锁），要么该槽已被重新分配，decode 端读到过期/外来 KV。
+  source: 'TensorRT-LLM #12542（v1.2.0.rc6，4P1D UCX）。'
+  behavior: 死锁分支表现为请求挂起；重分配分支表现为 decode 侧静默使用了错误的前缀 KV。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: off-manifold（infra_off），集中在消费端的**前缀位置**：早期 token 的 KV 或为零/垃圾（被释放的槽），或属于另一条序列。捕获者：geometric（前缀段范数塌陷或方向错位）、trajectory（前缀-后缀接缝处的轨迹断裂）、cheap（recompute-oracle）。漏检者：spectral / statistical 的全局量在「另一条序列的 KV」这一支上会通过（外来 KV 本身分布健康），只有零/垃圾那一支才有幅度异常。只有 stale-read 变体可评分，死锁变体没有任何隐藏态。
+  repro: 前缀段双模式覆盖——单个 `self_attn` pre-hook，对前 p 比例的 cached K/V 要么整段置零（freed slot 模式），要么替换为另一条 prompt 捕获的 K/V（reallocated slot 模式）；死锁模式不注入。
+  locus: '`cross-node-transfer`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 visibility=静默错误。原文两个分支并列，但 signature 明确'只有 stale-read 变体可评分，死锁变体没有任何隐藏态'，编目关注的是 decode 端静默读到过期/外来 KV；挂起 由 effect.objects 的 可用性/进度 覆盖。subsystem=KV缓存（词表含 KV 跨节点传输管理逻辑）与独立判断一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

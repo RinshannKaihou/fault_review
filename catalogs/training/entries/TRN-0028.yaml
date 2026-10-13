@@ -1,0 +1,56 @@
+id: TRN-0028
+legacy_ids:
+- NUM.19
+slug: invalid_grad_norm_check_ungated_overrides_opt_out
+aliases: []
+title: DeepSpeed 无效范数跳步判定绕过 check_grad_overflow
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: ZeRO-1/2 step 无效范数溢出判定
+  behavior: 'PR #8638 在 ZeRO-1/2 step() 引入的无效范数→overflow=True 判定落在 check_grad_overflow 门控之外；开 gradient_clipping 时范数被强制计算，关闭开关后仍会跳步。'
+effect:
+  objects:
+  - 训练轨迹
+  - 模型权重
+  detail: '无 crash、无警告：bf16 用户显式设 check_grad_overflow: False 且开 clipping 时，仍回到静默跳步，两种配置训练动力学不可区分（skipped_steps 相同）；单 rank CI 跳过 world_size=2 用例而恒绿，≥2 rank 可复现。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8805
+  kind: github_issue
+relations: []
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'DeepSpeed ZeRO-1/2 `step()`（`runtime/zero/stage_1_and_2.py:2791`）由 PR #8638 引入的第二条溢出判定 `is_invalid_grad_norm(scaled_global_grad_norm) → self.overflow = True` **不受 `bf16.check_grad_overflow` 门控**——该开关的文档语义是「检出梯度溢出/下溢并跳步」的 opt-out（默认 True）；`gradient_clipping > 0` 时 `compute_grad_norm` 被强制开启，而 #8638 的哨兵→overflow 规则落在 `self.check_grad_overflow` 块**之外**：`check_grad_overflow=False` + clipping 开启时 invalid-norm 仍置 `overflow=True` 跳步。修复 = 用 `if self.check_grad_overflow and is_invalid_grad_norm(...)` 把新规则关回用户开关之下。'
+  source: 'DeepSpeed #8805（2026-10-12；逐行因果隔离：删除 L2791-2793 三行 `4 passed`、保留则 `4 failed`；`test_ignore_grad_overflow` 在 ≥2 rank 下断言失败——CI 恒绿是因为 cpu-torch-latest runner 单 rank 跳过全部 `world_size=2` 用例，2-rank job 114158646231 可复现）。https://github.com/deepspeedai/DeepSpeed/issues/8805'
+  behavior: '无 crash——bf16 用户显式 `check_grad_overflow: False`（选「让 Inf 梯度直接进优化器」语义）时，clipping 开启即回到静默跳步 regime：**两种配置训练动力学不可区分**（`skipped_steps` 相同），文档承诺的 opt-out 失效且无任何警告。与 NUM.16（哨兵平方洗白溢出，#8638 所修）互补：那条是「坏 step 被放行」、这条是同一 PR 引入的「用户开关管不住新的跳步路径」；与 OBS.14（autocast z0 溢出跳步误记为已应用）同打击溢出路径的配置语义契约。任务影响未实测（multi-rank 单测断言已闭合证明行为分叉）。'
+  discovery: 2026-10-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 模型权重
+        to: 训练轨迹
+        status: unanimous

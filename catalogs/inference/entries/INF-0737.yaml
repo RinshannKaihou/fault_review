@@ -1,0 +1,58 @@
+id: INF-0737
+legacy_ids:
+- '7.64'
+slug: vllm_modelopt_nvfp4_invalid_utf8_token_ids_ct_clean
+aliases: []
+title: vLLM ModelOpt NVFP4 检查点生成无效 UTF-8 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: ModelOpt NVFP4 检查点格式语义
+  behavior: vLLM 对 ModelOpt NVFP4 检查点格式语义的处理有误（具体环节待定）；同精度、同 kernel、同 KV 布局的 compressed-tensors 版本无此问题。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: SM120 上生成韩文等多字节文本时，ModelOpt 版输出的 token id 不构成合法 UTF-8（6 次运行出现 62–94 个 U+FFFD，CT 版为 0）；HTTP 200、吞吐正常、英文基本正常，temp=0 也命中，易误判为渲染或客户端问题。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + ModelOpt NVFP4 checkpoint（GLM-5.3-Flash 等）+ SM120 + 多字节文字生成（checkpoint 变量；CT 版规避）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54150
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（ModelOpt NVFP4 转换在 SM120 上生成**无效 UTF-8 字节-token 序列**（韩文多字节文本 U+FFFD 62–94/6 次 vs 同模型 compressed-tensors NVFP4 0/6）——同 image、同 kernel、同 KV 布局、同并行/采样，唯一变量是 checkpoint 格式；`return_token_ids` 离线解码排除 detokenizer，greedy 命中指向 logits） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 四个 NVFP4 checkpoint 对照（LibertAIDAI ×2 revision、dealignai、RedHatAI-CT）：ModelOpt 版全命中 U+FFFD（62–94/6），CT 版 0/6；43-entry ignore list revision 仍 62/6。逐项排除：上下文长度（0–1M token 相关性零）、采样（temp=0 命中）、MTP（5/0 同）、PDL（patch 排除 SM12x 无变化）、abliteration（guardrail-removed 与原版同分）、`quantization_config.ignore`。token id 本身不构成合法 UTF-8（离线用 checkpoint 自带 tokenizer 解码 API 文本复现同数 U+FFFD）→ byte-token continuation 选择错误 → logits 层错误。
+  source: 'vLLM #54150（2026-08-28 open，SM120，含 4-checkpoint × 6-run 矩阵与逐项排除）。https://github.com/vllm-project/vllm/issues/54150'
+  behavior: 无 crash、HTTP 200、吞吐正常、英文基本正常——**多字节文字静默损坏**（音节丢失），极易误判为渲染/客户端问题。属「**ModelOpt NVFP4 元数据链缺陷的 UTF-8 显形面**」新子签名：与 7.60（未初始化 input_scale 归零专家）、#54126（FP8_PB_WO 导出约定加载失败）同 ModelOpt 检查点元数据域；CT 同精度同 kernel 干净说明缺陷在 checkpoint 格式语义而非 NVFP4 计算本身——多语言评测是唯一可靠探测器。
+  trigger_surface: vLLM + ModelOpt NVFP4 checkpoint（GLM-5.3-Flash 等）+ SM120 + 多字节文字生成（checkpoint 变量；CT 版规避）
+  discovery: |-
+    2026-08-29 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 输出分布
+        to: 输出内容
+        status: unanimous

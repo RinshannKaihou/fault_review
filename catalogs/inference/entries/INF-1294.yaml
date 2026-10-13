@@ -1,0 +1,57 @@
+id: INF-1294
+legacy_ids:
+- K9.3
+slug: fp8_kv_e5m2_vl_default_scale_flip
+aliases: []
+title: fp8_e5m2 KV 默认 scale 损坏视觉语言模型的图像理解
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: fp8_e5m2 KV 未校准默认 scale
+  behavior: kv_cache_dtype="fp8_e5m2" 只有 2 位尾数，叠加未校准的默认 scale，把视觉 token 的 KV 分辨率彻底压垮，文本 token 的 KV 尚能承受。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 纯文本请求正常，一旦输入含图像即给出事实错误的视觉描述（纯白图片答成红色），无警告无异常；见于 Qwen2/2.5-VL。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/41343
+  kind: github_issue
+  resolved_from: 'vLLM #41343'
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`ambiguous` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`kv_cache_dtype="fp8_e5m2"` 配合默认缩放会静默损坏**视觉语言（vision-language）**模型（Qwen2/2.5-VL）——一张纯白图片被回答成"红色"。E5M2 只有 2 位尾数，叠加未校准的默认 scale，把视觉 token 的 KV 分辨率彻底压垮，而文本 token 的 KV 尚能承受。'
+  source: 'vLLM #41343（OPEN 2026-04-30）。'
+  behavior: 纯文本请求看起来正常，一旦输入含图像即出现事实性错误的视觉描述（白 → 红），无警告无异常。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: off-manifold 的量化误差**集中在 image-token 的 KV 位置**上；逐位置量化误差指标在视觉 token 段尖峰。族判为 ambiguous：门控条件是输入模态——纯文本输入下签名完全不存在。检测面：per-position 的 statistical / geometric 度量（按 token 类型分段统计）可见；全序列平均的 cheap 与 spectral 度量会被大量正常文本 token 稀释而漏检。纯文本模型无视觉 token，只能以"对某一 token 子集施加更强量化误差"的方式近似。
+  repro: 在选定的 token 位置子集（充当 image-token 段的替身）上对 cached K/V 施加 E5M2 级别（2 位尾数）的粗量化 + 未校准 scale，其余位置保持 fp32；单钩子在 cache 写入后按位置掩码施加。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

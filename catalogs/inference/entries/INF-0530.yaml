@@ -1,0 +1,50 @@
+id: INF-0530
+legacy_ids:
+- '6.137'
+slug: vllm_kv_offload_supply_demand_contract_drift
+aliases: []
+title: vLLM PD 多层 KV offload 供需 key 契约漂移致超时重算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: p2p tier 供给/需求 key 计算
+  behavior: producer 供给集与 consumer 需求集由两台引擎的两条独立路径计算、无一致性校验；#51840 把 lookup 返回改为 HIT_PENDING，静默改变了 consumer 需求的 key。
+effect:
+  objects:
+  - 性能/资源
+  detail: PD 流程经 P2P secondary tier 且供需分歧时，consumer 未匹配需求 park 至 _LOAD_TIMEOUT_S 后重算 prompt；输出正确，+30s 尾延迟，仅 recompute 计数上涨，测试套件未察觉；#52808、#53062 为同一弱点的独立实例。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM PD 多层 KV offload（OffloadingConnector + p2p secondary tier）；依赖代码演化史（lookup 语义变更）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53083
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（PD 多层 KV offload：producer 供给集与 consumer 需求集由两台引擎两条独立代码路径计算、无一致性校验——lookup 语义变化单向静默改变需求侧，30s 超时后重算） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'PD 流程经 P2P secondary tier 时，producer 的供给与 consumer 的需求由**两台引擎上的两条独立代码路径**各自计算，没有任何机制校验二者一致。二者分歧时 consumer 的未匹配需求 park 至 `_LOAD_TIMEOUT_S` 后重算 prompt。#51840 把 `lookup` 返回值从 `RETRY` 改为 `HIT_PENDING`（开始 promotion 时），而 `HIT_PENDING` 在 `_sliding_window_lookup` 中保持 consecutive-hit streak 存活——**一个文件中的语义变化静默改变了 consumer 需求哪些 key**，测试套件毫无察觉；#52808（=6.112）与 #53062（=6.138）是该同一弱点的两个独立实例、被分别发现分别修复。PR #53330 主张需要机制级防护（declare-or-fail guards + `_POLICY_KEEPS_PREFIX_HITS` per-policy 契约表）而非继续打点补丁。'
+  source: 'vLLM #53083（2026-08-20 open）+ 修复 PR #53330（2026-08-21 open）。https://github.com/vllm-project/vllm/issues/53083'
+  behavior: 无 crash、输出正确（重算兜底）。纯活性/成本故障：+30s 尾延迟 + 全量重算，表面仅 recompute 计数上涨。属「**跨引擎 supply/demand 契约漂移**」新子签名——分布式系统中一条路径的语义演化无契约校验即静默破坏另一条路径的假设（C.6 活性盲区），且两个"点修复"实例先行出现说明该弱点系统性存在。
+  trigger_surface: vLLM PD 多层 KV offload（OffloadingConnector + p2p secondary tier）；依赖代码演化史（lookup 语义变更）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

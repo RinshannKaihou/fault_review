@@ -1,0 +1,62 @@
+id: INF-0650
+legacy_ids:
+- '6.257'
+slug: ttmetal_gemma4_shared_scheduler_chunk_multi_request_ragged_offset_cross_request_kv_mismatch
+aliases: []
+title: tt-metal Gemma4 多请求共享 prefill 步时 KV 错配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tt-metal
+    component: 共享 prefill 步每请求 KV 偏移
+  behavior: 多个请求共享 prefill 步时，后续请求 chunk 边界非 2048 倍数（ragged 偏移），每请求 K/V 定位在共享调度路径上错配；精确内核位点未定位。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  - 输出内容
+  detail: Gemma4-31B 经 vLLM TT plugin 在 P150x8 开 chunked prefill，多请求同步 prefill 时 needle 测试 12 请求错 5–6 个（错答或退化重复）；单请求跨步 split-prefill 正确，非 speculation 引入。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + vLLM TT plugin + Gemma4 + chunked prefill + 多请求同 step（ragged 偏移）（hw_specific：P150x8 实测；单请求/顺序 prefill 免疫）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57873
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（Gemma4-31B 经 vLLM TT plugin 于 P150x8 + `--enable-chunked-prefill --max-num-batched-tokens 2048`：**同一步共享多个 prefill 请求时错答**——plugin 测试 `test_prefills_sharing_a_step_each_recall_their_own_needle` 12 请求错 6（普通 Gemma4ForCausalLM）、错 5（Gemma4DFlashContractForCausalLM）；同服务器上**单请求跨多步 split-prefill 正确**、长 split-prefill 正确——失败需要"数个请求同时处于 prefill"。机理指向：多请求共享 step 时第二请求只拿到预算剩余 token，其 chunk 边界**非 2048 倍数（ragged offsets）**（日志实据：一次 eager prefill `batch=2` 混合 2807 与 1289 token 两请求的 continuation+首 chunk、随后 550 token 补齐）；失败答案形态为错 passphrase 或退化重复（`cobalt cobalt ...`/`the secret passphrase is the secret passphrase is ...`）；两 run 有两个错答逐字相同——**非 speculation 引入**。日志无 `chunk_start=N without sliding_tail_in` 告警，排除 #57531 链路；262144 上下文开启 bounded sliding、失败 prefill 全 eager（与 #57531"bounded 每块 eager"表述一致）） · Cov: `NEW`（共享 chunked-prefill 步内 ragged 偏移下跨请求 KV 错配子签名；与 8.93（同模型 spec verify 覆写在窗 KV）同模型族不同机制——本条无需 speculation、纯多请求调度形状触发） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '多请求共享 prefill step 的 ragged chunk 边界 × 每请求 K/V 定位（per-request page/ring 偏移）在共享调度器路径上的错配；精确内核位点未定位（两次 CI run 日志+错答清单为证，非最小复现）。根因区间已收窄：非 #57531 链、非 dFlash、单请求 split 无恙。'
+  source: 'tt-metal #57873（2026-09-25 open，含两 CI run 链接、12+12 请求错答清单、batch=2 ragged 长度日志实证与 #57531 排除）。https://github.com/tenstorrent/tt-metal/issues/57873'
+  behavior: 无 crash——**并发 prefill 的请求静默读到别人的 K/V**（needle 测试直接错答/退化重复）；单请求压测全绿使常规验证漏检，生产多租户并发才显形。6.252（KV 事件 parent 撤回）之后调度形状类 KV 错配族在 **tt-metal 共享 chunked prefill** 维度的首例。
+  trigger_surface: tt-metal + vLLM TT plugin + Gemma4 + chunked prefill + 多请求同 step（ragged 偏移）（hw_specific：P150x8 实测；单请求/顺序 prefill 免疫）
+  discovery: 2026-09-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 KV缓存。原文机制为“ragged chunk 边界 × 每请求 K/V 定位（per-request page/ring 偏移）错配”，症状是请求读到别人的 K/V；修复对象是每请求 KV 定位，属 KV缓存（KV 存储/映射）。多请求共享 chunked-prefill 步是触发条件（rule 6），调度器本身的准入与预算分配原文未指出错误，故不选 调度/服务。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: KV状态
+        to: 跨请求/跨样本数据
+        status: panel7

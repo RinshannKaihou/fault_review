@@ -1,0 +1,50 @@
+id: INF-0267
+legacy_ids:
+- '1.268'
+slug: ttmetal_binary_ng_shard_aliasing_on_partial_layout_match_silent_wrong_answer
+aliases: []
+title: binary_ng shard 别名判定只比部分布局属性致静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: is_native_L1_sharding 谓词
+  behavior: is_native_L1_sharding 判定 shard 能否原地别名为 CB 时，tensor-tensor 分支只比 shard grid，scalar 与 subtile 广播分支只比 ShardSpec，未比完整布局。
+effect:
+  objects:
+  - 数值结果
+  detail: L1-sharded 输入而输出分片方案不同（height→width 同 grid、height→block 同 ShardSpec）时内核按错误布局读数，n150 上 add PCC 0.22–0.52，无警告；全 operand 同 memory config 时正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + L1-sharded binary_ng/eltwise + 输出 memory config 与输入分片不同（height→width 同 grid / height→block 同 ShardSpec）（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58467
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`binary_ng`（含 tensor-scalar 分支）在 L1-sharded 输入下，`is_native_L1_sharding` 判定"可把 shard 原地别名为 circular buffer"时**只比较部分布局属性**：tensor-tensor 分支只比 a/b/c 的 shard **grid**（不同 shard 形状/内存布局/取向同 grid 即过），tensor-scalar 与 subtile-broadcast 分支只比 `ShardSpec`——height-sharded 输入进 width-sharded 输出（同 grid）或同 `ShardSpec` 的 block-sharded 输出时内核按错误布局读数据：真实 Wormhole n150 实测 `ttnn.add` PCC **0.2200**（11,802/16,384 元素偏差>0.1）、同 ShardSpec block 输出 PCC **0.5171**、tensor-scalar `add(x, 1.5)` PCC 0.5091；全 operand 同 memory config 对照 PCC **1.0000**） · Cov: `NEW`（binary_ng 布局等价性窄判定子签名；与 1.221（混合 dtype unpack 位域旋转）、1.263（行主序混合 dtype 双操作数按 A stride 读）同 binary_ng 数据搬运布局假设族——本条在 **shard 别名判定谓词**维度：grid/ShardSpec 匹配 ≠ 布局匹配） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`binary_ng_utils.cpp` 的 `is_native_L1_sharding` 谓词对 tensor-tensor 分支只比 shard grid（L890-L906）、对 scalar/subtile 分支只比 ShardSpec（`c_shard_matches_a`，L833）；报告者附代码行定位与四配置 PCC 对照表。'
+  source: 'tt-metal #58467（2026-09-29 open，Bad Outputs，真实 n150 四 Case 实测）。https://github.com/tenstorrent/tt-metal/issues/58467'
+  behavior: 无 crash、无警告——分片 add/eltwise **静默错值**（最重 72% 元素偏差>0.1）；触发条件是"输入输出都合法、只是输出分片方案不同"的常规重分片场景。
+  trigger_surface: tt-metal + L1-sharded binary_ng/eltwise + 输出 memory config 与输入分片不同（height→width 同 grid / height→block 同 ShardSpec）（hw_specific）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0613
+legacy_ids:
+- '6.220'
+slug: sglang_blockstored_kv_event_cache_salt_undecodable_public_types
+aliases: []
+title: SGLang KV 事件公共类型丢弃 cache_salt
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: KV 事件公共 msgspec 类型
+  behavior: 导出的 BlockStoredWithMetadata 把 metadata 设为必填且与基类同 tag，混合流在类型层不可表达；经 KVEventBatch 解码时 salted 事件被当作普通 BlockStored，salt 被丢弃。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 无 crash；外部 KV 事件消费者（监控、审计、分布式缓存协调器）用公共类型解码时看不到 cache_salt，依赖 salt 做键隔离的下游会把 salted 与 unsalted 条目混入同一命名空间，且无文档提示。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + KV 事件流外部消费者 + pip 安装的公共 msgspec 类型（other_stack：走公共类型解码即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38561
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0562
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang KV 事件流中 `cache_salt`（#30827 引入）生产端正常（salted 节点发 `BlockStoredWithMetadata`，序列化为 legacy 7 元素 `BlockStored` + 尾部 metadata 元素），**消费端坏**：SGLang 未导出任何能解码该流的类型——`BlockStoredWithMetadata` 把 `metadata` 声明为必填、无法解码同流的 unsalted 事件，且与基类同 `tag="BlockStored"` 不能共存于一个 union；经 `KVEventBatch` 的消费者看到 salted store 是普通 `BlockStored`、**salt 被静默丢弃**——隔离特性对走公共类型的所有人不可见，也无文档） · Cov: `var:sglang_lmcache_storage_keys_drop_cache_salt_tenant_isolation`（6.169 cache_salt 隔离缺失族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: wire format 本身后向兼容（legacy 消费者读 7 元素、忽略尾部）；坏在导出的 msgspec 类型系统：必填字段 + 同 tag 双 struct 使混合流在类型层不可表达——「producer 能发、public API 不能读」的接口半实现。
+  source: 'SGLang #38561（2026-09-08 open，含类型层分析、omit_defaults 边界与预期行为定义）。https://github.com/sgl-project/sglang/issues/38561'
+  behavior: 无 crash——外部 KV 消费者（监控/审计/分布式缓存协调器）**静默丢失 tenant 隔离盐**：依赖 cache_salt 做键隔离的下游会把 salted/unsalted 条目混入同一命名空间——6.169（LMCache 外部键丢 salt）之后 cache_salt 暴露面族第二例，本条在**事件导出接口**而非存储键。
+  trigger_surface: SGLang + KV 事件流外部消费者 + pip 安装的公共 msgspec 类型（other_stack：走公共类型解码即触发）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

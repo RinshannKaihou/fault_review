@@ -1,0 +1,54 @@
+id: INF-0420
+legacy_ids:
+- '6.27'
+slug: sglang_dspark_pagesize1_req_to_token_row_overflow_leak
+aliases: []
+title: SGLang page_size=1 下推测 slot 预留超行宽致跨请求溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: req_to_token 行宽分配与释放
+  behavior: 推测解码每步每请求预留 committed+2*num_draft_tokens 个 slot，req_to_token 行宽仅在 page_size>1 时按此分配，page_size=1 时小于预留；释放切片行尾静默 clamp。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 可用性/进度
+  detail: page_size=1、DSPARK gamma=16 时请求接近上下文边界即触发：写入溢出覆盖邻居请求行头部，每个边界命中请求永久泄漏 11-27 个 slot；长 eval 正常完成后服务器被空闲自检以 token_to_kv_ 错误 kill。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用；DSPARK/DFLASH spec v2 + `page_size=1`
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-04'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/33579
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（page_size=1 下 slot 预留水位 > 行宽 → 跨请求行溢出 + 静默泄漏） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: SGLang DFLASH-family（含 DSPARK）spec v2 在每步为每请求预留 `committed + 2*num_draft_tokens` KV slot（2x 为 overlap 双缓冲），但 `req_to_token` 行仅在 `page_size>1` 时才按该预留量分配。`page_size=1` 时行宽 = `context_len + 4 + num_draft_tokens`，小于预留水位。DSPARK gamma=16（`num_draft_tokens=17`）：行余量=21，每步预留超出量=34。当请求接近上下文边界（`committed > context_len - 13`）时：(1) 行写入**溢出到邻居请求的行**；(2) release slice `req_to_token[req_idx][start:end]` 在行尾静默 clamp，溢出的尾部 slot 永不释放 → **永久泄漏**（观察到每个边界命中请求泄漏 11-27 slot），邻居行头部被覆盖（二阶损坏/double-free 风险）。症状延迟且混乱：长 eval 在上下文限截断时正常完成，随后空闲自检 kill 服务器报 `token_to_kv_` 错误。
+  source: 'SGLang #33579（2026-08-04 open）。https://github.com/sgl-project/sglang/issues/33579'
+  behavior: 无即时 crash。`page_size=1` + 推测解码 + 接近上下文边界时，KV slot 预留超过行宽 → 跨请求行溢出（邻居行损坏）+ 永久 slot 泄漏。生产症状延迟且混乱：服务在边界命中的长 eval 完成后，被空闲自检 kill。属「推测解码 slot 预留水位 > page_size=1 行宽 → 跨请求行溢出 + 静默泄漏」新子签名。
+  trigger_surface: SGLang 专用；DSPARK/DFLASH spec v2 + `page_size=1`
+  discovery: 2026-08-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

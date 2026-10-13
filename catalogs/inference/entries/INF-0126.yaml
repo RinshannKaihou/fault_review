@@ -1,0 +1,50 @@
+id: INF-0126
+legacy_ids:
+- '1.127'
+slug: triton_fuse_nested_loops_nondominating_assume_miscompile
+aliases: []
+title: Triton 嵌套循环融合误用非支配 assume 致错误编译
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: fuse-nested-loops pass
+  behavior: tritongpu-fuse-nested-loops 的 matchPositiveTripCount 在函数内任意位置匹配 llvm.assume，不检查 dominance/可达性，据此认定内层循环至少执行一次而跳过零迭代版本分裂。
+effect:
+  objects:
+  - 数值结果
+  detail: 合法 kernel 合法调用（m=4、n=0）下 flatten=True 输出 [4,8,12,16]（应全 0）并越界写入 256 元素，flatten=False 全对；RTX PRO 6000 Blackwell 与 L4、Triton 3.6.0/3.7.1 均复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Triton 3.6+ 编译路径 + 嵌套循环 + 循环外存在相关 llvm.assume（`flatten` 对照可隔离）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: effect.objects 缺“内存安全/越界写”：本条除错值外还有源程序不会执行的越界 store，现只能并入 数值结果。
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11519
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`tritongpu-fuse-nested-loops` 用 `matchPositiveTripCount` 在函数内**任意位置**匹配 `llvm.assume`——不查 dominance/reachability——据此标记内层循环"至少执行一次"并跳过零迭代版本分裂：合法 kernel 合法调用下产生**错误返回值 + 源程序从不执行的越界 store**） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 'pass 需要"内层 trip count ≥1"才能无守卫地扁平化嵌套循环；正确路径是零/正 trip count 的版本分裂，但 assume 匹配成功即提前 return。硬件实测（非仅 IR）：RTX PRO 6000 Blackwell + L4（sm_89）、Triton 3.6.0/3.7.1，m=4/n=0 下 flatten=True 输出 [4,8,12,16]（源要求全 0）且 sink 写入 256 元素（源写 0）；同 kernel 同参数同设备 flatten=False（pass 拒绝）全对。main @ c349ce52 未变。与 #11407 不同 pass 不同根因。'
+  source: 'triton-lang/triton #11519（2026-08-29 open，含自包含复现脚本与双硬件双版本验证）。https://github.com/triton-lang/triton/issues/11519'
+  behavior: 无 crash、无 NaN——编译后 kernel 静默返回错值并执行越契约写入（内存安全面）。属「**优化 pass 的证明与控制流脱钩**」新子签名：编译器把函数级事实当作循环级事实消费；对一切依赖 Triton 的推理栈（vLLM/SGLang 自定义 kernel）构成任意 kernel 的上游正确性风险。与 1.39（FMA codegen）同为 Triton 编译器静默错值族，本条在 MLIR pass 层且带越界 store。
+  trigger_surface: Triton 3.6+ 编译路径 + 嵌套循环 + 循环外存在相关 llvm.assume（`flatten` 对照可隔离）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

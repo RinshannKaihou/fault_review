@@ -1,0 +1,62 @@
+id: INF-0681
+legacy_ids:
+- '7.8'
+slug: quantized_kernel_bias_omission
+aliases: []
+title: 融合反量化 matmul kernel 丢 bias 等量化 kernel 缺陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: 融合 dequant-matmul kernel
+  behavior: 融合 dequant-matmul kernel 实现中漏掉 bias 项；或 INT8 与 BF16 引擎不匹配；或 FP8 多层堆叠间的层间 requantization 引入误差（合并 GPTQ、EXL2、MLC 等子故障）。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: 关键层 bias 被完全丢弃时输出灾难性乱码；部分或轻微时表现为细微的 per-channel 加性偏置（均匀 DC 偏移），与 bias_param_bit_flip 签名重叠。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 量化后端/位数/KV quant 配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/1303
+  kind: github_issue
+  resolved_from: 'TRT-LLM #1303'
+- url: https://github.com/Dao-AILab/flash-attention/issues/679
+  kind: github_issue
+  resolved_from: 'flash-attention #679'
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 融合 dequant-matmul kernel 在实现中 OMIT 掉 bias 项；或 INT8 与 BF16 引擎之间不匹配；或 FP8 在多层堆叠之间做层间 requantization 时引入误差。后果从灾难性乱码到细微的 per-channel 加性偏置不等。本条为 MERGED 条目，逐一列出被合并的子故障：gptq_dequant_kernel_bias（GPTQ 反量化 kernel 丢 bias）、mixed_precision_conversion_corruption（混合精度转换损坏）、exl2_largematrix_precision（EXL2 大矩阵精度问题）、mlc_fp8_requant_compile（MLC FP8 重量化编译问题）。
+  source: 'TRT-LLM #1303；PyTorch Triton-GPTQ blog；flash-attention #679。'
+  behavior: 若关键层的 bias 被完全丢弃则输出灾难性乱码；若只是部分/轻微则表现为细微的 per-channel 加性偏置（均匀 DC 偏移，与 3.5 bias_param_bit_flip 相关）。（源文档将行为效应与签名合并为一条给出。）
+  trigger_surface: 量化后端/位数/KV quant 配置
+  signature: off-manifold。签名形态是**恒定的 per-channel DC 偏移**：geometric 族的均值偏移 / Mahalanobis 检测在偏置幅度足够时命中；statistical 族看到逐通道均值整体平移而方差基本不变——这与 SDC 尖峰（单点极值）和量化噪声（零均值）都可区分。由于偏移是常量，trajectory 族会看到从注入层起所有后续层的一致平移。源文档注明其签名与 bias_param_bit_flip 重叠，因此在签名正交性分析中二者不应被当作独立轴。
+  repro: 在运行时把某个 Linear 的 bias 置零或加扰（单钩子即可，作用于任一 Linear 层）。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+        status: panel7

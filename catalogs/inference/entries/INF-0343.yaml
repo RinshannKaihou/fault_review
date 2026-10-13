@@ -1,0 +1,61 @@
+id: INF-0343
+legacy_ids:
+- '4.27'
+slug: vllm_v2_spec_prefill_rmsnorm_autotune_config_flips_qwen3_greedy_first_token
+aliases: []
+title: vLLM spec 模式 RMSNorm 启动配置不同致首 token 翻转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: 三个 fused RMSNorm 启动配置
+  behavior: 三个 fused RMSNorm 变体的 torch.compile/autotune 工件在同源下按 spec 与 AR 的 dispatch/padding 形态选了不同 reduction-block 启动配置，两者数值不等价。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Qwen3-4B BF16 greedy 开 DFlash2/DSpark 推测解码后首 token 即与 AR 不同（334→95456），分歧发生在初始 target prefill、任何 draft 决策之前；对齐 launch 配置后 prefill logits bitwise 复原。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V2 spec（DFlash2/DSpark drafter）+ Qwen3 系 BF16 + torch.compile RMSNorm autotune + greedy（config；对齐 launch 配置即复原）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58973
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0342
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（vLLM V2 speculative **prefill 阶段的三个 fused RMSNorm 变体经 torch.compile/autotune 选择了与普通 AR 不同的 reduction-block 启动配置**——同一源码、不同 launch 设置即数值不同：pinned commit `153242a`（0.30.1rc0）Qwen3-4B BF16 greedy，行 46 重放中普通 AR 首 token 334、开 DFlash2/DSpark 七 token drafter 变 95456（并发 1、分歧发生在**初始 target prefill、任何 draft/rejection 决策存在之前**）。干预闭合：仅改 prefill dispatch/padding 的对照组保持原 token；把三处 RMSNorm launch 设置对齐 AR 后 36 层 prompt K/V、选定 hidden state 与全部原始 prefill logits **bitwise 等于 AR**，DFlash2 三次 fresh-server 重复全 128 token 复原（首 334）；DSpark 侧还需对齐 Q/K RMSNorm+RoPE launch 配置才得 bitwise 相等（首 token 复原、后续仍分歧）。decode 侧对照案例（row-5 槽 D=A=334 而 V=3786）证明 rejection sampler 无罪——分歧来自 target logits 本身） · Cov: `var:vllm_glm5x_replicated_indexer_key_norm_per_rank_autotune_nondeterministic_tp_greedy_forks`（4.26 Inductor autotune 非确定族——本条在**同一进程内 AR vs spec 两模式对同 op 的 autotune 分歧**维度：4.26 是跨 rank 分叉、本条是跨模式分叉，同一"autotune 选择空间含数值不等价 config"根因面；报告者明确询问维护者"这些 autotuned RMSNorm launch 配置的跨模式一致性是否是预期契约"） · 触发 `config` · 置信度 `documented`'
+  mechanism: 三个 fused RMSNorm 变体的 AOT 工件在同源下按 dispatch/padding 形态选择不同 reduction-block 配置；prefill-only 干预对齐 launch 设置即恢复 bitwise 一致（因果以算术干预闭合）。报告者保留完整 provenance（有序 46 请求、checkpoint 哈希、启动命令）可供公开复现；自定义 drafter + pinned checkout 上有 pre-existing speculative 配置脏补丁（已声明保留于 provenance）。
+  source: 'vLLM #58973（2026-09-28 open，含行 46 重放、三路干预对照（dispatch-only/RMSNorm 对齐/DSpark Q/K 补充对齐）、decode 侧 sampler 无罪对照与 provenance 说明）。https://github.com/vllm-project/vllm/issues/58973'
+  behavior: 无 crash——**开启 speculative 后首 greedy token 即可与 AR 不同**（prefill 编译期分歧，非 KV 损坏非 sampler 缺陷）；temp=0 输出跨服务模式分叉使"AR 基线 vs spec 加速"对拍失效。4.26 之后 Inductor autotune 非确定族新成员：**跨模式（AR/spec）而非跨 rank**。
+  trigger_surface: vLLM V2 spec（DFlash2/DSpark drafter）+ Qwen3 系 BF16 + torch.compile RMSNorm autotune + greedy（config；对齐 launch 配置即复原）
+  discovery: 2026-09-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 编译器。依据：原文分歧发生在“初始 target prefill、任何 draft/rejection 决策存在之前”，出错的是目标模型三个 fused RMSNorm 的 torch.compile/autotune launch 配置；推测解码模式只改变 dispatch/padding 形态，属触发条件（rule 6），出错代码不在 解码/采样 功能代码里，decode 侧对照也证明 rejection sampler 无罪，故不适用功能域优先。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

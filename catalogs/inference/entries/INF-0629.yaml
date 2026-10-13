@@ -1,0 +1,58 @@
+id: INF-0629
+legacy_ids:
+- '6.236'
+slug: vllm_mixed_prompt_embeds_selection_mask_omitted_from_prefix_cache_key
+aliases: []
+title: vLLM prompt embeds 选择 mask 未纳入前缀缓存键
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: prompt embeds 前缀缓存键计算
+  behavior: 前缀缓存键只哈希归一化后的 token ids 与供给 embedding 张量，未纳入逐位置选择 mask prompt_is_token_ids；embedding 位被归一化为合法 token id 0，不同 mask 的请求键碰撞。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  detail: 开启 prompt embeds 与前缀缓存时，token ids 与供给张量相同但 mask 不同的请求错误命中缓存（实测 32 token），输出由 `[9,0]*8` 变为 `[753]*16`；temp=0 下结果取决于谁先写缓存，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + prompt embeds 混合输入 + 本地 prefix caching（partial：公共离线接口；HTTP chat 路径受 renderer 零填充约束较难触达）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56655
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM `enable_prompt_embeds=True` + `enable_prefix_caching=True` 时，`prompt_is_token_ids[i]` 逐位置选择"模型 learned embedding（True）还是请求供给的 embedding 行（False）"——该**选择 mask 不参与 prefix-cache 键**：键只哈希归一化后的 token ids 与供给张量，而 embedding 位被归一化为 token id 0（本身是合法词表 id）。复现：A（mask 混合）缓存后，token ids 与供给张量完全相同但 mask 不同的 B **错误命中 32 个缓存 token**，从 `[9,0]*8` 输出变为 `[753]*16`；重复 A 自身则正确命中。标准 chat renderer 在文本位零填充供给张量，恰好使两个渲染请求可以张量字节相同而 mask 不同） · Cov: `NEW`（输入条件维度（逐位置双源选择）缺失于缓存键子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 缓存键的规范化把"该位置读哪个源"这一输入语义压缩掉——token id 0 既是合法 id 又是 embedding 位的占位归一值，键空间发生跨语义碰撞；命中后 KV 是按**另一个 mask 语义**算出的前缀。
+  source: 'vLLM #56655（2026-09-13 open，含 Qwen3-0.6B 真实 embedding 权重复现脚本（三 trial 断言）、两 commit 核对（a2bc2ff/e52be1a）、影响域界定（公共离线输入接口，无外部 connector/LoRA/并发）与"临时禁用前缀缓存可规避"说明）。https://github.com/vllm-project/vllm/issues/56655'
+  behavior: 无 crash、无 NaN——请求成功但确定性输出依赖**更早请求的缓存内容**（跨请求语义污染）；temp=0 下同一输入两次提交结果不同（取决于谁先写缓存）。6.169（LMCache 外部键丢 cache_salt）、6.180（prompt_cache_key 静默丢弃）与 5.37（跨端名字排序契约）之后"缓存键维度缺失"族新成员：本条缺的是**同 token id 的逐位置双源选择语义**维度。
+  trigger_surface: vLLM + prompt embeds 混合输入 + 本地 prefix caching（partial：公共离线接口；HTTP chat 路径受 renderer 零填充约束较难触达）
+  discovery: |-
+    2026-09-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: KV状态
+        to: 跨请求/跨样本数据
+        status: panel7

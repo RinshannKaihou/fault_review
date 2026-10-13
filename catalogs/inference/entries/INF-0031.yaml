@@ -1,0 +1,52 @@
+id: INF-0031
+legacy_ids:
+- '1.31'
+slug: ttmetal_blackhole_dest_reuse_sync_race_nondeterministic_welford
+aliases: []
+title: Blackhole dest 复用竞态致 layernorm 输出非确定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: LLK 目标复用 dummy unpack 同步
+  behavior: Blackhole 目标复用的 dummy unpack（UNPACR_NOP）清除保留的 source bank 时不等待 DEST→source 搬移完成，可能在 math 把 DEST 移入 SrcA/SrcB 时清掉 bank。
+effect:
+  objects:
+  - 数值结果
+  detail: 背靠背执行大张量 FP32 Welford layernorm 时，同一输入跨次运行输出不同；仅在 WATCHER 禁用时出现，启用 WATCHER 时其同步屏障掩盖了竞态。无 crash、无 NaN。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent Blackhole，destination-reuse 路径；非 NVIDIA 环境
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-05'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/52252
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/pull/52256
+  kind: github_pr
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（destination-reuse dummy unpack 不等待 dest-to-source move → 时序敏感的非确定性 FP32 Welford layernorm 输出） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: Blackhole 的 destination reuse 用 dummy unpack 操作（`UNPACR_NOP`）设置 source-valid 并清除 retained source banks，但**不等待对应的 destination-to-source move** 完成。在背靠背工作负载下，dummy unpack 可能在 math 正把 DEST 移入 SrcA/SrcB bank 时清除该 bank → **时序敏感的、非确定性 FP32 Welford layernorm 输出**（经典竞态特征：WATCHER 禁用时出现、启用时消失——因为 WATCHER 的同步屏障恰好掩盖了该竞态）。修复：在 destination-reuse dummy unpack 操作上设 `Stall_Clr_Cntrl`（stall/clear wait bit），统一所有支持路径的竞态敏感 dummy-unpack 编码。
+  source: 'tt-metal issue #52252（Bounty $3000，2026-08-05 open，closes #46523）+ PR #52256（2026-08-05 open）。组件：Blackhole destination-reuse LLK 同步。https://github.com/tenstorrent/tt-metal/issues/52252 · https://github.com/tenstorrent/tt-metal/pull/52256'
+  behavior: 无 crash、无 NaN。大张量 FP32 Welford layernorm 在背靠背执行时输出**非确定性**（同一输入跨次运行结果不同），仅在 WATCHER 禁用时触发。属「硬件同步竞态 → 非确定性 layernorm 输出」新子签名——时序敏感的静默数值错误，与 4.1 `fp_reduction_order_nondeterminism` 的 run-to-run variance 同形但根因是 LLK 硬件同步而非 FP reduction order。
+  trigger_surface: Tenstorrent Blackhole，destination-reuse 路径；非 NVIDIA 环境
+  discovery: 2026-08-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

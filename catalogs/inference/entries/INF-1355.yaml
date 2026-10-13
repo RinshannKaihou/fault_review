@@ -1,0 +1,59 @@
+id: INF-1355
+legacy_ids:
+- '9.34'
+slug: sglang_mm_token_layout_u32_wrap_multimodal_mrope_corruption
+aliases: []
+title: sglang-mm u32 回绕致 M-RoPE 位置表静默错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: token_layout.rs u32 截断
+  behavior: apply_layout 用 u32 (start,end) 报媒体项位置，展开后 prompt 全长为 i64，≥2^32 token 时回绕；回绕值流入 Qwen-VL M-RoPE 守卫，与真实 64 位长度比较恒真。
+effect:
+  objects:
+  - 输入编码
+  - 隐状态
+  - 输出内容
+  detail: 无 crash 无报错：图像 M-RoPE 坐标被写进位置表约 2^32 token 之前的位置，位置表静默错位、媒体错置、输出错。触发需多模态占位符展开后 ≥2^32 token 的极端 prompt；入口只查媒体项数与字节数，不拦截；CPU 侧预处理即可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: 'false'
+  trigger_note: SGLang Rust 多模态 worker + qwen_vl 家族 + 展开后 ≥2^32 token 的请求
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: 与 1.228（int32 行偏移回绕）同属索引宽度契约族，本条在多模态布局通道且自含源码级 repro（2^32+67 token 最小复现）；入口可从 Rust server 多模态 worker 的 qwen_vl 家族到达，服务端上下文长度检查在驱动检查之后。
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/43857
+  kind: github_issue
+relations: []
+original:
+  mechanism: '`token_layout.rs` 的 `as u32` 截断 × 64 位 input_ids；M-RoPE 守卫对回绕值与真实长度比较恒真。与 1.228（int32 行偏移回绕）同为索引宽度契约族，本条在多模态布局通道且自含源码级 repro。'
+  source: 'SGLang #43857（2026-10-12 open，main@62ff466 自建扩展 2^32+67 token 最小复现 + 源码行定位）。https://github.com/sgl-project/sglang/issues/43857'
+  behavior: 无 crash——M-RoPE 位置表静默错位、媒体错置、输出错；触发需 ≥4G token 的极端 prompt（容量外但无入口校验拦截）。
+  trigger_surface: SGLang Rust 多模态 worker + qwen_vl 家族 + 展开后 ≥2^32 token 请求（other_stack）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（SGLang Rust 多模态扩展 `sglang-mm` 的 `apply_layout` 把每个媒体项位置报为 u32 `(start, end)`，而展开后的 prompt 全长是 i64——多模态占位符展开后 ≥2^32 token 时 u32 回绕；回绕对 `(start, end)` 流入 Qwen-VL M-RoPE 计算，其边界守卫 `start < st || end >= len` 用**真实 64 位长度**校验**回绕后**的 pair，检查通过，图像 M-RoPE 坐标写进位置表约 2^32 token 之前的位置——位置表静默错位/媒体错位，无 crash 无报错。CPU 侧预处理即可复现（无需 GPU），入口可从 Rust server 多模态 worker 的 qwen_vl 家族到达；下界无钳制：驱动只查媒体项数与字节数，服务端上下文长度检查在其后） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输入编码

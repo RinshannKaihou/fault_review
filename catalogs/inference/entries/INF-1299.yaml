@@ -1,0 +1,72 @@
+id: INF-1299
+legacy_ids:
+- K9.8
+slug: prefix_cache_recompute_path_divergence
+aliases: []
+title: 前缀缓存命中/重算路径与完整 prefill 数值不等价
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 前缀缓存命中/重算路径（含 SGLang）
+  behavior: 前缀缓存的重算/命中路径与完整 prefill 路径在数值上不等价；改变输入切分点会改变命中边界，使相同前缀走上数学等价但实际偏离的计算路径。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: vLLM 为 recomputation 类负载启用前缀缓存后 GSM8K 78.4→60.1；SGLang 中相同前缀因切分点不同得到不同输出。单条输出看起来完全合理。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/18055
+  kind: github_issue
+  resolved_from: 'vLLM #18055'
+- url: https://github.com/sgl-project/sglang/issues/7857
+  kind: github_issue
+  resolved_from: 'SGLang #7857'
+relations:
+- kind: var
+  target: INF-1276
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`ambiguous` · Cov: `var:vllm_prefix_cache_hit_recompute_divergence` · 触发 `config` · 置信度 `verified`'
+  mechanism: 前缀缓存的重算/命中路径与完整 prefill 路径在数值上不等价。vLLM 侧：为 recomputation 类工作负载启用前缀缓存导致 GSM8K 准确率 **78.4→60.1**。SGLang 侧：改变输入的**切分点（split point）**（进而改变命中边界）就会改变相同前缀的输出——两条数学上等价的路径实际发生偏离。
+  source: 'vLLM #18055（CLOSED 2025-05-13）；SGLang #7857（CLOSED 2025-07-08，"output differs when input length changes despite identical prefix"）。'
+  behavior: 同一 prompt 因请求切分方式不同而得到不同输出；准确率整体下降近 18 个百分点，但单条输出看起来完全合理。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: '**near-manifold 的 argmax 翻转**，发生在 prefix/split 边界处；输出依赖切分点。族判为 ambiguous——扰动幅度在噪声底附近，只有在触发（命中边界恰好落在敏感位置）时才把某个 token 的 argmax 推翻。检测面：这是最难的一类——geometric/spectral/statistical 单点阈值几乎必然漏检，因为隐藏态始终在健康流形上；唯一可靠的手段是 **cheap 族的 recompute-oracle 轴**（同一输入走两条路径比对；前提：记录 batch 组成的 bitwise 重算或 batch-invariant kernels）与 batch/切分变体的一致性检查。属于"检测器看不见但 oracle 能看见"的边界案例。'
+  repro: 单钩子以"对前缀段施加运行时噪声底量级的扰动"近似路径不等价，并以不同切分点重复以复现切分依赖性；真实的双路径数值差异需要实际的 prefix-cache 实现，钩子层面只能模拟其幅度。
+  locus: arch-specific-cache
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 visibility=质量退化。vLLM 侧有明确评测指标下降（GSM8K 78.4→60.1），符合词表'评测/指标上可观察到质量下降'；SGLang 侧的切分点依赖已在 detail 中写明。subsystem=KV缓存（前缀缓存命中路径，rule 1）与独立判断一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 数值结果
+        to: 输出内容
+        status: panel7
+    uncertain:
+    - visibility

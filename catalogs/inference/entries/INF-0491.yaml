@@ -1,0 +1,56 @@
+id: INF-0491
+legacy_ids:
+- '6.98'
+slug: vllm_inductor_pad_alias_view_frozen_capture_zeros_cuda_graph_moe
+aliases: []
+title: Inductor alias 化 pad 致 graph 模式 MoE 输入全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: moe_forward 调用前的 F.pad
+  behavior: MoE 激活的 F.pad 在 torch.compile trace 区执行后喂给 opaque custom op，Inductor 将其优化为 alias view，内核读到 graph replay 不刷新的 buffer。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 所有 CUDA graph 模式（PIECEWISE、FULL_ALL 等）下 hidden_states 读到冻结的捕获期全零，输出确定性地流畅但语义损坏；eager 正常，易误判为模型或量化问题。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；torch.compile + CUDA graph + 需 pad 的 MoE（TRTLLM NVFP4 后端）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/52383
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（trace 区 F.pad 被优化为 alias view → CUDA graph replay 读到冻结的捕获期零） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: 'MoE 激活需 pad 到内核 hidden dim（如 TRTLLM NVFP4 2688→2816）时，`F.pad` 在 torch.compile trace 区内执行并喂给 opaque `vllm::moe_forward(_shared)` custom op。Inductor 把该 pad 优化成 stride-remap 的 alias view（生成代码 `buf12 = reinterpret_tensor(buf14, (s72, 2688), (2816, 1))`）；CUDA graph 捕获后，op 捕获的内核读到 replay 不刷新的 buffer——仪表化 replay 实测 `hidden_states` 消耗**冻结的捕获期全零**而 `router_logits` 是真实请求数据。结果：所有 graph 模式（`PIECEWISE`、`FULL_ALL` 等）上确定性输出「流畅但语义被毁」。修复（PR #52383）把 pad 移入 custom op 内部。与 7.35（#52308 monolithic MoE 后端语义错误）为同一 issue 的另一独立根因。'
+  source: 'vLLM PR #52383（2026-08-15 open，root-cause fix of #52308）。`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4`。https://github.com/vllm-project/vllm/pull/52383'
+  behavior: 无 crash。**确定性、语法流利但语义损坏**的输出，仅 graph 模式触发（eager 正常）——A/B 排查时极易误判为模型/量化问题。属「Inductor alias 优化 × opaque custom op × CUDA graph 捕获」**新子签名**——编译器视图优化破坏 graph 捕获的数据流契约。
+  trigger_surface: vLLM；torch.compile + CUDA graph + 需 pad 的 MoE（TRTLLM NVFP4 后端）
+  discovery: 2026-08-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 'subsystem 维持 编译器：原文定性为“编译器视图优化破坏 graph 捕获的数据流契约”，错误来自 Inductor 把 trace 区 F.pad 优化为 alias view；修复（PR #52383）是在 vLLM 的 torch.compile 集成边界把 pad 移入 custom op，stack 记 vllm。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

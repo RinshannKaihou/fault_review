@@ -1,0 +1,62 @@
+id: INF-0338
+legacy_ids:
+- '4.22'
+slug: vllm_batch_invariant_flag_ignored_by_triton_fused_moe_experts_batch_wide_dynamic_scale
+aliases: []
+title: vLLM 批不变 flag 未覆盖 Triton fused-MoE 专家
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: Fp8MoEMethod 激活 scale 粒度
+  - subsystem: 算子/内核
+    stack: vllm
+    component: Triton fused-MoE 批不变覆写
+  behavior: 批不变覆写只含 HUMMING 后端，Triton fused-MoE 专家未被重定向也不告警；在线 fp8 专家漏设 per_act_token_quant，全批共用一个动态 scale；bf16 专家按 token 数选配置。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  - KV状态
+  detail: 开 VLLM_BATCH_INVARIANT=1 用 Triton fused-MoE 时无警告，greedy 输出随批伴内容翻转（logprob gap 0.07–0.53），前缀缓存写入的 KV 字节依赖写者后缀；同输入重放探针全过，只有跨批/跨写者对拍才暴露。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `VLLM_BATCH_INVARIANT=1` + Triton fused-MoE（在线 fp8 双卡必现、bf16 Hopper 批形状差）+ 前缀缓存（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57016
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0333
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`ambiguous`（vLLM 0.27.1 `VLLM_BATCH_INVARIANT=1` 的覆盖矩阵有结构性缺口：唯一读取该 flag 的 experts 实现是 HUMMING 后端（`init_batch_invariance` 替换 aten matmul/bmm 并钉死 cuBLAS），**Triton fused-MoE 专家（bf16 与在线 fp8）不在覆写集内**——flag 既不把它们重定向到批不变实现、也不警告所选后端无该保证。两个失效机制不同：(1) **在线 fp8 专家**（`activation_scheme: dynamic` 无权重块尺度）：`Fp8MoEMethod.get_fused_moe_quant_config` 构造 quant config 时漏 `per_act_token_quant`，`moe_kernel_quantize_input` 走 `use_per_token_if_dynamic=False`——**整个激活张量（批内所有请求的所有 token）共用一个动态 scale**，谁的批伴谁定标，批依赖按构造成立（4090/H100 双卡一致、greedy 首几位即翻转、logprob gap 0.07–0.53）；block-scaled checkpoint 走 `per_token_group_quant_fp8` 分支则免疫；(2) **bf16 专家（Hopper）**：Triton unquantized MoE kernel 配置按 token 数选择，一 token 前缀命中 prefill 与 145-token 冷 prefill 取不同配置且无固定。前缀缓存后果：共享前缀写下的 KV 字节依赖写者的后缀（经专家分组），同 flag 下两个用户拿到不同缓存内容） · Cov: `var:vllm_batch_invariant_matmul_self_test_violated_and_tf32_leak`（4.17 批不变性承诺违约族；兼 4.13 flag 静默无效形态） · 触发 `config` · 置信度 `verified`'
+  mechanism: 批不变性是逐层路径的合取性质——dense Linear 被钉死而 experts 路径漏钉，单点豁免即整体失效；在线 fp8 的失效根源是量化粒度选择（per-tensor 动态 scale 天然批耦合），bf16 的失效根源是 kernel 配置按批形状切换。
+  source: 'vLLM #57016（2026-09-15 open，含 8 配置 × 3 探针（co-batch/writer-suffix/fully-cached）对照矩阵、dense 控制组全部恒等、源码定位与专家复现脚本）。https://github.com/vllm-project/vllm/issues/57016'
+  behavior: 无 crash、无 NaN、无警告——greedy 输出依赖批伴内容（首批 token 即翻转）、前缀缓存写入字节依赖写者后缀；"确定性"探针（同输入重放）全过，只有跨批/跨写者对拍才暴露。4.17（batch-invariant matmul 自测违约 + TF32 泄漏）与 4.13（确定性 flag 对量化 hybrid 静默无效）之后批不变族新成员：本条是**粒度选择 + 后端覆写集缺口**双根因。
+  trigger_surface: vLLM + `VLLM_BATCH_INVARIANT=1` + Triton fused-MoE（在线 fp8 双卡必现、bf16 Hopper 批形状差）+ 前缀缓存（config）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

@@ -1,0 +1,50 @@
+id: INF-0242
+legacy_ids:
+- '1.243'
+slug: ttmetal_slice_noninner_dim_truncation_misaligned_begin_misses_row_skip
+aliases: []
+title: ttnn.slice 非对齐 begin 时漏跳一行，读到应丢弃的行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.slice row-major 游标
+  behavior: 非最内维被截断且最内维 begin 非对齐时，内核跨批次边界推进游标少算一次整行跳跃，读取起点落在应丢弃的行上。
+effect:
+  objects:
+  - 数值结果
+  detail: (5,65,1025) fp32 做 slice([0,0,1],[5,64,1025]) 有 6/320 输出行错，坏行内容恰为应丢弃的前一行，形状正确且无报错；bf16 坏行降为 1，ROW_MAJOR/TILE 同错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.slice` + 非最内维截断 + 最内维 begin 非对齐（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-22'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57382
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.slice`（row-major program factory）在**非最内维被截断且最内维 begin 非对齐**时漏算一次行跳跃：`(5,65,1025)` fp32 输入 `slice([0,0,1],[5,64,1025])` 得 6144 元素错（6/320 输出行）、输出形状正确、无任何错误；每个坏行内容恰为**应被丢弃的前一行**（线性偏移 −1025 = 恰一行 stride）；batch 0/4 全对、受害 batch 仅前数行错后 resync；bf16 时坏行降为 1（错误行数 dtype 依赖）；ROW_MAJOR/TILE 双布局同错；bisect 锁定 `70ba57dc3ab`） · Cov: `NEW`（数据移动游标步进数学错子签名；与 1.196 slice bounding-box vs corerange、1.226 ragged concat 游标同族） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: row-major 切片内核在跨批次边界推进游标时，非对齐 innermost begin 使"跳过整输入行"的计数少进一位——读取起点落在应丢弃的行上；dtype 改变页/tile 对齐关系从而改变受害行数，说明缺陷在游标数学而非布局搬运。
+  source: 'tt-metal #57382（2026-09-22 open，Bad Outputs，含三行 arange 取证（out[1,0]=input[0,64]）、f32/bf16 双 dtype 对照、ROW_MAJOR/TILE 双布局、逐 commit bisect 表）。https://github.com/tenstorrent/tt-metal/issues/57382'
+  behavior: 无 crash、输出形状正确——**静默错数据**且错误内容是"相邻合法行"（值域正常、无 NaN/垃圾特征），无 golden 逐元素比对即不可发现；数据预处理/特征切片管线（embeddings 截取、区间切分）直接读错行。
+  trigger_surface: tt-metal + `ttnn.slice` + 非最内维截断 + 最内维 begin 非对齐（hw_specific）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

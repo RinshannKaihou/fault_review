@@ -1,0 +1,56 @@
+id: INF-0822
+legacy_ids:
+- '8.38'
+slug: vllm_rocm_glm52_fp8_piecewise_cudagraph_cold_replay_poisons_own_prefill
+aliases: []
+title: vLLM ROCm CUDA graph 冷重放污染空闲后首请求 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: piecewise CUDA graph 冷重放
+  behavior: 引擎空闲后 piecewise CUDA graph 的首次重放以陈旧或未正确初始化的捕获状态执行该请求的 prefill，把 garbage 写入其 KV/indexer cache。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: ROCm gfx942 + MoE AITER blockscale-FP8 路径，空闲 ≥20s 后首请求从第一个 token 起输出噪声且整请求不自愈，约 0.5s 后的下一请求正常；空闲 ≥50s 时复现率 50–100%，背靠背请求从不失败，无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm；piecewise CUDA graph + GPU 空闲 ≥20s + MoE AITER FP8（gfx942）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52150
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（piecewise CUDA graph 冷重放损坏空闲后首请求的自身 prefill KV/indexer → 整请求持久 garbage） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: ROCm/gfx942 + MoE AITER blockscale-FP8 路径：引擎空闲 ≥20–50s 后，piecewise CUDA graph 的冷重放（首次 replay）以陈旧/未正确初始化的捕获状态执行该请求的 prefill，把 garbage 写入其 KV/indexer cache；后续每个 decode 步消费中毒上下文，**该请求永不自愈**（max_tokens=300 全程噪声），而约 0.5s 后发出的下一请求完全正常。复现概率随空闲时长上升（≥50s 时 50–100%），背靠背请求从不失败。workaround：`cudagraph_mode=FULL_DECODE_ONLY`。temperature=0、6–10 token 短 prompt 即可复现。
+  source: 'vLLM #52150（2026-08-14 open）。8×AMD Instinct MI325X（gfx942），ROCm 7.14.0，`zai-org/GLM-5.2-FP8` TP=8，vLLM ROCm nightly。https://github.com/vllm-project/vllm/issues/52150'
+  behavior: '**无 crash。空闲后首请求从第一个 token 起输出 garbage 且整请求持久**——「idle→首请求」的时间结构 + 单请求内自愈失败是该签名的行为指纹，对生产监控是理想的时间结构信号用例。属「CUDA graph 冷重放状态陈旧化 × prefill 持久化缓存」**新子签名**——K§8 control-flow locus 的 idle 触发变体。'
+  trigger_surface: vLLM ROCm；piecewise CUDA graph + GPU 空闲 ≥20s + MoE AITER FP8（gfx942）
+  discovery: 2026-08-14 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: unanimous

@@ -1,0 +1,62 @@
+id: INF-0877
+legacy_ids:
+- '8.93'
+slug: ttmetal_gemma4_exact_window_sliding_ring_spec_verify_loses_in_window_kv_warning_only
+aliases: []
+title: Gemma4 spec verify 覆写滑窗 ring 中仍在窗内的 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tt-metal
+    component: spec verify 写环与槽 mask
+  behavior: sliding KV ring 默认等于窗口（31B 为 1024），spec verify 一次写 K+1 行，写 p+j 即覆写仍在前序 query 窗内的 p+j−1024；服务类只打 warning 仍照常 speculate
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 上下文超过约 1019 token 且 K>1 时 speculative 输出自首 token 起静默损坏：sliding 层 committed token 来自缩短窗口，被拒 draft 行被后续 decode 当历史读；唯一痕迹是启动 warning，262144 上下文的生产配置均自动开启
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: tt-metal + Gemma4 服务（dFlash/MTP spec）+ bounded sliding ring（默认=窗口）+ 上下文 > ~1019（config：长上下文自动开启；#57655 落地前 headroom ring 不可用）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57701
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（tt-metal Gemma4 服务路径（`Gemma4DFlashForCausalLM`/`Gemma4MTPForCausalLM`）：bounded sliding KV 的 ring 默认等于窗口（31B 为 1024），speculative verify 一次把 K+1 行 KV 写进 ring——**写 p+j 即覆写 p+j−1024，而该位置仍在查询 p..p+j−1 的因果窗口内**：anchor query 的窗口从 1024 缩到 1019（每 query 丢 K−i 个最老位置），**50 个 sliding 层的 committed token 全部来自缩短窗口**；被拒 draft 行留在 ring 里被后续 plain decode 当窗口内历史读（随后 K−a−1 步）；由缩短窗口算出的 KV 行持续驻留缓存（错误持久化）。ring 内代码注释自证（"Measured at 32k: K=1 stays token-correct, K=5 corrupts from the first token"；`_reserve_spec_ring_headroom` 注释"a SERVER ... corrupted from the first token at K>1"），服务类**只打一条启动 warning 后照常在精确 ring 上 speculate**；推荐的 headroom ring（2048）在 main 上因 bounded page tables 按窗口计尺寸而 warmup 失败（#57573，修复 #57655 在途）。触发为 `--max-model-len ≥ bounded_isl_min` 自动开或 env 显式开；CI 与 tt-inference-server 的 31B dFlash/MTP 配置（262144 上下文）全部落在自动开启区） · Cov: `NEW`（有界环写驱逐窗口内 token 子签名；与 6.172（PD Mamba spec padding 窗口穿过 align 裁剪）同属 spec 窗口 × 有界状态交互但本条在 sliding ring 环地址维度） · 触发 `config` · 置信度 `verified`'
+  mechanism: ring 槽 mask 公式（`_pv_host_masks`/`_pv_upload`，dflash_drafter.py:1596/:1628，spec_decode.py:862-866 同式）只保留"写后位置在因果窗内"的槽——每 query 恰好丢被覆写的最老 K−i 个位置；正确做法（#57542 Gemma4DFlashContract）在 verify 将绕环时停止提案、退 plain decode，输出与 eager 参考一致但 >1019 token 后无加速。
+  source: 'tt-metal #57701（2026-09-24 open，Bad Outputs，含逐位置覆写/窗口缩短推导、代码注释自证、受影响配置矩阵（CI leg + tt-inference-server model_specs 四配置）与规避路径谱系）。https://github.com/tenstorrent/tt-metal/issues/57701'
+  behavior: 无 crash、无失败请求——**>1019 token 上下文的 speculative 输出静默损坏**（自首 token 起），唯一痕迹是一条启动 warning；block-rail 生产服务器（262144 上下文、bounded 自动开）在 K>1 下系统受害。
+  trigger_surface: tt-metal + Gemma4 服务（dFlash/MTP spec）+ bounded sliding ring（默认=窗口）+ 上下文 > ~1019（config：长上下文自动开启；#57655 落地前 headroom ring 不可用）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: 裁定 subsystem：由 KV缓存 改为 解码/采样。依据 rule 1 与原文：ring 等于窗口对 plain decode 是正确的，缺陷只出现在 speculative verify 一次写 K+1 行的路径上；出错的槽 mask 公式位于 dflash_drafter.py 与 spec_decode.py，原文给出的正确做法（#57542）是在 verify 将绕环时停止提案、退 plain decode，修复落在推测解码逻辑。component 相应改为 spec verify 写环与槽 mask。effect 保持 KV状态+输出内容、静默错误。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: KV缓存
+        status: panel7

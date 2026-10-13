@@ -1,0 +1,52 @@
+id: INF-0257
+legacy_ids:
+- '1.258'
+slug: ttmetal_addcmul_bw_grad_times_tensor_before_scalar_intermediate_inf
+aliases: []
+title: ttnn.addcmul_bw 先乘两大操作数致中间溢出返回 inf 梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.addcmul_bw 反向实现
+  behavior: ternary_backward.cpp 中 grad_a/grad_b 两处按 (grad×tensorN)×value 顺序相乘，先乘两个大操作数；未像姊妹 addcdiv_bw 与前向 addcmul 那样先折叠 value。
+effect:
+  objects:
+  - 梯度
+  detail: grad 与 tensor 幅值大时 grad×tensorN 超出 FLT_MAX 变 ±inf，返回 inf 梯度，而数学梯度是普通有限 fp32（value 小）；inf 沿反传链污染，遇 0 再生成 NaN。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.addcmul_bw` + 大幅值 grad/tensor（hw_specific：默认路径；addcdiv_bw 与前向已免疫）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57867
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0170
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.addcmul_bw` 以 `(grad × tensorN) × value` 顺序计算梯度——**先乘两大操作数**：`grad×tensorN` 超出 FLT_MAX 时中间变 ±inf，`inf × value = inf`，而数学梯度 `grad × value × tensorN` 是普通有限 fp32（value 小）。同文件姊妹 `addcdiv_bw` **已**先折叠 value（`(grad×value) × reciprocal(...)`，L53-54）、前向 `addcmul` LLK 也已为同因重排为 `(value×b)×c`（#53282）——**唯独 backward 未同步**。实测 vs torch.autograd.grad：有限真值场景 ttnn 返 inf。三重结构证据：(1) 姊妹算子已修；(2) 前向已修；(3) 本算子留旧序） · Cov: `var:ttmetal_prod_bw_zero_input_nan_gradient`（1.171 反向传播中间量域损失族——本条在乘法排序溢出维度：中间量超出可表示域而非 NaN 哨兵） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`ternary_backward.cpp` L29-34 两个 `ttnn::multiply(ttnn::multiply(grad, tensorN), value)` 嵌套（grad_a/grad_b 对称双点位）；修复为复刻 addcdiv_bw 的先折叠序（一行交换）。来源为源码定位 + torch.autograd 对照。'
+  source: 'tt-metal #57867（2026-09-25 open，Bad Outputs/silent wrong results，含 overflow 判决例、姊妹/前向修复谱系与代码行）。https://github.com/tenstorrent/tt-metal/issues/57867'
+  behavior: 无 crash——大梯度×大权重（训练/微调场景常态）的 addcmul 反向**静默 inf**，沿反传链污染（inf×0=NaN 二次爆发）。1.171 之后反向域损失族在**乘法次序溢出**维度首例；"前向已修、反向漏修"的修复传播缺口模式与 7.83（修复未跨副本传播）同构、位点在 backward。
+  trigger_surface: tt-metal + `ttnn.addcmul_bw` + 大幅值 grad/tensor（hw_specific：默认路径；addcdiv_bw 与前向已免疫）
+  discovery: 2026-09-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

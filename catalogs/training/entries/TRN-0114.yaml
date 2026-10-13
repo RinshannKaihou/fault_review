@@ -1,0 +1,51 @@
+id: TRN-0114
+legacy_ids:
+- OPT.14
+slug: fused_adam_shared_step_counter_bias_correction
+aliases: []
+title: FusedAdam 共享 step 计数器致偏差校正错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: FusedAdam step 计数器
+  behavior: FusedAdam 每 dtype 只维护一个 step 计数器，只递增最后一个活跃参数的计数器并用于该 dtype 全部张量；参数间歇无梯度时计数漂移，多 dtype 组还重复递增，bias correction 按错误 t 计算。
+effect:
+  objects:
+  - 优化器状态
+  - 模型权重
+  detail: LoRA 冻结/解冻、条件分支、MoE 冷专家等间歇梯度场景下 moment 估计产生平滑偏差，有效 LR 随参数训练历史分叉；无 crash、无 NaN，config/log 正常，纯 fp32 下也发生。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8471
+  kind: github_pr
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: DeepSpeed FusedAdam 每 dtype 只维护**一个** step 计数器，且只在遍历中**递增最后一个活跃参数**的计数器、随后把该计数器用于该 dtype 的**全部**张量——参数间歇性无梯度（LoRA 冻结/解冻、条件分支、MoE 冷专家）时，计数器在不同参数间**漂移**：bias correction（`1-β^t`）按错误的 t 计算；多 dtype 组还让同一计数器按 dtype 各递增一次。修复 = 逐参数计数器 + 按 (dtype, step) 分桶批处理（同步参数仍共享一次 fused kernel 调用，state_dict 格式不变）。H800 实测：原实现 9 个新测试全挂（Adam/AdamW、均匀与混合 FP32/FP16/BF16、间歇梯度、state-dict round-trip、间歇冻结 layer bias vs PyTorch AdamW 参照），修复后全过 + 2-GPU FP32 ZeRO-0/3 累积更新对全模型 AdamW 参照一致。
+  source: 'DeepSpeed PR #8471（2026-09-10；「间歇训练下原代码 fail 全部九个新用例」；注意：不重建旧版本已写坏的计数器）。https://github.com/deepspeedai/DeepSpeed/pull/8471'
+  behavior: 无 crash、无 NaN——bias correction 系数错值在 **moment 估计上产生平滑偏差**，有效 LR 偏移随参数的训练历史分叉；症状是收敛速率与预期的不可归因偏差，config/log 全部正常。与 OPT.01（矩没 resume）不同：矩的数值格式对、`step` 标量本身错；与 NUM 家族（cast/scaler）不同：这是**优化器簿记状态共享**错误，纯 fp32 下也发生。间歇梯度场景（LoRA/条件路由/MoE 冷专家）是主要暴露面。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

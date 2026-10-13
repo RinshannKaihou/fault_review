@@ -1,0 +1,60 @@
+id: INF-1284
+legacy_ids:
+- K8.7
+slug: cudagraph_padded_batch_stale_block_table
+aliases: []
+title: CUDA graph 填充行过期 block table 污染 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: CUDA graph padding 输入准备
+  behavior: 完整 CUDA graph 捕获把 block-table/slot_mapping 缓冲区地址烘焙进图，batch 被 pad 到已捕获尺寸，padding 行保留上次 replay 的过期 block-table 值，未指向保留哑页。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: paged attention 可能从存活序列的物理块读取甚至写入，污染同批存活请求的 KV，造成跨请求内容串扰；只在需要 pad 的特定 batch 尺寸下出现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: vLLM CUDA Graphs 设计文档 + flex-nano-vllm 分析（机制已佐证；
+relations: []
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 完整 CUDA-graph 捕获会把 block-table / `slot_mapping` 缓冲区地址烘焙进图中，而真实 batch 会被 pad 到最近的已捕获尺寸；padding 行保留着先前 replay 留下的过期 block-table 值，因此 paged attention 可能从**存活序列的物理块**中读取、甚至向其写入——除非 padding 指向一个保留的哑页（`batch_idx=0, page_idx=0`）。
+  source: vLLM CUDA Graphs 设计文档 + flex-nano-vllm 分析（机制已佐证；源文档注：文档抓取被限流）。
+  behavior: 被 pad 的批次会污染同批存活请求的 KV，导致跨请求的内容串扰，且只在特定 batch 尺寸下出现。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: infra_off，跨请求方向——padding/受害行的隐藏态与某个"捐赠"序列相关（签名余弦矩阵 / cross-orthogonality 族的检测对象）。会漏检：单序列自洽性检查与幅值探针（受害状态本身是另一个合法序列的状态，单看完全在流形上）。源文档注：需要 CUDA graphs + 分页 block-table，只能通过把一行的 KV 读指向另一序列来粗略近似。
+  locus: control-flow
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 subsystem=运行时/执行。出错的是 CUDA graph 捕获后 padding 行未指向保留哑页（'除非 padding 指向一个保留的哑页'），属 CUDA graph 执行的输入准备；block-table/slot_mapping 是通用 paged attention 输入，不专属任何功能特性，rule 1 不适用。与独立判断一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

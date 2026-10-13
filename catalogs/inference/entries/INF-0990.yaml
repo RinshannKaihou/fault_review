@@ -1,0 +1,50 @@
+id: INF-0990
+legacy_ids:
+- '10.74'
+slug: vllm_outlines_backend_finished_guide_rejects_allowed_eos_500_every_completed_request
+aliases: []
+title: vLLM outlines 后端拒收终止 EOS 致约束请求 HTTP 500
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: outlines 后端 accept_tokens
+  behavior: outlines Guide 完成后拒绝一切 token，而 bitmask 终止步只放行 EOS；封装层仅 is_terminated 侧容忍，accept_tokens([eos]) 返回 False 被视作拒绝。
+effect:
+  objects:
+  - 可用性/进度
+  detail: outlines 后端下自然 emit EOS 完成的约束请求均返回 HTTP 500：180 秒 38,589 请求中 25,425 个 500（66%），全部 choice 与自然完成的 regex 失败；先撞 max_tokens 的存活；guidance/xgrammar 0 错。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + `--structured-outputs-config {"backend":"outlines"}` + 任何自然完成的约束请求（config：后端开关触发，短输出必现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57723
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM outlines 结构化输出后端下，**每个自然完成（emit EOS）的约束请求都返回 HTTP 500**：regex/choice/json 匹配完成后 bitmask 恰把 EOS 作为唯一合法 token 放行、采样器发出 EOS，而 `OutlinesGrammar.accept_tokens([eos])` 调用的 `Guide.accepts_tokens` 在 guide finished 后**恒拒**——scheduler 把 False 读作"grammar rejected tokens"终止请求（`scheduler.py:1841`）。180 秒 38,589 混合结构化请求实测 **25,425 个 500（66%）**：全部 choice（10,829）、全部自然完成的 regex（5,547）、26 个提前完成 schema；长输出先撞 max_tokens 的（5,418 regex + schema）反而存活——**不 emit EOS 是掩盖机制**。同配置 guidance 后端 39,532 请求 0 错、默认 xgrammar 0 错；非约束请求 0 错。无 GPU 即可复现（直接驱动 `OutlinesGrammar`：`accept_tokens(''yes'')`→True+finished；bitmask 允许 [eos]；`accept_tokens([eos])`→False）。`is_terminated()` 已有延迟一步的半修复 workaround，`accept_tokens` 无同等容忍） · Cov: `NEW`（后端封装与 guide 终止语义冲突子签名） · 触发 `config` · 置信度 `verified`'
+  mechanism: outlines_core Guide 生命周期约定"finished 后拒绝一切 token"，而 vLLM bitmask 侧约定"终止步唯一合法 token 是 EOS"——两个有限状态机在终止转移上不一致；封装层在 is_terminated 侧打了补丁、accept_tokens 侧漏打，scheduler 把语义差读成违约。
+  source: 'vLLM #57723（2026-09-19 open，含 GPU-free 复现脚本、38,589 请求 180 秒实测的 500 率分解（choice/regex/json × 完成 vs max_tokens）、双对照后端（guidance/xgrammar）与 `backend_outlines.py` workaround 行级对照）。https://github.com/vllm-project/vllm/issues/57723'
+  behavior: fail-loud（HTTP 500）而非静默——但**爆炸性**：约束请求的自然完成路径 100% 失败（短输出场景）；长期生成因不触发 EOS 而隐性存活，使问题在短 schema 测试中暴露、长生产负载中潜伏。10.73（同日、同 subsystem、相反方向：完全不约束静默放行）构成**结构化输出栈的双向失效对**：reasoning 门控路径静默放飞 vs outlines 后端过度拒绝——部署侧只能靠跨后端/跨端点对拍发现；10.48（guidance KeyError）、10.59（additionalProperties 稀释）之后结构化输出族第 5/6 成员。
+  trigger_surface: vLLM + `--structured-outputs-config {"backend":"outlines"}` + 任何自然完成的约束请求（config：后端开关触发，短输出必现）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

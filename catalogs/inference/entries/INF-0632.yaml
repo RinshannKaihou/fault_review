@@ -1,0 +1,51 @@
+id: INF-0632
+legacy_ids:
+- '6.239'
+slug: vllm_hisparse_host_resident_kv_decode_token_noise_first_token_correct
+aliases: []
+title: vLLM HiSparse host KV 解码自第 2 token 起噪声
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: HiSparse host KV 读路径
+  behavior: 根因未定位；已隔离到 decode 侧读取 host-mirror KV 的路径（prefill 完好），原文候选为 host 池取回块的布局/尺度错配，或异步取回与 decode 调度的可见性时序。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: GLM-5.2 NVFP4-FP8 等 DSA 模型开 HiSparse（TP2+）时，每个 completion 自第 2 个生成 token 起全为标点噪声，首 token 与对照一致，max_tokens=1 链式请求输出正确；确定性复现，GSM8K 0.0000 vs 0.9409，无日志。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM + HiSparse host-resident KV（GLM-5.2 NVFP4-FP8 等 DSA 模型）+ 单节点 TP2+（other_stack：需 ≥417GiB checkpoint 级硬件）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57019
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM main（5be911e，2026-09-15）+ GLM-5.2-NVFP4-FP8（GlmMoeDsa，DSA sparse MLA，index_topk 2048）+ 2×B300 TP2（TP4/TP8 同病）+ `hisparse_config` + HiSparseConnector（kv_both，host_pool_gib 32）BF16 KV：**每个 completion 从第 2 个生成 token 起全为 token 噪声**（六词 prompt 即中招），首个生成 token 与非 HiSparse 对照**完全一致**；同一 HiSparse server 上 `max_tokens:1` 链式 8 次逐 token 请求**完全复现对照输出**——prefill 完好、decode 的 host-mirror 读路径损坏。无任何日志（无错误/NaN/preemption），boot 行报告 HiSparse 激活；同请求重放与双次 reboot 均字节一致（确定性）。GSM8K 5-shot strict-match **0.0000 vs 0.9409**（TP4 FlashInfer sparse-MLA 早前扫测）。#56699（cudaErrorLaunchFailure）与 #56785（indexer capture crash，#56825 已修且在本次 checkout）为不同故障） · Cov: `NEW`（host-resident KV decode 读路径损坏·首 token 正确签名子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 未定位（报告者以 prefill-only 链式请求与首 token 对照将故障隔离到 decode 侧 host-mirror KV 读路径）；候选包括 host 池取回的块布局/尺度错配、异步取回与 decode 调度的可见性时序。#56889（两节点 DEP8 + FP8 KV + P2P offload 同症状 GSM8K 0%、TP8 评论复现）经本最小复现确认为同根因——09-14 "组合变量过多留观"判定升级。
+  source: 'vLLM #57019（2026-09-15 open/closed 跟踪，含最小复现命令、首 token/链式对照、GSM8K 双臂数据与 #56699/#56785/#56889 关系界分）；同根因：#56889。https://github.com/vllm-project/vllm/issues/57019'
+  behavior: 无 crash、无 NaN、无警告——所有经 host-resident KV 的 decode 从第 2 token 起输出标点噪声（`" (, \"' .'CC\"1adad.ss..."`），评测分数塌到 0；确定性使其在 smoke 对照（无 HiSparse 臂）下立即暴露、单臂部署则静默。6.193（DSA HiCache host 往返损坏 no-spec）之后 host-resident KV 族新成员：本条在 **HiSparse connector** 路径、prefill/decode 分离签名干净。
+  trigger_surface: vLLM + HiSparse host-resident KV（GLM-5.2 NVFP4-FP8 等 DSA 模型）+ 单节点 TP2+（other_stack：需 ≥417GiB checkpoint 级硬件）
+  discovery: 2026-09-15 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

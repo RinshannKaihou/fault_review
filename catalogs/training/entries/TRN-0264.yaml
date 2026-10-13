@@ -1,0 +1,57 @@
+id: TRN-0264
+legacy_ids:
+- OBS.15
+slug: gpt_oss_builder_dual_channel_position_embedding
+aliases: []
+title: Megatron GPT-OSS 位置编码双通道分叉，叠加随机位置表
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: megatron-lm
+    component: gpt-oss builder 位置编码传参
+  behavior: --enable-gpt-oss 时 builder 把 config 位置编码类型设为 yarn，却把 CLI 默认 learned_absolute 传给构造器；embedding 层按实参建位置表并在 forward 相加。
+effect:
+  objects:
+  - 隐状态
+  - 训练轨迹
+  - 性能/资源
+  detail: 官方 gpt-oss-20b recipe 默认即命中，无 crash 无 warning：ckpt 不含该表，随机初始化位置表叠加到每个 token 的 embedding，训练静默降质（幅度未量化）；多占约 236 MB，SP 的 reduce_scatter_embeddings 被静默禁用。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7900
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7850
+  kind: github_pr
+relations: []
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `pretrain/shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: 'Megatron `--enable-gpt-oss` post-training 同时启用 YaRN 与 learned absolute position table：`model_builder.py` 把 `config.position_embedding_type` 写成 `"yarn"`（GPTModel 据此构建 `YarnRotaryEmbedding`），但同一 builder 仍把 CLI 默认值 `--position-embedding-type learned_absolute` 传进构造器；`LanguageModelEmbedding` 读的是**构造器实参**，为 `learned_absolute` 时分配 `nn.Embedding(max_seq, hidden)` 并在 forward 把这张表**加到每个 token 的 embedding 上**。GPT-OSS ckpt 无 `position_embeddings.weight` → 该表**停在随机初始化**、每个 token 叠加同一随机偏置；`reduce_scatter_embeddings` 同时因该路径要求无 learned table 而被禁用。官方 recipe `examples/post_training/modelopt/conf/openai/gpt-oss-20b.sh` 即默认组合（额外表 40960×2880 ≈ 236 MB bf16）。反方向：`--export-model-type HybridModel` 只存构造器实参、不读 config 属性，`--enable-gpt-oss` 单独设置时 hybrid 导出仍留在 `learned_absolute`。修复 PR #7850 已于 2026-10-09 merge（配置/构造器单源 + 单测双断言）。'
+  source: 'Megatron-LM #7900（2026-10-06；builder 双通道配置分叉逐行定位 + 单元测试 `test_gpt_oss_gpt_model_has_no_learned_position_table` / `test_gpt_oss_hybrid_model_uses_yarn` + 236 MB 量化）。https://github.com/NVIDIA/Megatron-LM/issues/7900 ；修复：PR #7850（2026-10-09 merge）。https://github.com/NVIDIA/Megatron-LM/pull/7850'
+  behavior: 无 crash、无 warning——官方 recipe 默认组合下 post-training 的每个 embedding 都叠加一张**从未被 ckpt 提供也未被监督信号单独校正**的随机初始化位置表：序列位置信息被 YaRN 正确编码的同时又注入与位置无关的固定随机向量，训练静默降质（干扰幅度未量化）；SP 路径的 `reduce_scatter_embeddings` 优化同时被静默关闭。与 DATA.09（SWA fallback 无条件覆写 caller mask）同族「Megatron 配置双通道（config 属性 vs 构造器实参）分叉」：那边 mask 被 fallback 覆盖、这边**同一 position_embedding_type 写进两条通道各取一个值**；与 KER.06（compile 冻结 clamp kwargs）的共性是「配置冻结在错误的初始值上」。0 评论、修复当日 merge（oncall 直接消化）。
+  discovery: 2026-10-09 每日扫描（停机补扫）
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

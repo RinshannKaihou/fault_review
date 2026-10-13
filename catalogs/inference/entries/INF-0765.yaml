@@ -1,0 +1,58 @@
+id: INF-0765
+legacy_ids:
+- '7.88'
+slug: quant_Nbit
+aliases: []
+title: 低位 RTN 权重 fake-quant 致模型自洽变笨
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: 投影权重 RTN fake-quant
+  behavior: 对 q/k/v/o/gate/up/down 投影权重做对称 absmax RTN fake-quant（per_channel 或 group128，zero-point 为 0），位宽降到 4/3/2 bit 时舍入误差增大。
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: 8-bit 几乎无可观测差异；4-bit 起答案质量下降、部分 greedy 答案翻转；2-bit 输出基本坍塌。全程无错误信号、无 NaN；误差随层深累积，末层 cos 坍塌快于 per-layer cos。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: 权重量化加载/fake-quant；vLLM quant 配置一行
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`model_on` · Cov: `NEW`（本项目早期实测条目） · 触发 `config` · 置信度 `verified`'
+  mechanism: 对 attention/MLP 的 Linear 权重做对称 absmax round-to-nearest（RTN）fake-quantization，制造"自洽但更差"的 on-manifold 故障。只处理二维投影权重（q/k/v/o/gate/up/down），显式排除 embed / lm_head / norm；`per_channel` 每个输出通道一个 scale，`group128` 在行内每 128 个输入维一个 scale（尾部余量单独算），`w_q = round(w/scale).clamp(qmin, qmax) * scale`，zero-point 固定为 0。参数轴：`bits ∈ {8, 6, 5, 4, 3, 2}`（≥6 个点，使"拐点 vs 平滑下降"可证伪）× `scheme`。
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。原型阶段实测：量化误差随深度**累积**，最后一层 cos 的坍塌快于 per-layer cos，因此相变分析必须**逐层**报告 cos，且"不得先验假定 4-bit 在流形上——必须测"。
+  behavior: 8-bit 几乎无可观测差异；4-bit 起答案质量下降、部分 greedy 答案翻转；2-bit 输出基本坍塌。全程无错误信号、无 NaN——服务栈只会看到"这个模型好像变笨了"。
+  trigger_surface: 权重量化加载/fake-quant；vLLM quant 配置一行
+  signature: '`model_on` 的**旗舰样本**——扰动是被模型自身吸收的自洽变形：隐状态仍落在健康流形上，只是沿流形滑走，geometric 族的离流形距离预期表现很差。真正能看见它的是 trajectory 族的 **GRADUAL** 深度剖面（误差随层数单调累积，与 sdc_spike 的 STEP 形成形状对照）以及逐层 cos 的相变分析（bits 网格用于判断 4→3→2 bit 之间是拐点还是平滑下降）。会漏检的是：单层 geometric 距离、`nan_inf_flag`、以及任何只看单点的度量。'
+  repro: 作为"一次权重变换 + 逐位还原"实现（不是 hook）；纯 PyTorch，无需量化库，任何 device/dtype 均可；`group128` 的分组沿输入维 reshape 成 `[out, n_full, 128]` 后按组求 absmax。
+  相关条目: '`var:7.88` → **7.1 `massive_activation_quantize_sink`**（量化时裁掉 massive 通道）、**7.5 `per_tensor_act_clamp_outlier`**（激活侧 per-tensor fake-quant——目录注明这是 NEW 的独立故障，因为本条（`quant_Nbit`）只做权重）、**7.7 `gptq_awq_smoothquant_calibration_drift`**、**9.5 `bf16_rope_precision_breakdown`**（数值-位置耦合）。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出内容
+        status: panel7

@@ -1,0 +1,54 @@
+id: INF-1108
+legacy_ids:
+- '11.85'
+slug: vllm_mtp_draft_model_dict_hf_overrides_not_inherited_length_gate_dummy_zero_acceptance_collapse
+aliases: []
+title: vLLM MTP draft 不继承上下文 override 致接受率归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: MTP draft 配置继承与输入门
+  behavior: dict 形式 --hf-overrides 不应用到 MTP draft，draft 沿用原生 max_model_len；序列超限时 drafter 跳过提案、以普通 token 0 填充，与 sampler 的 -1 占位语义冲突。
+effect:
+  objects:
+  - 性能/资源
+  detail: 长上下文部署在序列越过 draft 原生 max_position_embeddings 后，MTP 接受率坍塌至约 0，每步仍付 target verify 成本，延迟变差；target 输出正确、零日志，只有 spec-decode 指标可见。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + MTP/native MTP + dict 形式 `--hf-overrides` 扩上下文 + 序列超 draft 原生 max_position_embeddings（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58080
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1086
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（vLLM `--hf-overrides` **以 dict 形式**扩展上下文（如 YaRN ×4）时 **MTP draft 模型不继承 override**——`compose_draft_hf_overrides()` 文档明示 dict override "not applied to the draft"，draft 保持原生 `max_position_embeddings` 作 `max_model_len`；该长度喂 `gpu_model_runner._input_fits_in_drafter` 输入门：batch 最长序列 + spec tokens 超 **draft 的** max_model_len 后，vLLM **跳过整个 draft 提案、以普通 token 0 填充全部请求**——rejection sampler 只认 -1 占位、token 0 是普通 token 仅当 target 恰采到 0 才被"接受"（≈0%）。结果：越界期间引擎级 MTP 接受率坍塌至 ~0（per-position 0.000/0.000）、每步仍付 target verify 成本、**target 输出保持正确、零日志**。Qwen3.8-27B-FP8（hybrid GDN）+ 2×H20 + `--max-model-len 1000000` + MTP k=2 生产实测） · Cov: `var:vllm_qwen38_flash_next_mtp_episodic_zero_acceptance_repetition_collapse`（11.63 MTP 接受率静默坍塌族——本条给出配置继承断链成因） · 触发 `config` · 置信度 `verified`'
+  mechanism: target 与 draft 的 `max_model_len` 来自不同配置源（target 拿 dict override、draft 拿原生 config），drafter 输入门按 draft 的窄门限截断；截断行为不是报错而是静默 dummy 填充，且 dummy 值（0）与占位符（-1）语义冲突使 rejection sampler 把"无提案"当"必败提案"。11.63（MTP 偶发 0% 接受 + 跨模型指纹）之后该族新成员：本条给出**确定性的配置传播断链**成因与精确越界阈值。
+  source: 'vLLM #58080（2026-09-22 open，vLLM 0.26.0 V1，含 `_input_fits_in_drafter`/`compose_draft_hf_overrides` 代码定位、per-position acceptance 指标（0.000/0.000）、RoPE 对象不发散的修正分析（diverge 的是 draft max_model_len））。https://github.com/vllm-project/vllm/issues/58080'
+  behavior: 无 crash、无错误日志、**target 输出正确**——唯一可见信号是 spec-decode 指标（接受率 0、每步 verify 照付的吞吐损失）；长上下文 + dict override 部署在序列越过 draft 原生门限后 MTP **静默失效**为纯负担（延迟退化、零收益），监控不看 spec 指标即无感知。
+  trigger_surface: vLLM + MTP/native MTP + dict 形式 `--hf-overrides` 扩上下文 + 序列超 draft 原生 max_position_embeddings（config）
+  discovery: 2026-09-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,56 @@
+id: INF-1353
+legacy_ids:
+- '8.100'
+slug: vllm_nvfp4_kv_writer_reader_stride_split_token_major_blnhc_all_context_garbage
+aliases: []
+title: nvfp4 KV 写读 stride 公式分裂，BLNHC 布局全上下文垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: nvfp4 KV 写/读内核 stride 推导
+  behavior: writer 按内部 head-major 公式推导数据 stride 与 data|scale 分区，reader 按实际张量 stride × data_dim/full_dim 切分，两套公式仅 head-major 页一致。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: QSA 后端默认布局解析选 BLNHC（token-major）时，writer/reader 落点系统性错位，每次 K/V 写入含 block scale 均落错误字节；任意上下文长度输出不连贯，常识检查全败、NIAH 0 命中，服务无异常在线。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: 'false'
+  trigger_note: vLLM 0.30 + --kv-cache-dtype nvfp4 + QSA 路径模型（Qwen3.8-Flash-Next）+ 默认 BLNHC 布局，引擎默认组合即触发，短 prompt 亦然
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-12'
+remarks: 测试盲区：任何自建 torch.zeros([B,H,N,C]) contiguous/head-major buffer 的 round-trip 测试自洽通过，token-major 页只有真实 allocator 才产生。与 8.53 同属 nvfp4 KV 布局契约族，本条为 BLNHC token-major 下 writer/reader 公式分裂，触发面从 FlashInfer HND 调用方扩到 QSA 后端默认布局。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61225
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0837
+original:
+  mechanism: writer 内部公式与 reader 实际 stride 缩放只在 head-major 物理页上一致；token-major 布局由引擎布局解析器对 QSA 后端默认选中。写入与读出双向错位使损坏 100% 覆盖。
+  source: 'vLLM #61225（2026-10-12 open，含根因源码定位 + NIAH 0/N + 静默性清单；v0.30.0 SM120 RTX PRO 5000 ×2 TP2+EP Qwen3.8-Flash-Next-NVFP4）。https://github.com/vllm-project/vllm/issues/61225'
+  behavior: 无 crash——全上下文长度不连贯输出，确定性常识检查全败，needle 检索 0 命中；服务健康视图完全正常。
+  trigger_surface: vLLM 0.30 + `--kv-cache-dtype nvfp4` + QSA 路径模型（Qwen3.8-Flash-Next）+ 默认 BLNHC 布局（config，引擎默认组合）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（vLLM nvfp4 KV-cache：C++ 写内核 `reshape_and_cache_nvfp4_dispatch` 以内部 head-major 公式推导 head/token 数据 stride 与 data|scale 分区，而 reader `nvfp4_split_data_scale` 按实际张量 stride × `data_dim/full_dim` 切——QSA 后端布局解析取 `supported_kv_cache_layouts()[0]` = **BLNHC（token-major）**时 writer 的落点与 reader 的读点系统性错位，**每次 K/V 写入（含 block scale）都落在错误字节**且 reader 忠实读回垃圾。**任何上下文长度都乱**（短 prompt 亦然）：算术/常识题全错、253k token NIAH 检索 0/N。静默：无异常、无 crash、无 Xid、无 AER，服务保持在线返回貌似合理的 token 流。**测试盲区机制**：任何自建 `torch.zeros([B,H,N,C])` contiguous/head-major buffer 的 round-trip 测试自洽通过——token-major 页只有真实 allocator 才产生） · Cov: `var:vllm_nvfp4_kv_cache_hnd_layout_probe_inversion`（8.53 nvfp4 KV 布局契约族——同为 writer 布局假设 × 物理布局分歧且单元测试视图窄化致盲，但 8.53 是 HND 物理形状反转子单测逻辑视图混淆、本条是 BLNHC token-major 布局下 writer/reader 公式分裂，触发面从 FlashInfer HND 调用方扩到 QSA 后端默认布局） · 触发 `config` · 置信度 `documented`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

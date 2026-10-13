@@ -1,0 +1,52 @@
+id: INF-0027
+legacy_ids:
+- '1.27'
+slug: ttmetal_sfpu_softsign_reciprocal_underflow_zero
+aliases: []
+title: tt-metal softsign 倒数中间值下溢致大输入静默返回 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: calculate_softsign()
+  behavior: calculate_softsign() 把 x/(1+|x|) 分解为 v*reciprocal(1+|v|)，大输入时倒数中间值低于最小正规数被 flush-to-zero，乘积坍缩为 0。
+effect:
+  objects:
+  - 数值结果
+  detail: 大输入时 softsign 静默返回 0，而非饱和端的 ±1；Wormhole 约从 1.06e38 起出错，Blackhole 早一个 binade（约 8.51e37）。现有 run_activation_unary_test 按标准正态采样输入，测不到该量级。无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent TT-Metal，非 NVIDIA 环境
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-08-04'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/pull/51979
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0011
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（SFPU reciprocal 中间值下溢 → activation 静默错误） · Cov: `var:sfpu_exp_overflow_guard_missing` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: Tenstorrent `calculate_softsign()` 计算 `x/(1+|x|)` 时分解为 `v * reciprocal(1+|v|)`。当 `1/(1+|v|)` 低于最小正常数时被 **flush-to-zero**，乘积坍缩为 `0`——而 softsign 在该区域的正确值是 `±1`（op 的饱和端）。Wormhole 从 ~1.06e38 起丢失值，Blackhole 早一个 binade（~8.51e37），差异在于各架构 reciprocal 的 flush 阈值。现有 `run_activation_unary_test` 用标准正态分布采样输入，永远达不到这些量级 → **测试盲区**。修复方式与 `ckernel_sfpu_gelu.h` 记载的"fused multiply avoids intermediate underflow" hazard 一致。
+  source: 'tt-metal PR #51979（2026-08-03 open）。Wormhole + Blackhole SFPU。https://github.com/tenstorrent/tt-metal/pull/51979'
+  behavior: 无 crash、无 NaN。大输入 softsign 静默返回 0 而非 ±1——activation 饱和端的完全错误值。属「SFPU reciprocal/exp 中间值下溢/溢出 → 静默错误激活值」签名族，与 1.11 `sfpu_exp_overflow_guard_missing` 同族（中间值精度 hazard）。
+  trigger_surface: Tenstorrent TT-Metal，非 NVIDIA 环境
+  discovery: 2026-08-04 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,52 @@
+id: INF-0259
+legacy_ids:
+- '1.260'
+slug: ttmetal_typecast_int_to_bf16_ties_away_from_zero_dual_rounding_rule_split
+aliases: []
+title: ttnn.typecast 整数→bf16 的 tie 远离零舍入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.typecast 整数→bf16 臂
+  behavior: 整数源→BFLOAT16 臂经 SFPCAST 转 fp32 后复用硬件 rounder（tie 远离零），而同 op 的 fp32→bf16 臂为软件 RNE，同一算子按源 dtype 施加两种舍入规则。
+effect:
+  objects:
+  - 数值结果
+  detail: 整数转 bf16 时恰好 tie 的值有一半比 torch 结果大 1 ULP，偏差方向系统性向大、不抵消；[256,65535] 穷举 1024 个 tie 中 512 个错，[256,512) 内 1/4 整数错；非 tie 输入全对。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.typecast` {uint16,int32,uint32}→bfloat16 + 恰好 tie 的整数值（hw_specific）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-26'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58001
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0249
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.typecast` 整数源（UINT16/INT32/UINT32）→ BFLOAT16 经 `SFPCAST` 转 fp32 后交给**硬件 rounder**——tie **away from zero**；同 op 的 float32→bfloat16 臂却是软件 RNE（`0x7FFF`+LSB，#46231）——**同一算子按源 dtype 施加两种舍入规则**：整数源在每个 binade `[2^k,2^(k+1))`（k≥8）的 128 个 tie 中 64 个背离 torch（RNE 取低时被本 op 推高）；[256,65535] 穷举 1024 tie 中 512 错（int32 域 2048 tie/1024 错）；非 tie 输入全对。bf16 仅 8 位有效数字使小整数 tie 密集：[256,512) 内**每个奇数都是 tie**、该区间 1/4 整数错） · Cov: `var:ttmetal_typecast_uint32_float32_double_rounding_bit31_one_ulp`（1.190/1.250 typecast 舍入族——本条在 tie-break 方向维度：非双重舍入而是同 op 内舍入模式分裂） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`ckernel_sfpu_typecast.h` 整数臂复用 fp32→bf16 硬件 rounder（away-from-zero），fp32 臂软件 RNE（`d7618ac998` 处 main）；[256,65535] 全 tie 穷举表在 issue 内，0 评论（Repo Assist 未响应）。'
+  source: 'tt-metal #58001（2026-09-26 open，Bad Outputs/silent，含三 dtype × 穷举 tie 计数与双臂代码行定位）。https://github.com/tenstorrent/tt-metal/issues/58001'
+  behavior: 无 crash——整数→bf16 转换在 tie 上 50% 静默 1-ULP 偏差且方向系统性向大；嵌入 ID/计数/哈希经 bf16 中转的管线偏差不抵消。1.250（双舍入 1 ULP）之后 typecast 族新维度：**同一 op 内部舍入规则分裂**，fp32 臂自证正确做法存在于同文件。
+  trigger_surface: tt-metal + `ttnn.typecast` {uint16,int32,uint32}→bfloat16 + 恰好 tie 的整数值（hw_specific）
+  discovery: 2026-09-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

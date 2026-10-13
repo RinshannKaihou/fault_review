@@ -1,0 +1,57 @@
+id: INF-1006
+legacy_ids:
+- '10.90'
+slug: vllm_parser_engine_nonstreaming_drops_post_tool_call_text_streaming_keeps
+aliases: []
+title: vLLM ParserEngine 非流式丢弃 tool call 后的正文
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: _single_pass_parse 非流式汇总
+  behavior: _events_to_delta 把跟在 tool 事件后的文本 defer，流式由下一个 delta flush，但非流式的 _single_pass_parse 缺少 flush 步骤。
+effect:
+  objects:
+  - 输出内容
+  detail: qwen3_coder、qwen3_xml、glm45、minimax_m2 等 parser 的非流式响应中，tool call 之后或之间的正文（如 "Done."）丢失、content 为 None，流式正确；/v1/completions 原样输出证明模型生成一致。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM main（ParserEngine 系 parser：qwen3_coder/qwen3_xml/glm45/minimax_m2 等）+ 模型输出 tool call 后继续生成正文 + 非流式请求（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-29'
+remarks: subsystem 缺「输出解析」（tool/reasoning parser 对生成文本的后处理）一类；暂取最接近的 调度/服务（API/前端）。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59218
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0958
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM 基于 `ParserEngine` 的 tool parser（qwen3_coder、qwen3_xml、glm45、minimax_m2 等）**非流式路径静默丢弃 tool call 之后/之间的正文**：`_events_to_delta` 把跟在 tool 事件后的文本 defer（避免 delta 混合 content 与 tool call），流式由下一个 delta flush 它，但 `_single_pass_parse` 从不 flush——实测（`structured_outputs` 强制确定性输出 `<tool_call>…</tool_call>Done.`）非流式 `content: None` + tool_calls 正常、流式 content `''Done.''`；两个 tool call 之间的文本同丢；同输出经 `/v1/completions` 原样返回证明模型生成一致、差异纯在 parser 汇总路径） · Cov: `var:10.42`（parser 静默丢内容族——10.42 是通道终止符假设丢 tool call，10.87（llama3_json 流式丢 `{` 开头正文）是流式/非流式算法分裂的第一形态；本条是**同一 parser 家族对流式 defer 语义的非流式补齐缺失**：流式正确而非流式丢，与 10.87 方向互为镜像） · 触发 `config` · 置信度 `verified`'
+  mechanism: '`TestPostToolContentDeferral` 的 defer 语义只在流式增量路径兑现；`_single_pass_parse`（非流式聚合）缺 flush 步骤。`tool_choice="none"` 路径走 `extract_tool_call` 前置、不受影响。'
+  source: 'vLLM #59218（2026-09-29 open，parser-only（macOS CPU 复现）、含对真实 server 的流式/非流式双路径最小复现与 `/v1/completions` 对照）。https://github.com/vllm-project/vllm/issues/59218'
+  behavior: 无 crash——**非流式响应静默丢失 tool call 后的正文**（如"Done."总结、下一步说明）：agent 编排读非流式响应时丢失模型实际生成的收尾内容；流式客户端反而正确，同一生成两 API 形态结果不同。
+  trigger_surface: vLLM main（ParserEngine 系 parser：qwen3_coder/qwen3_xml/glm45/minimax_m2 等）+ 模型输出 tool call 后继续生成正文 + 非流式请求（config）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 输出解析
+        status: unanimous

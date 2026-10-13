@@ -1,0 +1,56 @@
+id: INF-0356
+legacy_ids:
+- '5.9'
+slug: sglang_dsv4_nonep_tbo_attn_tp_replica_misshard
+aliases: []
+title: SGLang DSV4 TBO 误把 attention 副本当分片
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: sglang
+    component: TBO 全 TP 变长 collective
+  behavior: DP attention + moe_a2a_backend=none + attention TP>1 时，TBO 把全 TP 变长 collective 应用于 attention-TP 组内已复制的张量，把副本当作独立分片处理。
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: DeepSeek-V4 non-EP TBO 在上述组合下 gather 与 combine 布局损坏，产生非法模型输出，无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang 专用
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-02'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33250
+  kind: github_pr
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（TP×DP attention 副本误分片） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: DeepSeek-V4 Two-Batch Overlap（TBO）在 DP attention + `moe_a2a_backend=none` + attention 张量并行 >1 时，把**全 TP 变长 collective** 应用于在 attention-TP 组内**已被复制（replicated）**的张量。把这些副本当作独立分片处理会破坏 gather 与 combine 的布局 → 产生非法模型输出。修复：给每个 full-TP rank 一片其 DP-local 复制张量，并在 combine 后于 attention-TP 组内重建 DP-local 结果。
+  source: 'SGLang #33250（2026-08-02 open PR，依赖 #31700）。环境：DS-V4，non-EP TBO，DP attention，`moe_a2a_backend=none`，attn-TP>1。https://github.com/sgl-project/sglang/pull/33250'
+  behavior: 无 crash、无 NaN。全 TP collective 把 DP-local 副本当独立分片 → gather/combine 布局损坏 → 静默非法模型输出。属"TP×DP attention 副本被 collective 误分片"新子签名，与 5.3 `tp_marlin_gibberish`（TP 分片错误）同族但发生在 TBO+DP-attn 的特定组合下。
+  trigger_surface: SGLang 专用
+  discovery: 2026-08-02 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 输出内容
+        status: unanimous

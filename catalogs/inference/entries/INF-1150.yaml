@@ -1,0 +1,60 @@
+id: INF-1150
+legacy_ids:
+- '12.34'
+slug: sglang_qwen3_seqcls_head_bias_retained_loading_bias_free_checkpoint
+aliases: []
+title: SGLang Qwen3 分类头多出随机初始化 bias
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: sglang
+    component: Qwen3 序列分类头 score 层
+  behavior: 分类头用 nn.Linear 构建、默认 bias=True（transformers 参考为 bias=False）；load_weights 对缺失的 score.bias 无报错或置零守卫，随机初始值被保留。
+effect:
+  objects:
+  - 输出分布
+  - 模型权重
+  detail: 加载只含 score.weight 的合法 checkpoint 时无任何报错，分类 logits 被逐标签的固定随机偏移污染（算 W@h+b_init 而非 W@h），rerank/分类阈值类任务系统性漂移；CPU 合成复现，880d6fa6 与 v0.5.10.post1 均复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + Qwen3ForSequenceClassification + 无 score.bias 的 checkpoint（other_stack：SGLang；机制可迁移任何"构造含 bias、checkpoint 无 bias"的 head 加载）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-10'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/38768
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（SGLang `Qwen3ForSequenceClassification` 用 `nn.Linear(config.hidden_size, config.num_labels)` 建分类头——**默认开启并初始化 bias**；加载只含 `score.weight` 不含 `score.bias` 的 checkpoint（transformers 参考 head 为 `bias=False`，无 bias 的 checkpoint 是合法产物）时，随机初始化的 bias **原样保留、加载无任何报错**：期望计算 `W@h`，实际计算 `W@h + b_init`，静默改变分类 logits。CPU-only AST 提取复现（执行上游 head 构造语句 + `Qwen3ForPooledOutput.load_weights` + `default_weight_loader` 原样不变，8 输入×3 输出合成 head + 内存 checkpoint，不初始化 backbone 不起服务器）；current-main `880d6fa6` 与 `v0.5.10.post1` 双 revision 复现） · Cov: `NEW`（可选参数缺省初始化值在部分加载下残留子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: head 构造无条件 `bias=True`（transformers 建模层用 `bias=False`），`load_weights` 对 checkpoint 缺失的 `score.bias` 无"未加载即报错/置零"守卫——`default_weight_loader` 只覆盖 checkpoint 中存在的键，初始化噪声穿过加载存活。
+  source: 'SGLang #38768（2026-09-10 open，含 AST 提取上游源码的自包含合成复现脚本与双 revision 验证）。https://github.com/sgl-project/sglang/issues/38768'
+  behavior: 无 crash——**分类 logits 被随机偏置污染**（每个标签一个固定随机偏移，方向量级随初始化种子）：排序类任务（rerank/分类阈值）系统性漂移。12.28（unload_lora 前端-only 泄漏）、12.33（round-trip 丢 97% 权重）之后加载路径族新形态：本条不是丢权重而是**多出不该有的初始化权重**——"部分加载+可选参数缺省"的组合静默面。
+  trigger_surface: SGLang + Qwen3ForSequenceClassification + 无 score.bias 的 checkpoint（other_stack：SGLang；机制可迁移任何"构造含 bias、checkpoint 无 bias"的 head 加载）
+  discovery: 2026-09-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 权重/检查点
+        status: panel7
+      effect:
+        from: 模型权重
+        to: 输出分布
+        status: panel7

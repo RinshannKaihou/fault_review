@@ -1,0 +1,63 @@
+id: INF-1265
+legacy_ids:
+- K5.9
+slug: pd_disagg_transfer_inflight_page_release_overwrite
+aliases: []
+title: PD 分离 abort 后在途 KV 传输覆写新请求的 KV 页
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: abort 时 KV 页释放与在途传输
+  behavior: 请求因 abort/timeout 中止时 KV 页归还分配器，但 Mooncake 后端在途的 KV 传输未取消；页释放与传输完成间无同步（TOCTOU），新请求分到同批页后被旧写入覆盖。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  - 输出内容
+  detail: 无报错、无 crash、无 NaN，唯一症状是答案略错：与旧请求前缀重叠大时近似轻微偏置，完全不同时语义偏离但仍流畅。触发窗口窄，生产中频繁 abort 慢请求时实际命中。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/32564
+  kind: github_pr
+  resolved_from: 'SGLang PR #32564'
+relations: []
+original:
+  category: KV5
+  section: KV §5 cross-node-transfer（跨节点传输：分离式 / 卸载 / RDMA）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `no` · 置信度 `verified`'
+  mechanism: prefill→decode 分离式部署中，请求因 abort/timeout 被 abort 时，其 KV 页被归还分配器，但**正在途中的 KV 传输未被取消**（Mooncake transfer backend）。下一个请求分配到同一批物理页后，仍在途的旧写入到达接收端覆盖了新请求的 KV——下一请求实际上持有了**上一请求的 KV**。这是一个 **TOCTOU 竞态**（Time-of-Check-Time-of-Use）：页面生命周期管理（free）与异步传输完成（send 完成）之间没有同步。报告者注明触发窗口窄，但生产环境因频繁 abort 慢请求而实际命中。
+  source: 'SGLang PR #32564（2026-07-27，open）。'
+  behavior: '**唯一症状是"给用户的答案略错"**——被污染的 KV 导致后续解码基于错误的上下文历史，全程无任何错误抛出、无 crash、无 NaN。污染程度取决于旧/新请求的 prompt 前缀相似度：若前缀重叠大（radix cache 命中），效果可能近似"轻微偏置"；若完全不同，输出语义可能完全偏离但仍流畅。无任何运行时信号。'
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: infra_off，且是**跨请求方向**的 off-manifold：受害请求的隐藏态与**另一个请求**的前缀 KV 相关，而非自身 prompt 的健康轨迹。与 K5.3 `pd_disagg_dside_page_reuse_stale_kv` 的区别：K5.3 是 decode 端页面重用时的 stale KV 残留（**读**了旧数据），本条是传输层在途中**写**入已释放的页面（**写**覆盖了新数据）——TOCTOU 的 Check 侧在分配器、Use 侧在传输完成回调，两者无同步。可捕获：cross-orthogonality / 签名余弦矩阵族——受害状态与"某个未知的前缀捐赠者"相关，单看完全在流形上但与 prompt 条件化参考做偏离比对即可暴露；cheap 族的 recompute-oracle（重算 prefill 得到与被污染 cache 不一致的结果）也能命中。会漏检：所有无参考的单序列度量族（geometric / spectral / statistical 单看受害序列本身完全自洽）。
+  repro: 不可软件复现——需要 PD 分离式部署栈（Mooncake transfer backend + 异步 KV 传输 + 页面分配器），单进程路径原理上无法复现异步传输与页面生命周期竞态。
+  locus: '`cross-node-transfer`'
+  priority: '`medium`（静默损坏 + 生产命中窗口真实存在）'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: KV状态
+        to: 跨请求/跨样本数据
+        status: unanimous
+    uncertain:
+    - detail

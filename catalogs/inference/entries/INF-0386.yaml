@@ -1,0 +1,58 @@
+id: INF-0386
+legacy_ids:
+- '5.39'
+slug: vllm_sparse_nccl_weight_patch_noncontiguous_view_stride_ignored
+aliases: []
+title: vLLM 稀疏 NCCL 权重补丁忽略非连续 view stride
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: vllm
+    component: PyNccl broadcast 封装
+  behavior: trainer 把 SparseWeightPatch 的 indices/values 直接交给 PyNccl broadcast；遇非连续 view 时按 data_ptr()+numel 发送相邻存储元素，不应用 stride。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: indices/values 为非连续 view（如 stride-2 切片）时，推理 worker 静默加载索引与值都错位的补丁（期望 [10,-1,20,-1]，实得 [10,11,-1,-1]），无报错，在线更新后模型质量退化；发送侧正确，难定位。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM trainer→inference sparse NCCL 权重传输 + 非连续 indices/values view（partial：在线更新场景）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57130
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0385
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（vLLM sparse NCCL 权重传输路径：trainer 侧把 `SparseWeightPatch.indices`/`values` 直接交给 `PyNcclCommunicator.broadcast`，若任一张量是**非连续 CUDA view**（如 stride-2 切片），PyNccl 从 `data_ptr()` 起按 `numel` 发送**底层存储相邻元素**而不应用 stride——inference worker 收到的是相邻存储元素而非逻辑张量元素。最小复现：indices=[0,2]（stride 2）+ values=[10.0,20.0]（stride 2），推理侧参数 [-1,-1,-1,-1] 期望 [10,-1,20,-1]，实际收 [0,1]/[10.0,11.0] 得 **[10,11,-1,-1]**——错位且错值的稀疏补丁） · Cov: `var:vllm_dense_dp_weight_transfer_ipc_payload_selection_dp_rank_reset_zero`（5.38 权重分发正确性族） · 触发 `partial` · 置信度 `verified`'
+  mechanism: NCCL 集合通信以连续线性缓冲为契约，Python 侧封装未把"张量视图语义"（storage_offset + stride）翻译成打包拷贝或拒绝非连续输入——隐式 contiguity 假设跨 API 边界静默失效。
+  source: 'vLLM #57130（2026-09-16 open，含 stride-2 最小复现代码与期望/实际对照）。https://github.com/vllm-project/vllm/issues/57130'
+  behavior: 无 crash、无报错——推理 worker 静默加载错误的稀疏权重补丁（索引与值双双错位），在线更新后模型质量退化；发送侧逻辑正确使单侧调试极难定位。5.38（dense DP IPC payload 选错）之后权重分发族新成员：本条在**通信封装 stride 语义**维度、fail 完全静默。
+  trigger_surface: vLLM trainer→inference sparse NCCL 权重传输 + 非连续 indices/values view（partial：在线更新场景）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 集合通信：原文 mechanism 指出缺陷是“Python 侧封装未把张量视图语义翻译成打包拷贝或拒绝非连续输入”，修复落在通用 PyNccl broadcast 封装；该封装不专属 RL 权重同步路径，功能域优先不适用，权重传输路径只是触发条件。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

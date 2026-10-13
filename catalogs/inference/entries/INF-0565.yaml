@@ -1,0 +1,57 @@
+id: INF-0565
+legacy_ids:
+- '6.172'
+slug: vllm_pd_mamba_spec_padding_window_survives_align_split_truncation
+aliases: []
+title: vLLM 推测 padding 窗口被 Mamba 裁剪后未同步致引擎终止
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: waiting 路径推测 padding 窗口
+  behavior: 新准入请求只剩 1 个 prompt token 时被 pad 到 1+K=8；hybrid Mamba align 块边界裁剪到 5 个物理 token 后，pad_spec_decode 仍为 true、仍发布 7 个推测占位。
+effect:
+  objects:
+  - 可用性/进度
+  detail: PD分离、hybrid Mamba align、推测解码且批内已有decode请求时准入1-token请求（调度序列触发）：proposer按7-token窗口解释5-token行，Ascend DSpark position/slot mapping非法致引擎终止；crash表象在后端。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM PD 分离 + hybrid Mamba（align 模式）+ 推测解码 + 批内已有 decode 请求时准入 1-token 请求（调度序列触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54392
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（PD decode worker 上新准入请求可能只剩 1 个 prompt token 由 KV connector 供给；waiting-request 调度路径把它当新 decode 从 1 pad 到 1+K=8 token——hybrid Mamba `align` 模式下 #51113 的块边界裁剪把 8-token 跨块 span 裁到 5 个物理 token，但 `pad_spec_decode` 仍 true、仍发布 **7 个推测占位**——请求级契约（1 target + 7 drafts = 8 vs 物理 span 5）违背而全局 batch shape 全程合法） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 合成 padding 与后续调度限制器（Mamba 块边界、长度上限）不原子：裁剪发生在 padding 之后、占位发布与 padding 标志解耦。全局扁平 batch shape 仍自洽（缺陷不在全局形状而在请求级窗口语义）；proposer 按 7-token 拒绝窗解释 5-token 行 → Ascend DSpark 后端产生 invalid request-local position/slot mapping → 引擎终止。#51113 的边界保护本身必需（防 recurrent-state 投毒）——缺失的不变式是「合成窗口要么原子穿过全部限制器，要么整体取消」。
+  source: 'vLLM #54392（2026-08-30 open，vLLM Ascend + MooncakeConnectorV1 PD 分离 + Kimi-K3 + DSpark K=7，10/93 层 debug 模式；main 1ebff99 同序存在）。https://github.com/vllm-project/vllm/issues/54392'
+  behavior: 引擎终止（fail-loud 崩溃在 proposer 侧），但**根因不可见**——crash 表象在 DSpark 后端的 position/slot 校验，实际是调度器合成窗口契约；跨栈（vLLM 主仓 + Ascend 后端）使归属模糊。属「**合成 padding 未原子化穿过限制器链**」新子签名：与 11.52（async sched × Mamba postprocess 竞态）同 hybrid Mamba × spec 调度域，本条是确定性的窗口算术违背而非竞态。
+  trigger_surface: vLLM PD 分离 + hybrid Mamba（align 模式）+ 推测解码 + 批内已有 decode 请求时准入 1-token 请求（调度序列触发）
+  discovery: 2026-08-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 调度/服务
+        status: unanimous
+    rewritten:
+    - detail

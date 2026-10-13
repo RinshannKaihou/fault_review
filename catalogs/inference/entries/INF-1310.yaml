@@ -1,0 +1,70 @@
+id: INF-1310
+legacy_ids:
+- K9.19
+slug: specdec_kv_slot_boundary_faults
+aliases: []
+title: 推测解码 KV 槽/索引边界故障（合并：槽越界、形状不匹配、接受率坍缩）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 草稿路径 KV 槽索引与 seq_rm
+  behavior: KV 槽/索引边界出错：(a) 长序列 MTP 的 KV 槽越界；(b) DeepSeek-V4 EAGLE 草稿路径 req_pool_indices 与 out_cache_loc 形状不符；(c) GDN 不允许部分 seq_rm。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: (a)(b) 表现为非法内存访问或形状断言崩溃；(c) 在恰落于 KV 槽边界的特定上下文长度上，MTP 草稿接受率突然归零、吞吐坍塌，而输出仍正常。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/40756
+  kind: github_issue
+  resolved_from: 'vLLM #40756'
+- url: https://github.com/sgl-project/sglang/issues/24747
+  kind: github_issue
+  resolved_from: 'SGLang #24747'
+- url: https://github.com/ggml-org/llama.cpp/issues/23658
+  kind: github_issue
+  resolved_from: 'llama.cpp #23658'
+- url: https://github.com/ggml-org/llama.cpp/pull/22400
+  kind: github_pr
+  resolved_from: '#22400'
+relations: []
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`infra_off` · Cov: `NEW (recovered)` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 这是一个**合并条目**，聚合了三个位于边界的推测解码 KV **槽/索引**故障：(a) 长序列上 MTP 触发非法内存访问（KV slot over-run，槽越界）；(b) DeepSeek-V4 EAGLE 草稿路径中 `req_pool_indices`（形状 `[num_reqs]`）与 `out_cache_loc`（形状 `[num_reqs*num_spec_steps]`）形状不匹配；(c) MTP 草稿接受率在**特定上下文大小**处坍缩——该位置恰为 KV slot 边界，修复方式是为 GDN 模型允许**部分 `seq_rm`**。
+  source: 'vLLM #40756（OPEN 2026-04-24）；SGLang #24747（CLOSED 2026-05-09）；llama.cpp #23658（CLOSED 2026-05-25）+ #22400（GDN 的部分 `seq_rm`）。*（这三者曾被回填代理错误排除，均已 `gh` 确认为真实——见本节开头的引用溯源说明；"DSv4" 是真实的截止后模型。）*'
+  behavior: (a)(b) 表现为非法内存访问 / 形状断言崩溃；(c) 表现为在某些上下文长度上草稿接受率突然归零、吞吐坍塌而输出仍"正常"。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: '**大多为崩溃/断言，没有隐藏态信号**——(a)(b) 属于响亮失败，任何隐藏态检测器都无用武之地。唯一带信号的是 (c) 接受率坍缩变体，且它是**行为性**信号（acceptance rate），而非隐藏态度量；其触发受上下文长度门控（恰好落在 slot 边界时）。检测面：geometric/spectral/trajectory/statistical/infotheoretic 全族对本条目基本无效；正确的防线是槽索引的形状/边界断言与接受率监控。'
+  repro: 只能覆盖 (c) 的隐藏态侧后果——单钩子于某个上下文长度阈值处把一段 KV 置零/失效（模拟槽边界处 KV 被错误移除），并沿长度轴扫描以复现"仅在特定上下文大小处出现"的门控；(a)(b) 的崩溃语义不可软件复现。
+  locus: control-flow
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 由 解码/采样 改为 KV缓存：三个子故障都是 KV 槽/索引问题——(a) KV slot 越界、(b) out_cache_loc 与 req_pool_indices 形状不符、(c) 原文唯一明确的修复是为 GDN 允许部分 seq_rm（KV/循环状态管理）；词表 KV缓存 含 block 分配与循环状态池，推测解码是触发路径。stack 跨 vllm/sglang/llama.cpp，取首个来源 vllm。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

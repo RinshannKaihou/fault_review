@@ -1,0 +1,59 @@
+id: INF-1258
+legacy_ids:
+- K5.2
+slug: vllm_pd_disagg_mm_kv_size_keyed_reuse
+aliases: []
+title: vLLM PD 分离多模态 KV 存储键不含图像内容致跨请求复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: SharedStorageConnector存储键
+  behavior: V1 P/D 分离中 SharedStorageConnector 的存储键仅由 prompt_token_ids（文本+随图像尺寸变化的占位符数）派生，不含图像内容，同尺寸不同内容的图像哈希到已有条目。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 带同尺寸、不同内容图像的后续请求，decode 端加载前一请求的 KV，输出与前一请求逐字相同；见于 Qwen2.5-VL-3B 1P1D 部署。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/21175
+  kind: github_issue
+  resolved_from: 'vLLM #21175'
+relations:
+- kind: var
+  target: INF-0395
+original:
+  category: KV5
+  section: KV §5 cross-node-transfer（跨节点传输：分离式 / 卸载 / RDMA）
+  meta: '`infra_off` · Cov: `var:vllm_multimodal_cachekey_collision` · 触发 `no` · 置信度 `documented`'
+  mechanism: 在 V1 P/D 分离中，`SharedStorageConnector` 的存储键由 `prompt_token_ids` 派生（文本 + 与图像尺寸相关的占位符数量），但**不**包含图像内容 → 第三个请求若带一张尺寸相同、内容不同的图像，就会哈希到已有条目；decode 端加载了前一个请求的 KV 并输出完全相同的结果。
+  source: 'vLLM #21175（Qwen2.5-VL-3B，1P1D）。'
+  behavior: 不同图像的请求输出逐字相同——是本目录里少数「输出可直接肉眼判定」的跨请求碰撞。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: off-manifold（infra_off），但形态特殊：传输过来的 prefill KV 与另一个请求的 KV **逐比特相同**，尽管多模态输入不同。检测判据因此是结构性的「跨请求 KV / prefill embedding 在前缀区域完全相等」——这属于 cheap（哈希/相等性比对）与 geometric（跨请求逐位置余弦恰为 1.0）能直接拿下的类型。漏检者：任何单请求内部的 statistical / spectral / infotheoretic 判据——被复用的 KV 是另一个请求的健康激活，孤立看毫无异常。纯文本稠密模型无多模态占位符路径，无法单机复现。
+  locus: '`cross-node-transfer`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

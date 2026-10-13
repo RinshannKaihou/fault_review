@@ -1,0 +1,54 @@
+id: INF-1074
+legacy_ids:
+- '11.51'
+slug: vllm_prompt_logprobs_drafter_graph_buffer_reuse_corruption
+aliases: []
+title: vLLM prompt_logprobs 静默取自 draft 模型
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: drafter 与 logprobs 计算执行序
+  behavior: drafter 在 _bookkeeping_sync() 前运行，复用共享 CUDA graph 内存池，覆写 target hidden_states 所在 buffer，prompt logits 再从中计算
+effect:
+  objects:
+  - 输出分布
+  detail: spec decode + piecewise CUDA graph 下请求 prompt_logprobs：不超 capture 限长的 prompt 得到 draft 模型的 logprobs，超出（eager）正确；generation 不受影响，无 crash、无 NaN、无日志
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + spec decode（padded GPU drafter：MTP/EAGLE 族）+ piecewise CUDA graph + `prompt_logprobs` 请求
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53520
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（padded GPU drafter 在 `_bookkeeping_sync()` 之前运行并复用共享 CUDA graph 内存池，覆写 target hidden_states——prompt_logprobs 从 draft 模型输出计算、**静默损坏**；损坏边界精确等于 piecewise capture 限长，之上（eager 输出）全对，generation 不受影响） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 'V1 GPU model runner 中 padded GPU drafter（MTP/EAGLE 式）的执行序为 `target forward（hidden_states 落在可复用 CUDA graph 输出 buffer）→ sample → padded drafter forward（复用/覆写该 graph 输出 buffer）→ bookkeeping（_get_prompt_logprobs_dict 从已被覆写的 hidden_states 计算 prompt logits）`。全部 CUDA graph 共享一个全局内存池，drafter forward 可回收 target graph 输出背后的内存——prompt logprobs 实际从 **draft 模型输出**算出。精确解释 #53488 报告的锐利边界：≤capture 限长的 prompt（PIECEWISE）损坏，紧邻其上（cudagraph_mode NONE、eager 输出）正确；sampling 在 drafter 之前消费 logits，故 generation 不受影响。修复（PR #53520）重排 bookkeeping 先于 drafter 运行。报告者 aarch64 GB10，PR 作者在 RTX 5880 Ada 复现（跨硬件确证）。'
+  source: 'vLLM PR #53520（2026-08-24 open，fixes #53488；DEBUG log 中 `cudagraph_mode` 在损坏起点处 PIECEWISE→NONE 翻转作为证据链）。https://github.com/vllm-project/vllm/pull/53520'
+  behavior: '**无 crash、无 NaN、无日志**——`prompt_logprobs` 数值静默损坏（服务端 API 的对数概率消费方拿到 draft 模型的 logprobs 而非 target 的），长度门槛式触发使 A/B 排查极易误判。post-forward 结构性盲点新形态：损坏发生在「采样后读回」路径，隐藏态监控原理上看不见，只有对拍 target 独立评分才能发现。'
+  trigger_surface: vLLM + spec decode（padded GPU drafter：MTP/EAGLE 族）+ piecewise CUDA graph + `prompt_logprobs` 请求
+  discovery: |-
+    2026-08-25 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

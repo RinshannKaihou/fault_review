@@ -1,0 +1,56 @@
+id: TRN-0119
+legacy_ids:
+- OPT.19
+slug: muon_update_rescaled_by_loss_scale
+aliases: []
+title: DeepSpeed fp16 Muon 更新被误按 loss scale 缩小
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: unscale_and_clip_grads 路径
+  behavior: Newton-Schulz 输出的更新量与 loss scale 无关，但无 offload 的 fp16 step 路径把它当已放大梯度：unscale 时除以 loss scale、global norm 也按放大值计。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: 无 crash、无 NaN，fp16 Muon 参数几乎不动，loss 下降显著慢于 bf16 对照、接近停滞，表象与 lr 太小无法区分；fp16+Muon+ZeRO-1/2/3 且不带 CPU offload 时触发，PR 实测一步更新范数缩水约 1023 倍。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8655
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0111
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `shared` · Cov: `var:muon_zero_stage0_skips_newton_schulz` · 置信度 `documented`'
+  mechanism: 'DeepSpeed fp16 + Muon + ZeRO-1/2/3（不带 CPU offload）下，Newton-Schulz 的输出**在任何 loss scale 下都是同一个更新**，但 step 路径把它当「已放大的梯度」处理：`unscale_and_clip_grads` 把更新量除以 loss scale、global norm 也按放大值计——Muon 参数的有效更新被缩小 `1/loss_scale`（默认动态 scaler 起步即 1/65536）。CPU-offload 路径（#8464）已在 NS 前 unscale、norm 前放大回去，无 offload 的主路径漏了对称处理；更新停在 fp16 梯度 buffer 里放大回去会溢出，修复（PR #8655）在 cast 到 fp32 之后、norm 与 unscale 之前补偿。'
+  source: 'DeepSpeed PR #8655（2026-09-24；2×H20 定量：static scale 1 vs 1024 下 master 一步范数 4.47e-2 → 4.37e-5（×1023 缩水）、修复后恒 4.47e-2；60 步回归：bf16 0.403→0.295、fp16 master 0.403→0.385（≈不训）、fp16 修复 0.403→0.295；gas=2 同病；2^30 初始 scale 溢出后修复版恢复正常而 master NaN；294 passed on 2×H20）。https://github.com/deepspeedai/DeepSpeed/pull/8655'
+  behavior: 无 crash、无 NaN（修复版在溢出期后照常恢复）——fp16 Muon 参数**几乎不动**：loss 下降速率显著慢于 bf16 对照、接近停滞，表象与「lr 太小/数据太难」无法区分。与 OPT.06（fp16 ZeRO-0 backward 未乘 scale 而 step 恒除→有效更新 ×1/32768）**镜像同病**：那边是梯度没放大却被缩小、这边是**更新量本无 scale 语义却被套用 scale 算术**；与 OPT.11（stage 0 Muon 从不执行 NS）/OPT.10（每 micro-batch 重复 NS）同属 Muon 流水线契约破坏家族第 N 面——「Muon 的更新不是梯度」这一语义在 fp16 缩放协议里失守；ZenFlow/SuperOffload 自有 step 路径不在本修复覆盖内（PR 自述）。
+  discovery: 2026-09-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

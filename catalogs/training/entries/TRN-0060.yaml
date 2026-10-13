@@ -1,0 +1,69 @@
+id: TRN-0060
+legacy_ids:
+- CKPT.11
+slug: resume_resets_first_microbatch_flag
+aliases: []
+title: resume 重置 TE 首微批 flag，MTP 丢一个 depth 梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: TEGroupedLinear 首微批 flag
+  behavior: is_first_microbatch 是进程局部 flag、不入 ckpt，resume 后重置为 True；MTP 跨 depth 复用同层时首次调用由 accumulate 变 overwrite，丢一个 depth 的梯度。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: resume 后一步 grad-norm 分叉而 loss 暂时跟得上，resume 训练与不中断训练从此分叉；两个 fresh 进程错得一致，A/A 复查抓不住，需三进程对照。触发：MTP 层跨 depth 复用 + 梯度累积融合，关 grad-accum fusion 分叉即消失。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-30'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6965
+  kind: github_pr
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7186
+  kind: github_pr
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `TEGroupedLinear.is_first_microbatch` 是进程局部 flag，**不在 ckpt 状态里**：resume 后重置为 True。MTP 层跨 depth 复用（同一 layer 每步前向多次）时，TE 用该 flag 决定 main_grad 是 accumulate 还是 overwrite（beta=0）——resume 后首次共享层调用变成 overwrite，**丢掉一个 depth 的梯度**，resume 训练与不中断训练从此分叉。
+  source: 'Megatron-LM #6965（三段对照：不中断=grad(d2)+grad(d1)；resume 后=只剩 grad(d1)；修复后 2 节点 iter_10 全部 7 个 state shard **逐字节一致**、64 节点 255/256；关 grad-accum fusion 分叉即消失，与机制预测一致；修复为 `is_first_microbatch_tracked(config)` 不维护时给 TE 传 None）。https://github.com/NVIDIA/Megatron-LM/pull/6965 ；Megatron-LM PR #7186（2026-09-12 补：MFSDP v2 hybrid 数据并行同族——HSDP/HFSDP 的 DP-outer 轴跨 micro-batch 保持 Partial、最后一个 backward 才归约，MFSDP v2 适配器缺 `no_sync`：每个 backward 都 finalize 该轴并标记累积 buffer stale → 下个 microbatch 清零，**只有最后一个 microbatch 的梯度到达优化器**；修复 = adapter 实现 `no_sync` 上下文 `microbatch(ctx, is_last=False)`）。https://github.com/NVIDIA/Megatron-LM/pull/7186'
+  behavior: '**run-to-run A/A 复查抓不住**——两个 fresh 进程犯同样的错且互相一致；只有「训了 N 步的进程」对「刚 resume 的进程」三进程对照才可见。表象是 resume 后一步 grad-norm 分叉而 loss 暂时还跟得上。与 CKPT.08（resume 静默跳 epoch）同族：状态不完整的 resume，但丢的是**梯度累积语义**而非数据游标。'
+  discovery: 2026-08-30 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  - audit
+  changed:
+  - cause.objects
+  - effect.detail
+  note: 'subsystem 由 优化器 改为 算子/内核。依据“修复要改哪里”：原文修复 = “is_first_microbatch_tracked(config) 不维护时给 TE 传 None”，改动在 Megatron 的 TEGroupedLinear（TE 封装层）对 TE 的 flag 传参，TE 列于词表 算子/内核；main_grad accumulate/overwrite 是 TE 梯度累积融合（beta=0）的 kernel 行为，优化器 侧的梯度累积配置与步进逻辑无缺陷。resume 与 MTP 复用按 rules 只是触发条件。审计：detail 末句“同族：MFSDP v2 缺 no_sync…”是另一故障（PR #7186）的机制，不是本条影响，替换为原文给出的触发条件。'
+  audit_issues:
+  - field: effect.detail
+    type: 形式
+    detail: 'detail 末句写的是同族另一故障（MFSDP v2 缺 no_sync，PR #7186）的原因与后果，不属本条影响；改为原文的触发条件（MTP 跨 depth 复用 + grad-accum fusion，关闭即消失）'
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 优化器
+        status: unanimous

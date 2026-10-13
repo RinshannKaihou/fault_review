@@ -1,0 +1,73 @@
+id: TRN-0223
+legacy_ids:
+- RL-RO.01
+slug: tim_rollout_trainer_logprob_delta
+aliases: []
+title: rollout 与 trainer 对同一序列 logprob 不一致（TIM）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: 通用
+    component: rollout 与 trainer 概率失配
+  behavior: rollout 引擎（vLLM/SGLang）与 trainer（FSDP/Megatron）因核实现不同和非 batch-invariant 归约，对同一权重同一序列给出不同 token 概率
+effect:
+  objects:
+  - 输出分布
+  - 训练轨迹
+  detail: δ=log π_train−log π_rollout 均值小、极值可达约 1.0，甚至 argmax 翻转；REINFORCE 下仅 TIM 就使 MoE 验证奖励从 0.29 掉到 0.07，零错配的 VeXact 升到 0.53
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-17'
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2605.14220
+  kind: arxiv
+- url: https://arxiv.org/abs/2604.07853
+  kind: arxiv
+- url: https://arxiv.org/abs/2606.29526
+  kind: arxiv
+- url: https://arxiv.org/abs/2602.01826
+  kind: arxiv
+- url: https://arxiv.org/abs/2606.09821
+  kind: arxiv
+- url: https://arxiv.org/abs/2601.18150
+  kind: arxiv
+- url: https://arxiv.org/abs/2512.23087
+  kind: arxiv
+- url: https://arxiv.org/abs/2511.17826
+  kind: arxiv
+- url: https://arxiv.org/abs/2607.15810
+  kind: arxiv
+- url: https://arxiv.org/abs/2609.22870
+  kind: arxiv
+- url: https://arxiv.org/abs/2609.20807
+  kind: arxiv
+- url: https://arxiv.org/abs/2609.32444
+  kind: arxiv
+relations: []
+original:
+  category: RL-RO
+  section: RL-RO
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: rollout（vLLM/SGLang）与 trainer（FSDP/Megatron）对**同一权重同一序列**给出不同 token 概率。来源：核实现不同 + 非 batch-invariant 归约。δₜ = log π_train − log π_rollout，均值小，极值可到 ~1.0，甚至 argmax 翻转。
+  source: 'Zhong et al., "Diagnosing Training Inference Mismatch", arXiv:2605.14220。https://arxiv.org/abs/2605.14220 ；量化 rollout 放大版：QaRL arXiv:2604.07853（低精度 rollout + 全精度 trainer，长回复退化为重复/乱码 error token）。https://arxiv.org/abs/2604.07853 ；目标错位视角：MIPI/MIPU arXiv:2606.29526（TIM 造成常驻 off-policyness，训练引擎的改进不保证部署侧推理策略改进，需推理侧 gap proxy 选择性接受候选更新）。https://arxiv.org/abs/2606.29526 ；动态演化视角（2026-08-20 补）：arXiv:2602.01826（TIM 不是静态数值差：梯度噪声与 mismatch 随训练**同步增长**，IS 在长跑中失效；缩小更新尺寸可压制——mismatch 是与优化动力学耦合的动态故障，LR 调度即缓解）。https://arxiv.org/abs/2602.01826 ；结构化极限（2026-08-21 补）：arXiv:2606.09821（长尾词表下 importance ratio 是 distributional shift 的劣质代理，PPO/GRPO 的 ratio-clipping 只近似 trust region；DPPO 用 divergence-based mask 替换 ratio 剪裁更稳）。https://arxiv.org/abs/2606.09821 ；谱系（2026-08-22 补）：FP8-RL arXiv:2601.18150（veRL 生态 FP8 rollout 生产栈：blockwise W8A8 + FP8 KV-cache + per-step QKV scale 重校准，mismatch 用 token 级 TIS/MIS 校正——TIM 已被当作低精度 rollout 的**设计约束**而非偶发缺陷）。https://arxiv.org/abs/2601.18150 ；DVP arXiv:2512.23087（证明 TIM 的 logprob 散度界 ∝ (1−p)：高频 token 界趋零、长尾 token 界显著，采样尾部 token 引入系统性偏差误差并沿序列累积——为 RL-RO.06 重尾 / RL-RO.07 截断偏置给出统一理论：动态剪掉词表极尾部即稳定）。https://arxiv.org/abs/2512.23087 ；TP 尺寸维度（2026-08-30 补）：arXiv:2511.17826（serving 框架跨 TP 尺寸非确定：浮点非结合性 + 跨 GPU 归约序不一致，RL 场景 trainer TP=1 / rollout 多卡 TP 是天然错配源，与 batch-invariant kernel 已解决的 batch 维非确定性正交）。https://arxiv.org/abs/2511.17826 ；量化误差源分解（2026-09-17 补）：QUADS arXiv:2607.15810（NVFP4 rollout + BF16 trainer ~150 步崩塌且 rollout-trainer logprob gap 迅速增长；受控消融定位**激活误差而非权重误差**为主导——权重可经共享 quant-dequant 路径对齐、激活在线重算且误差被粗 E2M1 网格放大；缓解 = trainer 侧非对称 QAT 只伪量化权重 + rollout 侧残差补偿：低精度 mismatch 的**误差源分解 + 双侧对齐**设计范式）。https://arxiv.org/abs/2607.15810 ；clip 交互面（2026-09-23 补）：arXiv:2609.22870（全管线 FP8 的复合量化噪声使 ratio 系统性偏移，负 advantage token 被推出 trust region——TIM 残差经非线性 clip 放大成符号不对称的梯度掩蔽，见 RL-KL.09）。https://arxiv.org/abs/2609.22870 ；漂移项分解（2026-09-29 补）：Score Centering arXiv:2609.20807（证明 TIM 不稳定的首要来源是**漂移**——采样器 q ≠ trainer p 时存在持续偏置项 `E_q[R]·E_q[∇log p]`，随每步训练累积并构成向（量化/陈旧）采样器的蒸馏反馈环；加性 score centering 修正抵消漂移，0.6B-30B 上单独使用即匹配或超过 IS 类方法、严重量化失配下差距扩大，且与 TIS/MIS 可复合——把 TIM 从「逐 token 修 ratio」推进到「消期望方向偏置」；verl RFC #8009 正在引入）。https://arxiv.org/abs/2609.20807 ；表征与校正（2026-09-30 补）：CIS arXiv:2609.32444（实证支持 TIM 的 **logit-displacement 刻画**——mismatch 可表达为 softmax 前 per-logit 扰动决定的 log-odds 加性位移 εₜ，其分布近似不随 token confidence 变化；据此提出 confidence-aware 截断：大正位移按单一常数阈值截断、映射回随 confidence 提高而收紧的 importance-ratio cap，理论上把 IS 的无界二阶矩换成常数界、代价为受控截断偏置；3 个 MoE 模型 × 5 个数学基准上五基准均值最高，诊断显示对小 confidence token 的截断偏置低于 TIS、而对小 importance weight 的向上 clip 会降低 held-out accuracy——为 RL-RO.07 截断族给出「按 confidence 自适应收紧」的新门控变量）。https://arxiv.org/abs/2609.32444'
+  behavior: REINFORCE 下仅 TIM 就能让 MoE 验证奖励从 0.29 掉到 0.07；VeXact（零错配）继续升到 0.53。
+  discovery: 2026-08-17 基础调研
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

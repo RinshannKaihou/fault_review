@@ -1,0 +1,64 @@
+id: INF-0320
+legacy_ids:
+- '4.4'
+slug: fp16_overflow_ceiling
+aliases: []
+title: fp16 激活越过 65504 上限溢出为 inf/NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: logits 与 RMSNorm 归约
+  behavior: fp16 最大可表示值约 65504，长上下文或大激活下 QK attention logits、vocab logits 或 RMSNorm 方差归约越过上限溢出为 inf，并在后续运算中变成 NaN
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: NaN 传播导致垃圾输出或空生成，多见于长上下文或大激活；默认 fp32 setup 下基本不存在，需显式把中间激活降到 fp16 才能复现
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: fp16 overflow：cast 中间激活；CUDA 原生
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/37732
+  kind: github_issue
+  resolved_from: 'vLLM issues #37732'
+- url: https://github.com/vllm-project/vllm/issues/16579
+  kind: github_issue
+  resolved_from: '#16579'
+- url: https://github.com/vllm-project/vllm/issues/22881
+  kind: github_issue
+  resolved_from: '#22881'
+- url: https://github.com/pytorch/pytorch/issues/66707
+  kind: github_issue
+  resolved_from: 'pytorch #66707'
+relations:
+- kind: var
+  target: INF-0212
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off` · Cov: `var:1.213` · 触发 `yes` · 置信度 `documented`'
+  mechanism: fp16 的最大可表示值约为 65504，超出即溢出为 inf，随后在后续运算中变成 NaN。在长上下文或大激活条件下，QK attention logits、vocab logits、以及 RMSNorm 的方差归约都可能越过这个上限。源文档注明：在本项目默认的 fp32 setup 下该故障基本不存在（fp32 无此天花板），需要显式把中间激活降到 fp16 才能复现。
+  source: 'vLLM issues #37732/#16579/#22881; pytorch #66707 。（源文档未给出论文作者/标题。）'
+  behavior: NaN 传播 → 在长上下文或大激活下产生垃圾输出或空生成。
+  trigger_surface: fp16 overflow：cast 中间激活；CUDA 原生
+  signature: 一旦出现 NaN 就是强 off-manifold（显然可检测，cheap 与 geometric 度量都会立刻打满）；溢出本身则绑定在特定的 (token, channel) 上并伴随极大幅值，属于 sdc_spike_massive 型的单点巨幅离群。因此它在检测难度谱上位于最容易的一端 —— 价值不在于"能否检出"，而在于作为量表上端锚点，与 4.1/4.3 的噪声底一起把动态范围两头钉住。归类上是 sdc_spike_massive / NaN-producing 的变体，并与 weight_bitflip_naninf 相关。
+  repro: yes。用 forward hook 把 QK logits 或 vocab logits 降到 fp16（并在长上下文/大激活输入下运行），令其自然越过 65504 上限；属单钩子 dtype 变换。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

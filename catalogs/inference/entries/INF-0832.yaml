@@ -1,0 +1,56 @@
+id: INF-0832
+legacy_ids:
+- '8.48'
+slug: vllm_xpu_qnorm_rope_unordered_twin_store_race
+aliases: []
+title: vLLM XPU RoPE 融合 kernel 双 store 竞态损坏 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: qnorm/RoPE 融合 kernel
+  behavior: 同一程序先整体 store 未旋转的 rope 区，再以 stride-2 地址映射覆写旋转值，两次 store 写相同地址且无顺序保证，落地值取决于后端指令调度。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: MTT S5000（MUSA）上 4096 token×64 head 中 30 个 token 的 cache RoPE 区与 golden 不符（29 个为未旋转原值），同输入再跑为 29 个；NVIDIA 调度恰好掩盖竞态；注意力漂移、生成质量退化，无 crash。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM XPU 路径（qnorm/rope kernel）；任何后端调度重排即可显形（MUSA 已证实；理论全后端潜伏）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52415
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（qnorm+RoPE 融合 Triton kernel 同一程序内先整体 store 未旋转 KV 再以 stride-2 覆写旋转区——两个 store 无顺序保证，调度差异决定落地值 → 非确定性 KV cache RoPE 区损坏） · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: XPU 路径的 fused qnorm/RoPE kernel 中，同一程序先 `tl.store(kv_out_base + offs, kv_full)` 写入**未旋转**的 rope 区（L93-94），随后 `tl.store(kv_out_base + even_offs/odd_offs, ...)` 以 stride-2 地址映射覆写旋转值（L106-107）——对相同地址的两次 store、不同 lane-to-address 映射、**无任何顺序保证**，哪个落地取决于后端指令调度。NVIDIA 调度恰好总是旋转 store 后落（掩盖竞态）；MTT S5000（MUSA）暴露：4096 token × 64 head 中 30 个 token 的 cache RoPE 区与 golden 不符，**29 个恰好等于未旋转的原值**（bulk store 后落）、1 个部分覆写（lane 粒度竞态）；同输入第二次运行为 29 个——非确定性。修复一行且更快：bulk store 加 `mask=offs < NOPE_DIM` 消除重叠。
+  source: 'vLLM #52415（2026-08-15 open，作者附与 FlagGems 融合 kernel 及 pure-torch 参考的字节级对拍证据；"We found it because MUSA schedules differently"）。https://github.com/vllm-project/vllm/issues/52415'
+  behavior: 无 crash。KV cache 中 RoPE 区非确定性静默损坏（受影响 token 的 K 值为未旋转或部分旋转），注意力模式漂移、生成质量退化；损坏率随输入变化（30/4096 → 29/4096），run-to-run 不可复现。属「单程序内双 store 地址重叠竞态 × 后端调度差异显形」**新子签名**——**在 NVIDIA 上"正确"的 Triton kernel 不能作为无竞态的证据**，异构后端（XPU/MUSA/ROCm）是竞态探针。
+  trigger_surface: vLLM XPU 路径（qnorm/rope kernel）；任何后端调度重排即可显形（MUSA 已证实；理论全后端潜伏）
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 位置编码
+        to: 算子/内核
+        status: panel7

@@ -1,0 +1,56 @@
+id: INF-0221
+legacy_ids:
+- '1.222'
+slug: vllm_rocm_custom_all_reduce_start_barrier_fully_relaxed_torn_reads_xgmi
+aliases: []
+title: vLLM ROCm 自定义 all-reduce 起点屏障全松弛致撕裂读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: vllm
+    component: barrier_at_start（ROCm 分支）
+  behavior: ROCm barrier_at_start 的 flag store/load 均为 RELAXED，数据写读间无 release/acquire；带 release 的变体无内核调用，1stage/2stage 均用全松弛变体。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 多 GPU ROCm 经 XGMI P2P（4×MI100 实测）时，消费者可读到对端仍在途的 staged buffer，撕裂 bf16 值引发间歇性单层激活损坏（NaN/巨大有限值）与长上下文垃圾 token；随负载时序变化、难复现，CUDA 路径不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM 自定义 all-reduce + ROCm + 多 GPU XGMI P2P + 负载时序（hw_specific；gfx908 实测，内存模型论证适用于 peer 为远端 agent 的拓扑）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57059
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（vLLM 自定义 all-reduce 的 **start barrier 全松弛**：`csrc/custom_collective_common.cuh` `barrier_at_start`（ROCm 分支）flag store 为 `__ATOMIC_RELAXED`/`SYSTEM`、flag load 为 `__ATOMIC_RELAXED`/`DEVICE`——无 release 覆盖生产者此前的数据写、无 acquire 覆盖消费者随后的数据读；`barrier_at_start_release` 存在但 **HEAD 无任何内核调用它**，`cross_device_reduce_1stage/2stage` 都用全松弛变体同步 reduce 起点。多 GPU ROCm P2P 走 XGMI（4×MI100/gfx908，peer 为 device scope 的远端 agent）时消费者可在对端写入仍在途时读其 staged buffer——**torn bf16 值**播种 NaN/巨大有限激活，引擎内表现为间歇性单层损坏、长上下文时垃圾 token 墙；负载与时序相关、静默） · Cov: `NEW`（跨设备归约内存序缺失 → 撕裂读子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 归约起点屏障只保证"到达"不保证"可见"——生产者数据 store 与 flag store 之间、flag load 与数据 load 之间均无 happens-before 边；XGMI 远端写传播延迟使窗口可观察。SASS 层验证（gfx908）。
+  source: 'vLLM #57059（2026-09-15 open，bug/rocm，含上游 241e9391 SASS 证据、barrier 变体调用面分析与 XGMI 内存模型论证）。https://github.com/vllm-project/vllm/issues/57059'
+  behavior: 无 crash——间歇性单层激活损坏（torn 值→NaN/巨大有限值），长上下文输出垃圾墙；负载/时序依赖使复现困难，多卡 ROCm 生产部署下为持续性静默风险。1.9（tt 流水线竞态）之后硬件并发族新成员：本条在**跨 GPU 内存序**维度、CUDA 同构路径不受影响。
+  trigger_surface: vLLM 自定义 all-reduce + ROCm + 多 GPU XGMI P2P + 负载时序（hw_specific；gfx908 实测，内存模型论证适用于 peer 为远端 agent 的拓扑）
+  discovery: 2026-09-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+        status: panel7

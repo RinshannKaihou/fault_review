@@ -1,0 +1,53 @@
+id: INF-0820
+legacy_ids:
+- '8.36'
+slug: sglang_mamba_radix_cache_extra_buffer_wrong_ssm_state
+aliases: []
+title: SGLang mamba radix cache 缓存错误位置的 SSM 状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: _init_track_ssm_indices
+  behavior: _init_track_ssm_indices 以 cumsum 计算 track_ssm_src_offset，对未对齐 chunk 边界的请求指向错误 packed state，缓存了错误 token 位置的 SSM state。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: NemotronH 等 Mamba 混合模型开启 extra_buffer 策略且多请求 prefill 时，batch 中多数请求缓存的 SSM state 位置错误；prefix 命中后恢复错误状态，输出静默退化，无 crash、无 assert。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；Mamba 混合模型（NemotronH 等）+ `--mamba-radix-cache-strategy extra_buffer` + 多请求 prefill
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-12'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/33450
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（mamba radix cache extra_buffer 策略缓存错误 token 位置的 SSM state） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: SGLang `--mamba-radix-cache-strategy extra_buffer` 在 NemotronH 等 Mamba 混合模型上，mamba radix cache 对多请求 prefill batch 中的**大多数请求缓存了错误 token 位置的中间 SSM state**。`_init_track_ssm_indices`（`hybrid_linear_attn_backend.py`）为每个未对齐 tracked request 构建 index：`num_h_states = extend_seq_lens // mamba_cache_chunk_size`，然后 `track_ssm_src_offset[1:] = torch.cumsum(num_h_states[:-1], dim=0)`。对于未对齐 chunk 边界的请求，这个 cumsum offset 指向错误的 packed state——cache 持有错误位置的 SSM state。无 crash、无 assert。
+  source: 'SGLang #33450（2026-08-12 open PR），关闭 #31833。组件 mamba radix cache + `extra_buffer` 策略。https://github.com/sgl-project/sglang/pull/33450'
+  behavior: 无 crash、无 assert。cache 持有错误 token 位置的 SSM state→prefix hit 时恢复错误状态→输出静默退化。属「recurrent/SSM state cache 的 chunk 对齐 offset 计算错误」**新子签名**——SSM state 不可像 attention KV 那样按 token 索引，chunk 边界对齐是新的正确性约束。
+  trigger_surface: SGLang；Mamba 混合模型（NemotronH 等）+ `--mamba-radix-cache-strategy extra_buffer` + 多请求 prefill
+  discovery: 2026-08-12 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

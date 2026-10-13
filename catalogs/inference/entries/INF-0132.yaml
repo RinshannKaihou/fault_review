@@ -1,0 +1,61 @@
+id: INF-0132
+legacy_ids:
+- '1.133'
+slug: ttmetal_rms_norm_pre_all_gather_2d_grid_l1_overalloc_plus_hang
+aliases: []
+title: rms_norm_pre_all_gather 2D 路径过分配并挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: rms_norm 2D core grid 工厂
+  behavior: use_2d_core_grid 工厂复制了默认工厂（#54697 同缺陷）的 per-row x² 缓冲分配模式，按最宽行分配造成过分配；2D 划分下另有独立的同步/依赖缺陷。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 宽行 fp32_dest_acc 配置下静态 L1 分配超限，构建期报错；H=W=1024 的普通 shape 上无任何输出地挂起，hang 阻塞了该 2D 路径的全部验证。仅 use_2d_core_grid=True 时触发（Wormhole 复现）。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal Wormhole + `rms_norm_pre_all_gather(use_2d_core_grid=True)` + 宽行 fp32_dest_acc 或 H=W=1024（软件 config/shape 即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55075
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0104
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`rms_norm_pre_all_gather` 的 `use_2d_core_grid=True` 路径携带与 #54697 相同的 per-row x² buffer 过分配（L1 超限于宽 fp32_dest_acc 行），且 2D 路径在普通 shape H=1024 W=1024 上**直接挂起**——hang 阻塞该路径的全部验证） · Cov: `var:ttmetal_comp_pcc_constant_fallback_fp32_tolerance_false_reject`（1.105 同"验证路径缺陷掩盖数值路径缺陷"域） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 2D core grid 工厂复制了默认工厂的 per-row 缓冲分配模式（x² 缓冲按最宽行分配）；H=1024×W=1024 的 hang 表明 2D 划分下还有独立的同步/依赖缺陷。pre-all-gather 变体把归约挪到 all-gather 前以省带宽，路径仅 2D flag 可选。
+  source: 'tt-metal #55075（2026-09-01 open，wormhole 复现，含静态 dataflow buffer 分配报错与最小脚本）。https://github.com/tenstorrent/tt-metal/issues/55075 · 关联：#54697（默认工厂同缺陷）'
+  behavior: 双形态——宽行 fp32_dest_acc 配置下 L1 静态分配超限（构建期报错，fail-loud）；普通 shape 上无任何输出的 hang（liveness 故障）。与 6.176（ptxas 自旋 wedge）同 silent-hang 域，本条在 tt-metal 2D grid 调度层。
+  trigger_surface: tt-metal Wormhole + `rms_norm_pre_all_gather(use_2d_core_grid=True)` + 宽行 fp32_dest_acc 或 H=W=1024（软件 config/shape 即触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed:
+  - cause.behavior
+  note: '审计：分类一致（算子/内核/tt-metal；可用性/进度；挂起）。behavior 中“宽 fp32_dest_acc 行下 L1 超限”是后果，且与 detail 重复，已删去，补上原文的 #54697 同缺陷关联。'
+  audit_issues:
+  - field: cause.behavior
+    type: 形式
+    detail: behavior 写入了后果“宽 fp32_dest_acc 行下 L1 超限”，与 effect.detail 的“静态 L1 分配超限，构建期报错”重复
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,59 @@
+id: INF-1170
+legacy_ids:
+- '13.2'
+slug: bug_prenorm_postnorm_swap
+aliases: []
+title: pre-norm 被改成 post-norm，破坏残差通路
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: 通用
+    component: decoder 层归一化位置
+  behavior: 把归一化从子层之前（pre-norm）移到残差相加之后（post-norm），却仍使用按 pre-norm 训练的权重运行，破坏残差高速公路。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 从第 1 层起激活分布严重扭曲、残差流范数不再随深度增长，到深层输出垃圾或 NaN，质量严重崩塌；per-layer 范数增长等 geometric/trajectory 度量可轻易捕获。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 实现 patch/错误配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/1910.05895
+  kind: arxiv
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`infra_off` · Cov: `NEW`（无既有故障改动 norm 的**位置**；`bug_rmsnorm_eps` 只扰动 epsilon） · 触发 `yes` · 置信度 `documented`'
+  mechanism: 把归一化从子层之前（pre-norm，所有现代 decoder 的做法）移到残差相加之后（post-norm），破坏了残差高速公路。用一份按 pre-norm 训练出来的权重去跑 post-norm，会灾难性地扭曲激活分布。
+  source: Nguyen & Salazar, "Transformers without Tears", IWSLT 2019（arXiv:1910.05895）。
+  behavior: 灾难性：到了深层就是垃圾输出或 NaN，质量严重崩塌。
+  trigger_surface: 实现 patch/错误配置
+  signature: 从第 1 层起就大幅 off-manifold：残差流范数**不再随深度增长**。geometric（per-layer norm growth）+ trajectory 度量可以轻易捕获，是本目录中最容易检测的一类。
+  repro: 真实 pre-norm 为 `h_out = h_in + f(RMSNorm(h_in))`，真实 post-norm 为 `h_out = RMSNorm(h_in + f(h_in))`。forward_hook 只能观察到已经算完的 pre-norm 输出，无法在不重跑子层的前提下恢复 `f(h_in)`，所以在单钩子分辨率上做诚实近似：用 `f_out = hook_output - h_in` 还原子层贡献，再用该 block **自己的** RMSNorm 学习增益与 eps（`post_attention_layernorm`，与 `input_layernorm` 同类、具有匹配的 `.weight`/`.variance_epsilon` 接口）对残差和 `h_in + f_out` 重新归一化。**核验注**：这是"把 norm 移到残差相加之后"在单个 hook 点分辨率上的近似，**不是**字面意义的架构改写（那需要 patch block 自身的 forward 以跳过其内部 pre-norm 调用，hook 做不到）。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：分类与独立判断一致；behavior/detail 事实（pre-norm→post-norm、第 1 层起 off-manifold、残差流范数不随深度增长、垃圾输出或 NaN）均见原文。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

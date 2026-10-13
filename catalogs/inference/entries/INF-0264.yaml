@@ -1,0 +1,55 @@
+id: INF-0264
+legacy_ids:
+- '1.265'
+slug: ttmetal_packer_l1_acc_ignored_two_kblocks_partials_spilled_in_output_format
+aliases: []
+title: matmul 恰 2 个 K 块时静默关闭 packer_l1_acc
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: packer_l1_acc_en 谓词
+  behavior: 三工厂的 packer_l1_acc_en 谓词无 bias 时要求 num_blocks>2，恰 2 块即关闭 L1 累加；partials CB 格式绑定该 flag，关闭后部分和以输出格式落盘。
+effect:
+  objects:
+  - 数值结果
+  detail: 2D mcast/1D in1-mcast/Reuse 工厂下 block-float 输出且 K 恰拆 2 块时部分和被舍入到 block float，精度劣化（bf4_b PCC 0.962，4 块为 0.973），2 块反比 4 块更不准；无任何警告。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn.matmul + 2D mcast / 1D in1-mcast / Reuse 工厂 + packer_l1_acc=True + num_blocks==2 + block-float 输出（hw_specific；bias 融合 / 其他块数 / in0-mcast·DRAM-sharded 工厂免疫）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/58177
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（tt-metal matmul **`packer_l1_acc=True`（非 fp32 输出的默认）在核内恰好 2 个 K 块（且无 fused bias）时被静默关闭**：`bool packer_l1_acc_en = packer_l1_acc && (((bias_mesh.has_value()) && num_blocks > 1) || (num_blocks > 2))`——2D mcast / 1D in1-mcast / Reuse 三工厂同款（`num_blocks > 2` 使 Reuse 在 2 块时同样关闭）；partials CB 格式绑定该 flag（`interm0_data_format = packer_l1_acc_en ? (fp32_dest_acc_en ? Float32 : Float16_b) : output_data_format`），关闭时**部分和以输出格式落盘**——block-float 输出（bfloat8_b/bfloat4_b）把部分和**舍入到 block float**，2 块拆分反而比 4 块更不准：256×512×256 实测 PCC——bfloat4_b：2 块 **0.96224** / 4 块 0.97268；bfloat8_b：2 块 **0.99983** / 4 块 0.99989。1D in0-mcast 与 DRAM-sharded 工厂已用 `num_blocks > 1`（正确） · Cov: `NEW`（matmul partials 精度格式由块数谓词静默决定子签名：用户显式请求 L1 累加、配置无任何警告地改变数值路径；与 1.249（prod SrcA-TF32 回读）同属"中间精度格式选择漂移"域但机制独立——本条是**累加格式按块数分支**） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: 2 块时 L1 累加只省一次 partial pack（推测是跳过原因），但 partials CB 格式跟随 flag，跳过即改变数值；修复为凡 `num_blocks > 1` 保持累加格式（对齐 in0-mcast/DRAM-sharded 工厂）。
+  source: 'tt-metal #58177（2026-09-28 open，Bad Outputs，含三工厂代码定位、interm0 格式绑定分析与双 dtype × 双块数 PCC 表）。https://github.com/tenstorrent/tt-metal/issues/58177'
+  behavior: 无 crash——block-float 输出 matmul **K 恰拆 2 块时精度静默劣化**（bf4_b PCC 0.962 vs 0.973）；"更多 K 块理应更不准"的直觉被反转是可检测指纹；请求的 compute 配置与实际数值路径脱钩。
+  trigger_surface: tt-metal ttnn.matmul + 2D mcast / 1D in1-mcast / Reuse 工厂 + packer_l1_acc=True + num_blocks==2 + block-float 输出（hw_specific；bias 融合 / 其他块数 / in0-mcast·DRAM-sharded 工厂免疫）
+  discovery: 2026-09-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 维持原判。缺陷在 tt-metal matmul 三个 program factory 的 packer_l1_acc_en 谓词（原文代码 num_blocks > 2），修复改该谓词 → 算子/内核；block-float 是输出格式触发条件，缺陷不在量化方案代码路径，不按功能域归 量化。数值、工厂名、PCC 均与原文一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

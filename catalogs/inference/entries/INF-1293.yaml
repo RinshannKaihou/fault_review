@@ -1,0 +1,63 @@
+id: INF-1293
+legacy_ids:
+- K9.2
+slug: fp8_kv_fa3_longctx_accum_collapse
+aliases: []
+title: FP8 KV 内核累加不足致长上下文检索准确率塌方
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FA3 FP8-KV 累加、DeepGEMM 缩放
+  behavior: FA3 的 FP8-KV 内核 FP32 累加不足；同时在 B200 上 DeepGEMM fp8_gemm_nt 的 E8M0 块缩放格式对非 MoE 的 FP8 线性层不一致。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 短 QA 完全正常，128k 大海捞针准确率 91%→13%，无崩溃无 NaN；约几 k token 以下不可见，只在长上下文检索类评测上暴露（B200、FP8 KV）。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: true
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/37618
+  kind: github_issue
+  resolved_from: 'vLLM #37618'
+- url: https://github.com/vllm-project/vllm/issues/23813
+  kind: github_issue
+  resolved_from: 'issue #23813'
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV9
+  section: KV §9 跨 LLM 来源补充（GLM + Kimi 社区文档）——全部经 `gh` 核实
+  meta: '`ambiguous` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `config`⚠ · 置信度 `verified`'
+  mechanism: FA3 的 FP8-KV 内核使用了**不足的 FP32 累加**；同时在 B200 上，DeepGEMM `fp8_gemm_nt` 的 E8M0 块缩放（block-scale）格式对非 MoE 的 FP8 线性层不一致——原文描述为"silent regression, just wrong answers"。后果是 128k 大海捞针（needle-in-haystack）准确率 **91%→13%**，而短 QA 完全正常；改用两级累加（two-level accumulation）后恢复到约 **89%**。
+  source: 'vLLM #37618（CLOSED 2026-03-20，"FP8 kv cache on b200 ... degraded accuracy"）+ vLLM FP8-KV blog；TP 敏感性孪生 issue #23813。'
+  behavior: 短上下文评测全绿、长上下文检索类任务塌方（91%→13%），无崩溃无 NaN，典型的"只在长 benchmark 上才暴露"的静默回归。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: 与基础 `kv_cache_fp8_quantization_drift` 同族的**长度耦合单调 logprob 漂移**，但成因是内核累加而非量化格式本身，并且**受长度门控**——约几 k token 以下完全不可见，故族判为 ambiguous。检测面：trajectory 族（随位置递增的累积位移）与 statistical 族（长程 logprob 漂移斜率）可捕获；任何在短 prompt 上取样的 cheap 检测器与固定短窗 spectral 度量必然漏检。签名只有在扫描长度轴时才出现，属于典型的"必须用长度扫描而非单点阈值"的故障。
+  repro: 单钩子只能近似——对 cached K/V 施加随位置索引单调增长的量化噪声（模拟累加误差随 KV 长度线性堆积），并沿长度轴扫描以复现门控；真实的 FA3 内核累加路径与 B200 E8M0 块缩放不可复现。
+  locus: eviction-compression
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

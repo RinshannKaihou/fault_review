@@ -1,0 +1,70 @@
+id: INF-1244
+legacy_ids:
+- K3.7
+slug: trtllm_int8_kv_reuse_plugin_abort
+aliases: []
+title: TRT-LLM 强开 INT8 KV 复用，约 3000 请求后 SIGABRT
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tensorrt-llm
+    component: paged-context INT8 KV 路径
+  behavior: KV 复用依赖不支持 INT8 KV 的 paged-context FMHA（有断言守卫）；强行启用后，该 INT8 路径在复用期间错误处理量化块布局与 scale
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: 强行启用后能运行，约 3000 个请求后在 GPTAttentionPlugin::enqueue 中 SIGABRT 中止；源文档称崩溃前复用块的 INT8 反量化给出粗糙的 KV
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/2166
+  kind: github_issue
+  resolved_from: 'TensorRT-LLM #2166'
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/2112
+  kind: github_issue
+  resolved_from: '#2112'
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`ambiguous` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: KV 复用要求 paged-context FMHA，而后者不支持 INT8 KV（有断言守卫）；强行启用可以跑起来，但在约 3000 个请求之后中止（`GPTAttentionPlugin::enqueue` 中 SIGABRT），因为 paged-context 的 INT8 路径在复用期间错误处理了量化块布局与 scale。
+  source: 'TensorRT-LLM #2166（以 not-planned 关闭；相关 #2112）。'
+  behavior: 源文档未单列该字段；机制中记载的可观测后果是运行约 3000 个请求后 SIGABRT 中止。
+  trigger_surface: TensorRT-LLM 专用；vLLM 无直接等价除非同概念
+  signature: 族记为 `ambiguous`，需要把两个成分拆开看：源文档判定「崩溃前，复用块的 INT8 反量化给出粗糙的离流形 KV（阶梯状量化误差、有效秩更低）」，但按本项目的轴，**纯 INT8 伪量化**的误差属于模型能吸收的 model_on 型；真正 infra_off 的成分是复用期间的量化块布局 / scale 错配，而其终态是崩溃（无隐藏态可测）。可捕获的是 spectral 族（有效秩下降、谱平坦化对阶梯量化误差最敏感；注意 feasibility 评估将 spectral 判为语义信号、对轻度 infra 故障原理不敏感，该主张需在目标栈验证）；geometric 族响应微弱，trajectory 族通常漏检。源文档同时指出：只有 INT8 伪量化部分是单机可复现的。
+  repro: 尚未实现；建议方案是单钩子对某层缓存 K/V 做 INT8 伪量化（round-to-scale），并对被「复用」的前缀段使用与后缀段不同的 scale，从而把 scale 错配这一 infra_off 成分与纯量化这一 model_on 成分分离开来测。属 partial：崩溃路径不可复现。
+  locus: block-slot-alloc
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 subsystem=量化。错处是 paged-context INT8 路径在复用期间'错误处理了量化块布局与 scale'，属量化方案/scale 处理；KV 复用是触发条件（rule 6）。与 INF-1272（FP8 KV reuse scale 不一致 → 量化）同口径。effect 顺序与 visibility=报错 维持。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: KV缓存
+        status: panel7

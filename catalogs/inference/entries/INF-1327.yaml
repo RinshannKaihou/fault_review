@@ -1,0 +1,61 @@
+id: INF-1327
+legacy_ids:
+- K10.16
+slug: fp8_attn_pv_longctx_accumulation_collapse
+aliases: []
+title: FA3 FP8 注意力 P·V 长上下文累加求和淹没致精度崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: FA3 FP8 内核 P·V 累加
+  behavior: FA3 的 FP8 内核沿序列长度累加 Softmax(P)·V，虽累加到 FP32 寄存器，但超过约 100k token 时小加数被大的运行和吞掉低位（求和淹没）。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 短上下文 QA 完全正常；128k 长上下文检索（NIAH）准确率从 91% 崩到 13%，两级累加修复后回到约 89%。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: true
+  trigger_note: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: '`gh`：vLLM flash-attention PR #104 + FP8-KV 博客（91%→13% NIAH → 89%）。'
+relations: []
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `config`⚠ · 置信度 `verified`'
+  mechanism: '`Softmax(P)·V` 沿序列长度做收缩累加；FA3 的 FP8 内核虽然累加到 FP32 寄存器，但在 >~100k token 时**求和淹没**（小加数被大的运行和吞掉低位）显著劣化输出。修复方式是两级累加。**文档内重叠标注 ⚑§9**：本条与 §9 的 `fp8_kv_fa3_longctx_accum_collapse`（#37618）是同一现象的不同来源侧——那一条来自 issue 侧，本条来自修复 PR 侧；全文档 102 条原始条目扣除这类 3 处 §9/§10 FP8 重叠后，约为 **99 个不同机制**。'
+  source: '`gh`：vLLM flash-attention PR #104 + FP8-KV 博客（91%→13% NIAH → 89%）。*与 §9 `fp8_kv_fa3_longctx_accum_collapse`（#37618）为同一现象；这是修复侧的 PR。*'
+  behavior: 短上下文 QA 完全正常，128k 长上下文检索（NIAH）准确率从 91% 崩到 13%，两级累加修复后回到约 89%。
+  trigger_surface: KV/前缀/FP8 相关：vLLM 配置可触发或强相关
+  signature: 长度门控的 ambiguous——短序列区域签名平坦，越过临界长度后出现**集中在弥散 softmax 头上的、与长度耦合的单调漂移**。trajectory（随长度单调增长的漂移曲线）是主力，statistical 可见弥散头输出的方差结构变化；单一长度点的 geometric 快照无法区分它与普通量化噪声，spectral 亦弱。
+  repro: '**显著近似**——不运行 FP8 内核。在目标层 `self_attn` 前向钩子上把 attn_output 吸附到一个随查询块长度 T 递减的每张量尾数网格：`eff_bits = max(2, mantissa_bits - log2(max(T, ref_len)/ref_len))`，`step = amax(|y|) * 2**(-eff_bits)`，`y_q = round(y/step)*step`；即把被淹没累加器的误差底建模为输出侧均匀量化，每当上下文长度翻倍就损失一个 bit。`T <= ref_len` 时仅为轻微网格噪声（对应长度门控签名的平坦段）。真实故障的序列**内**逐位置误差增长、在弥散 softmax 头上的集中、以及 FP8 数值格式本身，均未建模；解码步 T==1，门控不激活。'
+  locus: arch-specific-cache
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: 算子/内核
+        status: panel7
+    uncertain:
+    - effect

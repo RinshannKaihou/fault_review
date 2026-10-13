@@ -1,0 +1,52 @@
+id: TRN-0098
+legacy_ids:
+- DATA.16
+slug: tiktoken_double_special_token_offset
+aliases: []
+title: Megatron TikToken id 查询重复加特殊 token 偏移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: megatron-lm
+    component: TikToken token_to_id 与逆词表
+  behavior: TikToken 实例初始化时已把 rank 偏移 num_special_tokens，token_to_id()/tokens_to_ids() 却再加一次，逆词表 inv_vocab 构键时同样多加一次。
+effect:
+  objects:
+  - 输入编码
+  detail: tokens_to_ids(text_to_tokens(t)) 与 text_to_ids(t) 分叉，默认配置下 id 整体 +1000、指向别的 token；特殊 token 查询、token 级掩码/过滤等消费路径静默拿到错 id，端到端症状未列明。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-28'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/7543
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0086
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `shared` · Cov: `var:tokenizer_train_infer_id_mismatch` · 置信度 `documented`'
+  mechanism: Megatron `TikTokenTokenizer.reload_mergeable_ranks()` 初始化底层 TikToken 实例时已把普通 token rank 偏移 `num_special_tokens`，`encode_single_token()` 返回的已是**最终词表 ID**；但 `token_to_id()`（及 `tokens_to_ids()`）对结果**再加一次** `num_special_tokens`，逆词表 `decoder`/`inv_vocab` 构键时同样多加一次——`tokens_to_ids(text_to_tokens(text))` 与 `text_to_ids(text)` 系统性分叉。默认 1000 special tokens + 公开 v2.5 词表实测：`"hi how are you?"` 正确 `[8101,2606,1584,1636,1063]` vs 错误 `[9101,3606,2584,2636,2063]`（整体 +1000）；`token_to_id("\n")` 返回 2010 而非 1010。修复 = 删重复偏移、逆词表直接用已偏移 rank，并把全词表双向 1:1 映射断言扩进单测。
+  source: 'Megatron-LM PR #7543（2026-09-21；修复 + 双向映射测试）。https://github.com/NVIDIA/Megatron-LM/pull/7543'
+  behavior: 无 crash——凡消费 `token_to_id`/`tokens_to_ids`/`inv_vocab` 的路径（特殊 token 查询、token 级掩码/过滤、词表统计、与外部 id 空间对接的转换器）拿到的 id 整体偏移 `num_special_tokens`：id 指向**别的 token**，错误语义化而非显式炸（越界 id 若被下游 embedding 查询才可能 crash）。与 DATA.04（tokenizer 训推 id 不一致）同族「id 空间映射错位」：那边是两栈约定不同、这边是**同一 tokenizer 内两条查询路径的 id 空间不一致**；与 DATA.05（MMIDIDX magic 错读垃圾）的区别：这边数据格式完好、纯查询 API 算术错。哪个训练路径实际消费这些 API 决定打击面（PR 未列端到端症状，留观下游消费者清单）。
+  discovery: 2026-09-28 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

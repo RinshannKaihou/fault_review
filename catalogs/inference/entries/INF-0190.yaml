@@ -1,0 +1,50 @@
+id: INF-0190
+legacy_ids:
+- '1.191'
+slug: ttmetal_matmul_program_config_silent_hifi2_to_lofi_fidelity_drop
+aliases: []
+title: matmul 显式调度参数令 fidelity 静默降为 LoFi
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: matmul fidelity 默认补偿规则
+  behavior: create_matmul_attributes 仅在用户未给 program_config、core_grid 且输入非低精度时把 bf16 math fidelity 提升到 HiFi2，任何显式调度参数都会关闭该补偿。
+effect:
+  objects:
+  - 数值结果
+  detail: matmul/linear/addmm 传 core_grid 或 program_config 且未给 compute_kernel_config 时 bf16 降为 LoFi：实测 95.0% 输出 word 改变、快 14%，文档与返回值均无提示；models/ 中 146 处调用受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal ttnn.matmul/linear/addmm + core_grid/program_config + bf16 输入 + 未显式给 compute_kernel_config（hw_specific）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55889
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.matmul/linear/addmm` 传入 `core_grid=` 或 `program_config=` 时 bf16 math fidelity **静默从 HiFi2 降到 LoFi**：`create_matmul_attributes` 的单行规则 `increase_fidelity = !has_program_config && !has_user_grid && !are_inputs_low_precision_df`；实测 2048×4096×14336 通行显式传回 ttnn 自选 block config 即有 **95.0% 输出 word 改变且快 14%**；docstring/文档/返回 tensor 均不提示。AST 清点 `models/` shipped 代码 **146 处**调用传 config/grid 而无 `compute_kernel_config`（BERT demo 等），325 处不传（HiFi2）、278 处显式设置不受影响） · Cov: `NEW`（可选调度参数隐式改变数值精度档位子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: fidelity 提升仅在"用户什么调度参数都没给"时作为补偿默认值生效——任何显式 program_config/core_grid（用户为了 sharding、融合激活或特定 grid 而传）都关闭补偿，fp32 输入随后覆盖为 HiFi4（WH 为 HiFi3）。下游 fusion tracer 曾把 ~15k-word 差异当未解之谜携带数周。
+  source: 'tt-metal #55889（2026-09-09 open，含双平台（BH/WH）实测、95.0% word 差异计数、AST 调用清点与一行根因定位）。https://github.com/tenstorrent/tt-metal/issues/55889'
+  behavior: 无 crash——**静默精度税**：为提速/分片传配置的用户"measuring the fidelity, not the config"。与 7.77（MoE provider 先于 per-layer quant config 解析）同族的"可选参数隐式改变数值语义"，但本条在硬件数学 fidelity 维度且影响面以 shipped 调用计数。
+  trigger_surface: tt-metal ttnn.matmul/linear/addmm + core_grid/program_config + bf16 输入 + 未显式给 compute_kernel_config（hw_specific）
+  discovery: 2026-09-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

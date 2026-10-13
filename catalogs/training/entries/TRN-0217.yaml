@@ -1,0 +1,73 @@
+id: TRN-0217
+legacy_ids:
+- RL-KL.04
+slug: stale_loss_copy_silently_drops_config
+aliases: []
+title: trl 变体 trainer 的 loss 副本漂移致配置静默失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: trl
+    component: _compute_loss 副本与 Liger
+  behavior: GSPO-token/GMPO 等复制粘贴的 _compute_loss 与主实现漂移，GRPO 的 Liger 路径又绕过 _compute_loss，新增正则项/开关在这些路径上没有对应代码
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 配置通过校验、resolved config 正确，但 KL 偏置校正、OPSM、entropy bonus、router aux loss 静默 no-op；Liger 路径下改 coef 后 loss bit 级不变，MoE 默认配置即中招
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/6807
+  kind: github_issue
+- url: https://github.com/huggingface/trl/issues/6808
+  kind: github_issue
+- url: https://github.com/huggingface/trl/issues/7009
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7038
+  kind: github_pr
+- url: https://github.com/huggingface/trl/pull/7062
+  kind: github_pr
+- url: https://github.com/huggingface/trl/issues/7270
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0055
+original:
+  category: RL-KL
+  section: RL-KL
+  meta: 'stage: `rl` · Cov: `var:config_default_swallows_cli_override` · 置信度 `documented`'
+  mechanism: 变体 trainer（GSPO-token / GMPO 等复制粘贴 `_compute_loss` 的实验实现）与主实现**漂移**：新增的正则项/开关在副本里没有对应代码，配置项通过校验、resolved config 里正确，但在 loss 里**静默 no-op**——KL 偏置校正系数不乘、off-policy mask（OPSM）不应用、entropy bonus 整块缺失、MoE router aux loss 不加。
+  source: 'trl #6807（gspo_token `_compute_loss` 是旧版 GRPO 的 stale copy：`use_bias_correction_kl`/`off_policy_mask_threshold`/`entropy_coef`/`router_aux_loss_coef` 全部静默无效，代码对照复现）。https://github.com/huggingface/trl/issues/6807 ；trl #6808（GMPO：`use_liger_kernel=True` 时基类 `compute_loss` 绕过 GMPO 覆写、静默训成普通 GRPO clipped-surrogate；MoE aux loss / entropy bonus 同样缺失）。https://github.com/huggingface/trl/issues/6808 ；trl #7009（2026-09-03 补，GRPOTrainer **本体**同一分叉：`compute_loss` 按 Liger flag 提前 return，唯一加 aux loss 的 `_compute_loss` 不再执行、Liger 路径从不引用 `router_aux_loss_coef`，而 `aux_loss_enabled` 仍为 True、`router_aux_loss_coef` 默认 0.001 使 MoE 模型**零配置即中招**；2×2 实测（tiny-Qwen3MoE，同 H100 同 seed）：coef 0.0→0.1 标准 path loss 移动 0.2239 且与 `coef×aux_loss` 对到 float32 分辨率，Liger path 两个 loss **bit 级相同**（2^-26）——系数对目标完全无效；DPO/KTO 对该组合已 raise，GRPO 副本没有守卫）。https://github.com/huggingface/trl/issues/7009 ；修复 #7037/#7038（2026-09-04 补：GRPO 对 MoE aux + Liger 组合补 fail-fast 守卫 + `GRPOConfig` 文档写明须 `router_aux_loss_coef=0.0`，静默 no-op → 显式拒绝）。https://github.com/huggingface/trl/pull/7038 ；trl #7062（2026-09-06 补：vendored Liger 路径同族缺陷——DPO label smoothing/DiscoPOP tau 不转发进 fused loss、KTO 非默认 class weight 被**静默忽略**、KTO 多 example chunk 指标错、PEFT 参考路径被误关：#7059 vendor 进 `trl.losses` 时把配置面凿穿，「fused 快路径丢弃配置」是本条机制的第 5 个实例）。https://github.com/huggingface/trl/pull/7062 ；trl #7270（2026-09-19 补：GMPO + Liger 的**完整更新级**独立复现——固定 ckpt + 固定 rollout 下单步 SGD 对照，Liger 开启的 GMPO 与纯 GRPO 的 loss/全梯度/终态**完全一致**、与 GMPO 目标的梯度相对 L2 差 0.1996558210；覆盖 `compute_loss` 调 GMPO 自身 `_compute_loss` 后差降到 1.93e-7；维护者 qgallouedec 确认与 #6808 同病、关闭为 duplicate，修复走向 = #7163 init 期拒绝该 flag + #7063/#7077 整体移除 fused Liger 路径后 `compute_loss` 不再绕过 `_compute_loss`——「结构性移除分叉面」而非补丁）。https://github.com/huggingface/trl/issues/7270'
+  behavior: 无报错；用户以为在跑 GSPO-token/GMPO + KL 校正 + 负载均衡，实际 loss 退化成缺项的旧目标。MoE 场景 router aux 缺失会沿 MOE.01（负载均衡失守 → 专家死）方向放大。与 CKPT.06/07 同族但发生在**损失计算路径**：错误每一步都进梯度。机制面与 OPT.01（矩/权重错配）互补：那边是恢复期错位，这边是副本代码漂移。
+  discovery: 2026-08-20 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem RL训练回路 vs 损失计算：定为 RL训练回路。静默失效项以 KL 偏置校正、off-policy mask（OPSM）为主，二者正是词表 RL训练回路 列出的 KL/重要性采样修正；出错代码是 GSPO-token/GMPO/GRPO 等 RL trainer 专属的 _compute_loss 副本与 Liger 分叉，按 rule 1 功能域优先归 RL训练回路。entropy bonus/router aux 缺失同属这一副本，不需拆第二个 subsystem。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: RL训练回路
+        to: 损失计算
+        status: panel7

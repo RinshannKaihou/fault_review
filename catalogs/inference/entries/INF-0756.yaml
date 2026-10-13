@@ -1,0 +1,50 @@
+id: INF-0756
+legacy_ids:
+- '7.83'
+slug: flashinfer_vendored_trtllm_fp8_packed_cast_bf16_double_rounding_unpropagated_fix
+aliases: []
+title: flashinfer vendored fp8 转换双舍入修复未同步到副本
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: flashinfer
+    component: vendored fp8x2 cast 双舍入
+  behavior: 'vendored 的 csrc/nv_internal/cudaTypeUtils.cuh 中 fp8x2_e4m3 转换仍先舍入到 bf16 再转 e4m3（两次舍入）；PR #4167 只修了 twin 副本，未传播。'
+effect:
+  objects:
+  - 数值结果
+  detail: 每个错值恰差一个可表示步且在元素容差内，只有聚合 mismatch 比例可见：A100 上 log-uniform 全域 2.34% 元素不同、真实激活 3.16% 输出不同。当前 fp8 实例化无 caller，重新接线或直接编译 csrc/nv_internal 即中招。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: flashinfer + 编译 `csrc/nv_internal` 的路径（perTokenQuantization e4m3、或下游直接编译 vendored 树）（partial：当前 dormant，激活即中招）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5128
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（flashinfer 仓库携带两份 TRT-LLM `cudaTypeUtils.cuh`：vendored `csrc/nv_internal/tensorrt_llm/`（#1113 引入）与 header-only twin `include/flashinfer/trtllm/`（#1212）。PR #4167（2026-07-27）修复了 twin 的 `cuda_cast<__nv_fp8x2_e4m3, float2>`——pre-fix 版本先舍入到 bf16 再转 e4m3（两次舍入），mantissa 被丢的位经 1/scale 放大跨越 e4m3 舍入边界，**每个错值恰好差一个可表示步且都在元素容差内**（只有聚合计数能抓到：#4160 nightly 1% 界、quant_scale=0.01 时 3/30 seed 失败）；修复从未传播到 vendored 副本（`csrc/.../cudaTypeUtils.cuh:595` 至今 pre-fix）。A100 实测：4284 个边界邻域点中 2016 个转换不同、log-uniform 全域 2.34% 元素不同、真实激活上 dormant epilogue 3.16% 输出不同。当前 fp8 实例化路径 dormant（无 caller）但 vendored 树活着（MoE launcher 引其 quantization.h、#5031 在同文件修 NVFP4 精度）——任何重新接线、新内核或直接编译 `csrc/nv_internal` 的下游构建即继承双舍入） · Cov: `NEW`（修复未跨仓库内副本传播子签名；1.122 为跨 arch、本条为同仓库内 vendored twin） · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`bf1622float2(float22bf162(val))` 的中间 bf16 舍入丢 mantissa 位；直接转换 `__nv_cvt_float2_to_fp8x2` 无此损失。两副本 diff 仅 include 前缀、此转换与 twin 独有的 e5m2 特化——分歧完全归因于未传播。'
+  source: 'flashinfer #5128（2026-09-11 open，needs-triage label，含双文件 diff、252 中点×±8 ulp 扫描、#4160 复现与真实激活 dormant epilogue 实测）。https://github.com/flashinfer-ai/flashinfer/issues/5128'
+  behavior: 无 crash——**元素级全静默**（每元素错一个可表示步、都在 fp8 容差内），只有 mismatch-fraction 聚合检查可见；#4160 当年即只以聚合形态浮出。7.50（UE8M0 双后端 scale 分歧）之后"同代码两副本语义漂移"族新成员：本条在 vendored/twin 维度、错误形态为系统性一步量化偏差。
+  trigger_surface: flashinfer + 编译 `csrc/nv_internal` 的路径（perTokenQuantization e4m3、或下游直接编译 vendored 树）（partial：当前 dormant，激活即中招）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

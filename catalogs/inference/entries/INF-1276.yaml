@@ -1,0 +1,60 @@
+id: INF-1276
+legacy_ids:
+- K7.1
+slug: vllm_prefix_cache_hit_recompute_divergence
+aliases: []
+title: vLLM ROCm 后端前缀缓存命中与重算结果不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: ROCm 注意力后端缓存 KV 归约
+  behavior: cache-HIT 路径加载缓存前缀 KV、只算新 token，部分后端对缓存 KV 的归约以与 cache-MISS 全序列重算不同的顺序/精度累加，两条路径数值不等价。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 同一 prompt 在缓存命中与未命中两次运行下输出不同，偏离最早在位置 3 翻转 argmax 后级联放大，无报错；仅 AMD MI355X/MI325X 上的 TRITON_ATTN、ROCM_AITER_FA 受影响，CUDA 不受影响。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 配置/后端/缓存开关可构造对照
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/33123
+  kind: github_issue
+  resolved_from: 'vLLM #33123'
+relations: []
+original:
+  category: KV7
+  section: KV §7 arch-specific-cache（架构特定缓存）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 对同一个 prompt，cache-MISS 路径在整个序列上重算注意力，而 cache-HIT 路径加载缓存的前缀 KV、只计算新 token；两者本应数值等价，但在某些后端，缓存 KV 的归约以不同的顺序/精度累加。偏离最早在**位置 3** 出现并翻转 argmax，随后级联放大。后端相关：AMD 的 TRITON_ATTN / ROCM_AITER_FA 受影响，CUDA 不受影响。
+  source: 'vLLM #33123（ROCm MI355X/MI325X）。'
+  behavior: 同一 prompt 在缓存命中与未命中两次运行下产生不同输出（用户看到的是"随机"不可复现的回答），无任何报错。
+  trigger_surface: vLLM 配置/后端/缓存开关可构造对照
+  signature: ambiguous——受后端/是否命中缓存门控：只有走到 cache-hit 路径才出现签名。触发时表现为同一 prompt 的 cache-hit 与 cache-miss 运行之间微小但一致的 logit/隐藏态 delta，集中在**前缀边界**并向下游放大（近流形、argmax 翻转）。可捕获：recompute-oracle 轴（重算对照）与 batch-invariance/非确定性抖动探针——这正是为此类故障设计的 cheap 检测轴（前提：记录 batch 组成的 bitwise 重算或 batch-invariant kernels）；单次运行的 geometric/spectral 快照则完全看不见（单条轨迹本身自洽）。
+  repro: （方案）单钩子模拟"读回的前缀 KV 与新算 KV 归约精度不同"：对前缀位置的 K/V 做一次极小幅度的低精度往返（如 bf16 round-trip 或重排求和顺序），新位置保持 fp32 精确，再用 recompute-oracle 比较两条路径；因真实差异源自后端 kernel 的归约顺序，钩子层面只能近似，故为 partial。
+  locus: arch-specific-cache
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 subsystem=算子/内核。原文'后端相关：AMD 的 TRITON_ATTN / ROCM_AITER_FA 受影响，CUDA 不受影响'，偏差来自注意力后端对缓存 KV 的归约顺序/精度，修复在后端 kernel；prefix cache 命中是触发条件（rule 6）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

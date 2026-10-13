@@ -1,0 +1,52 @@
+id: INF-0254
+legacy_ids:
+- '1.255'
+slug: ttmetal_requantize_tensor_spelled_scales_bf16_intermediate_up_to_80_lsb
+aliases: []
+title: requantize 以 Tensor 传 scale 时中间量 bf16 化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: tt-metal
+    component: requantize composite 回退
+  behavior: 任一 scale/zero_point 为 Tensor 时走 composite 回退，dequantize 中间量 dtype 缺省 BFLOAT16，经 7 位尾数舍入后再重量化；全标量路径走 fp32 融合 LLK。
+effect:
+  objects:
+  - 数值结果
+  detail: int32 输入、in_scale=0.05、out_scale=0.001 时 75.4% 元素偏差、最大 13 LSB，0.08/0.003 时 94.2% 偏差、80 LSB；torch 导出量化模型以 Tensor 携带 scale 必中此路径，Python 标量测试恒绿。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.requantize` + Tensor 拼写的 scale/zero_point（torch 导出量化模型的标准形态）（hw_specific：composite 回退路径；全标量路径免疫）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-25'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57852
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0756
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.requantize` 的 composite 回退路径（任一 scale/zero_point 拼写为 **Tensor** 即进入）把实值中间量 `(q−in_zp)×in_scale` 的 dequantize 输出 dtype 默认 **BFLOAT16**——7 位尾数舍入后再 `round(x/out_scale+out_zp)` 重量化：int32 输入 + 小 out_scale 时一个 bf16 ULP 值数十输出 LSB。实测（host replay vs fp32 golden）：int32 in、in_scale=0.05、out_scale=0.001 → **75.4% 元素偏差、max 13 LSB**（q=−124 → ttnn −6187 vs torch −6200）；int32 in、[−1000,1000]、0.08/0.003 → **94.2% 偏差、80 LSB**（q=−822 → ttnn −22000 vs torch −21920）；int8 域 1.6%/1 LSB。**全 Python 标量路径走融合 REQUANT LLK、fp32 `scale_recip`、与 torch 逐位一致**——分歧纯由拼写（scalar vs Tensor）决定，而 **torch 导出的量化模型恰以 Tensor 携带 scale/zero_point**，即真实导入路径必中回退。op 自带 golden `_golden_function_requantize` 中间量保持 fp32——这是对 op 自己注册参考的背离，非容差问题） · Cov: `var:flashinfer_vendored_trtllm_fp8_packed_cast_bf16_double_rounding_unpropagated_fix`（7.83 bf16 中转双舍入族——本条在 tt-metal 量化算子维度：中间精度由参数拼写静默选择） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`quantization.cpp` L471–L516 分派：全标量→融合 LLK（fp32）；任一 Tensor→`dequantize(..., output_dtype=nullopt)` 且 `get_output_dtype` 默认 BFLOAT16（:532）→ `quantize`。修复即回退路径显式传 fp32 中间 dtype。来源为源码定位 + host replay 三档量化域对照（无设备）。'
+  source: 'tt-metal #57852（2026-09-25 open，Bad Outputs/silent wrong results，含三档 LSB 偏差表、分派代码行与 golden 语义对照）。https://github.com/tenstorrent/tt-metal/issues/57852'
+  behavior: 无 crash——torch 导出量化模型的 requantize **静默错至 80 LSB**；标量路径正确使最小测试（Python 标量）恒绿、Tensor 路径分歧对纯数值容差门也可能半绿（int8 域仅 1 LSB）。7.83 之后"中间量 bf16 化"族在 **tt-metal 量化复合算子**维度的首例，且首次把触发面定到**参数拼写（scalar vs Tensor）**。
+  trigger_surface: tt-metal + `ttnn.requantize` + Tensor 拼写的 scale/zero_point（torch 导出量化模型的标准形态）（hw_specific：composite 回退路径；全标量路径免疫）
+  discovery: 2026-09-25 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

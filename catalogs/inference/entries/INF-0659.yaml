@@ -1,0 +1,58 @@
+id: INF-0659
+legacy_ids:
+- '6.266'
+slug: vllm_lhbnc_native_cpu_offload_stride_heuristic_offloads_head0_layer0_only
+aliases: []
+title: vLLM LHBNC 布局 CPU 卸载误判 packed 仅存 head0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: register_kv_caches 布局判定
+  behavior: register_kv_caches 按“block stride < page size 即 packed”启发式把 LHBNC（恰为 packed 的反面）误判为 packed，每块只 offload layer 0 的 head 0。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 设 VLLM_KV_CACHE_LAYOUT=LHBNC 并开 native CPU offload 时，GPU→CPU 字节仅为 1/384；驱逐后重发同 prompt 命中回读，输出 gibberish，块仍计为 stored+hit，无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: vLLM + VLLM_KV_CACHE_LAYOUT=LHBNC + native CPU offloading（other_stack）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/60004
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0651
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（`VLLM_KV_CACHE_LAYOUT=LHBNC` + native CPU offload：`register_kv_caches` 按"block stride < page size 即 packed"的启发式把 LHBNC（stride=N*C、page=H*N*C，**packed 的反面**）误判为 packed——每块只 offload `block_stride` 字节 = layer 0 的 head 0（GPU→CPU 字节 12.9 GB→33.5 MB，1/384）；回读命中时输出 gibberish（`_1401401010…`）、块仍计为 stored+hit、无告警。A100 + DeepSeek-R1-Distill-Qwen-14B 三步复现（驱逐后重发同 prompt）） · Cov: `var:vllm_simplecpu_offload_misaligned_explicit_block_size_write_only_offload`（6.258 offload 布局/粒度误解族——本条在**stride 启发式误分类布局**维度） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: LHBNC 头跨层分布使 stride 与 page 关系与 packed 假设相反；#51718 起改用 stride 比较后引入。
+  source: 'vLLM #60004（2026-10-05 open，e2e 三步复现+字节计量对照）。https://github.com/vllm-project/vllm/issues/60004'
+  behavior: 无 crash——显式 LHBNC 用户 offload 命中后静默 gibberish；仅显式 env 才达此路径。
+  trigger_surface: vLLM + VLLM_KV_CACHE_LAYOUT=LHBNC + native CPU offloading（other_stack）
+  discovery: 2026-10-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：原文核对（LHBNC、block stride < page size 的 packed 启发式、只 offload layer 0 head 0、12.9 GB→33.5 MB 即 1/384、驱逐后重发命中、gibberish、stored+hit、无告警）均有依据。分类与独立判断一致：KV缓存/vllm（KV 卸载布局判定），KV状态、输出内容，静默错误。形式合规。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

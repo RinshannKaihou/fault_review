@@ -1,7 +1,8 @@
 """Index build/load: entries.jsonl + embeddings.npy + bm25.pkl + meta.json.
 
-Incremental: embeddings are cached per (repo, id) and only recomputed when the
-exact derived embedding text changes. `reindex` re-parses the catalogs
+Incremental: embeddings are reused whenever the exact derived embedding text is
+unchanged (matched by its hash, so a renumbering such as the 2026-10 move to
+INF-/TRN- ids does not force re-embedding) and only recomputed when it changes. `reindex` re-parses the catalogs
 (read-only) and reuses all unchanged vectors; `reindex --full` re-embeds
 everything.
 """
@@ -55,12 +56,17 @@ def bm25_text(e):
     f = e["fields"]
     parts = [
         e["id"],
+        " ".join(e.get("legacy_ids", [])),
         e["name"],
         e["name"].replace("_", " "),
         e["category"],
+        e.get("legacy_category") or "",
     ]
-    for key in ("mechanism", "behavior", "signature", "trigger_surface",
-                "repro", "source", "content"):
+    # Not the other structured fields (cause_behavior / effect_detail / component /
+    # effect_objects): their repeated technical terms let near-topic entries outrank
+    # the right one (independent set Recall@5 0.952 -> 0.937). Revisit notes stay in.
+    for key in ("title", "mechanism", "behavior", "signature", "trigger_surface",
+                "repro", "source", "notes", "content"):
         if f.get(key):
             parts.append(f[key])
     return "\n".join(parts)
@@ -123,7 +129,7 @@ def build(full=False, progress=True):
     entries = parse_mod.parse_all()
 
     # load previous vectors for incremental reuse
-    old = {}
+    old, by_hash = {}, {}
     if not full and os.path.exists(EMB_NPY) and os.path.exists(ENTRIES_JSONL):
         with open(ENTRIES_JSONL, encoding="utf-8") as f:
             old_entries = [json.loads(line) for line in f]
@@ -137,21 +143,18 @@ def build(full=False, progress=True):
                 if old_embed_hash is None and "embed_text" in oe:
                     old_embed_hash = parse_mod.embedding_hash(oe["embed_text"])
                 old[_key(oe)] = (old_embed_hash, old_mat[i])
+                by_hash[old_embed_hash] = old_mat[i]
 
     texts = [e["embed_text"] for e in entries]
     dim = None
     if old:
         dim = next(iter(old.values()))[1].shape[0]
 
-    need = [
-        i for i, e in enumerate(entries)
-        if _key(e) not in old or old[_key(e)][0] != e["embed_hash"]
-    ]
+    need = [i for i, e in enumerate(entries) if e["embed_hash"] not in by_hash]
     mat = np.zeros((len(entries), dim or 1024), dtype=np.float32)
     for i, e in enumerate(entries):
-        k = _key(e)
-        if i not in need and k in old:
-            mat[i] = old[k][1]
+        if e["embed_hash"] in by_hash:
+            mat[i] = by_hash[e["embed_hash"]]
 
     if need:
         if progress:
@@ -163,9 +166,8 @@ def build(full=False, progress=True):
         if dim is None:
             mat = np.zeros((len(entries), new_vecs.shape[1]), dtype=np.float32)
             for i, e in enumerate(entries):
-                k = _key(e)
-                if i not in need and k in old:
-                    mat[i] = old[k][1]
+                if e["embed_hash"] in by_hash:
+                    mat[i] = by_hash[e["embed_hash"]]
         for row, i in zip(new_vecs, need):
             mat[i] = row
     elif dim is None:
@@ -188,11 +190,14 @@ def build(full=False, progress=True):
         "model": "BAAI/bge-m3",
         "dim": int(mat.shape[1]),
         "sources": {
-            "inference_master": parse_mod.INFERENCE_MASTER,
-            "training_master": parse_mod.TRAINING_MASTER,
+            "inference_entries": parse_mod.INFERENCE_ENTRIES,
+            "training_entries": parse_mod.TRAINING_ENTRIES,
+            "inference_appendix_negatives": parse_mod.INFERENCE_MASTER,
             "training_rejected": parse_mod.TRAINING_REJECTED,
             "training_blindspots": parse_mod.TRAINING_BLINDSPOTS,
         },
+        "by_repo": {r: sum(e["repo"] == r for e in entries) for r in ("inference", "training")},
+        "pending_audit": sum(e.get("status") == "pending_audit" for e in entries),
     }
     with open(META_JSON, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
@@ -213,10 +218,13 @@ class Index:
             self.bm25 = pickle.load(f)
         self.tokens = [None] * len(self.entries)  # filled on demand if needed
         self.by_id = {}
+        self.by_legacy = {}
         self.by_name = {}
         canonical_names = {}
         for i, e in enumerate(self.entries):
             self.by_id.setdefault(e["id"], []).append(i)
+            for old in e.get("legacy_ids", []):
+                self.by_legacy.setdefault(old, []).append(i)
             self.by_name.setdefault(e["name"], []).append(i)
             canonical_names.setdefault((e["repo"], e["name"]), []).append(i)
             for alias in e.get("aliases", []):

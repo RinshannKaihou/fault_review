@@ -1,0 +1,51 @@
+id: TRN-0259
+legacy_ids:
+- OBS.10
+slug: tp_replicated_tokens_summed_in_metrics
+aliases: []
+title: trl 在 TP 下对全部进程累加 num_tokens，计数虚高
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: trl
+    component: num_tokens 指标跨进程累加
+  behavior: TP 下各 rank 收到同一份 batch，trl 自建的 num_tokens 指标仍对全部进程求和，漏了 Trainer 基类对 num_input_tokens_seen 已做的 TP 除法；EP 同理。
+effect:
+  objects:
+  - 指标/日志
+  detail: 无 crash、训练本体正确；tp_size=2 时 num_tokens 恰为真实值 2 倍、tp_size=32 时 32 倍，tokens/s、token 预算与成本核算随之按 TP 度虚高。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7100
+  kind: github_issue
+relations: []
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `sft/rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: TP 下每个 rank 收到**同一份** batch，但 trl 的 `num_tokens` 指标对全部进程求和——每个 token 被计 `tp_size` 次。`Trainer` 基类对 `num_input_tokens_seen` / `num_items_in_batch` 已做 TP 除法，trl 自建路径漏了同一处理。EP 同理（每 EP rank 见全量 token）。最小复现：`tp_size=2` 下 `num_tokens` 恰为真实值 2 倍，`tp_size=32` 下 32 倍。
+  source: 'trl #7100（2-rank repro 脚本；期望行为引用 `Trainer.num_input_tokens_seen` 的先例）。https://github.com/huggingface/trl/issues/7100'
+  behavior: 无 crash、训练本体正确；tokens/s、token 预算、数据配方核算（「N token 训完」）全部按 TP 度系统性虚高，wall-clock 效率对比与成本核算错值。与 OBS.09 同族（指标聚合几何与并行几何错配），差异在这边是**复制维**（TP 复制被当独立样本累加）而非 padding 维；弱于 OBS.06/08 一档（不动 loss/KL，只动计数面），但直接影响「训了多少 token」这一最常被引用的 run 属性。
+  discovery: 2026-09-08 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: TRN-0258
+legacy_ids:
+- OBS.09
+slug: gathered_mean_metrics_double_count_padding
+aliases: []
+title: trl 指标先本地归约再 gather，尾批 padding 重复计入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: trl
+    component: 多个 trainer 的指标 gather 聚合
+  behavior: 指标先在 rank 本地 reduce 成标量再 gather_for_metrics，其沿 batch 维切片去 padding 对标量失效；PPO micro-batch 指标按槽位取均值，未写入槽位的零值也被计入。
+effect:
+  objects:
+  - 指标/日志
+  detail: 数据集不整除 rank 数时，每个 epoch 尾批的 accuracy、KL、margins、entropy 等指标系统性偏移，小数据集/大 world_size 偏差最大；涉及六个 trainer 共 11 处，另有全 1 ratio 下 val/ratio_var 记为 0.2667。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-06'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/pull/7045
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0257
+original:
+  category: OBS
+  section: OBS
+  meta: 'stage: `sft/rl` · Cov: `var:loss_path_metrics_weighted_by_window_size` · 置信度 `documented`'
+  mechanism: '`Accelerator.gather_for_metrics` 靠沿 batch 维切片去掉 accelerate 给最后一批补的 padding 去重——**rank-local 标量已经没有 batch 维**，重复样本折进数字里后截断无从剥离。数据集不整除 rank 数时，每个 epoch 的最后一批上，所有「先本地 reduce 再 gather」的指标都带这份偏差。trl 修复一次性扫描出六个 trainer 的 11 处（RewardTrainer accuracy/margin、XPO log-probs/KL/entropy/margins、OnlineDPO scores/KL/RLHF reward、CPO/ORPO logits means、TPO per-token entropy……）；同日姊妹 PR 把 PPO micro-batch 指标的「槽位均值」改成按 token/样本数加权池化，顺带修掉 unwritten 槽位零值污染（`val/ratio_var` 在全 1 ratio 下 log 出 0.2667 方差）。'
+  source: 'trl PR #7045（fixes #7010）+ 姊妹 PR #7041（fixes #7012，closed 后并入后续修复）。https://github.com/huggingface/trl/pull/7045'
+  behavior: 无 crash；每个 epoch 尾批的评测指标（accuracy、KL、margins、entropy……）系统性偏移，尾批占比越大偏得越狠——小数据集/大 world_size 的实验读数最受污染，恰好是调参决策最依赖看板的场景。与 OBS.08 同族（诊断层聚合错值），机制互补：那边错在**时间维**（micro-batch 条目数加权），这边错在**空间维**（跨 rank gather 的 padding 去重对已聚合标量失效）。
+  discovery: 2026-09-06 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

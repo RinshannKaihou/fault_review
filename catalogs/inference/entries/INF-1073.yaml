@@ -1,0 +1,53 @@
+id: INF-1073
+legacy_ids:
+- '11.50'
+slug: vllm_rejection_sampler_nan_row_laundered_oov_token_id
+aliases: []
+title: vLLM rejection sampler 将 NaN 行洗成越界 id
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: rejection sampler 重采样内核
+  behavior: verify 行 logits 全 NaN 时，_rejection_resample_kernel 的 residual 与 gumbel 噪声仍为 NaN，argmax 链产出等于 vocab_size 的越界 id，不报错也不回退
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: 越界 id 经 input_ids 传播，1–3 步后以 indexSelectSmallIndex device assert 崩溃，异步浮现于 copy_event.synchronize()，远离根源、误导排查；引擎 NaN 检测器看不到 verify 行
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + spec decode（FULL cudagraph）+ verify 路径 NaN 注入（FI 或故障内核）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53029
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（verify 行全 NaN logits 经 rejection sampler 的 NaN 污染 argmax 链被"洗"成恰好等于 vocab_size 的越界 token id——device assert 在远离根源 1–3 步后引爆，引擎 NaN 检测器对 verify 路径全盲） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: spec decode（dspark，greedy draft → one-hot verify）V2 GPU worker rejection sampler：某验证行 `target_logits` 全 NaN（任意前向数值故障——报告场景为自定义 SM80 attention 内核放大垃圾 KV 读，但任何 NaN 行触发后续链条）时：verify 内核对 NaN 的接受比较全 false → 位置被拒；`_rejection_resample_kernel` 对 NaN 行计算 one-hot residual（仍 NaN）+ gumbel 噪声（仍 NaN）→ NaN 污染的 per-block maxima/argmaxes 链**恰好产出等于 `vocab_size` 的 token id**，经 `last_sampled_tokens` → `combine_sampled_and_draft_tokens` → `input_ids` 传播，1–3 步后以 `srcIndex < srcSelectDimSize`（indexSelectSmallIndex）device assert 引爆，异步浮出于 `copy_event.synchronize()`，远离根源。端到端复现+插轨 ~10 次；#42261（gemma4+MTP 间歇同 assert）签名吻合疑同源。同文件另含一族未初始化 scratch 隐患；引擎唯一的 NaN 检测器看不到这些 verify 行（NaN-metric 盲区）。
+  source: 'vLLM #53029（2026-08-19 open，含完整机制插桩、NaN-metric 盲区分析与 uninit-scratch 审计）。https://github.com/vllm-project/vllm/issues/53029'
+  behavior: 根源 NaN 行静默通过采样器（不 fail、不 fallback），以**合法 int 形态的越界 id** 洗白，延迟 1–3 步 crash 于 indexing 断言——崩溃点与故障点分离，误导向 indexing/词表排查。post-forward 结构性盲点的极端形态：NaN 进入采样器后监控窗口只剩一步。
+  trigger_surface: vLLM + spec decode（FULL cudagraph）+ verify 路径 NaN 注入（FI 或故障内核）
+  discovery: |-
+    2026-08-20 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

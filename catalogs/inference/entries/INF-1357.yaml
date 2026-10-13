@@ -1,0 +1,54 @@
+id: INF-1357
+legacy_ids:
+- '10.109'
+slug: trtllm_qwen3vl_total_num_frames_rewrite_fps_misresample_4frame_summary_wrong_timestamps
+aliases: []
+title: TRT-LLM Qwen3-VL重写帧数未重算fps，视频恒采4帧且时间戳错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: tensorrt-llm
+    component: InputProcessor 视频元数据重写
+  behavior: _preprocess 把 total_num_frames 重写为 len(vd.frames) 但不重算 fps，单位不匹配使下游 HF Qwen3VLVideoProcessor 按错误时长采样与计算时间戳。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: 默认采样路径下视频静默退化为恒4帧摘要：10s/24fps/240帧已解码为40帧，按40/24≈1.67s采样，fps=2、min_frames=4下取4帧，30s clip同样4帧；时间戳token被压缩（0/3.3/6.7/10s变0.3/1.4s）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TensorRT-LLM + Qwen3-VL + 视频输入 + 默认采样路径（不传 do_sample_frames/num_frames/fps）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-12'
+remarks: '机制为帧数重写与源 fps 的单位制不匹配，默认路径意图对齐 HF 类默认反而引入分歧；rc25 与 main@760a584 代码相同。来源：TensorRT-LLM #20141（CPU-only HF processor 复现 + 帧数/时间戳双后果定量）。'
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/20141
+  kind: github_issue
+relations: []
+original:
+  mechanism: 帧数重写与源 fps 的单位制不匹配；默认路径意图对齐 HF 类默认反而引入分歧。rc25 与 main@760a584（2026-10-12）代码相同。
+  source: 'TensorRT-LLM #20141（2026-10-12 open，CPU-only HF processor 复现 + 帧数/时间戳双后果定量）。https://github.com/NVIDIA/TensorRT-LLM/issues/20141'
+  behavior: 无 crash——默认配置下视频输入静默退化为 4 帧摘要 + 错误时间戳，模型对视频时序理解系统性错误。
+  trigger_surface: TensorRT-LLM（Dynamo 后端聚合多模态/LLM API）+ Qwen3-VL + 视频输入 + 默认采样路径（other_stack）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（TensorRT-LLM `Qwen3VLInputProcessorBase._preprocess` 把 `video_metadata.total_num_frames` 重写为 `len(vd.frames)` 但不重算 `fps`：IO 层已抽帧的 clip（如 10s/24fps/240 帧解码为 40 帧）使 HF `Qwen3VLVideoProcessor` 相信视频只有 40/24≈1.67s——类默认 `fps=2, min_frames=4` 下只采样 `int(40/24*2)=3→4` 帧（**无论 clip 多长恒为 4 帧摘要**，30s clip 同样 4 帧）；且 `<t seconds>` 时间戳 token 按重写后的帧数/源 fps 计算，被压缩 decoded/source 比例（真实 0/3.3/6.7/10s 变成 0.3/1.4s）。这是默认路径：调用方不传 `do_sample_frames/num_frames/fps` 时 `_decide_do_sample_frames` 自动开启采样；`do_sample_frames=False` 完全正确，证明帧本身无恙、纯元数据不一致） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

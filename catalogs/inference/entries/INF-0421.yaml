@@ -1,0 +1,50 @@
+id: INF-0421
+legacy_ids:
+- '6.28'
+slug: vllm_prefix_cache_silent_noop_mamba_gdn_hybrid
+aliases: []
+title: vLLM prefix caching 对混合 SSM 架构静默 no-op
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: APC 前缀缓存的 recurrent 状态追踪
+  behavior: APC 只追踪 attention KV block，混合架构的 recurrent conv+SSM 状态没有 APC 缓存条目、无法被追踪，--enable-prefix-caching 实为 no-op 且不给 warning。
+effect:
+  objects:
+  - 性能/资源
+  detail: Qwen/Qwen3.6-35B-A3B 等 Mamba-2/GDN 混合模型上，共享相同长前缀的请求命中率 0%（vllm:prefix_cache_hits_total 恒为 0），prefill 计算量未减少；无 crash、无 error（vLLM 0.26.0，GB10/sm_121a）。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 主路径；Mamba-2/GDN 混合架构 + `--enable-prefix-caching`
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51198
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（prefix caching 对混合 SSM 架构静默 no-op → 启用承诺被静默违背） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 在 Mamba-2/GDN 混合架构（如 `Qwen3_5MoeForConditionalGeneration`，`Qwen/Qwen3.6-35B-A3B`）上，`--enable-prefix-caching`（APC，automatic prefix caching）只追踪 attention KV block。混合架构的 recurrent conv+SSM 状态**不可被 APC 追踪**——APC 没有 recurrent state 的缓存条目。于是对共享相同长前缀的请求给出 **0% 命中率**（`vllm:prefix_cache_hits_total` 恒为 0），`--enable-prefix-caching` 实际是一个**静默 no-op**。调用方期望共享前缀 prefill 复用却拿不到，且**无 warning、无 error**。修复方向：要么在混合 SSM 模型上 warn 该 flag 是 no-op，要么支持缓存 recurrent state。
+  source: 'vLLM #51198（2026-08-05 open）。环境：vLLM 0.26.0，GB10 / sm_121a。https://github.com/vllm-project/vllm/issues/51198'
+  behavior: 无 crash、无 NaN、无数据损坏。功能静默失效：启用 prefix caching 却拿不到任何命中，prefill 计算量未减少（性能退化而非正确性退化）。属「prefix caching 对混合 SSM 架构静默 no-op」新子签名——控制平面承诺被静默违背。与 6.1 `apc_non_full_block_dirty_hash`（APC 脏块 → 错误 KV 复用）同域但相反：本条是 APC **完全不生效**而非错误生效。
+  trigger_surface: vLLM 主路径；Mamba-2/GDN 混合架构 + `--enable-prefix-caching`
+  discovery: 2026-08-05 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

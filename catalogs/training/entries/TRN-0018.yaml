@@ -1,0 +1,51 @@
+id: TRN-0018
+legacy_ids:
+- NUM.09
+slug: mixed_precision_cast_sweeps_quantized_params
+aliases: []
+title: DeepSpeed 混精 cast 把冻结的 FP8/MX 权重转成 bf16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: deepspeed
+    component: engine 混精 cast 的浮点判定
+  behavior: engine 混精转换按 is_floating_point() 一刀切，FP8/MX/NVFP4 均判为浮点，冻结的量化权重被整体 cast 成 bf16；MX 的 e8m0 scale 存的是指数，cast 后不能还原。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: frozen 量化基座 + LoRA 场景在 initialize 即触发：FP8/MX 面完全静默，训练照常但量化表示与 scale 语义被毁、权重占用翻倍，LoRA 产物对量化部署不可用；NVFP4 面直接 NotImplementedError。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8414
+  kind: github_issue
+relations: []
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed engine 的混精转换按 `p.is_floating_point()` 一刀切——FP8/MX/NVFP4 窄精度 dtype 对该谓词全为 True，**冻结的量化权重**（从不收梯度、只被量化 GEMM 消费）被整体 cast 成 `param_dtype`（bf16）。三种面：FP8 权重 1B→2B、量化表示丢失；MX 的 `float8_e8m0fnu` block-scale 存的是**指数**不是值，cast 到 bf16 再回来不 round-trip → scale 语义毁；NVFP4（`float4_e2m1fn_x2` 两个 4-bit 打包）无 `copy_` → `deepspeed.initialize` 直接 NotImplementedError。LoRA-on-quantized-checkpoint 常态场景（frozen 量化基座 + trainable adapter）一步 initialize 即中招。修复 = cast 跳过窄精度 dtype。
+  source: 'DeepSpeed #8414（repro：4096×4096 fp8 frozen param + bf16 + ZeRO-2，16 MiB→32 MiB bfloat16）+ 修复 PR #8416（skip narrow dtypes）。https://github.com/deepspeedai/DeepSpeed/issues/8414'
+  behavior: FP8/MX 面**完全静默**——训练照常，量化 GEMM 之后拿到的是被 bf16 化的权重，LoRA 产物对量化部署不可用；NVFP4 面 fail-fast。与 CKPT.09（MXFP8 ckpt round-trip 丢 scale）互补：那边序列化破坏编码，这边 engine 初始化破坏。
+  discovery: 2026-09-05 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

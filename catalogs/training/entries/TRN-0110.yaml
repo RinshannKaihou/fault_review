@@ -1,0 +1,56 @@
+id: TRN-0110
+legacy_ids:
+- OPT.10
+slug: muon_update_applied_per_microbatch
+aliases: []
+title: ZeRO-3 下 Muon 每个 micro-batch 都执行更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: ZeRO-3 IPG 路径 Muon 更新
+  behavior: ZeRO-3 把 Muon 的 Newton-Schulz 与 momentum 更新挂在每个 micro-batch 都执行的 IPG bucket reduce 路径上，缺少梯度累积边界守卫，NS 作用于部分梯度。
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  detail: 梯度累积 gas=n 时 momentum 每步推进 n 次（β=0.95、gas=4 有效保留率 0.81），NS 计算量 ×n；stage3 gas=1 vs 4 权重相对差 1.0e-01（stage2 仅 3.3e-04）；无 crash、无 NaN、loss 正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8443
+  kind: github_issue
+relations: []
+original:
+  category: OPT
+  section: OPT
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: DeepSpeed ZeRO-3 把 Muon 的 Newton-Schulz + momentum 更新挂进 **IPG bucket reduce 路径**——该路径每个 micro-batch 都跑，无 accumulation-boundary 守卫（ZeRO-1/2 的等价逻辑在 `ipg_epilogue` 里、只于 `is_gradient_accumulation_boundary()` 时执行）。`gradient_accumulation_steps=n` 时每步 momentum 被推进 n 次（有效保留率 βⁿ 而非 β：β=0.95、gas=4 → 0.81，gas=16 → 0.44）、NS 作用在**部分梯度**上（NS 非线性：各 micro-batch 正交化之和 ≠ 和的正交化；Muon 更新尺度不变，样本再少的 micro-batch 也贡献单位尺度更新）、NS 计算量 ×n。同数据同种子对照：stage 2 gas=1 vs gas=4 权重相对差 3.3e-04（半精 NS 噪声底，同一训练），stage 3 = **1.0e-01（三百倍于此，另一个训练）**。
+  source: 'DeepSpeed #8443（NS kernel 调用计数表：stage1/2 全部正确、stage3+gas=4 得 16 而非 4）。https://github.com/deepspeedai/DeepSpeed/issues/8443'
+  behavior: 无 crash、无 NaN、loss 正常——用户配置的 momentum 不是得到的 momentum，且偏差随 `gradient_accumulation_steps`（无关旋钮）移动；ZeRO-3 + 梯度累积正是需要 ZeRO-3 的模型的标准配置。与 OPT.08（Muon 矩阵几何错）同为 Muon 流水线数学契约破坏：那边错在单次更新的矩阵语义，这边错在**更新频率与 optimizer step 脱钩**；与 OBS.08（指标按 micro-batch 平摊）形似而质异——那边只错诊断，这边错权重本身。
+  discovery: 2026-09-07 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 优化器状态
+        to: 模型权重
+        status: unanimous

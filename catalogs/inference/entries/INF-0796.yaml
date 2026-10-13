@@ -1,0 +1,60 @@
+id: INF-0796
+legacy_ids:
+- '8.12'
+slug: vllm_int8_per_token_head_kv_prefix_cache_off_first_token_corruption
+aliases: []
+title: vLLM int8 KV 关闭前缀缓存时首 token 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: int8_per_token_head KV 缓存
+  behavior: int8_per_token_head KV 与关闭 prefix caching 的组合存在缺陷，具体出错代码原文未定位；已排除量化精度损失与内存压力。
+effect:
+  objects:
+  - 输出内容
+  detail: v0.26.0 V1、Gemma-4 31B hybrid、Triton backend、prefix caching 关闭时，响应开头几个 token 损坏（结构化输出首键出错），其余 2–3.5k token 正常；开启 prefix caching 则干净，KV 池利用率仅约 3%。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM V1；int8_per_token_head KV + prefix caching off + Triton attention + hybrid 模型组合
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/50749
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（int8 per-token-head KV × prefix-caching-off 交互 → 首 token 损坏） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: 'vLLM v0.26.0 V1，Gemma-4 31B hybrid（50 层 sliding head_dim 256 + 10 层 global head_dim 512），`--kv-cache-dtype=int8_per_token_head` + **prefix caching 关闭** + Triton backend：完整 2×2 因子实验（n=48/arm，同一批生产流量请求）证明——prefix caching **开**则同配置完全干净，**关**则**前几个生成 token 损坏**（endpoint 表现为响应 JSON 首键 damage），而其余 2–3.5k token 完全连贯。KV 池利用率仅 ~3%：无 flood、无 preemption、无内存压力。报告者明确区分：不是 #50702（需要池 ~100% + 持续驱逐复用 + prefix on），也不是量化质量损失——**精度损失不可能依赖 cache 是否启用**。'
+  source: 'vLLM #50749（2026-08-02 open，2× RTX 3090 TP=2，`cyankiwi/gemma-4-31B-it-AWQ-4bit`）。https://github.com/vllm-project/vllm/issues/50749'
+  behavior: 无 crash、无 NaN。响应**开头几个 token 损坏**（结构化输出的首字段出错），后续长输出完全正常——极具迷惑性的局部损坏。属「int8 per-token-head KV × prefix-caching-off 交互 → 首 token 损坏（空闲池）」新子签名。
+  trigger_surface: vLLM V1；int8_per_token_head KV + prefix caching off + Triton attention + hybrid 模型组合
+  discovery: 2026-08-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem KV缓存 vs 量化：报告者明确排除量化精度损失（“精度损失不可能依赖 cache 是否启用”），故障随 prefix caching 开关而出现/消失，指向 KV 缓存管理路径；定为 KV缓存。根因原文未定位，behavior 已如实写明。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 量化
+        status: panel7

@@ -1,0 +1,58 @@
+id: INF-1347
+legacy_ids:
+- '1.299'
+slug: ttmetal_single_row_sort_padding_value_tie_returns_out_of_range_indices
+aliases: []
+title: ttnn.sort Single Row 工厂哨兵并列返回越界 index
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.sort Single Row 工厂
+  behavior: pad 到 2 幂时用应排最后的哨兵值（float ±inf 等）填充；哨兵是合法输入值，输入含该值时真实元素与 padding 并列，stable=False 按位置破并列使 padding（index≥n）混入返回 indices。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 无crash；values正确，indices含≥n越界值，下游gather/scatter静默OOB读。触发：tt-metal中ttnn.sort(stable=False)、非2幂宽≤2048且输入含dtype哨兵极值；非2幂宽sort走Single Row Single Core工厂。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + ttnn.sort(stable=False) + 非 2 幂宽 ≤2048 + 输入含 dtype 哨兵极值（WH N150 实机）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-12'
+remarks: '与 1.23 ttnn.sort bf16 整数值坍塌同属 sort 返回索引损坏族，但机制不同：本条是 padding 哨兵值与真实值并列使 pad index 泄入返回值。实测 n=100 descending 时 128 个越界 index、n=1000 时 768 个。来源：tt-metal #60262（2026-10-12 open，四配置 × 计数表 + 逐工厂修复状态对照）。'
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/60262
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0023
+original:
+  mechanism: 哨兵填充假设输入不含哨兵值；非稳定排序按位置破并列使 pad 赢过等值真实元素。哨兵=±inf/0/极值均为合法输入值。
+  source: 'tt-metal #60262（2026-10-12 open，四配置 × 计数表 + 逐工厂修复状态对照；WH N150 实机）。https://github.com/tenstorrent/tt-metal/issues/60262'
+  behavior: 无 crash——sort values 正确而 indices 含 ≥n 越界值，下游索引消费静默 OOB。
+  trigger_surface: tt-metal + ttnn.sort(stable=False) + 非 2 幂宽 ≤2048 + 输入含 dtype 哨兵极值（hw_specific）
+  discovery: 2026-10-12 每日扫描。
+  meta: '`infra_off`（`ttnn.sort` Single Row Single Core 工厂（padded 宽 ≤2048，非 2 幂宽 sort 全走此工厂）：sort 维 pad 到 2 幂时用应排最后 的哨兵值（float 的 ±inf / uint16 的 0/65535）——**输入自身含该值时真实元素与 padding 并列**，`stable=False` 按位置破并列使 padding 元素（index ≥ n）混入返回行：实测 n=100 descending 时 128 个越界 index、n=1000 时 768 个（全 padding 混入）；**values 全对、只有 indices 错**，任何下游 gather/scatter 用这些 index 即 OOB 读。MultiCore DRAM 工厂同病已被 #58600 修复（#53326），Cross Core 工厂用 index-aware 比较器无恙） · Cov: `var:ttmetal_sort_bf16_integer_collapse_nondeterministic_index`（1.23 ttnn.sort 损坏族——同为 sort op 返回索引损坏，但 1.23 是 bf16 整数值坍塌、本条是 padding 哨兵值与真实值并列把 pad index 泄入返回值） · 触发 `hw_specific` · 置信度 `verified`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

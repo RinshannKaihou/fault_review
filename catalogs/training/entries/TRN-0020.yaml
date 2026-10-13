@@ -1,0 +1,68 @@
+id: TRN-0020
+legacy_ids:
+- NUM.11
+slug: fsdp_cpu_offload_rng_tracker_device_mismatch
+aliases: []
+title: CPU offload 下 RNG tracker 设备错配致随机值重复
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: DTensor RNG tracker 设备谓词
+  behavior: DTensor RNG tracker 以 CUDA 设备 fork_rng 包裹随机操作；CPU offload 下 mesh 仍为 CUDA 而存储在 CPU，CPU 随机操作被错路由，退出时无条件恢复 CPU 生成器状态。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  - 可用性/进度
+  detail: FSDP2 开 CPU offload 时触发：offload 后的 CPU 随机操作产生完全相同的值，初始化/dropout 等去相关失效，训练期无 crash、无 NaN；torchtitan 中 lm_head 的 trunc_normal_ 反复得到相同越界值，初始化挂死。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-09'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/pytorch/pull/196072
+  kind: github_pr
+- url: https://github.com/pytorch/torchtitan/issues/4511
+  kind: github_issue
+relations: []
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: PyTorch DTensor 的 RNG tracker 是进程级单例，其 `_distribute_region()` 用 `torch.random.fork_rng(devices=[cuda_device], ...)`。FSDP2 `CPUOffloadPolicy` 下 DTensor 的 mesh 仍是 CUDA 类型、而局部存储已驻留 CPU——CPU 侧随机操作被路由进 CUDA 配置的 tracker；`fork_rng` 退出时**无条件恢复 CPU 默认生成器状态**（与传入哪些设备无关）：每个被错误路由的 CPU 随机操作都从同一 RNG 状态出发，产生**完全相同的值**。torchtitan 侧最初表现为 `trunc_normal_` 拒绝采样重采循环永不收敛（lm_head 初始化挂死：`normal_` 反复产生相同越界值）；上游 PR 明示更宽的静默面——offload 之后初始化的张量可能收到**相同更新**。
+  source: 'pytorch/pytorch#196072（根因分析 + `fork_rng` 语义定位；影响面未广泛测试，作者自标）。https://github.com/pytorch/pytorch/pull/196072 ；torchtitan #4511（LM head `trunc_normal_` std=0.0625 初始化 hang，debug 配置 CPU offload 复现，维护者已 cc PyTorch 团队）。https://github.com/pytorch/torchtitan/issues/4511'
+  behavior: 两副面孔：初始化期可表现为挂死（可见），训练期相同值注入是**静默**的——无 crash、无 NaN，破坏的是随机性契约本身（offload 后初始化/dropout 等随机操作去相关失效）。与 CKPT.13 / CKPT.18（RNG 状态面）同主题——那边错在 **resume 路径**的随机性契约（存错对象/丢 epoch 种子），这边错在**运行时路由**：单进程内设备面变化使 tracker 与实际执行设备脱钩；与 NUM 家族的确定性/复制作业错值面相邻但机制独立（不是归约序、不是 cast，是 RNG tracker 设备谓词失效）。
+  discovery: 2026-09-09 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 并行切分/pytorch：出错代码是 DTensor RNG tracker 的 _distribute_region 设备谓词（分布式张量设施）；FSDP2 CPUOffloadPolicy 按 rule 只是触发条件。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 并行切分
+        to: 运行时/执行
+        status: unanimous
+      effect:
+        from: 模型权重
+        to: 数值结果
+        status: unanimous

@@ -1,0 +1,52 @@
+id: INF-0054
+legacy_ids:
+- '1.54'
+slug: ttmetal_pow_bf16_relative_error_grows_with_exponent
+aliases: []
+title: ttnn.pow bf16 路径相对误差随指数无界增长且溢出返回 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.pow bf16 SFPU 路径
+  behavior: bf16 路径按 2^(y·log2x) 算 pow，log2 只用单一 3 阶多项式，其绝对误差（最大约 2.8e-3）被指数 y 放大，相对误差约 2e-3·|y| 无上界；结果 ≥2^128 时指数回绕。
+effect:
+  objects:
+  - 数值结果
+  detail: bf16/BFLOAT8_B/BFLOAT4_B 下浮点或张量指数的 pow/rpow 在整个文档化输入域静默返回有限错误值，如 pow(0.996094,100.0) 得 0.8008（真值 0.6761）；溢出时返回 NaN 而非 inf。int32 指数重载准确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal SFPU；bf16/BFLOAT8_B/BFLOAT4_B + pow 浮点/tensor 指数
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/52675
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn.pow bf16 路径：log2 单一 3 阶多项式绝对误差被指数放大→相对误差 ~0.2%·|y| 无界；溢出返回 NaN 而非 inf） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`ttnn.pow(tensor, float_scalar)` / `ttnn.pow(tensor, tensor)` / `rpow` 在 bf16/BFLOAT8_B/BFLOAT4_B 下走 `_sfpu_unary_power_21f_`/`_sfpu_binary_power_21f_`，算 `pow(x,y)=2**(y·log2(x))`，log2 用单一 3 阶 minimax 多项式（`ckernel_sfpu_unary_power.h` L60）。多项式绝对误差（max ≈2.8e-3，mantissa→2⁻ 时最差）被 y 放大→结果相对误差 ≈2.0e-3·|y| 无上界。`ttnn.pow(0.996094, 100.0)` 返回 0.8008（真值 0.6761，18% 偏差）；y=500 时中位误差 29.3%。bf16 ULP ~0.39%，故 |y|≳3 时算法噪声主导格式。此外结果 ≥2^128 时 biased exponent 回绕 255+非零尾数→NaN（应为 inf）：`2.0**128→NaN`、`10.0**39→NaN`。fp32 路径已在 #49625 重建（NR reciprocal + atanh-series log + hi/lo split），但 bf16（多数用户默认）仍用原算法。**尖锐边**：int32 exponent 重载用精确重复平方，故 `pow(x,100)` 准确但 `pow(x,100.0)` 不准确。'
+  source: 'tt-metal #52675（2026-08-09 open）。组件 `ckernel_sfpu_unary_power.h` L60。https://github.com/tenstorrent/tt-metal/issues/52675'
+  behavior: 无 crash、无 assert。静默有限错误值跨整个文档化输入域。溢出返回 NaN（违反 IEEE 应返回 inf）。属「多项式近似误差被指数放大无界」**新子签名**——与 1.49-1.53 SFPU 数值原语缺陷同族，但本条是误差放大机制（非 NaN 吞噬/死守卫），且 bf16 默认 dtype 使多数用户受影响。
+  trigger_surface: tt-metal SFPU；bf16/BFLOAT8_B/BFLOAT4_B + pow 浮点/tensor 指数
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

@@ -1,0 +1,50 @@
+id: INF-0056
+legacy_ids:
+- '1.56'
+slug: triton_amd_bf16_multiply_truncation_not_rne
+aliases: []
+title: Triton AMD 后端 bf16 乘法截断而非就近舍入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: AMD 后端 bf16 fmul 降低
+  behavior: AMD 后端把标量 fmul bfloat 降低为第二 lane 置零的 fdot2.bf16.bf16（发射 v_dot2_bf16_bf16），该指令在 f32 累加后写 bf16 时不做舍入，低位尾数直接丢弃。
+effect:
+  objects:
+  - 数值结果
+  detail: AMD GPU（gfx1200）上含 bf16 乘法的 Triton kernel 每次乘法系统性截断最多 1 ULP，累积后与 torch/CUDA 分叉；bf16 频率的 RoPE kernel 约 41% 输出超出 rtol=1e-3（eager 约 14%）；bf16 加法不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Triton AMD 后端；任何含 bf16 multiply 的 Triton kernel（特别影响 RoPE、attention、量化反沖）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11217
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（AMD 后端 bf16 multiply 被降低为 `v_dot2_bf16_bf16`（第二 lane 置零），该指令在 f32 累加但不做 bf16 舍入→截断而非 round-to-nearest-even） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: Triton AMD 后端将标量 `fmul bfloat` 降低为 `llvm.amdgcn.fdot2.bf16.bf16(<a, 0.0>, <b, 0.0>, 0.0)`——一个 2-way bf16 dot product 且第二 lane 为零，发射 `v_dot2_bf16_bf16` 指令。该指令在 f32 中累加、写 bf16 时**不执行舍入步骤**，低位 mantissa bits 被丢弃。2^20 随机 bf16 对测试：结果与截断 100.00% 匹配、与 RNE 仅 52.58% 匹配（即 ~47% 情况 RNE 向上进位但 truncation 不进位）。误差 ≤1 ULP/乘法，但是**系统性舍入模式差异**而非噪声，会累积并导致 AMD 结果与 torch/CUDA 后端分叉。bf16 addition 不受影响（保持正确 RNE：`v_add3_u32 ..., 0x7fff` + NaN fixup）；fp16 multiply 不受影响。在 RoPE kernel 中以 bf16 频率计算时，~41% 输出超出 `rtol=1e-3`（vs eager torch ~14%）。
+  source: 'Triton #11217（2026-08-08 open）。后端 AMD gfx1200。组件 Triton AMD codegen `fmul bfloat` lowering。https://github.com/triton-lang/triton/issues/11217'
+  behavior: 无 crash、无 NaN。bf16 multiply 系统性向零截断（最多 1 ULP/乘法），累积导致 RoPE 等数值敏感 kernel 输出偏离。属「后端 codegen 舍入模式契约不一致」**新子签名**——硬件指令语义与 IEEE 舍入期望不匹配，影响 AMD GPU 上所有 bf16 Triton kernel。
+  trigger_surface: Triton AMD 后端；任何含 bf16 multiply 的 Triton kernel（特别影响 RoPE、attention、量化反沖）
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

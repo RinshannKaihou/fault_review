@@ -1,0 +1,55 @@
+id: INF-0205
+legacy_ids:
+- '1.206'
+slug: vllm_triton_attention_softcap_exp_quotient_overflow_nan
+aliases: []
+title: vLLM attention softcap 手工 tanh 展开溢出致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: Triton 注意力 apply_softcap
+  behavior: apply_softcap 把 x·tanh(S/x) 手工展开为 exp 商式，未用数值稳定形式也未钳位中间 exp；|S/x| 超过约 88 时分子分母同时溢出为 inf，商为 inf/inf=NaN。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: softcap 模型（如 Gemma-2，softcap=50）pre-softcap score 超过约 4400 时 attention 整行输出 NaN，生成静默崩坏，无 crash；unified/DiffKV/INT4 三个 Triton attention 内核均受影响。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + Triton attention（unified/DiffKV/INT4）+ attn logit softcap 模型（Gemma-2 类）+ pre-softcap score >~4400（yes）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/56578
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0161
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（vLLM Triton attention 的 softcap helper `apply_softcap` 把 `x·tanh(S/x)` 手工展开为 `(exp(S/x)−exp(−S/x))/(exp(S/x)+exp(−S/x))`：|S/x|>~88 时两个 exp 同溢出为 inf，商变 inf/inf=NaN 毒化整行 attention。softcap 本为压制大 attention logit 而设（Gemma-2 `attn_logit_softcapping=50`，pre-softcap score>4400 即触发）——恰在设计目标场景失效。unified/DiffKV/INT4 三个 attention 内核共用该 helper；main `c191787a68` + Triton 3.7.1 最小 kernel 复现 `[50.0, 50.0, nan, nan, nan, inf]`，稳定式 `x·(1−2/(exp(2S/x)+1))` 可修） · Cov: `var:ttmetal_logsigmoid_large_positive_bf16_exp_double_negation_inf`（1.162 超越函数手工展开大参数域溢出族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: 手工展开的 tanh 商式在指数域溢出，未用数值稳定形式也未钳位中间 exp；被保护的极端 logit 恰是溢出输入。
+  source: 'vLLM #56578（2026-09-12 open，含最小 Triton kernel 六值探针与 torch.tanh 对照）。https://github.com/vllm-project/vllm/issues/56578'
+  behavior: 无 crash——大 attention logit 模型（softcap 用户）的 attention 输出 NaN，生成静默崩坏。1.162（logsigmoid exp 双重否定 −inf）之后"手工展开超越函数在极端参数域溢出"族新成员：本条在 attention softcap 维度、且失效点即该机制的设计保护场景。
+  trigger_surface: vLLM + Triton attention（unified/DiffKV/INT4）+ attn logit softcap 模型（Gemma-2 类）+ pre-softcap score >~4400（yes）
+  discovery: |-
+    2026-09-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

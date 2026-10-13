@@ -1,0 +1,54 @@
+id: TRN-0197
+legacy_ids:
+- RL-RWD.04
+slug: tool_schema_constraints_silently_weakened
+aliases: []
+title: verl 工具 schema 序列化静默丢弃 JSON Schema 约束
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: 工具 schema Pydantic 载体
+  behavior: OpenAIFunctionToolSchema 的 Pydantic 载体只声明少数键，model_dump() 把 minimum/maximum/additionalProperties 等未声明键整键丢弃。
+effect:
+  objects:
+  - 输入编码
+  detail: 工具调用仍正常解析执行、训练无异常，但渲染进 prompt 的工具契约被削弱（如 limit≤128、offset≥0 约束消失）；@function_tool(schema=...) 同样丢失。reward 只认调用成功时越界参数可成得分路径（推断）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: subsystem 缺「agent 环境/工具」：agent-RL 的工具定义与环境交互不在 RL训练回路 现有描述（reward/advantage/KL/IS/同步）内，也不是模板本身，暂归最接近的 RL训练回路。
+evidence:
+- url: https://github.com/verl-project/verl/issues/7505
+  kind: github_issue
+- url: https://github.com/verl-project/verl/pull/7766
+  kind: github_pr
+relations: []
+original:
+  category: RL-RWD
+  section: RL-RWD
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: verl `OpenAIFunctionToolSchema.model_validate()` 接受含标准 JSON Schema 约束的工具定义，但底层窄 Pydantic 载体只声明 `type/description/enum`（属性层）与 `type/properties/required`（参数层），`model_dump()` 把未声明键（`minimum`/`maximum`/`additionalProperties` 等）**整键静默丢弃**。agent-RL 循环里模型可见的工具契约在 prompt 渲染前被单方面削弱：没有了 `limit ≤ 128`、`offset ≥ 0` 这类约束，合法的退化参数空间变大。`@function_tool(..., schema=...)` 文档承诺 "as-is"，实际同路丢失。CPU 可复现，无 GPU/rollout 依赖。
+  source: 'verl #7505（`model_validate → model_dump` round-trip 断言复现；主分支 + 独立 checkout 双确认，`schemas.py` blob 一致）。https://github.com/verl-project/verl/issues/7505 ；修复 PR #7766（2026-09-06 补：两个 carrier 加 `ConfigDict(extra="allow")`，未声明键保留且计入 `exclude_unset`——`minimum`/`maximum`/`pattern`/`items`/嵌套 `properties`/根级 `additionalProperties` 全部存活；已声明字段仍走校验）。https://github.com/verl-project/verl/pull/7766'
+  behavior: 工具调用仍正常解析执行、训练无异常——变的只是模型看到的约束定义（issue 自评：非 tool-parser / 执行失败，是「模型可见契约被静默改写」）。行为族与 RL-RWD.01（格式黑客）同向：奖励可涨、约束遵循能力不受测；但机制在**环境侧 schema 序列化有损**而非奖励函数设计。reward 只认「调用成功」时，越界/退化参数即成合法得分路径（机制为代码级确认；RL 端到端效应为推断，issue 未跑完整 RL 实验）。
+  discovery: 2026-08-22 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

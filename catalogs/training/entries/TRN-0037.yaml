@@ -1,0 +1,50 @@
+id: TRN-0037
+legacy_ids:
+- PAR.09
+slug: cpu_typestring_bucket_skips_allreduce
+aliases: []
+title: ZeRO CPU 张量类型串不匹配，梯度 allreduce 被静默跳过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: ZeRO 梯度类型串分桶
+  behavior: ZeRO-1/2 非连续梯度归约按 torch.{device}.FloatTensor 类型串分桶，CPU 张量类型串 torch.FloatTensor 无设备前缀，永不匹配，bucket 恒空，梯度 allreduce 整体被跳过。
+effect:
+  objects:
+  - 梯度
+  detail: CPU 多进程（gloo）路径触发，GPU 不受影响；无 crash、无警告，各 rank 用本地梯度更新。gradient_allreduce_op=mean 时完全不可见，sum 时结果错 world_size 倍，CPU 参考实现/测试会把错值当基线。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8382
+  kind: github_pr
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: DeepSpeed ZeRO-1/2 非连续梯度归约按 legacy 类型串 `torch.{device}.FloatTensor` 分桶（`split_half_float_double()`）。CPU 张量的合法类型串是 `torch.FloatTensor` **不带设备前缀**，与构造出的模式永不匹配 → bucket 列表恒空 → **梯度 allreduce 整体静默跳过**，每个 rank 用自己的本地梯度继续更新。`gradient_allreduce_op=mean` 时完全不可见（各 rank 梯度相同，未归约的本地值恰等于 mean）；`sum` 时结果错 `world_size` 倍。GPU 上 `torch.cuda.FloatTensor` 恰好匹配，18 个 GPU CI 变体全绿——CPU 多进程路径是首个踩到的执行环境。修复 = 按 `t.dtype` 分桶（设备无关）。
+  source: 'DeepSpeed PR #8382（CPU/gloo world 2–3 实测：`TestGradientAllreduceOp` 2 failed→18/18，`TestUnmanagedGradientAccumulationOffload` 数值不匹配→修复；GPU 行为按构造不变）。https://github.com/deepspeedai/DeepSpeed/pull/8382'
+  behavior: 无 crash、无警告；`mean` 语义下数值恰好对（最静默），`sum` 语义下静默放大 world_size 倍——梯度累积 + `sum` 的 CPU 参考实现/测试会把错值当基线。与 PAR.01（bf16 多子图不完整归约）同症状（归约缺失），但根因是**设备名类型串构造**而非子图遍历；与 PAR.02（allreduce 静默错值）区分：这边 collective 根本没发。
+  discovery: 2026-09-04 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

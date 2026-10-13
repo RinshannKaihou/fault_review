@@ -1,0 +1,60 @@
+id: INF-0552
+legacy_ids:
+- '6.159'
+slug: vllm_glm53flash_multi_kernel_random_ima_single_corrupter
+aliases: []
+title: vLLM GLM-5.3-Flash 多内核族随机 IMA，单点损坏者未定位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 待定（疑在线性注意力状态路径）
+  behavior: 待定：推测为负载/状态依赖的单点上游内存损坏者（最可能在 linear-attention/state 路径），异步 CUDA 错误在同步点才浮出；硬件已排除（ECC 0、无 Xid、无 page retirement）。
+effect:
+  objects:
+  - 可用性/进度
+  detail: GLM-5.3-Flash 4×B200 TP4 生产流量下约 6 小时 5 次 CUDA IMA（EngineDeadError）；故障帧分布于 Triton KDA、TileLang MHC、TRT-LLM fused MoE 三个内核族，同次 crash 各 rank 不同；禁用 PDL 无效
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM day-0 GLM-5.3-Flash image + 4×B200 TP4 + 持续生产流量（partial：负载/状态依赖）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54317
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（GLM-5.3-Flash 4×B200 生产聊天流量下 ~6 小时 5 次 CUDA illegal memory access——**同一故障在三个无关内核族显形**（Triton KDA linear-attention / TileLang MHC / TRT-LLM fused MoE），同一次 crash 不同 TP rank 报告不同内核；此前同机 15.5 小时零 crash——负载/状态依赖的上游内存损坏者，受害内核只是 async 显形点） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '异步 CUDA 错误的栈是**同步点**而非根因位置：crash 1 在 `prepare_chunk_indices`（`.tolist()` 强制 sync）；crash 2/3 在 `mhc_fused_post_pre_tilelang`；crash 4 同 crash 内 3 rank TileLang + 1 rank Triton KDA；crash 5 全 4 rank TRT-LLM fused MoE + 1 rank KDA。三内核族互不相关 + per-rank 不一致 → 单点上游 corrupter（最可能在 linear-attention/state 路径）假说；ECC 0、无 Xid、无 page retirement、`Remapping Failure: No`（硬件排除）。PDL 禁用不救（crash 5 即 PDL off）。模型未上游（#53906 open），day-0 vendor image `0.1.dev20051`。'
+  source: 'vLLM #54317（2026-08-29 open，含 5 次 crash 时间线/uptime 与 faulting-frame 矩阵）。https://github.com/vllm-project/vllm/issues/54317'
+  behavior: '**crash（EngineDeadError）但根因静默**——每次 crash 的表层内核都不同，按表层栈修内核永远修不到根因；间歇性（22min–2.5h uptime）使复现窗口难以维持。属「**多内核随机显形的单点损坏者**」新子签名：与 6.158（OOB 写随机受害内核 crash）同域，本条损坏者未定位、受害面横跨三个内核族与 TP rank。'
+  trigger_surface: vLLM day-0 GLM-5.3-Flash image + 4×B200 TP4 + 持续生产流量（partial：负载/状态依赖）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '维持 subsystem=待定。原文“单点上游 corrupter（最可能在 linear-attention/state 路径）假说”“未定位”，候选 算子/内核（KDA kernel）与 KV缓存（线性注意力状态池）都只是推测，硬件已由 ECC 0、无 Xid、Remapping Failure: No 排除；属原文确实缺信息，留 待定。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 待定
+        to: KV缓存
+        status: unanimous

@@ -1,0 +1,51 @@
+id: INF-0488
+legacy_ids:
+- '6.95'
+slug: sglang_swa_tombstone_blocks_prefix_match_pool_accounting_crash
+aliases: []
+title: SGLang SWA tombstone 被拒匹配致 pool 记账漂移崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: SWA 前缀匹配校验器 tombstone 处理
+  behavior: 未启用 HiCache 时 SWA 匹配校验器拒绝 tombstone 节点，insert 后 rematch 返回 0，cache_protected_len 不前进，dup_start 算错致 pool 记账漂移。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: hybrid SWA + EAGLE + 统一 radix cache（默认配置）下触发：前缀缓存命中先静默塌到 0，随后每个 TP rank 报 pool memory leak detected! 崩溃。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang；hybrid SWA + EAGLE + 统一 radix cache（默认配置即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-14'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34870
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SWA tombstone 拒绝非 HiCache 前缀匹配 → protected_len 停滞 → pool 记账漂移至崩溃） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 'hybrid SWA 模型 + EAGLE 推测解码 + 统一 radix cache（`SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS=1`，#34653 起默认开）的复合链条：(1) out-of-window 释放留下带 SWA tombstone 的节点；(2) SWA match validator 在未启用 `enable_hicache` 时拒绝 tombstone，insert 后的 rematch 停在 root 返回 0 indices；(3) `req.cache_protected_len` 因此永不前进；(4) 下一次 insert 的 `dup_start = prev_prefix_len - total_prefix_length` 计算错误 → pool 记账持续漂移，最终每个 TP rank 触发 `pool memory leak detected!` crash。修复（PR #34870）允许 tombstone 参与前缀匹配。'
+  source: 'SGLang PR #34870（2026-08-14 open，root fix of #34823）。8×H200 仪表化复现。https://github.com/sgl-project/sglang/pull/34870'
+  behavior: 最终 **crash**（pool leak 检测器触发），但此前前缀匹配已**静默失效**（缓存命中塌到 0、protected_len 停在 0）。属「tombstone 语义 × 部署形态（非 HiCache）→ 匹配停滞 → 记账不变量破坏」**新子签名**——cache 元数据生命周期与 pool 记账的复合缺陷。
+  trigger_surface: SGLang；hybrid SWA + EAGLE + 统一 radix cache（默认配置即触发）
+  discovery: 2026-08-14 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

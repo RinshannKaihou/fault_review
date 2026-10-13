@@ -1,0 +1,58 @@
+id: INF-0997
+legacy_ids:
+- '10.81'
+slug: vllm_completions_derender_drops_requested_prompt_logprobs
+aliases: []
+title: vLLM derender 端点丢弃请求的 prompt_logprobs
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: OnlineDerenderer 响应组装
+  behavior: derender 步从 GenerateResponse 重组 OpenAI 形状响应时未映射 prompt_logprobs 字段，该字段在管线前三级正确存活、在最后一环形状转换中被丢掉。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: scale-out 管线经 /v1/completions/derender 请求 prompt_logprobs 时，HTTP 200、生成文本与 usage 正常，但 choices[0].prompt_logprobs 为 null；客户端不显式断言非空则无感知。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM scale-out 端点 + `/v1/completions/derender` + `prompt_logprobs` 参数（config：该端点必触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57929
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1074
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM scale-out 管线末端 `/v1/completions/derender` **丢弃请求的 `prompt_logprobs`**：同一请求 `prompt_logprobs=1` 在 `/v1/completions`（返回）、`/v1/completions/render`（向引擎请求）、`/inference/v1/generate`（`GenerateResponse.prompt_logprobs` 返回）三级都正确，唯独 derender 组装步丢弃——HTTP 200、`choices[0].prompt_logprobs` 为 `null`；生成文本与 usage 全部正常，缺失可无声滑过。v0.29.0 与当前 main（`OnlineDerenderer._derender_completion`）均有） · Cov: `var:vllm_prompt_logprobs_drafter_graph_buffer_reuse_corruption`（11.51 prompt_logprobs 字段失效族） · 触发 `config` · 置信度 `verified`'
+  mechanism: derender 步从 GenerateResponse 重组 OpenAI 形状响应时未映射 prompt_logprobs 字段——字段在管线前三级存活、在最后一环的形状转换中掉落。11.51（prompt_logprobs 被 drafter graph buffer 复用覆写——内核层错值）之后同字段双位点：本条是 **API 组装层整字段丢弃**（null 而非错值），危害方向是静默缺失而非数据损坏。
+  source: 'vLLM #57929（2026-09-21 open，vLLM 0.29.0 + Qwen2.5-0.5B + L40S，含四级端点对照请求/响应、main 代码定位）。https://github.com/vllm-project/vllm/issues/57929'
+  behavior: 无 crash、无错误——`prompt_logprobs` 请求方拿到 null：依赖 prompt 概率做评估/筛选的下游静默失能；因为其余字段全对、HTTP 200，客户端若不显式断言非空即无感知。
+  trigger_surface: vLLM scale-out 端点 + `/v1/completions/derender` + `prompt_logprobs` 参数（config：该端点必触发）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 输出分布
+        to: 输出内容
+        status: unanimous

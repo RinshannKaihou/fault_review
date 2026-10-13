@@ -1,0 +1,50 @@
+id: INF-0230
+legacy_ids:
+- '1.231'
+slug: ttmetal_groupnorm_sharded_welford_batch_stride_uses_block_hw_reads_previous_batch
+aliases: []
+title: groupnorm Welford 内核批步进常量错用致后续批错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: groupnorm Welford 批步进
+  behavior: Welford 内核不读 compile arg 18（每批 tile 数），改用单 group tile 跨度 block_hw 作批间步进，每核多 group 时第 b 批起点提前、落进前一批数据。
+effect:
+  objects:
+  - 数值结果
+  detail: use_welford=True、单核持多批（num_batches_per_core≥2）且每核多 group（block_wt<per_core_Nt）时首批正确、后续每批输出全错，use_welford=False 同输入正确；报告者为静态分析推导，未上设备验证。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + sharded groupnorm（use_welford=True）+ 单核多批（num_batches_per_core≥2）+ 每核多 group（block_wt<per_core_Nt）（hw_specific：形状×分片配置触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56955
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（ttnn sharded groupnorm `use_welford=True` 路径：单核持有 `num_batches_per_core≥2` 批时，**首批正确、后续每批全错**。factory 把"每批 tile 数"算成 compile arg 18（`per_core_Mt*per_core_Nt/num_batches_per_core` = `block_ht*per_core_Nt`），legacy 内核正确读取使用；Welford 内核（`welford_groupnorm_sharded_v2.cpp:174/:318`）**从不读 arg 18**，用 `tile_id = b * block_hw` 步进（arg 9 = `block_ht*block_wt`，`block_wt` 是单个 group 的 tile 跨度 `find_max_tile_span(...)`）——`block_wt < per_core_Nt`（每核多 group）时 batch b 起点**提前 `b*block_ht*(per_core_Nt-block_wt)` 个 tile、落进前一批的数据里**。唯一 Welford 专项校验是 `num_groups_per_core<=16`，无任何检查拒绝该组合；stride 自 #31732 起未变、#54786 重写会原样继承。静态分析+公式级触发推导（`[2,1,32,64]` bf16 TILE、单核 height-shard、`num_groups=2`：batch 1 应从 tile 2 开始、内核从 tile 1（batch 0 的第二个 group）开始），报告者自述未上设备验证） · Cov: `NEW`（sharded 归约内核批次步进常量选错子签名） · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: 两个内核变体（legacy/Welford）对同一 factory 的 compile-arg 约定理解不一致——Welford 版拿"单 group tile 跨度"的 `block_hw` 当"每批 tile 数"用，批间寻址系统性错位；首批落在正确位置使小批量测试全绿。
+  source: 'tt-metal #56955（2026-09-18 open，bug/op_cat:reduces/community，含 factory/双内核行号级引用链、arg 9 vs arg 18 语义对照、公式化触发条件与 use_welford=False 对照实验设计）。https://github.com/tenstorrent/tt-metal/issues/56955'
+  behavior: 无 crash、无 NaN——多批次共核分片下第 2 批起 groupnorm 输出**静默错值**，同输入 `use_welford=False` 即正确（两变体同 tensor 分歧是最直接的服务侧指纹）。1.31（dest-reuse 同步竞态 Welford 非确定）、1.42（Welford FPU 路径精度损失）之后 Welford 族新成员：本条根因既非同步也非精度而是**批次索引步进常量错用**，且为确定性全错（非时序）。
+  trigger_surface: tt-metal + sharded groupnorm（use_welford=True）+ 单核多批（num_batches_per_core≥2）+ 每核多 group（block_wt<per_core_Nt）（hw_specific：形状×分片配置触发）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

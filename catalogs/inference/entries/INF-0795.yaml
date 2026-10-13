@@ -1,0 +1,51 @@
+id: INF-0795
+legacy_ids:
+- '8.11'
+slug: vllm_minimax_m3_fp8e5m2_kv_python_scatter_cuda_graph_corruption
+aliases: []
+title: vLLM MiniMax-M3 fp8 KV 写入不可图捕获致输出垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MiniMax-M3 fp8 _insert_kv
+  behavior: fp8 KV 路径的 _insert_kv 是纯 Python 实现，每次新分配 tensor 并做 advanced-index scatter，非 graph-safe，在 CUDA graph 捕获下写坏 index-K cache。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: SM80 + MiniMax-M3 + fp8_e5m2 KV + TRITON_ATTN 时，任何 CUDA graph 模式下服务正常启动却流畅生成纯垃圾，无报错；--enforce-eager 输出连贯但仅 5.2 tok/s，bf16+graph 正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM 主路径；SM80 + fp8_e5m2 KV + Triton attention + CUDA graph 组合
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/50881
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（非 graph-safe 的 Python KV 写入路径 → CUDA graph 捕获下索引缓存损坏） · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: SM80（A100/A800）上 MiniMax-M3 + `--kv-cache-dtype fp8_e5m2` + TRITON_ATTN：bf16 路径的 KV 写入走 fused CUDA op（graph-safe），而 **fp8 路径走 `MiniMaxM3SparseAttention._insert_kv`——纯 Python**，每次分配一个新 tensor 并做 advanced-index scatter（`idx_cache[slot_mapping] = ...`）。在 CUDA graph 捕获下该写入**损坏 index-K cache**，sparse indexer 随后选错 top-k 块 → attention 读到错误 KV。这一机制同时解释三个观测（bf16+graph 正常 / fp8+eager 正常 / fp8+graph 垃圾）。报告者直接实测了 e5m2 读写 kernel：round-trip 误差 4.5%、全 kernel 12–16%——对 2 位尾数格式属正常，**排除精度问题**。
+  source: 'vLLM #50881（2026-08-03 open，8× A800-80GB TP=8，MiniMax-M3-AWQ-INT4，1M token 窗口）+ 修复 PR #50882（2026-08-03）。mainline 共享同一 `_insert_kv` KV 写入路径。https://github.com/vllm-project/vllm/issues/50881'
+  behavior: 无 crash、无报错。`--enforce-eager` 下输出完全连贯（但 5.2 tok/s 不可用）；**任何 CUDA-graph 模式下生成纯垃圾**——服务器正常启动、接收 1M token 窗口、流畅地产出错误内容。属「非 graph-safe 的 Python KV 写入路径 → CUDA graph 捕获下索引缓存损坏」新子签名，与 K§8 control-flow（CUDA-graph）族同域但机制是写入路径本身不可捕获。
+  trigger_surface: vLLM 主路径；SM80 + fp8_e5m2 KV + Triton attention + CUDA graph 组合
+  discovery: 2026-08-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

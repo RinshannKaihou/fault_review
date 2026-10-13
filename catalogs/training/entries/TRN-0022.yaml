@@ -1,0 +1,53 @@
+id: TRN-0022
+legacy_ids:
+- NUM.13
+slug: gkd_jsd_mixed_precision_sign_flip
+aliases: []
+title: ms-swift GKD jsd_loss 混精输入致 loss 符号翻转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: ms-swift
+    component: Megatron GKD 的 jsd_loss
+  behavior: jsd_loss 接受 student FP32 / teacher BF16 混精 logits，温度 scaling 前不统一提升精度，BF16 logits 进 log-softmax 时精度不足，使恒非负的 JSD 算出负值。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 无 crash、无 NaN；同输入仅把 loss 计算提到 FP32 得 +0.000509（与 FP64 参照吻合），原混精路径得 −0.000170，符号翻转、幅度错约 3×，日志只显示一个小负数 loss；gkd_logits_topk=64 稀疏化进一步放大敏感性。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10156
+  kind: github_issue
+- url: https://github.com/modelscope/ms-swift/pull/10102
+  kind: github_pr
+relations: []
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `sft` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: ms-swift Megatron GKD 的 `jsd_loss` 接受 **student FP32 / teacher BF16 混精 logits**，温度 scaling 前不统一提升精度：BF16 teacher logits 进 log-softmax/log-sum-exp 时精度不足，使数学上恒非负的 JSD = 0.5·KL(P_s‖M) + 0.5·KL(P_t‖M) 算出**负值**。同输入、同 mask、同 beta/temperature，仅把 loss 计算精度提到 FP32 → +0.000509（与 FP64 参照 +0.000509 吻合），原混精路径 −0.000170——符号翻转、幅度错约 3×。16 个捕获案例（2 步 × 8 rank）CUDA replay 与原 loss 全部吻合 1e-8（排除捕获错误）；最小合成 repro 直接调用安装版 `swift/rlhf_trainers/gkd_loss.py` 的 `jsd_loss`，无需模型/数据/通信。top-64 稀疏化（`gkd_logits_topk=64`）进一步放大敏感性。
+  source: 'ms-swift #10156（2026-09-16；ms-swift 4.5.3 + Megatron-Core 0.18.0 + mcore-bridge 1.6.3，Qwen3.5-9B teacher / Qwen3.5-0.8B student，TP1/DP8 H100）。https://github.com/modelscope/ms-swift/issues/10156 ；修复草案 PR #10102（`SWIFT_GKD_JSD_FP32=1` opt-in，默认关、未合）。https://github.com/modelscope/ms-swift/pull/10102'
+  behavior: 无 crash、无 NaN——**JSD loss 符号翻转**：loss 值与梯度相对高精度参照出现符号级偏差，训练日志只显示一个「小负数 loss」，极易当数值噪声忽略。与 NUM.12（BF16 reward 舍入掉组基线）同族：**RL/蒸馏管线的 dtype 边界精度契约**，这边打击点在散度计算的 teacher/student logits 混精入口；与 LOSS.08（GKD mean-of-means 归约错权）同文件域不同机制——那边归约几何错、这边输入精度错。
+  discovery: 2026-09-17 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,61 @@
+id: INF-1119
+legacy_ids:
+- '12.3'
+slug: tied_embedding_random_lm_head
+aliases: []
+title: tie_word_embeddings 配置不符致 lm_head 随机初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: transformers
+    component: lm_head 加载与 tie 配置
+  behavior: config.json 的 tie_word_embeddings 与 checkpoint 实际保存方式不一致（声明不共享却无单独 lm_head.weight，或反之），加载器经 _init_weights 把缺失矩阵随机初始化。
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  detail: 输出完全是随机 token，top-1 近似在整个词表上均匀随机；final norm 之前隐藏态健康，异常只出现在 logits 层（熵接近 log(V)），隐藏态几何度量可能漏检。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 加载/文件/config 操作可复现
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/39812
+  kind: github_issue
+  resolved_from: 'transformers #39812'
+- url: https://github.com/sgl-project/sglang/issues/16722
+  kind: github_issue
+  resolved_from: 'sglang #16722'
+- url: https://github.com/gpustack/gpustack/issues/4268
+  kind: github_issue
+  resolved_from: 'gpustack #4268'
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off` · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: '`config.json` 里 `tie_word_embeddings=false`（意味着期望有一份单独训练过的 `lm_head.weight`），但 checkpoint 是按 tied 保存的、根本没有这个矩阵；或者反过来。加载器于是通过 `_init_weights` 把缺失的矩阵随机初始化。'
+  source: 'QwenLM/Qwen3-VL-Embedding #89；transformers #39812；sglang #16722；gpustack #4268。'
+  behavior: 完全垃圾 / 随机 token 输出。Top-1 基本等价于在整个词表上均匀随机。
+  trigger_surface: 加载/文件/config 操作可复现
+  signature: 可检测，但正好卡在检测器的边界上：直到 final norm 为止的隐藏态都是**健康的**（破坏只存在于未训练的 lm_head）。信号只存在于 logits 层（logit entropy 达到最大值约 log(V)）。作用在 logits 上的廉价 infotheoretic 度量能抓到；hidden-state 的 geometric 度量可能完全漏检。它属于本项目所说的 "perfect disguise" 一族，是检测器盲区的直接样本。
+  repro: 在上下文期内解开 tie 并随机初始化 `lm_head.weight`，退出时恢复 tie。实测（live model）：当 `tie_word_embeddings=True` 时 `model.lm_head.weight` 与 `model.model.embed_tokens.weight` 是**同一个** Parameter 对象；注入时用一个按原权重 std 缩放的新随机 `nn.Parameter` 替换它（从而断开 tie），退出时把原始共享 Parameter 对象赋回，并断言 `get_output_embeddings().weight is get_input_embeddings().weight` 重新成立（由 `test_tied_embedding_restores_tie` 回归守护）。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

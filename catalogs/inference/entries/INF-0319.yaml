@@ -1,0 +1,60 @@
+id: INF-0319
+legacy_ids:
+- '4.3'
+slug: flashattention_bf16_residual_drift
+aliases: []
+title: FlashAttention 重排浮点运算致跨 backend 数值漂移
+kind: 结论
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flash-attention
+    component: FA tiled/online softmax
+  behavior: FlashAttention 相对 eager 重排浮点运算顺序（tiled/online softmax，P@V 用 BF16、running max/sum 用 fp32），FA2 前向跨 run 不确定，fp16 进一步放大偏差
+effect:
+  objects:
+  - 隐状态
+  - 输出分布
+  detail: eager/sdpa/flash 三个 backend 非 bitwise 一致（带 mask 时尤甚），BF16 单次前向偏差比 baseline 大约一个数量级；表现为极小平滑的 logit/隐状态差异，很少翻转 greedy token 但会移动 logprob
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: FlashAttention vs SDPA/torch：vLLM attention backend / 环境变量切换
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2405.02803
+  kind: arxiv
+relations: []
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`model_on`（按设计即为 calibration null） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: MERGED 条目，合并三个子故障："flashattention_bf16_residual_drift"、"fp16_accumulation_order_qk_dot"、"flashattention_eager_divergence"。FlashAttention 相对 eager 重排了 FP 运算顺序（tiled / online softmax，P@V 用 BF16 而 running max/sum 用 fp32）：在孤立的一次 forward pass 上，BF16 下的数值偏差比 baseline 大约一个数量级；FA2 的 forward 跨 run 不确定；eager/sdpa/flash 三个 backend 并非 bitwise-identical，带 mask 时尤其如此；fp16 会进一步放大这一偏差。
+  source: 'Golden, Hsia et al., "Is Flash Attention Stable?", https://arxiv.org/abs/2405.02803 。transformers #36585, #31787 。'
+  behavior: 跨 backend 出现极小且平滑的 logit / 隐状态差异；很少翻转 greedy token，但会移动 logprob。
+  trigger_surface: FlashAttention vs SDPA/torch：vLLM attention backend / 环境变量切换
+  signature: 技术上 off-manifold，但幅值 TINY 且平滑 —— 按设计输出几乎一致。它在本项目里的角色是 NULL / 干扰项：用来证明某个被提出的 attention 类故障不只是 backend 噪声，检测器的阈值必须坐在这条地板之上。与 quant_Nbit 的区别在于它不是待检测的故障，而是校准零假设。若某个 geometric/spectral 度量在这里就已经报警，说明该度量测的是数值抖动而非故障。运行时噪声底即为其经验实例。
+  repro: yes。两种做法：切换 `attn_implementation`（eager ↔ sdpa）取两组隐状态做对照；或用 forward hook 把 attention 的 P@V 一步降到 bf16 再回 fp32。两者都应作为 null control 跑，而不是作为正样本。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      kind:
+        from: 故障
+        to: 结论
+        status: panel7
+    uncertain:
+    - effect
+    - visibility

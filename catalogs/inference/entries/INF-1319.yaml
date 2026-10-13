@@ -1,0 +1,63 @@
+id: INF-1319
+legacy_ids:
+- K10.8
+slug: deepspeed_fastgen_longrope_su_factor_dropped
+aliases: []
+title: FastGen rotary 内核忽略 Phi-3 LongRoPE 缩放因子
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: deepspeed
+    component: FastGen 分块 KV rotary 内核
+  behavior: FastGen 的 ragged 分块 KV rotary 内核只携带 theta_base，忽视 Phi-3 LongRoPE 的 short/long 缩放因子，超过 original_max_position 后相位 OOD。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: 短上下文正常；请求长度越过 LongRoPE 的 short/long 交叉点后，长上下文质量急剧劣化。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: 其他服务栈/API
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/text-generation-inference/issues/2172
+  kind: github_issue
+  resolved_from: 'TGI #2172'
+relations:
+- kind: var
+  target_raw: rope_scaling_dropped
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `var:rope_scaling_dropped` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: DeepSpeed-FastGen 的参差（ragged）分块 KV rotary 内核只携带 `theta_base`，忽视了 Phi-3 LongRoPE 的 short/long 缩放因子。超过 `original_max_position` 之后，rotary 相位进入训练分布之外（OOD），逐维相位误差随距离增长。
+  source: '`gh`：DeepSpeed-MII #528；TGI #2172。'
+  behavior: 短上下文正常，一旦请求长度越过 LongRoPE 的 short/long 交叉点，长上下文质量急剧劣化。
+  trigger_surface: 其他服务栈/API
+  signature: 典型的长度门控 ambiguous——交叉点以下签名为空，之上则出现越过交叉点后**逐维 rotary 相位误差增长**。trajectory（随长度单调增长的漂移）与 spectral（旋转维度上的能量重分布）能捕获；固定短长度的 geometric 基线彻底漏检。注意 RoPE 缩放本身在项目主轴上偏 model_on（模型能吸收温和缩放），此处判定为 ambiguous 是因为超过交叉点后相位真正 OOD。
+  repro: partial——在 RoPE 应用点的钩子里，对位置 > 阈值的 token 使用未缩放的 `theta_base` 相位（即"丢掉 su/long 因子"），阈值以下保持正确缩放，从而复现交叉点门控；Phi-3 的具体 LongRoPE 因子表与 FastGen 的 ragged 分块内核需原栈复现。
+  locus: index-position
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+        status: unanimous

@@ -1,0 +1,51 @@
+id: INF-0457
+legacy_ids:
+- '6.64'
+slug: sglang_prefill_graph_stale_track_rows_corrupt_conv_checkpoint
+aliases: []
+title: SGLang prefill graph 残留 track 污染前请求状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: PrefillInputBuffers 清零守卫
+  behavior: replay 的 prefill graph 中 mamba_track_mask/indices 残留前次 replay 的行；清零守卫 bs != raw_bs 因按 token padding 永不成立。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: hybrid-SWA 模型在 prefill CUDA graph+chunked prefill+并发+prefix hit 时触发，禁用 prefill graph 即消失；track scatter 写入前一请求的 conv checkpoint，之后恢复该前缀的请求整个生成错误。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；prefill CUDA graph + chunked prefill + 并发 + prefix-cache hit + hybrid-SWA
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/34184
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（prefill CUDA graph 下 stale track rows 把当前窗口 scatter 到前一请求 conv checkpoint→受影响请求整个生成错误） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'hybrid-SWA 模型 prefix-cache hit 可 decode 出它从未生产过的 conv state。replayed prefill graph 读 `_capture_req_slots` 行，但 `mamba_track_mask`/`mamba_track_indices` 保留前一 replay 的 live batch 之后的残留→当前窗口的 track scatter 落到前一请求的 checkpoint。之后 restore 该 prefix 的请求**整个生成错误**。track buffer 的 clear 守卫在 `bs != raw_bs`（`PrefillInputBuffers.fill_from`），但 prefill graph 因 pad tokens 而非 requests 使 `padded_bs == raw_bs`→clear 永不触发（死代码）。需 prefill graph + chunked prefill + 并发 + prefix hit，禁 prefill graph 即消失。与 #34043（spec 路径 scatter 特化）邻近但独立。修复：将两个 track 行与 sentinel tail 已清的六个字段一同清零。'
+  source: 'SGLang PR #34184（2026-08-09 open）。组件 prefill graph track buffer clear。https://github.com/sgl-project/sglang/pull/34184'
+  behavior: 无 crash。受影响请求**整个生成错误**（conv checkpoint 被前一请求的 stale track 污染）。属「CUDA graph capture 下 buffer clear 死代码→stale 污染」**新子签名**——track buffer 清零守卫因 padding 语义而失效。
+  trigger_surface: SGLang；prefill CUDA graph + chunked prefill + 并发 + prefix-cache hit + hybrid-SWA
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

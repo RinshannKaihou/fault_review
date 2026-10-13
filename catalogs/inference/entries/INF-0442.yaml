@@ -1,0 +1,50 @@
+id: INF-0442
+legacy_ids:
+- '6.49'
+slug: vllm_dsd_k_lookup_counts_prefills_k_thrash
+aliases: []
+title: vLLM DSD K-lookup 误计 prefill 致吞吐崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: scheduler 的 DSD K-lookup
+  behavior: K-lookup 用 len(num_scheduled_tokens) 计 batch size，计入 mid-prefill/chunked-prefill 请求而非只计当步采样请求，K 在值间反复跳变（如 2→0→2）。
+effect:
+  objects:
+  - 性能/资源
+  detail: 'DSD 下 prefill 与 decode 混合 batch 时触发；无 crash，每次 K 翻转都改变 verify-token 数、forward shape 与 CUDA graph dispatch，吞吐灾难性下降，是 #49548 吞吐崩溃的诱因。'
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；DSD（动态推测解码）+ prefill/decode 混合 batch
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51466
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DSD K-lookup 计入 prefill 请求→K 在 batch 边界反复 thrash，吞吐崩溃） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '动态推测解码 K-lookup 用 `len(num_scheduled_tokens)`（含 mid-prefill/chunked-prefill），prefill 混入 decode 暂时膨胀 batch size，K 在值间反复跳变（如 2→0→2）。每次翻转改变 verify-token 数、forward shape、CUDA graph dispatch。是 #49548 吞吐崩溃的诱因。修复：只计当步将采样的请求。'
+  source: 'vLLM PR #51466（2026-08-08 open）。组件 `scheduler.py` DSD K-lookup。https://github.com/vllm-project/vllm/pull/51466'
+  behavior: 无 crash。吞吐灾难性下降（K thrash 导致反复重编译/shape 变化）。属「K 选择启发式误计 batch 组成」签名——推测解码自适应参数的新子签名。
+  trigger_surface: vLLM；DSD（动态推测解码）+ prefill/decode 混合 batch
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

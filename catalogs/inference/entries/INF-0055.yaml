@@ -1,0 +1,55 @@
+id: INF-0055
+legacy_ids:
+- '1.55'
+slug: ttmetal_update_cache_batch_gt32_tile_padding_overwrite
+aliases: []
+title: update_cache 在 batch>32 且非 32 倍数时覆写用户行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tt-metal
+    component: update_cache padding 循环边界
+  behavior: update_cache 多核 factory 的 tile padding 循环边界对 input 与 cache 的 padded_shape 处理不一致，把输入的 tile padding 写到真实用户行上。
+effect:
+  objects:
+  - KV状态
+  detail: 缓存 batch Bcache>32 且非 32 倍数时受影响用户行静默变为零，无警告；部分尺寸非确定，同输入每次 dispatch 损坏行数不同、偶尔完全正确（Bcache=33 时损坏 0–31 行），测试极易漏检；Bcache=32/64/96 正确。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal；ttnn.update_cache + batch>32 且非 32 倍数
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/52671
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（update_cache 在 batch>32 且非 32 倍数时 tile padding 覆盖真实用户行→部分尺寸非确定性） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`ttnn.update_cache` 当缓存 batch `Bcache > 32` 且非 32 倍数时，将输入 tensor 的 tile padding 写到真实用户行上，受影响用户行返回零。无形状拒绝、无警告。对若干尺寸结果还**非确定性**：同输入同调用每次 dispatch 返回不同数量损坏行，偶尔返回完全正确答案→测试极易漏检。probe（user row u 填 u+1，cache 预填 -1）实测：Bcache=33 时正确行 2–33 变化、损坏 0–31 行；Bcache=65 同样非确定（正确 34–65 变化）；Bcache=64/96/32 正确。根因在 `update_cache_multi_core_program_factory.cpp` 的 tile padding 循环边界（`input_tensor.padded_shape()[-2]` vs `cache_tensor.padded_shape()[0]` 不一致处理）。'
+  source: 'tt-metal #52671（2026-08-09 open）。组件 `update_cache_multi_core_program_factory.cpp`。https://github.com/tenstorrent/tt-metal/issues/52671'
+  behavior: 无 crash、无 assert。KV cache 静默部分清零（用户行被 tile padding 覆盖），部分尺寸非确定性。属「tile-padding 交互非确定性」**新子签名**——cache 写入路径的静默形状门控损坏。
+  trigger_surface: tt-metal；ttnn.update_cache + batch>32 且非 32 倍数
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+        status: panel7

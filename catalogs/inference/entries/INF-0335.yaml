@@ -1,0 +1,55 @@
+id: INF-0335
+legacy_ids:
+- '4.19'
+slug: vllm_rope_kvcache_fusion_mla_only_zero_pattern_side_effects_paid
+aliases: []
+title: vLLM rope+KV 融合 pass 对 MLA 模型零匹配仍付副作用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: rope_kvcache 融合 pass 层收集
+  behavior: 融合 pass 用 Attention 类收集目标层，而 MLAAttention 是兄弟类，MLA-only 模型收集恒空；但扩编译端点、强插 +rotary_embedding、pass 无条件执行三项副作用未被同一条件守卫。
+effect:
+  objects:
+  - 性能/资源
+  - 数值结果
+  detail: MLA-only 模型（如 GLM-5.3，ROCm gfx950 TP4）开两个 fusion flag 时零 pattern 注册，编译端点由 [5461,8192] 变为 [256,256,5461,8192]，吞吐下降，rope 改走 custom op，日志无提示。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + MLA-only 模型（GLM-5.3 等）+ `--compilation-config` 两 fusion flag 开启（config：模型架构 × flag 组合即触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55720
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0600
+original:
+  category: cat4
+  section: 第 4 类 · 数值 / 精度 / 不确定性（本项目的噪声底）
+  meta: '`infra_off`（vLLM torch.compile 融合 pass `fuse_rope_kvcache`/`fuse_qk_norm_rope_kvcache` 用 `get_layers_from_vllm_config(config, Attention)` 收集目标层，而 `Attention` 与 `MLAAttention` 是**兄弟类**（互不继承）——MLA-only 模型（GLM-5.3，`glm_moe_dsa`，ROCm/gfx950 TP4）收集结果恒空、**零 pattern 注册但两个 flag 的副作用全部照付**：编译端点从 `[5461,8192]` 变 `[256,256,5461,8192]`（每 flag 多一个 graph 特化）、`custom_ops:[''+rotary_embedding'']` 被强插覆盖 Inductor 自身 rope lowering、两个图重写 pass 无条件执行——吞吐可测损失 + rope 数值求值路径被更换，日志零提示） · Cov: `var:sglang_legacy_sgl_env_rewrite_after_deprecation_registry_drop`（6.207 机制不匹配静默空转族） · 触发 `config` · 置信度 `documented`'
+  mechanism: pass 的层收集器与 MLA 注意力类层次不匹配（`fused_rope_kvcache_supported()` 也只实现于非 MLA 后端，双重不可达）；但编译范围扩端点、custom op 强制注册、pass_manager 无条件执行三个副作用不在同一条件守卫内。正确行为应是 flag 在零匹配时 no-op 或 warn。
+  source: 'vLLM #55720（2026-09-07 open，rocm label，含类层次源码定位、编译端点前后对照与吞吐测量）。https://github.com/vllm-project/vllm/issues/55720'
+  behavior: 无 crash、无错误日志——**吞吐静默损失 + rope 数值路径静默更换**（对 MLA-only 模型用户是纯负优化，且换掉的是 Inductor 官方 rope lowering，数值等价性无对照保证）。6.207（legacy env 重写名自身被 deprecation 吞掉）之后「机制不匹配但副作用照付」族新成员：本条在图编译 fusion 域；「flag 开了但模式零注册」对依赖 fusion 加速的部署是无法从输出侧察觉的性能/数值双重风险。
+  trigger_surface: vLLM + MLA-only 模型（GLM-5.3 等）+ `--compilation-config` 两 fusion flag 开启（config：模型架构 × flag 组合即触发）
+  discovery: |-
+    2026-09-07 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

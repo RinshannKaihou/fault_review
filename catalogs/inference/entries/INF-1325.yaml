@@ -1,0 +1,70 @@
+id: INF-1325
+legacy_ids:
+- K10.14
+slug: paged_kv_nhd_hnd_layout_axis_transpose
+aliases: []
+title: 分页 KV 的 NHD/HND 布局错配致头轴与序列轴被静默交换（合并）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: TRITON_ATTN 等后端 KV 布局硬编码
+  behavior: 按错误 NHD/HND 布局读写分页 KV：TRITON_ATTN 在 NIXL/异构 TP 用 HND 时仍硬编码 NHD；FlashInfer trtllm_batch_decode 默认 HND 而其他 wrapper 用 NHD。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: heads == page_size 时两种布局字节数相同、不报任何 shape 错误；输出跨位置近乎恒定、低熵，典型为重复吐 is is is… 而非正确答案 Paris。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/37703
+  kind: github_issue
+  resolved_from: 'vLLM #37703'
+relations: []
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: MERGED——后端以错误的 **NHD-vs-HND** 布局读写分页 KV，交换了头轴与 seq/页轴，合并两个子来源：(a) vLLM `TRITON_ATTN` 在 NIXL / 异构 TP 使用 HND 时仍硬编码 NHD；(b) FlashInfer `trtllm_batch_decode` 默认 HND，而其他 wrapper 默认 NHD。当 `heads == page_size` 时两种布局的字节数相同，**不会报任何 shape 错误**，数据却被按错误的 stride 重新解释。
+  source: '`gh`：vLLM #37703（"TRITON_ATTN ignores VLLM_KV_CACHE_LAYOUT=HND"）。'
+  behavior: 输出跨位置**近乎恒定 / 低熵**——典型现象是重复吐 "is is is…" 而不是正确答案 "Paris"。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: 轴置换把 KV 彻底打乱，是最强的 infra_off 之一，且相对 NHD 参考是一个**固定的轴置换**。statistical（输出熵坍缩、token 重复率）、geometric（该层隐状态离流形距离骤增）、trajectory（注入层起的 STEP）三族同时强响应；infotheoretic 上表现为条件熵异常降低。几乎不存在漏检风险，但要注意签名只在 `heads == page_size` 这种"无形状错误"的配置下才会静默发生。
+  repro: prefill 时在层 L 一次性把 cache 内存重解释为 `K.transpose(1, 2).contiguous().view(K.shape)`（V 同）——即把扁平缓冲以交换后的 head/seq stride 重新读取，与布局错配打乱数据的方式完全一致，同时保持张量形状使解码不报错。诚实近似说明：真实 bug 以固定大小的 KV 页为单位发生，注入器则作用于整层缓存。
+  locus: layout-backend
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 由 KV缓存 改为 算子/内核：两个子来源的修复都在注意力后端——vLLM TRITON_ATTN 忽略 VLLM_KV_CACHE_LAYOUT=HND、FlashInfer trtllm_batch_decode 与其他 wrapper 默认布局不一致，KV 存储/分配逻辑本身无错；词表 算子/内核 明列 attention kernel 与 layout 算子；NIXL/异构 TP 只是触发条件。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+        status: panel7
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

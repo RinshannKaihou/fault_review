@@ -1,0 +1,61 @@
+id: INF-0453
+legacy_ids:
+- '6.60'
+slug: vllm_dflash_fused_kv_proj_bypasses_quant_weight_scale
+aliases: []
+title: vLLM DFlash 绕过量化方法、忽略 weight_scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: Qwen3DFlash fused KV GEMM
+  behavior: 构建 fused KV GEMM 时切 qkv_proj.weight 用裸 F.linear 计算，绕过量化方法；qkv_proj 为量化 Linear 时直接用 packed 权重，忽略 weight_scale。
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: DFlash 推测解码配 weight-only 量化 drafter（fp8/AWQ/GPTQ/compressed-tensors）时触发；dtype 不对齐报 RuntimeError，对齐时静默产出数值错误的 draft，只表现为 acceptance 下降。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM；DFlash 推测解码 + weight-quantized drafter（fp8/AWQ/GPTQ/compressed-tensors）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51581
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DFlash fused-KV GEMM 对 sliced qkv_proj 权重调裸 F.linear，绕过量化方法，静默忽略 weight_scale→数值错误 draft） · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: '`Qwen3DFlash` 构建 fused KV GEMM 时切 `qkv_proj.weight` 切片并拼接，用裸 `torch.nn.functional.linear` 应用（`qwen3_dflash.py:521-522`），完全绕过模块量化方法。当 `qkv_proj` 是量化 Linear 时 `.weight` 是 packed/quantized tensor。dtype 碰巧对齐时不 raise 而是**静默忽略 `weight_scale`**→数值错误 draft。对任何 weight-only 方案（fp8/compressed-tensors/AWQ/GPTQ）适用。不是 #42588 的重复（那个是 ROCm activations→fp32，`combine_hidden_states` 的 fc 层，已由 #42646 修）。建议修复：构建 buffer 时反量化（应用 `weight_scale` 并 cast 到 activation dtype），或路由 fused KV proj 经量化方法。'
+  source: 'vLLM #51581（2026-08-09 open）。组件 `vllm/model_executor/models/qwen3_dflash.py:448-449,521-522`。https://github.com/vllm-project/vllm/issues/51581'
+  behavior: 'dtype 不对齐时 `RuntimeError: mat1/mat2 dtype mismatch`（fp8 案例）；dtype 对齐时**静默数值错误 draft**→spec decode 不报错，仅表现为 acceptance 下降。属「模型代码绕过量化方法直接操作 packed 权重」签名——推测解码路径的新子签名。'
+  trigger_surface: vLLM；DFlash 推测解码 + weight-quantized drafter（fp8/AWQ/GPTQ/compressed-tensors）
+  discovery: 2026-08-09 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 量化：原文缺陷是裸 F.linear 绕过量化方法、静默忽略 weight_scale，修复建议是反量化或经量化方法路由，修复改的是量化处理；推测解码 drafter 路径为触发条件。visibility 性能退化：原文“spec decode 不报错，仅表现为 acceptance 下降”。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 性能退化
+        to: 静默错误
+        status: unanimous

@@ -1,0 +1,59 @@
+id: INF-1278
+legacy_ids:
+- K8.1
+slug: cudagraph_cache_position_captured_constant
+aliases: []
+title: CUDA graph 捕获 cache_position 为常量致缓存锁死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: cache_position 长度计数器
+  behavior: 在 StaticCache 上对 model.forward 用 torch.compile 的 CUDA graph 模式时，cache_position/累积长度计数器被捕获为常量，每次 replay 都读写同一批槽位。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 跨请求/跨样本数据
+  detail: 缓存锁定在编译时使用的第一个 prompt：第二个 prompt 返回第一个 prompt 的内容，decode 输出无视新输入。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/30351
+  kind: github_issue
+  resolved_from: 'transformers #30351'
+- url: https://github.com/huggingface/transformers/pull/30476
+  kind: github_pr
+  resolved_from: 'PR #30476'
+relations: []
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: 在 StaticCache 上使用 `torch.compile(model.forward, mode="reduced-overhead")`（CUDA graphs）时，`cache_position` / 累积长度计数器被捕获为**常量**，因此每次 replay 都读写同一批槽位，缓存"锁定在编译时使用的第一个 prompt"——第二个 prompt 返回第一个 prompt 的内容。缓解方式：把计数器保持为就地更新的张量（`.add_()` + `mark_static_address`），绝不作为 Python int 重新赋值。
+  source: 'transformers #30351（由 PR #30476 关闭）。'
+  behavior: decode 反复读写一个被冻结的位置 → 缓存卡在捕获时的 prompt；输出无视新输入。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: infra_off——离流形坍缩。spectral 族看到低秩/退化（重复）的隐藏态，trajectory 族看到近零位移（停滞）；这是本套度量中最容易被抓到的形态之一。会漏检：逐 token 幅值/范数阈值探针（每个状态单独看都"正常"，异常在于它们彼此重复）。
+  repro: 两个 decode-time 钩子。(a) `model.model.rotary_emb` 上的 forward_pre_hook：context 内的第一次调用（prefill / "图捕获"）记录 `frozen = max(position_ids)` 并原样放行，之后每次调用把 `position_ids` 逐元素 clamp 到不超过 `frozen`。(b) 最后一个 decoder layer（index `n_layers-1`，该 hook 点上每层 cache 都已追加当前行）的 forward hook，仅在 decode 步（`hidden_states.shape[1] == 1`）触发：对**所有层**，把索引 `frozen` 处的行用刚追加的最后一行覆写，并把 cache 截回长度 `frozen+1`。截断必须跨全部 24 层一致（attention mask 由 layer 0 的长度构建，任何不一致都会让下一步崩溃）。净效果：每个 decode 步都重写同一个槽，cache 永不增长。
+  locus: control-flow
+  priority: high
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

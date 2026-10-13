@@ -1,0 +1,50 @@
+id: INF-0131
+legacy_ids:
+- '1.132'
+slug: ttmetal_concat_s2s_absolute_dim_rank_confusion_silent_wrong_data
+aliases: []
+title: ConcatS2S 按绝对 dim 判宽高，rank-3 拼接错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ConcatS2SMulti 工厂 dim 判定
+  behavior: 工厂用 2==dim/3==dim 绝对字面量判定 height/width，应为 rank-relative；rank-3 width concat 被误判为 height，rank-5 sharded width 无可用路径。
+effect:
+  objects:
+  - 数值结果
+  detail: rank-3 张量 width concat 时分片堆叠在下方而非并排、尾列置零，shape 不变故下游不报错；大 shard 高度下错误写偏移可能 L1 越界。词元级 concat（如 embeddings 拼接）会静默换轴。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + sharded s2s concat + rank-3 张量 width concat（或多输入 width）+ rank≠4（软件 shape 选择即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55032
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ConcatS2SMultiProgramFactory` 用**绝对 dim==2/3** 字面量判定 height/width concat，而语义应为 rank-relative（height=rank−2、width=rank−1）——rank-3 张量的 width concat（dim=2=rank−1）被误判 height：分片**堆叠在下方而非并排**、尾列置零；大 shard 高度下坏写偏移可 L1 OOB） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: '`operation_attributes.dim` 已归一化，但工厂用 `2 == dim`/`3 == dim` 字面量选择布局；rank-3 width concat 永远进不了 RM/tiled width 工厂（同为字面量门槛）被迫走 multi 工厂 + 错误布局；rank-5 sharded width（dim=4）完全无路径。sibling `ConcatBlockShardedProgramFactory` 与 sharded validator 已用 rank-relative 判定——修复即对齐。同文件已定义的 `build_unsqueeze_concat()`（可把 rank<4 提升到 4D）未被 massage 链调用。'
+  source: 'tt-metal #55032（2026-09-01 open，master ticket 第 4 项，含 rank-3 `(1,4,16)+(1,4,16)` PyTorch/ttnn 对照）。https://github.com/tenstorrent/tt-metal/issues/55032'
+  behavior: 无 crash（in-bounds）——**静默错误数据**：空间布局被重排（行堆叠 + 零填充列），shape 不变故下游不报错；大 shard 下偶发 L1 越界。属「**绝对 vs rank-relative 维度语义混淆**」新子签名：hidden-dim/序列长维在 rank-3 张量上恰为 dim=2，词元级 concat（如 embeddings 拼接）会静默换轴。
+  trigger_surface: tt-metal + sharded s2s concat + rank-3 张量 width concat（或多输入 width）+ rank≠4（软件 shape 选择即触发）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

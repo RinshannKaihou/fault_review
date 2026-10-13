@@ -1,0 +1,53 @@
+id: INF-0908
+legacy_ids:
+- '9.25'
+slug: bug_perfect_disguise
+aliases: []
+title: position_ids 相邻对调 off-by-one，检测器近乎看不见
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: 通用
+    component: RoPE position_ids 相邻对调
+  behavior: 距末尾 offset 处两个相邻 position_ids 被对调的 off-by-one（原型以 rotary embedding forward pre-hook 注入，模拟服务栈构造 position_ids 的错误）。
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: 输出流利、自信但错误，几乎每条 prompt 的 greedy 答案都翻转；中层隐状态仍在健康 per-channel 分布内，geometric/trajectory/spectral 与 cheap 族均近乎不可检测，用户侧看不出是基础设施 bug。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: perfect disguise 小扰动；CUDA 可调 amplitude
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`model_on`（family 标注存在历史分歧：另版实现标为 `infra_off`，见机制） · Cov: `NEW`（本项目早期实测条目；论文的**显式盲区**样本） · 触发 `yes` · 置信度 `verified`'
+  mechanism: '`position_ids` 的 off-by-one——预先声明的**盲区**故障：行为上明确有害，几何上近乎不可见。实现是 rotary embedding 上的 forward pre-hook：把距离末尾 `offset` 处的**两个相邻** `position_ids` 对调（越界时原样返回）。**为什么不是"给所有位置加一个常数"**（已验证）：RoPE 只编码**相对**位置，给每个 position_id 加同一个常数不改变任何 query-key 相位差，cos/sin、attention 图与输出**逐位相同**——实测最大 logit 差极小、答案翻转率 0%，那是一个 null 而不是盲区。相邻位置对调才是真正的 off-by-one（服务栈在生成边界构造 `position_ids` 时的经典错误），实测结论：**几乎每条 prompt 的 greedy 答案都翻转**，同时标准化后的中层隐状态仍留在健康 per-channel 分布内（geometric / trajectory / spectral 均接近不可检测）。**family 标注落差需记录**：原型配置标 `model_on`（"explicit thesis blind-spot"），代码工厂标 `family="infra_off"`。'
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。"近乎不可见"的判定要求几何检测显著低于可用水平，且同时满足 `answer_changed`（行为有害）。
+  behavior: 输出流利、自信、**错误**——两个相邻 token 的位置被互换，模型据此重排了句尾的语序理解，greedy 答案基本必翻。用户侧完全看不出这是基础设施 bug。
+  trigger_surface: perfect disguise 小扰动；CUDA 可调 amplitude
+  signature: 本目录最重要的一条**负结果**：扰动只改变末尾两个位置的相对相位，隐状态被推到"另一个同样合法"的流形位置上，因此它在签名上表现为 `model_on`（尽管成因是 infra 层的索引错误——这也是 family 标注分歧的实质）。geometric / trajectory / spectral 三族**全部接近不可检测**，statistical 与 infotheoretic 也无预期优势；cheap 族同样无效（确定性、可重算、无 NaN、batch 不变）。它与 13.35 `bug_attn_scale` 的 `factor = 0.9`、以及 1.3 `sdc_gradient_magnitude` 一起，界定了"检测器看不见但用户会受伤"的那块区域。
+  repro: 用 `rotary_emb` 的 forward pre-hook 即可；不改权重、不改 forward 签名，退出只需移除 hook。注意必须用**相邻对调**而非常数偏移，否则得到的是 null。
+  相关条目: '`var:9.25` → **8.4 `cache_position_off_by_one`**（Coverage 写 "VARIANT-OF:bug_perfect_disguise / fault_rope offset"，并给了独立的 cache-indexing id；该条也记录了 family 张力——`bug_perfect_disguise` 被标 model_on，而其 cache-plumbing 兄弟被标 off-manifold）。多条目录条目（**1.3**、**3.1**、**3.4**、**5.1**、**8.3**）在描述自己的签名时直接以 `bug_perfect_disguise` 为参照系。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: INF-0875
+legacy_ids:
+- '8.91'
+slug: vllm_kimi_k3_fp8_latent_cache_nan_bytes_pv_mask_bypass_mla_decode_detonation
+aliases: []
+title: KDA 内核 NaN 污染 latent cache，P·V 穿透掩码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: KDA chunk 内核、MLA P·V
+  behavior: '混合批中 chunk_kda_with_fused_gate 对 decode 行返回 NaN（NVIDIA 副本缺 #50649 修复），写进 latent cache 新页头行；decode 的 mask 只管 QK，P·V 仍读坏字节'
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: 并发长序列负载下 3–30 分钟间歇触发：verify 步 target logits 全 NaN、argmax 退化为 0，该请求 drafter 分数永久 NaN，无守卫时 live-lock 到 max-token 并输出垃圾；NaN 首现于输入全有限的 MLA 层，bf16 KV 同样触发
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + Kimi-K3 类 hybrid（KDA/Mamba+MLA）+ fp8 或 bf16 latent cache + 并发长序列负载 + DSpark spec（partial：多卡拓扑+并发+缺修内核副本）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/57716
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0414
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（vLLM Kimi-K3（TP8×PP2 2×B200、fp8 latent KV + Mamba/KDA 混合层 0–2 + MLA 层 3+、DSpark spec `num_speculative_tokens=7` block rejection）并发负载下 verify 步**间歇性全 NaN target logits**：某步起 target logits 全 NaN（argmax 退化为 index 0），该请求后续步永久中毒（drafter proposal scores 永久 NaN），无遏制守卫时 live-lock 到 max-token。NaN 首现于 `layers.N.self_attn`（N=3/11/47 均观测到）**且该层全部输入有限**（hidden、量化 fp8 query、block_table、seq_lens）；layers.11+ 首站点与 layers.N 的"恰半数列 NaN"（57344/114688 = row-parallel GEMM 输出列的一半）共同证明 NaN 源头是 rank-local NaN 经 re-all-reduce 汇聚。池取证：受害请求的 fp8 latent cache 在**block table 刚跨入页的头几行**（rows 0..~5）散布 0x7F/0xFF（e4m3 NaN 编码）字节。**核心机制——mask 不保护的传播**：causal mask 把中毒列的 QK 分数替换为 -1e6、softmax 概率归零，但 **P·V MMA 把（零）概率乘以中毒列的原始字节 → 0×NaN=NaN** 穿透 mask 结构。内核级毒化注入 harness 独立证实：干净池 q_len=8 通过；仅尾页行 [seq, vd*64) 置 NaN 时 **q_len=8 NaN 输出、q_len=1 有限**（单 token decode tile 不读尾行）；workspace 全脏 0x7F 反而通过（正确清零）。NaN 字节源头锁定 `chunk_kda_with_fused_gate` 对混合 prefill+decode 批的 decode 行返回 NaN（#50649 已修 ROCm 副本，**NVIDIA 副本缺修**）；bf16-KV 对照同样引爆（排除精度一阶效应）；同序列干净服务器重放两次同位置引爆（4608）——content+seed 决定 onset） · Cov: `var:vllm_rocm_kimi_k3_kda_mixed_batch_nan_autotune_race`（6.21 同源内核 + P·V 掩码旁路新传播机制） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 两层叠加——(1) 上游已知缺陷（#50649）的 NVIDIA 侧副本未同步修复，混合批 KDA chunk 内核把 NaN 写进 latent cache 池新分配页头行；(2) 传播放大：decode 内核的 causal/offset mask 只作用于 QK 分数，P·V 无对应保护，任何 latent 值损坏只要字节落在被读列上即绕过 mask 传播为全 NaN 输出；块表越界读（past-valid 列）是第二入口。
+  source: 'vLLM #57716（2026-09-19 open，含逐模块有限性 watcher 的首站点归因、池字节取证、70 行内核级毒化注入 harness 四案例矩阵、四条已排除假设（MRV2/fp8-vs-bf16/深度缩放/prefix caching）与三组生产缓解（KIMI_SPEC_NAN_ABORT / 块表钉扎 / 新页零化））。https://github.com/vllm-project/vllm/issues/57716'
+  behavior: 无进程 crash——请求级 NaN 中毒（verify 步 logits 全 NaN → argmax 退化 → drafter 分数永久 NaN → live-lock 到 max-token），并发负载 3–30 分钟窗口间歇触发；默认无守卫时表现为长尾卡死+垃圾输出。8.x/K§1 全部 value-corruption 类之后**通用传播定律级观察**：掩码结构（causal/offset）只保护 QK 侧、不保护 P·V 侧，"零概率×坏字节=坏输出"对一切 latent/KV 值损坏成立；6.21（KDA 混合批 NaN 写入）之后该族在 NVIDIA 主线路径的显形 + 传播机制补全。
+  trigger_surface: vLLM + Kimi-K3 类 hybrid（KDA/Mamba+MLA）+ fp8 或 bf16 latent cache + 并发长序列负载 + DSpark spec（partial：多卡拓扑+并发+缺修内核副本）
+  discovery: 2026-09-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

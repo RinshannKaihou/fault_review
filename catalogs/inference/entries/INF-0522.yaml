@@ -1,0 +1,56 @@
+id: INF-0522
+legacy_ids:
+- '6.129'
+slug: vllm_empty_splitting_ops_guard_skip_piecewise_cudagraph_spec_reject
+aliases: []
+title: vLLM 早退绕过 splitting_ops 防护致 cudagraph 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: CompilationConfig 防护早退
+  behavior: set_splitting_ops_for_v1 在非 VLLM_COMPILE 模式早退，绕过“splitting_ops 为空则强制 cudagraph_mode=NONE”防护，attention 进入 piecewise 捕获区。
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: 经 VLLM_USE_BREAKABLE_CUDAGRAPH 可在 stock vLLM 到达；query length 与捕获值不同的 batch 静默产出错误结果，叠加推测解码时 draft 被全部静默拒绝、退化为无加速逐 token 解码；无 crash、无日志。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；`VLLM_USE_BREAKABLE_CUDAGRAPH` + `cudagraph_mode=PIECEWISE` + spec decode（config 级）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53030
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（非 VLLM_COMPILE 模式早退跳过 empty-splitting-ops 防护——attention 被捕获进 piecewise cudagraph，spec decode 下静默拒绝每个 draft / 静默错值） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`CompilationConfig.set_splitting_ops_for_v1` 在 `mode != VLLM_COMPILE` 时早退，跳过"`splitting_ops` 为空则强制 `cudagraph_mode=NONE`"的防护 → `mode=NONE + cudagraph_mode=PIECEWISE` 落入本应被禁止的状态：attention op 进入捕获区域，而 piecewise graph 以 `BatchDescriptor`（含 per-request query length）为键——任何 query length 与捕获值不同的 batch（推测解码是常态场景）静默产出错误结果；叠加 spec decode 后表现为**全部 draft 被静默拒绝**（退化为无加速的逐 token 解码）。该状态可在 stock vLLM 经 `VLLM_USE_BREAKABLE_CUDAGRAPH`（多架构自动启用）到达。防护逻辑本身正确，只是被控制流早退旁路而不可达。'
+  source: 'vLLM #53030（2026-08-19 open，rocm label，含早退与被跳过防护的代码对照）。https://github.com/vllm-project/vllm/issues/53030'
+  behavior: 无 crash、无日志：spec decode 静默失效（draft 全拒）或形状不匹配 batch 的静默错值。「正确防护被早退旁路」新子签名——配置校验存在但控制流使其不可达，静态读代码会误以为安全。
+  trigger_surface: vLLM；`VLLM_USE_BREAKABLE_CUDAGRAPH` + `cudagraph_mode=PIECEWISE` + spec decode（config 级）
+  discovery: 2026-08-20 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: subsystem 维持 运行时/执行：被绕过的防护是“splitting_ops 为空则强制 cudagraph_mode=NONE”，错误状态是 mode=NONE（不走 VLLM_COMPILE）+ PIECEWISE cudagraph 把 attention 捕获进图，按 BatchDescriptor 复用；缺陷与编译 pass 无关，属 CUDA graph 执行配置。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

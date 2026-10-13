@@ -1,0 +1,59 @@
+id: INF-0375
+legacy_ids:
+- '5.28'
+slug: vllm_flashinfer_trtllm_moe_dp_ep_worker_stuck_wedge
+aliases: []
+title: vLLM TRTLLM MoE 后端 DP/EP 下启动静默卡死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: FlashInfer TRTLLM MoE 后端
+  behavior: DP/EP 拓扑下 FlashInfer TRTLLM MoE 路径在 dummy run 期停滞，栈停在 _apply_quant_method，下方疑为 collective 或 kernel 启动等待。
+effect:
+  objects:
+  - 可用性/进度
+  detail: GB200 TP8 + DP/EP 启动时 worker 无进展，无 NaN、无错误日志，引擎永远到不了 ready；Kimi-K2-base 与 DeepSeek-v3-base 均复现，v0.27.1-cu129 镜像同样命中，换 triton/cutlass moe_backend 可规避。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + FlashInfer TRTLLM MoE backend + DP/EP（Kimi K2/DeepSeek V3 系；换 `--moe-backend triton/cutlass` 规避）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54723
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0372
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（GB200 TP8 + DP/EP 下 FlashInfer TRTLLM MoE 后端启动即 wedged：worker 停在 `execute_dummy_batch → _dummy_run → … → _apply_quant_method`（routed_experts.py:1261）调用链无进展，无 NaN、无错误推进；Kimi-K2-base 与 DeepSeek-v3-base 双模型复现，v0.27.1-cu129 镜像同样命中——临时规避是换 triton/cutlass moe_backend） · Cov: `var:sglang_symm_mem_pool_growth_nccl_window_register_silent_deadlock`（5.25 silent-wedge 族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: FlashInfer TRTLLM MoE 路径在 DP attention + EP 组合的 topologies 下初始化/dummy-run 期停滞（栈停在量化方法选择层，下方疑为 collective 或 kernel 启动等待）；aarch64 GB200、torch 2.13+cu129。dummy run 是 vLLM 编译/capture 前的空跑——停滞使引擎永远到不了 ready。与 5.25（symm-mem NCCL 注册死锁）同为"DP/EP 拓扑 × 后端初始化静默 wedge"：无错误输出、只有栈冻结。
+  source: 'vLLM #54723（2026-09-01 open，GB200×4 aarch64、两模型复现、含完整 dummy_run→inductor→deepseek_v2 forward 栈）。https://github.com/vllm-project/vllm/issues/54723'
+  behavior: 无 crash、无日志错误——启动期活性死亡（服务不可用）；因发生在 dummy batch，对外表现为"起不来"而非运行期退化。与 5.25 互补：本条在 MoE 量化后端选择层、彼条在通信注册层，同为 DP/EP 拓扑压力下的 silent wedge。
+  trigger_surface: vLLM + FlashInfer TRTLLM MoE backend + DP/EP（Kimi K2/DeepSeek V3 系；换 `--moe-backend triton/cutlass` 规避）
+  discovery: 2026-09-01 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 算子/内核。依据：原文规避方式是“换 triton/cutlass moe_backend”即正常，说明缺陷专属于 FlashInfer TRTLLM MoE 后端这一 kernel 路径；“下方疑为 collective 或 kernel 启动等待”只是推测，换后端后同一 DP/EP 拓扑的 collective 正常，故不归 集合通信。栈停在 _apply_quant_method，但原文未表明缺陷在量化方案本身，不归 量化。stack 维持 vllm（原文未定位到 flashinfer 内部）。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

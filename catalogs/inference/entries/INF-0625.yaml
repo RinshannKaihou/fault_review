@@ -1,0 +1,54 @@
+id: INF-0625
+legacy_ids:
+- '6.232'
+slug: sglang_dp_scheduler_batch_is_full_sticky_wedge_after_cancel
+aliases: []
+title: SGLang DP 调度 batch_is_full 粘滞致 rank 永久拒收
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: batch_is_full 标志与准入判据
+  behavior: 请求验证与 PrefillAdder 接纳判据相差一个预留页，近容量请求通过验证却永不被接纳；调度器随即置 batch_is_full=True，该标志无复位路径，请求取消后仍保持。
+effect:
+  objects:
+  - 可用性/进度
+  detail: DP attention 下 input 长度落在近容量窗口（如 190720–190777）的请求被取消后，该 DP rank 静默停摆、永久拒收新请求，无错误日志，仅重启可恢复。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: SGLang + DP attention + input 长度 ∈ 近容量窗口的请求 + 取消（yes）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/39271
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0528
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang DP scheduler：input 长度接近 KV 容量的请求（如 190720 vs 容量 190784、页 64、公告上限 190778）通过请求验证但**永不被 PrefillAdder 接纳**——`init_req_max_new_tokens()` 把 max_new_tokens 剪到 0 后仍需 `input_length + max_new_tokens + page_size < available_kv_tokens`（190720+0+64≥190784 返 NO_TOKEN）；调度器随即置 `running_batch.batch_is_full=True` 且后续遍历前检查该标志直接早退。请求取消后 waiting 空、running 空、KV 占用 0，但 batch_is_full 无失效路径——该 rank **永久拒收新请求**，仅重启可恢复。CPU 状态级复现（无 GPU/权重）；生产配置：DP rank 容量 190784、稳定触发区间 190720–190777） · Cov: `var:vllm_scheduler_deferred_wedge_healthy_engine`（6.135 调度器粘性状态无复位路径族） · 触发 `yes` · 置信度 `verified`'
+  mechanism: intake 验证与 PrefillAdder 接纳判据不一致（相差一个预留页），且 `batch_is_full` 生命周期与 running batch 实际状态脱钩——置位后没有"running 空时复位"的路径。
+  source: 'SGLang #39271（2026-09-13 open，含精确触发区间推导、状态级最小复现脚本与三条修复建议）。https://github.com/sgl-project/sglang/issues/39271'
+  behavior: 无 crash、无错误日志——近容量请求取消后**该 DP rank 静默停摆**：后续请求永久排队、零输出；多 rank 部署下表现为该 rank 分流的所有请求挂起。6.135（deferred 计数 wedge 健康引擎）之后"调度器粘性标志 wedge"族新成员：本条在 DP rank 准入 + 取消生命周期维度。
+  trigger_surface: SGLang + DP attention + input 长度 ∈ 近容量窗口的请求 + 取消（yes）
+  discovery: |-
+    2026-09-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

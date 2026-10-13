@@ -1,0 +1,57 @@
+id: INF-0835
+legacy_ids:
+- '8.51'
+slug: sglang_cpu_amx_extend_forced_causal_mask_bidirectional
+aliases: []
+title: SGLang CPU AMX 后端对双向模型强制 causal mask
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: extend_attention_cpu
+  behavior: Intel AMX CPU attention 后端的 extend_attention_cpu 对 extend 阶段恒定施加 causal mask，未按模型 mask 类型分派，双向 encoder-only 自注意力也被因果掩码。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: CPU 后端运行 bge-reranker 等 BERT 族 reranker/embedder 时无 crash，输出静默错误；rerank 中内容不同的文档得分完全相同（如均为 2.611328125）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang CPU 后端（Intel AMX）+ encoder-only 双向注意力模型（reranker/embedder）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/35434
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（Intel AMX CPU attention 后端 extend_attention_cpu 恒用 causal mask——encoder-only 双向注意力（bge-reranker 族）静默得到因果掩码分数：所有文档评分完全相同） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 'SGLang 的 Intel AMX CPU attention 后端上，`extend_attention_cpu`（`kernels/aot/csrc/cpu/extend.cpp`）对 attention 的 extend 阶段**恒定施加 causal mask**。这对 decoder 式自注意力正确，但对**双向、encoder-only 自注意力**（BERT 族 reranker/embedder，如 `BAAI/bge-reranker-base`）错误——此类模型静默得到因果掩码的注意力分数，输出错误。修复（PR #35434）按模型 mask 类型分派。复现：rerank "what is panda?" 的两文档，修复前 `"hi"` 与长文档得分**完全相同**（2.611328125），修复后正确分化（6.1875 / −8.15625）。'
+  source: 'SGLang PR #35434（2026-08-19 open，"[CPU] Fix wrongly causal-masked bidirectional attention"）。https://github.com/sgl-project/sglang/pull/35434'
+  behavior: 无 crash。encoder-only 模型输出静默错误；rerank 场景的**完全相同评分**（跨不同内容文档）是可编程检测的强签名。属「**硬编码 mask 假设 × 双向架构**」新子签名——与 6.x FULL-graph causal buf 冻结（DiffusionGemma）同"causal/bidirectional 错配"族，但本条是 CPU 后端的静态硬编码而非 graph 捕获问题。
+  trigger_surface: SGLang CPU 后端（Intel AMX）+ encoder-only 双向注意力模型（reranker/embedder）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+        status: panel7

@@ -1,0 +1,68 @@
+id: INF-1172
+legacy_ids:
+- '13.4'
+slug: bug_attn_backend_eager_sdpa_flash
+aliases: []
+title: eager/SDPA/flash 注意力后端切换使同一权重输出数值不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: transformers
+    component: attention 后端 mask 与累加实现
+  behavior: attn_implementation 的三种后端数值实现不同：eager 加 float mask；sdpa 融合 softmax 与 matmul 并以 fp32 计算；flash 使用不同的 masking 与累加顺序。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: '切换后端后同权重 per-token logit 漂移，从约 1e-3（良性）到带 mask 病态情形下 argmax 翻转（transformers #36585 allclose 失败、#31787 FA2 不确定性）；幅度与运行时噪声底同量级，更适合作检测器的标定 null。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: eager / SDPA / FlashAttention 后端切换（与 4.3 同类）；vLLM/HF 均可 A/B
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/36585
+  kind: github_issue
+  resolved_from: 'transformers #36585'
+- url: https://github.com/huggingface/transformers/issues/31787
+  kind: github_issue
+  resolved_from: '#31787'
+relations: []
+original:
+  category: cat13
+  section: 第 13 类 · 模型图 / 架构配置故障
+  meta: '`ambiguous` · Cov: `NEW`（标定用 null —— 另见 4.3；`bug_attn_scale` 改的是数学，不是 kernel） · 触发 `config` · 置信度 `verified`'
+  mechanism: 在 `attn_implementation` 的 eager / sdpa / flash_attention_2 之间切换，对**完全相同的权重**会产生数值上不同的输出：eager 是加一个 float mask；sdpa 把 softmax 与 matmul 融合并在 fp32 下计算；flash 使用不同的 masking 与累加顺序。
+  source: 'transformers #36585（带 mask 时 allclose 失败）；#31787（FA2 nondeterminism）。'
+  behavior: per-token 的 logit 漂移，从约 1e-3 量级（良性）一直到 argmax 翻转（在带 mask 的病态情形下）。
+  trigger_surface: eager / SDPA / FlashAttention 后端切换（与 4.3 同类）；vLLM/HF 均可 A/B
+  signature: 每一层都存在小幅、接近 on-manifold 的数值抖动。statistical 度量（相对参考 backend 的 per-layer cosine / L2 差值分布）能捕获；geometric trajectory 会把它标记为低幅度的宽带噪声。由于幅度与运行时噪声底同量级，单点 cheap 度量基本不可能分辨 —— 它更适合当作检测器的**标定 null**，而不是需要报警的故障。
+  repro: 通过切换模型的 `attn_implementation` 属性并对照参考 backend 的隐藏态即可，无需权重改动。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 'kind 维持 故障：原文给出可复现现象与 issue 证据（transformers #36585 带 mask allclose 失败、argmax 翻转；#31787 FA2 nondeterminism）；signature 中“更适合当作标定 null”是对检测器用途的建议，不改变其为具体数值不一致现象。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+        status: panel7
+    uncertain:
+    - effect

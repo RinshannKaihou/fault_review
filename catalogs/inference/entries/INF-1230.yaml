@@ -1,0 +1,63 @@
+id: INF-1230
+legacy_ids:
+- K1.2
+slug: vllm_cascade_attn_noncontig_lse_merge
+aliases: []
+title: vLLM cascade 注意力 LSE 非连续致前后缀合并错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: merge_attn_states LSE 合并
+  behavior: flash_attn_varlen_func 可能返回非连续的 suffix_lse，merge_attn_states 却假定连续布局，按错误的 stride 取元素，破坏前缀/后缀的加权组合
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 共享前缀负载上间歇出现乱码 token，准确率约 0.55；概率随 TP 度与并发度上升，batch size 为 1 时消失，--disable-cascade-attn 可恢复
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: 同 cascade LSE merge
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/22003
+  kind: github_pr
+  resolved_from: 'vLLM PR #22003'
+- url: https://github.com/vllm-project/vllm/issues/22103
+  kind: github_issue
+  resolved_from: 'vLLM #22103'
+relations: []
+original:
+  category: KV1
+  section: KV §1 value-corruption（值损坏）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`flash_attn_varlen_func` 可能返回非连续（non-contiguous）的 `suffix_lse`，而 `merge_attn_states` 假定连续布局，于是索引到错误的 strided 元素，前缀/后缀的加权组合被破坏。触发概率随 TP 度与并发度上升。'
+  source: 'vLLM PR #22003（强制 LSE 连续）；症状见 vLLM #22103。'
+  behavior: 共享前缀工作负载上间歇性出现乱码 token；准确率约 0.55，用 `--disable-cascade-attn` 可恢复；在 batch size 为 1 时完全消失。
+  trigger_surface: 同 cascade LSE merge
+  signature: '`ambiguous` —— batch/TP/并发门控（batch=1 时签名消失），是 batch-invariance 检查的典型对象。触发时属 infra_off：受影响 head 的 prefix/suffix 混合权重变成任意值，产生偶发的注意力输出范数大幅偏离，以及逐位置残差 delta 的重尾分布（相对连续布局参考）。可捕获的是 statistical 族（重尾/离群检测）与 cheap 族（batch-size 变体 / 非确定性抖动探针正是为这类门控设计）；均值型 geometric 与 spectral 族会漏检，因为偶发的单 head 事件在层级聚合中被平均掉。'
+  repro: 单钩子近似——在某层注意力输出上，把该层的注意力显式拆成「前缀段 / 后缀段」两次局部注意力，再用错误的 LSE 权重（打乱 stride 的取值）重新合并，只对随机子集 head 生效；并且只在 batch>1 的样本上启用，以保留 batch 门控特性。属 partial：真实 bug 的非连续性来自 kernel 内存布局，单钩子层面只能人为指定错误权重。
+  locus: value-corruption
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: '维持 subsystem=算子/内核：错在 merge_attn_states 假定 LSE 连续布局（修复 PR #22003 强制 LSE 连续），属注意力合并 kernel；prefix caching/cascade 只是触发条件（rule 6）。visibility 独立判断曾倾向 质量退化，复核后维持 不可复现：原文''batch size 为 1 时完全消失''''触发概率随 TP 度与并发度上升''正对应词表''换 batch/并行度后结果不一致''。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

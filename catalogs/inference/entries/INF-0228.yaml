@@ -1,0 +1,50 @@
+id: INF-0228
+legacy_ids:
+- '1.229'
+slug: triton_optimize_thread_locality_accumulator_extra_use_miscompile
+aliases: []
+title: Triton OptimizeThreadLocality 漏检累加器额外使用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: OptimizeThreadLocality
+  behavior: 该 pass 把 acc = acc + tl.sum(...) 重写为线程本地累积时，只检查归约及其 update 的用途数，未检查循环携带累加器的其他使用者；createYield 把原累加器改为恒等携带初值。
+effect:
+  objects:
+  - 数值结果
+  detail: 循环内对累加器的额外读取（如 tl.store 快照）持续读到初值 0，而最终结果正确，无 crash 无错误信号；sm89 复现 OUT 全 0、FIN 正确，仅当消费者依赖循环内中间值时显形，端到端单断言测试发现不了。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Triton ≥3.8 + 归约累加器在循环内被额外读取（store/多用途）（partial：特定 IR 形状门控）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-17'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11836
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（Triton 3.8.0+git6cdc9d5 `TritonGPUOptimizeThreadLocality`（lib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp）把 `acc = acc + tl.sum(...)` 模式重写为 thread-local 累积 + 环境外归约：匹配逻辑只检查 reduction 及其 update 的用途数，**不检查 loop-carried 累加器块参数是否有其他使用者**；重写中 `createYield` 把原累加器改为恒等携带（初值），实际部分累积移入新增循环参数——循环内对累加器的额外读取（如 `tl.store(OUT+i*M, acc)` 快照）持续读到恒等初值 0。sm89 复现：OUT 全 0 而最终 FIN 正确（期望 0,256,512,768）——**部分正确部分错**的 miscompile；保守修复为原累加器块参数存在被识别 update 之外的用途时跳过优化） · Cov: `NEW`（归约优化单一用途假设漏检循环携带值额外消费者子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 优化 pass 的正确性前提（累加器在循环内仅被 update 消费）未作为重写前置条件验证——`createYield` 恒等替换静默改变了仍存活的其他读取者的语义；最终值走新累加器故端到端单断言 CI 无法发现。
+  source: 'triton #11836（2026-09-17 open，bug，含最小复现 kernel、期望/实际输出对照、Codex 辅助的 pass 源码级根因分析与修复建议）。https://github.com/triton-lang/triton/issues/11836'
+  behavior: 无 crash、无错误信号——循环内快照/部分和全错而最终归约结果正确；对推理栈意味着"最终输出对、中间探针/部分和/logits 轨迹错"，仅当消费者依赖循环内中间值时显形。1.127（FuseNestedLoops 非支配 assume miscompile）与 1.192（FuseNestedLoops 空动态内层 miscompile）之后 Triton 编译器 miscompile 族新成员：本条在 **OptimizeThreadLocality 重写假设**维度。
+  trigger_surface: Triton ≥3.8 + 归约累加器在循环内被额外读取（store/多用途）（partial：特定 IR 形状门控）
+  discovery: 2026-09-17 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

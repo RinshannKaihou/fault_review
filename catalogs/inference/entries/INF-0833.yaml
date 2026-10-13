@@ -1,0 +1,61 @@
+id: INF-0833
+legacy_ids:
+- '8.49'
+slug: vllm_aiter_sparse_pa_spec_decoding_corruption
+aliases: []
+title: vLLM ROCm AITER sparse PA 原型路径叠加推测解码输出损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: AITER sparse PA 原型路径
+  behavior: AITER 与 shuffled KV layout 同开时自动选中 AITER sparse paged-attention 原型路径（无 opt-in），该路径与推测解码组合时计算有误，具体根因待定。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: MiniMax-M3 FP8 TP8（MI325X）+ DSpark 推测解码时，输出从正确开头退化为重复/mojibake，smoke test 易漏检；acceptance 从 44% 降至 7%；改走 Triton sparse 路径即正确，无错误日志。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: vLLM ROCm；AITER + shuffled KV layout（自动选 prototype sparse PA）+ DSpark/MTP 推测解码
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52860
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（ROCm AITER sparse paged-attention prototype 路径叠加推测解码后输出损坏、acceptance 骤降——prototype 路径由两个通用 env var 隐式选中且无 opt-in） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `documented`'
+  mechanism: MiniMax-M3 FP8-dynamic TP8（8×MI325X）+ DSpark drafter（num_speculative_tokens=8）下，`_minimax_m3_aiter_sparse_pa_requested()` 在 AITER 与 shuffled KV layout 同时启用时**自动**选择 AITER sparse paged-attention prototype 路径——无 opt-in、文档未提及其与 speculation 的组合。开启推测解码后输出立即从正确退化为重复/mojibake（greedy "1,1,1,1,...facing"）；关闭 `VLLM_ROCM_SHUFFLE_KV_CACHE_LAYOUT`（走 Triton sparse 路径）则完全正确。量化对照：AITER+FP8 KV acceptance 7.3%/mean 1.58；AITER+bf16 KV 30%/3.40（仍损坏）；Triton+FP8 KV 44%/4.55（正确）——**损坏与 FP8 KV 无关，与 AITER sparse PA × 推测解码组合有关**。`num_speculative_tokens=1`、关 async scheduling、enforce-eager、换 target backend 均无效。附带发现：DSpark 要求 `VLLM_USE_BREAKABLE_CUDAGRAPH=0` 才能启动（auto-enable 的该 flag 强制 NONE 编译模式，破坏 padded batch 对齐断言）。
+  source: 'vLLM #52860（2026-08-15 open，ROCm 7.2.53211/gfx942）。https://github.com/vllm-project/vllm/issues/52860'
+  behavior: 无 crash、无错误日志。输出静默损坏（正确开头后退化），**短补全常以正确答案开始——smoke test 会漏检**（issue 原文强调 "how quiet the failure is"）。acceptance 骤降（44%→7%）是唯一易得信号。属「prototype 内核路径隐式启用 × 推测解码组合损坏」**新子签名**。
+  trigger_surface: vLLM ROCm；AITER + shuffled KV layout（自动选 prototype sparse PA）+ DSpark/MTP 推测解码
+  discovery: 2026-08-19 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: uncertain 字段 cause.subsystem 算子/内核 vs 解码/采样：原文对照显示换 Triton sparse 路径即正确、改 num_speculative_tokens/async scheduling/enforce-eager/target backend 均无效，问题定位在 AITER sparse PA 原型内核路径（及其自动选中），定为 算子/内核；推测解码为触发条件（rule 6）。visibility 质量退化：输出退化为重复/mojibake 且 acceptance 指标骤降，可观察。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

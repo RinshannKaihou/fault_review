@@ -1,0 +1,62 @@
+id: INF-0545
+legacy_ids:
+- '6.152'
+slug: vllm_hybrid_gdn_mtp_async_ima_exit0_supervisor_undeath
+aliases: []
+title: vLLM hybrid 异步调度 IMA 后 API server 退出码为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 异步调度下 GDN+MTP 路径
+  - subsystem: 调度/服务
+    stack: vllm
+    component: API server 致命错误退出码
+  behavior: async scheduling 下小请求完成与 mid-MTP-decode 长生成交织时，gdn_attn build 路径出现 CUDA IMA（根因未定位）；API server 随后以退出码 0 退出而非报告失败。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Qwen3.5 hybrid GDN 27B + MTP k=3 + 异步调度 + fp8 KV，混合长短流量下 30–50% 复现，死亡请求已算 token 约 23.6K–26.2K；exit 0 使 systemd Restart=on-failure 不拉起，服务静默下线。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid GDN + MTP + `--async-scheduling` + 混合长短期流量（概率性 30–50%；机制可迁移）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53726
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1075
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid GDN + MTP k=3 + async scheduling 混合流量下 CUDA illegal-memory-access 异步浮出后 **API server 以 exit status 0 退出**——systemd `Restart=on-failure` 视为成功不再拉起，服务静默消失；#50021/#45100/#53613 类修复在树仍复现） · Cov: `var:vllm_async_sched_hybrid_spec_update_states_postprocess_race` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'vLLM 0.27.1（vendor tree，含 #50021 等价 GDN bounds hardening）+ Qwen3.5 hybrid GDN 27B W4A16 + MTP k=3 + `--async-scheduling` + fp8 KV + FlashInfer attention（PIECEWISE cudagraphs）在 RTX 3090 上：小请求完成与长生成 decode 交织时 `torch.AcceleratorError: CUDA IMA` 于 `CommonAttentionMetadata.seq_lens_cpu`（gdn_attn build 路径）异步上报；API server 随后 **exit 0**。5+ 次 crash 观测中死亡请求均处于 mid-MTP-decode、`num_computed_tokens ≈ 23.6K–26.2K`（同值 23615 跨不同 prompt 出现两次——结构性边界而非数据依赖），重载启动 30–50% 复现。与 11.52（async sched `_update_states` × Mamba postprocess 竞态，PR #53613）同 async 调度 × hybrid 竞态族，但本条在修复链之后仍存且叠加 exit-0 形态。'
+  source: 'vLLM #53726（2026-08-25 open，含排除清单、num_computed_tokens 边界观测与 systemd 行为）。https://github.com/vllm-project/vllm/issues/53726'
+  behavior: crash 型但**伪装成正常退出**——进程监督器（`Restart=on-failure`）不会拉起，服务静默下线；唯一防御是 `Restart=always` 或外部探针。属「**致命错误以退出码 0 汇报**」新后果形态（与 5.21 readiness 盲区同为活性盲区 C.6 家族实证）。
+  trigger_surface: vLLM + hybrid GDN + MTP + `--async-scheduling` + 混合长短期流量（概率性 30–50%；机制可迁移）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持两项 cause：运行时/执行（async scheduling 下 IMA 竞态）+ 调度/服务（API server 致命错误以 exit 0 退出）。两处是独立缺陷，修复分别落在执行竞态与 API server 退出路径，符合多对象 rule。IMA 不选 解码/采样：按 rule“触发条件不是对象”，MTP 与 hybrid GDN 是触发组合，原文异常浮出点是 CommonAttentionMetadata.seq_lens_cpu（gdn_attn build），并非 sampler/proposer 代码；async 调度的 CPU/GPU 重叠竞态属 运行时/执行。保留意见：IMA 根因原文未定位。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

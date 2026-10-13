@@ -1,0 +1,52 @@
+id: INF-0532
+legacy_ids:
+- '6.139'
+slug: vllm_kv_load_reject_partial_rollback_state_divergence
+aliases: []
+title: vLLM 外部 KV load 被拒后部分回卷致结果与全量重算不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV load 失败回卷路径
+  behavior: 外部 KV load 被拒后 scheduler 状态回卷，但 Model Runner V2 保留旧 device 侧 computed-token offset；overlap 批次在途 output 可改写已重置状态或迟到。
+effect:
+  objects:
+  - 输出内容
+  detail: 外部 KV connector + kv_load_failure_policy=recompute 且 load 失败、overlap 调度（含多 token 推测异步帧）时，最终结果与全量重算不等价；无 crash，隐藏在罕见失败回退路径中。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + 外部 KV connector + `kv_load_failure_policy=recompute` + 负载失败 + overlap scheduler（含 spec decode）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53298
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm/pull/53730
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（外部 KV load 被拒后 scheduler 回卷但 Model Runner V2 保留旧 device 侧 computed-token offset；重叠批次在途 output 可改写已重置状态或迟到——结果 ≠ 全量重算，静默错误输出） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: '同步外部 KV load 在 `kv_load_failure_policy="recompute"` 下被拒时，scheduler 状态被回卷，但 Model Runner V2 **保留旧的 device 侧 computed-token offset**；重叠（overlap）批次下已在途的 output 还可**改写已重置的 scheduler 状态**、或在请求已被重新调度后才送达——最终结果**不匹配全量重算**。修复（PR #53298）将失败 load 重算时的确切在途 token 位置标记 stale、清除 speculative 与 placeholder 状态、以显式 `rewound_req_ids` 标记传播 cached-request 数据、仅对该显式回卷应用 scheduler 的绝对 computed-token offset 到 MRV2 device 状态；含多 token speculative 异步帧的回归测试。与 #49252（从 `num_output_placeholders - 1` 推导 frame count、明确排除 spec decode）机制不同。'
+  source: 'vLLM #49250 + 修复 PR #53298（2026-08-21 open，附 scheduler/worker 回归测试）。https://github.com/vllm-project/vllm/pull/53298 ；后续加固 PR #53730（2026-08-25 open，Mooncake hybrid DCP 分组外部命中：分组外部缓存元数据 + 部分加载失败不留下组间失配状态）。https://github.com/vllm-project/vllm/pull/53730'
+  behavior: '**无 crash、静默错误输出**——回卷路径产生与全量重算不等价的结果（部分状态陈旧参与计算）。属「**部分回滚的三方状态分歧**」新子签名：scheduler（回卷）× device 状态（未回卷）× 在途 output（竞态写入）三方不一致，正确性故障而非活性故障，隐藏在罕见失败回退路径中。'
+  trigger_surface: vLLM + 外部 KV connector + `kv_load_failure_policy=recompute` + 负载失败 + overlap scheduler（含 spec decode）
+  discovery: 2026-08-22 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

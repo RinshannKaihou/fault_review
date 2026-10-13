@@ -1,0 +1,59 @@
+id: INF-1057
+legacy_ids:
+- '11.34'
+slug: vllm_mtp_spec_decode_turboquant_kv_cache_repetition_collapse_sm120
+aliases: []
+title: vLLM MTP 与 turboquant KV 组合致长上下文重复坍塌
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: TurboQuantMetadataBuilder
+  behavior: TurboQuantMetadataBuilder 声明矛盾：允许 FULL 图捕获 query_len=1+k 的 verify 批，却设 supports_spec_as_decode=False 使其走单 token 路由。
+effect:
+  objects:
+  - 输出内容
+  detail: sm_120 + hybrid GDN 模型 + MTP，KV dtype 为 turboquant_4bit_nc/3bit_nc 时，约 8k token 起的长 prompt 输出单 token 重复约 230 次；fp8 KV 正常、短 prompt 仍答对；k=1 时直接非法访存。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；sm_120 + MTP + `--kv-cache-dtype turboquant_*` + hybrid GDN 模型 + 长上下文（≥8k）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/52475
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/pull/53406
+  kind: github_pr
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（MTP verify × turboquant 量化 KV 交互 → 长上下文重复坍塌） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 'RTX 5090（sm_120）上 Qwen3.8-27B-NVFP4（hybrid Gated DeltaNet）+ MTP 推测解码（`num_speculative_tokens: 3`）：KV cache dtype 为 `fp8` 时干净，为 `turboquant_4bit_nc`/`turboquant_3bit_nc` 时**长 prompt（约 8k token 起）退化为重复坍塌**——输出为单个 token 重复约 230 次，答案在 `content` 与 `reasoning_content` 中均不存在。短 prompt（"What is 2+2?"）在坏的 KV dtype 下依然答对，使缺陷极易漏检。'
+  source: 'vLLM #52475（2026-08-15 open）。RTX 5090（sm_120），unsloth/Qwen3.8-27B-NVFP4，vLLM 0.27.x。https://github.com/vllm-project/vllm/issues/52475 。补充来源：根因修复 PR #53406（2026-08-21 open——TurboQuantMetadataBuilder 声明自相矛盾：`_cudagraph_support=UNIFORM_BATCH` 允许 FULL 捕获 query_len=1+k 的 spec verify 批，而 `supports_spec_as_decode=False` 使 `reorder_batch_threshold=1`、批走单 token 路由；k=1 直接 illegal memory access）。https://github.com/vllm-project/vllm/pull/53406'
+  behavior: 无 crash、无 NaN。服务器健康启动、KV pool 报告正常、短 prompt 正确——**仅在长上下文上静默坍塌为重复**。属「推测解码 verify 路径 × 量化 KV cache 精度」**新子签名**（spec-decode 与 KV 量化的复合退化，post-forward，隐藏态监控原理上部分可见）。
+  trigger_surface: vLLM；sm_120 + MTP + `--kv-cache-dtype turboquant_*` + hybrid GDN 模型 + 长上下文（≥8k）
+  discovery: |-
+    2026-08-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

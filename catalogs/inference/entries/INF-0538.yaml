@@ -1,0 +1,52 @@
+id: INF-0538
+legacy_ids:
+- '6.145'
+slug: vllm_mamba_full_local_hit_n_minus_1_truncation_zero_new_tokens_crash
+aliases: []
+title: vLLM hybrid 前缀缓存全命中截断致 scheduler 断言崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: hybrid 前缀缓存命中截断与查找顺序
+  behavior: hybrid（Mamba/GDN）路径把块对齐 prompt 的本地前缀缓存全量命中按 N−1 截断，且查找先于 get_num_new_matched_tokens() 执行，使待 prefill 的 num_new_tokens 归零。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 块对齐 prompt 首跑返回 200，重放时 scheduler 的 assert num_new_tokens > 0 失败，prefill EngineCore 终止、HTTP 500、K8s 容器重启；实证于 Dynamo 1P1D + NixlConnector、TP4。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid Mamba/GDN 模型 + prefix caching + 块对齐长度 prompt 的重放（1P1D/Dynamo + NixlConnector 场景实证）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/53706
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid Mamba 全量本地 prefix-cache 命中后按 N−1 截断使 `num_new_tokens=0`——scheduler `assert num_new_tokens > 0` 崩溃 prefill EngineCore；同一请求首跑 200、重放 500，K8s 容器重启） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: scheduler 对本地 prefix-cache 的查找先于 `get_num_new_matched_tokens()` 调用执行，而常规 cache-hit 上限为 `request.num_tokens - 1`。7681-token 请求的本地查找返回 7680 cached tokens 后，hybrid（Mamba/GDN）路径按 N−1 截断命中使待 prefill 的 `num_new_tokens` 归零，`vllm/v1/core/sched/scheduler.py` 的 `assert num_new_tokens > 0` 触发 AssertionError 终止 prefill EngineCore。环境：vLLM 0.28.0rc2 + Dynamo 1P1D + NixlConnector push mode + KimiK3 + TP4（SM90）；排序在 main（d9fbe526）仍在。与 6.143/6.144 同属 hybrid 前缀缓存「(n−1) 边界」缺陷族——本条在**截断侧**：全命中（唯一深位状态恰在 prompt 末端）把"最多省 N−1"的上限直接变成"零新 token"这一非法调度输入。
+  source: 'vLLM #53706（2026-08-25 open，含 7681-token 双发复现脚本与 scheduler.py/kv_cache_manager.py 行号）。https://github.com/vllm-project/vllm/issues/53706'
+  behavior: crash 型——HTTP 500 + EngineCore 终止 + K8s prefill 容器重启；触发面为**重复请求**（cache 填充后的重放），首跑成功使故障具有"第二次才炸"的时序特征。健康路径假设「cache 命中永远留至少一个新 token」在块对齐 prompt 上不成立。
+  trigger_surface: vLLM + hybrid Mamba/GDN 模型 + prefix caching + 块对齐长度 prompt 的重放（1P1D/Dynamo + NixlConnector 场景实证）
+  discovery: |-
+    2026-08-25 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

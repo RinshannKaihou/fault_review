@@ -1,0 +1,50 @@
+id: INF-0568
+legacy_ids:
+- '6.175'
+slug: vllm_mooncake_multi_connector_group_index_hybrid_save_crash
+aliases: []
+title: vLLM MultiConnector 计数转发缺陷致 save 崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MultiConnector token 数转发
+  behavior: update_state_after_alloc 只把真实 token 数转发给首个子 connector，其余收到 0/陈旧计数；sender 线程仍按全局 g_idx 索引 per-group block_ids 而越界。
+effect:
+  objects:
+  - 可用性/进度
+  detail: MooncakeStoreConnector（MultiConnector 组合）+ hybrid 多 KV-group 模型（如 Kimi-K3）在请求完成时的 save 路径，后台 sender 线程抛 IndexError；主请求可能已完成，表现为完成后爆 traceback。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + MooncakeStoreConnector（MultiConnector 组合）+ hybrid 多 KV-group 模型（Kimi-K3 类 MLA+GDN）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/54643
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid 多 KV-group 模型（Kimi-K3 MLA+GDN）的 finish-time save 路径：`MultiConnector` 下 `update_state_after_alloc` 只把真实 `num_external_tokens` 转发给第一个 connector，`KVCacheStoreSendingThread → _handle_request` 仍用全局 g_idx 索引 per-group `block_ids_per_group[g_idx]` 抛 IndexError——**为 offload/迁移引入的 saver 线程在 hybrid 多组模型上 crash**） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 'hybrid 模型的 KV group 数 >1，每个 group 有独立的 block_ids 结构；MultiConnector 的 token 计数转发只到达第一个子 connector，后续 connector 收到 0/陈旧计数但仍被逐 group 驱动——saver 线程对 `block_ids_per_group` 的元组索引越界。修复（PR #54643）把真实 token 数转发给全部 connector。与 6.168（hybrid 页对齐巨块）同"hybrid 多组泛化缺口"域：单组假设的代码路径在多组模型上首次暴露。'
+  source: 'vLLM PR #54643（2026-08-31 open，bug + kv-connector label，Kimi-K3 + MooncakeStoreConnector + MultiConnector 栈 traceback）。https://github.com/vllm-project/vllm/pull/54643'
+  behavior: crash（worker 线程 IndexError，fail-loud）——但发生在 finish-time save 的后台 sender 线程，主请求路径可能已完成，表象是"完成后爆 traceback"；与 6.157（KV offload 末槽跨请求投毒）同 Mooncake/offload 域，本条 fail-loud、彼条静默。属「**调度器→connector 契约在多 KV-group 泛化时的缺口**」新子签名。
+  trigger_surface: vLLM + MooncakeStoreConnector（MultiConnector 组合）+ hybrid 多 KV-group 模型（Kimi-K3 类 MLA+GDN）
+  discovery: 2026-08-31 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

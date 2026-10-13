@@ -1,0 +1,63 @@
+id: TRN-0027
+legacy_ids:
+- NUM.18
+slug: simplefsdp_grad_reduce_rounds_fp32_sum_to_bf16
+aliases: []
+title: SimpleFSDP 把复制参数梯度的 fp32 和截回 bf16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: torchtitan
+    component: SimpleFSDP 非分片参数梯度归约
+  behavior: pytorch#194434 令 FSDP2 非分片参数梯度默认取 reduce_dtype（torchtitan 下即 fp32），SimpleFSDP 以 fp32 求和却把和 round 回 bf16，router gate 梯度同。
+effect:
+  objects:
+  - 梯度
+  detail: 无 crash；GraphTrainer 与 eager FSDP2 的 TP-replicated 参数（SP norm 权重、router gate）梯度系统性精度分叉，同 ckpt/seed 下 dense 与 MoE 模型从 step 2 起静默不同，A/B 对照结论被污染。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-10'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/5171
+  kind: github_pr
+relations: []
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: 'pytorch `#194434`（2026-10-02 nightly）改变 FSDP2 `grad_dtype` 未指定时非分片参数梯度的默认 dtype：`param_dtype` → `reduce_dtype`（torchtitan 混精策略下 = fp32）。eager FSDP2 据此把 TP-replicated（R-on-TP：SP norm 权重、MoE router gate）梯度的 backward all-reduce 在 fp32 中 sum + reduce-scatter；**SimpleFSDP（GraphTrainer）** 同样 fp32 sum、但和值被 round 回 bf16 以匹配非分片权重的 dtype（bf16 autograd 中间量）、router gate 的 fp32 `grad_weight` 同被 round。修复（PR #5171）= 自定义 autograd Function 让 SimpleFSDP 梯度归约按 FSDP2 方式执行，全部 xfail 移除、bitwise 匹配 eager。'
+  source: 'torchtitan PR #5171（2026-10-08；dense Llama3/Qwen3 与 Qwen3 MoE numerics 测试在 step 2 与 eager 分叉（#5110/#5133 xfail）、修复后 bitwise 一致；根因上游 pytorch/pytorch#194434）。https://github.com/pytorch/torchtitan/pull/5171'
+  behavior: 无 crash——GraphTrainer 与 eager FSDP2 的 TP-replicated 参数梯度出现**系统性精度分叉**（fp32 归约结果被 bf16 截断）：同一 ckpt/seed 下两种 trainer 从 step 2 起静默不同，A/B 对照实验结论被污染。与 NUM.08/KER.18（混精 cast 截断族）共享「fp32 中间量被 round 到 bf16」数值面，但断点在**梯度归约输出 dtype 契约**而非 buffer/参数 cast；与 PAR.21（qgZ 除数分叉）同打击「归约路径决定数值」。本质是 trainer 间等价性契约失守，端到端任务影响未实测（bitwise 分叉已闭合证明）。
+  discovery: 2026-10-10 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed:
+  - cause.behavior
+  - effect.objects
+  note: 审计：分类维持 并行切分/torchtitan、静默错误；修正 behavior 中默认 dtype 的表述与 effect.objects。
+  audit_issues:
+  - field: cause.behavior
+    type: 忠实性
+    detail: 原文是默认 dtype 由 param_dtype 改为 reduce_dtype，仅在 torchtitan 混精策略下等于 fp32，原写“改为 fp32”丢了条件
+  - field: effect.objects
+    type: 分类
+    detail: 原文称端到端任务影响未实测，只证明 trainer 间 bitwise 分叉，训练轨迹（收敛/质量）无依据，删去
+  audit:
+    round: gateway-audit-2026-10-12

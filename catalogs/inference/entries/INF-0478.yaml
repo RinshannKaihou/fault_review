@@ -1,0 +1,50 @@
+id: INF-0478
+legacy_ids:
+- '6.85'
+slug: vllm_diskbackend_kv_offload_double_buffer_race_corrupts_gpu_cache
+aliases: []
+title: vLLM DiskBackend 双缓冲竞态静默损坏 GPU KV cache
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: DiskBackend._do_load 双缓冲
+  behavior: _do_load 双缓冲流水线把 pending H2D event 记在局部列表，返回前从不 drain；下一次调用的 preadv 可能覆盖上一次仍在被 H2D 拷贝读取的 buffer slot
+effect:
+  objects:
+  - KV状态
+  detail: 启用 DiskBackend KV 卸载并连续 _do_load（驱逐后 reload）时，reload 进 GPU 的 KV cache 静默损坏，无 crash；对应回归测试在 main 上失败、修复后通过。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM；DiskBackend KV offloading + 多次连续 `_do_load`（cache eviction/reload 场景）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51667
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（DiskBackend _do_load double-buffer 中 pending H2D events 不 drain → buffer slot 被覆盖 → GPU KV cache 静默损坏） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: 'DiskBackend（KV offloading #49644）的 `_do_load` double-buffer pipeline 中，pending H2D events 在每次调用中追踪在 local list，与 `_do_store` 不同——**返回前从不 drain**。后续 `_do_load` 调用的 `preadv` 可在上一调用的 trailing H2D copy 仍在读取时覆盖 buffer slot，**静默损坏 reload 时的 GPU KV cache**。`_do_store` 已有 drain pattern，`_do_load` 丢失了。'
+  source: 'vLLM #51667（2026-08-10 open PR），基于 #49644。https://github.com/vllm-project/vllm/pull/51667'
+  behavior: '**无 crash。GPU KV cache 在 DiskBackend reload 时静默损坏**——preadv 覆盖仍在被 H2D 读取的 buffer slot [0,1]。属「double-buffer H2D event 不 drain 的静默数据竞争」**新子签名**。回归测试 `test_do_load_drains_inflight_before_next_batch` 在 main 失败、修复后通过。'
+  trigger_surface: vLLM；DiskBackend KV offloading + 多次连续 `_do_load`（cache eviction/reload 场景）
+  discovery: 2026-08-13 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

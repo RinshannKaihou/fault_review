@@ -1,0 +1,55 @@
+id: INF-1314
+legacy_ids:
+- K10.3
+slug: flashinfer_append_paged_kv_varlen_cudagraph_oob_write
+aliases: []
+title: FlashInfer KV 追加内核在 CUDA graph 下写入填充槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: flashinfer
+    component: AppendPagedKVCacheKernel
+  behavior: 固定批次 CUDA-graph 捕获下，AppendPagedKVCacheKernel 按 positions[i] 写入却不按真实序列长度做边界约束，批内对齐用的零填充槽被写进分页 KV cache，覆盖真实 KV。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 仅固定批 CUDA-graph 路径触发、非 graph 路径正常；≥真实序列长度的位置出现零 KV 条目，输出退化且与批内其他序列的长度分布相关。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/919
+  kind: github_issue
+  resolved_from: 'flashinfer #919'
+relations: []
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`ambiguous` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 在固定批次的 CUDA-graph 捕获下，`AppendPagedKVCacheKernel` 按 `positions[i]` 索引写入，却不对真实序列长度做边界约束；批内为对齐而补的零填充槽被一并写进分页 KV cache，覆盖了真实 KV。结果是在 ≥ 真实序列长度的位置上出现"有效"的零 KV 条目。
+  source: '`gh`：flashinfer #919（open）。'
+  behavior: 固定批 CUDA-graph 路径下输出退化，且与批内其他序列的长度分布相关；非 graph 路径正常。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: 零填充 KV 混入真实 cache 属 infra_off，但完全受 batch 填充与 graph 捕获门控，故记为 ambiguous。签名是"注意力质量落在应为空的尾部位置"——statistical（注意力熵/尾部位置质量）与 cheap 侧的 batch-invariance 探针（同一序列在不同 batch 组成下输出应不变）最敏感；geometric 在单序列 batch=1 下完全漏检。
+  repro: partial——prefill 后在某层 cache 尾部追加若干全零 K/V 行并放宽 attention mask 使其可见，模拟"零填充槽被写入"；真实的 kernel 越界写与分页布局不可复现。
+  locus: block-slot-alloc
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

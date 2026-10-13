@@ -1,0 +1,50 @@
+id: INF-1053
+legacy_ids:
+- '11.29'
+slug: ttmetal_ttsampling_topk_iota_half_width_wrong_tokens
+aliases: []
+title: TTSampling top-k 索引宽度减半返回错误 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tt-metal
+    component: TTSampling top-k iota 索引
+  behavior: decode_forward 传给 ttnn.topk 的 iota indices_tensor 宽度只有 logits（padded vocab）的一半，多核 top-k 因此从截断的 logits 行中选 token。
+effect:
+  objects:
+  - 输出内容
+  detail: temperature≠0 或 p∉{0,1} 且 vocab≥32768 时触发：Mistral-7B Top-1 从 96.4% 降到 83.2%，vocab 32768 时 256 token 错 126 个，部分超出词表；CI 只走 argmax 路径而未暴露。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal；TTSampling top-k 路径（temperature≠0 或 p∉{0,1}）+ multi-core topk（vocab≥32768）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-12'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/52928
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（TTSampling top-k 路径 iota indices_tensor 宽度仅 logits 一半→多核 top-k 从截断 logits 选 token，部分超词表） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '单芯片 `TTSampling` 在 top-k 路径（非 argmax fast path）上返回**错误 token**。`decode_forward` 交给 `ttnn.topk` 的 `iota` `indices_tensor` 宽度仅为 logits 的一半（padded vocab/2），导致多核 top-k 选择从**截断的 logits 行**选出 token。Mistral-7B-Instruct 在 500 个 teacher-forced token 上 Top-1 从 96.4%（argmax 路径）跌到 83.2%（k=1, p=0.5 top-k 路径），Top-5 从 99.4% 跌到 85.4%。padded vocab 32768 时 256 token 中 **126 个错误**，65536 时 **191 个错误**，部分返回的 token**超出词表范围**。CI 使用 `temperature=0` 走 argmax fast path（`_is_force_argmax_sampling` 要求 `p ∈ {0.0, 1.0}`），所以 `p=0.5` 的 top-k 路径长期被掩盖。这是 tt-metal #34763（自 2025-12 开启，workaround 是禁用整个 Mistral-7B family 的 on-device sampling）的根因。'
+  source: 'tt-metal #52928（2026-08-12 open）。组件 `TTSampling` / `ttnn.topk`。P150 Blackhole。https://github.com/tenstorrent/tt-metal/issues/52928 · 关联 #34763、#51921（1.44；原 1.70 已并入）'
+  behavior: 无 crash。top-k 采样返回错误 token（部分超词表），CI 全绿掩盖。属「采样 kernel 的索引张量宽度与 logits 不匹配→多核路径选择错误」**新子签名**——post-forward 结构性盲点，隐藏态监控不可见。
+  trigger_surface: tt-metal；TTSampling top-k 路径（temperature≠0 或 p∉{0,1}）+ multi-core topk（vocab≥32768）
+  discovery: 2026-08-12 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

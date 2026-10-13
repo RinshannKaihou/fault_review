@@ -1,0 +1,51 @@
+id: INF-0732
+legacy_ids:
+- '7.59'
+slug: sglang_bench_one_batch_moe_backend_flag_silent_bf16_fallback_misbenchmark
+aliases: []
+title: SGLang bench_one_batch 忽略 MoE 后端参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: sglang
+    component: bench_one_batch 初始化流程
+  behavior: bench_one_batch 直接构造 ModelRunner，从不调用仅 scheduler 执行的 initialize_moe_config，runner backend 懒解析为 AUTO；日志仍打印请求的 backend。
+effect:
+  objects:
+  - 指标/日志
+  - 性能/资源
+  detail: 用 bench_one_batch 测量化 MoE（如 Kimi-K3 mxfp4）时 --moe-runner-backend 被静默忽略，mxfp4 权重加载期物化为 BF16、专家走 triton fused_moe_kernel；基准数字实为 BF16 fallback。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + `bench_one_batch` + 任意量化 MoE backend flag（工具路径确定性触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36395
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（`bench_one_batch` 从不调用 scheduler-only 的 `initialize_moe_config`——`--moe-runner-backend` 被静默忽略、恒解析为 AUTO：mxfp4 权重**加载期物化 BF16**、专家路径跑 triton `fused_moe_kernel`，而日志仍打印请求的 backend——一切「量化 MoE 基准」实际测的是 BF16/triton fallback） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`initialize_moe_config(server_args)` 只被 scheduler 与 weight-cache daemon 调用；`sglang.benchmark.one_batch` 直接构造 `ModelRunner` 跳过它，`get_flags().moe.runner_backend` 保持 None → 懒解析为 `MoeRunnerBackend.AUTO`。`Mxfp4MoEMethod.__init__` 读 `get_moe_runner_backend().is_flashinfer_mxfp4()` 得 False → `use_flashinfer=False`，权重加载即物化 BF16、专家路径走 triton fallback；ServerArgs 日志照打请求值。GB300/SM103、Kimi-K3 mxfp4 checkpoint 实测：profile 到的 expert kernel 是 `fused_moe_kernel`（triton），时序与 bf16 反量化 checkpoint 一致。'
+  source: 'SGLang #36395（2026-08-25 open，含 profile 证据与时序对照）。https://github.com/sgl-project/sglang/issues/36395'
+  behavior: '**无 crash、无损坏——基准测错对象**：量化 MoE 的性能数字全部来自 BF16 fallback，基于其的容量规划/选型结论系统性失真；「日志说 A、跑的是 B」。属「**旁路入口跳过全局初始化的静默配置失效**」新子签名：与 8.46（bench_one_batch 构造性命中 zero-launch）同 bench 路径正确性盲区族——基准工具自身成为故障放大器。'
+  trigger_surface: SGLang + `bench_one_batch` + 任意量化 MoE backend flag（工具路径确定性触发）
+  discovery: 2026-08-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

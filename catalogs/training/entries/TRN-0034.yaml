@@ -1,0 +1,51 @@
+id: TRN-0034
+legacy_ids:
+- PAR.06
+slug: fsdp_size1_mesh_shape_rank_confound
+aliases: []
+title: verl fsdp_size=1 致 FSDP1 不同步梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: verl
+    component: device mesh 分片策略推导
+  behavior: fsdp_size=1 被表达为 2-D mesh，sharding 策略按 mesh 的 rank 数而非形状推导：FSDP 组 size=1 被判为无需分片，而 FSDP1 的梯度同步寄生在分片 allreduce 中，于是从不同步。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: 多 GPU trainer 上 run 正常跑完，loss 下降，grad_norm/entropy/KL 全正常；ckpt 的 rank-0 副本只见过 1/world_size 的数据。生产中 2 个月未察觉：3 个 trainer rank 每次更新只用 48 条采样序列中的 16 条。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-21'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/7493
+  kind: github_issue
+relations: []
+original:
+  category: PAR
+  section: PAR
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: verl FSDP1 后端下 `actor.fsdp_config.fsdp_size=1`（「数据并行、不分片」的自然写法）被 `create_device_mesh` 表达成 2-D mesh，sharding 策略从 mesh 的 **rank 数**而非**形状**推导：FSDP 组 size=1 → 判定「无需分片」→ 也就**从不建立任何梯度同步**（FSDP1 的梯度同步寄生在分片 allreduce 里）。多 GPU trainer 上每个 rank 静默训练自己的独立副本。
+  source: 'verl #7493（生产 2 个月未察觉：3 trainer rank 每次更新只用 48 条采样序列中的 16 条；当日已修复关闭）。https://github.com/verl-project/verl/issues/7493'
+  behavior: run 正常跑完、loss 下降、grad_norm/entropy/KL 全正常；ckpt 的 rank-0 副本实际只见过 1/world_size 的数据。与 PAR.05 同为「退化组」家族但是对偶面：PAR.05 是归约仍在跑但算术放大，本条是归约根本不发生——数据并行静默退化成各 rank 独立训练。
+  discovery: 2026-08-21 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

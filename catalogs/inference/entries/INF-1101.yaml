@@ -1,0 +1,53 @@
+id: INF-1101
+legacy_ids:
+- '11.78'
+slug: ttmetal_gemma4_dflash_spec_session_reseed_replay_skip_previous_request_prompt_bleed
+aliases: []
+title: tt-metal dFlash spec 会话跳过 replay 致答上一请求
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tt-metal
+    component: spec 会话 reseed/replay 守卫
+  behavior: spec 会话 replay 与 capture 之间守卫时序有窗口：批式请求后 session 的 pending replay 未消费，下一请求跳过 replay 直接读 _out 残留，以上一请求 token 开场；所有权标志未覆盖。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 31B dFlash、P150x8、temperature 0：8 并发 baseline 突发后的 solo thinking 请求生成 400+ token、finish=stop，内容回答的是上一个请求的 prompt；依赖批式→solo 流量转换，复现 2/2。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: tt-metal + Gemma4 dFlash spec 路径 + 批式突发后接 solo spec 请求（other_stack：Tenstorrent 栈；replay/pending 守卫时序模式可迁移任何带伪首步的 spec session 复用实现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/56680
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（tt-metal Gemma4 dFlash **spec 路径**会话复用：**批式 baseline 突发之后**的 solo spec 请求回答**上一个请求的 prompt**——31B dFlash、P150x8、temperature 0，序列依赖复现 2/2（换代码前亦 2/2，非当前 PR 引入）：4 个不同 prompt 的 solo 请求全对 → 8 并发同 prompt baseline 全对 → 1 个 solo thinking 请求（"What is 17 times 3?"）生成 399–616 token、finish=stop、内容是**"The capital of France is Paris."**——400+ token 条件于错误 prompt，属 prompt/state bleed 而非 detokenizer/parser 工件。机制即 `reseed()` docstring 自述的失效模式：`self._out` 仍持有前一请求的 last replay，首步必须 replay 才能读——跳过使复用 session 以前一请求 token 开场；`_replay_on_first` 守卫在 `reseed()` 设置、`capture()` 清除，`_spec_pending_is_mine`/`_spec_session_owner` 防护未捕获此路径。触发要求"批式 baseline 突发 → solo spec 请求"转换——自适应路径的正常流量模式） · Cov: `NEW`（spec session replay-on-first 守卫时序失效·前请求 token 注入子签名） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: spec 会话的伪首步（replay）与真首步（capture）之间的守卫时序存在窗口：session 在批式请求后归还时 pending replay 未被消费，下一 solo spec 请求直接读取 `_out` 残留——前请求最后的 replay token 成为新生成的条件上下文；所有权标志（session_owner/pending_is_mine）检查未能覆盖该转换序列。
+  source: 'tt-metal #56680（2026-09-15 open，含精确触发序列、reseed() docstring 引证（"observed as request N answering with request N-1''s content"——库自身文档已预知该失效模式）、2/2×2 复现与 adaptive 路径常态性论证）。https://github.com/tenstorrent/tt-metal/issues/56680'
+  behavior: 无 crash——solo spec 请求**完整回答别人的问题**（长生成、正常 finish_reason），是跨请求上下文污染的极端形态（答案级而非 token 级）；前 4 个 solo 请求正确使间歇性极强、依赖流量序列。6.163（Kimi-K3 高压跨请求上下文污染）与 6.6（radix 串扰）之后跨请求污染族新成员：本条根因在 **spec 状态机 replay 守卫**、由批式→solo 流量转换触发。
+  trigger_surface: tt-metal + Gemma4 dFlash spec 路径 + 批式突发后接 solo spec 请求（other_stack：Tenstorrent 栈；replay/pending 守卫时序模式可迁移任何带伪首步的 spec session 复用实现）
+  discovery: |-
+    2026-09-15 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

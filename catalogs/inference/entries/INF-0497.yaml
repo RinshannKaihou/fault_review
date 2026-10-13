@@ -1,0 +1,56 @@
+id: INF-0497
+legacy_ids:
+- '6.104'
+slug: sglang_abort_inflight_kv_transfer_freed_page_overwrite
+aliases: []
+title: SGLang abort 立即释放 KV 页遭在飞传输覆写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: decode 侧 abort KV 页释放时机
+  behavior: PD 分离下 decode 请求被 abort 时，其 KV pages 与 req-pool slot 被立即释放，但不取消仍在飞行的 prefill→decode KV 传输，也不等其完成。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 超时、客户端断连等 abort 频繁的负载下，下一个分到同一批 pages 的无关请求被迟到写入覆写 KV；无 crash、无报错，受害请求输出质量劣化。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang PD 分离；decode abort（长 ITL abort / 超时 / `/abort_request`）+ prefill→decode KV transfer 在飞
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-16'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/35049
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（decode abort 立即释放 KV 页但不取消在飞传输 → 页被复用后遭迟到写入覆写） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '长 ITL abort / `/abort_request` 中止一个 decode 请求时，其 prefill→decode KV transfer 可能仍在飞行；但请求的 KV pages 与 req-pool slot 被**立即释放且不取消传输**。下一个请求可被分配到同一批 pages，随后被仍在飞行的旧写入覆写——**下一个请求静默持有被污染的 KV**。修复（PR #35049）把 KV 释放推迟到在飞传输完成/取消。'
+  source: 'SGLang PR #35049（2026-08-16 open，[PD] deferred decode-side KV release）。https://github.com/sgl-project/sglang/pull/35049'
+  behavior: 无 crash、无报错。abort 高频的负载（超时/客户端断连）下，后续无关请求的 KV cache 被**跨请求静默污染** → 输出质量劣化且与受害请求自身配置无关。属「abort 路径生命周期 × 异步传输取消缺失」**新子签名**——教科书级 free-and-reuse 竞态，KV§5 cross-node-transfer 家族在 abort 路径上的实例。
+  trigger_surface: SGLang PD 分离；decode abort（长 ITL abort / 超时 / `/abort_request`）+ prefill→decode KV transfer 在飞
+  discovery: 2026-08-16 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化
+        status: panel7

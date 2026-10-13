@@ -1,0 +1,62 @@
+id: INF-1282
+legacy_ids:
+- K8.5
+slug: specdec_radix_prefix_draft_topk_corruption
+aliases: []
+title: RadixCache 批内重复 prompt 致 draft 读到损坏上下文
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: RadixCache 批内前缀共享
+  behavior: 开启 RadixCache 前缀共享时，同一批次中重复 prompt 的 KV 由兄弟条目提供，推测 draft model 因此读到被损坏的上下文。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 批内放入相同 prompt 时第一个的提议正确、重复者发出错误 topk_index 提议，接受率骤降甚至输出错误；单独发送同一 prompt 正常，disable_radix_cache=True 时消失。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/8726
+  kind: github_issue
+  resolved_from: 'SGLang #8726'
+relations:
+- kind: var
+  target: INF-0399
+original:
+  category: KV8
+  section: KV §8 control-flow（推测解码 / beam-search / CUDA-graph × KV）
+  meta: '`infra_off` · Cov: `var:radix_kvcache_cross_contamination` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 开启 RadixCache 前缀共享时，若**同一批次**中某个重复 prompt 的 KV 由兄弟条目提供，推测 draft model 就会读到被损坏的上下文，发出错误的 `topk_index` 提议。复现：一个 batch 内放入相同的 prompt，第一个的提议正确、重复的错误；`disable_radix_cache=True` 可修复。
+  source: 'SGLang #8726。'
+  behavior: 批次内重复 prompt 的推测提议错误、接受率骤降甚至输出错误，而单独发送同一 prompt 完全正常。
+  trigger_surface: 推测解码/CUDA graph：vLLM 可开，需接受率与 batch 场景
+  signature: infra_off，但**受 batch 组成门控**（只有同批出现重复 prompt 时才触发）。触发时在重复位置处离流形：受害者的隐藏态签名与**错误的前缀捐赠者**对齐，属 cross-orthogonality / 签名余弦矩阵族的典型目标。与 `radix_kvcache_cross_contamination` 的区别在于它经由批内前缀复用污染的是 **draft 提议路径**。会漏检：单序列自比对指标与 batch-invariance 探针以外的 cheap 探针。
+  repro: （源文档未给出 Inject 字段；方案）在 batch ≥ 2 且含相同 prompt 的解码路径上，用 KV 钩子把重复行的前缀 K/V 替换为兄弟行的对应片段（跨 batch 行拷贝），制造"由错误兄弟条目供给前缀"的效果；因单序列路径无 radix 树，只能近似，故为 partial。
+  locus: control-flow
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 subsystem=KV缓存。原文'disable_radix_cache=True 可修复'，被损坏的上下文来自 RadixCache 批内兄弟条目提供的前缀 KV，draft 提议是受害的消费方；旧 Cov 亦标为 radix_kvcache_cross_contamination 变体。独立判断曾倾向 解码/采样，但原文未把错处定位在 draft 逻辑本身。保留意见：修复所在侧原文未给出。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

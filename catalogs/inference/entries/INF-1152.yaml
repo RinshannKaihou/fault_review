@@ -1,0 +1,58 @@
+id: INF-1152
+legacy_ids:
+- '12.36'
+slug: vllm_weight_cache_daemon_shared_ipc_refcount_slot_premature_free
+aliases: []
+title: vLLM 权重缓存 daemon 共享 IPC 引用计数槽致权重内存过早释放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: 权重缓存 daemon IPC 导出
+  behavior: daemon 对每个 get_state 响应只调一次 reduce_tensor，把同一组参数（含一个消费者的 refcount 槽）发给所有 client，引用计数与实际消费者数脱钩；启动时还留有无主初始引用。
+effect:
+  objects:
+  - 模型权重
+  - 可用性/进度
+  detail: 多 engine 混合 copy/zero-copy client 时，copy-mode client 释放临时 IPC tensor 可使计数归零、底层 allocation 被回收，另一 engine 仍持映射并读悬垂权重：表现为 IMA 或静默权重损坏（取决于复用时机）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: vLLM + weight cache daemon + 多 engine 混合 copy/zero-copy client（yes）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/56472
+  kind: github_pr
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（vLLM 权重缓存 daemon 对每个 `get_state` 响应只调一次 `reduce_tensor` 并把**同一组参数（含一个消费者的 refcount 槽）发给所有 client**：copy-mode client 启动时，它释放临时 IPC tensor 可把引用计数带到零——而另一 engine 仍持有 zero-copy 映射，底层 allocation 被过早回收（13.36 实测：producer allocation 从 4096 字节掉到 0 时映射仍 live）。存活 engine 后续读悬垂映射；修复 PR #56472 改为按 client 分别 export（PyTorch 逐消费者跟踪），并移除启动时的无主初始引用。#51259 修过 packed weight transfer 的同类问题，本条是独立 weight-cache daemon 路径） · Cov: `NEW`（多消费者共享单 IPC refcount 槽子签名） · 触发 `yes` · 置信度 `verified`'
+  mechanism: IPC tensor 的 refcount 语义按"每次 export 一个消费者"设计，daemon 单次 reduce + 广播同一参数使计数与实际消费者数脱钩；copy client 的临时引用释放成为压垮计数的最后一根稻草。
+  source: 'vLLM PR #56472（2026-09-11 open，含 13.36 双 client 回归（before failed/after passed）与 ipc_collect 验证）。https://github.com/vllm-project/vllm/pull/56472'
+  behavior: 无 crash 于发起端——**存活 engine 读悬垂权重映射**：生产形态为 IMA 或静默权重损坏（取决于复用时机）。12.27（tt_dit weight cache 丢非 Parameter 态）之后权重缓存基础设施族新成员：本条在 IPC 引用计数维度、跨 engine 生命周期。
+  trigger_surface: vLLM + weight cache daemon + 多 engine 混合 copy/zero-copy client（yes）
+  discovery: |-
+    2026-09-11 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 'cause.subsystem 维持 权重/检查点：缺陷在 vLLM weight-cache daemon 的 get_state 导出逻辑（单次 reduce_tensor 广播同一 refcount 槽），修复 PR #56472 改为按 client 分别 export，改动落在权重缓存/分发组件而非通用分配器或 driver。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

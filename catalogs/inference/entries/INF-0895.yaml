@@ -1,0 +1,56 @@
+id: INF-0895
+legacy_ids:
+- '9.12'
+slug: sglang_mrope_3d_positions_1d_fused_rope_flatten
+aliases: []
+title: SGLang 融合 RoPE 内核只读 mRoPE 首行致视觉 Q/K 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: sglang
+    component: qwen3_5 融合 rope_gate 内核选择
+  behavior: attn_output_gate=True 时 Qwen3.5 系无条件用只接受 1-D positions 的融合 QK-norm+RoPE kernel；(3,T) mRoPE 位置传入后只读 temporal 行，H/W 位置未施加。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Qwen3.6/3.8-27B 多模态图像/视频 prefill 时视觉 token 的 Q/K 静默错误，图像理解与 GUI 坐标定位（grounding）退化，文本流畅掩盖根因；v0.5.16/v0.5.17/main 均受影响，无 mrope_section 的文本版不受影响。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang；Qwen3.6/3.8-27B 多模态 + fused QK RMSNorm+RoPE kernel + 图像/视频 prefill
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-08-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/35345
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0893
+original:
+  category: cat9
+  section: 第 9 类 · 位置编码 / RoPE 配置故障
+  meta: '`infra_off`（(3,T) mRoPE 位置被传入只接受 1-D 的 fused QK RMSNorm+RoPE kernel → 只读 temporal 行，H/W 位置从未施加，视觉 token Q/K 静默错误） · Cov: `var:sglang_multimodal_draft_extend_mrope_oob_access` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: 'Qwen3.5-family 全注意力实现无条件选择 `fused_qk_gemma_rmsnorm_rope_gate`（`attn_output_gate=True` 时），该 Triton kernel 只接受 1-D `positions: [T]` 并逐 token 读一个标量（`tl.load(positions_ptr + token)`）。Qwen3.6-27B/Qwen3.8-27B（多模态 `Qwen3_5ForConditionalGeneration`，interleaved mRoPE，config 含 `mrope_section`）的图像/视频 prefill 路径传入 contiguous `(3, T)`（temporal/height/width）位置——kernel 只读第一（temporal）行，height/width 位置从未施加到对应 rotary 维度，Q/K 静默错误。v0.5.16/v0.5.17/main 均含；2.4T-A95B 文本版（无 mrope_section）不受影响。'
+  source: 'SGLang #35345（2026-08-17 open，NVIDIA CUDA；受影响：Qwen3.6-27B、Qwen3.8-27B、Qwen3.8-27B-FP8，revision 锚定）。https://github.com/sgl-project/sglang/issues/35345'
+  behavior: 无 crash。视觉 token Q/K 静默错误 → 图像理解与 GUI 坐标定位（grounding）退化，文本流畅性掩盖根因。与 9.10（mRoPE OOB）同对象族（多模态 mRoPE × kernel 假设），本条是维度展平而非访存越界。
+  trigger_surface: SGLang；Qwen3.6/3.8-27B 多模态 + fused QK RMSNorm+RoPE kernel + 图像/视频 prefill
+  discovery: 2026-08-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect
+    - visibility

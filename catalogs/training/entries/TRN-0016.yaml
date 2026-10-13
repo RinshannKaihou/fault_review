@@ -1,0 +1,53 @@
+id: TRN-0016
+legacy_ids:
+- NUM.07
+slug: triton_autotune_rank_divergent_tiling
+aliases: []
+title: Triton autotune 使各 rank 归约 tiling 分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: megatron-lm
+    component: Triton autotune 配置与缓存
+  behavior: Triton autotune 按现场计时选 kernel config，计时噪声使各 rank 对同一 kernel 选出不同归约 tiling；deterministic-mode 下 autotune 缓存目录未共享，各节点各自调优。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 无 NaN、无 crash、loss 正常；DP allreduce 平均的是不同累加序的结果，run 间与 rank 间 bit 级不复现，A/B 对照、bitwise resume、RL π_old 重算失效；实测 8-rank 中 22 个条目 13 个 winner 不一致。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-04'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6966
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0012
+original:
+  category: NUM
+  section: NUM
+  meta: 'stage: `shared` · Cov: `var:fp_reduction_order_training_nondeterminism` · 置信度 `documented`'
+  mechanism: Triton autotune 靠**现场计时**选 kernel config，winner 属于「那一刻那台机器」——计时噪声使不同 rank 对同一 (kernel, shape) 选出不同 `BLOCK_SIZE`/`num_warps`/`num_stages`，即每个 rank 用**不同的归约 tiling** 计算「同一个」算子，浮点累加序逐 rank 分叉。叠加面：`--deterministic-mode` 开 `TRITON_CACHE_AUTOTUNING` 但 cache 目录未共享时，每个节点各自独立 autotune，静默产生节点级分叉。实测 8-rank 混合配置：22 个 kernel/shape 条目中 **13 个** rank 间 winner 不一致；`l2norm_fwd_kernel` **全部 8 个 rank** 在两次运行间各选了不同配置。修复 = deterministic-mode 下强制共享 cache 目录（拒绝而非猜测）+ `TRITON_PRINT_AUTOTUNING` 跨 rank 对账；cache 完整性故意不校验（cache 按 shape/build/GPU/env 键控，异形状预热后的目录「看起来完整」但不够用，校验会误杀合法 run）。
+  source: 'Megatron-LM PR #6966。https://github.com/NVIDIA/Megatron-LM/pull/6966'
+  behavior: 无 NaN、无 crash、loss 正常——每个 rank 的梯度都「对」，但 DP allreduce 平均的是**不同累加序的结果**，run-to-run 与 rank-to-rank bit 级不复现；A/B 对照、bitwise resume、π_old 重算（RL）全部失效。与 NUM.03（batch/tile 归约树非确定）同根因的**调优器放大版**：不是归约树随机，是调优器把不同的树钉进了每个 rank/进程。
+  discovery: 2026-09-04 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

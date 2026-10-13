@@ -1,0 +1,62 @@
+id: INF-1255
+legacy_ids:
+- K4.8
+slug: hybrid_mamba_ssm_attention_state_desync
+aliases: []
+title: 混合 Mamba 模型 SSM 状态与 attention KV 失步
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 混合模型 Mamba conv/SSM 状态管理
+  behavior: Mamba 层 conv+SSM 状态是不受 block manager 管理的逐请求张量；前缀缓存+推测解码下 attention KV 按 block gather/回滚，SSM 状态不知 gather 索引、不回滚被拒 token。
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  detail: 'Jamba/NemotronH 类混合模型同时开启 prefix cache 与 MTP 推测解码时，vLLM #39809 记录为崩溃；非崩溃路径下 attention 层与 Mamba 层对同一 token 索引持有不同历史，两条状态流推进到不同位置。'
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: KV 类：需具体缓存时序
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/17140
+  kind: github_issue
+  resolved_from: 'vLLM RFC #17140'
+- url: https://github.com/vllm-project/vllm/issues/39809
+  kind: github_issue
+  resolved_from: 'vLLM #39809'
+relations: []
+original:
+  category: KV4
+  section: KV §4 cross-request（跨请求，缓存键 / 汏染）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 在 Jamba / NemotronH 这类混合堆栈里，attention 层用分页 KV block，而每个 Mamba 层的 conv+SSM 状态是一个不受 block manager 管理的 per-request 张量。在 prefix caching + speculative decode 下，attention KV 会按 block index 被 gather / 回滚，而由 `selective_state_update` 更新的 SSM 状态既不知道 gather 索引、也不会回滚被拒绝的 token → 两条状态流推进到不同的位置。
+  source: 'vLLM RFC #17140；vLLM #39809（NemotronH prefix-cache + MTP spec-decode 崩溃）。'
+  behavior: '#39809 记录的是 NemotronH 在 prefix-cache 与 MTP 推测解码同时开启时崩溃；非崩溃路径下两类层对同一 token 索引持有不同的历史。'
+  trigger_surface: KV 类：需具体缓存时序
+  signature: off-manifold（infra_off），且签名形态是**层间不一致**：同一 token 索引处，attention 层与 mamba 层的隐藏态轨迹相互偏离。捕获者：trajectory（按层族分组的轨迹对比，是唯一天然对得上这种签名的族）、geometric（跨层方向一致性）。漏检者：任何把全部层混在一起做汇总的 statistical / spectral 指标——两类层各自看都健康，异常只存在于它们的**相对**关系里。纯 attention 架构没有 Mamba 层，该签名在标准稠密模型上原理上不可复现。
+  locus: '`cross-request`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 维持 visibility=静默错误。#39809 的崩溃是该失步的一个已记录实例，但原文 mechanism/signature 编目的故障本体是'两条状态流推进到不同位置'的层间不一致（非崩溃路径），词表注'编目一般不收纯报错类'。subsystem=KV缓存（词表含线性注意力/SSM 循环状态池）与独立判断一致。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

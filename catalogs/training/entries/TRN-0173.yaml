@@ -1,0 +1,68 @@
+id: TRN-0173
+legacy_ids:
+- LOSS.09
+slug: dapo_family_gas_double_scaling
+aliases: []
+title: ms-swift DAPO 族 loss 在梯度累积下被二次除以 G
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: ms-swift
+    component: GRPO dapo 族 loss 归一化
+  behavior: dapo/cispo/fipo loss 已按整个梯度累积窗口的 completion token 数归一，Trainer.training_step 在 backward 前又除以梯度累积步数且无补偿，形成二次缩放。
+effect:
+  objects:
+  - 梯度
+  - 训练信号
+  detail: loss_type=dapo 且梯度累积步数 G>1 时 loss 与梯度被缩小 G 倍（G=4 时更新量为 G=1 的 1/4），有效学习率随 G 漂移、日志 loss 也被除以 G；无 crash、无 NaN。grpo/bnpo/dr_grpo 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-13'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10117
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0172
+original:
+  category: LOSS
+  section: LOSS
+  meta: 'stage: `rl` · Cov: `var:gkd_mean_of_means_token_reweighting` · 置信度 `documented`'
+  mechanism: 'ms-swift GRPO 的 `loss_type=''dapo''`（`cispo`/`fipo` 同族）loss 已按**整个梯度累积窗口**的 completion token 数归一：`normalizer = num_items_in_batch / num_processes`，其中 `num_items_in_batch` 由 `ga_batch_encoded_inputs` 汇总、覆盖所有 micro-batch × 所有进程——单个 micro-batch 只是全局 token 均值的一部分。但 `transformers.Trainer.training_step` 在 backward 前还会**再除一次** `current_gradient_accumulation_steps`（`Accelerator` 的 `num_steps` 被强制为 1，无二次缩放对冲），于是 loss 与梯度都被额外缩小 **G 倍**：期望梯度 g、`gradient_accumulation_steps=4` 时实际只有 g/4。`grpo`/`sapo`/`bnpo`/`dr_grpo` 按 micro-batch 取均值，不受影响。修复 PR #10116：补偿 `current_gradient_accumulation_steps`，附单测 21 passed。'
+  source: 'ms-swift #10117（解析推导 + 最小验证 `(loss/4).backward()` 复现 Trainer 行为；`--loss_type dapo --gradient_accumulation_steps 4` 实测更新量为 G=1 的 1/4）+ 修复 PR #10116。https://github.com/modelscope/ms-swift/issues/10117'
+  behavior: 无 crash、无 NaN——**有效学习率随 `gradient_accumulation_steps` 漂移**（G 越大更新越弱），日志 loss 也被除以 G；同配置改 G 的两次 run 收敛速度不可比，且无任何信号指示更新量错。与 OPT.10（ZeRO-3 Muon 每 micro-batch 跑一次 NS——momentum 变 βⁿ）同病：**梯度累积旋钮静默改变有效优化量**，那边放大、这边缩小；归一化域错配（全局 token 已归一再被 per-mb 逻辑二次缩放）与 LOSS.08（mean-of-means）互为镜像——那边漏归、这边重除。
+  discovery: 2026-09-13 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 改 RL训练回路：rule1 功能域优先，缺陷只出现在 GRPO 的 dapo/cispo/fipo loss 路径（grpo/bnpo/dr_grpo 不受影响），修复在 ms-swift GRPO loss 里补偿梯度累积步数；损失计算 留给不专属于功能特性的通用 loss。与 TRN-0177 同口径。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: RL训练回路
+        to: 损失计算
+        status: panel7
+      effect:
+        from: 训练信号
+        to: 梯度
+        status: panel7

@@ -1,0 +1,62 @@
+id: INF-0352
+legacy_ids:
+- '5.5'
+slug: ep_checkpoint_shard_mismatch
+aliases: []
+title: EP 重分片或跨框架转换致 expert 权重错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: 通用
+    component: EP 重分片/转换的 expert 排序
+  behavior: 以不同 EP degree 加载、experts 数不被 ep_size 整除或 Megatron↔HF 排序约定不同，expert 落到错误 rank、映射到另一组权重；合并子项含 GQA head 复制、词表 padding 错。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 错误的 expert 权重被施加，输出被破坏：expert i↔j 互换时两者都是合法权重、逐 token 看似正常而极隐蔽，shape 不符时则直接崩溃。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 单机多卡 TP 可做（原判定受单机无多卡限制）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/5794
+  kind: github_issue
+  resolved_from: 'DeepSpeed #5794'
+- url: https://github.com/deepspeedai/DeepSpeed/issues/6891
+  kind: github_issue
+  resolved_from: '#6891'
+- url: https://github.com/sgl-project/sglang/issues/25117
+  kind: github_issue
+  resolved_from: 'SGLang #25117'
+- url: https://github.com/NVIDIA/Megatron-LM/issues/1754
+  kind: github_issue
+  resolved_from: 'Megatron-LM #1754'
+relations: []
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 以与保存时不同的 expert-parallel degree 加载 checkpoint，或 `num_experts % ep_size != 0`，或跨框架转换（Megatron↔HF）时 expert 排序约定不同 → expert 被分配到错误的 rank，router 的 expert-id 映射到了另一组权重。本条为 MERGED 条目，合并的子故障为：(a) expert weight misorder on reshard（重分片时 expert 权重顺序错乱，即上述主机制）；(b) GQA head replication（KV head 复制/分片方式与 checkpoint 约定不符，源文档未给出该子项的独立机制描述）；(c) vocab padding mis-mask（词表 padding 段的 mask 处理错误，源文档未给出该子项的独立机制描述）。
+  source: 'DeepSpeed #5794, #6891; SGLang #25117; Megatron-LM #1754。'
+  behavior: 错误的 expert 权重被施加 → 输出被破坏；可以很隐蔽（expert i↔j 互换，两者都是合法权重），也可以很粗暴（shape mismatch 直接崩溃）。
+  trigger_surface: 单机多卡 TP 可做（原判定受单机无多卡限制）
+  signature: 在「隐蔽」这一有意义的情形下是 OFF-manifold，但形态特殊：每个受影响 token 的输出都是某个「合理但错误」的 expert 的输出，因此逐 token 状态各自看起来都像在流形上，只有全局才不自洽。geometric 检测器很难看到；需要与正确分片的参考做 recompute-oracle 比对才能确定捕获（前提：可复现的重算路径，见图例噪声底注记）。
+  repro: 通过对权重行/块做 permute 来模拟 mis-sharding（例如把某一层 FFN 权重按分片边界整块交换顺序），得到「合法权重、错误位置」的稠密类比。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

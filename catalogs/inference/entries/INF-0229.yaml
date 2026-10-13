@@ -1,0 +1,51 @@
+id: INF-0229
+legacy_ids:
+- '1.230'
+slug: flashinfer_blackwell_gdn_chunked_tmem_stage_released_before_tcgen05_ld_completes
+aliases: []
+title: flashinfer GDN 内核 TMEM stage 读未完成即释放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: GDN chunked cg1 stage 释放
+  behavior: compute group 1 两处 TMEM stage 在 cute.copy 发出异步 tcgen05.ld 后立即 arrive 释放，漏插 load fence，生产者下一次 tcgen05.mma 可覆写在途读的 stage。
+effect:
+  objects:
+  - 数值结果
+  - KV状态
+  detail: Blackwell（sm_103a）上 GDN chunked 状态/输出被下一 chunk 数据按竞态窗口混合，静默错值，无 crash 无 NaN；vLLM Qwen3-Next 类 hybrid 模型首 prefill 即经过该内核；缺陷只见于 SASS 控制位。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: flashinfer Blackwell GDN chunked 内核 + cg1 路径（ks/nv handle）+ vLLM Qwen3-Next 类 hybrid 首 prefill（hw_specific：sm103a 实测）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/5334
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（Blackwell GDN chunked 内核（`gated_delta_net_chunked.py`）compute group 1 的两处 TMEM 累加器 stage 消费者释放（`:4528` ks_handle/tTR_tCtKS、`:4569` nv_handle/tTR_tCtShared，后者**每 chunk 无条件执行**）在 `cute.copy` 发出异步 `tcgen05.ld`（LDTM）后立即 `SYNCS.ARRIVE` 通知生产者 stage 空闲——**不等在途读完成**；生产者下一次 `tcgen05.mma` 可中途覆写该 stage，消费者寄存器收到本 chunk 与下一 chunk 值的混合。compute group 0 的两处同构 handoff（`:3082`/`:3110`）正确（调了 `fence_view_async_tmem_load()`）。**SASS 控制位级证据**（sm_103a、CUDA 13.3.29）：该 fence 降低为裸 `NOP`，真正的 ordering 在**后续 `SYNCS.ARRIVE` 的 wait-mask 控制位**里——正确站点 `wait=000010`（等 bar 1 = LDTM scoreboard）、缺陷站点 `wait=000000`（什么都不等）。另识别两个**形似但正确**的站点（qs_handle/o_qs_handle：中间寄存器消费者已隐式等 scoreboard）——"源码级 fence 审计在两个方向都不成立，只有控制位说了算"。vLLM Qwen3-Next 首 prefill 路径（16QK/48V heads、148 SMs、batch 1–16 非 CP 分支）即经过此内核） · Cov: `NEW`（TMEM 异步读在途释放 stage 的消费者时序竞态子签名） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: LDTM 是异步指令且其 scoreboard 是唯一完成机制；释放 mbarrier 与读完成之间无 happens-before 边。cg1 两站点漏插 load fence，属于"复制 cg0 正确模式时漏掉两个站点"的单侧遗漏——同一函数内正确/错误模式并存正是其隐蔽来源。
+  source: 'flashinfer #5334（2026-09-18 open，needs-triage，含四站点对照表、sm_103a nvdisasm 控制位反汇编（`/*8870*/ SYNCS.ARRIVE... wait=000000`）、vLLM Qwen3-Next 特化审计与非缺陷站点甄别）。https://github.com/flashinfer-ai/flashinfer/issues/5334'
+  behavior: 无 crash、无 NaN——GDN chunked 状态/输出值被下一 chunk 数据按竞态窗口混合（时序相关的静默错值），vLLM Qwen3-Next 类 hybrid 模型首 prefill 即暴露。1.9（tt 流水线竞态）、1.121（sdpa_decode mask store 无 drain）、1.223（trtllm-gen context FMHA TMEM 消费者时序扰动）之后异步内存管线竞态族新成员：本条在 **TMEM load scoreboard × mbarrier 释放序**维度、且给出"缺陷只存在于指令控制位"的最强隐蔽性证据。
+  trigger_surface: flashinfer Blackwell GDN chunked 内核 + cg1 路径（ks/nv handle）+ vLLM Qwen3-Next 类 hybrid 首 prefill（hw_specific：sm103a 实测）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

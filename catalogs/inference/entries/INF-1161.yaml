@@ -1,0 +1,54 @@
+id: INF-1161
+legacy_ids:
+- '12.45'
+slug: vllm_wna16_moe_partial_group_size_repeat_interleave_shape_mismatch_704_128
+aliases: []
+title: vLLM WNA16 MoE scale 组展开错位致加载崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: moe_wna16 scale 组展开
+  behavior: 中间宽不整除 group size 时 create_weights() 把有效 group size 折半、权重按 repeat_interleave 展开，但 checkpoint 的 scale 组数未按同规则展开。
+effect:
+  objects:
+  - 可用性/进度
+  detail: Gemma-4-26B-A4B（中间宽 704、group 128）的 AutoRound W4A16 checkpoint 加载 w2 时 RuntimeError（11 vs 12），引擎无法启动；显式 --quantization 或 MoE backend override 均无法绕过。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM v0.30.0 + AutoRound/INC W4A16 MoE checkpoint + per-expert 中间宽非 group size 倍数（Gemma-4-26B-A4B 704/128 实测）（config）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/59312
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1155
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（vLLM WNA16 MoE 加载器对**per-expert 中间宽非 group size 整除**的 checkpoint：Gemma-4-26B-A4B 中间宽 704、group size 128——checkpoint 存 `ceil(704/128)=6` 个 scale 组（末组部分）；`moe_wna16.py` 的 `create_weights()` 因 704 不被 128 整除把有效 group size 降到 64（`group_size_div_factor = 2`），加载器随后 `repeat_interleave(group_size_div_factor, 1)` 展开权重——但 checkpoint 的 6 组 scale 未按同规则展开，`w2` 加载即 `RuntimeError: The size of tensor a (11) must match the size of tensor b (12)`（704/64=11 vs 12 列），Intel AutoRound W4A16 checkpoint 加载崩溃（引擎未启动；显式 `--quantization gptq/auto-round` 不改变 resolved `inc` 路径、MoE backend override 均不达成功加载）） · Cov: `var:12.39`（量化 checkpoint 加载布局/参数假设族——12.39 是 pin transformers 缺 processor 静默降级、12.42 是 rsLoRA 重算丢 √r；本条在 **非整除中间宽的 group-size 折半 × scale 组展开错位**维度） · 触发 `config` · 置信度 `documented`'
+  mechanism: '`group_size_div_factor` 只作用于权重展开而未同步 checkpoint 的 scale 组数语义（6 组按 64 展开应为 11 列，张量实际 12）；报告者附 704/128/6 组算术与 `create_weights`/`_load_w2` 代码定位。'
+  source: 'vLLM #59312（2026-09-29 open，RTX 3090 复现、含算术推导与复现命令）；姊妹 #59248（Qwen3-Coder-Next AutoRound routed gate `qweight` vs 实例化 `weight` 同日同报告域——gate 未带 quant config 实例化、加载前失败，fail-loud）。https://github.com/vllm-project/vllm/issues/59312'
+  behavior: 加载期 fail-loud（RuntimeError shape mismatch）——结果面无静默错值，但**整类非整除中间宽 AutoRound MoE checkpoint 在 vLLM 不可用**；无配置绕过。
+  trigger_surface: vLLM v0.30.0 + AutoRound/INC W4A16 MoE checkpoint + per-expert 中间宽非 group size 倍数（Gemma-4-26B-A4B 704/128 实测）（config）
+  discovery: |-
+    2026-09-29 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

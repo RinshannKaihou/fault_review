@@ -1,0 +1,55 @@
+id: INF-1257
+legacy_ids:
+- K5.1
+slug: mooncake_rdma_mr_silent_truncation
+aliases: []
+title: Mooncake 内存注册超 max_mr_size 被截断致 KV 部分传输
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: mooncake
+    component: registerLocalMemory 内存注册
+  behavior: registerLocalMemory() 以超过网卡 max_mr_size 的长度调用时只注册 max_mr_size 字节，却让 BufferDesc.length 继续宣告原始大小。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 在 MR 上限较小的网卡（如 AMD Pensando 2 GiB）上，大于上限的逐层 KV 缓冲区只被部分传输，越界 RDMA 读写命中 IBV_WC_REM_ACCESS_ERR；消费端拿到被截断的上下文，仍能生成通顺文本。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/kvcache-ai/Mooncake/issues/2017
+  kind: github_issue
+  resolved_from: 'Mooncake #2017'
+relations: []
+original:
+  category: KV5
+  section: KV §5 cross-node-transfer（跨节点传输：分离式 / 卸载 / RDMA）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `no` · 置信度 `documented`'
+  mechanism: '`registerLocalMemory()` 被以 `length > device.max_mr_size` 调用（例如 AMD Pensando 网卡上的 2 GiB 上限）；Mooncake 只注册了 `max_mr_size` 字节，却让 `BufferDesc.length` 继续宣告原始大小 → 越过边界的 RDMA WRITE/READ 命中 `IBV_WC_REM_ACCESS_ERR`，凡是大于该上限的逐层 KV 缓冲区只被部分传输。'
+  source: 'kvcache-ai/Mooncake #2017。'
+  behavior: 源文档未给出独立的「行为效应」条目；按机制，超出注册边界的那部分 KV 传输失败/报 `IBV_WC_REM_ACCESS_ERR`，消费端拿到的是被截断的上下文。
+  trigger_surface: 需要 P/D 分离或跨节点/RDMA 拓扑（默认实验室单机不具备）
+  signature: off-manifold（infra_off），空间上是一个干净的「切片」形状：KV 落在边界之外的那些层/位置，其 attention 输出失去了这部分贡献（上下文被系统性衰减/清零）。捕获者：geometric（逐位置隐藏态范数在受影响切片处塌陷）、trajectory（受影响层带的轨迹突跳）、cheap（层级 attention mass 汇总，缺失比扰动更容易被幅度类判据看到）。漏检者：对层做平均的 spectral / statistical——未受影响的层完全健康，会把切片信号稀释；也漏检任何只看输出流畅度的行为判据（截断上下文仍能生成通顺文本）。
+  repro: 单 hook 边界截断——在选定的若干层上挂 `self_attn` pre-hook，把 cached K/V 中位置索引大于某个「字节边界折算位置」的部分整体置零（模拟只注册了 `max_mr_size` 字节），层的选择对应「逐层 KV 缓冲区超过上限的那几层」。
+  locus: '`cross-node-transfer`'
+  priority: '`low`'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

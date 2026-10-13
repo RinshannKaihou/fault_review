@@ -1,0 +1,51 @@
+id: TRN-0071
+legacy_ids:
+- CKPT.22
+slug: cached_optimizer_state_stale_scalar_lr
+aliases: []
+title: TorchFT 缓存的优化器状态 LR 陈旧，加入副本以错误 LR 恢复
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: torchtitan
+    component: TorchFT 优化器状态缓存、LR 恢复
+  behavior: optimizer state dict 被缓存，标量 LR 是值拷贝，scheduler 更新后缓存 LR 陈旧；恢复 scheduler state 时不回写 optimizer param groups 的 LR。
+effect:
+  objects:
+  - 优化器状态
+  - 模型权重
+  detail: TorchFT 拓扑变化或 replica 加入后，scheduler get_lr() 报告正确而各副本实际以不同 LR 更新，梯度 all-reduce 一致但权重静默分叉；无 crash、无 NaN，只有与不中断 run 的零偏差对齐能发现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-12'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/4598
+  kind: github_pr
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `verified`'
+  mechanism: torchtitan TorchFT 的 optimizer state dict 被**缓存**：张量状态靠共享引用保持最新，但**标量 LR 是值拷贝**——scheduler 更新 optimizer 后缓存里的 LR 是陈旧值；同时 restore scheduler state 只更新 scheduler 元数据**不回写 optimizer param groups 的 LR**：scheduler `get_lr()` 报告的值正确、optimizer 实际用的是另一个。两个缺陷叠加：**joining replica 以错误 LR resume**——梯度 all-reduce 完全一致、更新后权重分叉，破坏同步数据并行「同参数+同优化器状态+同步梯度 ⇒ 同更新」的基本不变量。修复 = 导出前刷新缓存里的 LR + 两个状态都加载完后从 scheduler 回填 optimizer 实际 LR。
+  source: 'torchtitan PR #4598（2026-09-11；作者在 TorchTitan+TorchFT 零偏差数值对齐验证中发现，replicas 发散 root-cause 图 + 修复回归测试）。https://github.com/pytorch/torchtitan/pull/4598'
+  behavior: 无 crash、无 NaN——TorchFT 拓扑变化/replica 加入后各副本以不同 LR 更新，权重静默分叉，后续梯度平均把分叉抹成「貌似一致实则偏离任意副本应有轨迹」；零偏差验证（对齐 uninterrupted run）是唯一可靠探针。与 OPT.12（scheduler override 抹平组界）同族：**scheduler↔optimizer 的 LR 传导契约断裂**，那边是 resume 加载覆写、这边是缓存值拷贝 + 恢复不回填；与 CKPT.02（矩错位）互补：那边优化器**状态**错、这边优化器**标量控制量**错。
+  discovery: 2026-09-12 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,53 @@
+id: TRN-0068
+legacy_ids:
+- CKPT.19
+slug: class_name_allowlist_leaves_weights_on_meta
+aliases: []
+title: DeepSpeed AutoTP 按类名白名单加载，norm 权重留在 meta
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: deepspeed
+    component: is_load_module 类名白名单
+  behavior: AutoTP 用硬编码的 26 项类名白名单决定是否从 ckpt 加载模块权重；norm 类无子模块、递归探不到，不在名单上就永不加载，meta 设备路径上的参数留在 meta。名单只能随模型家族手工增补。
+effect:
+  objects:
+  - 模型权重
+  detail: 模块替换完成后无报错、无缺失计数，名单外 norm 层（transformers 5.16.1 中 233 个 norm 类有 219 个不在名单，如 Gemma/GLM/Granite 系）参数仍在 meta；后续 ZeRO init 或首次前向决定是崩溃还是得到随机值。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-07'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8447
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0052
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `sft/pretrain` · Cov: `var:from_pretrained_silent_random_init` · 置信度 `documented`'
+  mechanism: DeepSpeed AutoTP 用**硬编码类名白名单**（26 项）决定是否从 ckpt 加载模块权重（`Loading.is_load_module`）。norm 类无子模块、递归探不到——不在名单上就永不加载，meta-device 路径上参数留在 meta。transformers 5.16.1 的 233 个 norm 类中 **219 个不在名单**（全部 Gemma / GLM / Granite / Olmo / MiniMax / Nemotron / Zamba 代系）；名单只能手工随模型家族增长（#8306 给 Qwen3.5 手补四个），跟不上时失败是静默的。最小复现：结构完全相同的两个 norm 类、state_dict 都给 7.0——名单内加载成功、名单外 `.is_meta` 为 True。`GlmMoeDsaRMSNorm`（DeepSpeed 自测用的 GLM-5.2 模型的 norm）即中招。
+  source: 'DeepSpeed #8447。https://github.com/deepspeedai/DeepSpeed/issues/8447'
+  behavior: 替换完成无报错、无缺失计数——未被加载的权重留在 meta（后续 ZeRO init / 首前向的处置决定是崩还是随机值；issue 验证到 gate 行为与 meta 参数幸存于 replacement 之后，未跑 end-to-end 错误生成）。与 CKPT.03（missing key 静默随机初始化）同下游（参数没有从 ckpt 来），机制在**按类名的加载白名单**而非键名匹配；与 CKPT.17（映射漂移整组省略）同为「转换/加载层对不认识的模块静默跳过」。
+  discovery: 2026-09-07 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

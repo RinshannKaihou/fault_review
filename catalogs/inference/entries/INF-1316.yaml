@@ -1,0 +1,62 @@
+id: INF-1316
+legacy_ids:
+- K10.5
+slug: gqa_head_group_repeat_vs_interleave_mismap
+aliases: []
+title: GQA KV 头扩展误用 torch.repeat 致查询头路由到错误 KV 组
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: 通用
+    component: GQA KV 头扩展（torch.repeat）
+  behavior: GQA 的 KV 头扩展用 torch.repeat 平铺（g(h)=h mod H_KV），而非 repeat_kv/repeat_interleave（g(h)=⌊h/r⌋），形状一致无报错，每个查询头都被路由到错误 KV 组。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 所有 GQA 层同时受影响，输出整体崩坏但无任何异常或报错；仅 MHA（H_KV=H_Q）或 MQA（H_KV=1）配置下恰好等价于正确映射。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 原可复现；CUDA+vLLM 下仍可软件构造
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: '`gh`：SHI-Labs/NATTEN #92（"GQA without repeat()"）。'
+relations: []
+original:
+  category: KV10
+  section: KV §10 第二轮补充（其他框架 / 卸载 / 共享 KV / 布局 / API 缓存）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `yes` · 置信度 `documented`'
+  mechanism: GQA 的 KV 头扩展使用 `torch.repeat`（平铺，映射 `g(h)=h mod H_KV`）而非 `repeat_kv`/`repeat_interleave`（映射 `g(h)=⌊h/r⌋`）。张量形状完全一致，因此没有任何 shape 报错，但**每个**查询头都被静默路由到错误的 KV 组。该错映射在所有使用 GQA 的层同时生效。
+  source: '`gh`：SHI-Labs/NATTEN #92（"GQA without repeat()"）。'
+  behavior: 输出整体崩坏但无任何异常/报错；只有在 MHA（H_KV=H_Q）或 MQA（H_KV=1）配置下才恰好退化为正确映射，这一点本身就是诊断信号。
+  trigger_surface: 原可复现；CUDA+vLLM 下仍可软件构造
+  signature: 查询与错误 KV 组配对是强 infra_off 扰动。签名极为醒目：**所有层同时偏离**——geometric（逐层余弦相对基线断崖）、trajectory（全深度而非单层 STEP）、spectral 三族都能强烈响应，statistical 亦可见 logit/熵分布整体位移。唯一的漏检情形是模型本身为 MHA 或 MQA，此时映射恰好等价。
+  repro: 在目标层的 `self_attn.k_proj` 与 `self_attn.v_proj` 前向钩子上，把投影输出的 KV-head 轴（`[B, T, H_KV*head_dim]` 视作 `[B, T, H_KV, head_dim]`）按 `perm` 置换——在 cache 写入 / `repeat_kv` 之前置换 KV 头，等价于用错误的组映射扩展。prefill 即可见，置换后的 K/V 同时进入 cache，解码继承同一错路由。诚实说明：该模型 H_KV=2，唯一的非恒等置换是组交换 `[1,0]`（每个查询头都读到另一组），这是 mod-vs-floor 错映射族的最强成员；14Q/2KV 头上字面的 tile-vs-interleave 映射只错路由 6/14 个查询头，逐查询头的部分错路由无法表示为 KV 头置换，故注入器实现的是该 bug 的组置换上界而非其精确的 6/14 模式。
+  locus: index-position
+  priority: high
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: 'subsystem/stack 由 算子/内核/natten 改为 模型定义/通用：torch.repeat 本身计算正确，错的是调用侧选错 KV 头复制方式，原文对照的 repeat_kv 是建模代码函数，修复是改调用；原文未称缺陷位于 NATTEN 内核，NATTEN #92 只是来源，描述为通用机制（触发面“软件构造”），故 stack 写 通用。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - visibility

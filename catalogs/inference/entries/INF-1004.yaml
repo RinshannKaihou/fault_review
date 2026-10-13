@@ -1,0 +1,52 @@
+id: INF-1004
+legacy_ids:
+- '10.88'
+slug: vllm_xgrammar_structural_tag_nested_json_schema_skips_unsupported_feature_check_constraints_silent
+aliases: []
+title: vLLM structural tag 嵌套 schema 跳过不支持特性检查
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: validate_xgrammar_grammar
+  behavior: 校验按顶层约束类型分派，structural_tag 分支只编译 tag 本身，不对嵌套 json_schema 做 unsupported-feature 检查，本应回退 guidance/outlines 的请求留在 xgrammar。
+effect:
+  objects:
+  - 输出内容
+  detail: 自供 structural_tag、strict tool 参数、Harmony（gpt-oss）response_format 三条路径中，含 multipleOf 等特性的 schema 通过验证却不被强制，输出可违反 schema；同 schema 走 plain json 会被拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM（main + v0.30 世代）+ xgrammar 后端（默认 auto）+ strict tools 参数 schema / structural_tag / Harmony response_format 含 xgrammar 不支持特性（config）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58930
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0956
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（vLLM `validate_xgrammar_grammar()` 对 **structural tag 内嵌套的 JSON schema 不做 unsupported-feature 检查**：plain `json` 约束经 `has_xgrammar_unsupported_json_features()` 拒绝 xgrammar 会编译错的 schema（如 `multipleOf`——xgrammar 仅 log warning 后忽略）、触发 guidance/outlines 回退；`structural_tag` 分支只编译 tag 本身，**嵌套 `json_schema` 完全跳过检查**——验证通过、请求留在 xgrammar、输出可违反 schema。schema 进入 structural tag 的三条路径全部复现（`{"type":"number","multipleOf":0.5}` 编译出的 grammar 接受 `0.3`）：(1) 用户自供 `structural_tag`（response_format/structured_outputs，新 `format` 与 legacy `structures`/`triggers` 形态）；(2) strict tool 的参数 schema（任何构建 tool-call tag 的 `tool_choice`：required/auto/named）；(3) Harmony（gpt-oss）把一切 response_format/structured_outputs 约束包进 structural tag（无 tools 也中）。同 schema 以 plain json 递交则被正确拒绝（main `2b9b55c7f1` + xgrammar 0.2.7 复现）） · Cov: `var:vllm_legacy_guided_json_silently_dropped_unconstrained_200`（10.40/10.47/10.73 约束静默失效族——本条在校验准入维度：嵌套 schema 绕过 unsupported-feature 检查使本应回退 guidance/outlines 的请求留在 xgrammar） · 触发 `config` · 置信度 `verified`'
+  mechanism: '结构化输出校验按"顶层约束类型"分派，structural tag 分支没有递归检查内嵌 schema 的 unsupported features——准入检查的存在（plain json 路径）自证正确做法已在同文件；修复 PR #58940（09-27 已开、open 未合并）对 legacy/新两种形态的嵌套 schema 施加同一检查，使 `multipleOf` 等抛 `XgrammarUnsupportedJsonFeaturesError` 并使 `backend="auto"` 回退 guidance/outlines。'
+  source: 'vLLM #58930（2026-09-27 open，含三路径复现脚本（validate/accepts/Grammar.from_structural_tag）、main commit 与 xgrammar 0.2.7 环境表；维护者认领并已开 PR #58940 附回归测试计划）。https://github.com/vllm-project/vllm/issues/58930'
+  behavior: 无 crash——**strict tool 参数与 Harmony 结构化输出静默违反声明的 schema**（`multipleOf` 等约束不生效）：下游按 schema 解析的消费者拿到违约值；三条路径覆盖 gpt-oss 全系与一切 strict tools 用户。10.47（SGLang 约束子集丢弃）、10.73（reasoning 门控 bitmask 不施加）之后约束静默失效族新成员：本条在 **校验准入的嵌套盲区**维度——检查存在但因分派粒度错过实际载荷。
+  trigger_surface: vLLM（main + v0.30 世代）+ xgrammar 后端（默认 auto）+ strict tools 参数 schema / structural_tag / Harmony response_format 含 xgrammar 不支持特性（config）
+  discovery: 2026-09-27 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

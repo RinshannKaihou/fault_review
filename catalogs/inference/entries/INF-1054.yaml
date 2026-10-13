@@ -1,0 +1,52 @@
+id: INF-1054
+legacy_ids:
+- '11.31'
+slug: hf_spec_decode_candidate_generator_q_distribution_mismatch
+aliases: []
+title: transformers 推测解码 q 分布错用 raw logits
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: transformers
+    component: block drafter 候选生成器
+  behavior: DFlash 等三个 block drafter 从 processor 处理后的 logits 采样，却返回 raw candidate_logits，被 _speculative_sampling 当作 q。
+effect:
+  objects:
+  - 输出分布
+  detail: do_sample=True 且配置 logits processor 时，acceptance test 基于错误的 q 运行，推测解码失去无损性保证，输出分布静默偏离理论分布；无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: transformers；`DFlashTokenCandidateGenerator` 等 block drafter + `do_sample=True` + logits processor
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/47932
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（推测解码 block drafter 返回 raw logits 而非采样所用 processor-applied logits → acceptance test 针对错误 q 运行） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`_speculative_sampling` 将 candidate generator 返回的 `candidate_logits` 当作 `q`（drafter proposal distribution）。但 `DFlashTokenCandidateGenerator.get_candidates` 从 **processor-applied logits** 采样 token（`logits_processor` → `softmax` → `multinomial`），却返回 **raw** `candidate_logits`——`next_token_logits`（processor 应用后的）被丢弃。三个 block drafter 有此问题。`do_sample=True` 时 acceptance test 针对错误的 q 运行，**破坏推测解码的无损性保证**。'
+  source: 'transformers #47932（2026-08-12 open）。`candidate_generator.py` L1674-L1696。https://github.com/huggingface/transformers/issues/47932'
+  behavior: '**无 crash。静默改变输出分布**——acceptance probability 计算基于错误的 q，输出分布偏离理论预期。属「推测解码 q 分布不一致→无损性破坏」**新子签名**——post-forward 结构性盲点中的核心正确性问题。'
+  trigger_surface: transformers；`DFlashTokenCandidateGenerator` 等 block drafter + `do_sample=True` + logits processor
+  discovery: |-
+    2026-08-13 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

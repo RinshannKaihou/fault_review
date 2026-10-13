@@ -1,0 +1,64 @@
+id: INF-0123
+legacy_ids:
+- '1.124'
+slug: trtllm_blackwell_gvr_topk_decode_barrier_divergence_race
+aliases: []
+title: TRT-LLM GVR top-k 内核 barrier 分歧竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tensorrt-llm
+    component: GVR top-k decode 内核
+  behavior: hint 依赖内核假设 hint 集合有区分度：全零 pre_idx 使全部线程走同一 gather 分支，tie 行使 hint 值逐位碰撞，均破坏 barrier 到达率假设，引发 barrier 分歧竞态。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: B200（sm100a）上冷启动全零 pre_idx 或量化 logits 的 tie 密集行即触发输出损坏或 CUDA_ERROR_ILLEGAL_ADDRESS 类崩溃；生产首个 decode step 可命中，完美 hint 也复现，cutlass-dsl 三版本均复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM + SM100/SM103 + GVR top-k decode + 冷启动零态或量化-logit tie 行（最小 direct-drive 复现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/18338
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（CuTe DSL GVR top-k decode 内核在 all-zeros `pre_idx`（GVR 先验 buffer 冷启动全零态——生产首步 decode 前即此状态）与 tie 密集行上触发 barrier 分歧竞态：输出损坏或 CUDA crash；完美 hint 也复现——tie 行 gathered hint 值逐位碰撞） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: hint 依赖内核假设 hint 集合有区分度：全零态使全部线程走同一 gather 分支、tie 行使 hint 值 bitwise 碰撞，两种输入类都破坏 barrier 到达率假设 → barrier-divergence race。最小 direct-drive repro（indices-only `GvrTopKKernel.launch`，生产 runner 与 tier dispatcher fallback 同入口）；nvidia-cutlass-dsl 4.6.1（requirements pin）/4.7.0/4.8.0.dev0 三版本复现（内核 bug 非 DSL 工具链）；B200 sm100a，内核亦面向 SM103。tie 输入类：量化 logits（round 后大量并列）+ argmax-slot hint。
+  source: 'TensorRT-LLM #18338（2026-08-28 open，含 zeros/ties 双模式最小复现）。https://github.com/NVIDIA/TensorRT-LLM/issues/18338'
+  behavior: 输出损坏或 crash（`CUDA_ERROR_ILLEGAL_ADDRESS` 类）；**冷启动零态可达**意味着生产服务第一个 decode step 即可命中，无需预热异常状态。属「hint 依赖内核 × 零初始化冷启动态」新子签名：与 1.44（topk 忽略 indices tensor）同 top-k 正确性域，本条在 TRT-LLM CuTe DSL 且根因是同步结构而非数据流。
+  trigger_surface: TRT-LLM + SM100/SM103 + GVR top-k decode + 冷启动零态或量化-logit tie 行（最小 direct-drive 复现）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: cause.subsystem 维持 算子/内核：原文明确“根因是同步结构而非数据流”，是 CuTe DSL top-k 内核的 barrier 分歧竞态；原文没有说明该 top-k 专属 sampler，rule 功能域优先的前提（缺陷只在某功能特性路径上）无依据。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 解码/采样
+        status: panel7
+    uncertain:
+    - effect
+    - visibility

@@ -1,0 +1,50 @@
+id: INF-0734
+legacy_ids:
+- '7.61'
+slug: vllm_quark_fse_check_substring_overmatch_shared_expert_gate_silent_disable
+aliases: []
+title: vLLM Quark FSE 检查子串过宽误命中 gate，共享专家融合静默失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: Quark FSE 兼容性检查 helper
+  behavior: FSE 兼容性检查在 Quark exclude 列表里搜子串 shared_expert（#51695 重构丢了尾部句点），误命中按设计总被排除的 shared_expert_gate 而判为不兼容。
+effect:
+  objects:
+  - 性能/资源
+  detail: ROCm/AITER 上开启 VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS 跑 Quark MXFP4 Qwen MoE 检查点时，FSE 被拒用、走 unfused shared expert 路径；无失败、精度不变，仅每 MoE 层一条启动 warning。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + ROCm/AITER + Quark MXFP4 Qwen MoE checkpoint + `VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS`（config 即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/54206
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（`is_shared_expert_quant_fse_compatible` 在整个 Quark `exclude` 列表里搜子串 `"shared_expert"`——同时命中 `mlp.shared_expert_gate`（hidden_size→1 的 BF16 router gate，按设计永远在 exclude 里）：**FSE 在它被启用的那些 checkpoint 上恰恰被拒用**，无失败、精度不变，仅每 MoE 层一条 startup warning，代价是 ROCm 上 FSE 加速整体丢失；#51695 重构时丢掉了旧 Qwen 本地检查的尾部句点） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: 旧 Qwen 本地检查匹配 `"shared_expert."`（带尾点，只命中真实投影 `shared_expert.down_proj`）；#51695 迁到共享 helper 时为同时覆盖 DeepSeek/GLM 复数形式 `shared_experts.` 丢掉句点，导致 gate 兄弟模块误命中。公开 checkpoint `amd/Qwen3.5-397B-A17B-MoE-MXFP4` 的 exclude 中 61 条命中全部是 `shared_expert_gate`、零条真实共享专家投影被排除——检查仍报不兼容。该 PR 新增测试只测复数命名、从未构造 `shared_expert_gate` 兄弟，CI 未能拦截。实测三个公开 Qwen MoE checkpoint：#51695 前 enabled、main 上 disabled、正确答案 enabled。
+  source: 'vLLM #54206（2026-08-28 open，含纯 config.json 无 GPU 复现脚本与三 checkpoint 对照表）。https://github.com/vllm-project/vllm/issues/54206'
+  behavior: '**无 crash、无精度变化**——纯性能/资源静默损失（unfused shared expert 路径），一条 startup warning 后再无信号。属「**重构期子串匹配过宽 × 模块命名空间冲突 = 优化静默失效**」新子签名：正确性数值不变使一切输出对拍漏检，只有性能基准才能暴露；与 7.59（日志说 A 跑的是 B）同"静默配置失效"族但方向相反（本条降级、彼条测错对象）。'
+  trigger_surface: vLLM + ROCm/AITER + Quark MXFP4 Qwen MoE checkpoint + `VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS`（config 即触发）
+  discovery: 2026-08-28 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

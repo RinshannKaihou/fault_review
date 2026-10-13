@@ -1,0 +1,69 @@
+id: INF-1273
+legacy_ids:
+- K6.8
+slug: llamacpp_quantized_kshift_precision_break
+aliases: []
+title: llama.cpp 量化 K-cache 的 context shift 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: llama.cpp
+    component: 量化 K-cache 的 K-shift 路径
+  behavior: context swap/shift 对缓存 K 就地施加 RoPE 旋转；量化 K-cache（type_k=q4_0）下需逐 cell 反量化→旋转→重量化，这条路径被破坏或不受支持，旋转后的 key 出错。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: 实际部署中先触发 GGML_ASSERT 断言崩溃；若跳过断言，上下文平移后旧 token 的位置编码错乱，输出逐渐脱轨。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: llama.cpp 专用
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/ggml-org/llama.cpp/issues/5652
+  kind: github_issue
+  resolved_from: 'llama.cpp #5652'
+- url: https://github.com/ggml-org/llama.cpp/issues/9743
+  kind: github_issue
+  resolved_from: '#9743'
+relations:
+- kind: var
+  target: INF-0675
+original:
+  category: KV6
+  section: KV §6 eviction-compression（驱逐/压缩）
+  meta: '`infra_off` · Cov: `var:kv_cache_fp8_quantization_drift` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: context swap/shift 会对缓存的 K 就地施加一次 RoPE 旋转；在量化 K-cache（`type_k=q4_0`）下，该 shift 必须对每个 cell 做「反量化→旋转→重量化」，而这条路径被破坏/不受支持 → 旋转后的 key 是错的。低 bit 存储与位置旋转算子的**交互**是其独有机制（而非单独的量化漂移或单独的 RoPE 误差）。
+  source: 'llama.cpp #5652（佐证 #9743）。源文档注：真实观察到的效果是在损坏之前先发生 `GGML_ASSERT` 崩溃。'
+  behavior: 实际部署中表现为断言崩溃而非静默退化；若跳过断言，则表现为上下文平移后旧 token 的位置编码错乱、输出逐渐脱轨。
+  trigger_surface: llama.cpp 专用
+  signature: infra_off——复合离流形：量化舍入噪声被 RoPE 旋转放大，缓存 K 上同时出现幅值误差与**相位**误差。可捕获：spectral 族对相位/频域畸变敏感，配合 statistical 的逐通道误差探针；trajectory 族可见平移点处的曲率不连续。会漏检：只做幅值比较的 geometric 探针（旋转近似保范数）。
+  repro: （方案）单钩子在 prefill 后对层 L 的缓存 K 先做 q4_0 风格的 fake-quant，再对同一批 quantized 值额外施加一次 RoPE 旋转（模拟"未重量化即旋转"），value 不动；因真实缺陷在 llama.cpp 的 GGML 内核层且以断言崩溃收场，钩子层面只能近似其数值后果，故为 partial。
+  locus: eviction-compression
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 量化
+        to: KV缓存
+        status: unanimous
+      effect:
+        from: 可用性/进度
+        to: KV状态
+        status: unanimous

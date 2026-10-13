@@ -1,0 +1,55 @@
+id: INF-0396
+legacy_ids:
+- '6.3'
+slug: vllm_chunked_prefill_logprob_norecompute
+aliases: []
+title: vLLM 分块 prefill 致 prompt_logprobs 偏移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: prompt_logprobs 处理器
+  behavior: V1 始终启用 chunked prefill；prompt_logprobs 处理器把逐 chunk 的 logprob 聚合后即丢弃，较早或已缓存的 chunk 不会针对最终全上下文 attention 重新计算。
+effect:
+  objects:
+  - 输出分布
+  - 训练信号
+  detail: 两个共享前缀、仅最后一个 token 不同的 prompt，在相同的共享前缀位置得到不同的 prompt_logprob；GRPO/PPO 的重要性采样 ratio 随之静默偏移，生成的 token 文本通常不变。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 配置/后端/缓存开关可构造对照
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/25262
+  kind: github_issue
+  resolved_from: 'vLLM #25262'
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`model_on` · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: vLLM V1 始终启用 chunked prefill；prompt_logprobs 处理器把逐 chunk 的 logprob 聚合后即丢弃，因此更早的/已缓存的 chunk 不会针对 FINAL 全上下文 attention 重新计算。于是两个共享前缀、只在最后一个 token 不同的 prompt，在**相同的共享前缀位置**上会得到不同的 prompt_logprob 值。
+  source: 'vLLM #25262; v1.engine.logprobs 文档; HF/ServiceNow "vLLM V0 to V1" blog。综述 RC.1/RE.x。'
+  behavior: prompt_logprobs（以及 GRPO/PPO 中的 RL importance-sampling ratio）静默偏移；生成的 token 文本通常不变。
+  trigger_surface: vLLM 配置/后端/缓存开关可构造对照
+  signature: ON-manifold —— 隐状态对于「实际被计算的那段上下文」而言是正确的，因此 geometric 隐藏态度量**完全漏检**，spectral/trajectory 同样看不到。签名只存在于 logits/logprobs 头输出与重算参考之间的差（KL / top-k overlap）。这是本项目的结构性盲点之一：post-forward 且 downstream-agnostic 的检测器无法覆盖。替代检测手段是关闭 chunked prefill 的整段重算对拍。
+  repro: 不适用。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

@@ -1,0 +1,53 @@
+id: INF-0812
+legacy_ids:
+- '8.28'
+slug: trtllm_window_vector_layer_indexing_model_global_vs_stage_local
+aliases: []
+title: TRT-LLM PP 下窗口向量全局/本地层索引混淆
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tensorrt-llm
+    component: V1/V2 管理器窗口向量层索引
+  behavior: max_attention_window 是模型全局的重复模式，而 KV pool 与 attention 元数据按流水线 stage 本地组织；V1 管理器部分分片、V2 保持全局，消费者需猜用本地还是全局层索引。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 流水线并行（含非零或不均匀 stage）+ VSWA/滑窗注意力下，层索引不一致可使 attention 采用错误的窗口值，输出静默退化、无 crash；masked hybrid cache 的启用层约定加剧此问题。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TRT-LLM；pipeline-parallel + VSWA/sliding-window attention + max_attention_window 配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-10'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/17466
+  kind: github_pr
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（KvCacheConfig.max_attention_window 是 model-global pattern 但 pools/metadata 是 pipeline-stage local→消费者猜用哪个 layer index） · Cov: `NEW` · 触发 `other_stack` · 置信度 `documented`'
+  mechanism: '`KvCacheConfig.max_attention_window` 是 model-global repeating pattern，但 KV-cache pools 和 attention metadata 是 pipeline-stage local。之前 V1 manager 部分分片（partially sharded）、V2 manager 保持全局（global），消费者需猜测用哪个 layer index（local vs global）。masked hybrid caches 中 window vector 的 enabled-layer convention 进一步复杂化。不一致的 layer indexing 可导致 attention 使用错误 window 值。修复将 configured pattern 一次性解析为精确 per-local-layer `max_attention_window_vec`，Cache/sizing/FMHA 消费者统一使用 local layer index，含 nonzero 和 uneven pipeline-parallel stages。'
+  source: 'TRT-LLM #17466（2026-08-10 open）。组件 `KvCacheConfig.max_attention_window` / V1/V2 manager layer indexing。https://github.com/NVIDIA/TensorRT-LLM/pull/17466'
+  behavior: 无 crash（但 attention window 可能使用错误 layer index 的值→静默退化）。属「config scope（model-global）与 runtime scope（stage-local）不一致」**新子签名**——pipeline-parallel 下 window vector layer index 的 scope 混淆。
+  trigger_surface: TRT-LLM；pipeline-parallel + VSWA/sliding-window attention + max_attention_window 配置
+  discovery: 2026-08-10 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

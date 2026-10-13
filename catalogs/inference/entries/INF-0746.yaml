@@ -1,0 +1,55 @@
+id: INF-0746
+legacy_ids:
+- '7.73'
+slug: vllm_manual_nvfp4_fusion_scale_buffer_unpadded_oob_write
+aliases: []
+title: 手工 SiLU+NVFP4 fusion scale 缓冲未 pad 致越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: SiLU+NVFP4 融合 scale 分配
+  behavior: '#51415 手工 fusion 按 [num_tokens, ceil(K/64)*4] 分配 scale，而 kernel 按 128×4 swizzle 以整 128 行 tile 写 scale，分配未 pad 到 tile 边界。'
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: token 数非 128 倍数（小 batch 或末尾残 tile）时越界写：CI 在 silu_mul_cvt_fp16_to_fp4 报 WARP_ILLEGAL_ADDRESS，#51415 合入后连败 17 次；是否崩取决于 heap 布局，也可能静默损坏相邻缓冲。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 'vLLM + #51415 后的手工 SiLU+NVFP4 fusion + 非 128 倍数 token 数（config×shape 触发）'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/55456
+  kind: github_pr
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（#51415 手工 SiLU+NVFP4 fusion 按 `[num_tokens, ceil(K/64)*4]` 分配 scale 存储，而 CUDA kernel 按 128×4 swizzle 布局以整 128 行 tile 写 scale 偏移——小 batch（<128）与末尾残 tile 越出分配写：CI 在 `silu_mul_cvt_fp16_to_fp4` 记录 `CUDBG_EXCEPTION_WARP_ILLEGAL_ADDRESS`，#51415 合入后 open alert 17 连败） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: kernel 的 swizzle 写偏移按满 128 行 tile 计算，分配侧只按逻辑 token 数给行——两个对齐域（逻辑 [num_tokens] vs 物理 [128-row tile]）在手工路径上失配；既有 `create_fp4_output_tensors` allocator 会 pad 行到 128 倍数、列到 4 倍数，手工 fusion 没有用它。1/5/32/127/128/129 token 的回归矩阵覆盖悬崖两侧。
+  source: 'vLLM PR #55456（2026-09-05，faulting kernel 来自 CUDA dump 而非 Python 同步栈；build 87376 引用）。https://github.com/vllm-project/vllm/pull/55456'
+  behavior: kernel 期 illegal address（fail-loud，偶发取决于 heap 布局）——越界写也可能静默损坏相邻缓冲（本例 CI 显形为 fault）。NVFP4 手工融合路径的**分配-布局契约缺口**：与 7.56（scale 丢失）同 NVFP4 工程化不成熟域，本条在内存布局层。
+  trigger_surface: 'vLLM + #51415 后的手工 SiLU+NVFP4 fusion + 非 128 倍数 token 数（config×shape 触发）'
+  discovery: |-
+    2026-09-05 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

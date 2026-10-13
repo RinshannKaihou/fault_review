@@ -1,0 +1,54 @@
+id: INF-0158
+legacy_ids:
+- '1.159'
+slug: ttmetal_dtype_kwarg_silently_ignored_nine_signatures_nullopt_hardcoded
+aliases: []
+title: 九个 ttnn 签名接受 dtype 参数却静默丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: 九个 op 的 dtype 转发与池快路径
+  behavior: div 各 dispatch 在输出 dtype 槽硬编码 nullopt；pow/max/min/gcd/lcm/bias_gelu 标量版注释掉参数再传 nullopt；global_avg_pool2d 快路径不用 dtype。
+effect:
+  objects:
+  - 数值结果
+  detail: 传入的 dtype= 被静默丢弃，如 div(a,b,dtype=float32) 仍返回 bf16，fp32/int32/bfloat8_b 均不生效；global_avg_pool2d 同一参数在快路径静默丢弃、普通路径 TT_FATAL 拒绝。下游按声明 dtype 消费会错误解释位型。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent WH/BH + 九个受影响 op 的 `dtype=` 参数（软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55304
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/55305
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/55311
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（九个 ttnn 签名接受 `dtype=` 并静默丢弃：`div` **每个** dispatch 都在 output-dtype 槽硬编码 `std::nullopt`（含刚通过 TT_FATAL 校验该参数的分支）；`pow/maximum/minimum/gcd/lcm/bias_gelu(tensor,scalar)` 把参数名注释出签名再传 nullopt——而同文件 `add/subtract/multiply` 与 `bias_gelu(tensor,tensor)` 正确转发：`div(a,b,dtype=float32)` 返回 bf16；`global_avg_pool2d` 全局快路径对 dtype= 既不应用也不校验（连显式支持的 bfloat8_b 也丢），普通路径同参数 TT_FATAL 拒绝——**同一参数一条路径静默丢、一条路径大声拒**） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`binary_composite_op.cpp` 九处签名注释掉参数 + 传 nullopt；`generic_pools.cpp` 全局池快路径体从不引用 dtype 参数（只看输入 canonical dtype），且该分支先于普通路径校验到达。参数被接受、部分分支被校验、无一分支被应用。'
+  source: 'tt-metal #55304 / #55305 / #55311（2026-09-03，#55304/#55305 closed、#55311 open；ttsim BH 实测、honoured/ignored 对照表）。https://github.com/tenstorrent/tt-metal/issues/55304 · https://github.com/tenstorrent/tt-metal/issues/55305 · https://github.com/tenstorrent/tt-metal/issues/55311'
+  behavior: 无 crash——请求的输出 dtype 静默不生效（fp32/int32/bfloat8_b 均被丢）；下游按声明 dtype 消费即错位解释位型。与 1.150（rms_norm 分支丢 epsilon）合成「**参数被接受但不被消费**」跨 op 族（epsilon/dtype 两参数、eltwise/binary/pool/norm 四域），提示系统性的签名-实现脱节模式。
+  trigger_surface: Tenstorrent WH/BH + 九个受影响 op 的 `dtype=` 参数（软件 API 可触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,50 @@
+id: INF-0771
+legacy_ids:
+- '7.98'
+slug: vllm_triton_fused_moe_per_channel_weight_scales_indexed_as_per_tensor_quark_static_int8
+aliases: []
+title: fused MoE 按 per-tensor 读取通道级权重 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: fused MoE 权重 scale 索引布局
+  behavior: legacy Triton fused MoE 用同一布尔同时决定激活与权重 scale 布局，Quark 静态 INT8 的 per-tensor 激活+per-channel 权重组合下权重 scale 被按 per-tensor 读。
+effect:
+  objects:
+  - 数值结果
+  detail: Quark 静态 INT8 W8A8 MoE 走 legacy Triton 路径时，探针中把某专家全部 W13 通道 scale ×4 输出不变，per-channel 校准失效、输出带系统性量化误差；仅组件级观察，未做完整模型评测。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + Quark 静态 INT8 W8A8 MoE（legacy Triton 路径）+ per-channel 权重 scale（config：量化格式即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58532
+  kind: github_issue
+relations: []
+original:
+  category: cat7
+  section: 第 7 类 · 量化（PTQ / 低位 / FP8 / 微缩度）
+  meta: '`infra_off`（vLLM Triton fused MoE legacy 路径（INT8/FP8 共享内核）：`per_act_token_quant` 标志**同时选择**激活 scale 与权重 scale 的索引布局——Quark `W8A8Int8MoEMethod` 的"静态 per-tensor 激活 scale + per-output-channel 权重 scale"组合走 tensor-scale 分支，**per-channel 权重 scale 被按 per-tensor 布局读取**（`int8_w8a8_moe_quant_config()` 又把 `per_out_ch_quant=False` 钉死）。组件级判决：4 专家/top-k=2 探针中把专家 3 全部 W13 通道 scale ×4 **输出无任何变化**（该专家被 4 个路由槽选中）；实验性分离两标志后扰动即影响输出、修正后的 legacy 与手工模块路径输出一致。#57092 修的是**相反组合**（per-token 激活 × per-tensor 权重），本组合在其更新后的组合测试中仍被跳过） · Cov: `NEW`（双标志共用单开关子签名；与 7.91（block-fp8 else 吞不支持值 fail-late）同属"量化粒度矩阵的未覆盖格"但本条是索引布局错读而非静默回退） · 触发 `config` · 置信度 `documented`'
+  mechanism: 共享非 block W8A8 内核的 `per_channel_quant` 单布尔同时控制 per-token 激活 scale 读取与 per-channel 权重 scale 读取；Quark static INT8 的粒度组合落在两标志耦合的缺口上。组件级观察（overlay 探针 + 代码核对 `00b7847c`），**非完整模型评测**；报告者自述确定性复现脚本尚未在 GPU 运行（预测性失败声明）。
+  source: 'vLLM #58532（2026-09-24 open，含组件探针设计、未路由专家控制组、双问题定位（config factory + 共享索引点）、#57092/#54959 关联与修复提案）。https://github.com/vllm-project/vllm/issues/58532'
+  behavior: 无 crash——路由专家的 per-channel 校准被静默按错误布局索引（扰动不可见=校准失效面），静态 INT8 Quark MoE 输出携带系统性量化误差；FP8 共享同一实现属兼容范围但未单独复现。
+  trigger_surface: vLLM + Quark 静态 INT8 W8A8 MoE（legacy Triton 路径）+ per-channel 权重 scale（config：量化格式即触发）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

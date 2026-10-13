@@ -1,0 +1,56 @@
+id: INF-0785
+legacy_ids:
+- '8.1'
+slug: attn_sink_eviction_collapse
+aliases: []
+title: 滑窗/FIFO KV 驱逐 attention sink 致长生成崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: 滑窗/FIFO KV 驱逐策略
+  behavior: 朴素 sliding-window/FIFO KV cache 把最前约 4 个吸收 softmax 多余概率质量的 sink token 驱逐，或滑窗实现未保留 sink。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 生成长度超过窗口后输出变得不连贯/乱码，perplexity 跳升数个数量级；驱逐边界之前完全正常。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 可复现
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://arxiv.org/abs/2309.17453
+  kind: arxiv
+- url: https://arxiv.org/abs/2504.02732
+  kind: arxiv
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`model_on` · Cov: `NEW` · 触发 `yes` · 置信度 `verified`'
+  mechanism: 朴素的 sliding-window / FIFO KV cache 会把最前面约 4 个 "sink" token 淘汰掉，而正是这些 token 在吸收 softmax 的多余概率质量；一旦被驱逐，softmax 无处倾倒多余质量，attention 随即退化。保留约 4 个 sink token 即可恢复稳定性。本条为 MERGED 条目，合并的子故障为：attention_sink_eviction（sink token 被驱逐）、sliding-window without sinks（滑窗实现未保留 sink）。
+  source: Xiao, Tian, Chen, Han, Lewis, "Efficient Streaming Language Models with Attention Sinks" (StreamingLLM), ICLR 2024, https://arxiv.org/abs/2309.17453 。Barbero et al. arXiv:2504.02732。
+  behavior: 一旦生成长度超过窗口，输出变得不连贯 / 乱码，perplexity 跳升数个数量级。
+  trigger_surface: 可复现
+  signature: model_on，但是**分段**的：在驱逐边界之前完全 on-manifold，边界处出现急剧不连续。最强信号来自 attention 概率向量——位置 0–3 上的 sink 浓度消失（cheap 族指标：max-attention-on-first-token 塌陷）。spectral / trajectory 族则看到隐状态范数与轨迹恰好在驱逐边界处出现 kink。源文档指出它与 sdc_spike 的 massive-vs-non_massive 划分相通：sink token 携带的正是 massive-magnitude 的 key 通道。单帧 geometric 检查若采样点落在边界之前则完全漏检。
+  repro: 用 hook 丢弃前 K 个 KV 条目，或直接把落在 sink 位置上的 attention 置零。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

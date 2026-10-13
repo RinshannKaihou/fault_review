@@ -1,0 +1,52 @@
+id: TRN-0144
+legacy_ids:
+- KER.13
+slug: chunked_ce_backward_inplace_overwrites_logits
+aliases: []
+title: ms-swift 分块 CE 反向就地覆写调用方 logits
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: ms-swift
+    component: ChunkedCrossEntropyLoss
+  behavior: 序列并行 ChunkedCrossEntropyLoss 为省显存把每个梯度 chunk 就地写进前向保存的 logits，并把该输入张量原样作为梯度返回，违反 autograd 保留 saved input 的契约。
+effect:
+  objects:
+  - 数值结果
+  detail: CELOSS_PARALLEL_SIZE>0 的 SP 训练中，单一 logits 消费者时静默跑通，但 backward 后调用方 logits 已被梯度覆写，后续依赖前向 logits 的计算拿到梯度值；复用前向图或带 aux loss 时 crash；单次 backward 梯度本身正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-15'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10129
+  kind: github_issue
+relations: []
+original:
+  category: KER
+  section: KER
+  meta: 'stage: `shared` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: ms-swift 序列并行 `ChunkedCrossEntropyLoss`（`swift.sequence_parallel.utils` 导出，`CELOSS_PARALLEL_SIZE > 0` 时被 `per_token_loss_func_sp` 使用）为省显存把每个梯度 chunk **就地写进前向保存的 `logits`**，再把该输入张量原样作为梯度返回——违反 autograd「backward 返回独立梯度、保留 saved input」的契约。后果按调用形状分三层：① 叶子张量（raw `requires_grad=True` logits）触发 in-place `RuntimeError`（fail-fast 面）；② 非叶子输入（如 `raw.tanh()`）报 version-counter 错；带辅助项（`logits.square().mean()`）同样炸；③ **简单 linear head、单一 logits 消费者时静默跑通**——backward 把调用方的 logits 原位替换成梯度值，前向图若被复用（aux loss / retain_graph / 第二次 backward）即消费被污染的值。`torch.nn.functional.cross_entropy` 接受同样的输入。
+  source: 'ms-swift #10129（6 行最小复现 `ChunkedCrossEntropyLoss.apply(logits, labels, 3).mean().backward()`；提交者自带含梯度/参照测试的修复，代价是额外 logits-sized 梯度 buffer；macOS arm64 / PyTorch 2.14 / CPU+MPS，无需权重或分布式；closed 2026-09-15，无评论、无关联 commit）。https://github.com/modelscope/ms-swift/issues/10129'
+  behavior: 可见面 = 复用前向图或带 aux loss 时 crash；**静默面 = 单一消费者的 SP 训练路径 backward 后调用方 logits 已被梯度覆写**——任何后续依赖前向 logits 的计算（distill 温度缩放、软标签缓存）拿到的是梯度值；标准单 backward 下返回的梯度数值本身正确，loss 曲线无异常信号。与 KER.12（cuDNN SDPA backward 写坏 dQ）同为 backward 路径错误，差异在这边是 Python 侧自定义 autograd Function 的 saved-tensor 契约破坏（写穿调用方张量）、那边是闭源 kernel 内部错值；与 DATA.09（SWA fallback 无条件覆写 caller attention mask）同病：**库代码就地复用调用方张量**。
+  discovery: 2026-09-15 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

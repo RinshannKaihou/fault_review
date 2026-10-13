@@ -1,0 +1,52 @@
+id: INF-0646
+legacy_ids:
+- '6.253'
+slug: vllm_partial_prefix_cache_promotion_events_parent_removed_in_same_batch
+aliases: []
+title: vLLM 部分前缀提升事件的 parent 指向同批已移除 hash
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: cache_partial_block 提升事件
+  behavior: 部分前缀条目提升到更晚边界时，同一事件批先发旧边界 BlockRemoved，再发新边界 BlockStored，其 parent_block_hash 恰指向刚被移除的 hash。
+effect:
+  objects:
+  - KV状态
+  detail: 开 KV cache events 时，外部消费者在提升场景收到自相矛盾的事件批，父引用无法解析、前缀链断裂；生成正常、无 crash，CPU 单元级可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + enable_kv_cache_events + 部分前缀条目跨边界提升（config：外部消费者启用即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-23'
+remarks: effect object 缺“对外事件流/接口契约”类值：变错的是发给外部消费者的 KV 事件流，暂用最接近的 KV状态
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/58394
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0645
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM 部分 prefix-cache 条目被**提升（promotion）到更晚边界**时，`BlockPool.cache_partial_block()` 在同一事件批内先发 `BlockRemoved`（旧边界）再发 `BlockStored`（新边界、其 `parent_block_hash` **恰指向刚被移除的那个 hash**）——外部消费者收到无法解析的父引用：本批中唯一提及该 hash 的事件说它被移除了。CPU-only 单元级复现（复用 `test_partial_prefix_cache_primitives.py` 的 helpers 驱动真实 `BlockPool`）。报告者明确 #58383 修复不覆盖此案例（该 PR 只填首次注册的边界，本形态被既有测试 pin 住）） · Cov: `var:vllm_partial_block_kv_event_parent_hash_never_emitted_chain_unreconstructable`（6.252 KV 事件对外契约缺陷族——parent 从未上报 vs parent 同批移除，第三形态） · 触发 `config` · 置信度 `verified`'
+  mechanism: promotion 路径把"删除旧边界 + 存储新边界"作为一个原子批发出，但新边界的 parent 锚点选择没有考虑消费者视角——命名了一个本批宣告死亡 hash；修复方向（#58396）：提升条目重新锚定到幸存的块对齐祖先（`BlockStored(H10, parent=H6)` 覆盖 `[6,10)`），使事件批自包含。
+  source: 'vLLM #58394（2026-09-23 open，含单元级复现脚本、事件批 dump（`Removed hashes=[''0xb92e76c1'']` / `Stored parent=0xb92e76c1`、`parent reported in this batch? False`）、与 #58119/#58383 的谱系界定）。https://github.com/vllm-project/vllm/issues/58394'
+  behavior: 无 crash、生成正常——**外部 KV 消费者（offload/复用/审计组件）前缀链断裂**：依赖事件流重建链的组件在 promotion 场景拿到自相矛盾的批；6.252（parent 从未上报）之后该族第三形态：本条 parent **上报过但同批撤回**，同族不同分支。
+  trigger_surface: vLLM + enable_kv_cache_events + 部分前缀条目跨边界提升（config：外部消费者启用即触发）
+  discovery: 2026-09-23 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

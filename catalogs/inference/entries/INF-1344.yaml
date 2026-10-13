@@ -1,0 +1,59 @@
+id: INF-1344
+legacy_ids:
+- '1.296'
+slug: ttmetal_update_cache_num_users_gt32_tile_pad_rows_walked_oob_dram_write
+aliases: []
+title: update_cache padding 行越界写 cache 外 DRAM
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tt-metal
+    component: update_cache writer
+  behavior: 输入 tilize 到 64 行高后，writer 按 padded 高逐 user 行走、无 Bcache 钳制，padding 行 48..63 被当真实 user 写出，越出 cache 张量页数。
+effect:
+  objects:
+  - 数值结果
+  detail: num_users>32 且非 32 倍数（如 48）时触发；无 TT_FATAL、无 crash，cache 内部值全对，越界 NOC 写落在 cache 外部 DRAM，表现为同 run 中无关张量的莫名损坏，极难归因。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: 'false'
+  trigger_note: num_users>32 且非 32 倍数（如 48）时触发
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-12'
+remarks: '8.96（update_cache fp32 毒化邻 31 行，同 op #59561）的写侧姊妹：8.96 是 cache 内相邻行 fp32 精度毒化（数值面），本条是 padding 行越界写 cache 外 DRAM（地址面），失效维度正交。越界写按 cache_id=user*cache_batch_num_tiles+… 计算地址；worked example：Bcache=48 时 pad users 写 page 12288..16129，全部 ≥ cache_total 12288。校验只查 cache.padded_shape[0] <= input.padded_shape[-2] 与 batch_offset，无 %32 约束。来源 tt-metal #59824，main@e495861 复核未变。'
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/59824
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0880
+original:
+  mechanism: user 行计数取 padded 输入高、user 每块行数冻结 min(32,Bcache)、无 Bcache 钳制三者叠加；源码行级定位（main@e495861 复核未变）+ 逐数字 worked example 闭合因果。
+  source: 'tt-metal #59824（2026-10-12 前窗口 open，全源码推导 + worked example；10-12 扫描"下轮优先"标记，本日补录）。https://github.com/tenstorrent/tt-metal/issues/59824'
+  behavior: 无 crash——cache 外 DRAM 静默损坏，波及同 run 无关张量，极难归因。
+  trigger_surface: tt-metal + ttnn.update_cache + num_users>32 且非 32 倍数（hw_specific）
+  discovery: 2026-10-12 每日扫描（10-12 扫描"下轮优先"补录，正文本日深读）。
+  meta: '`infra_off`（`ttnn.update_cache` UPDATE 路径（multi-core factory）：batch size（num_users）**>32 且非 32 倍数**（如 48——普通服务形状）时，输入 tilize 到 64 行高，writer 按 `num_batched_heads × min(32, Bcache)` 逐 user 行走、只在 `b == B`（padded 高）re-base cache_id，无任何钳制——padding 行 48..63 被当真实 user 写到 `cache_id = user*cache_batch_num_tiles + …`，**超出 cache 张量页数的 NOC 写入**（worked example：Bcache=48 时 pad users 写 page 12288..16129，全部 ≥ cache_total 12288）。无 TT_FATAL 无 assert；cache **内部**值全对、损坏落在**外部** DRAM——表现为后续运行中无关张量的莫名损坏。校验只查 `cache.padded_shape[0] <= input.padded_shape[-2]` 与 batch_offset，无 %32 约束。8.96（update_cache fp32 毒化邻 31 行，同 op #59561）的**写侧姊妹**） · Cov: `var:ttmetal_update_cache_fp32_corrupts_31_neighbouring_rows_of_updated_position`（8.96 update_cache 损坏族——同 op 同 KV cache 基础设施，但 8.96 是 cache 内相邻行 fp32 精度毒化（数值面）、本条是 num_users tile padding 行越界写 cache 外 DRAM（地址面），失效维度正交） · 触发 `hw_specific` · 置信度 `verified`'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-13
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,51 @@
+id: INF-1139
+legacy_ids:
+- '12.23'
+slug: hf_v5_chunk_op_unequal_split_silent_reinit
+aliases: []
+title: transformers v5 Chunk 转换不校验均分致权重错切
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: transformers
+    component: Chunk.convert 转换 op
+  behavior: core_model_loading.py 的 Chunk.convert 用 torch.chunk 切分融合张量，guard 只校验块数与 target 数一致、不校验均分；尺寸不可整除时产出不等长块且块数吻合，guard 通过。
+effect:
+  objects:
+  - 模型权重
+  - 可用性/进度
+  detail: from_pretrained 转换不可整除的融合张量时，或在远离因果处 shape mismatch 崩溃、难以归因，或在 ignore_mismatched_sizes=True 下静默重初始化权重、无任何加载信号；CPU 可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: transformers v5 动态加载 + 任何不可整除的融合张量 × Chunk op 映射（CPU 纯软件可复现）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-26'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/48323
+  kind: github_issue
+relations: []
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（transformers v5 动态加载 API 的 `Chunk` 转换 op 只校验 chunk **数量**与 target 数一致、不校验均分——张量尺寸不被整除时 `torch.chunk` 产出**不等长**块且块数恰好吻合 → 每个下游消费者拿到尺寸错误的张量：或远端 shape mismatch 崩溃难归因，或 `ignore_mismatched_sizes` 下**静默重初始化权重**） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: '`src/transformers/core_model_loading.py` 的 `Chunk.convert` 用 `torch.chunk(tensor, sizes, dim)` 切分融合张量（q/k/v 类目标），guard 仅 `len(chunks) != len(target_patterns)`——`torch.chunk` 在不可整除时返回不等长块（如 5 行切 2 份得 (3,2)）且块数与 target 数相同，guard 通过。最小复现：`Chunk(dim=0)` 对 `arange(5.)` 切 {"a","b"} 得 `(3,)(2,)` 无任何错误。真实 `from_pretrained` 转换中后果两分支：远端消费者 shape mismatch（错误发生在离因果很远的位置）；更糟的是 `ignore_mismatched_sizes=True` 路径直接静默重初始化——模型权重被随机值替换且零信号。代码库内已注册的全部 `Chunk` 用法按构造均切等长兄弟，故加整除校验不误伤。'
+  source: 'transformers #48323（2026-08-25 open，transformers 5.16.0.dev0；附 6 行最小复现与两分支后果分析）。https://github.com/huggingface/transformers/issues/48323'
+  behavior: 双分支——远端 crash（错误位置不可归因）或**静默权重重初始化**（模型行为彻底改变、无任何加载信号）。属「**guard 校验维度不完备（数量代尺寸）**」新子签名：契约声明"等长切分"而实现只验证了能验证的弱性质；与 7.54 同日同 v5 动态加载域构成「加载期静默损坏」对（本条在通用张量重排、7.54 在量化配置语义）。
+  trigger_surface: transformers v5 动态加载 + 任何不可整除的融合张量 × Chunk op 映射（CPU 纯软件可复现）
+  discovery: 2026-08-26 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

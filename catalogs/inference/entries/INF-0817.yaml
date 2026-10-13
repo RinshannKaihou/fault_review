@@ -1,0 +1,50 @@
+id: INF-0817
+legacy_ids:
+- '8.33'
+slug: vllm_eagle_volatile_tail_boundary_collapse_hybrid_swa_zero_recovery
+aliases: []
+title: vLLM EAGLE 尾部回退致 CPU KV offload 零命中
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: CPU KV offload 存储/查找边界
+  behavior: EAGLE volatile-tail pop 把共享 replay 边界收紧到 full-attention 对齐以下，而 store 只保留 prompt 末尾 tail、未存小滑窗组验证窗口所需 chunk，lookup 级联下探。
+effect:
+  objects:
+  - 性能/资源
+  detail: 混合 EAGLE/MTP + 多个小滑窗组 + CPU KV offload 下，非对齐 prompt（如 30,208 token）存储成功但 replay 时恢复 0 个外部 token，等同无缓存；对齐的 30,272-token prompt 正常恢复；无 crash。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM；CPU KV offload + 混合 EAGLE/MTP + 多 sliding-window 组
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/51761
+  kind: github_issue
+relations: []
+original:
+  category: cat8
+  section: 第 8 类 · KV 缓存 / 注意力机制故障
+  meta: '`infra_off`（EAGLE volatile-tail pop 将共享 replay 边界推到 full-attention 对齐以下→CPU KV offload 恢复零外部 token） · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 混合 EAGLE/MTP + 小 sliding-window 组下，CPU KV offload 在 EAGLE volatile-tail pop 将共享 replay 边界推到 full-attention 对齐边界以下时**恢复零外部 token**。5 组配置（full-256/SWA-64/EAGLE-SWA-64/C4-4/C128-8）：30,208-token prompt 存储成功，但匹配 replay 时 EAGLE volatile-tail pop 将共享边界收紧到 30,144。C4 组需 chunk 7534/7535 验证其 window，但普通 per-segment store 只保留 7550/7551 的 prompt-end tail→lookup 级联到更低边界→返回 0 外部 token。控制：对齐的 30,272-token prompt 正确恢复 30,208 token。
+  source: 'vLLM #51761（2026-08-11 open）。组件 `OffloadingConnectorScheduler._build_store_jobs` / `CPUOffloadingManager`。https://github.com/vllm-project/vllm/issues/51761'
+  behavior: 无 crash。**cache hit 降为零**——对齐外边界的 prompt 的 KV offload 恢复完全失败，等效于无缓存。属「EAGLE volatile-tail boundary 与 sliding-window 对齐的交互→KV offload 恢复失败」**新子签名**——推测解码 volatile-tail 与多组 SWA 的对齐竞态。
+  trigger_surface: vLLM；CPU KV offload + 混合 EAGLE/MTP + 多 sliding-window 组
+  discovery: 2026-08-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

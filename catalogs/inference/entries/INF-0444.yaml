@@ -1,0 +1,51 @@
+id: INF-0444
+legacy_ids:
+- '6.51'
+slug: vllm_check_stop_min_tokens_skip_max_len_hang
+aliases: []
+title: vLLM check_stop 因 min_tokens 跳过长度检查致挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: check_stop() 停止条件判断
+  behavior: check_stop() 在 num_output_tokens < min_tokens 时提前返回，同时跳过了其后的 max_model_len/max_tokens 长度检查。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: 请求在达到 min_tokens 前已撞上 max_model_len 时触发（显式或隐式 clamp 的 max_tokens，参数校验能通过）；调度器每步算出 0 个新 token 并跳过，请求永留 running queue，llm.generate() 不返回，KV 块泄漏。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V1 scheduler；min_tokens > 剩余上下文（显式或隐式 max_tokens clamp）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-08'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/51299
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（check_stop 在 min_tokens 未达时提前返回，跳过 max_model_len 检查→请求永久挂起） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: '`check_stop()` 在 `num_output_tokens < min_tokens` 时提前返回（#26317 加），但也跳过下方 `max_model_len`/`max_tokens` 长度检查。若请求在到达 `min_tokens` 前已撞 `max_model_len`，调度器每步算 `num_new_tokens==0` 并跳过，请求永远留 running queue 持有 KV 块和 request slot。`llm.generate()` 永不返回。参数验证通过（`max_tokens==min_tokens > 剩余上下文` 或 `max_tokens=None` 被 clamp）。'
+  source: 'vLLM PR #51299（2026-08-06 open）。组件 `vllm/v1/core/sched/utils.py`。https://github.com/vllm-project/vllm/pull/51299'
+  behavior: 请求永久挂起（无 crash、无错误），engine core 持续空转，KV 块泄漏。属「提前返回跳过互斥的停止条件」签名——调度逻辑控制流新子签名。
+  trigger_surface: vLLM V1 scheduler；min_tokens > 剩余上下文（显式或隐式 max_tokens clamp）
+  discovery: 2026-08-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

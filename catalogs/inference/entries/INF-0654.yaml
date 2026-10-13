@@ -1,0 +1,53 @@
+id: INF-0654
+legacy_ids:
+- '6.261'
+slug: sglang_strip_thinking_cache_retraction_release_kv_cache_frees_radix_owned_slots_double_alloc
+aliases: []
+title: SGLang --strip-thinking-cache 致 KV 槽双分配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: owned_kv_len 与 KV 释放
+  behavior: owned_kv_len 在有 reasoning token 后封顶于 prompt 长度；被 retract 的请求重 prefill 后整段插入 radix tree，释放时把属于 tree 节点的槽当超额分配释放，造成双释放。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 开 --strip-thinking-cache 且发生 retraction 时，节点驱逐二次释放使 available_size 可超池大小，alloc 可把同一 KV slot 发给两个请求，静默跨请求上下文污染；本应捕获的断言被跳过。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + `--strip-thinking-cache` + retraction（长负载回退）+ radix cache（other_stack；不开 strip-thinking-cache 或无 retract 免疫）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-29'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/41617
+  kind: github_issue
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（SGLang `--strip-thinking-cache` 下 `Req.owned_kv_len()` 在请求有 reasoning token 后把 owned 长度**封顶在 prompt 长度**（#22373）；被** retract 的请求**保留 `output_ids`/`reasoning_tokens`（`reset_for_retract` 两者都不重置）并以 `prompt + output_ids` 重新 prefill——重 prefill 后 `maybe_cache_unfinished_req` 把整段插入 radix tree，`cache_protected_len = len(prompt)+len(earlier output)`。请求完成或再次 retract 时 `release_kv_cache` 把 `[owned_kv_len, kv_allocated_len)` 当"超额分配"释放，**其中 `[P, cache_protected_len)` 属于 tree 节点**——这些 slot 同时进 free list 且被 tree 引用；节点被驱逐时二次释放，`available_size()` 可超池大小、一次 `alloc()` 可把同一 slot 发给两个请求（静默 KV 损坏；本会捕获它的 `start_p == end_p` 断言在 strip_thinking_cache 下被跳过；`page_size > 1` 且 prompt 不落在页边界时经 `cache_finished_req` 的非对齐尾释放走同一条双释放路径；PD decode resume 路径疑似同样暴露） · Cov: `NEW`（retract 生命周期 × thinking-cache owned 长度封顶的 KV 槽双分配子签名；与 6.157（KV offload 完成请求未写入末槽跨请求投毒）同为"完成/回收路径 KV 槽归属错"域但本条在 **strip-thinking-cache 的 owned 长度契约 × retract 重 prefill**交叠面且双释放可致 alloc 同槽两请求） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: owned_kv_len 封顶假设"prompt 之后的内容不在 tree 中"（`cache_protected_len <= len(origin_input_ids)`），retract-重 prefill 打破该假设；报告者给出两条独立双释放路径（overalloc 释放 + 非对齐尾释放）的逐步推导与 `alloc()` 同槽两请求后果链。
+  source: 'SGLang #41617（2026-09-29 open，含代码引用（#22373 owned_kv_len 封顶、reset_for_retract 不重置）、双路径推导与 free list/radix 双持有后果分析）。https://github.com/sgl-project/sglang/issues/41617'
+  behavior: '无 crash——**同一 KV slot 被两个请求写入**后的静默跨请求上下文污染（6.163 谱系的最底层成因形态之一）；available_size 超池与断言被跳过使运营面完全不可见。 回访（2026-10-09）：仍 open；09-29 报告者评论确认 #41281 合并后 main 仍复现（finish/二次 retract 与 4 个 page_size=4 用例双释放），一行 owned_kv_len 修复验证有效。'
+  trigger_surface: SGLang + `--strip-thinking-cache` + retraction（长负载回退）+ radix cache（other_stack；不开 strip-thinking-cache 或无 retract 免疫）
+  discovery: 2026-09-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

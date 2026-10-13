@@ -1,0 +1,51 @@
+id: TRN-0175
+legacy_ids:
+- LOSS.11
+slug: mtp_per_token_loss_local_token_ratio
+aliases: []
+title: Megatron MTP loss 用 rank 本地 token 比率缩放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: megatron-lm
+    component: MTP loss token 比率缩放
+  behavior: MTP 路径把每个 MTP loss 乘 original_num_tokens/num_tokens_safe，两个计数都取 rank 本地值；该非线性比率先作用于 loss，后续全局归一无法还原。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: MTP + calculate_per_token_loss=True 且各 DP/CP rank 有效 token 数不均时，MTP 梯度被本地比率加权（repro 4.67 vs 参照 4.0），MTP 损失权重随 rank 分布漂移，多卡与单卡 run 不可比；无 crash、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/7452
+  kind: github_issue
+relations: []
+original:
+  category: LOSS
+  section: LOSS
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron MTP 路径（multi_token_prediction.py:1113 `original_num_tokens = loss_mask.sum()`、L1216 把每个 MTP loss 乘 `original_num_tokens / num_tokens_safe`）——**两个计数都是 DP/CP rank 本地的**。`finalize_model_grads` 后续的全局归一除以全局 main-token 计数，**解不开一个已形成的非线性本地比率**（比率先作用于 per-token loss、再进梯度）。MTP + `calculate_per_token_loss=True` + DP/CP 间有效 token 数不均（SFT 式 masking 即产生）时触发。repro：两 DP worker main/MTP 计数 4/3 与 2/1、未缩放 MTP 梯度和 6 与 10 → 实现梯度 4.6666665，单 worker 参照 4.0。修复 = 先在与梯度归一相同的 DP/CP 组上 all-reduce 两个计数、再构成比率。#4896 报过同型比率平均但只在 MTP loss **日志**（已关）；本条证明**梯度路径同病**；#3943/#1532 是更早的 MTP 缩放 bug（已修）。
+  source: 'Megatron-LM #7452（2026-09-17；finding 3）。https://github.com/NVIDIA/Megatron-LM/issues/7452'
+  behavior: 无 crash、无 NaN——MTP 梯度被本地 token 比率加权，**有效 MTP 损失权重随各 rank 的 main/深 token 分布漂移**；多卡 vs 单卡 run 不可比、MTP head 的训练强度系统性错位。与 LOSS.10（CP-local mean-of-means）同打击「局部比率/均值先于全局归一进入非线性组合」，这边是 **MTP 双计数比率**、那边是 CP 均值；与 MOE.11（累积分子配瞬时分母）同为「比率的两项取自不同归约域」；「日志路径已报过、梯度路径漏修」与 OBS 家族「可见指标正常、隐藏路径坏」互为镜像。
+  discovery: 2026-09-18 每日扫描
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

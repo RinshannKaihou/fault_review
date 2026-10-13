@@ -1,0 +1,58 @@
+id: INF-0600
+legacy_ids:
+- '6.207'
+slug: sglang_legacy_sgl_env_rewrite_after_deprecation_registry_drop
+aliases: []
+title: SGLang 旧 SGL_ 变量重写晚于 deprecation 转发
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 配置/参数
+    stack: sglang
+    component: _handle_deprecated_envs
+  behavior: _handle_deprecated_envs() 先做 deprecation registry 转发、后做 SGL_→SGLANG_ 重写；重写名本身已 deprecated 时错过 registry 轮次，链式转发永不发生。
+effect:
+  objects:
+  - 性能/资源
+  - 指标/日志
+  detail: 设置 SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK 这类其重写名亦已 deprecated 的旧变量时，开关静默失效（TP 内存不平衡检查关不掉），无 crash，唯一线索是一条指向另一个 deprecated 名的告警。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + legacy SGL_ 前缀环境变量 + 其重写名亦 deprecated（other_stack：SGLang；配置即触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-06'
+remarks: subsystem 缺“配置/参数解析”（环境变量、CLI 参数规范化与 deprecation 转发），暂归 调度/服务；effect 缺“配置生效”（用户设置被静默丢弃），暂用 性能/资源。
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/38219
+  kind: github_pr
+relations:
+- kind: var
+  target: INF-0557
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（`_handle_deprecated_envs()` 先跑 deprecation registry 转发、后做 legacy `SGL_`→`SGLANG_` 前缀重写——重写结果本身在 registry 中的 legacy 变量（如 `SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK` → `SGLANG_DISABLE_...`，而后者已 deprecated、registry 会把它转发到 `SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK`）错过 registry 轮次，转发永不发生：设置被静默丢弃，且告警指向另一个 deprecated 名） · Cov: `var:vllm_envs_typechecking_default_runtime_split_hybrid_mode_off`（6.164 配置语义分裂族） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 两条规范化管线（前缀重写、registry 转发）的执行顺序使"链式 deprecated"路径断裂。修复把 `SGL_`→`SGLANG_` 前缀重写提前到 registry 轮次之前（单跳名无行为变化）；回归用 fresh-import 子进程测试（模块级 `_handle_deprecated_envs()` 在 import 时跑，进程内 `_apply` 模式覆盖不到顺序）。
+  source: 'SGLang PR #38219（2026-09-06，含修复前后 CLI 复现与 14 项单测）。https://github.com/sgl-project/sglang/pull/38219'
+  behavior: 无 crash——用户设置的故障规避/调优开关静默失效（本例：TP 内存不平衡检查关不掉），唯一线索是一条指向另一个 deprecated 名的告警。「双层 deprecation 链的顺序断裂」是 6.164（声明/运行时默认分裂）之后配置语义域新变体：本条在**名字规范化管线内部**。
+  trigger_surface: SGLang + legacy SGL_ 前缀环境变量 + 其重写名亦 deprecated（other_stack：SGLang；配置即触发）
+  discovery: 2026-09-06 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 配置/参数
+        status: unanimous

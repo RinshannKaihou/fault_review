@@ -1,0 +1,54 @@
+id: INF-0376
+legacy_ids:
+- '5.29'
+slug: vllm_dp8_p2p_tier_secondary_nixl_ucx_agent_startup_hang
+aliases: []
+title: vLLM DP8 二级 tier NIXL/UCX agent 构造挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: vllm
+    component: 二级 tier NixlTransport 构造
+  behavior: TieringOffloadingSpec 的 p2p 二级 tier 为每个 engine-core 进程单独构造 NixlTransport agent，某个 rank 上的 UCX 初始化/内存注册路径无限阻塞，且无超时。
+effect:
+  objects:
+  - 可用性/进度
+  detail: fresh pod 上 DP8（8×H200、TP1+EP、MultiConnector）启动时 primary NIXL agent 均成功，某二级 agent 卡在 UCX 实例化之前，serving port 不开、pod 永不 Ready，8 卡被占而闲置。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + DP8 + MultiConnector/TieringOffloadingSpec p2p 二级 tier + NIXL/UCX（拓扑+连接器配置触发）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-09-02'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/55000
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0375
+original:
+  category: cat5
+  section: 第 5 类 · 分布式 / 多 GPU / 并行推理
+  meta: '`infra_off`（fresh pod 上 DP8（8×H200、TP1+EP、GLM-5.2-FP8、MultiConnector = NixlConnector + OffloadingConnector/TieringOffloadingSpec 含 p2p 二级 tier）启动挂起：8 个 primary NIXL agent 全部初始化成功，某个**二级** `NixlTransport` agent 停在 `_NixlAgent(...)` 内部、"Backend UCX was instantiated" 日志之前；DP supervisor 等待全部 rank → serving port 永不打开、pod 永不 Ready、8 GPU 占用但闲置；无 Python 异常、无容器重启、无超时——发生在任何推理请求之前） · Cov: `var:vllm_flashinfer_trtllm_moe_dp_ep_worker_stuck_wedge`（5.28 DP 拓扑启动期 silent wedge 族） · 触发 `partial` · 置信度 `documented`'
+  mechanism: TieringOffloadingSpec 的 P2P 二级 tier 为每个 engine-core 进程单独构造 NixlTransport agent；UCX 初始化/内存注册路径在某个 rank 上无限阻塞（nixl-cu13 1.3.2 / CUDA 13.0.2 / NCCL 2.30.7；nightly 同 pin 同路径）。与 5.25（symm-mem NCCL 注册死锁）同为"通信库初始化/注册无超时阻塞"，本条在 UCX agent 构造层且为 DP 启动期形态；与 5.28 同为 DP 拓扑启动 wedge，本条 KV 连接器二级 tier、彼条 MoE 后端。
+  source: 'vLLM #55000（2026-09-02 open，kv-connector 标签，含完整 MultiConnector JSON 配置与观测序列）。https://github.com/vllm-project/vllm/issues/55000'
+  behavior: 活性死亡（hang）——启动期无超时无异常，k8s 侧 pod 永不 Ready、GPU 资源被占；与 stale-peer 重启失败是不同故障（fresh pod 即触发）。
+  trigger_surface: vLLM + DP8 + MultiConnector/TieringOffloadingSpec p2p 二级 tier + NIXL/UCX（拓扑+连接器配置触发）
+  discovery: |-
+    2026-09-02 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

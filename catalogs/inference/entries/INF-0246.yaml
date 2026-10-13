@@ -1,0 +1,50 @@
+id: INF-0246
+legacy_ids:
+- '1.247'
+slug: ttmetal_moe_expert_token_remap_writer_group_boundary_off_by_one_drops_page_overwrites_next_core
+aliases: []
+title: moe_expert_token_remap 组计数双重推进致丢页与越核覆写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: tt-metal
+    component: token_remap writer 组计数
+  behavior: writer 内核组计数器体内 reset 为 0 后又被 for 增量表达式推进为 1，首组之后每组只跨 reduction_size−1 页，组边界每次 flush 提前一页漂移。
+effect:
+  objects:
+  - 数值结果
+  detail: 单 core 拥有多于一个归约组时，每组尾页的专家激活位不进入 reduced 输出，并覆写下一 core 的页；wormhole 128 页/rs=1 错 906/4096；现有测试每 core 单组故恒绿。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.moe_expert_token_remap` + 单 core 拥有 >1 个归约组（`batch*seq/reduction_size` 超过分片 core 数；默认测试形状之外即触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-09-23'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57461
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`moe_expert_token_remap` writer 内核（`writer_moe_expert_token_remap.cpp:107`）组计数器被 **for 增量表达式与体内 reset 双重推进**：`reduction_count = 0` 后循环自带 `++reduction_count` 立即把它变 1——第一个之后每个归约组跨 `reduction_size − 1` 页而非 `reduction_size` 页，组边界每次 flush 提前一页漂移。三重后果：(a) 每组尾页的激活被 OR 进 scratch 后又被 post-write `fill_with_val` 清零——**从未到达 reduced 输出**（下游消费者漏掉一个真实激活 local expert 的 token 批）；(b) 组变短使多页 core **发出多于其 reduced 页数的写**，`reduce_idx` 越过本 core 切片**覆写下一 core 的页**（最后一个 core 则写越缓冲末端）；(c) `reduction_size == 1` 时每 core 恰写一页、其余保留输出缓冲原值。**全部访问留在已分配张量内——无 assert、静默错数据**；`output_mapping`（`page_id = bs` 独立路径）不受影响） · Cov: `NEW`（循环计数器双重推进组边界漂移子签名） · 触发 `yes` · 置信度 `documented`'
+  mechanism: 'host 侧 `split_work_to_cores_even_multiples` 按 `reduction_size` 整数倍分页、golden `reshape(...).any(dim=2)` 按连续不重叠 chunk 归约——两侧契约都证实内核的组边界漂移是缺陷；该 op 测试套件只参数化 `batch*seq` 64/128 对 64 core（每 core 单组、漂移无处发生），故恒绿。wormhole_b0 实测：128 页/rs=1 错 **906/4096**、256 页/rs=2 错 **1346/4096**、4096 页/rs=16 错 45/8192；rs=16 低错数是"丢 1/16 token 只在该 token 恰为组内唯一激活者时翻转 OR 位"的稀释而非良性。修复 #57463（open，未合并）：把计数移进体内前置自增。**09-24 回访补充**：#57463 评论区记录三个相邻缺陷——writer 仍丢部分尾组（当前被偶数倍分配掩盖、与 #51290 修复联动即暴露）、`reduction_size` 完全无主机校验（0/非整除）、`output_reduced` 经真实消费者（sparse_matmul）的覆盖被 #28376 跳过。'
+  source: 'tt-metal #57461（2026-09-23 open，含逐迭代漂移表、host/golden 双侧契约证据、7 组 wormhole 实测错元素计数与建议修复；master ticket #51214 item 10）。https://github.com/tenstorrent/tt-metal/issues/57461'
+  behavior: 无 crash——MoE 专家路由元数据静默错值：被丢页 token 批的 local expert 激活位归零（消费者误判"该专家未被使用"）、越界写污染下一 core 的 reduced 页；`reduction_size==1` 时除首组外全组保留陈旧缓冲内容。
+  trigger_surface: tt-metal + `ttnn.moe_expert_token_remap` + 单 core 拥有 >1 个归约组（`batch*seq/reduction_size` 超过分片 core 数；默认测试形状之外即触发）
+  discovery: '2026-09-23 每日扫描发现、当日 core 限额未及核实；2026-09-24 补录（评论核实修复 #57463 open 未合并）。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

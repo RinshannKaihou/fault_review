@@ -1,0 +1,79 @@
+id: INF-1249
+legacy_ids:
+- K4.2
+slug: left_padding_cache_position_desync
+aliases: []
+title: 左填充 position_ids 未按 mask 推导，batch 与单条不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: transformers
+    component: 左填充 position_ids 推导
+  behavior: 左填充时 position_ids/cache_position 未由 attention mask 推导而按下标朴素推断，计入 pad 前缀，真实 token 得到错误 RoPE 位置，pad 位置也被 attend
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 同一 prompt 在左填充 batch 与单条推理下生成结果不一致，程度随该行 pad 长度增大，batch=1 时消失；自 transformers 4.42 起仅 mask 有无即会移动缓存生成路径的 logits
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: ambiguous
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/29419
+  kind: github_issue
+  resolved_from: 'transformers #29419'
+- url: https://github.com/huggingface/transformers/issues/31943
+  kind: github_issue
+  resolved_from: '#31943'
+- url: https://github.com/huggingface/transformers/pull/31944
+  kind: github_pr
+  resolved_from: 'PR #31944'
+- url: https://github.com/huggingface/transformers/issues/29149
+  kind: github_issue
+  resolved_from: '#29149'
+relations:
+- kind: var
+  target: INF-0788
+original:
+  category: KV4
+  section: KV §4 cross-request（跨请求，缓存键 / 汏染）
+  meta: '`ambiguous` · Cov: `var:cache_position_off_by_one` · 触发 `partial` · 置信度 `documented`'
+  mechanism: 当 `padding_side='left'` 时，`position_ids` / `cache_position` 必须由 attention mask 推导（`clamp(cumsum(mask)-1, min=0)`）；若按序列下标朴素推断，就会把 pad 前缀也计入 → 真实 token 拿到错误的 RoPE 位置，并且缓存里的 pad 位置也被 attend 到。自 transformers 4.42 起，仅仅是 mask 的存在与否就足以移动缓存生成路径下的 logits。
+  source: 'transformers #29419、#31943（PR #31944）、#29149。'
+  behavior: 源文档未给出独立的「行为效应」条目；按机制，同一条 prompt 在 batch（左填充）与单条推理下生成结果不一致，且不一致程度随该行的 pad 长度增大。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: ambiguous——签名被 batch 结构与 pad 长度门控，batch=1 时完全消失。表现为「跨序列污染 + 位置偏移」两重叠加：被填充的行在 pad 槽上携带非零 attention mass，同时该行整体带一个等于 pad 长度的 RoPE 相位偏移。捕获者：cheap（batch-vs-single 输出/隐藏态偏离，即 batch-invariance 检查）、geometric（attention-mass-on-pad 的结构性检测）、trajectory（逐行不同幅度的偏移）。漏检者：任何 batch=1 的单序列基线，以及把 batch 内各行平均掉的 statistical 汇总量。与 `cache_position_off_by_one` 那种全局恒定、近乎零效应的偏移不同，这里的偏移是逐序列不同的。
+  repro: 走 batch 变体路径：构造左填充 batch，在 `model.model.rotary_emb` 上挂单个 hook，给每一行加上等于其 pad 长度的 `position_ids` 偏移（复用 `cache_position_off_by_one` / `bug_perfect_disguise` 的 position 改写惯用法），并同时放开 pad 槽的 mask，使 attention 能落到 pad 上。
+  locus: '`cross-request`'
+  priority: '`medium`'
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 位置编码 → 模型定义。出错的不是 RoPE 本身或其缩放/插值配置（词表 位置编码 的范围），而是左填充时 position_ids/cache_position 未按 attention mask 推导；该错误同时造成 RoPE 位置错和 pad 位置被 attend（掩码问题），属建模/生成输入准备代码，词表 模型定义 含'attention mask 构造'。左填充是触发条件（rule 6），不是功能域路径。component 保留。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 位置编码
+        status: panel7
+    uncertain:
+    - effect

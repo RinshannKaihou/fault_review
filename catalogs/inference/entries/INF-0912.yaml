@@ -1,0 +1,53 @@
+id: INF-0912
+legacy_ids:
+- '9.26'
+slug: fault_rope
+aliases: []
+title: RoPE 故障注入原型：cos/sin 整体乘 factor 弱化位置信息
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: 通用
+    component: RoPE cos/sin 输出缩放
+  behavior: scale 模式用 rotary embedding forward hook 把输出 (cos, sin) 整体乘以 factor（默认 0.5），cos²+sin² 不再为 1，被旋转的 q/k 维度整体缩小；其余模式原型未接线。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 位置信息被系统性弱化，长距离依赖与语序敏感任务先劣化；深度剖面从早期层就偏离，靠 trajectory 与 spectral 捕获，只看最后一层 geometric 距离和 cheap 族会漏检；模式名 scaled/scale 不匹配会静默落入 no-op。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: config
+  trigger_review: false
+  trigger_note: RoPE scale 模式
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat9
+  section: §3.8 输入层故障（tokenizer / 模板 / RoPE）
+  meta: '`model_on` · Cov: `NEW`（本项目早期实测条目） · 触发 `config`（仅 `scale` 模式是真实模型变更） · 置信度 `verified`'
+  mechanism: 破坏 RoPE 的位置编码。`scale` 模式是真实模型变更：在 rotary embedding 上注册 forward hook，把输出的 `(cos, sin)` 整体乘以 `factor`（默认 0.5）后返回——同时压缩旋转分量的幅度（`cos²+sin²` 不再为 1），使被旋转的 q/k 维度整体缩小，等价于"RoPE scaling 配置被写错"的粗粒度抽象。其余三个模式（`zeros` / `reversed` / `offset`）按设计要通过 `position_ids` 覆写实现，原型实现中未接线（no-op）；且配置取值名（`scaled` vs `scale`）曾不匹配——复现时必须核对模式名，否则静默落进 no-op 分支。
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。
+  behavior: '`scale` 模式下位置信息被系统性弱化，长距离依赖与语序敏感任务先劣化；`zeros`（全部位置视为 0）会让模型完全丧失顺序感、输出词袋式内容；`reversed` 让句子顺序被反读。'
+  trigger_surface: RoPE scale 模式
+  signature: 原型配置标为 `model_on`，但严格说取决于模式——`scale` 是一个平滑的、被模型部分吸收的自洽变形（on-manifold 倾向，与 quant 同族），而 `zeros`/`reversed` 若真被实现将是强 off-manifold。可见性上它属于 **INPUT_LEVEL/位置域**：深度剖面从早期层就偏离；attention 距离衰减曲线是最直接的 tell，但本目录的度量族里没有 attention-域度量，因此实际靠 trajectory（早期起跳的 cos drift）与 spectral（位置结构塌缩后 token 表示的有效秩变化）捕获。会漏检的是：只看最后一层的 geometric 距离（模型把偏离吸收回自洽轨迹）、以及全部 cheap 族。
+  repro: 只需 `rotary_emb` 的一个 forward hook（`(cos, sin) → (cos*f, sin*f)`），退出时移除即可；位置-id 三模式需要在 forward 调用处提供 `position_ids` 覆写通道，原型代码路径未提供，故整体标记为 `partial`。
+  相关条目: '`var:9.26` → **9.2 `rope_scaling_dropped_no_scaling`**（Coverage: "VARIANT-OF:fault_rope scaled"）、**9.3 `rope_scaling_wrong_type`**、**13.7 `bug_head_dim_kv_heads_misconfig`**（签名描述为 per-head RoPE 误旋转，Coverage: VARIANT-OF:fault_rope）；**8.4 `cache_position_off_by_one`** 的 Coverage 同时挂靠 "fault_rope offset"。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

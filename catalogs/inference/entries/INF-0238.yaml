@@ -1,0 +1,52 @@
+id: INF-0238
+legacy_ids:
+- '1.239'
+slug: ttmetal_grid_sample_golden_ignores_use_precomputed_grid_nan_3x_wide
+aliases: []
+title: grid_sample golden 丢弃模式 flag 返回 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: tt-metal
+    component: grid_sample golden
+  behavior: golden 只实现标准 grid 模式，use_precomputed_grid 落入 **_ 被丢弃，无条件按 last_dim//2 解析 grid，把 int16 位型当归一化坐标使用。
+effect:
+  objects:
+  - 测试判定
+  detail: use_precomputed_grid=True 时 golden 无报错地返回 NaN 与无关有限值、形状 3× 过宽（(1,2,9,2) 应为 (1,2,3,2)），该文档化路径的参考验证从未真实存在，比较模式恒假阳性或恒炸。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + `ttnn.grid_sample` + `use_precomputed_grid=True` 的 golden/比较模式（hw_specific：验证层）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-21'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57149
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0232
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（**验证面失效**：`ttnn.grid_sample` 的注册 golden `golden_grid_sample`（`pool.py:360`）只实现标准 grid 模式、**从不引用 `use_precomputed_grid`**——flag 落 `**_`（pool.py:368）被丢弃， handed 另一模式时无错误地返回 **NaN 与无关有限值、张量 3× 过宽**。precomputed grid 为 `(N,H,W,6K)`，其 6 元素是 `h0/w0` 的 **int16 位型 bit_cast 进 bfloat16** + 4 个真实 bf16 双线性权重（`grid_sample_prepare_grid.cpp:137-146`）——golden 无条件 `K_grid = last_dim // 2` 得 K=3（真 K=1），把位型当 3 对归一化坐标喂 `F.grid_sample`。fp32 host 实测（`4f9fa9e`）：control 路径 max abs diff 0.0436（bf16 权重设计舍入），缺陷路径 NaN + 形状 `(1,2,9,2)`（应 `(1,2,3,2)`）） · Cov: `var:ttmetal_selu_golden_drops_scale_alpha_kwargs_3416pct_off_pcc_passes`（1.233 golden 吞 kwargs 姊妹对第三成员） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: golden 的 `**_` 吞噬在 1.233（数值参数 scale/alpha）与 1.234（工厂签名 scalar=）之后出现第三形态——被吞的是**语义模式 flag**：不是让参考算错数值，而是让 golden 对整条文档化路径（precomputed grid）产出结构性垃圾（NaN + 错形状）。由于形状错误在多数门禁下会炸出（fail-visible），危害低于 1.233/1.234 的恒绿型，但"flag 落 `**_`"的代码模式与前两者完全同构。
+  source: 'tt-metal #57149（2026-09-21 open，含 prepare_grid 内核的 6 元素布局表、control/defect 双路径实测（形状+max diff）、`4f9fa9e` fp32 host 无需设备的复现方式）。https://github.com/tenstorrent/tt-metal/issues/57149'
+  behavior: golden 对 precomputed 路径返回 NaN/错形状——若测试断言只看 PCC 可能被 NaN 传播误判，若看形状则 fail-visible；主要危害是**该路径的参考验证从未真实存在**（comparison mode 对文档化路径恒假阳性或恒炸）。
+  trigger_surface: tt-metal + `ttnn.grid_sample` + `use_precomputed_grid=True` 的 golden/比较模式（hw_specific：验证层）
+  discovery: 2026-09-21 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

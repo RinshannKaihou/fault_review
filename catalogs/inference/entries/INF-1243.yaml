@@ -1,0 +1,69 @@
+id: INF-1243
+legacy_ids:
+- K3.6
+slug: hybrid_cache_sliding_window_misroute
+aliases: []
+title: Gemma2 漏传 sliding_window，滑动层被误派静态更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: Gemma2 HybridCache 滑动层分派
+  behavior: Gemma2Attention.forward 的 cache_kwargs 缺 sliding_window，HybridCache.update 把滑动层误派给 _static_update，按绝对索引写入，越出较小的滑动缓冲区
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  detail: 长上下文下交错的滑动（局部）层发生错误槽写入或索引越界，全注意力层不受影响；源文档未单列外部症状
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/35711
+  kind: github_issue
+  resolved_from: 'transformers #35711'
+- url: https://github.com/huggingface/transformers/pull/35681
+  kind: github_pr
+  resolved_from: 'PR #35681'
+- url: https://github.com/huggingface/transformers/pull/35691
+  kind: github_pr
+  resolved_from: '#35691'
+relations:
+- kind: var
+  target: INF-0790
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`infra_off` · Cov: `var:sliding_window_misapplied` · 触发 `partial` · 置信度 `verified`'
+  mechanism: '`Gemma2Attention.forward` 构造的 `cache_kwargs` 里没有 `''sliding_window''`，于是 `HybridCache.update` 把滑动（局部）层错误地分派给 `_static_update`；后者用绝对索引写 `k_out[:, :, cache_position]`，索引超出较小的滑动缓冲区，在长上下文下造成写错槽或索引越界。'
+  source: 'transformers #35711（修复 PR #35681 已合并，#35691 被取代）。'
+  behavior: 源文档未单列该字段；机制中记载的后果是长上下文下滑动层发生错误槽写入或索引越界。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: '`infra_off`，签名形态是**层奇偶（layer-parity）**：只有交错的局部（奇数）层离流形，逐层残差范数发散局限在滑动层，全注意力层保持干净。因此必须用逐层剖面（depth profile）来看；任何跨层聚合的指标都会把一半干净层混进来、把信号稀释一半。这也是本目录里少数几条**签名形状本身**（层交替）就足以做归因的故障。'
+  repro: 方案：只对奇数层的缓存施加「用超出滑动窗口的绝对索引写入」等价的槽错位（对该层缓存做位置错位覆盖），偶数层不动，从而复现层奇偶签名。属 partial：非 Gemma2 式交错-SWA 的架构没有层交错，层奇偶模式必须人为指定。
+  locus: block-slot-alloc
+  priority: medium
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - effect.visibility
+  note: subsystem 维持 KV缓存：误分派发生在 HybridCache.update（滑动层被派给 _static_update），只出现在 HybridCache 滑动层缓存路径上，按 rule 1 归 KV缓存；漏传参数的 Gemma2Attention 只是调用方。visibility 待定 → 静默错误：原文给出了后果'错误槽写入或索引越界'，signature 描述滑动层残差范数发散（无报错的离流形），信息并非缺失，不应留 待定。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

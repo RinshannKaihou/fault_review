@@ -1,0 +1,59 @@
+id: TRN-0059
+legacy_ids:
+- CKPT.10
+slug: zero3_lazy_teacher_init_reads_partitioned_state
+aliases: []
+title: trl SDPO teacher 在 ZeRO-3 分片后初始化读空 shard
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: PEFTAdapterEMACallback
+  behavior: 该回调在 on_train_begin() 才创建 SDPO teacher adapter，此时 student 已被 ZeRO-3 分片，get_peft_model_state_dict() 读到未 gather 的空分区。
+effect:
+  objects:
+  - 模型权重
+  - 训练信号
+  detail: teacher 与 EMA shadow 从空张量初始化（实测 28 个 adapter tensor numel()==0），训练照常、蒸馏目标从错误 anchor 出发；另一面：分片后插入的新参数脱离 ZeRO instrumentation，首个 forward 即崩。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-21'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/6828
+  kind: github_issue
+relations: []
+original:
+  category: CKPT
+  section: CKPT
+  meta: 'stage: `rl` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: trl `PEFTAdapterEMACallback` 在 `on_train_begin()` 才惰性创建 SDPO teacher adapter——此时 student 已被 DeepSpeed ZeRO-3 分片。两个静默面：(1) `get_peft_model_state_dict()` 直接读未 gather 的分区参数，读到 `numel()==0` 的空 shard 视图，teacher 与 EMA shadow 从**空张量**初始化；(2) 分片后插入的新参数脱离 ZeRO instrumentation，首个 forward 崩（`'dict' object has no attribute '_in_forward'`）。
+  source: 'trl #6828（实测：分区态 28 个 adapter tensor `numel()==0`；修复方向 = 在 DeepSpeed prepare 之前建结构 + gather 后取 detach clone）。https://github.com/huggingface/trl/issues/6828'
+  behavior: face (1) 静默——teacher/EMA 初始化源错但训练照常，蒸馏目标从错误 anchor 出发；face (2) fail-fast。与 CKPT.02（ZeRO 分片图与加载布局错位）不同：这里分片布局是对的，错的是**读取时机在 gather 窗口之外**——合法配置下生命周期序错，非几何错。
+  discovery: 2026-08-21 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: 'subsystem 由 权重/检查点 改为 RL训练回路。依据 rules 功能域优先：缺陷只出现在 RL 阶段（meta stage: rl）SDPO teacher/EMA 回调 PEFTAdapterEMACallback 的代码路径上，RL训练回路 在功能域清单内；修复方向（在 DeepSpeed prepare 之前建结构 + gather 后取 detach clone）改的也是该回调的生命周期，而非通用的权重加载/保存/转换代码。原文强调“分片布局是对的，错的是读取时机”，不是检查点内容或加载几何问题。'
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

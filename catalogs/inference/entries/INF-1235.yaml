@@ -1,0 +1,66 @@
+id: INF-1235
+legacy_ids:
+- K2.5
+slug: overlap_scheduler_committed_len_off_by_one
+aliases: []
+title: SGLang overlap 调度致前缀缓存多提交一个 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: radix 前缀缓存提交长度记账
+  behavior: overlap 调度器在批次 N 的 EOS-finish 前执行下一批 prepare_for_decode（kv_committed_len+1），使 cache_finished_req 向 radix 树多提交一个 token
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 共享该前缀的后续请求复用了本应重算的边界 token 的 KV，仅在复用接缝处有单位置索引偏移；源文档未给出外部症状
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: model_on
+  trigger: partial
+  trigger_review: false
+  trigger_note: 原 partial；单机 vLLM 上可尝试场景化复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/24590
+  kind: github_issue
+  resolved_from: 'SGLang #24590'
+- url: https://github.com/sgl-project/sglang/pull/24745
+  kind: github_pr
+  resolved_from: 'PR #24745'
+relations: []
+original:
+  category: KV2
+  section: KV §2 index-position（索引/位置）
+  meta: '`model_on` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: overlap 调度器在批次 N 的 EOS-finish 之前就运行批次 N+1 的 `prepare_for_decode`（`kv_committed_len += 1`），于是 `cache_finished_req` 向 radix tree 多提交了一个 token；后续共享该前缀的请求会复用一个本应重算的边界 token。
+  source: 'SGLang #24590（修复 PR #24745）。'
+  behavior: 源文档未给出该字段；机制中记载的后果是共享前缀的后续请求复用了多出来的那个边界 token 的 KV。
+  trigger_surface: 原 partial；单机 vLLM 上可尝试场景化复现
+  signature: '`model_on` —— 源文档明确判为「mostly on-manifold」：多复用的那个 token 的 KV 是真实前向算出来的，只是位置多了一个，因此隐藏态在数值上完全自洽，只在复用接缝处存在单位置索引偏移。这是最难检测的一类：geometric / spectral / statistical / trajectory 族几乎必然漏检，只有 recompute-oracle 轴（重算对照；前提：记录 batch 组成的 bitwise 重算或 batch-invariant kernels）能把「复用 KV 与重算 KV 不一致」直接暴露出来。'
+  repro: 方案：单钩子在 prefill 后把缓存尾部多保留一位（把上一段的最后一个真实 KV 行原样保留到复用边界），全程不引入任何合成噪声——保持 on-manifold 正是这条故障的检测价值所在。属 partial：单进程路径没有 radix tree 与跨请求复用，只能复现「多一个真实 KV 行」的末态。
+  locus: index-position
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - cause.objects
+  note: subsystem 调度/服务 → KV缓存。依据 rule 1（功能域优先）：多提交的 token 发生在 cache_finished_req 向 radix tree 提交 kv_committed_len 的前缀缓存路径上，后果只在后续请求复用该前缀时出现；overlap 调度的执行顺序是触发条件（rule 6），调度/服务 不在功能域列表内。component 相应改为前缀缓存提交记账。effect/visibility 维持。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - subsystem

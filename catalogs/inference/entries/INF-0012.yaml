@@ -1,0 +1,54 @@
+id: INF-0012
+legacy_ids:
+- '1.12'
+slug: triton_fp8_e5m2_transposed_store_codegen_corruption
+aliases: []
+title: Triton fp8 转置 store 误编译写出 Inf/NaN 垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: fp8 转置 store lowering
+  behavior: 值由 PropagateNan.ALL 的 tl.maximum/minimum 产生、lowering 为 min.NaN/max.NaN PTX 时，转置布局的 fp8 store 被错误 codegen，指向寄存器分配或向量化。
+effect:
+  objects:
+  - 数值结果
+  detail: 同一值的 contiguous store 正确，transposed store 却写出解码为 Inf/NaN 的垃圾字节，损坏模式随 XBLOCK/num_warps 变化；用转置 fp8 e5m2 store 的自定义 kernel（MoE 专家输出、量化 attention）静默损坏。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 可在 CUDA 上跑 Triton 最小复现，但需构造 kernel/版本，非一行配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-07-30'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/11111
+  kind: github_issue
+- url: https://gist.github.com/vkuzo/c7410babadd904c93beb3fd3638ffc75
+  kind: other
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off` · Cov: `NEW` · 触发 `partial` · 置信度 `documented`'
+  mechanism: Triton 内核计算单个 fp8（float8e5）值并 store 到两个输出缓冲——一个 contiguous 布局、一个 transposed 布局。当值通过 `tl.maximum`/`tl.minimum` with `tl.PropagateNan.ALL` 产生时，**transposed store 被破坏**（解码为 Inf/NaN 的 garbage 字节），而同一值的 contiguous store 始终正确。重写 min/max 为数值等价的 `tl.where(a>b | a!=a, a, b)` 使破坏消失。存储值可证明有限（contiguous 输出干净，cast 是 `cvt.rn.satfinite.e5m2x2.f32` 不能发 Inf/NaN）——这是 **store lowering/codegen bug** 而非计算值错误。仅在 min/max lowering 到 `min.NaN.f32`/`max.NaN.f32` PTX intrinsic 时出现，`setp+selp` 形式正确。确切损坏模式随 XBLOCK/num_warps 变化（如 72 NaN + 24 Inf，或 3072 Inf），指向寄存器分配/store 向量化而非语义问题。
+  source: 'triton-lang/triton #11111（2026-07-30 open）。https://github.com/triton-lang/triton/issues/11111 。复现 gist: https://gist.github.com/vkuzo/c7410babadd904c93beb3fd3638ffc75'
+  behavior: fp8 transposed store 静默产出 Inf/NaN garbage 字节。对 LLM 推理的影响：任何用 transposed fp8 e5m2 store 的自定义 kernel（MoE expert 输出、量化 attention）静默损坏。无 crash，输出含 Inf/NaN 的损坏数据。
+  trigger_surface: 可在 CUDA 上跑 Triton 最小复现，但需构造 kernel/版本，非一行配置
+  signature: infra_off。与 1.9 kernel_sync_semantic 同属"编译器/codegen 在合法配置下的静默错误值"。损坏若进入残差流则表现为 Inf/NaN 传播的强 off-manifold 离群（cheap 族 nan_inf_flag 直接命中）。
+  repro: 不可软件复现——需要 Triton 编译器 + fp8 e5m2 + transposed store。
+  discovery: 2026-07-30 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

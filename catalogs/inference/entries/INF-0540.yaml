@@ -1,0 +1,54 @@
+id: INF-0540
+legacy_ids:
+- '6.147'
+slug: vllm_hybrid_state_registration_n_floor_lookup_cap_mismatch
+aliases: []
+title: vLLM hybrid 状态注册与查找 n−1 边界错配致命中归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: hybrid 前缀缓存状态注册站点
+  behavior: 查找只搜 ≤n−1 的位置（eagle drafter 再下移一个 hash 单元），而 mamba tail split、tail-boundary 位置、SWA retention 三个注册点从 n 取 floor，块对齐时永远查不到。
+effect:
+  objects:
+  - 性能/资源
+  detail: hybrid（Mamba/GDN+SWA）模型在块对齐 prompt 或启用 eagle 族 drafter 时 prefix 命中归零，共享文档的分叉尾重提交全部从零 prefill；无报错，仅 vllm:prefix_cache_hits_total 类计数器可见。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM + hybrid（Mamba/GDN+SWA）模型 + prefix caching + 块对齐 prompt 或 eagle 族 drafter
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/53802
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（hybrid 三个可复用状态注册点（mamba tail split、tail-boundary cache position、SWA retention）从 n 取 floor 而查找搜索 ≤n−1 的位置（eagle drafter 再把可用边界下移一 hash 单元）——块对齐或 eagle 激活时注册位置永远高于任何可查找位置，hybrid prefix 命中坍缩为零） · Cov: `NEW` · 触发 `config` · 置信度 `verified`'
+  mechanism: 'prefix-cache finder 对 n-token 请求只搜索命中位置 ≤ n−1，eagle 族 drafter 再把每个可用边界下移一个 hash 单元；但三个注册可复用状态的站点从 **n** 而非 **n−1** 取 floor——prompt 长度块对齐（或 eagle drafter 激活）时，注册的状态恰好位于任何查找都永远无法请求的位置之上，hybrid 模型 prefix 命中**坍缩为零**，共享文档的 divergent-tail 重提交全部从零重 prefill。修复（PR #53802）把所有注册站点统一从 (n−1) floor 并应用 eagle 移位，共享规则在 scheduler 文档化一次；38/38 单测含 5 个 (n−1)+eagle-shift 回归。与 PR #53479（6.144 的状态密化+删 back-off）为**相邻问题的不同修法**，可组合非重复。'
+  source: 'vLLM PR #53802（2026-08-25 open，"Align hybrid prefix-cache hit boundaries"；与 #53479 互补性在 PR 描述中显式论证）。https://github.com/vllm-project/vllm/pull/53802'
+  behavior: 无 crash、无错误——缓存活性静默失效（命中归零、共享前缀零复用），仅 `vllm:prefix_cache_hits_total` 类计数器可见。hybrid「(n−1) 边界」缺陷族的**注册侧**实例，与 6.143（命中剥离）、6.144（物化×上限）、6.145（截断崩溃）合并构成注册/查找/物化/截断四侧各错一次的完整族谱。
+  trigger_surface: vLLM + hybrid（Mamba/GDN+SWA）模型 + prefix caching + 块对齐 prompt 或 eagle 族 drafter
+  discovery: |-
+    2026-08-25 每日扫描。
+    ---
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    uncertain:
+    - effect

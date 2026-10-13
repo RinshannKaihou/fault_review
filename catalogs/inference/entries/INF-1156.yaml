@@ -1,0 +1,62 @@
+id: INF-1156
+legacy_ids:
+- '12.40'
+slug: sglang_minimax_h3_int8_convrot_quant_format_implies_qkv_layout_skips_reorder
+aliases: []
+title: SGLang int8 误判 QKV 布局致 MiniMax-H3 花屏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: KitchenInt8Config 布局判定
+  behavior: KitchenInt8Config 用“是否 int8 序列化”代理“QKV 是否 native 布局”，int8 checkpoint 一律跳过 MiniMax 官方 head-interleaved QKV 重排。
+effect:
+  objects:
+  - 输出内容
+  - 模型权重
+  detail: 加载 MiniMax-H3-INT8-CONVROT 等 repack 时每个 attention block 从错误行读 Q/K/V，运行完成、无错误无 NaN，产出合法 MP4 但视频塌成平坦低对比场（std 50.78→2.80）、音频变噪声；单 GPU 未开 FSDP 推理即中招。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + MiniMax-H3 INT8 repack checkpoint（保留 interleaved 布局）+ kitchen-int8 config（other_stack：checkpoint 依赖触发）
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-09-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/40127
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0357
+original:
+  category: cat12
+  section: 第 12 类 · 权重 / 适配器 / 检查点加载故障
+  meta: '`infra_off`（SGLang `KitchenInt8Config` 从**量化格式推断 QKV 权重布局**：`checkpoint_uses_native_qkv_layout = is_checkpoint_int8_serialized`——任何 int8 序列化 checkpoint 被假定为已存 `[q_all, k_all, v_all]`（Comfy/GGUF 布局）而跳过 MiniMax 官方 **head-interleaved** QKV reorder。`RunningHubAI/MiniMax-H3-INT8-CONVROT` repack 实际保留 interleaved 布局 → 每个 attention block 从**错误行**读 Q/K/V。形状全合法、运行完成、无错误无 NaN 无警告，产出**结构合法但内容全错的 MP4**：视频塌成平坦低对比场（4s 1344×768 clip 帧 50：video mean 149.6→79.4、std 50.78→2.80、max 244→100）、音频变噪声（-37.9dB→-5.0dB；同 prompt 同 seed ComfyUI+comfy-kitchen 同权重参照）。非 FSDP 路径——与 5.10（#34227 FSDP inference 静默 AV 损坏）**同一 reorder 缺陷的不同触发面**（issue 自述 "same defect as #34227, non-FSDP path"），单 GPU `--use-fsdp-inference` 未设即中招） · Cov: `var:sglang_minimax_h3_fsdp_inference_silent_av_corruption`（5.10 同缺陷非 FSDP 触发面） · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: 量化格式（int8 序列化与否）与权重布局（interleaved vs native 打包）是**两个独立维度**，config 用前者代理后者——repack 工具保留官方 interleaved 布局时假设静默失效；`checkpoint_qkv_is_native` 判定链（gguf 名字 or int8 序列化）对"int8 但 interleaved"的组合落入错误分支。
+  source: 'SGLang #40127（2026-09-18 open，含 config/模型双文件行级引用、同 seed 参照对比表（video/audio 统计）与 FSDP 无关性说明）。https://github.com/sgl-project/sglang/issues/40127'
+  behavior: 无 crash、无 NaN、无日志——多模态输出**静默花屏**（视频低对比平坦化 + 音频噪声化），HTTP 正常返回；与 5.10 同形（该条为 FSDP flag 触发、本条为量化 repack checkpoint 触发），两触发面叠加意味着 MiniMax-H3 社区量化 checkpoint 在默认路径即中招。
+  trigger_surface: SGLang + MiniMax-H3 INT8 repack checkpoint（保留 interleaved 布局）+ kitchen-int8 config（other_stack：checkpoint 依赖触发）
+  discovery: 2026-09-18 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 模型权重
+        to: 输出内容
+        status: panel7
+      visibility:
+        from: 质量退化
+        to: 静默错误
+        status: panel7

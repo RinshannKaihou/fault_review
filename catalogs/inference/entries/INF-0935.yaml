@@ -1,0 +1,64 @@
+id: INF-0935
+legacy_ids:
+- '10.19'
+slug: sglang_simulate_acc_len_fill100_byte_fallback_detoken_o_n_squared
+aliases: []
+title: SGLang 模拟接受写死 id 100 且 detokenize 降级
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: sglang
+    component: SIMULATE_ACC_LEN 模拟接受路径
+  - subsystem: 分词/模板
+    stack: sglang
+    component: DetokenizerManager 提交判定
+  behavior: (A) 模拟接受路径 fill_(100) 覆盖全部 accepted id，该 id 在 byte-fallback 词表中为 U+FFFD；(B) detokenize 提交判定靠 endswith U+FFFD，offset 不前进。
+effect:
+  objects:
+  - 性能/资源
+  - 输出内容
+  detail: 设置 SGLANG_SIMULATE_ACC_LEN 时整个输出变为 � 串、benchmark 失去意义；生产路径中任何含 byte-fallback token 的输出（如 DeepSeek-V4 词表）都使增量 detokenization 降级为 O(n²) 重新解码。无 crash。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang；byte-fallback vocab（DeepSeek-V4 等）+ `SGLANG_SIMULATE_ACC_LEN`（A）或任何 byte-fallback token 输出（B）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/34740
+  kind: github_issue
+relations: []
+original:
+  category: cat10
+  section: 第 10 类 · 分词器 / 对话模板故障
+  meta: '`infra_off`（SIMULATE_ACC_LEN 用硬编码 token id 100 覆盖所有 accepted token + byte-fallback commit gate 永不前进 → detokenization 降级 O(n²)） · Cov: `NEW` · 触发 `config` · 置信度 `documented`'
+  mechanism: 两个独立缺陷复合：(A) benchmark path——`generate_simulated_accept_index()` 用 `predict.fill_(100)` 覆盖所有 accepted token id。在 byte-fallback vocab 中 id 100 解码为 U+FFFD（DeepSeek-V4-Pro ids 97–111 均为 `�`），整个输出变为 `�` 串；(B) production path——`DetokenizerManager` 的 commit gate 用 `endswith("\ufffd")` 字符级启发式判断 incremental detokenization 是否可 commit。byte-fallback token（`�`）使 gate 永远不前进 offset，降级为 O(n²) 重新解码。
+  source: 'SGLang #34740（2026-08-13 open）。DeepSeek-V4-Pro vocab。https://github.com/sgl-project/sglang/issues/34740'
+  behavior: (A) benchmark 路径——整个输出变为 `�` 串（benchmark 无意义）；(B) production 路径——任何含 byte-fallback token 的输出使 detokenization 降级为 O(n²)。无 crash。属「byte-fallback vocab id 与 detokenization commit gate 的交互」**新子签名**——token id 值的语义盲区。
+  trigger_surface: SGLang；byte-fallback vocab（DeepSeek-V4 等）+ `SGLANG_SIMULATE_ACC_LEN`（A）或任何 byte-fallback token 输出（B）
+  discovery: 2026-08-13 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed: []
+  note: 缺陷 A 的 generate_simulated_accept_index 位于推测解码的接受索引代码路径，按 rules“功能域优先”归 解码/采样；SGLANG_SIMULATE_ACC_LEN 只是触发配置，该代码不是评测 harness，不归 观测/评测。两个独立缺陷分处两个 subsystem，符合多对象规则。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 分词/模板
+        status: unanimous

@@ -1,0 +1,65 @@
+id: INF-1245
+legacy_ids:
+- K3.8
+slug: llamacpp_unified_cache_seqid_stream_mismap
+aliases: []
+title: llama.cpp 统一缓存 seq_to_stream 映射错位致断言崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: llama.cpp
+    component: 统一缓存 seq_to_stream 映射
+  behavior: b5913 拆分 K/V 缓冲区后统一缓存经 seq_to_stream 表索引；加载已缓存 prompt 或喂入意外 seq_id 时索引到错误 stream，序列的 cell 被归属到另一 stream。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: 有文档记录的主要模式是 GGML_ASSERT(seq_id < seq_to_stream.size()) 硬断言崩溃；不触发断言的路径上推测会出现跨 stream 的非致命 KV 泄漏。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: true
+  trigger_note: llama.cpp 专用
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: 待定
+remarks: ''
+evidence:
+- url: https://github.com/ggml-org/llama.cpp/issues/14847
+  kind: github_issue
+  resolved_from: 'llama.cpp #14847'
+- url: https://github.com/ggml-org/llama.cpp/issues/15215
+  kind: github_issue
+  resolved_from: '#15215'
+- url: https://github.com/abetlen/llama-cpp-python/issues/2045
+  kind: github_issue
+  resolved_from: 'llama-cpp-python #2045'
+relations:
+- kind: var
+  target: INF-0791
+original:
+  category: KV3
+  section: KV §3 block-slot-alloc（块/槽分配）
+  meta: '`infra_off` · Cov: `var:paged_attention_block_corruption` · 触发 `other_stack`⚠ · 置信度 `documented`'
+  mechanism: 在 b5913 的 K/V 缓冲区拆分（commit 225e7a1）之后，统一缓存通过 `seq_to_stream` 表按 cell 索引；加载一个已缓存的 prompt 或喂入意外的 `seq_id` 会索引到错误的 stream，或触发 `GGML_ASSERT(seq_id < seq_to_stream.size())`；在不触发断言的路径上，一条序列的 cell 会被归属到另一个 stream。
+  source: 'llama.cpp #14847、#15215；llama-cpp-python #2045。'
+  behavior: 源文档未单列该字段；机制中记载的主要模式是硬断言（`GGML_ASSERT`）崩溃。
+  trigger_surface: llama.cpp 专用
+  signature: 源文档明确指出：有文档记录的模式是硬断言崩溃，**没有隐藏态可测**；只有推测性的非致命跨 stream 泄漏分支是可评分的，而该分支的签名会坍缩到 `paged_attention_block_corruption`（跨请求 KV 余弦异常 + 逐位置范数离群，由 geometric 族捕获）。族按非致命泄漏分支记为 `infra_off`。因此本条对检测器的边际价值主要在分类学上（补齐 llama.cpp 统一缓存这一 locus 的来源链），而不是提供新签名。
+  repro: 尚未实现；若要注入，即把某层一段位置的 KV 替换为同 batch 中另一条序列的对应行——这与 `paged_attention_block_corruption` 的注入完全同形，故不产生独立签名。属 partial。
+  locus: block-slot-alloc
+  priority: low
+migration:
+  extractor: opus v1.1
+  method: pilot-majority
+  votes: 3/3
+  pass: A
+  audit:
+    round: gateway-audit-2026-10-12

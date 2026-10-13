@@ -1,0 +1,50 @@
+id: INF-0251
+legacy_ids:
+- '1.252'
+slug: ttmetal_matmul_2d_mcast_dram_width_shard_first_read_unclamped_narrow_per_core_n_garbage
+aliases: []
+title: 2D mcast matmul DRAM 分片首读未钳制，宽网格输出垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: mcast matmul in1 首读游标
+  behavior: in1 DRAM width-sharded 时工厂的 DRAM bank 游标首读未用 per_core_N 钳制 worker_core_stride（后续读取有钳制），首读过冲使游标越过下一列所需 tile，其后每列读错权重。
+effect:
+  objects:
+  - 数值结果
+  detail: per_core_N < ceil(N/DRAM bank 数) 时（P150 8 bank 下 grid 9、13 列）全形状输出 inf/垃圾，config 照常过验证、无 raise；tt_transformers prefill 因此被限在 ≤8 列网格。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal + 2D mcast matmul + in1 DRAM width-sharded + grid 列数 > DRAM bank 数（P150 8 bank；P100 7 bank 未测；Wormhole 未测）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-24'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/57732
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`MatmulMultiCoreReuseMultiCastProgramConfig` + in1 **DRAM width-sharded**（`tt_transformers` 每个 prefill linear 的默认权重布局）在 per-worker 块窄于一个 DRAM shard（`per_core_N < ceil(N / num_dram_channels)`）时**静默返回 inf/garbage**、config 过验证正常执行：工厂的 DRAM bank 游标首读未钳制 `worker_core_stride = per_core_N_storage − storage_core_stride`（后续读取都有 `std::min(stride, per_core_N)`），首读过冲使 bank 游标越过下一列需要的 tile、其后每列读错权重。P150（8 bank）：grid 9（per_core_N 22<24）与 grid 13（15<24）全形状 non-finite；**预测规则 `per_core_N ≥ ceil(N/8)` 在 22/22 配置 + 288 配置检查搜索（宽 10-13：229/229 错；宽 8：59/59 对）全部成立**。decode 姊妹工厂（`..._dram_sharded_...`）同款未钳制行但先分支后封顶故不中招。修复即同一行加 `std::min(..., per_core_N)`：五垃圾配置全对（PCC ≥ 0.99988）、212 既有测试逐测试结论不变（188 过/24 跳/0 挂——无一到达失败案例）） · Cov: `NEW`（sharded 权重读取首过冲子签名；与 1.119（MatmulMultiCoreReuse 过订阅静默丢块）同属 mcast matmul 工厂数据通路缺陷但机制独立——本条是游标钳制缺失非资源过订阅） · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: DRAM shard 内列段连续性与 worker 块宽不匹配时，首读按"取余整个 bank 条带"推进游标——修复把首读钳到 worker 块宽；同一 commit（`213530ded2a`，`arg/pplx-embed-upstream` 分支）还带 in1 合并读优化（逐 tile NoC 读改行段突发，Qwen3-4B 端到端 22.3→21.5/21.4→17.7 ms）。
+  source: 'tt-metal #57732（2026-09-24 open，社区报告，含自包含回归测试、22+288 配置验证矩阵、隔离构建因果证明（五配置垃圾→修复后 PCC≥0.99988、`/proc/self/maps` 验证加载 .so）、212 测试无回归与 Llama-3.1-8B 端到端 bit-identical logits）；同 commit 另以 #57630 独立报告（同根因、同修复，含 4 形状×8/12 列 PCC 表与 perf 数据）。https://github.com/tenstorrent/tt-metal/issues/57732'
+  behavior: 无 crash、无 raise——**宽网格 prefill 静默垃圾输出**；缺陷把 `tt_transformers` P150 prefill 配置锁死在 ≤8 列网格（错误同时掩盖性能上限：修复后 13 列网格快 14.3–21.5% 且 logits bit-identical）。
+  trigger_surface: tt-metal + 2D mcast matmul + in1 DRAM width-sharded + grid 列数 > DRAM bank 数（P150 8 bank；P100 7 bank 未测；Wormhole 未测）
+  discovery: 2026-09-24 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

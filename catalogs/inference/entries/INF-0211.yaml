@@ -1,0 +1,53 @@
+id: INF-0211
+legacy_ids:
+- '1.212'
+slug: sdc_spike
+aliases: []
+title: 单粒子翻转在 decoder 层输出隐状态上的加性通道尖峰
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 硬件
+    stack: 硬件
+    component: decoder block L 输出激活
+  behavior: single-event upset 在 decoder block L 输出的最后一个 token 上，对 k 个非 massive 通道各加 c 倍健康 per-channel 标准差的加性尖峰。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 幅度足够大（c=30）时 greedy 答案几乎必然翻转，无 NaN、无崩溃、无运行时错误信号，表现为一次莫名的错误回答；深度剖面在注入层后呈 STEP 跳变、末层部分回落。原型阶段实测，量值不跨栈继承。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: CUDA forward hook 注入 activation spike；任意规模/精度模型可用
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: 待定
+remarks: ''
+evidence:
+- kind: citation
+  text: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off` · Cov: `NEW`（本项目早期实测条目；编目中多条以 `var:1.212` 挂靠） · 触发 `yes` · 置信度 `verified`'
+  mechanism: single-event upset 在 decoder block L 输出上的加性 per-channel 尖峰：对最后一个 token 做 `hs[0, -1, idx] += c * sigma`，其中 `idx` 为从**非** massive 通道中无放回抽取的 `k` 个通道，`sigma` 是层 L 上这些通道的健康 per-channel 标准差，`c` 是以 sigma 为单位的幅度系数。参数轴：`L`（注入层）× `c`（幅度）× `k`（通道数）；massive 通道情形交由 1.213。注意注入层与观测层的先后关系：hook 的修改在 `output_hidden_states` 序列中的显形位置可能比理论预测晚一格，深度剖面应读取经验 onset 而非假定 onset。
+  source: 本项目早期实测条目（原型阶段实测，量值不跨栈继承；触发/复现已按 vLLM/CUDA 重估）。深度剖面呈 STEP 形：注入层前逐层差异平坦，注入层后跳变，至末层部分回落（pseudo-attractor）；原型阶段量值不可跨栈继承。
+  behavior: 单个 token 位置的输出被推偏——greedy 答案在幅度足够大（`c=30`）时几乎必然翻转；不产生 NaN/崩溃，也没有任何运行时错误信号，所以在服务栈里表现为"一次莫名其妙的错误回答"。
+  trigger_surface: CUDA forward hook 注入 activation spike；任意规模/精度模型可用
+  signature: 教科书式 off-manifold——扰动把最后一个 token 的隐状态沿若干健康方差方向推出健康流形。geometric 族（`mahalanobis_to_healthy`、`knn_distance_to_healthy`、`hidden_norm_distribution`）是主力；trajectory 族看到清晰的 **STEP** 形状（`onset_layer` / `depth_profile_shape`），statistical 族的 `outlier_count` / `kurtosis` 同样命中。会漏检的是：`k=1` 且 `c` 小时 spectral 族几乎不动——只有一个 token 的一个方向被扰动，token 集合的谱结构基本不变；`recompute_oracle_mismatch` 这类 cheap 度量则因为 hook 对重算同样生效而不一定给出干净的 1-bit 判据。
+  repro: 单个 block 级 forward hook 加一次 baseline 通道 sigma 估计即可；hook 在 `finally` 中移除，退出后用 clean-rerun 校验模型状态复原（复原判据取运行时噪声底，绝不用 `== 0.0` 判定）。
+  相关条目: '`var:1.212` → **1.1 `sdc_multibit_warp_spray`**（成簇/多通道空间模式）、**1.5 `seu_register_file`**（sub-row / per-position 空间粒度）。'
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

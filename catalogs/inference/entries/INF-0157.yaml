@@ -1,0 +1,50 @@
+id: INF-0157
+legacy_ids:
+- '1.158'
+slug: ttmetal_unary_chain_specialized_head_kernel_drops_tail_ops
+aliases: []
+title: ttnn.unary_chain 头 op 走特化 kernel 时丢弃链尾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: unary_chain 的 kernel 选择
+  behavior: get_compute_kernel_path 只按链头 op 选 kernel，而 hardswish/logit/lgamma 等七个特化 kernel 不含 SFPU_OP_CHAIN_0 展开点，链被截断成单个头 op。
+effect:
+  objects:
+  - 数值结果
+  detail: 头 op 为 hardswish/logit/lgamma/logsigmoid/identity/where_tss/mac_tss 且链长>1 时后续 op 不执行，无错误无警告；如 hardswish→square 返回未平方结果（出现负值），fusion 路径输出偏移但形态正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Tenstorrent WH/BH + `ttnn.unary_chain` + 头 op ∈ {hardswish,logit,lgamma,logsigmoid,identity,where_tss,mac_tss} 且链长>1（软件 API 可触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-03'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55298
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.unary_chain` 在**头 op 派发到特化 kernel**时静默丢弃其后所有 op：`get_compute_kernel_path` 只看链头选 kernel，特化 kernel（hardswish/logit/lgamma/logsigmoid/identity/where_tss/mac_tss）不含 `SFPU_OP_CHAIN_0` 展开点——`hardswish→square` 返回未平方的 hardswish 结果（负值，一眼可见 SQUARE 未跑）；无错误无警告） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: kernel 选择函数对 `ops_chain.size()` 无可见性；泛型 `eltwise_sfpu.cpp` 有 chain 展开宏、六个特化 kernel 计数为 0——链被截断成单 op。与 1.144（conv depthwise activation 守卫缺项）同「特化路径静默丢功能」族，本条丢的是**链尾算子序列**。
+  source: 'tt-metal #55298（2026-09-03 open，ttsim BH 实测 + 逐 kernel SFPU_OP_CHAIN_0 计数表）。https://github.com/tenstorrent/tt-metal/issues/55298'
+  behavior: 无 crash——复合一元链静默退化为头算子（数学语义无声改变）；LLM 图中 chain 常见于 fusion 路径，退化后输出偏移但形态正常。属「**分派路径截断算子链**」新子签名。
+  trigger_surface: Tenstorrent WH/BH + `ttnn.unary_chain` + 头 op ∈ {hardswish,logit,lgamma,logsigmoid,identity,where_tss,mac_tss} 且链长>1（软件 API 可触发）
+  discovery: 2026-09-03 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

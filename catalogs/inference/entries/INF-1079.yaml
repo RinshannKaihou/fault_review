@@ -1,0 +1,56 @@
+id: INF-1079
+legacy_ids:
+- '11.56'
+slug: sglang_prefill_logprob_cursor_skip_misalignment_cross_request
+aliases: []
+title: SGLang skip 分支不推进 logprob 游标致跨请求错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: prefill 结果处理 logprob 游标
+  behavior: skip 分支对 retracted/finished 请求 continue 时跳过 logprob_pt 推进，生产者仍为其计入切片；非 disaggregated 路径漏了 advance_logprob_pt()
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出分布
+  detail: 请求 input logprobs 且同 batch 有 retracted/finished 请求时，后续请求拿到别人的 prompt logprobs；数值合法，断言只查长度、移位不越界，无异常；默认 overlap scheduling 下 KV 压力即触发
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: SGLang + 请求 input logprobs + 同 batch 混合 retracted/finished 请求（默认 overlap scheduling 下 KV 压力即触发）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-08-29'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/36938
+  kind: github_issue
+relations: []
+original:
+  category: cat11
+  section: 第 11 类 · 解码 / 采样故障（多为 post-forward — 结构性盲点）
+  meta: '`infra_off`（`process_batch_result_prefill` 的 skip 分支（finished-in-mixed-batch / retracted 请求）**不推进 `logprob_pt` 游标**——同 batch 后续每个请求读到移位切片：**拿到别人的 prompt logprobs**；flat 数组按 batch 顺序每请求一块（无论是否请求 logprobs），断言只查切片**长度**不查 offset、移位恒向后永不越界——无异常） · Cov: `NEW` · 触发 `other_stack` · 置信度 `verified`'
+  mechanism: '`batch_result_processor.py:307-313` 的 `continue` 跳过 retracted/finished 请求时步过 `logprob_pt += num_input_logprobs`（:344/:374 在 continue 之后）；生产者 `logistics_processor.py` 的 `extend_logprob_pruned_lens_cpu` 与消费者同式计数。CPU 驱动复现：两请求首者 retracted、flat 数组 [-1,-2,-30,-31,-32]，活跃请求期望 [None,-30,-31] 实得 [None,-1,-2]（retracted 请求的值）。disaggregated prefill 循环已有 `advance_logprob_pt()` 正确处理（`disaggregation/prefill.py:703,721,789,797`）——非 disaggregated 路径漏同步。触发条件：被跳过请求自身 `logprob_start_len >= 0`；overlap scheduling 默认开 + KV 压力下 retraction 常态。'
+  source: 'SGLang #36938（2026-08-29 open，含 CPU 最小复现与回归测试）。https://github.com/sgl-project/sglang/issues/36938'
+  behavior: 无 crash、无异常——返回的 logprob **数值域完全合法**（真是某个 token 序列的对数概率，只是错的主人），蒸馏/评测/偏好数据管道不可检；诊断签名：`input_top_logprobs_val[i]` 按请求索引恒对而 `input_token_logprobs` 按游标切片恒错。属「**skip 路径游标失步 = 输出来源错位**」新子签名：与 11.51（prompt_logprobs 被 drafter buffer 覆写）同 logprob 数据面，本条是控制流 skip 的算术遗漏且跨请求污染——post-forward 结构性盲点的又一实例。
+  trigger_surface: SGLang + 请求 input logprobs + 同 batch 混合 retracted/finished 请求（默认 overlap scheduling 下 KV 压力即触发）
+  discovery: 2026-08-29 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12
+    corrected:
+      effect:
+        from: 输出分布
+        to: 跨请求/跨样本数据
+        status: unanimous

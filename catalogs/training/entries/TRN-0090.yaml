@@ -1,0 +1,58 @@
+id: TRN-0090
+legacy_ids:
+- DATA.08
+slug: loss_mask_cache_aliasing_leaks_first_sample
+aliases: []
+title: GPTDataset loss_mask 缓存别名致 pad 掩码污染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: megatron-lm
+    component: GPTDataset loss_mask 缓存
+  behavior: FILL 路径把 loss_mask 的引用存入 cached_loss_mask，随后对 pad 位置就地置零写穿缓存；缓存单槽且每个数据集只 FILL 一次，第一个被服务的样本若含 pad 位，其零掩码永久进入之后每个样本的 mask。
+effect:
+  objects:
+  - 训练样本流
+  - 跨请求/跨样本数据
+  detail: 静默，loss 按 mask sum 归一化仍看似合理；哪个样本执行 FILL 取决于进程，从头启动与 resume 的 run 对同一样本使用不同 mask，ckpt 与输入 bitwise 一致时梯度仍从 resume 后第一步分叉。pad id 出现在数据中即可触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: N/A
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-08-31'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/6981
+  kind: github_pr
+relations: []
+original:
+  category: DATA
+  section: DATA
+  meta: 'stage: `pretrain` · Cov: `NEW` · 置信度 `documented`'
+  mechanism: Megatron `GPTDataset.__getitem__` 缓存 `loss_mask` 后就地掩码：FILL 路径 `self.cached_loss_mask = loss_mask`（存**引用**），随后 `loss_mask[labels == _pad_token_id] = 0.0` 就地写穿透缓存槽位。缓存单槽且 FILL 每数据集只跑一次（`masks_and_position_ids_are_cached` 置 True 后不复位），**只有第一个被服务的样本**能写入；若它含 pad 位（短于 `sequence_length` 的真 padding，仅 validation 可产生；或 pad id 作为普通数据出现——token 流中任何该 id 都中招，内容依赖位置），其零掩码永久污染缓存，之后每个 HIT 样本 clone 出的都是脏 base。训练 split 因 `drop_last_partial_sequence=True` 硬编码不产生真 padding，但 pad id 数据位触发不罕见（`--mock-data` 的 `(arange+1)%vocab` ramp 几乎每样本命中）。`MockGPTDataset`/`GPTFIMDataset` 继承此 `__getitem__`；`SFTDataset` 自定义不受影响。`cached_attention_mask`/`cached_position_ids` 同样存引用但当前无就地写。
+  source: 'Megatron-LM #6981（完整别名分析 + FILL/HIT 时序图 + 单测 `test_mask_cache_does_not_leak_padding`：修复前 AssertionError、修复后通过）。https://github.com/NVIDIA/Megatron-LM/pull/6981'
+  behavior: 静默——loss 按 mask sum 归一化故数值保持 plausible。**破坏 bitwise resume**：哪个样本跑 FILL 是进程属性而非数据属性——从头启动的 run 与 resume 的 run 对同一样本服务不同 mask，ckpt 状态/`tokens`/`labels`/`position_ids` 全部 bitwise 一致的情况下梯度从 resume 后第一步就分叉。与 DATA.03（mask 范围错）同族但根因是**缓存别名**：掩码逻辑本身正确，坏在共享可变状态。
+  discovery: 2026-08-31 每日扫描
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - uncertain
+  changed:
+  - effect.objects
+  - effect.visibility
+  note: visibility 由 不可复现 改为 静默错误：原文 behavior 首句即“静默——loss 按 mask sum 归一化故数值保持 plausible”，mask 污染在不 resume 时同样发生，结果看似合理但错，符合 静默错误 定义；resume 前后 bitwise 分叉只是暴露途径。effect.objects 第二项由 梯度 改为 跨请求/跨样本数据：原文核心是第一个被服务样本的零掩码通过共享缓存“永久污染”之后每个样本的 mask，正是词表“一个训练样本的数据/状态泄漏、污染到另一个”。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12

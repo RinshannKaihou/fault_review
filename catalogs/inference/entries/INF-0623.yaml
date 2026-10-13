@@ -1,0 +1,51 @@
+id: INF-0623
+legacy_ids:
+- '6.230'
+slug: vllm_mamba_prefix_hash_published_before_commit_fence_abort_retry_poison
+aliases: []
+title: vLLM Mamba 前缀 hash 先于写入发布致重试毒化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mamba 前缀缓存 hash 发布时序
+  behavior: MambaManager.cache_blocks 在调度时就把状态块 hash 发布进前缀缓存，写该状态的 chunk 稍后才执行（abort 则永不执行）；一步有效的守卫在写入仍在途时已被清除。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: abort 长 prefill 后 1–2 秒内重试同前缀，命中已发布未写入的 hash，以垃圾 recurrent state 起步输出无界垃圾；重试正常完成后毒化 hash 被提交为有效，同前缀后续请求持续中毒至重启。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM + hybrid mamba/KDA + align 前缀缓存 + abort-retry / 调度竞态（partial）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/56525
+  kind: github_pr
+relations: []
+original:
+  category: cat6
+  section: 第 6 类 · 服务栈 / 缓存正确性（vLLM/TGI/SGLang/TRT-LLM）
+  meta: '`infra_off`（vLLM hybrid 模型 align 模式下 `MambaManager.cache_blocks` 在**调度时**把状态块 hash 发布进前缀缓存（含 `_cache_partial_tail_block` 的 checkpoint 块 re-key），而实际写该状态的 chunk **晚于此执行**（客户端 abort 则永不执行）；现有守卫 `cached_blocks_this_step` 一步有效期，被 `new_step_starts()` 在下一调度趟清除——在写入步仍在途时被调度的请求可命中"hash 已发布、状态不存在"的边界。生产 Kimi-K3：abort ~40–240k prefill 后 1–2 秒内重试同前缀，命中被中断请求最深处的已发布未写入 hash、把它当初始 recurrent state 加载 → 无界垃圾；**retry 正常完成后其哈希被提交为有效**——同前缀的所有未来请求中毒直至重启（1–2/36 复现率 + 一起真实用户事故）。修复（PR #56525）以 publish-step/commit-fence 栅栏替换一步守卫） · Cov: `NEW`（发布先于提交的时序窗口子签名） · 触发 `partial` · 置信度 `verified`'
+  mechanism: 发布（schedule 时）与写入（GPU 异步执行）之间无 happens-before 约束；abort 使写入永不发生而发布已可见。"abort 时清理 hash"不足——竞态 retry 在 abort 处理前已读走 hash 并提交毒化状态（生产 A/B 证伪）。
+  source: 'vLLM PR #56525（2026-09-11 open，与 #56524 姊妹；含生产 8×B300 Kimi-K3 验证矩阵、fence 设计与两种被否方案）。https://github.com/vllm-project/vllm/pull/56525'
+  behavior: 无 crash——abort-retry 模式下**毒化雪崩**：单次竞态命中 → 垃圾 state 起步 → 正常完成并把毒化 hash 转正 → 同前缀流量持续中毒至重启。6.157（KV offload 完成请求未写末槽跨请求投毒）之后"未完成写入进入缓存"族新成员：本条在 hash 发布/提交时序维度、且毒化可自我转正。
+  trigger_surface: vLLM + hybrid mamba/KDA + align 前缀缓存 + abort-retry / 调度竞态（partial）
+  discovery: 2026-09-11 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: extract
+  audit:
+    round: gateway-audit-2026-10-12

@@ -1,0 +1,55 @@
+id: INF-0184
+legacy_ids:
+- '1.185'
+slug: ttmetal_from_torch_host_float_to_int_cast_ub_arch_divergence
+aliases: []
+title: 宿主浮点→整数 static_cast UB 致结果随 CPU 架构而异
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: 宿主 transform_buffers 转换
+  behavior: from_torch/to_dtype/宿主 typecast/from_span 的浮点→整数转换对每个元素做无范围检查的 static_cast，越界、inf、NaN 值触发 C++ 未定义行为。
+effect:
+  objects:
+  - 数值结果
+  detail: FLOAT32/BFLOAT16 源转整数 dtype 时越界/inf/NaN 元素静默得到错值：x86_64 给 INT_MIN，aarch64 饱和且 NaN→0，两者互异且都与设备侧转换不一致；x86 上验证通过不代表 arm 上结果相同。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal 宿主 dtype 转换路径 + 浮点越界/inf/NaN 值 → 整数 dtype（hw_specific；构建架构决定显形形态）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-09-08'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/55825
+  kind: github_issue
+relations: []
+original:
+  category: cat1
+  section: 第 1 类 · 硬件 / 静默数据损坏（SDC）
+  meta: '`infra_off`（`ttnn.from_torch`/`ttnn.to_dtype`/宿主 `typecast`/`Tensor::from_span` 的浮点→整数转换用**未检查 `static_cast`**：越界值是 C++ UB——x86_64 `cvttss2si` 给 INT_MIN（含 +inf/NaN）、aarch64 `fcvtzs` 饱和且 NaN→0；两架构互不相同且**都与设备侧转换不一致**，哪个错取决于目标 dtype；FLOAT32/BFLOAT16 源全受影响） · Cov: `NEW` · 触发 `hw_specific` · 置信度 `verified`'
+  mechanism: '`tensor_apis.cpp:484` `transform_buffers` 对每元素 `static_cast<DstType>(value)` 无范围检查；宿主 UB 使同一张量在不同构建架构上产出不同整数张量，并与设备内核的转换语义分叉——同一 op 存在两个互斥真值。'
+  source: 'tt-metal #55825（2026-09-08 open，community label；早期同文提交 #55815 已关为重复）。https://github.com/tenstorrent/tt-metal/issues/55825'
+  behavior: 无 crash——宿主侧 dtype 转换**静默产出架构相关的错值**（越界/inf/NaN 输入的映射因 CPU 架构而异）；跨架构结果分歧本身是排障陷阱（x86 上验证通过、arm 上静默不同）。「宿主/设备语义分叉」新子签名。
+  trigger_surface: tt-metal 宿主 dtype 转换路径 + 浮点越界/inf/NaN 值 → 整数 dtype（hw_specific；构建架构决定显形形态）
+  discovery: 2026-09-08 每日扫描。
+migration:
+  extractor: opus v1.1
+  method: adjudicated
+  reason:
+  - audit
+  changed: []
+  note: 审计：transform_buffers 未检查 static_cast、x86_64 INT_MIN / aarch64 饱和且 NaN→0、两架构互异且与设备侧不一致、FLOAT32/BFLOAT16 源，均有原文依据。分类 算子/内核/tt-metal、数值结果、静默错误 与独立判断一致。维持原判。
+  audit_issues: []
+  audit:
+    round: gateway-audit-2026-10-12
