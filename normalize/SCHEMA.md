@@ -38,7 +38,7 @@
 | `mitigation.fix` | 改进措施（修复/规避） | **本期统一 `待定`**，后续单独回源补全 |
 | `labels` | remarks | 项目既有维度：`family`、`trigger`、`trigger_review`、`trigger_note`、`stage`、`confidence`、`coverage`、`discovered` |
 | `remarks` | remarks | 自由备注 |
-| `evidence[]` | — | 来源链接：`url`、`kind`（github_issue / github_pr / arxiv / paper / other） |
+| `evidence[]` | reference | **必填，至少一项**。来源链接：`url` + `kind`（github_issue / github_pr / arxiv / paper / other）；原文只写了“项目 #编号”的，解析为经 GitHub API 核实的链接，并在 `resolved_from` 记下原写法；确实没有链接时写 `{kind: citation, text: <来源原文>}` |
 | `relations[]` | — | `{kind: var / cross, target: <新 ID>}`；目标无法解析时保留 `target_raw` |
 | `original` | — | 迁移前各字段原文，原样保留，供检索和回溯 |
 | `migration` | — | 可选。语义字段的来源：`extract`（单遍抽取）/ `adjudicated`（独立裁定或审计后定稿）/ `pilot-majority`（试点三路多数票），附改动字段与审计问题 |

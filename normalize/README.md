@@ -14,6 +14,7 @@
 | 4. 合并 | `python3 finalize.py` | 把抽取结果写入 `out/entries`（会覆盖第 6 步结果，需重跑第 6 步） |
 | 5. 校验 | `python3 validate.py` | 枚举、编号、关系检查 |
 | 6. 网关审计（不用 Claude） | `audit/`：`build_items.py` → `run_task.sh` / `audit_merge.py` → `finish_audit.sh` | `audit/REPORT.md`；`audit_apply.py` 从冻结基线 `audit/baseline_*.tar.gz` 只增量应用，可重复执行 |
+| 7. 补来源 | `python3 enrich_evidence.py`（在第 6 步之后运行） | 无链接条目：“项目 #编号”→ 经 GitHub API 核实的链接（缓存在 `evidence_cache.json`），否则写文字引用 |
 
 审计协议沿用 llm-judge-labeling：
 - 三个便宜网关模型投票，未达成一致的字段交给 4 个模型组成的 7 票评审团，至少 2/3 多数才算定论；

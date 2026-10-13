@@ -31,6 +31,13 @@ def read_jsonl(pattern):
     return rows
 
 
+def refs(e):
+    ev = e["evidence"] if isinstance(e["evidence"], list) else []
+    shown = [x["url"] if x.get("url") else f"（引用）{x.get('text', '')}" for x in ev[:3]]
+    more = f" 等 {len(ev)} 个" if len(ev) > 3 else ""
+    return "；".join(shown) + more if shown else "（缺）"
+
+
 def wilson(k, n, z=1.96):
     if n == 0:
         return (0.0, 0.0)
@@ -134,6 +141,7 @@ def main():
         "- C 影响详情只写外部表现和触发条件，没有重复原因",
         "- D 原因对象/影响对象的取值看起来与文字描述相称（凭字面判断即可）",
         "- E 没有乱码、截断、中英混排失控等形式问题",
+        "- F 有来源链接或文字引用",
         "",
     ]
     for e in sample:
@@ -146,7 +154,8 @@ def main():
             f"- 原因行为：{e['cause']['behavior']}",
             f"- 影响对象：{eff}（{e['effect'].get('visibility')}）",
             f"- 影响详情：{e['effect']['detail']}",
-            "- 检查：A ☐ B ☐ C ☐ D ☐ E ☐",
+            f"- 来源：{refs(e)}",
+            "- 检查：A ☐ B ☐ C ☐ D ☐ E ☐ F ☐",
             "",
         ]
     with open(os.path.join(RUN, "form_review.md"), "w", encoding="utf-8") as fh:

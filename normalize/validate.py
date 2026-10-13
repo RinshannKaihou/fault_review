@@ -135,11 +135,16 @@ def check_entry(e, fname, vocab, rep):
     if not is_ph(disc) and not DATE_RE.match(str(disc)):
         rep.err(eid, f"labels.discovered={disc!r} 不是日期")
 
-    # evidence
+    # evidence: every entry needs at least one reference — a link, or a text citation when none exists
     ev = e["evidence"]
-    if not is_ph(ev):
+    if is_ph(ev) or not ev:
+        rep.err(eid, "evidence 为空：至少需要一个来源链接或文字引用")
+    else:
         for item in ev:
-            if item.get("kind") not in EVIDENCE_KINDS or not str(item.get("url", "")).startswith("http"):
+            if item.get("kind") == "citation":
+                if not str(item.get("text", "")).strip():
+                    rep.err(eid, f"citation 缺少 text: {item}")
+            elif item.get("kind") not in EVIDENCE_KINDS or not str(item.get("url", "")).startswith("http"):
                 rep.err(eid, f"evidence 项非法: {item}")
 
 
