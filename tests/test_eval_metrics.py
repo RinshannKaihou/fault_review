@@ -171,8 +171,21 @@ class QualityGateTests(unittest.TestCase):
         self.assertTrue(any("recall_at_5 regressed" in item for item in failures))
 
     def test_passing_report_has_no_failures(self):
-        baseline = self._report(recall=0.90)
-        self.assertEqual(check_report(self._report(recall=0.89), baseline), [])
+        baseline = self._report(mrr=0.80)
+        self.assertEqual(check_report(self._report(mrr=0.79), baseline), [])
+
+    def test_any_recall_drop_fails_even_within_tolerance(self):
+        baseline = self._report(recall=0.9524)
+        failures = check_report(self._report(recall=0.9365), baseline)  # one miss in 63
+        self.assertTrue(any("recall_at_5 regressed" in item for item in failures))
+
+    def test_recall_at_10_drop_fails(self):
+        baseline = self._report()
+        baseline["aggregate"]["recall_at_10"] = 0.9841
+        report = self._report()
+        report["aggregate"]["recall_at_10"] = 0.9683
+        failures = check_report(report, baseline)
+        self.assertTrue(any("recall_at_10 regressed" in item for item in failures))
 
 
 class RecallAtTenAndLegacyLabelTests(unittest.TestCase):

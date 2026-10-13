@@ -61,10 +61,11 @@ stdout 一律是 JSON。出错信息在 stderr。
 ```bash
 cd /workspace/RAG/fault_review
 python3 eval/run_eval.py --cases eval/cases.jsonl --check eval/baseline.json
+python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_indy.json
 ```
 
-该命令检查 36 条人工核验 query 的 Recall@5、Recall@10、MRR@10、nDCG@10 及 negative
-slice；标签来自源条目（用旧编号书写，评测时自动对应到新编号），不得按当前 top-k 反向生成。
+两条命令分别检查 36 条人工核验 query 和 63 条独立盲测 query 的 Recall@5、Recall@10、MRR@10、nDCG@10 及 negative
+slice（Recall@5/@10 不得低于基线，MRR/nDCG 容差 0.02）；标签来自源条目（用旧编号书写，评测时自动对应到新编号），不得按当前 top-k 反向生成。
 旧题通过不代表新增、退役或修订条目语义正确；每次发布须补本次变更的定向检查。
 
 ## 故障排查

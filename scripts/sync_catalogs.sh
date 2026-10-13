@@ -48,7 +48,21 @@ echo "snapshots updated under catalogs/:"
 cat catalogs/SOURCES.txt
 
 ./fault-rag reindex
-python3 eval/run_eval.py --cases eval/cases.jsonl --check eval/baseline.json > /dev/null
+
+# Acceptance gate: the 36-case bench and the 63-case independent set; Recall@5/@10
+# may not drop below either baseline (see eval/README.md, eval/ACCEPTANCE.md).
+mkdir -p eval/results
+for set in "cases baseline bench" "indy_cases baseline_indy indy"; do
+    read -r cases base name <<< "$set"
+    python3 eval/run_eval.py --cases "eval/$cases.jsonl" --check "eval/$base.json" \
+        --output "eval/results/sync_$name.json" > /dev/null
+    python3 - "eval/$base.json" "eval/results/sync_$name.json" "$name" <<'EOF'
+import json, sys
+b, r = (json.load(open(p))["aggregate"] for p in sys.argv[1:3])
+print(f"{sys.argv[3]:5s}", "  ".join(f"{k} {b.get(k, float('nan')):.4f}->{r[k]:.4f}"
+                                     for k in ("recall_at_5", "recall_at_10", "mrr_at_10", "ndcg_at_10")))
+EOF
+done
 
 echo
 echo "quality gate passed. Next steps:"

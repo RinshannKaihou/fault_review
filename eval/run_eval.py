@@ -14,6 +14,7 @@ if ROOT not in sys.path:
 
 
 METRIC_NAMES = ("recall_at_5", "recall_at_10", "mrr_at_10", "ndcg_at_10")
+STRICT_RECALL = ("recall_at_5", "recall_at_10")   # no regression tolerance
 ALLOWED_MODES = {"hybrid", "dense", "bm25"}
 ALLOWED_FILTERS = {
     "repo", "category", "confidence", "trigger", "include_neg",
@@ -208,11 +209,14 @@ def check_report(report, baseline=None, regression_tolerance=0.02):
         for name in METRIC_NAMES:
             if name not in baseline["aggregate"]:      # older baselines predate recall_at_10
                 continue
+            # Acceptance rule: Recall@5/@10 may not drop at all (one miss in the
+            # 63-case set is only 0.016, inside the rank-metric tolerance).
+            limit = 0.0 if name in STRICT_RECALL else regression_tolerance
             drop = baseline["aggregate"][name] - aggregate[name]
-            if drop > regression_tolerance + 1e-12:
+            if drop > limit + 1e-12:
                 failures.append(
                     f"{name} regressed by {drop:.6f} "
-                    f"(limit {regression_tolerance:.6f})"
+                    f"(limit {limit:.6f})"
                 )
     return failures
 

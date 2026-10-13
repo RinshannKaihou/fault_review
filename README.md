@@ -90,9 +90,10 @@ python scripts/download_model.py       # 下载 bge-m3 到 models/bge-m3/
 ```bash
 python3 -m unittest discover -s tests -q
 python3 eval/run_eval.py --cases eval/cases.jsonl --check eval/baseline.json
+python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_indy.json
 ```
 
-现有评测包含 36 条按来源核验的查询（指标含 Recall@5/@10、MRR@10、nDCG@10），标注里的旧编号会自动对应到新编号，用于发现既有检索退步；通过它**不代表**本次新增、修订或退役的条目都已得到语义验证。评测字段和门槛见 [eval/README.md](eval/README.md)。
+现有评测包含 36 条按来源核验的查询和 63 条独立盲测查询（指标含 Recall@5/@10、MRR@10、nDCG@10；Recall 不得低于基线），标注里的旧编号会自动对应到新编号，用于发现既有检索退步；通过它**不代表**本次新增、修订或退役的条目都已得到语义验证。评测字段和门槛见 [eval/README.md](eval/README.md)。
 
 - 提示 `index not built yet`：运行 `./fault-rag reindex`（读取本仓库 `catalogs/`）。
 - 提示模型缺失：运行 `python scripts/download_model.py`；网络受限时可为 Hugging Face 下载配置可用镜像。
