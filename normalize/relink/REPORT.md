@@ -1,7 +1,20 @@
 # 阶段 A 试点报告：悬空 var 关系无法自动恢复
 
-状态：**试点完成，A 按原设想不可行。** 未改动任何真源条目。
+状态：**已收尾（2026-10-15）。** A 按原设想不可行；45 条已标为「目标不可恢复」。
 消耗：149 次网关调用（约 0.3M token，≈ 单晚推理扫描的 2%）。
+
+收尾方式（与原计划的选项 1 不同，原因见下）：
+- 推理 1e1aa25（42 条）、训练 5ebacf8（3 条）：每条 `original.notes` 加一行
+  `relink-unrecoverable: ...`，说明该 `target_raw` 是编造的、不要照它找目标。
+- **没有删关系**：schema 要求 `coverage=var` 的条目至少保留一个 var 关系；而把
+  `coverage` 改成 `NEW` 等于断言「这是新模式」——恰好是未知的那件事，还会污染 B 要用的 NEW 类。
+- `validate` 的 warning 因此**不归零**（推理 43 / 训练 16），但每条都已就地解释。
+- 顺带修了 `catalog_tool` 的一个真 bug：`--drop-relation` 在 ref 无法解析时
+  （`tid` 为 None）会命中该条目上所有无 target 的关系并静默删除，因为 `None in (ref, None)` 为真。
+  现在无法解析的 ref 报错，且支持按 `target_raw` 精确删除。
+- RAG 快照同步到 9e5227b，两道门槛通过（Recall@5/@10 完全不变）。
+- 已知边界：RAG 的 `lookup` 不投影 `original.notes`，只给 `file`。关系里「有 `target_raw`
+  无 `target`」本身即未解析信号；留痕的主要读者（扫描 agent）直接读上游 YAML，能看到。
 
 ## 结论先行
 

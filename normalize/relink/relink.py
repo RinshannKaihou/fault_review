@@ -370,6 +370,44 @@ def cmd_apply(a):
     print(json.dumps({"applied": len(cmds) - fails, "failed": fails}, ensure_ascii=False))
 
 
+MARK = "relink-unrecoverable"
+
+
+def cmd_close(a):
+    """给 45 条打上「目标不可恢复」的留痕，不删关系、不改 coverage。
+
+    删关系行不通：schema 要求 coverage=var 的条目至少保留一个 var 关系，而把
+    coverage 改成 NEW 等于断言「这是新模式」——我们并不知道，还会污染 NEW 类。
+    留痕的目的是让后来者（和每日扫描 agent）不再把编造的 target_raw 当真指针。
+    """
+    import subprocess
+    rows = items()
+    done = skipped = failed = 0
+    for r in rows:
+        e = yaml.safe_load(open(REPOS[r["repo"]] + f"/catalog/entries/{r['src']}.yaml"))
+        notes = " ".join(str(x) for x in ((e.get("original") or {}).get("notes") or []))
+        if MARK in notes:
+            skipped += 1
+            continue
+        note = (f"{MARK}: var 目标 {r['target_raw']!r} 不可恢复——迁移的抽取模型编造了这个名字，"
+                f"它从未是任何条目的 slug/alias（证据与标定见 RAG normalize/relink/REPORT.md）。"
+                f"不要按它去找目标；父条目待人工判定。")
+        cmd = ["/usr/bin/python3", REPOS[r["repo"]] + "/tools/catalog_tool.py",
+               "update", r["src"], "--note", note]
+        if a.dry_run:
+            done += 1
+            continue
+        pr = subprocess.run(cmd, capture_output=True, text=True,
+                            cwd=REPOS[r["repo"]])
+        if pr.returncode:
+            failed += 1
+            print(f"FAIL {r['src']}: {pr.stderr.strip()[:160]}")
+        else:
+            done += 1
+    print(json.dumps({"items": len(rows), "noted": done, "already_marked": skipped,
+                      "failed": failed, "dry_run": bool(a.dry_run)}, ensure_ascii=False))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -389,6 +427,9 @@ def main():
     s.add_argument("--source", choices=["raw", "legacy"], default="legacy")
     s.add_argument("--bucket", choices=["exact", "fuzzy_same", "fuzzy_cross", "nomatch"])
     s.set_defaults(func=cmd_decide)
+    s = sub.add_parser("close", help="给不可恢复的目标打留痕（幂等）")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(func=cmd_close)
     s = sub.add_parser("apply")
     s.add_argument("--tag", required=True)
     s.add_argument("--execute", action="store_true")
