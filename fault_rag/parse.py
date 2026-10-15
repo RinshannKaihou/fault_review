@@ -104,7 +104,7 @@ def _parse_meta(meta_line, repo):
     training:  stage: `pretrain/shared` · Cov: `NEW` · 置信度 `documented`
     inference: `infra_off` · Cov: `var:1.212` · 触发 `yes` · 置信度 `verified`
     """
-    meta = {"stage": None, "axis": None, "coverage": None, "trigger": None, "confidence": None}
+    meta = {"stage": None, "axis": None, "coverage": None, "pattern": None, "trigger": None, "confidence": None}
     tokens = re.findall(r"`([^`]+)`", meta_line)
     if repo == "training":
         m = re.search(r"stage\s*[：:]\s*`([^`]+)`", meta_line)
@@ -253,7 +253,7 @@ def parse_master(path, repo):
 
     # entries missing the metadata line still need the keys
     for e in entries:
-        for k in ("stage", "axis", "coverage", "trigger", "confidence"):
+        for k in ("stage", "axis", "coverage", "pattern", "trigger", "confidence"):
             e.setdefault(k, None)
         e["line_end"] = e["line"] + e["raw"].count("\n")
     return entries
@@ -288,7 +288,7 @@ def parse_negative_doc(path, repo, kind):
                 "line_end": end_line,
                 "neg": True,
                 "entry_type": "negative",
-                "stage": None, "axis": None, "coverage": None,
+                "stage": None, "axis": None, "coverage": None, "pattern": None,
                 "trigger": None, "confidence": None,
                 "fields": {"content": text},
                 "raw": text,
@@ -339,7 +339,7 @@ def parse_appendix(path, repo, letters=("C", "D")):
                 "line_end": end_line,
                 "neg": True,
                 "entry_type": "negative",
-                "stage": None, "axis": None, "coverage": None,
+                "stage": None, "axis": None, "coverage": None, "pattern": None,
                 "trigger": None, "confidence": None,
                 "fields": {"content": text},
                 "raw": text,
@@ -438,6 +438,9 @@ def parse_yaml_entries(path, repo):
             "stage": "/".join(stage) if isinstance(stage, list) else None,
             "axis": None if labels.get("family") in (None, "N/A", "待定") else labels.get("family"),
             "coverage": labels.get("coverage"),
+            # 模式层（PAT-xxxx）只做投影与过滤，不进嵌入文本也不进 BM25：结构化字段加进
+            # 检索文本会让近似主题条目反超（独立集 Recall@5 0.952 -> 0.937 的旧教训）。
+            "pattern": y.get("pattern"),
             "trigger": None if labels.get("trigger") in (None, "N/A", "待定") else labels.get("trigger"),
             "confidence": None if labels.get("confidence") in (None, "N/A", "待定") else labels.get("confidence"),
             "relations": list(y.get("relations") or []),

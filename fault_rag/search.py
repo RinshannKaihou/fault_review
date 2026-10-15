@@ -15,7 +15,7 @@ def _entry_type(e):
 
 
 def _passes(e, repo=None, category=None, confidence=None, trigger=None,
-            neg=None, include_pointers=False):
+            neg=None, include_pointers=False, pattern=None):
     if _entry_type(e) == "pointer" and not include_pointers:
         return False
     if repo and e["repo"] != repo:
@@ -23,6 +23,8 @@ def _passes(e, repo=None, category=None, confidence=None, trigger=None,
     if category and not _category_matches(e, category):
         return False
     if confidence and (e.get("confidence") or "") != confidence:
+        return False
+    if pattern and (e.get("pattern") or "") != pattern:
         return False
     if trigger and _norm_trigger(e.get("trigger") or "") != _norm_trigger(trigger):
         return False
@@ -73,14 +75,14 @@ def _rrf_scores(*rankings):
 
 def search(query, topk=8, mode="hybrid", repo=None, category=None,
            confidence=None, trigger=None, include_neg=True,
-           include_pointers=False):
+           include_pointers=False, pattern=None):
     idx = get_index()
     neg_flag = None if include_neg else False
 
     eligible = [
         i for i, e in enumerate(idx.entries)
         if _passes(e, repo, category, confidence, trigger, neg=neg_flag,
-                   include_pointers=include_pointers)
+                   include_pointers=include_pointers, pattern=pattern)
     ]
     if not eligible:
         return []
@@ -187,6 +189,7 @@ def _full(e):
         "status": e.get("status"),
         "confidence": e.get("confidence"),
         "coverage": e.get("coverage"),
+        "pattern": e.get("pattern"),
         "stage": e.get("stage"),
         "axis": e.get("axis"),
         "trigger": e.get("trigger"),

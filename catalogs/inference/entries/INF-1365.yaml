@@ -36,6 +36,7 @@ evidence:
 relations:
 - kind: var
   target: INF-1349
+pattern: PAT-INF-0154
 original:
   mechanism: vLLm AMD 路径 Qwen4ExpModelState.prepare_inputs 只刷新 ple_query_start_loc[:num_reqs_padded+1] 与 ngram_context[:num_reqs_padded]，而 PIECEWISE CUDA graph 按 padded token 数分派、捕获时用 dummy num_reqs=min(num_tokens,max_num_seqs)（v1/worker/gpu/cudagraph_utils.py create_forward_fn），重放时请求数更少仍读 ple_query_start_loc[0:R_cap+1] 与 ngram_context[0:R_cap]（ple_layer.py qwen4_exp_amd_ple_ngram_ids 以 numel()-1 为请求数做二分）。该 op 不是 splitting op，被捕获进 piece 且固化捕获期请求计数。当陈旧尾部非单调或低于本步 token 数时，真实 token 被分配到陈旧请求行、得到错误 n-gram ID，输出依赖服务器历史（例：warmup_kernels 后缓冲为 [0,1,2,12,16,...,32]，8-token 单请求步看到 [0,8,2,12,...]，token 2..7 映射到行 2）。NVIDIA 路径有意把依赖请求计数的 ID 生成放图外（splitting op vllm::qwen4_exp_compute_ple_ngram_ids）。证据：CPU 模型（V2 捕获顺序/warmup 序列/读区间对照 eager 参考）46 个探针步 94 处真实 token ID 错，并发突发后同样错；2x AMD Radeon AI PRO R9700（gfx1201）ROCm 构建（model_state.py 与 main 字节一致）TP1/TP2：关前缀缓存时 10 个探针在 8 路并发突发前后 0/10 一致（修复后 10/10，长 prompt 与单请求 decode 位级不变）；开 --mamba-cache-mode align 前缀缓存后冷请求结果也在并发突发后改变。修复建议：prepare_inputs 刷新后把 ple_query_start_loc[num_reqs_padded+1:] 填 input_batch.num_tokens（与 runner 自身 query_start_loc 相同的非递减 padding）、ngram_context 全行填 EOS；或注册为 splitting op。
   source: vLLM issue https://github.com/vllm-project/vllm/issues/61486（2026-10-13 open，2 评论；ROCm 0.29 基线 + main 代码定位 + CPU 模型 + 2x R9700 实测）
@@ -65,3 +66,6 @@ migration:
   - date: '2026-10-14'
     fields:
     - original.notes
+  - date: '2026-10-15'
+    fields:
+    - pattern

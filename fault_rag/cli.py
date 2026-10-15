@@ -23,6 +23,7 @@ def main(argv=None):
     s.add_argument("query")
     s.add_argument("--repo", choices=["inference", "training"])
     s.add_argument("--category", help="subsystem (e.g. KV缓存) or old category: NUM / HW / cat1 / KV1 / neg_rejected ...")
+    s.add_argument("--pattern", help="fault pattern id (PAT-0042): only entries in that family")
     s.add_argument("--confidence", choices=["verified", "documented", "speculative"])
     s.add_argument("--trigger", help="inference 触发 tag, e.g. yes/partial/no")
     s.add_argument("--topk", type=int, default=8)
@@ -64,7 +65,7 @@ def main(argv=None):
             args.query, topk=args.topk, mode=args.mode, repo=args.repo,
             category=args.category, confidence=args.confidence,
             trigger=args.trigger, include_neg=not args.no_neg,
-            include_pointers=args.include_pointers,
+            include_pointers=args.include_pointers, pattern=args.pattern,
         )
         if args.full:
             from .search import _full, get_index
