@@ -20,12 +20,14 @@ stdout 一律是 JSON。出错信息在 stderr。
 | 用症状/机制描述找相似故障模式 | `search "<描述>" --topk 5` |
 | 已知编号或 snake_case 名，取完整条目 | `lookup INF-0044` / `lookup 1.44`（旧编号自动对应）/ `lookup sdc_multibit_warp_spray` |
 | 顺覆盖关系/交叉指针找关联条目 | `related TRN-0005 --depth 1`（旧号 `HW.05` 亦可） |
+| 看某个故障模式下的全部实例 | `search "<描述>" --pattern PAT-INF-0035`，或读模式文件 `catalog/<repo>/patterns/` |
 | 人工确认发布已审查的编目更新 | 先在隔离副本运行 `scripts/sync_catalogs.sh` 与定向校验；无读者窗口在正式库重跑、核验后才提交 `catalogs/`。脚本非原子，失败不得发布 |
 
 ## search 要点
 
 - 默认 hybrid（BM25 + bge-m3 稠密向量，RRF 融合）。中英混排查询都支持。
 - 过滤：`--repo inference|training`、`--category <原因子系统，如 KV缓存> | <旧分类 NUM|cat1|KV1>`、
+  `--pattern PAT-INF-0035`（只看该故障模式这一族）、
   `--confidence verified|documented|speculative`、`--trigger yes|partial|no|not_target`、
   `--no-neg`（排除负结果块）、`--include-pointers`（显式包含指针行）、
   `--full`（返回条目全部字段）。
@@ -35,6 +37,11 @@ stdout 一律是 JSON。出错信息在 stderr。
   `--mode bm25` 下关键词零命中返回空列表，这不代表编目里没有相关故障，可换 hybrid 或换说法再查。
 - 新编号 `INF-xxxx` / `TRN-xxxx` 不含分类语义；旧编号记在 `legacy_ids`，`lookup` 会对应到新编号，已合并的 `1.70`、`11.30` 也会对应到保留条目（`INF-0044`、`INF-1048`）。精确查不到的编号不会模糊命中别的编号。
 - `status: pending_audit` 的条目是每日扫描刚写入、尚未经次日自动审计的，引用时注明。
+- `pattern: PAT-INF-0035` 是条目所属的**故障模式**（同一底层问题的一族）。编号带编目命名空间，
+  `PAT-INF-` 与 `PAT-TRN-` 不可混。模式的 `members` 由 `var` 关系派生，**不是**人工策划的分类；
+  模式自身的 `title` / `shared_mechanism` 在上游 `catalog/patterns/<id>.yaml`，RAG 不投影它们。
+  模式只表示「同族」，**不等于已核实同机制**——深度 >1 的树隐含 var 可传递的假设，
+  且 199 个模式里 55 个的共享机制仍是 `待定`。引用时不要据模式声称两条机制相同。
 - 每条结果带 `file`（条目 YAML）：需要完整上下文时直接用 Read 打开它，
   `original` 下是扫描写的完整原始说明；`title` 和 `cause` / `effect` 等结构化字段是从它抽取的摘要，不要只凭摘要下结论。
 - 结果里 `neg: true` 的是**负结果**（rejected/blindspots/附录C/D）——
