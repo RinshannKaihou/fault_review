@@ -15,10 +15,12 @@
 """
 
 import argparse
+import calendar
 import collections
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -27,7 +29,6 @@ import urllib.request
 from pathlib import Path
 
 GITCODE = 'https://api.gitcode.com/api/v5/repos/'
-GITHUB = 'https://api.github.com/search/issues'
 
 # 宽口径：在首晚 27 个真实入库 issue 上召回 26/27。NPU_SCAN.md 第 2 条那套严格
 # 关键词只有 18/27 —— 漏掉"接收偏移错误""数据丢失（0 值）""silent miscompile"
@@ -59,11 +60,9 @@ TIERS = {
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def request(url, token=None):
-    """直连取一页 JSON；只向 api.github.com 发 token。"""
+def request(url):
+    """直连取一页 JSON。只用于 GitCode（匿名可读）；GitHub 侧走 gh CLI。"""
     headers = {'User-Agent': 'npu-backfill-prefilter'}
-    if token and urllib.parse.urlsplit(url).hostname == 'api.github.com':
-        headers['Authorization'] = 'Bearer ' + token
     last = None
     for attempt in range(3):
         try:
@@ -85,7 +84,7 @@ def row(item, repo, platform):
                 labels=labels, url=item.get('html_url') or item.get('web_url') or '')
 
 
-def list_gitcode(repo, cache):
+def list_gitcode(repo):
     """GitCode 列表 API 带 total_page 头，匿名可全量翻页；不取正文。"""
     rows, page = [], 1
     while True:
@@ -100,29 +99,64 @@ def list_gitcode(repo, cache):
         time.sleep(0.2)
 
 
-def list_github(repo, token, until):
-    """GitHub Search 每查最多 1000 条，按创建年份切片绕开上限。"""
+def gh_search(query, page):
+    """用 gh CLI 查 Search API：认证交给 gh，token 不进本进程环境。
+
+    环境里的 `gh auth login` 凭据带 repo scope，不该为了读公开 issue 把它导出成
+    GITHUB_TOKEN 四处传递；`gh api` 让它留在 gh 自己的凭据存储里。
+    """
+    out = subprocess.run(
+        ['gh', 'api', '-X', 'GET', 'search/issues', '-f', 'q=' + query,
+         '-f', 'per_page=100', '-f', 'page=' + str(page)],
+        capture_output=True, text=True, timeout=120)
+    if out.returncode:
+        raise SystemExit('gh api failed (%s): %s' % (out.returncode, out.stderr.strip()[:300]))
+    return json.loads(out.stdout)
+
+
+def list_github(repo, until):
+    """Search API 每条查询最多回 1000 条，按创建月份切片绕开上限。
+
+    年切片不够：vllm-ascend 2026 年有 2,724 条、2025 年 1,601 条，都会撞上限并静默截断。
+    """
     rows = []
     for year in range(2023, 2027):
-        page = 1
-        while True:
-            q = 'repo:%s is:issue created:%d-01-01..%d-12-31 updated:<%s' % (repo, year, year, until)
-            url = GITHUB + '?' + urllib.parse.urlencode(dict(q=q, per_page=100, page=page))
-            head, data = request(url, token)
-            rows += [row(item, repo, 'github') for item in data.get('items') or []]
-            if len(data.get('items') or []) < 100 or page * 100 >= min(1000, data['total_count']):
+        for month in range(1, 13):
+            start = '%d-%02d-01' % (year, month)
+            if start >= until:
                 break
-            page += 1
-            time.sleep(2 if token else 7)
-        time.sleep(2 if token else 7)
-    return rows, len(rows)
+            # 必须用区间写法：两个 created: 限定词 GitHub 不接受，会静默退化成
+            # 无日期过滤，每个切片都回全量（实测 sgl-kernel-npu 重复 4275 行）。
+            # created:A..B 两端都含，所以 B 取当月最后一天。
+            end = '%d-%02d-%02d' % (year, month, calendar.monthrange(year, month)[1])
+            query = ('repo:%s is:issue created:%s..%s updated:<%s'
+                     % (repo, start, end, until))
+            page, total = 1, None
+            while True:
+                data = gh_search(query, page)
+                if total is None:
+                    total = data['total_count']
+                    if total >= 1000:
+                        raise SystemExit('slice %s hit the 1000-result cap (%d); narrow it'
+                                         % (start, total))
+                items = data.get('items') or []
+                rows += [row(item, repo, 'github') for item in items]
+                if len(items) < 100 or page * 100 >= total:
+                    break
+                page += 1
+                time.sleep(2)
+            time.sleep(2)
+    unique = {item['number']: item for item in rows}
+    if len(unique) != len(rows):
+        print('%s: %d duplicate rows across slices' % (repo, len(rows) - len(unique)),
+              file=sys.stderr)
+    return list(unique.values()), len(unique)
 
 
 def do_list(args):
     sources = json.load(open(args.registry))['sources']
     out = Path(args.cache)
     out.mkdir(parents=True, exist_ok=True)
-    token = os.environ.get('GITHUB_TOKEN')
     for source in sources:
         repo, platform = source['repo'], source['platform']
         if args.platform and platform != args.platform:
@@ -133,13 +167,10 @@ def do_list(args):
         if path.exists() and not args.force:
             print('cached', repo, file=sys.stderr)
             continue
-        if platform == 'github' and not token:
-            print('skip %s: GITHUB_TOKEN unset (anonymous search is 10/min)' % repo, file=sys.stderr)
-            continue
         if platform == 'gitcode':
-            rows, declared = list_gitcode(repo, out)
+            rows, declared = list_gitcode(repo)
         else:
-            rows, declared = list_github(repo, token, args.until)
+            rows, declared = list_github(repo, args.until)
         with open(str(path) + '.tmp', 'w') as handle:
             for item in rows:
                 handle.write(json.dumps(item, ensure_ascii=False) + '\n')

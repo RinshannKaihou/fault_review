@@ -95,15 +95,24 @@ T2 的 1,837 候选留作后续决定——首晚 ops-nn/ops-math 产出密度�
 
 ## 开工前提
 
-1. **`GITHUB_TOKEN` 尚未配置。** 当前匿名限额 core 60/h、search 10/min，
-   vllm-ascend 那 4,326 条历史 issue 匿名做不动。GitCode 侧不受影响，可先做。
-2. A（悬空链接）与 B（模式分层）先完成。B 若后做，本轮灌入的 40–70 条会抬高
-   近重复对数量（当前 cos≥0.80 约 103 对），等于让 B 重做一遍。
+A（悬空链接）与 B（模式分层）先完成。B 若后做，本轮灌入的 40–70 条会抬高
+近重复对数量（当前 cos≥0.80 约 103 对），等于让 B 重做一遍。
+
+GitHub 侧**不需要** `GITHUB_TOKEN`：环境里 `gh` 已登录（core 5000/h、search
+30/min），`prefilter.py` 的 GitHub 路径走 `gh api`，认证留在 gh 自己的凭据存储里。
+那份凭据带 `repo` scope（对全部仓库含私有的读写权），不该为了读公开 issue 把它导出
+成环境变量传给采集器和扫描 agent——所以这里不导出，也不写进 `.env`。
+
+（日常扫描要不要配 token 是**另一个独立决定**：扫描 prompt 里的 7 仓 Search 查询用
+`curl` 读 `$GITHUB_TOKEN`，未设就按匿名 10/min 跑并 `sleep 7`。若要提速，建议新建一个
+**无任何 scope** 的 PAT 写进 `/root/.hermes/profiles/third/.env`，不要复用 gh 那份
+带 `repo` 写权的 token——扫描 agent 要读远端不可信的 issue 正文，给它写权没有必要。）
 
 ## 执行步骤
 
 1. **清点**（已完成 GitCode 侧）：`prefilter.py list`，19 仓 37,479 条标题，约 400 个
-   列表页、13 分钟、匿名无限额。GitHub 侧待 token。
+   列表页、13 分钟、匿名无限额。GitHub 侧走 `gh api`，按**创建月份**切片
+   （年切片会撞 Search 的 1000 条上限：vllm-ascend 2026 年 2,724 条、2025 年 1,601 条）。
 2. **试点 150 条**：从 T1 候选池分层随机抽 150，走完整漏斗，量出真实
    候选→深读→收录两级转化率，再决定是否放量到全部 1,950。与此前每个阶段
    "先跑 20 条试点"的做法一致。
@@ -122,7 +131,7 @@ T2 的 1,837 候选留作后续决定——首晚 ops-nn/ops-math 产出密度�
 | 项 | 量 |
 |---|---|
 | GitCode 列表清点 | ~400 请求（已完成） |
-| GitHub 列表清点 | ~60 请求（需 token） |
+| GitHub 列表清点 | ~140 请求（`gh api`，月切片，约 8 分钟） |
 | 标题判读 | ~100 网关调用（1,950 条，批 20/次） |
 | 正文拉取 | ~600 HTTP 请求（200–300 条 × 1–3） |
 | 条目写入与校验回路 | ~150–210 网关调用 |
@@ -135,7 +144,10 @@ T2 的 1,837 候选留作后续决定——首晚 ops-nn/ops-math 产出密度�
 ## 工具
 
 - `prefilter.py list` — 全量拉取 issue 标题（不取正文），缓存 JSONL；
-  `--only owner/repo` 试跑单仓，`--platform` 分平台。
+  `--only owner/repo` 试跑单仓，`--platform` 分平台。GitCode 走匿名 urllib，
+  GitHub 走 `gh api`。两条路径都校验声明总数，GitHub 侧还按编号去重并报告重复数
+  ——这个安全网抓到过一个真 bug：两个 `created:` 限定词会被 GitHub 静默忽略，
+  导致每个月切片都返回全量（sgl-kernel-npu 重复 4,275 行），必须用 `created:A..B`。
 - `prefilter.py filter --tier N --out <path>` — 应用校准过的宽口径正则，
   按仓输出候选数与候选清单。
 
