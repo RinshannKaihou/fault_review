@@ -1,0 +1,59 @@
+id: INF-1373
+legacy_ids: []
+slug: cann_gather_pa_kv_cache_32b_floor_tail_drop
+aliases: []
+title: GatherPaKvCache 32B 取整搬运丢尾数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: GatherPaKvCache ND kernel
+  behavior: ND kernel 把真实搬运字节数除以 32 写入 DataCopyParams.blockLen 但不处理余数：非 32 倍数的 token 搬运量向下取整，余数字节不搬。
+effect:
+  objects:
+  - KV状态
+  detail: INT8、Norm、blockSize=1、num_heads=1 下 head_size=17 时 copyLen=0 整 token 未写；head_size=33 仅写 32B 尾 1B 丢失；K/V 两路均存在。输入满足 README 全部约束，与逐元素按位一致承诺冲突。
+  visibility: 静默错误
+mitigation:
+  detect: 非 32B 对齐 head_size 的 gather 后逐元素比对 KV（报告含源码行级定位）
+  fix: 待定（open，master 4bbfb3b2 未修；Host 检查未要求 32B 对齐）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: cann/ops-transformer gather_pa_kv_cache ND kernel + 每元素字节数非 32 倍数的合法输入（INT8/Norm/head_size 非 32 倍数；A3 910_93 + CANN 8.3 实测，master HEAD 4bbfb3b2）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6133
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: gather_pa_kv_cache_nd.h:177/198（master 4bbfb3b2，SHA-256 逐字节核对）中 ND Kernel 把真实搬运字节数 realUbBaseK_*sizeof(T) 除以 32 作为 uint16_t copyLen 写入 DataCopyParams.blockLen，不做余数处理：余数字节不搬。INT8、Norm 布局、blockSize=1、num_heads=1 时 head_size=17 → copyLen=0 整 token 未写；head_size=33 → 只写 32B 尾 1B 丢失；K/V 两路同病。这些输入满足 README 当前约束（A2/A3 数据类型、Norm 布局、单 token 不超 148KiB），文档与 Host 检查均未要求 32B 对齐；README:71 承诺合法输入逐元素按位一致，实际行为与契约冲突。环境：Atlas-800T-A3（Ascend910_9382）、CANN Runtime 8.3.0.1.200/Toolkit 8.3.RC1。
+  source: 'cann/ops-transformer #6133（2026-10-14 open，含行级源码定位与触发形状枚举）。https://gitcode.com/cann/ops-transformer/issues/6133'
+  behavior: 合法输入下 KV gather 静默丢尾数据（整 token 或尾字节），无报错。
+  trigger_surface: GatherPaKvCache ND kernel + token 字节数非 32 倍数（INT8/Norm/小 head_size 等合法组合）
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

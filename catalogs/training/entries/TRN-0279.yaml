@@ -1,0 +1,66 @@
+id: TRN-0279
+legacy_ids: []
+slug: torch_npu_oob_index_silent_wrong
+aliases: []
+title: torch_npu 索引/损失算子越界输入静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: gather/scatter/CE 越界校验缺失
+  behavior: torch_npu 对 gather/scatter/index_put/cross_entropy/nll_loss 缺 host 越界校验：越界读拿垃圾、越界写被丢弃，无异常；CPU/CUDA 会 raise。
+effect:
+  objects:
+  - 数值结果
+  detail: A3 真机确定性复现：cross_entropy 越界 target 返回数值不报错；gather 越界返回垃圾；scatter_ 越界写被静默丢弃。数据侧 bug 被无声吞掉。
+  visibility: 静默错误
+mitigation:
+  detect: 训练前对 index/target 做范围断言；与 CPU 参考实现对账。
+  fix: 待定（F.embedding、Tensor.select 越界在 NPU 仍会 raise，说明该校验可实现；issue 建议 host 端补齐对齐 CPU/CUDA 语义，未见修复 MR）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5296
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-1378
+original:
+  mechanism: 'Ascend/pytorch issue #5296（2026-10-08，open；A3 真机算子巡检发现）：torch_npu 2.7.1.post4 + CANN 9.0.0（A3/Ascend910 双卡）对若干索引/损失算子缺失 host 端越界校验——传入越界 index/target 时 CPU/CUDA 抛 IndexError/RuntimeError，NPU 静默返回错误结果（越界读拿垃圾值、越界写被丢弃），torch.npu.synchronize() 后也无异常；A3 硬件对越界访存本身静默容忍、内核不崩。最小复现四例（确定性）：F.cross_entropy target=7（≥num_classes=4）返回数值不报错；F.nll_loss target=5 越界不报错；torch.gather idx=3（size=3）静默返回垃圾；Tensor.scatter_ 行 3 越界写被丢弃、sum 只剩合法写入。对照证明非全局无检查：F.embedding 越界与 Tensor.select 越界在 NPU 端仍会 raise，缺陷定位在这批算子的校验缺失，属可实现的不一致。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5296
+  behavior: NPU 上越界的 index/target 输入（gather/scatter/index_put/cross_entropy/nll_loss）不抛异常：越界读返回垃圾值、越界写被静默丢弃，synchronize 后无任何报错；同代码在 CPU/CUDA 会 raise。训练管线中的数据侧越界 bug（如 label 越界）在 NPU 上被无声吞掉、产出错误 loss/数据布局。
+  discovery: 2026-10-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-15'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence
+  - date: '2026-10-15'
+    fields:
+    - relations

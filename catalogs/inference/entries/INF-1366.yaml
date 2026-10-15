@@ -1,0 +1,72 @@
+id: INF-1366
+legacy_ids: []
+slug: vllm_lfm2_hybrid_mamba_greedy_nondeterministic_warm_rounds
+aliases: []
+title: vLLM LFM2 hybrid mamba 贪心解码暖轮间不可复现
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: hybrid mamba 前向非确定归约
+  behavior: LFM2混合模型贪心解码相同请求产生不同输出序列；根因内核未定位，疑似非确定归约顺序扰动logits使argmax翻转。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 同引擎同 seed 同 prompt 的 temperature=0 两次 generate() 输出序列不同：长公共前缀+单 token 分岔+再对齐的归约序签名；评测/A-B 跨轮比较出现幻影差异
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定（报告者已排除 CUDA graph 重放（NONE 模式仍发散）、采样 RNG（temperature=0）、缓存冷热（暖对暖发散）；同机 Qwen1.5-MoE 稠密注意力对照稳定，归因收窄到 LFM2/hybrid-mamba 特有路径但未定位内核）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 0.31.0 官方 wheel + LiquidAI/LFM2-8B-A1B（hybrid conv+SSM+full-attention，bf16）+ temperature=0 贪心 + 同引擎重复调用；RTX A6000/5880 Ada（sm86/sm89）；dense-attention 对照模型稳定
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-13'
+remarks: 与 INF-0344（4.28 Qwen3.6 hybrid GDN 多序列 run-to-run 非确定）共享的具体失效机制：hybrid（mamba/GDN 类线性注意力）模型的 GPU 前向归约顺序非确定，同批重复提交间 logits 微扰使贪心 token 翻转——4.28 为批内多序列调度引起（272 生产 prompt 10–17% 决策翻转、max_num_seqs=1 归零），本条为同引擎暖轮间时间序引起且禁 CUDA graph 仍在，触发维度不同、机制家族相同。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61319（2026-10-13
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0344
+original:
+  mechanism: vLLM 0.31.0（官方 wheel，PyTorch 2.13.0+cu130，RTX A6000 sm86 + RTX 5880 Ada sm89）服务 LiquidAI/LFM2-8B-A1B（hybrid conv+SSM+full-attention，bf16）时，同一引擎实例、同 seed、同 prompts、temperature=0 的两次 llm.generate() 产生不同 token 序列。发散签名跨所有不匹配 prompt 一致：长公共前缀+单个分岔 token+再对齐——非确定归约顺序（atomicAdd/split-K 累加）扰动 logits 使 argmax 翻转的典型形态（报告者列出的 p0/p1/p3 分岔示例：3256→884、15637→2316、9029→12051 等）。排除项：cudagraph_mode=NONE 仍 3/4 prompt 发散（其中 1 个在首个输出 token 即分岔）→ 非 graph 重放伪影；temperature=0 → 无采样噪声；发散发生在暖对暖两轮之间 → 非冷启动缓存态。归因收窄：同机同栈 Qwen/Qwen1.5-MoE-A2.7B-Chat（dense-attention MoE）暖对暖与冷对暖完全一致 → LFM2/hybrid-mamba 特有。根因内核未定位（报告者明确为非确定归约假设，未给出 SASS/源码级证据），故标 documented。影响：贪心解码可复现性是评测复现与 A/B 测试基线，hybrid 模型上跨轮输出比较出现幻影 diff。
+  source: vLLM issue https://github.com/vllm-project/vllm/issues/61319（2026-10-13 open，0 评论；含 repro_greedy_nondeterminism_lfm2.py 逐 prompt 分岔 token 表）
+  behavior: 无报错；同一引擎两次相同请求输出序列分岔（128 token/prompt，长前缀+单点分岔+再对齐），跨轮持续存在、禁 CUDA graph 不消失；暖轮间即发散
+  trigger_surface: vLLM 0.31.0 + LiquidAI/LFM2-8B-A1B（hybrid mamba）+ temperature=0 贪心 + 同引擎重复调用；sm86/sm89 实测
+  discovery: 2026-10-13 每日扫描
+  notes:
+  - 2026-10-14 回访 2026-10-14：vllm#61319 无新评论（0 条），判定维持。
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - component
+  updates:
+  - date: '2026-10-14'
+    fields:
+    - relations
+    - remarks
+  - date: '2026-10-14'
+    fields:
+    - original.notes

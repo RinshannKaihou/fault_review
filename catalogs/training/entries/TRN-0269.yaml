@@ -1,0 +1,63 @@
+id: TRN-0269
+legacy_ids: []
+slug: streamed_shards_repeat_window_mismatch
+aliases: []
+title: trl 流式数据集分片下静默跳过/重复训练 prompt
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: trl
+    component: GRPO/RLOO 流式数据加载分组
+  behavior: repeat_iterable_dataset按全局prompt数构造窗口内同一batch重复，_prepare_inputs只对首个batch生成；独享shard时进程窗口含多个不同batch。
+effect:
+  objects:
+  - 训练样本流
+  detail: 流式数据集且dispatch_batches=False，Accelerate分配独享shard（1.14起n_shards≥进程数、此前>进程数）时，仅窗口首个batch生成并训练，其余batch的prompt静默跳过，其余步重复训练；2进程16prompt实训8，无报错警告且训练正常完成。
+  visibility: 静默错误
+mitigation:
+  detect: 训练步数×每步 prompt 数与数据集总 prompt 数对账；或按 uid 统计被生成 prompt 集合。
+  fix: '修复 PR #7697（open 未 merge）：各进程只按自己份额（generation_batch_size // num_generations // num_processes）分组，份额切不开时 ValueError；修复后 16/16 prompt 全训。https://github.com/huggingface/trl/pull/7697'
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - rl
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7690
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7697
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'trl GRPOTrainer/RLOOTrainer（及 DistillationTrainer）用 repeat_iterable_dataset 把「steps_per_generation 窗口内的 batch」构造成同一 batch 的重复，_prepare_inputs 只对窗口首个 batch 做 rollout 生成、窗口内其余步重放这些生成。该分组用全局 prompt 数计算。当数据集是流式（iterable）且 dispatch_batches=False 时，Accelerate（1.14 起 n_shards>=num_processes、此前 >）给每个进程分配独享 shard——每进程的窗口因此包含数个不同 batch，而不是一个 batch 的重复；只有首个 batch 的 prompt 被生成并训练，窗口内其余 batch 的 prompt 被静默跳过，同时其余部分被重复训练。报告者在 2 进程、16 prompt、2/4 shard 的 CPU 复现：main 只训 8/16 prompt，无报错无警告（issue #7690 含完整 torchrun 复现脚本与逐 rank batch 打印）。修复 PR #7697 使各进程只按自身份额分组并加约束 ValueError；修复后 1/2/4/8 shard 下 16/16 prompt 全部被训。'
+  source: 'trl #7690（2026-10-13，torchrun 2 进程 CPU 复现，逐 rank micro-batch 打印显示 8/16 prompt 被跳过）；修复 PR #7697（open）。https://github.com/huggingface/trl/issues/7690 ；https://github.com/huggingface/trl/pull/7697'
+  behavior: 流式/ streamed 数据集 + 多进程 + shard 数达标时：训练正常跑完、无报错；实际只训练了部分 prompt（实测 8/16），其余被重复训练。触发条件：iterable dataset + Accelerate 独享 shard 路径 + GRPO/RLOO/Distillation trainer。
+  discovery: 2026-10-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - subsystem

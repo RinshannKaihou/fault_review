@@ -1,0 +1,69 @@
+id: TRN-0267
+legacy_ids: []
+slug: kto_unpaired_single_label_blocks
+aliases: []
+title: trl KTO 成对数据集拆成单标签整块 batch
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: trl
+    component: KTO 成对数据集 unpair 分组
+  behavior: 成对 KTO 数据集按文档路径进入 trainer 时被 unpair 成 desirable/undesirable 各自连续的大块，数据加载层未打散标签块，绝大多数 micro-batch 内只有一种标签。
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  detail: 配对数据集按文档用法训练时 300 batch 仅 2 个混合双标签；多数步无 rewards/margins，块内 KTO 对比统计退化；训练静默完成无报错；手工 unpair+shuffle 后 295/300 混合、指标恢复。
+  visibility: 质量退化
+mitigation:
+  detect: 在数据加载层检查每个 micro-batch 的标签构成（含两种标签的 batch 占比），0% 混合即报警。
+  fix: '修复 PR #7684（2026-10-13 closed unmerged，未落地）：unpair 后按 args.seed shuffle 打散标签块（IterableDataset 无 shuffle 保持原样）。当前 workaround：构造 trainer 前自行 unpair_preference_dataset + shuffle。https://github.com/huggingface/trl/pull/7684'
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7682
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'trl KTOTrainer 文档要求成对（paired）偏好数据集，内部对成对数据集调用 unpair 逻辑把每对 (chosen, rejected) 拆成单标签样本；该拆分保持原始顺序，把所有 desirable 样本排成一块、所有 undesirable 排成另一块，而数据加载路径没有按标签打散。KTO 的 loss 依赖 batch 内 desirable/undesirable 混合（KL 参考点与 margins 项需要两种标签的对比统计），单标签块使绝大多数步的计算退化。报告者在 Qwen2.5-0.5B-Instruct + ultrafeedback_binarized、bsz=8、300 步、bf16 实测：按文档的 paired 路径 300 个 batch 仅 2 个含双标签，step 281 日志 desirable-only 块内无 rewards/rejected、无 rewards/margins（2/300 步有 margins）；用户侧手工 unpair+shuffle 后 295/300 batch 双标签、全部指标恢复且训练无报错。标签块序列为 116 desirable、1 mixed、115 undesirable、1 mixed、67 desirable 等。修复 PR #7684（open 未 merge）在加载层 shuffle unpaired 数据集。'
+  source: 'trl #7682（2026-10-13 报告，含复现代码、300 步双 run 对照日志、逐 batch 标签计数）。https://github.com/huggingface/trl/issues/7682'
+  behavior: 按文档用成对 KTO 数据集训练：训练正常跑完、无报错、loss 正常下降；但绝大多数 batch 单标签，rewards/margins 等对比指标在多数步缺失，模型质量受损且无任何警告。手工 unpair+shuffle 后同样设置指标恢复。触发条件：成对 KTO 数据集 + 默认数据加载顺序。
+  discovery: 2026-10-14 每日扫描
+  notes:
+  - '2026-10-14 回访 2026-10-14（同日）：修复 PR #7684 当日 closed unmerged，缺陷仍在 main。机制细化（据 #7684）：unpair_preference_dataset 每个 map-batch 先写全部 chosen 行再写 rejected 行，train_sampling_strategy=sequential（默认，KL 类 loss 要求）每 batch 取连续切片，两因素叠加使 batch 恒单标签；修复即 unpair 后 shuffle 一次。'
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  updates:
+  - date: '2026-10-14'
+    fields:
+    - mitigation.fix
+  - date: '2026-10-14'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化

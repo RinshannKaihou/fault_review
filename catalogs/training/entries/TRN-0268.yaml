@@ -1,0 +1,51 @@
+id: TRN-0268
+legacy_ids: []
+slug: loss_mask_probe_ignores_enable_thinking_default
+aliases: []
+title: verl loss mask 探针不感知 thinking 默认值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: verl
+    component: MultiTurnSFTDataset 探针
+  behavior: loss mask 探针不接收 enable_thinking_default，按模板内置默认测 generation_prompt 长度，与逐消息渲染的 thinking 模式不一致。
+effect:
+  objects:
+  - 训练样本流
+  detail: 显式设 enable_thinking_default 且模板两种模式前缀长度不同时，assistant turn 的模板前缀 token 被误计入 loss（或反向误 mask 丢梯度）；训练无报错、loss 正常。
+  visibility: 静默错误
+mitigation:
+  detect: 对每条样本分别以两种 thinking 设置渲染探针并比对 loss mask 边界 token 是否均被 mask；或核对 loss_mask==1 段首是否含模板控制 token。
+  fix: 'PR #8086 描述的第二处修复（extract_system_prompt_and_generation 接收 enable_thinking_default）未进入 merge diff：该 PR 最终只合入 YAML 默认值 none→null 一行（https://github.com/verl-project/verl/pull/8086/files），截至 2026-10-14 main 代码 verl/utils/dataset/multiturn_sft_dataset.py:180-182 仍不传该参数，缺陷仍在 HEAD。'
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/8086
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'verl MultiTurnSFTDataset 的 loss mask 探针与逐消息渲染使用不同口径。初始化时（main@2026-10-14，verl/utils/dataset/multiturn_sft_dataset.py:180-182）：self.system_prompt, self.generation_prompt = extract_system_prompt_and_generation(self.tokenizer, **self.apply_chat_template_kwargs)——只透传 apply_chat_template_kwargs，不传 enable_thinking_default。而 _process_single_message（同文件 210-212 行）把 dataset 级 enable_thinking（列缺省时取 enable_thinking_default）注入 apply_chat_template_kwargs 再渲染。assistant turn 的 loss_mask = ones 后 loss_mask[: len(self.generation_prompt)] = 0（231-237 行）。当用户显式设 data.enable_thinking_default=false/true 且模板在 thinking on/off 下前缀 token 数不同（如 Qwen3 式模板 <think> 块前缀），探针测得的 generation_prompt 长度对应模板内置默认，与实际渲染前缀长度错位：若实际前缀更长，多出的模板 token 未被 mask、被当 assistant 内容训练；若更短，部分 assistant 内容被误 mask 丢梯度。PR #8086（2026-10-09 merge）描述了该第二处修复（描述原文：extract_system_prompt_and_generation now receives enable_thinking_default via apply_chat_template_kwargs），但该 PR 最终 merge 的 diff 仅含 sft_trainer_engine.yaml 的 enable_thinking_default: none→null 一行——描述中的代码修复未进 main（本扫描核对 main 源码 180-182 行确认参数仍未传递）。PR #8086 同时修了 bug 1：YAML 默认值字符串 ''none'' 经 bool(''none'')=True 隐式开启 thinking——该部分已落地。'
+  source: 'verl PR #8086（merged 2026-10-09；描述含两处修复，merge diff 仅 YAML 一行；代码残留核对：main verl/utils/dataset/multiturn_sft_dataset.py:180-182）。https://github.com/verl-project/verl/pull/8086 ；上轮疑点来源：评审者 ZhiliangWu 2026-10-09 指出第二处改动可能给 Qwen3 式模板引入新 loss-mask bug（见 daily/reports/2026-10-12.md 轮巡记录）'
+  behavior: 多轮 SFT 数据集 + 显式 enable_thinking_default（false 或 true）+ 模板两种模式 generation prompt 长度不同时：训练无报错、loss 正常，但 assistant turn loss mask 边界错位，模板前缀 token 被计入训练内容（或反向丢失梯度）。默认 enable_thinking_default=None 时探针与渲染一致、不触发。
+  discovery: 2026-10-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

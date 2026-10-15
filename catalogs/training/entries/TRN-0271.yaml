@@ -1,0 +1,57 @@
+id: TRN-0271
+legacy_ids: []
+slug: index_put_v2_stride_u32_overflow
+aliases: []
+title: IndexPutV2 大 stride 偏移 uint32 溢出写错地址
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: IndexPutV2 偏移计算整型宽度
+  behavior: 非连续（大 stride）目标张量上索引偏移以 uint32 计算：idx×stride ≥ 2^32 时回绕，写入落到 (idx×stride) mod 2^32 的错误地址。
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend 950DT、CANN 9.2.0：uint8 大张量切片视图（stride(0)=228352 > size(1)=16896）view[18816]=0x5A，期望写行 18816，实际写在行 7/偏移 105472；数据布局静默破坏，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 写入后读回校验目标位置；触发条件为非连续大张量 + 越界乘积超 2^32，可静态排查 stride×max_idx。
+  fix: 待定（issue 未附修复 MR，未核实）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6523
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0147
+original:
+  mechanism: 'cann/ops-nn issue #6523（2026-10-12，open；CANN 9.2.0、Ascend 950DT）：IndexPutV2 在非连续目标张量（大 stride）上计算写入偏移时使用 uint32 整型：t=[20000,228352] uint8（4.57GB）、view=t[:,:16896]（stride(0)=228352>size(1)=16896）、idx=18816 时 18816×228352=4.30e9>2^32，偏移回绕为 (idx×stride) mod 2^32，写入落在行 7/偏移 105472 而非行 18816（实测 (t==0x5A).any(1).nonzero() 返回 [7]）。期望行为：max(idx)×stride ≥ 2^32 时走 64 位偏移。与 TRN-0147（DeepSpeed Triton int32 偏移回绕为负致越界读写）同机制「偏移算术整型宽度不足回绕→越界/错址访问」，不同栈与算子：本条是 CANN aclnn IndexPutV2 kernel，彼条是 DeepSpeed Triton kernel。'
+  source: https://gitcode.com/cann/ops-nn/issues/6523
+  behavior: NPU 上对非连续大张量（stride 超过 2^32/max_idx）执行 index_put 类写入时，写入位置被 uint32 回绕算错：目标行未写入、错误位置被污染，全程无报错；训练数据/标签就地构造（如 scatter 写 label、mask）场景下静默破坏数据布局。
+  discovery: 2026-10-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-15'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

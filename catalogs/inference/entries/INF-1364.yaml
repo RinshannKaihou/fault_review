@@ -1,0 +1,67 @@
+id: INF-1364
+legacy_ids: []
+slug: sglang_pd_prefill_early_send_cached_prefix_stale_h2d_kv
+aliases: []
+title: SGLang PD prefill 早发前缀在 H2D 回载完成前送出陈旧 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: 早发前缀×load-back 竞态
+  behavior: commit_load_back 在 H2D 拷贝仅入队时就把新 device 页挂上 radix 节点，早发路径把同批第二个请求重匹配到这些页并在拷贝仍在写时先行发送该区间且不再重发
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: decode 端静默收到部分前缀的陈旧 KV，答案随重载区间内上下文改变；GB300 1P1D NIXL Qwen3-4B 双 100K 同前缀请求 39/40（direct）、29/30（kernel）、29/30（+checksum，全部被 KV checksum mismatch 标记）损坏
+  visibility: 静默错误
+mitigation:
+  detect: 待定（--disaggregation-enable-kv-checksum 可标记每次损坏，但默认不拦截）
+  fix: 规避：SGLANG_DISAGG_PREFILL_EARLY_SEND_CACHED_PREFIX=0（0/84）；候选修复（issue 内提议，未实现）：批内排队过 load-back 时跳过早发（batch.hicache_consumer_index>=0）或让 KV 传输等待 load-back finish event
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: PD prefill 服务器 + HiCache + 默认 SGLANG_DISAGG_PREFILL_EARLY_SEND_CACHED_PREFIX=1 + 两请求共享仅存在于 host 内存的前缀且同批进入 prefill；时序竞态非必现（39/40 高概率）
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-13'
+remarks: 与 INF-1351（vLLM PD autocaching 跨请求污染）同为 PD 分离 + 共享前缀复用路径的静默 KV 损坏，但机制不同（本条为 H2D 回载竞态 vs 对方为自动前缀缓存跨请求串扰），不构成 var。
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/44070（2026-10-13
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang PD prefill 服务器开启 HiCache 且默认早发缓存前缀（SGLANG_DISAGG_PREFILL_EARLY_SEND_CACHED_PREFIX=1）时：第一个请求排队 HiCache load-back，commit_load_back 立即把新 device 页挂到 radix 节点，而 H2D 拷贝只是入队（unified_radix_cache.py L1800–L1823）；同 prefill 批内第二个请求被重匹配到这些页为 device 前缀（host_hit_length=0）；maybe_send_cached_prefix_chunk 在 forward 之前把这些页发往 decode 侧，此时 H2D 仍在写入（prefill.py L1415–L1450），且该区间此后不再重发。结果 decode 侧对部分前缀消费陈旧 KV。实验（GB300 单节点 1P1D、NIXL、Qwen3-4B-Instruct-2507、两条相同 100K-token prompt 同发）：2026-09-14 nightly + direct I/O 39/40 损坏、kernel I/O 29/30；2026-09-23 nightly + --disaggregation-enable-kv-checksum 29/30 且每一次都打出 KV checksum mismatch；关早发 0/84、第二条请求等第一条完成后再发 0/18。main 存在同一代码路径但未实测。报告者给出候选修复：批内 hicache_consumer_index>=0 时跳过早发，或 KV 传输等待 load-back 的 finish event。
+  source: SGLang issue https://github.com/sgl-project/sglang/issues/44070（2026-10-13 open，3 评论；含完整复现命令与三臂对照计数）
+  behavior: 静默：请求正常完成、无错误日志（开 checksum 时有 mismatch 标记），decode 端收到的部分前缀 KV 为 H2D 写入途中的陈旧数据，当所需上下文落在重载区间内时答案改变；损坏率高（29/30–39/40）
+  trigger_surface: SGLang PD prefill + HiCache + 早发缓存前缀默认开启 + 共享 host-only 前缀的两个请求同批 prefill；GB300/NIXL 实测，2026-09 nightly 镜像
+  discovery: 2026-10-13 每日扫描
+  notes:
+  - '2026-10-14 回访 2026-10-14：sglang#44070 3 条新评论——社区认领（Vegetog 计划 skip hicache_consumer_index>=0 批次早发，未复现原始竞态）；报告者 agent 已提交修复 PR #44081。判定不变，修复在途。'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+  updates:
+  - date: '2026-10-14'
+    fields:
+    - original.notes

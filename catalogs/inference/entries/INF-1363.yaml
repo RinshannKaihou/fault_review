@@ -1,0 +1,66 @@
+id: INF-1363
+legacy_ids: []
+slug: sglang_hicache_host_restore_missing_dsa_indexer_keys_wrong_answer
+aliases: []
+title: SGLang HiCache host 回载缺 indexer 键致静默错答
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HiCache host 层池声明
+  behavior: hybrid KDA+DSA 的 host 层策略只声明 KV+MAMBA 池、不备份 DSA indexer 键，L2→L1 回载只还原 KV，稀疏注意力索引器键缺失，恢复的前缀对 DSA 不完整
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: host-tier 命中的请求报满前缀命中、正常完成且答案流畅但事实错误（verbatim-recall 18/20 错 vs 冷/device 命中 0/20）；4x B300 TP4 GLM-5.3-Flash FP8 实测
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 'main 已由 PR #40913+#40915 修复（声明 INDEXER host 池，v0.5.21 分支点后合入）；v0.5.21 backport PR #43998 open（2026-10-13）；规避：关闭 --enable-hierarchical-cache 或使用含 #40915 的构建'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang v0.5.21 + --enable-hierarchical-cache + hybrid KDA+DSA 模型（GLM-5.3-Flash）+ 前缀被逐出到 host 层后回载；冷请求与 device 池命中不受影响
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-13'
+remarks: 报告者用最小 backport 把 host-hit 错误率 18/20→0/20 验证归因（Rust/Python radix core 双核对照、池集补 INDEXER 后全对），因果闭合。来源同日 closed/completed（修复在 main 已有）。
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/43997（2026-10-13
+  kind: github_issue
+- url: https://github.com/sgl-project/sglang/pull/43998（open
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'SGLang v0.5.21（lmsysorg/sglang:v0.5.21-cu130，digest sha256:2dbe4c7f）服务 GLM-5.3-Flash（zai-org/GLM-5.3-Flash FP8 revision 04c4e9e）+ --enable-hierarchical-cache 时，hybrid KDA+DSA 架构的 host 层策略 _MambaStrategy 只声明 KV+MAMBA 两个池、不备份 DSA indexer 键（稀疏注意力的索引器键值）。前缀被 ~77k filler token 从 49,152-token device 池逐出后，再次请求同一 prompt 触发 L2→L1 host restore：load_back 只把 KV 池拉回，indexer 键缺失，DSA 注意力在不完整索引上计算。引擎日志证明每条 host-leg 请求为真实完整 L2 restore（Prefill batch #cached-token: 3776、load_back_tokens_total{pool=kv}=37,760=10x3,776、hicache_dropped_tokens_total=0），不是重 prefill。报告者做了六臂对照：v0.5.21 stock（Rust radix core 默认）host 腿 18/20 错、v0.5.21 stock Python core 10/10 错、v0.5.21+INDEXER sidecar backport（Rust）0/20、同 backport 早期修订（Python）0/20、main @7224fce1b5（Rust）0/20、main @4d5692b6cd（Python）0/20，冷腿与 device 腿全部 0/20；补 INDEXER 池后走同样的 restore 路径即正确，归因闭合。修复在 main 由 PR #40913（为 DSA indexer 声明 HiCache host 池）与 #40915（hybrid Mamba indexer host 池）承担，均在 v0.5.21 分支点后合入；v0.5.21 最小 backport PR #43998（nvpohanh 2026-10-13 提出）待审。另两个 GraniteMoE 相关问题见同仓库 #43914（不属本条机制）。'
+  source: SGLang issue https://github.com/sgl-project/sglang/issues/43997（2026-10-13 创建、同日 closed/completed；含三腿 verbatim-recall 门控复现脚本 repro_hicache_host_tier.py 与六臂对照表）；backport PR https://github.com/sgl-project/sglang/pull/43998（open）
+  behavior: host-tier 命中的请求静默返回错答：verbatim-recall 探针（3.8k-token prompt 植入事实、exact match 评分）host 腿 18/20 运行答错（冷腿 0/20、device 腿 0/20），错答形态为流畅但事实替换（vault 247→234、sector 57→117），10/20 的 host restore 里模型用尽 900-token 预算推理却始终给不出最终答案；temperature=0、无 speculative decoding、无任何报错
+  trigger_surface: SGLang v0.5.21 + --enable-hierarchical-cache + hybrid KDA+DSA 模型（GLM-5.3-Flash FP8）+ 前缀在 host 层而非 device 池命中；4x B300 TP4 环境
+  discovery: 2026-10-13 每日扫描
+  notes:
+  - '2026-10-14 回访 2026-10-14：sgl#43997 closed 状态维持（1 评论），v0.5.21 backport PR #43998 状态未变（未查到 merge 证据），判定不变。'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-10-14'
+    fields:
+    - original.notes

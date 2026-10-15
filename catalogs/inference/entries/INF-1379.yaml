@@ -1,0 +1,53 @@
+id: INF-1379
+legacy_ids: []
+slug: vllm_ascend_random_sample_side_stream_q_race
+aliases: []
+title: vllm-ascend 采样侧流 q 竞态致乱码 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: random_sample 侧流同步
+  behavior: random_sample() 在侧流填充随机除数 q，回主流仅 wait_stream 流序同步、无 event；graph 重放与 async scheduling 重叠下 div_ 在 q 写完前消费它，读到未初始化或陈旧内存。
+effect:
+  objects:
+  - 输出内容
+  detail: graph+async scheduling（默认部署）下 T>0 采样间歇产出损坏 token：q 全零→argmax 恒 0 即 <pad>；部分陈旧 q→错误 token/重复段。错误率随并发升高（8 约 1/25k，64 约 1/5k token）；贪心 52k+ token 完全干净。
+  visibility: 静默错误
+mitigation:
+  detect: 固定 prompt 高并发下对比贪心与采样输出（报告含逐字复现 canary 脚本）；无产品级检测
+  fix: '规避 --additional-config ''{"enable_async_exponential": true}''（q 预生成+event 硬同步，实测吞吐无损，720 请求 12 轮 0/60 损坏）；同文件 do_async_exponential 已实现正确模式，报告建议把它提升为默认路径；修复 PR 尚未提交（报告者愿提 PR，open）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.20.2rc1 + 910B2C 默认 graph 模式(PIECEWISE)+async scheduling+temperature>0（关 async scheduling/enforce-eager/开 enable_async_exponential 任一即消失）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/18754
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm_ascend/sample/sampler.py 的 random_sample() 在采样调用内部于侧流 global_stream() 生成随机除数 q（torch.empty_like 未初始化 + exponential_() 填充），返回主计算流仅做 torch.npu.current_stream().wait_stream(global_stream()) 流序同步、没有记录 event 也没有 host 侧 synchronize。ACL graph 重放与 async-scheduling 重叠执行时该流序依赖不充分：probs.div_(q).argmax() 在 exponential_() 完成前/进行中消费 q，读到未初始化或陈旧值。四臂对照实验（720 请求×12 轮、固定 30 行 JSON 逐字转写 canary、并发 64）：默认 graph+async 14-18/60 损坏；--no-async-scheduling 0/60；--enforce-eager+async 0/60；graph+async+enable_async_exponential=true（唯一改变 q 生成路径为预生成+event 硬同步的配置）0/60——根因定位到侧流 q 竞态。同文件 do_async_exponential/forward_native 已有正确同步范式（q 预生成+async_exponential_event.record()+synchronize()）。环境：vllm 0.20.2 + vllm-ascend 0.20.2rc1 + torch_npu 2.10.0 + CANN 9.0.0，16×910B2C DP4×TP4。
+  source: 'vllm-ascend #18754（2026-10-14 open，含代码定位、四臂差分实验、复现脚本与规避配置）。https://github.com/vllm-project/vllm-ascend/issues/18754'
+  behavior: 无报错无 crash——T>0 采样输出间歇性插入/替换 <pad>(id 0)、id 4096、重复 token 串等乱码，输出整体连贯只局部损坏；贪心完全干净（隔离到采样路径）。错误率随并发从 ~1/25k token（并发 8）升至 ~1/5k（并发 64），T=1.0 与 T=0.2 均受影响。
+  trigger_surface: vllm-ascend（0.20.2rc1 实测）+ ACL graph 模式（默认 PIECEWISE）+ async scheduling（该部署默认开启）+ temperature>0 采样；910B2C 实测，机制为流同步缺陷、不限具体 NPU 型号
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    issue_unfixed:
+    - detail

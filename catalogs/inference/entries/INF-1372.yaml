@@ -1,0 +1,53 @@
+id: INF-1372
+legacy_ids: []
+slug: triton_ascend_vec_bool_ne_scalar_true_folds_all_true
+aliases: []
+title: triton-ascend 向量bool!=真值标量折叠全真
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 标量 bool 谓词 != 折叠
+  behavior: 向量 bool 谓词 != 标量 bool 谓词，标量侧为真时被折叠为全真——与标量来源、dtype 无关。C-rem→floor-mod 符号修正链因此对所有负除数失效：b<0 时每个 r!=0 的 lane 多做一次 +b。
+effect:
+  objects:
+  - 数值结果
+  detail: 含向量bool!=真值标量bool的内核，负除数floor-mod结果系统性偏移一个除数，正除数正确；随机输入错误率约50%，int32/int64/f16/f32计数一致；改向量splat、xor展开或标量侧假均正确。
+  visibility: 静默错误
+mitigation:
+  detect: 负除数 floor-mod 修正链与 eager torch.remainder 对照（报告含确定性计数复现）
+  fix: 待定（open）；规避=用 ((r<0)&(b>=0))|((r>=0)&(b<0)) 展开式替代 != 组合
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton-ascend 3.6.0 + 910B4 + CANN 9.1.0 GA（纯 Triton，不依赖 torch.compile）；唯一触发条件=!= 右操作数为值为真的标量 bool
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2290
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend 3.6.0 纯 Triton 内核对 (vec_bool != scalar_bool) 组合的静默误编译：标量侧为真即折叠全真，与来源（tl.load 0-dim/constexpr 字面量）和 dtype 无关（int32/int64/f16/f32 四格计数逐位一致）。C-rem→floor-mod 符号修正链 r=where(((r<0)!=(b<0))&(r!=0), r+b, r) 因 b<0（标量谓词真）整体失效，每个 r!=0 lane 系统性 +b 过冲。三组隔离对照证明罪在 != 组合本身：同真值标量改向量 splat 正确（2560/4096 逐 lane 期望）；改 xor 展开式正确；标量侧假（b=+4）正确。a%b 本身（C 式截断余）在全部实测 dtype/除数下 100% 等于 eager torch.fmod 无罪。随机输入（randn*30）错误率≈50% 恰为负数占比。环境：910B4、CANN 9.1.0 GA、triton-ascend 3.6.0（triton.__version__ 报 3.5.0）、torch 2.14.0a0/torch_npu 2.14.0、Python 3.12。
+  source: 'triton-ascend #2290（2026-09-19 open，复现 A/B 双脚本、逐 dtype 计数与隔离对照）。https://github.com/triton-lang/triton-ascend/issues/2290'
+  behavior: 内核不报任何错直接产出错误数值：负除数下 floor-mod 结果系统性偏移一个除数量；正除数全对。
+  trigger_surface: triton-ascend（910B4 实测）+ 含 (向量bool != 真值标量bool) 的内核；floor-mod 修正链为已证实入口
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

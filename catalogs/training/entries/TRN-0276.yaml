@@ -1,0 +1,57 @@
+id: TRN-0276
+legacy_ids: []
+slug: add_rms_norm_gamma_mul_order_overflow
+aliases: []
+title: Ascend 950 AddRmsNorm 先乘 gamma 致 FP32 溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: AddRmsNorm trans 模板乘法顺序
+  behavior: Ascend 950 regbase 的 AddRmsNorm/InplaceAddRmsNorm trans 模板按 (x1+x2)*gamma*rstd 计算，先乘 gamma 可使 FP32 中间结果提前超范围，输出 Inf。
+effect:
+  objects:
+  - 数值结果
+  detail: 输入与 gamma 均有限、归一化结果也应有限时输出 Inf：x1=2^32、gamma=2^100 期望 2^100 实得 Inf；24 条 trans 溢出用例修复前全 FAIL、修复后全 PASS。
+  visibility: 数值异常
+mitigation:
+  detect: 对 AddRmsNorm 输出做有限性抽检；固定输入回归用例（x1=2^32、gamma=2^100）。
+  fix: 修复 MR !11953（open 未合入）：先以 FP32 计算 xSum*rstd 再乘 gamma，两次乘法间不转回低精度；两个算子 arch35 ST CSV 各加一条固定输入回归用例。https://gitcode.com/cann/ops-nn/merge_requests/11953
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6679
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/11953
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: CANN ops-nn 的 Ascend 950/regbase AddRmsNorm trans 模板按 (x1+x2)*gamma*rstd 顺序计算（InplaceAddRmsNorm 共用该模板）：当 x1+x2 与 gamma 均有限、归一化结果也应有限时，先乘 gamma 的 FP32 中间积（如 xSum*gamma=2^132）超过 FP32 有限范围，输出 y 为 Inf。环境：Ascend 950PR_9579、CANN 9.2.0、Python 3.12.9、ops-nn master 6a974e237、TTK kernel Promote 默认精度门限。修复 MR !11953 调整两次乘法顺序（先 xSum*rstd 再乘 gamma），同输入、分别加载基线与修复后 vendor 二进制的上板冒烟：24 条 FP32/BF16 trans 溢出用例 FAIL→PASS，其余 30 条不变（2 条失败为未改动的 full-load/SplitD FP16 近零精度问题，主线同样复现）；4024 条完整测试当时仍在跑，未宣称全量通过。
+  source: https://gitcode.com/cann/ops-nn/issues/6679 ；修复：https://gitcode.com/cann/ops-nn/merge_requests/11953
+  behavior: Ascend 950 上 AddRmsNorm/InplaceAddRmsNorm（trans 模板、tilingKey=4000）对有限值输入输出 Inf：FP32 ND、x1.shape=x2.shape=[28673,1]、gamma=[1]、x1=2^32、gamma=2^100 时期望有限值 2^100、实得 Inf；RMSNorm 是 Transformer 训练标配算子，中间激活 Inf 会向下游传播。
+  discovery: 2026-10-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-15'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

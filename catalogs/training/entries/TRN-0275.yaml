@@ -1,0 +1,75 @@
+id: TRN-0275
+legacy_ids: []
+slug: aclnn_empty_input_early_return_unwritten
+aliases: []
+title: aclnn 空输入早退不写非空出参返回脏数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn 空张量早退分支
+  behavior: aclnn 两段式接口早退条件覆盖输入空×出参非空组合：不写出参即返回 ACLNN_SUCCESS；CheckShape 未绑定出参空性随输入联动。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: pad 系反向/UnfoldGrad 的 gradInput、Multinomial 的 out、MedianDim 输出、DynamicQuant 的 scaleOut 残留未初始化内存（实测哨兵/NaN），接口返回成功无报错。
+  visibility: 不可复现
+mitigation:
+  detect: 出参预填哨兵值做 round-trip 校验；PyTorch 参考语义为空 grad_output 回全零，可对账。
+  fix: '待定：同机理先例 ops-math #3360（aclnnCdistBackward）已闭环；本批 #3553/#3560/#6582/#6605 暂未见已合入修复（各 issue 关联 MR 状态未逐一核实）。'
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3553
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3560
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/6582
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/6605
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'CANN aclnn 两段式接口的「空输入早退」分支在输入为空而出参非空时不写出参即返回 ACLNN_SUCCESS：pad 系反向（aclnn_pad2d_backward.cpp:227-249 OR 早退，同类 circular_pad2d/3d、pad3d、unfold_grad 共 5 文件）gradOutput 前导维为 0 而 gradInput 非空时直接 SUCCESS+workspaceSize=0，gradInput 残留调用方内存（910B2 + CANN 9.2.0-beta.2 实测预填 1234.0 一个字节未写；PyTorch 参考语义为回全零）；aclnnMultinomial（aclnn_multinomial.cpp:463-467，Tensor 变体 569-573 同型）self=[0]/[N,0] 且 replacement=true 时 out 非空但保持 INT64 哨兵 999999（ctypes 直调 libopapi_math.so 实测）；aclnnMedianDim（aclnn_median.cpp:136）归约维为 0、输出 [3,1] 非空时 values/indices 残留 0x7F 污染 pattern（910B2 实测，CANN 9.1.1/9.2.0-beta.2 双版本；torch.median 公开接口可触发，CPU 为 IndexError）；aclnnDynamicQuant（aclnn_dynamic_quant.cpp:354-358）x=[M,0] 时非空 scaleOut 残留 NaN（GM 污染复现法，后续反量化被污染）。共同根因：CheckShape 未绑定「出参空性随输入联动」，早退条件覆盖了输入空×出参非空的组合。同机理先例 ops-math #3360（aclnnCdistBackward）已闭环修复。'
+  source: https://gitcode.com/cann/ops-math/issues/3553 ；同类：https://gitcode.com/cann/ops-math/issues/3560 、https://gitcode.com/cann/ops-nn/issues/6582 、https://gitcode.com/cann/ops-nn/issues/6605
+  behavior: NPU 上以空张量输入（gradOutput 前导维 0 / self=[N,0] / 归约维 0 / x=[M,0]）调用对应 aclnn 算子且出参非空时：接口返回成功、无报错，出参保持未初始化内存（脏数据/NaN/哨兵残留），随显存复用不可复现；训练反向路径（pad 反向梯度）拿到未初始化梯度。
+  discovery: 2026-10-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-15'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 梯度
+        to: 数值结果
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    rewritten:
+    - behavior
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

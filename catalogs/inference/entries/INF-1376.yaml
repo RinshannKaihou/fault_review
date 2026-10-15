@@ -1,0 +1,54 @@
+id: INF-1376
+legacy_ids: []
+slug: triton_ascend_3d_leading_axis_reduction_stride_swap
+aliases: []
+title: triton-ascend 3-D 首轴 tl.sum 归约换轴错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 3-D 首轴归约 lowering
+  behavior: tl.sum(acc, 0) 对 3-D tile 首轴归约时，triton-ascend lowering 把归约轴与内层 x 轴的 stride 映射交换/展平，确定性产出错误数值。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 纯 Triton 最小复现 3D maxdiff 2025.0（消费 stride-50 轴）、2D 0.0，两次运行逐位一致。inductor broadcast 反向归约即此形状：33 opinfo 行大幅梯度错值（abs diff 150+，aten.add 广播梯度都错）。
+  visibility: 静默错误
+mitigation:
+  detect: 3-D/2-D 同 offset 数学对照（报告含完整最小复现脚本）
+  fix: 待定（open；规避=把索引计算写成 2-D 展平形式）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton-ascend 3.6.0 + 910B4 + CANN 9.1.0（纯 Triton 即复现，无需 torch.compile）；触发形状=归约轴为 leading dimension 的 3-D tile 归约
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2291
+  kind: github_issue
+relations: []
+original:
+  mechanism: '多维权值 tile 归约、归约轴为首维时，triton-ascend lowering 把归约轴与内层 x 轴的 stride 映射交换/展平，确定性产出错误数值（IR 正确、数值错——静默误编译非编译失败）。控制组：同 offset 数学 2-D [RBLOCK,XBLOCK] tile tl.sum(acc,0) 逐位正确（maxdiff 0.0）；3-D acc 在 sum 前立即 reshape 为 2-D 不能修复。该形状正是 torch inductor NPU triton_experimental 后端为 broadcast-input backward reductions 发出的形状，在其 opinfo 上表现为 33 行大幅梯度错值（abs diff 至 150+，含 aten.add 广播梯度）；缺陷在编译器层、纯 Triton 可复现。与 #2247（A5 2-D lane-drop）、#2239（A5 编译期 IR 错）平台与机制均不同。环境：910B4、CANN 9.1.0、triton-ascend 3.6.0、torch 2.14.0a0/torch_npu 2.14.0。'
+  source: 'triton-ascend #2291（2026-09-19 open，含完整最小复现与 opinfo 影响面）。https://github.com/triton-lang/triton-ascend/issues/2291'
+  behavior: 3D maxdiff 2025.0（消费 stride-50 轴）、2D 0.0，两次运行逐位一致；内核无任何报错。
+  trigger_surface: triton-ascend（910B 实测）+ tl.sum 对 3-D tile 首轴归约；inductor broadcast backward 路径全量暴露
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior

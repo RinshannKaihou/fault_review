@@ -1,0 +1,62 @@
+id: INF-1389
+legacy_ids: []
+slug: vllm_ascend_fused_mc2_capacity_silent_truncation
+aliases: []
+title: vllm-ascend fused MC2 容量截断静默损坏 MoE 输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: fused MC2 dispatch 容量
+  behavior: dispatch_ffn_combine 按 max_output_size 分配每 rank 缓冲，计数达容量即静默截断不报错；mega_moe_max_tokens 只守护 op 侧，默认 65536 覆盖不了长 prefill 负载。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: enable_fused_mc2=1，长prefill超容量时，受影响token的MoE输出损坏，表现重复/乱码；mega_moe_max_tokens=8192+67531-token prompt复现273/288调用截断、28/288 NaN行；65536同请求正确。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 op 容量与每 rank post-dispatch 负载分布（PR 含实测统计表）；修复 PR 自带一次性 warning（命名两个缓冲与 --max-num-batched-tokens 替代）
+  fix: 'PR #17343（open，2026-10-14 仍 open 未合并）：_fused_mc2_required_capacity() 按编译期配置推导 rank 不变下界，_fused_mc2_capacity()=max(configured, required)，同时用于 op max_output_size 与 P/PD-mixed peer buffer；规避=调大 mega_moe_max_tokens'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend enable_fused_mc2=1 + 长上下文 prefill（每 rank post-dispatch 负载超 max_output_size；GLM-5.2-w4a8/A3/EP16/8192 batch tokens 实测，topk 8 下负载可达均值 4.9 倍）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/17343
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'fused MC2 MoE 路径（enable_fused_mc2=1）的 dispatch_ffn_combine 内核按 max_output_size 分配每 rank token 缓冲，post-dispatch 计数达容量即静默截断（preCurrentmSum >= maxOutputSize → currentM=0；否则钳到差值），无任何错误。additional_config.mega_moe_max_tokens 文档称同时 sizing op 的 max_output_size 与 CANN MegaMoe 对称缓冲 max_recv_token_num，实际只有 op 侧被守护。每 rank post-dispatch 均值为 num_tokens*num_experts_per_tok，实测负载达均值 ~4.9 倍（GLM-5.2-w4a8/A3/EP16：median 14923/p99 44332/max 70990，单专家 max 31711=默认 65536 的 108%），长上下文 prefill 必然越界。独立复现：mega_moe_max_tokens=8192 + 67531-token prompt → 273/288 调用截断、28/288 NaN 行；65536 同请求正确。修复 PR #17343 推导 rank 不变下界（对称缓冲由集合握手分配，各 EP rank 必须同值）并 max(configured, required)。'
+  source: 'vllm-ascend PR #17343（2026-09-23 open、2026-10-14 复核仍 open 未合并，含根因代码、负载统计与修复验证）。https://github.com/vllm-project/vllm-ascend/pull/17343'
+  behavior: '无报错——受影响 token 的 MoE 输出损坏，表面为重复/乱码 token（issue #16941）；负载统计驱动，长上下文高并发下概率触发。'
+  trigger_surface: vllm-ascend enable_fused_mc2=1 + 长 prefill chunk 使每 rank post-dispatch token 数超容量
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出内容
+        to: 数值结果
+    rewritten:
+    - detail

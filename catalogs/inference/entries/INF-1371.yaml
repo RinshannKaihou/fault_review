@@ -1,0 +1,59 @@
+id: INF-1371
+legacy_ids: []
+slug: torch_npu_npugraph_ex_replay_overwrites_prior_input
+aliases: []
+title: torch_npu npugraph_ex 回放覆写前次输入存储
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: npugraph_ex 静态输入槽
+  behavior: 同一已捕获 ACL graph 被同形状不同输入张量回放时，前一次调用的输入存储被后续回放覆写，旧输入张量数据被静默改写。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  detail: 同形状即触发（不涉及动态 shape）；仅紧邻前一次输入被改写；输出及时 clone 即正确。保留旧 batch 输入的场景（缓存/去重/落日志/双缓冲/失败回捞）被静默污染；常规训练循环因地址复用恰好不触发，更隐蔽。
+  visibility: 静默错误
+mitigation:
+  detect: 回放后 torch.equal(t, snapshot) 检查旧输入（报告含 12 行最小复现）
+  fix: 规避：传入前 x.clone() 留存，或改 backend="npugraphs"（实测输入受保护）；issue 期望对齐输出侧的告警/开关（acl_graph.py:1470 仅有输出侧覆盖告警），官方修复未出（closed 状态但无修复链接记录）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: torch_npu backend="npugraph_ex" + 同形状不同输入张量回放且旧引用仍存活（910B2/CANN 9.1.0/torch_npu 2.12.0 实测）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5114
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: backend="npugraph_ex"（ACL graph）下同一已捕获图被不同输入张量回放时，前一次调用的输入存储被后续回放覆写，全程无报错。最小复现：3 个同形状 (16,128) 输入依次回放，x0 的 torch.equal 由 True 变 False（数据被改写非引用变化）；npugraphs/npu/aot_eager 三对照后端均完整。运行时仅对输出侧有保留内存覆盖告警（torch_npu/dynamo/npugraph_ex/_acl_concrete_graph/acl_graph.py:1470 及 clone_output 选项），输入侧无任何提示。初步推测 ACL graph 固定地址静态输入槽 copy-in 写入旧输入存活存储，精确机制以官方定位为准。环境：Atlas 800T A2（910B2）、CANN 9.1.0、torch/torch_npu 2.12.0、Python 3.12 aarch64。
+  source: 'Ascend/pytorch #5114（2026-10-14 采集批次内正文，原报 2026-09-24 closed；含最小复现、四后端对照表与影响分析）。https://gitcode.com/Ascend/pytorch/issues/5114'
+  behavior: 旧输入张量数据被静默改写（输出正确），无告警无 crash；依赖保留旧 batch 输入的下游（缓存/去重/日志/双缓冲/回捞对比）被污染且极难排查。
+  trigger_surface: torch_npu npugraph_ex 后端 + 同形状换入参回放 + 旧输入引用仍被用户持有
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

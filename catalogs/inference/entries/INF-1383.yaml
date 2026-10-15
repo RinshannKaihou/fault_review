@@ -1,0 +1,62 @@
+id: INF-1383
+legacy_ids: []
+slug: cann_ops_nn_hard_swish_v2_bf16_tmp0_clobber
+aliases: []
+title: HardSwishV2 BF16 分支覆盖原输入致输出错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: hard_swish_v2 BF16 分支
+  behavior: BF16 分支先把原输入转到 tmp0，随后 Duplicate(tmp0, 6.0f) 覆盖它，最后仍把 tmp0 当原输入相乘——输出接近 clamp(x+3,0,6) 而非 HardSwish 公式；还读取未写入的 zLocal。
+effect:
+  objects:
+  - 数值结果
+  detail: 真机 BF16 复现（长度 64 边界值扫描）：x=-2 得 1（期望 -0.334）、x=0 得 3（期望 0）、x=8 得 6（期望 8），48/64 失败；FP32 控制组 0 失败。experimental OpDef 前向 kernel，非 hard_swish_grad_v2。
+  visibility: 静默错误
+mitigation:
+  detect: BF16 独立公式 x*clamp(x+3,0,6)/6 对照（报告含 ASC 直编生产头文件的真机复现与保护区间检查）
+  fix: 修复已在同环境验证（保留 FP32 原输入缓存+倒数标量缩放，移除未写读取；CPU 21/21、A3 三精度矩阵 21/21、大 tile/host tile 6/6）；修复 PR 随 issue 提供，合并状态未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: ops-nn experimental/activation/hard_swish_v2 BF16 前向 kernel（原始 ae873b11，2026-10-12 复核 master 2e78df1a 逐字一致；A3 + CANN 9.1.0 实测）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6516
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: experimental/activation/hard_swish_v2/op_kernel/hard_swish_v2.h 的 BF16 分支：原输入先转 tmp0，Duplicate(tmp0, 6.0f, ...) 覆盖 tmp0，随后仍以 tmp0 作原输入参与相乘——输出退化为 clamp(x+3,0,6)；另读取刚分配未写入的 zLocal。真机复现（CANNLab 单卡 A3/CANN 9.1.0，直接 ASC 编译运行生产头文件，非 Python 推导）：边界值 48/64 失败（x=-2 got=1 expected=-0.334；x=0 got=3；x=8 got=6），FP32 控制组 0 失败。修复方案同环境验证：CPU 21/21（CANN tikicpulib+GoogleTest 三精度）、A3 21/21、大 tile 与 host tile 6/6，覆盖 -3/3 边界/多 tile/未对齐长度。备注：尚未验证完整 ACLNN/C API 链或证明 experimental OpDef 已提供 A3 dispatch。原始代码 ae873b11，复核 master 2e78df1a 逐字一致。
+  source: 'cann/ops-nn #6516（2026-10-12 closed，含真机 PROBE_SUMMARY、控制组与修复验证数据）。https://gitcode.com/cann/ops-nn/issues/6516'
+  behavior: BF16 输入整体数值错误（所有 x 输出≈clamp(x+3,0,6)），无报错；FP16/FP32 正确。
+  trigger_surface: ops-nn experimental HardSwishV2 前向 + BF16 输入
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

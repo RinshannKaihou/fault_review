@@ -1,0 +1,63 @@
+id: TRN-0272
+legacy_ids: []
+slug: d2h_dma_madvfree_page_reclaim
+aliases: []
+title: NPU D2H 拷贝不清 MADV_FREE 脏标记页被回收清零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: aclrtMemcpy D2H 与分配器交互
+  behavior: aclrtMemcpy DMA 写 CPU 内存不经 CPU MMU：不设 PTE_DIRTY、不清 MADV_FREE 标签；kswapd 视这些页为干净直接回收，数据清零。
+effect:
+  objects:
+  - 数值结果
+  detail: aarch64+NPU+mimalloc2.x下npu_tensor.cpu()间歇性得0；内存压力回收MADV_FREE且DMA写过页；MIMALLOC_PURGE_DECOMMITS=0+madvise(MADV_PAGEOUT)秒级87.6%清零；真实kswapd需root；C直调100%复现
+  visibility: 静默错误
+mitigation:
+  detect: D2H 后校验和/CRC；复现脚本监测 LazyFree 页变化。
+  fix: 上游未修。临时规避：用 torch.zeros+copy_ 替代 .cpu()（CPU memset 写入会清 MADV_FREE 标签）；修复建议为 DMA 后对目标页标脏。关联 PyTorch 上游同机制 issue：https://github.com/pytorch/pytorch/issues/200756
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5396
+  kind: gitcode_issue
+- url: https://github.com/pytorch/pytorch/issues/200756
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #5396（2026-10-13，open）：aclrtMemcpy DMA 写入 CPU 内存不经过 CPU MMU，不触发 write-protect fault、不设置 PTE_DIRTY，因此不清除 MADV_FREE 标签；内存压力触发 kswapd 时内核认为这些页面是“干净的”直接回收→数据清零。背景：mimalloc v2.x 在 aarch64 自动启用，跨线程释放大 tensor 时经 _mi_segment_huge_page_reset 路径产生 MADV_FREE 标签（PyTorch issue #200756 同机制）。环境：aarch64、Ascend 910B4、CANN 9.0.0-beta.2、torch_npu 2.10.0.post4、PyTorch 2.10.0、mimalloc v2.2.4。三种复现：1) MIMALLOC_PURGE_DECOMMITS=0 + madvise(MADV_PAGEOUT) 秒级复现（87.6% 元素清零、LazyFree 归零）；2) 跨线程释放 + NUMA 压力触发真实 kswapd（需 root）；3) C 直调 mi_malloc/mi_free/mi_collect + DMA + kswapd 100% 复现。规避：torch.zeros+copy_ 替代 .cpu()。训练影响面：任何 D2H 拷贝（指标/日志取回、host 侧 ckpt 片段、eval 样本搬运）在内存压力下都可能静默拿 0。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5396 ；关联上游：https://github.com/pytorch/pytorch/issues/200756
+  behavior: aarch64 + NPU + mimalloc v2.x 环境下 npu_tensor.cpu() 得到的 CPU tensor 间歇性出现 0 值（NPU tensor 本身不含 0），无任何报错；触发依赖内存压力（kswapd 回收带 MADV_FREE 标签且被 DMA 写过的页），呈间歇性。
+  discovery: 2026-10-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-15'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

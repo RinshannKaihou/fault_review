@@ -1,0 +1,58 @@
+id: INF-1368
+legacy_ids: []
+slug: ttmetal_chunk_gated_delta_rule_chunk64_dl_tile_wrong_slot
+aliases: []
+title: ttnn chunk_gated_delta_rule chunk64 装错槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: decay_all pack_tile 调用序
+  behavior: pack_tile 按调用顺序而非给定索引写；i==0 时 dl 被插入 decayfac 循环，Ct==2 时 CB 实际序 decayfac_0,dl,decayfac_1，读者按 slot 取值时 dl 与 decayfac_1 错位
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: chunk_size=64（Ct==2）时 dl 与 k_dec_t 后半错：final state PCC 0.003、output PCC 0.995（B=1,T=256,4 头,K=V=128，fused 与 phased 路径同错）；chunk_size=32 正确
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: '待定（现有 chunk-64 测试只比较设备路径互相之间（test_scan_mcast_bit_exact[chunk64_ct2]、test_fused_tinv_chunk64），全部路径共享缺陷故恒绿；报告者已参数化 test_prep_outputs_vs_torch 至 chunk64 抓到 k_dec_t PCC 3.4e-5<0.999，PR to follow；同一 i==0 模式也在 #58891 分支上）'
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: tt-metal main @20e872e3b6 + ttnn.transformer.chunk_gated_delta_rule + chunk_size=64（Ct==2）；ttsim v1.11.3 + Wormhole n150 直调实测；Qwen GDN 模型走 chunk 32，无已知生产调用方
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-13'
+remarks: 与 INF-0213（1.214 同 op 的 FTZ 指数拆分）同一算子不同机制：本条是 prep 核 pack_tile 槽序错位（结构性错值，与数值边界无关），独立子签名。验证盲区同 6.281/9.33 家族：测试只对设备路径互相比较、缺 torch 参考。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/60393（2026-10-13
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal main @20e872e3b6 的 ttnn.transformer.chunk_gated_delta_rule 在 chunk_size=64 时不匹配 torch 参考：final state PCC 0.003、output PCC 0.995（B=1、T=256、4 key/4 value 头、K=V=128；fused 与 phased 两条路径给出同样数字）。根因在 chunk_gdn_math.hpp 的 decay_all：对每个 tile 行 i 执行 pack_tile(1, o_fac, i)，且 i==0 时执行 pack_tile(2, o_fac, Ct) 打包 dl；pack_tile 按调用顺序写 tile 而不管传入的索引，于是 Ct==2 时 CB 内实际顺序为 decayfac_0, dl, decayfac_1，而读者把 slot1 当 decayfac_1、slot2 当 dl——交接的 dl tile 与 k_dec_t 后半错。Ct==1（chunk 32）时顺序 decayfac_0, dl 恰好正确。无现有测试捕获：chunk-64 的 test_scan_mcast_bit_exact[...chunk64_ct2] 与 test_fused_tinv_chunk64 只在设备路径之间比较，每条路径共享同一缺陷；把 prep prim 对 torch 断言参数化到 chunk64 后立即失败（k_dec_t PCC 3.358e-05 < 0.999），修复 PR 待出。Blackhole ttsim v1.11.3 与 Wormhole n150 直调同数字，未在 BH 硅片跑。生产面：Qwen GDN 模型用 chunk 32 运行该 op，报告者不知受影响的生产调用方；models/demos/blackhole/qwen36/tt/gdn/fused_chunk.py 注释提到 chunk 64 精度损失并归因 fp32 block inverse，报告者未核实是否即本缺陷。
+  source: tt-metal issue https://github.com/tenstorrent/tt-metal/issues/60393（2026-10-13 open，0 评论，community label；源码行级定位 + torch 对照 PCC + 参数化测试证据）
+  behavior: 无报错无 assert；chunk_size=64 时 final state PCC 0.003（近乎全错）、output PCC 0.995；chunk_size=32 完全正确；同二进制内两条实现路径同样错
+  trigger_surface: tt-metal + ttnn.transformer.chunk_gated_delta_rule + chunk_size=64；ttsim BH 与 WH n150 实测一致
+  discovery: 2026-10-13 每日扫描
+  notes:
+  - '2026-10-14 回访 2026-10-14：tt-metal#60393 已 closed/completed（10-14T16:07Z），修复 PR #60613 同仓 #60395 [Bug fix] GDN prep kernel: wrong dl and k_dec_t at chunk_size 64 已 merged（10-14T16:07:35Z，commit 7086ed4c7a06）。closed+merged 不自动证明已发布版本。'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-14'
+    fields:
+    - original.notes

@@ -1,0 +1,56 @@
+id: INF-1385
+legacy_ids: []
+slug: vllm_cascade_attn_cpu_offload_prefix_share_leak
+aliases: []
+title: vLLM Cascade+CPUOffload 把他请求 KV 当公共前缀
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: cascade 前缀识别×offload 引用
+  behavior: SimpleCPUOffloadConnector 的 CPU store 在途给共享头块 +1 引用：15/16 请求持有的块看似全体持有（含无共享的 O）。V1 cascade 据此把 O 计入公共前缀，O 被用第一请求的 KV 解码。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: O 的贪心输出在 token 2-3 起偏离 solo 输出（该处 top1-top2 差 9.56-12.94 nats），复述他人共享头内容；正常 200 无错误。60 次试验：O 晚 5ms 15/18 触发、晚 80-120ms 0/12、同时发 1/30（store 窗口 1-2 步）。
+  visibility: 静默错误
+mitigation:
+  detect: 无共享请求 O 的 batched vs solo 贪心输出对照（报告含完整 repro.py 与 60 次试验时序矩阵）
+  fix: 待定（open；V2 model runner 不受影响——恒传 common_prefix_len=0）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM V1 model runner + --no-disable-cascade-attn + SimpleCPUOffloadConnector + 批内多数请求共享长前缀且 store 在途（cascade 需 ≥8 请求且各 ≥256 computed tokens；FLASH_ATTN 实测）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61673
+  kind: github_issue
+relations: []
+original:
+  mechanism: 触发链：SimpleCPUOffloadConnector 的 CPU store 在途给共享头块 +1 引用 → 15/16 请求持有的块看似全体持有（含无共享的 O）→ V1 cascade attention 的 num_common_prefix_blocks=[128] 把 O 计入 → O 用第一请求的 KV 块解码自己的后续 token。五臂隔离：关 cascade 0/12；去 connector 0/60；V2 runner（代码层恒 common_prefix_len=0，未运行）不触发。cascade 自身条件（≥8 请求、各 ≥256 computed tokens）叠加 store 1-2 步窗口，触发率随时序：O 晚 5ms 15/18；晚 80-120ms 0/12；同时发 1/30。实测 FLASH_ATTN 后端、Qwen3-0.6B、16 请求（S1..S15 共享 2048-token 头 + 400-token 无共享 O、同 cache_salt、nonce 防跨试验残留）。O 的输出含他人共享头特有短语（"is red"），贪心 token 2-3 处 solo top1-top2 差 9.56-12.94 nats。
+  source: 'vLLM #61673（2026-10-14 open，含 repro.py、五臂隔离与时序矩阵）。https://github.com/vllm-project/vllm/issues/61673'
+  behavior: 无错误正常 200——无共享请求被用他人 KV 解码，输出内容为他人上下文的复述/混杂。
+  trigger_surface: V1 + cascade attention 开启 + SimpleCPUOffloadConnector + 共享前缀批 + store 在途时序相交
+  discovery: 2026-10-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

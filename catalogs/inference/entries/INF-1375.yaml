@@ -1,0 +1,63 @@
+id: INF-1375
+legacy_ids: []
+slug: triton_ascend_static_rnumel_softmax_miscompile
+aliases: []
+title: triton-ascend 静态 r-numel 致 softmax 误编译
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 归约 lowering 常量特化
+  behavior: r0_numel 作为 ASTSource 编译期常量烧入时，triton-ascend 对 fused softmax 行 max 归约生成错误代码；同内核同配置仅该常量化差异即数值翻转（常量 96→97% 错，运行时 i32→正确）。
+effect:
+  objects:
+  - 数值结果
+  detail: triton_experimental 后端 torch.compile 下带 attn_mask 的 fp16 SDPA 约97%元素错、maxdiff 0.0908，确定性复现无报错；eager 正确。静态 r-numel 特化且 R0_BLOCK==rnumel 的线性化归约触发。
+  visibility: 静默错误
+mitigation:
+  detect: torch.compile(fn) vs eager 逐元素比对（报告含 6 行最小复现）
+  fix: 临时规避：torch_npu 侧去掉静态 r-tree numel 常量注入（令 r0_numel 回运行时 i32 传参；实验补丁实测 causal 11919/12288→0、alibi→1/12288，未回写安装树）；编译器侧修复 open 未定位到具体 pass
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: triton-ascend 3.5.0 + TORCHINDUCTOR_NPU_BACKEND=triton_experimental + torch.compile 下带 attn_mask 的 SDPA/含 linearized reduction 内核（910B2 + CANN 9.2.0-beta.2 实测；触发条件是常量特化形态、不限 dtype/网格）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2531
+  kind: github_issue
+relations:
+- kind: cross
+  target: TRN-0280
+original:
+  mechanism: 'torch_npu _inductor/triton_experimental/codegen/triton.py 把归约轴长度 r0_numel 注入为 ASTSource 级编译期常量（本意是 R0_BLOCK==r0_numel 时让编译器证明 r0_mask 恒真、消掉 ttadapter 边界检查），triton-ascend 在该特化下对 fused softmax 的行 max 归约产生错误代码。两条编译路径 Body 与配置完全一致、唯一差异是 r0_numel 形态：①编译期常量 96（signature 3 参）→ 97% 数值错；②运行时 i32（signature 5 参）→ mismatch=0/36864 maxdiff=0。真机探针已排除 num_stages/grid/sanitize_overflow/enable_vf_fusion/mix_mode/debug/dtype/num_warps/全部 22 个 autotune 候选，kernel body 内静态影子行两路径共有亦排除。同文件组合核路径另有一处 constants:{r0_numel: total_cores}（rsplit partial 组合核入口）疑似同型风险。环境：910B2 + CANN 9.2.0-beta.2 + triton-ascend 3.5.0 + torch/torch_npu 2.15.0.dev。'
+  source: 'triton-ascend #2531（2026-10-13 open，含双路径二进制 hash 对比、排除矩阵与临时规避补丁）。https://github.com/triton-lang/triton-ascend/issues/2531'
+  behavior: torch.compile 下带 attn_mask 的 fp16 SDPA（fused softmax 内核 triton_red_fused__safe_softmax__…）约 97% 元素错、maxdiff 0.0908，确定性复现无报错；eager 正确。
+  trigger_surface: triton_experimental 后端 torch.compile + 静态 r-numel 特化 + R0_BLOCK==rnumel 的 linearized reduction（SDPA attn_mask 为已证实入口）
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - relations

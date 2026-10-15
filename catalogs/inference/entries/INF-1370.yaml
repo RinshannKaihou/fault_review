@@ -1,0 +1,65 @@
+id: INF-1370
+legacy_ids: []
+slug: ttmetal_matmul_reuse_dram_sharded_srca_reload_tf32_truncation
+aliases: []
+title: ttnn matmul 三工厂 SrcA 重载 fp32 部分和 TF32 截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: reuse/DRAM-sharded 部分和重载
+  behavior: 'reuse、DRAM-sharded、batched 三个 matmul 工厂把 fp32 部分和经 SrcA 重载，SrcA 截断为 TF32，损失随 K block 数增长；mcast_1d/2d 已在 #50250 改无损，这三个未改'
+effect:
+  objects:
+  - 数值结果
+  detail: fp32_dest_acc_en=True 多 K block累加时输出系统性负偏置；reuse 2.47e-2、DRAM-sharded decode 2.44e-2、batched DRAM-sharded 1.26e-2–8.5e-4、带fused bias 1.3e-2–2.55e-2。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（#50250 已为 mcast_1d/2d 工厂实现无损重载，三个受影响工厂可参照；issue 2026-10-08 创建、2026-10-09 closed/completed，修复 PR 未在扫描窗口内核实——closed 不自动证明修复已发布）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: tt-metal + matmul（MatmulMultiCoreReuseProgramConfig / MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig / Batched 变体）+ fp32_dest_acc_en=True + 多 K block（in0_block_w=1 时 K=4096 达 128 次重载）；core_grid(y=1,x=8) 会自动选中 reuse 工厂
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-13'
+remarks: 编目勘误：2026-10-09 日报曾把 '#59828（CPU 采样 buffer 别名 closed——11.51 族语境）' 记在 vLLM 拒收列表，但当日 GitHub 查询仅覆盖 vllm/sglang/transformers/TRT/triton/tt-metal/flashinfer 中 vLLM 侧命中；tt-metal#59828（本条，2026-10-08 创建）与 vLLM#59828 为不同仓库同号 issue，10-09 日报的 11.51 语境条目指 vLLM 侧，本条 tt-metal 侧此前未被单独判定。四舍五入族与 1.266（unpack TF32 截断）机制相邻但缺陷面不同（本条为部分和写回-重载路径，非输入 unpack）。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/59828（2026-10-08
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/59828#issuecomment（jberkowitzTT
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal matmul 的三个 program factory——MatmulMultiCoreReuseProgramConfig、MatmulMultiCoreReuseMultiCastDRAMShardedProgramConfig、MatmulMultiCoreReuseMultiCastBatchedDRAMShardedProgramConfig——在每个 K block 后把部分和以 fp32 打进中间 buffer 并经 SrcA 重载继续累加，而 SrcA 把重载数据截断为 TF32（10 位 mantissa），fp32 精度随重载次数线性流失。mcast_1d/2d 工厂在 #50250 已改为无损重载，这三个工厂漏改。量化证据（fp64 参考、bf16 可表示输入、HiFi4、fp32 输出、in0_block_w=1）：reuse（B=8, 256x4096x256）相对最大误差 packer_l1_acc=False 2.47e-2 / True 8.6e-4，对照 auto/mcast 8.3e-5；DRAM-sharded LLM decode 路径（32x4096x1280）2.44e-2；batched DRAM-sharded（B=8, 32x2048x64）1.26e-2–8.5e-4；带 fused bias 同样 1.3e-2–2.55e-2。误差为系统性负偏置（截断）：reuse 案例输出 ~1000 上平均符号误差 -21。in0_block_w=4 时约缩小 3.5x（重载更少）。core_grid=CoreGrid(y=1,x=8) 会在 batched matmul 上自动选中 reuse 工厂 + in0_block_w=1 并出现同样 2.47e-2。issue 2026-10-08 创建、2026-10-09 closed/completed（Tenstorrent 维护者 jberkowitzTT 2026-10-13 邀请进入 bounty 板块），closed 状态与修复发布未核实。'
+  source: 'tt-metal issue https://github.com/tenstorrent/tt-metal/issues/59828（2026-10-08 创建、2026-10-09 closed/completed；fp64 对照误差表 + 工厂覆盖矩阵 + #50250 对照）；评论 https://github.com/tenstorrent/tt-metal/issues/59828#issuecomment（jberkowitzTT 2026-10-18 bounty 邀请）'
+  behavior: 无报错；fp32_dest_acc_en=True 的 matmul 输出带随 K 增长的系统性截断偏差（相对误差最高 2.47e-2 vs 正确工厂 8.3e-5，约 300x），包含 LLM decode 常见形状（32x4096x1280）
+  trigger_surface: tt-metal + 三个 reuse/DRAM-sharded matmul 工厂 + fp32_dest_acc_en=True + 多 K block 累加；自动路径（core_grid y=1,x=8）可达
+  discovery: 2026-10-13 每日扫描
+  notes:
+  - 2026-10-14 回访 2026-10-14：tt-metal#59828 状态 closed，1 条评论（10-13 bounty 邀请已并录），无新机制证据。
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-14'
+    fields:
+    - original.notes

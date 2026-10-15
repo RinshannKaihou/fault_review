@@ -1,0 +1,59 @@
+id: TRN-0281
+legacy_ids: []
+slug: inductor_mod_eliminate_noncontig_reduction
+aliases: []
+title: torch_npu Inductor 取模消除错致非连续归约错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: eliminate_modular 取模消除
+  behavior: eliminate_modular 处理乘积时只用其中一个变量的长度判断取模是否多余：对 (7*r)%7 按 5%7==5 误判可消除，化简为 7*r（实际恒为 0），小归约展开后第一列 load 地址错误。
+effect:
+  objects:
+  - 数值结果
+  detail: Inductor default 后端、shape[5,7]/stride[14,1] 非连续输入小归约（unroll_reductions_threshold=8）：amax 期望 62 实得 84、amin 同错；地址错非浮点误差，Triton 源码中地址已错。
+  visibility: 静默错误
+mitigation:
+  detect: 非连续输入下编译前后 amax/amin 对账；生成 Triton 源码检查首列地址表达式。
+  fix: 待定（issue open，2026-10-08；修复方向：coeff*(numel-1)<divisor*modulus 才消除并返回 FloorDiv，多变量/负系数/未知范围保留原式）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5295
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #5295（2026-10-08，open）：torch_npu/_inductor/codegen/ir.py::eliminate_modular() 处理乘积时提取乘数后只用其中一个变量的长度判断取模是否多余：对 r=0..4 计算 5%7==5 后把 (7*r)%7 错误化为 7*r（实际 (7*r)%7 恒为 0）。小归约展开后第一列 load 地址由 14*r 变 21*r，其他列仍按 14*r+c 读取。环境：Ubuntu 22.04 aarch64、Ascend 910B3、CANN 9.1.0、PyTorch 2.15.0.dev20260902、torch-npu master cea4a6a9、Triton-Ascend 3.2.1、Inductor default。最小复现（backing=arange(140)、as_strided (5,7)/(14,1)、config.patch(unroll_reductions_threshold=8)、torch.compile(torch.amax)）：compiled 84.0 vs expected 62.0，负值输入 amin 同错；问题发生在 PTA 索引表达式化简阶段，生成 Triton 源码地址已错，非浮点误差。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5295
+  behavior: NPU torch.compile（Inductor）对小归约展开 + 非连续输入：amax/amin 等归约结果静默错误（首列 load 地址错），无报错；正负乘数、多变量乘积和取模边界同样暴露。
+  discovery: 2026-10-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-15'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

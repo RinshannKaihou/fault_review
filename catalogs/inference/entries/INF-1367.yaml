@@ -1,0 +1,67 @@
+id: INF-1367
+legacy_ids: []
+slug: vllm_explicit_truncation_side_drops_tokenizer_special_tokens
+aliases: []
+title: vLLM 显式 truncation_side 截掉特殊 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: truncate_prompt_tokens 截断
+  behavior: 带显式 truncation_side（即使与默认同值）时截断作用于加特殊 token 后的序列而非 prompt，截断端特殊 token（BOS/[CLS]/[SEP]/EOS）被切掉；不设该字段则保留特殊 token
+effect:
+  objects:
+  - 输入编码
+  detail: 嵌入/池化模型的 prompt token 序列静默缺结构性特殊 token：BERT 类丢 [CLS]/[SEP]、Llama 丢 BOS、Qwen3-Embedding 丢 pooling 用 EOS；Cohere /v2/embed truncate=START 同路径
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue 提供可复现 CPU 级最小复现：render server + tiny-random-LlamaForCausalLM 的 /v1/completions/render，unset vs "left" 输出 [1,17366,11203,29889] vs [278,17366,11203,29889]；与 AutoTokenizer 行为对照）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM（当前 main）+ truncate_prompt_tokens 请求参数 + 显式 truncation_side（含与默认同值、含 Cohere /v2/embed truncate 映射）；embedding/池化与 completion render 路径
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-13'
+remarks: 源码级单变量因果闭合（同请求仅 side 显式与否即不同 token 序列）。9.18 族（RoPE 配置忽略）同类为请求级参数静默改变输入构造，但对象是特殊 token 截断而非位置编码，独立机制。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61359（2026-10-13
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 请求同时设置 truncate_prompt_tokens 与显式 truncation_side 时，tokenizer 围绕 prompt 添加的特殊 token（BERT 类 [CLS]/[SEP]、Llama 类 BOS、Qwen3-Embedding 为 last-token pooling 追加的 EOS）在截断端被切掉；truncation_side 未设置时截断作用于 prompt 本身、特殊 token 保留。触发不要求 side 与默认不同——把默认值显式写出即触发。Cohere /v2/embed 的 truncate=START 映射为显式 "left" 走同一错误路径。CPU 级最小复现（render server hmellor/tiny-random-LlamaForCausalLM，/v1/completions/render，truncate_prompt_tokens=4）：side 未设输出 token_ids [1,17366,11203,29889]（BOS=1 保留），side="left"（该 tokenizer 默认侧）输出 [278,17366,11203,29889]（BOS 被截）。报告者对照 AutoTokenizer(model, truncation_side=side)(text, truncation...) 确认 vLLM 保留集与 tokenizer 自身行为不一致（tokenizer 保留特殊 token）。
+  source: vLLM issue https://github.com/vllm-project/vllm/issues/61359（2026-10-13 open，0 评论；CPU-only 复现命令 + 两臂 token_ids 对照 + embedding 模型对照）
+  behavior: 无报错；嵌入/池化与渲染路径的输入 token 序列静默缺少结构性特殊 token（BOS/[CLS]/[SEP]/EOS），下游 last-token pooling 与分类语义受影响；客户端无法从响应分辨
+  trigger_surface: vLLM + truncate_prompt_tokens + 显式 truncation_side（含 Cohere /v2/embed truncate 参数）；影响 embedding/token_classify 与 completion render
+  discovery: 2026-10-13 每日扫描
+  notes:
+  - '2026-10-14 回访 2026-10-14：vllm#61359 新增两条评论——Asthenia0412 提 Draft PR #61524（tokenizer 默认侧自处理方案）；roydonsequeira 指出 #61363 已两侧全修并带测试等待 review，且指出 embedding 侧 truncation_side=left（Cohere truncate=START 同路径）仍走 slice 丢 [CLS]。判定不变。'
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 分词/模板
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-10-14'
+    fields:
+    - original.notes

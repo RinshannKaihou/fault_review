@@ -1,0 +1,81 @@
+id: TRN-0278
+legacy_ids: []
+slug: lora_ckpt_missing_moe_routing_rng
+aliases: []
+title: mindformers LoRA 续训 ckpt 漏存 MoE 路由态与 RNG
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspore
+    component: LoRA ckpt 保存范围
+  behavior: save_trainable_only 只存 LoRA A/B，漏存每步更新且影响下一步专家路由的 MoE expert_bias/tokens_per_expert，也不存各 rank RNG 状态。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: 8 卡 PyNative LoRA 微调第 40 步仅存 LoRA 参数与优化器后续训，第 41-50 步与连续训练不对齐：loss 最大绝对误差 3.89e-4，grad norm 最大绝对误差 0.0435、最大相对误差 27.4%；无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 断点续训与连续训练在重叠步做 loss/grad norm 对账；隔离实验分别恢复 RNG 与 MoE 状态定位偏差来源。
+  fix: 修复 MR !8868（open）：LoRA trainable-only ckpt 追加 MoE expert_bias/tokens_per_expert，ckpt I/O 前按 rank 原子保存 RNG sidecar（加载优化器续训时恢复，老断点缺 sidecar 兼容告警）；修复后第 41-50 步 loss/grad norm 误差 0.0/0.0%。https://atomgit.com/mindspore/mindformers/merge_requests/8868
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-15'
+remarks: ''
+evidence:
+- url: https://atomgit.com/mindspore/mindformers/merge_requests/8868
+  kind: gitcode_pr
+- url: https://gitcode.com/mindspore/org-issues/issues/43525
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: mindformers（分支 src/master d3f5dc943）8 卡 PyNative LoRA 微调连续训 50 步、第 40 步仅保存 LoRA 参数和优化器后恢复：第 41-50 步与连续训练不对齐（loss 最大绝对误差 0.000389；grad norm 最大绝对误差 0.043512、最大相对误差 27.44%）。根因两点：1) save_trainable_only 只保存 LoRA A/B，遗漏每步更新并影响下一步专家路由的 MoE expert_bias 与 tokens_per_expert；2) checkpoint 未保存各 rank 的 MindSpore 默认 RNG 状态，恢复进程后 lora_dropout=0.05 的随机序列从 YAML seed 重新开始。隔离实验：仅恢复 RNG 时 grad norm 最大误差仍 0.042410；仅恢复 MoE 状态、不恢复 RNG 时仍 0.005193——两类状态都需恢复。修复 MR !8868 补存两类状态并加 RNG sidecar（原子写、老断点兼容告警）；修复后 8 卡续训 41-50 步 loss/grad norm 最大误差均为 0.0，新增 3 个单测通过。RNG 漏存与 TRN-0062（DeepSpeed 存错 RNG 对象）/TRN-0067（ms-swift resume 丢 epoch 种子）同族，但 MoE 路由态漏存为本条主机制（影响下一步专家分派）。关联 issue：https://gitcode.com/mindspore/org-issues/issues/43525
+  source: https://atomgit.com/mindspore/mindformers/merge_requests/8868 ；关联 issue：https://gitcode.com/mindspore/org-issues/issues/43525
+  behavior: 8 卡 PyNative LoRA 微调 + MoE 模型，第 40 步仅保存 LoRA 参数与优化器后续训：恢复后的 41-50 步 loss 与 grad norm 与连续训练轨迹偏离（grad norm 相对误差最大 27.4%），无报错无警告；不存断点连续训练或全量 checkpoint 不受影响。
+  discovery: 2026-10-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-15'
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - cause.objects[0].component
+  - date: '2026-10-15'
+    fields:
+    - cause.objects[0].component
+  - date: '2026-10-15'
+    fields:
+    - cause.objects
+  - date: '2026-10-15'
+    fields:
+    - cause
+  - date: '2026-10-15'
+    fields:
+    - evidence
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 训练轨迹
+        to: 训练信号
+      visibility:
+        from: 不可复现
+        to: 静默错误

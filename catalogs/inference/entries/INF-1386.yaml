@@ -1,0 +1,57 @@
+id: INF-1386
+legacy_ids: []
+slug: tt_metal_sort_nan_sorts_past_inf_padding
+aliases: []
+title: ttnn.sort fp32 NaN 越过 padding 索引泄漏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.sort padding 比较
+  behavior: ttnn.sort 把排序维 pad 到 2 的幂，pad 值取应排最后的极值；设备按符号+幅值位比较 fp32，NaN 幅值大于 inf：NaN 排到 padding 后被 slice 丢弃，padding 元素（索引 ≥n）顶替。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32 输入含 NaN 时，返回越界索引（≥n，max index=1003），输出 NaN 计数 0（期望 4）；三工厂、升降序、stable 两态均复现，无报错。torch.sort 语义：NaN 升序排最后。
+  visibility: 静默错误
+mitigation:
+  detect: 含 NaN 输入 sort 后检查 idx<n 与 NaN 计数（报告含三工厂×升降序×三规模复现）
+  fix: 待定（open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: tt-metal ttnn.sort + fp32 输入含 NaN（WH N150 实测，n=1000/3000/300000 三工厂；设备比较 NaN>inf 语义，与具体形状无关）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/60613
+  kind: github_issue
+relations: []
+original:
+  mechanism: ttnn.sort 的 padding 设计：排序维 pad 到 2 的幂、pad 值取应排最后的极值（升序 +inf/降序 -inf），排序后 slice 回 n。设备按 fp32 符号位+幅值位比较：+NaN(0x7FC00000) 幅值 > +inf(0x7F800000)、-NaN(0xFFC00000) 幅值 > -inf(0xFF800000)，故升序 +NaN 排到 +inf padding 之后、降序 -NaN 排到 -inf 之后：NaN 落位超过 n 被 slice 丢弃、padding 元素（索引 ≥n）顶替。NaN 与 padding 永不打平，index-aware 比较器（Cross Core/padded Multi Core/stable）也无济于事。WH N150 实测 n=1000/3000/300000 三工厂、升降序、stable 两态：out-of-range indices=4、max index=1003、输出 NaN 计数 0（期望 4）。torch.sort 语义：NaN 升序排最后。
+  source: 'tt-metal #60613（2026-10-14 open，Bad Outputs 标签，含位级机制表与三工厂复现脚本）。https://github.com/tenstorrent/tt-metal/issues/60613'
+  behavior: fp32 含 NaN 输入的 sort 静默返回越界索引（≥n，max index=1003）且输出值中 NaN 消失（期望保留 4 个）；三工厂、升降序、stable 两态均复现，无报错。
+  trigger_surface: ttnn.sort + fp32 + 输入含 NaN（所有 sort 工厂）
+  discovery: 2026-10-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

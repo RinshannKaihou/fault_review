@@ -1,0 +1,67 @@
+id: INF-1365
+legacy_ids: []
+slug: vllm_qwen4exp_amd_ple_ngram_stale_query_start_loc_tail_piecewise
+aliases: []
+title: vLLM Qwen4Exp AMD PLE n-gram 陈旧行映射
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: PIECEWISE 图内 PLE 缓冲刷新
+  behavior: AMD 路径把 PLE n-gram ID 生成留在 PIECEWISE 图 piece 内，捕获时按 dummy 请求数固化读取长度，重放时读到未刷新的 query_start_loc/ngram_context 陈旧尾部并按其分配请求行
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 非均匀小批量步（短 prompt、短末 chunk、混批）真实 token 被按陈旧行分配错误 n-gram ID，输出随服务历史漂移：并发突发后 10 探针 0/10 一致，修复后 10/10；CPU 模型 46 步 94 处 ID 错
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: issue 内给出最小修复（刷新范围外填 input_batch.num_tokens 非递减 padding + ngram_context 全行填 EOS）与替代方案（把 AMD n-gram op 注册为 splitting op，与 NVIDIA 路径一致）；报告者已在 2x R9700 TP1/TP2 验证修复后 10/10 一致、eager/FULL 位级不变；上游修复状态未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM ROCm（0.29 基线，main 同代码）+ Qwen4Exp/Qwen3.8-Flash-Next + MTP 推测解码 + FULL_AND_PIECEWISE CUDA graph + 短 prompt/短末 chunk/混批等非均匀 ≤max capture size 步；FULL decode 图与 eager 不受影响
+  stage: N/A
+  confidence: verified
+  coverage: var
+  discovered: '2026-10-13'
+remarks: 与 INF-1349（6.281 PIECEWISE moe_forward 陈旧地址）共享的具体失效机制：PIECEWISE 图按捕获期固化的形状/地址假设重放，运行期真实值（地址或缓冲长度/内容）已变且无人刷新——同属 PIECEWISE 捕获契约缺口族；差异：6.281 是分配器复用导致陈旧**地址**（split 中间张量），本条是 prepare_inputs 只刷新 [:num_reqs_padded] 导致陈旧**尾部内容**（请求行映射）。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61486（2026-10-13
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1349
+original:
+  mechanism: vLLm AMD 路径 Qwen4ExpModelState.prepare_inputs 只刷新 ple_query_start_loc[:num_reqs_padded+1] 与 ngram_context[:num_reqs_padded]，而 PIECEWISE CUDA graph 按 padded token 数分派、捕获时用 dummy num_reqs=min(num_tokens,max_num_seqs)（v1/worker/gpu/cudagraph_utils.py create_forward_fn），重放时请求数更少仍读 ple_query_start_loc[0:R_cap+1] 与 ngram_context[0:R_cap]（ple_layer.py qwen4_exp_amd_ple_ngram_ids 以 numel()-1 为请求数做二分）。该 op 不是 splitting op，被捕获进 piece 且固化捕获期请求计数。当陈旧尾部非单调或低于本步 token 数时，真实 token 被分配到陈旧请求行、得到错误 n-gram ID，输出依赖服务器历史（例：warmup_kernels 后缓冲为 [0,1,2,12,16,...,32]，8-token 单请求步看到 [0,8,2,12,...]，token 2..7 映射到行 2）。NVIDIA 路径有意把依赖请求计数的 ID 生成放图外（splitting op vllm::qwen4_exp_compute_ple_ngram_ids）。证据：CPU 模型（V2 捕获顺序/warmup 序列/读区间对照 eager 参考）46 个探针步 94 处真实 token ID 错，并发突发后同样错；2x AMD Radeon AI PRO R9700（gfx1201）ROCm 构建（model_state.py 与 main 字节一致）TP1/TP2：关前缀缓存时 10 个探针在 8 路并发突发前后 0/10 一致（修复后 10/10，长 prompt 与单请求 decode 位级不变）；开 --mamba-cache-mode align 前缀缓存后冷请求结果也在并发突发后改变。修复建议：prepare_inputs 刷新后把 ple_query_start_loc[num_reqs_padded+1:] 填 input_batch.num_tokens（与 runner 自身 query_start_loc 相同的非递减 padding）、ngram_context 全行填 EOS；或注册为 splitting op。
+  source: vLLM issue https://github.com/vllm-project/vllm/issues/61486（2026-10-13 open，2 评论；ROCm 0.29 基线 + main 代码定位 + CPU 模型 + 2x R9700 实测）
+  behavior: 无报错；输出依赖服务器历史：并发突发后同一请求的 token/logprobs 改变（0/10 一致），短 prompt、mamba 对齐前缀缓存拆分的短末步、混批等非均匀小步受影响；FULL decode 图与 eager 不受影响
+  trigger_surface: vLLM ROCm + Qwen4Exp（Qwen3.8-Flash-Next 量化版）+ MTP 推测解码 + FULL_AND_PIECEWISE CUDA graph + AMD PLE n-gram 路径 + 非均匀 ≤max capture size 批（短 prompt/短末 chunk/混批）
+  discovery: 2026-10-13 每日扫描
+  notes:
+  - 2026-10-14 回访 2026-10-14：vllm#61486 仅 ROCm bot CC+info 请求（10-13），无实质进展。
+migration:
+  method: scan
+  scanned: '2026-10-13'
+  audit:
+    round: daily-audit-2026-10-14
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect
+    - visibility
+  updates:
+  - date: '2026-10-14'
+    fields:
+    - original.notes

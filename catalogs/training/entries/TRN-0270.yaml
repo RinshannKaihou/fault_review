@@ -1,0 +1,66 @@
+id: TRN-0270
+legacy_ids: []
+slug: ccu_allreduce_rank_slot_nondeterminism
+aliases: []
+title: CCU AllReduce 槽位随 rank 落位致跨卡归约不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: CCU GroupReduce 归约槽位落位
+  behavior: CCU 引擎 GroupReduce 将本卡输入固定垫底于 GO 内存末槽、远端按 rank 升序占槽 0..N-2，硬件按槽序归约：各卡浮点加法操作数序列随本卡 rank 漂移，同输入不同卡输出 bitwise 不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: CCU AllReduce one_shot/2die 浮点 SUM 下同输入各卡输出 bitwise 不相等（2die 两分支计算序列也不同）；整型与 MIN/MAX 不受影响。训练侧表现为跨卡归约结果分叉、不可复现。
+  visibility: 不可复现
+mitigation:
+  detect: 同输入跨卡 AllReduce 输出 bitwise 对账；确定性模式训练对比。
+  fix: 修复 MR !3607（open）：归约槽位按 rank 落位，各卡操作数序列恒为 (s_0..s_{N-1}) 与 rank 无关；合入后 CCU allreduce one_shot/2die 浮点 SUM 输出将发生预期 bitwise 变化（对齐全卡一致）。https://gitcode.com/cann/hccl/merge_requests/3607
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/825
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/hccl/merge_requests/3607
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0012
+original:
+  mechanism: 'cann/hccl issue #825（Requirement，2026-10-14）+ 修复 MR !3607（open）：浮点加法不满足结合律，CCU 引擎 GroupReduce 现状将本卡输入固定垫底于 GO 内存末槽、远端按 rank 升序占槽，硬件按槽序归约。AllReduce one_shot（全量型）各卡操作数序列为 (s_0,…,ŝ_r,…,s_{N-1},in_r) 随本卡 rank 漂移→同输入不同卡输出 bitwise 不一致；2die 变体 withMyRank 分支本卡垫底、对侧 WithoutMyRank 分支纯升序，两份部分和计算序列不同→跨卡不一致。修复按 rank 落位槽位使序列恒为 (s_0..s_{N-1})，不改 selector 路由/核数/launch，Host 侧零改动（2die 仅增 kernel arg 字段）；合入后浮点 SUM 输出发生预期 bitwise 变化，整数与 MIN/MAX 不变。与 TRN-0012（浮点归约顺序随 batch/tile 变化致训练梯度不可复现）共享「浮点加法结合律不成立 + 实现定义的操作数顺序→同输入不同执行路径结果不一致」机制，触发点不同：本条是 CCU 硬件归约槽位按 rank 垫底，属集合通信库实现。'
+  source: https://gitcode.com/cann/hccl/issues/825 ；修复：https://gitcode.com/cann/hccl/merge_requests/3607
+  behavior: NPU CCU AllReduce（one_shot/2die）浮点 SUM 归约时，同一输入在不同卡上的输出 bitwise 不相等（各卡加法操作数序列不同）；ReduceScatter/AllGather 走缺省槽位语义不受影响。梯度 all-reduce 场景下表现为跨卡梯度/参数分叉与训练不可复现。
+  discovery: 2026-10-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-15'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility
+    - behavior
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence

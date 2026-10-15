@@ -1,0 +1,55 @@
+id: INF-1377
+legacy_ids: []
+slug: triton_ascend_int_rem_zero_compiles_to_minus1
+aliases: []
+title: triton-ascend 整型除零取余编译态恒返 −1
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 整型 rem 除零 lowering
+  behavior: 编译的整型 a%b 在除数恒为 0 时输出恒为 -1（逐 lane），编译成功不报错；向量 splat/0 维标量/字面量三种除数形态全命中。eager remainder(x,0) 返回被除数——compiled 与 eager 分裂。
+effect:
+  objects:
+  - 数值结果
+  detail: int32/int64 下任何非 −1 输入 lane 全错（确定性极强，无需测试配置即触发生产数值路径）；float16/32 x%0 编译态与 eager 同为 NaN 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: compiled vs eager torch.remainder 对照（报告含三形态最小复现）
+  fix: 待定（open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton-ascend 3.6.0 + 910B4 + CANN 9.2.0-beta.2（复现 A 纯 Triton 无需 torch.compile；复现 B 需 TORCHINDUCTOR_NPU_BACKEND=triton_experimental）；唯一触发=整型除数恒 0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2518
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend 编译的整型取余 a%b 当除数 b 恒为 0 时输出恒为常量 −1（逐 lane），静默错值；三种除数形态（tl.full 向量 splat 0 / tl.load 0 维标量 0 / 字面量 a%0）全部命中，int32/int64 同型。同设备 eager 参考语义为返回被除数：torch.remainder(x,0)（NPU aclnn）对 x=[-9..-1024] 逐元素返回 x 本身；PyTorch 文档 floor-mod 恒等式亦以此为极限。Inductor 基本不变量（编译结果==eager）在整型除零点被打破。浮点侧不受影响（f16/f32 x%0 编译态与 eager 同 NaN，0/23 错）。#2290/#2289 覆盖不到本单，是 floor-mod 链上第四个独立缺陷、唯一直接命中生产数值路径的一个（仪器断言默认关、不需要测试配置即触发）。环境：910B4、driver 25.5.1、CANN 9.2.0-beta.2、torch 2.16.0.dev/torch_npu 2.16.0+git322546e、triton-ascend 3.6.0。
+  source: 'triton-ascend #2518（2026-10-12 open，含三形态逐 dtype 实测输出与 eager 对照）。https://github.com/triton-lang/triton-ascend/issues/2518'
+  behavior: 编译成功不报错不 trap——整型除零场景输出恒 −1，与 eager（返回被除数）静默分裂。
+  trigger_surface: triton-ascend（910B4 实测）+ 整型 % 且除数恒 0（编译期或运行时为 0 均可）
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

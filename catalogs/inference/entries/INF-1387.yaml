@@ -1,0 +1,67 @@
+id: INF-1387
+legacy_ids: []
+slug: cann_scatter_pa_kv_cache_slotmapping_unchecked
+aliases: []
+title: ScatterPaKvCache 空/不足 slotMapping 静默错写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: ScatterPaKvCache host 检查
+  behavior: 空态早退分支未覆盖 slotMapping：空/不足的 slotMapping 不早退不报错直接透传 kernel；tiling 以 key.dim0 推导 numTokens 去索引 slotMapping，越界读后写出错误结果。
+effect:
+  objects:
+  - KV状态
+  detail: key=[2,2,32] fp16 对照组合法 slotMapping=[0,1] 时写 128 元素；slotMapping=[](空)或[1000](不足+越界)时均 0/SUCCESS 但只写 64 元素（丢一个 token 的 scatter），无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 非法 slotMapping 下检查写入元素数与 key.dim0 一致性（报告含 ctypes 直调三用例实测表）
+  fix: 待定（open；报告建议空态分支纳入 slotMapping 或元素数不一致返回 161002）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: cann/ops-transformer scatter_pa_kv_cache + slotMapping 空/元素数≠key.dim0（910B2 + CANN 9.2.0-beta.2 实测；aclnn 公开接口路径）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-14'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6114
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnn_scatter_pa_kv_cache.cpp:476-488 空态早退仅覆盖 key/keyCacheRef 与 value/valueCacheRef，slotMapping 未纳入；:341/:405 未判空即 Contiguous 透传；CheckShape(:192-210) 不约束 slotMapping 元素数与 key token 数一致；tiling(scatter_pa_kv_cache_tiling.cpp:339/381/416) params_.numTokens=inputKeyShape_.GetDim(DIM_0)——取值对象（key）与真正被索引对象（slotMapping）不一致。ctypes 直调 libopapi_transformer.so 实测（910B2、CANN 9.2.0-beta.2、PA_NZ）：合法对照写 128 元素；slotMapping=[0]（空 numel==0）与 [1]={1000}（不足+越界槽位）均返回 0 SUCCESS 且 workspaceSize 与合法用例相同（16777728，证明确实下发了 kernel），写入元素降为 64——丢失一个 token 的 scatter，无告警。
+  source: 'cann/ops-transformer #6114（2026-10-13 open，含源码行号、tiling 机制与 NPU 实测三用例表）。https://gitcode.com/cann/ops-transformer/issues/6114'
+  behavior: 空/不足 slotMapping 被静默接受，KV cache 写入不完整（token 丢弃或写错位置），接口成功无告警。
+  trigger_surface: aclnnScatterPaKvCache + slotMapping 空或元素数与 key.dim0 不一致
+  discovery: 2026-10-14 每日扫描（NPU 新来源首轮）
+migration:
+  method: scan
+  scanned: '2026-10-14'
+  audit:
+    round: daily-audit-2026-10-15
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+    issue_unfixed:
+    - detail
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-10-15'
+    fields:
+    - evidence
