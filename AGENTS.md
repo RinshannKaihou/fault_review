@@ -3,7 +3,7 @@
 本仓库是**故障编目检索工具**（RAG），供任意 interactive agent CLI 通过 Bash 调用。
 不是在维护编目本身——编目真源在 `/workspace/inference_error_review` 与
 `/workspace/training_error_review`，本仓库对它们**严格只读**。检索与引用读的是
-`catalogs/` 下的 vendored 快照：两个编目的结构化条目 `catalogs/<repo>/entries/*.yaml`（经人工审查后通常每周手动同步，可能滞后于真源；每日扫描不自动同步 RAG）。
+`catalogs/` 下的 vendored 快照：两个编目的结构化条目 `catalogs/<repo>/entries/*.yaml`（经人工审查后手动同步，可能滞后于真源；每日扫描不自动同步 RAG；快照对应的上游提交见 `catalogs/SOURCES.txt`）。
 
 ## 入口
 
@@ -30,11 +30,13 @@ stdout 一律是 JSON。出错信息在 stderr。
   `--no-neg`（排除负结果块）、`--include-pointers`（显式包含指针行）、
   `--full`（返回条目全部字段）。
 - pointer 默认不参与 search；精确 `lookup` 仍可读取并沿 links 找到真实条目。
-- BM25 完全零命中时返回空结果，不要把空结果解释成“目录前几条最相关”。
+- hybrid 的向量路会给每个合格条目排名，所以 hybrid **总有结果**，排在后面的不一定相关；
+  `bm25_rank: null` 表示该条没有任何关键词命中、只靠向量相似进来，要读原文再判断。
+  `--mode bm25` 下关键词零命中返回空列表，这不代表编目里没有相关故障，可换 hybrid 或换说法再查。
 - 新编号 `INF-xxxx` / `TRN-xxxx` 不含分类语义；旧编号记在 `legacy_ids`，`lookup` 会对应到新编号，已合并的 `1.70`、`11.30` 也会对应到保留条目（`INF-0044`、`INF-1048`）。精确查不到的编号不会模糊命中别的编号。
 - `status: pending_audit` 的条目是每日扫描刚写入、尚未经次日自动审计的，引用时注明。
 - 每条结果带 `file`（条目 YAML）：需要完整上下文时直接用 Read 打开它，
-  `original` 下是扫描写的完整原始说明，不要只凭 snippet 下结论。
+  `original` 下是扫描写的完整原始说明；`title` 和 `cause` / `effect` 等结构化字段是从它抽取的摘要，不要只凭摘要下结论。
 - 结果里 `neg: true` 的是**负结果**（rejected/blindspots/附录C/D）——
   它告诉你「这条路被否过」，不要当成可复用故障模式引用。
 
@@ -49,6 +51,9 @@ stdout 一律是 JSON。出错信息在 stderr。
 - `entry_type: pointer` 不是独立故障，不得作为故障证据引用。
 - `name_ambiguous: true` 时必须使用 repo + ID + name + file；不能只写
   snake name。当前同名的 `INF-0421` / `INF-0426`（旧号 6.28 / 6.33）是两条不同来源记录。
+- `name_ambiguous` 只检查**同一编目内**的重名。跨库同名不会被标记，例如
+  `training_sdc_checkpoint_inherit` 同时是 `INF-0006` 与 `TRN-0005`（同一机制的推理/训练两个视角），
+  按名称 `lookup` 会返回两条。所以任何时候都要写明 repo + ID。
 
 ## 本仓库不做什么
 
@@ -71,5 +76,7 @@ slice（Recall@5/@10 不得低于基线，MRR/nDCG 容差 0.02）；标签来自
 ## 故障排查
 
 - `index not built yet` → 先跑 `reindex`。
-- 模型缺失 → `python3 scripts/download_model.py`（需能访问 huggingface.co）。
+- 模型缺失 → `python3 scripts/download_model.py`；访问不了 huggingface.co 时先 `export HF_ENDPOINT=https://hf-mirror.com`。
+- `reindex` 报 `No module named 'yaml'` → `pip install -r requirements.txt`（读条目 YAML 需要 PyYAML）。
+- 明知编号却查不到 → 对照 `catalogs/SOURCES.txt` 与 `stats`：上游当天新写的条目要等下次手动同步；`git pull` 后还要 `reindex`。
 - 编目真源仓库搬家了 → 给 `scripts/sync_catalogs.sh` 设 `FAULT_RAG_SRC_INFERENCE_REPO` / `FAULT_RAG_SRC_TRAINING_REPO`（仓库根目录）环境变量（或改脚本默认值）后重跑。

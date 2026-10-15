@@ -114,7 +114,7 @@ python scripts/download_model.py             # 下载 bge-m3（约 2.2 GB）到 
 
 ### 引用纪律
 
-- 写全 **库 + 编号 + 名称 + file**，例如：`TRN-0005 training_sdc_checkpoint_inherit`（旧号 HW.05；`catalogs/training/entries/TRN-0005.yaml`）。只写名称不够：`name_ambiguous: true` 表示有同名条目，`same_name_ids` 列出其余编号。
+- 写全 **库 + 编号 + 名称 + file**，例如：`TRN-0005 training_sdc_checkpoint_inherit`（旧号 HW.05；`catalogs/training/entries/TRN-0005.yaml`）。只写名称不够：`name_ambiguous: true` 表示同一编目内有同名条目，`same_name_ids` 列出全部同名编号；跨库同名（如上面的 `INF-0006` / `TRN-0005`）不会被标记。
 - 置信度照实写：`documented` 不等于已复现，`speculative` 不能当结论。
 - `status: pending_audit`：每日扫描刚写入、还没经过次日审计的条目，引用时要注明。
 - `neg: true`：负结果，来自训练编目的 `rejected.md`、`blindspots.md` 和推理 Markdown 编目的附录 C/D。它表示“这条路被否过”，不是可复用的故障案例。
