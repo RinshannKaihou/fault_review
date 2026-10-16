@@ -31,3 +31,25 @@ hermes -p third cron create '0 2 * * *' --name '故障编目每日审计' --no-a
 ```
 
 （`--script` 的具体语法以 `hermes cron create --help` 为准；需要 `JUDGE_API_KEY` 在该任务环境中可见。）
+
+## 2026-10-16：限流等待加上限（两个扫描任务）
+
+10-16 推理扫描（8645356b40ae）以 error 结束：按旧措辞「循环重查额度」等未认证 core API
+的小时级配额重置（约 40 分钟），耗尽工具调用迭代预算，**零交付**（未写编目/日报/未提交），
+仓库保持干净。同夜训练扫描遇到同样的 3/3 403 却成功——它不等待，用 search item 自带 body
+与 NPU 共享批次把候选判完，并在 API 账本里写明哪些只按索引判定。
+
+两个 cron 提示词与两份扫描说明同步改为：
+
+- 单次命令调用 sleep ≤ 60 秒（不变）；
+- **累计等待上限 5 分钟**，到点停止等待；
+- 改用已有数据判完候选，并在日报写明只按索引判定的候选与未覆盖范围；
+- **不得因等待配额重置而放弃写入编目、日报、build/validate、提交与推送**。
+
+上游提交：推理 841c608、训练 3135924。`jobs.json` 改前备份在
+`~/.hermes/backups/jobs.json.bak-2026-10-16-waitcap`。
+
+附带结论：`failure_streak` 只用于 `cron list` 的红字提示（`hermes_cli/cron.py:222`），
+**没有按连续失败次数自动暂停的逻辑**——自动暂停只在配置错误时触发
+（`_block_and_pause_job` 仅被 `NO_AGENT_WITHOUT_SCRIPT_ERROR` / `EMPTY_PAYLOAD_ERROR` 调用）。
+所以失败一次不影响下一次按时触发。
