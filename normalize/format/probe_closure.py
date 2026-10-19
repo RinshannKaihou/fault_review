@@ -41,10 +41,10 @@ def fetch(args):
         iss = json.loads(out.stdout)["data"]["repository"]["issue"]
     except Exception:
         return y, None
-    prs = {p["number"] for p in iss["closedByPullRequestsReferences"]["nodes"] if p["merged"]}
-    prs |= {s["source"]["number"] for s in iss["timelineItems"]["nodes"]
+    closing = {p["number"] for p in iss["closedByPullRequestsReferences"]["nodes"] if p["merged"]}
+    prs = closing | {s["source"]["number"] for s in iss["timelineItems"]["nodes"]
             if s.get("source", {}).get("merged") and s["source"]["repository"]["nameWithOwner"].lower() == f"{o}/{r}".lower()}
-    return y, dict(state=iss["state"], reason=iss["stateReason"], comments=iss["comments"]["totalCount"], prs=prs)
+    return y, dict(state=iss["state"], reason=iss["stateReason"], comments=iss["comments"]["totalCount"], prs=prs, closing=closing)
 
 
 def main():
@@ -66,6 +66,7 @@ def main():
         c["ok"] += 1
         c[f"state={s['state']}/{s['reason']}"] += 1
         c["upstream_has_merged_pr"] += bool(s["prs"])
+        c["upstream_closed_by_merged_pr(strict)"] += bool(s["closing"])
         c["merged_pr_recorded_in_entry"] += bool(s["prs"]) and recorded
         c["merged_pr_NOT_in_entry"] += bool(s["prs"]) and not recorded
         c["entry_fix_is_待定"] += fix.startswith("待定")
