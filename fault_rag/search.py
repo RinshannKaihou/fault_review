@@ -112,6 +112,7 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
             "id": e["id"],
             "name": e["name"],
             "title": e.get("title"),
+            "summary": _summary(e),
             "legacy_ids": e.get("legacy_ids", []),
             "repo": e["repo"],
             "category": e["category"],
@@ -175,6 +176,19 @@ def related(q, depth=1):
                 nxt.append(rec)
         frontier = nxt
     return out
+
+
+def _summary(e):
+    """给 agent 判断相关性用的一行摘要：只做展示，不进 BM25 也不进嵌入文本，
+    所以加它不改变任何排序。来源是条目已有的压缩字段（effect.detail 写现象与条件，
+    cause.behavior 写原因），零生成成本；条目将来有了叙述式导语再换成导语。"""
+    f = e["fields"]
+    if e["neg"]:
+        return "负结果：" + " ".join(f.get("content", "").split())[:200]
+    fix = str(f.get("mitigation_fix") or "").strip()
+    fix = "未记录" if not fix or fix.startswith("待定") else fix[:120]
+    return (f"现象：{f.get('effect_detail') or '待定'}｜原因：{f.get('cause_behavior') or '待定'}"
+            f"｜修复：{fix}")
 
 
 def _full(e):
