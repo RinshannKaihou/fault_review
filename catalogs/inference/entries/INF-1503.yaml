@@ -1,0 +1,63 @@
+id: INF-1503
+legacy_ids: []
+slug: op_plugin_ascend950_compare_maxmin_mixed_input_dtype
+aliases: []
+title: 950 比较/max-min 混合输入 dtype 推导错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: eq/ge/maximum dtype 推导
+  behavior: 沿用 other.dim()==0 且非 NPU 的旧 CPU scalar 特判与 IsCPUScalar 转 scalar 逻辑，比较与 max/min 算子在混合 host/device 输入下 dtype 推导与标杆不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950 上 self 为 NPU、other 为 CPU（含 0 维 CPU scalar tensor）时，ge/le 与 maximum/minimum 输出 dtype 与 CPU/CUDA 标杆不同，结果按错误 dtype 解释；反向组合缺校验。
+  visibility: 静默错误
+mitigation:
+  detect: 在 950 上构造 self(NPU)+other(CPU) 与 self(CPU)+other(NPU) 混合输入，比对 eq/ge/gt/le/lt/ne 与 maximum/minimum（含 out=/inplace）的输出 dtype/device/数值
+  fix: 修复 PR https://gitcode.com/Ascend/op-plugin/pull/4715 （issue 为 closed；合入与发布状态未核实）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_note: Ascend950 + 比较类/maximum/minimum + host tensor 与 device tensor 混合输入（含 0 维 CPU scalar tensor 包装）
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/168
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0161
+original:
+  mechanism: 'op-plugin issue #168（2026-06-15，closed）：针对 Ascend950，正文列出三处缺陷。(1) 比较类算子 eq/ge/gt/le/lt/ne 与 maximum/minimum 沿用旧的 CPU scalar 特判路径——other.dim()==0 && !is_npu(other) 走 *Scalar 分支，配合 IsCPUScalar 转 scalar 逻辑，输出 dtype 推导与标杆（CPU/CUDA）不一致，典型如 ge/le 的类型推导、maximum/minimum 的计算 dtype 差异。(2) 未对 host/device 混合 tensor 做统一搬运，缺少 self/other 设备一致性保障与 NPU tensor 校验。(3) inplace / out 变体未校验 self/result 必须为 NPU tensor。复现是在 950 上构造 self 为 NPU、other 为 CPU（或 0 维 CPU scalar tensor）以及反向组合，分别调这些算子与 CPU/CUDA 标杆对比 dtype/device/数值，并覆盖 out= 与 inplace 变体。关联 PR https://gitcode.com/Ascend/op-plugin/pull/4715。'
+  source: 2026-06-15 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/168 （closed）
+  behavior: 在 Ascend950 上做比较或取大：一边是 NPU 张量、另一边是 CPU 上的张量（或包装成 0 维 CPU scalar tensor），结果就跟 CPU/CUDA 不一样——最典型的是出来的 dtype 不对，比如 ge/le 推成和标杆不同的类型、maximum/minimum 的计算 dtype 有差异，下游按这个 dtype 继续算就偏了。inplace 和 out= 变体还漏掉“必须都是 NPU 张量”的校验。
+  trigger_surface: Ascend950 + eq/ge/gt/le/lt/ne 与 maximum/minimum + host/device 混合输入（含 0 维 CPU scalar tensor）；out= / inplace 变体
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+    - detail

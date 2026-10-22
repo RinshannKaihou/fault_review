@@ -1,0 +1,55 @@
+id: INF-1730
+legacy_ids: []
+slug: sfm_swa_tmpbuff_missing_pipe_dep
+aliases: []
+title: SparseFlashMla SWA 复用 UB 缺依赖致结果不稳
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SparseFlashMla SWA/DSpark
+  behavior: Vec1 的 tmpBuff1 同时用作 sparse-index 输入与 Softmax 临时区，下一轮 MTE2 写 sparse indices 前缺 V→MTE2 跨流水依赖，覆盖仍在使用的 Softmax 临时数据。
+effect:
+  objects:
+  - 数值结果
+  detail: N1=128、D=512、DSpark topk=512、稀疏 KV 有效长度>128 时同一输入重复执行结果不一致，部分 head 明显偏差；补 V→MTE2 依赖后 fp16/bf16 与长度 128/1024/8192 均稳定。
+  visibility: 不可复现
+mitigation:
+  detect: N1=128 的 SWA/DSpark 用例用同一输入重复执行并逐次比对（单次对 golden 通过不代表正确）
+  fix: PR 12529（master）/12530（9.2.0）：MTE2 复用 tmpBuff1 前建立 V→MTE2 依赖，保留 N1=128 原有并行度
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend910B + CANN 9.2 + SparseFlashMla SWA/DSpark + N1=128 + 稀疏 KV 有效长度>128
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5522
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5522（Ascend910B、CANN 9.2，closed）：SparseFlashMla 的 SWA/DSpark 路径在 N1=128、D=512、DSpark topk=512 且稀疏 KV 有效长度大于 128 时，重复执行结果不稳定、部分 head 出现明显精度误差。根因是 Vec1 的 tmpBuff1 被同时用作 sparse-index 输入缓冲和 Softmax 临时区：下一轮 MTE2 在写入 sparse indices 之前缺少 V→MTE2 的跨流水依赖，MTE2 提前覆盖了 V 流水仍在使用的 Softmax 临时数据，于是同一输入不同次执行读到的中间值不同。修复在 MTE2 复用 tmpBuff1 前建立 V→MTE2 依赖（PR master 12529、9.2.0 12530），验证覆盖 FP16/BF16 与稀疏 KV 有效长度 128/1024/8192，重复执行结果一致。'
+  source: 2026-09-20 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5522 （closed）
+  behavior: 同一个 SWA/DSpark 稀疏 MLA 请求连续跑多次，输出会变：部分 head 与 golden 偏差明显、部分 head 又正常，换一次执行偏差位置还可能不同；没有报错、没有 NaN，只能靠重复执行比对或与独立标杆对照才能发现，并且有效 KV 长度不超过 128 时不出现。
+  trigger_surface: Ascend910B + CANN 9.2 + SparseFlashMla SWA/DSpark + N1=128 + 稀疏 KV 有效长度>128 + 重复执行
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

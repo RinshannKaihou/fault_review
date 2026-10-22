@@ -1,0 +1,51 @@
+id: INF-2002
+legacy_ids: []
+slug: ops_nn_msda_metadata_no_bounds_check
+aliases: []
+title: MSDA 不校验 deform 元数据致越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ms_deform_attn kernel
+  behavior: kernel 直接用 device metadata 里的 levelStartId/h/w 索引 value GM，不校验它们相对 numKeys 的范围；metadata 与 value.numKeys 不一致时仍照常启动
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3 + CANN 9.1.0-beta.3：numKeys=1、spatial_shapes=4×4 时 aclnn 仍 SUCCESS 并越界采样；level_start=1e6 时报 507035 device fault；匹配的 numKeys=16 用例输出 ≈100 正常。
+  visibility: 静默错误
+mitigation:
+  detect: 让 level_start_index/spatial_shapes 与 value.numKeys 故意不一致（numKeys=1 + 4×4），断言参数错误而不是 SUCCESS；再与 torch 参考采样值逐点对拍
+  fix: 在内核取 metadata 前校验 levelStartId/h/w 落在 [0,numKeys) 及 spatial 范围内，非法返回参数错误；issue closed，未附 MR，是否已修未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnMultiScaleDeformableAttnFunction，level_start_index/spatial_shapes 与 value.numKeys 不一致（numKeys=1 + 4×4）或 level_start 极大；Ascend910B3 + CANN 9.1.0-beta.3
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 报告为本地 draft 复现（未远程提交上游），复现包与退出码 42 见正文。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4770
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4770（2026-08-13，closed，Track A / P-011）：Ascend910B3 + CANN 9.1.0-beta.3，ops-nn HEAD e16ef626bb3a，build.sh --pkg --soc=ascend910b --ops=multi_scale_deformable_attn_function 编包安装到 vendors/cann_scan_repro_nn。vfusion/multi_scale_deformable_attn_function/op_kernel/ms_deform_attn_generic.h（high_perf 同类实现亦然）里 levelStartId/h/w 来自 device metadata，没有相对 numKeys 的全局范围校验。复现：numKeys=16 的匹配用例 out≈100；numKeys=1 配 spatial 4×4 仍 SUCCESS 但采样错误；level_start=1e6 触发 507035。退出码 42。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4770 （closed）
+  behavior: 调用方把 spatial_shapes/level_start_index 和 value 的长度传得不一致时，算子不报参数错误：小偏差静默返回错误采样值，偏差大时直接 507035 device fault。中间档的错值不会在日志里留下任何痕迹。
+  trigger_surface: aclnnMultiScaleDeformableAttnFunction + 不一致的 level_start_index/spatial_shapes
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

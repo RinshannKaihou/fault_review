@@ -1,0 +1,61 @@
+id: INF-1533
+legacy_ids: []
+slug: ops_nn_embedding_dense_grad_v2_unsigned_index
+aliases: []
+title: EmbeddingDenseGradV2 负索引按无符号读致越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: arch22 常规内核索引读取
+  behavior: arch22 内核按 uint32 读 indices、按 uint64 比 paddingIdx：-1 变成 4294967295，与哨兵不等，padding 过滤失效后按 2^32×embeddingDim 偏移 atomic add。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: grad[2,1024]=1、indices={-1,-1}、numWeights=4、paddingIdx=-1（def 默认值）时两段式接口均返回 0，stream 同步才报 507057，out 被清 0；设备日志 MTE errorCode=546、retCode=0x31。
+  visibility: 报错
+mitigation:
+  detect: 用 indices 含 -1 且 paddingIdx=-1 的用例跑完两段式接口后强制 stream 同步并读回 out；只看 GetWorkspaceSize/Execute 返回值会判成成功。
+  fix: issue 6306 open；正文建议 arch22 内核索引改 __gm__ int*、paddingIdx 统一按有符号 int64 比较（对齐 determinist/small_dim 内核），未给修复 PR。
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend910_93 + CANN 9.2.0 + aclnnEmbeddingDenseBackward（tilingKey=0、embeddingDim=1024>512 走 arch22 常规内核）+ indices 含 -1 且 paddingIdx=-1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: host 侧两段式接口都返回成功，异常只在 stream 同步时暴露，因此按“报错”记可见性；后果是 GM 越界 atomic add 与输出被清 0。与 WeightQuantBmmV2 的 L1 预取越界写（另一条）机制不同：这条是索引符号语义断裂。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6306
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6306（2026-09-29，open）：环境 Ascend910_93、CANN 9.2.0、ops-nn master 1e0c064（2026-09-28），C 直调 aclnn 两段式接口。index/embedding_dense_grad_v2 的 arch22 常规内核在第 190 行把 sortIndices 设成 (__gm__ uint32_t*) 无符号读，第 268 行取出 currentId 后在第 271 行与 paddingIdx_ 比较，而 paddingIdx 为 uint64_t；int32 的 -1 零扩展为 4294967295，与 padding 哨兵 (uint64_t)(-1)=0xFFFFFFFFFFFFFFFF 恒不相等，负索引因此不被过滤，直接以约 2^32×embeddingDim 的偏移参与 atomic add 越界访问 GM。同族内核 embedding_dense_grad_v2_determinist.h:149、_small_dim.h:112 都用 (__gm__ int*) 有符号读，唯常规内核遗漏；op_host 的 padding_idx 默认值就是 -1。实测四组：合法索引与 paddingIdx=3 生效两组正常；indices={-1,-1}、paddingIdx=-1 时（含预置 NaN 的一组）第一段与第二段均返回 0，stream 同步返回 507057（ACL_ERROR_RT_SUSPECT_REMOTE_ERROR），out 被清 0，设备日志报 ProcLogicCqReport task exception、MTE errorCode=546、Vector Core retCode=0x31。
+  source: 2026-09-29 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6306 （open）
+  behavior: 用 aclnnEmbeddingDenseBackward 做 embedding 反向：grad 全 1、indices 传 -1、paddingIdx 用默认的 -1（PyTorch 生态最常见取值）时，GetWorkspaceSize 和 Execute 都返回成功，看上去一切正常；直到 stream 同步才报 507057 设备异常，输出被清成 0。也就是说 host 侧完全没有拦住负索引，越界的 atomic add 已经打到 GM 上。
+  trigger_surface: Ascend910_93 + CANN 9.2.0 + aclnnEmbeddingDenseBackward 的 arch22 常规内核（embeddingDim>512、tilingKey=0）+ indices 含负值 + paddingIdx=-1
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - detail
+    uncertain:
+    - effect
+    - behavior

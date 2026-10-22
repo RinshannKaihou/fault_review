@@ -1,0 +1,58 @@
+id: INF-1804
+legacy_ids: []
+slug: om_inout_desc_name_len_read_before_check
+aliases: []
+title: OM 入出参解析按未校验 name_len 越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: GenInOutTensorDesc
+  behavior: 解析 OM 的 MODEL_INOUT_INFO 分区时，先按文件中的 name_len 构造 std::string 读取张量名，之后才做溢出与分区边界检查，检查对该字段无效。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 把畸形 OM 最后一个张量的 name_len 置为超大值，aclmdlGetDescFromFile/FromMem 就会越界读堆，读出的字节作为张量名进入 desc 被下游消费；轻则描述符内容错乱，重则崩溃。
+  visibility: 静默错误
+mitigation:
+  detect: 构造末张量 name_len 超大的 OM 走 aclmdlGetDescFromFile / aclmdlGetDescFromMem，配 mssanitizer memcheck
+  fix: 待定（issue closed，正文只给修复建议：把 CheckUint64AddOverflow 与 GE_CHECK_LE 提前到 std::string 构造之前；未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  trigger_note: 公开 ACL 接口读畸形/损坏 OM；同函数 dims、shape_range 均先检查后读取，唯 name 相反
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/550
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ge base/common/helper/model_parser_base.cc 的 GenInOutTensorDesc（第142行起）在第145-146行以 std::string(data+offset, tensor_base_info.name_len) 构造张量名。name_len 来自 MODEL_INOUT_INFO 分区反序列化出的 ModelTensorDescBaseInfo（第204-205行，仅结构体本身有界），而 CheckUint64AddOverflow（第148行）与 GE_CHECK_LE((offset+name_len), size)（第151行）位于读取之后，检查对本字段不构成防护。同函数 dims（156→157）、dimsV2（166→167）、shape_range（176→178）都是先检查后读取，唯独 name 先读后检。数据流自公开 API aclmdlGetDescFromFile / aclmdlGetDescFromMem（model.cpp:1078/1100/1113）经 GetModelDescInfoFromMem（graph_loader.cc:195-244，TLV 记录 value/length）到达该函数，报告置信度 90%。
+  source: 2026-09-06 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/550 （closed）
+  behavior: 用户用 aclmdlGetDescFromFile 或 aclmdlGetDescFromMem 读一个损坏或构造的 OM 时，只要最后一个张量描述的 name_len 过大，解析就会越出分区堆缓冲：可能读到界外字节并把它当作张量名返回给调用方，也可能直接崩溃；整个过程不报参数错误，因为边界检查排在读取之后。
+  trigger_surface: 公开 ACL 接口加载用户提供的畸形/损坏 OM 文件或内存
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect

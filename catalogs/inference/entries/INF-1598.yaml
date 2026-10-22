@@ -1,0 +1,51 @@
+id: INF-1598
+legacy_ids: []
+slug: runtime_external_event_wait_addr_zero_deadlock
+aliases: []
+title: 外部事件 wait 未 record 时写地址 0 致回放挂死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: 通用
+    component: capture_model 外部事件 wait
+  behavior: 外部事件 wait 的地址先被置 0，仅当 event 已 record 且未 reset 才回填；consumer 先于 producer record 执行时，这个 0 被原样写进 wait entry。
+effect:
+  objects:
+  - 可用性/进度
+  detail: cross-model 外部事件同步在 consumer 先于 producer 执行时，设备 wait 任务拿地址 0 等值 1，信号永不满足，rtModelExecute 挂死；即使 producer 上轮 record 过，写的是上轮过期地址，同样挂死。
+  visibility: 挂起
+mitigation:
+  detect: graph 调试日志里看 wait entry 的 waitRefreshAddr 是否为 0 或与 record 本轮 AllocExpandingPoolEvent 地址不一致
+  fix: issue 建议 wait entry 取 producer 本轮即将写入的地址（PrepareExternalWaitsForReplay 在 record 发布后按 GetEventAddr 填充），而不是 event 的已发布历史地址；issue 已 closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: cross-model 外部事件（capture record/wait external）+ consumer 图先于 producer record 回放；Ascend910_9362 chipType=5、CANN 9.0.0、runtime 9.1.0 软件 SQ/value-wait 实现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/runtime/issues/814
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/runtime 的 graph capture 实现里，capture 阶段为 producer 的 record 与 consumer 的 wait 各建占位任务（TS_TASK_TYPE_CAPTURE_RECORD_EXTERNAL / TS_TASK_TYPE_CAPTURE_WAIT_EXTERNAL）。每次 replay 时 PrepareExternalRecordsForReplay（capture_model.cc:647）为每个 record 调 AllocExpandingPoolEvent 分配全新 event 地址并把“向该地址写 1”的 SQE 填入 record entry；PrepareExternalWaitsForReplay（:676/:689-694）再把 producer 的 event 地址写进 wait entry 并 H2D 到设备表。问题在 RetainRecordedEventForExternalWait（capture_model.cc:45）：先 *eventAddr = 0U，只有在 addr 非空、eventId 有效、event->HasRecord() 且 !HasReset() 时才回填 RtPtrToValue(addr)。当 consumer 图先于 producer record 执行，HasRecord()==false，eventAddr 保持 0，wait entry 被写成 0，设备 wait 任务在 waitRefreshAddr 处解引用 0 / 等待永不到来 → rtModelExecute 挂死。即使 producer 上一轮 record 过，HasRecord()==true 写进去的也是上一轮的过期地址，而本轮 record 会用 AllocExpandingPoolEvent 分配新地址，旧地址不再被写，同样挂死。根因是 wait 地址取自 event 的“已发布历史地址”而非“本轮 producer 将写入的地址”。环境为 Ascend910_9362（chipType=5）、CANN 9.0.0、runtime 源码 9.1.0、software_sq_enable 的 value-wait 实现。
+  source: 2026-08-11 GitCode cann/runtime issue https://gitcode.com/cann/runtime/issues/814 （closed）
+  behavior: 开了 cross-model 外部事件同步的模型回放时，某次 rtModelExecute 直接不返回：进程不崩、不报错，设备侧的 wait 任务一直在等一个地址上的 1，日志停在 model execute 前后；把 producer/consumer 的执行顺序换一下或换机器时序就恢复，表现为偶发挂死。
+  trigger_surface: cross-model external wait（capture wait external）+ consumer 图先于 producer record 执行 / producer 每轮重新分配 event 地址
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

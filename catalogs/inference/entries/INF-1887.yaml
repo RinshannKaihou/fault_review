@@ -1,0 +1,61 @@
+id: INF-1887
+legacy_ids: []
+slug: msprobe_inplace_module_dump_input_overwritten
+aliases: []
+title: inplace Module 的输入在 dump 时已被就地改写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: L0+tensor dump 输入快照
+  behavior: 对 inplace Module（如 nn.ReLU(inplace=True)）采集时，保存 input 的时刻晚于算子就地改写，input 与 output 落盘成同一份数据，比对显示零差异
+effect:
+  objects:
+  - 指标/日志
+  - 测试判定
+  detail: nn.ReLU(inplace=True) 的 input 落盘已是 ReLU 后的值，与 output 相同；换 non-inplace ReLU 时 input/output 分属两个地址、与日志一致
+  visibility: 静默错误
+mitigation:
+  detect: 怀疑漏检时先看目标 Module 是否 inplace；对比 dump 里 input 与 output 的数值/内存地址，或临时换 non-inplace 版本重采
+  fix: 未修复（issue 已关闭，未核实）；规避：对 inplace Module 改用 non-inplace 副本采集，或在 forward 前自行保存输入
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: msprobe 26.0.0a2 + L0+tensor 级采集 + inplace Module（nn.ReLU(inplace=True) 等）；torch 2.10.0，H20
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/195
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 用 msprobe 对 nn.ReLU(inplace=True) 做 L0+tensor 级精度数据采集时，保存下来的 Module input 和 output 一模一样。运行日志里 relu 前后的张量并不相同：输入是 [[0.4793,-0.2864,0.6908,-0.0297],[0.0618,0.4141,-0.4794,0.3370]]，输出是 [[0.4793,0,0.6908,0],[0.0618,0.4141,0,0.3370]]；但 dump 里 input 与 output 都是后者，且两者 data_ptr 相同。对照实验：把 nn.ReLU 换成 non-inplace 版本，input 与 output 分属两个地址、数据与日志一一对应，dump 也就正确。结论是工具在 inplace 算子上保存输入的时刻晚于就地改写——它在 hook 的返回阶段才把 input 张量写到磁盘，此时底层存储已经被算子改写，无法还原现场数据。后果是 inplace 激活/残差类 Module 的输入差异被完全抹平，比对结果显示 input 与 output 零差异、或该 Module 的输入侧差异永远查不出来。
+  source: '2026 GitCode Ascend/msprobe issue #195 https://gitcode.com/Ascend/msprobe/issues/195（closed；mindstudio-probe 26.0.0a2，torch 2.10.0，H20）'
+  behavior: 对带 inplace 的 Module（最典型是 nn.ReLU(inplace=True)）采精度数据后，发现 dump 里这个 Module 的输入和输出一模一样，而运行日志打印的输入明显还有负值；换 non-inplace 版本采集就正常。于是这种 Module 的输入侧异常在比对里永远看不到，或者被误判成「该层没问题」。
+  trigger_surface: msprobe L0+tensor 采集 + inplace Module（ReLU/激活、inplace add 等）；non-inplace 版本不复现
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 测试判定
+        to: 指标/日志
+    uncertain:
+    - behavior

@@ -1,0 +1,60 @@
+id: INF-1867
+legacy_ids: []
+slug: ge_resnet50_sample_top5_tie_map_key_collision
+aliases: []
+title: ResNet50 样例并列分数丢类别仍报 PASSED
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: acl ResNet50 样例 top-k
+  behavior: 两个 ResNet50 样例用 std::map<float,unsigned,greater<>> 存「分数→类别」，map 的 key 唯一，相同分数覆盖先前类别，Top-5 可能不足 5 项。
+effect:
+  objects:
+  - 输出内容
+  - 测试判定
+  detail: 并列 logits 的模型上固定/动态 Batch 样例各跑 3 次都只打印一至两条 top（期望 5 条，保留最后写入的类别 999），末尾仍输出 SAMPLE PASSED；真实 ResNet50 固定/动态对照均打印完整 Top-5。
+  visibility: 静默错误
+mitigation:
+  detect: 用输出全同值（或大量并列）的模型跑样例，数 top 行数是否为 5；真实 ResNet50 输出没有并列，正常用例看不出问题。
+  fix: 待定（issue closed，未给 MR）：改 std::multimap 并用 emplace(score,index) 插入，保留并列类别。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: cann/ge examples/acl/1_sample_resnet50_* 与 2_sample_resnet50_*_dynamic_batch + 模型输出存在并列分数
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 缺陷在样例的结果后处理而非算子/运行时；影响是分类结果少项 + SAMPLE PASSED 假通过，故归观测/评测并同时记「输出内容」「测试判定」。
+evidence:
+- url: https://gitcode.com/cann/ge/issues/548
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ge issue 548（closed）：examples/acl/1_sample_resnet50_imagenet_classification/src/sample_resnet50_imagenet_classification.cpp 与 examples/acl/2_sample_resnet50_imagenet_classification_dynamic_batch/src/sample_resnet50_imagenet_classification_dynamic_batch.cpp 都用 std::map<float, unsigned int, std::greater<...>> 保存「分数→类别」，靠 map 天然有序取 Top-5；但 std::map 的 key 唯一，相同 float 分数会覆盖先前写入的类别，Top-5 因此可能不足 5 项，而主流程仍然打印 SAMPLE PASSED。作者在 develop 405718278a9ac91ca920017f39fb35cca330746e、CANN 9.0.0、Ascend910B4（ATC soc_version=Ascend910B3）上构造保持真实输入依赖的并列输出模型（ReduceMean→Flatten→与 [1,1000] 全零张量 Add，输出 shape [batch,1000]、1000 个值相同但随图片变化，opset 11/IR 8），固定与动态 Batch 的 atc 转换均返回 0 并成功；把 OM 放回样例路径运行，固定与动态样例各 3 次都只打印一至两条 top、保留最后写入的类别 999，两个不同值证明输出确实依赖输入，末尾仍 SAMPLE PASSED；真实 ResNet50 固定/动态对照均打印完整 Top-5（dog1 Top-1=162、dog2 Top-1=267）。建议最小修复为 std::multimap + emplace(score, index)。
+  source: GitCode cann/ge issue https://gitcode.com/cann/ge/issues/548 （closed）
+  behavior: 样例模型输出里出现分数并列时，Top-5 结果会少几项——极端情况下只打印 1 个类别，而程序照样打印 SAMPLE PASSED，看起来任务成功；只有拿真实 ResNet50 或人工数 top 行数才能发现。因为真实网络的 logits 几乎不会并列，日常跑样例永远碰不到，但任何把该样例当精度/功能验证模板复用的场景都会把「结果不完整」判成通过。
+  trigger_surface: ResNet50 分类样例（固定/动态 Batch）+ 输出存在并列分数
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+    - effect

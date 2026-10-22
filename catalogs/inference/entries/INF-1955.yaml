@@ -1,0 +1,51 @@
+id: INF-1955
+legacy_ids: []
+slug: streaming_toolcall_args_truncated_to_brace
+aliases: []
+title: 流式 tool call 只吐出收尾括号，参数全丢
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: 流式 tool call 参数增量
+  behavior: 流式增量解析只把参数尾部（引号加右括号）写进 arguments，长字符串参数主体没有流出；同请求非流式参数完整。
+effect:
+  objects:
+  - 输出内容
+  detail: GLM-5-w4a8 43510 token 请求：非流式 arguments 是完整 todos 列表，流式只剩 "\"}"，工具调用被判无效；finish_reason=tool_calls。
+  visibility: 静默错误
+mitigation:
+  detect: 同一请求分别用 stream=true/false 调用，逐字段比对 tool_calls[].function.arguments 长度与 JSON 可解析性
+  fix: 待定（issue open，评论已定位到流式增量拼接，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: GLM-5-w4a8 + 流式 /v1/chat/completions + tools（参数为长 markdown 字符串）；非流式正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/7682
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #7682（2026-03-26，open）：GLM-5-w4a8 服务化后，同一份 test-todolist.json（prompt_tokens 43510）请求带工具，非流式响应里 tool_calls[0].function.arguments 是完整的 {"todos": "- [x] 分析项目结构和代码 …"}，finish_reason=tool_calls、stop_reason=154829；改成 stream=true 后 delta 里只陆续出现空 content，最后一个工具块把 arguments 拼成 "\"}" 这种只剩引号与右括号的残片，没有任何参数正文。报告者 NSDie 在评论里用表格对比两种模式的 arguments 内容确认了这一点，维护者转给 GLM parser 负责人后未给出结论。说明流式路径在按 schema/delta 增量输出参数时丢掉了长字符串参数的主体，只把收尾分隔符发了出去，而非流式一次性解析路径正常。'
+  source: 2026-03-26 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/7682 （open）
+  behavior: 接 GLM-5-w4a8 做流式工具调用时，前端看到模型先空跑一串 chunk，最后拿到一个 arguments 只有 "\"}" 的 tool_call，JSON 无法解析、工具根本没被调用；把同一个请求改成非流式，arguments 却是完整的多行 todos 列表。因为 HTTP 200、finish_reason 正常是 tool_calls，只在客户端解析工具参数时才暴露，属于典型「看起来成功、实际调用丢失」的静默错误。
+  trigger_surface: 流式 chat/completions + tools（长字符串参数）+ GLM-5-w4a8
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

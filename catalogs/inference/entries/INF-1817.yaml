@@ -1,0 +1,52 @@
+id: INF-1817
+legacy_ids: []
+slug: ascend_sleep_mode_kv_pool_tags_persistent_metadata
+aliases: []
+title: 睡眠丢弃 KV 池误删常驻元数据致唤醒后错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NPUWorker kv_cache 内存池
+  behavior: initialize_kv_cache 整段被包进可丢弃 kv_cache 池，attention metadata、block table 与 graph 常量继承 kv_cache 标签，level-1 sleep 释放存储、地址不变。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 唤醒后 ACL graph 仍指向已回收复用的地址，post_kv_cache_wake_up 重建存储又替换了 graph 已捕获的份；公开 sleep/wake 接口无任何异常，继续推理的结果已错。
+  visibility: 静默错误
+mitigation:
+  detect: sleep→wake_up 后与未睡眠实例比对同 prompt 输出；核对 kv_cache 标签覆盖的张量是否只含 backing KV 页
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/16096 （issue 已 closed，未核实是否已合入发布）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 'Ascend NPU（MRV1/MRV2/310P/Xlite）+ --enable-sleep-mode，level-1 sleep 后唤醒继续推理才暴露；上游 vLLM #53508/#53343 已改为只包 backing KV 分配'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17760
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #17760，涉及 MRV1/MRV2/310P/Xlite 的 NPU sleep/wake（--enable-sleep-mode）。NPUWorker.initialize_from_config() 目前把整个 initialize_kv_cache() 调用放进可丢弃的 kv_cache CaMemAllocator 池，于是必须在 sleep/wake 之间常驻的张量——attention metadata builder、block table、connector state、graph-safe 常量、DSA Hadamard buffer——都继承了 kv_cache 标签。level-1 sleep 丢弃这些张量的存储却保留原虚拟地址，针对这些地址捕获的 ACL graph 在唤醒后看到已释放/被复用的内存；在 post_kv_cache_wake_up() 里重建这些张量又会替换掉 graph 已捕获的存储。复现方式即让整个 initialize_kv_cache 进入 discardable kv_cache 池；上游 vLLM #53508/#53343 已把池传进 initialize_kv_cache 且只包住 backing KV 分配，期望只有 backing KV 页带 kv_cache 标签、常驻元数据保留、post_kv_cache_wake_up 不再替换 graph 捕获的存储。'
+  source: 2026-09-29 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17760 （closed）
+  behavior: 开启 --enable-sleep-mode 的服务在 level-1 sleep 再 wake_up 之后，公开的 sleep/wake API 看起来完全正常、不报错，但后续请求结果已经错了：被丢弃又重建的常驻元数据与 ACL graph 捕获时绑定的地址不一致，graph 继续读写被回收复用的显存。KV 块表、attention metadata 这类东西一错不会抛异常，只会让后面的注意力算在错误的块上。只有在唤醒后继续推理、与从未睡眠的实例比对同一 prompt 输出才能发现。
+  trigger_surface: --enable-sleep-mode + level-1 sleep/wake_up 后继续推理（MRV1/MRV2/310P/Xlite）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

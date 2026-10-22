@@ -1,0 +1,57 @@
+id: INF-1583
+legacy_ids: []
+slug: hccl_nhr_broadcast_batchsr_tx_dst_slices_self
+aliases: []
+title: NHR broadcast 跨服务器 TX 目标片误指本地
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: 通用
+    component: Broadcast NHR BatchSR 模板
+  behavior: BatchSR 构造 TX 侧 SlicesList 时把 txSrcSlices 同时当作 src 与 dst、丢弃 txDstSlices，SendRecvWrite 把数据写回本地 buffer，远端目标 buffer 从未被写。
+effect:
+  objects:
+  - 数值结果
+  detail: 跨服务器拓扑下用 NHR 算法执行 broadcast 或 allgather 时，部分非 root rank 拿到本地 buffer 旧值/未初始化值，而非 root 广播内容；接口返回成功、无错误日志，单机/单服务器测试正常，逐 rank 对比才发现。
+  visibility: 静默错误
+mitigation:
+  detect: 多服务器 NHR 拓扑下 broadcast 后逐 rank 与 root 源 buffer 比对；单服务器用例覆盖不到
+  fix: issue 给出单行修复：ins_temp_broadcast_nhr.cc:419 改为 SlicesList txSlicesList(txSrcSlices, txDstSlices)；issue 已 closed，合入版本与发布状态未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: HCCL_ALGO_TYPE_NHR + cross-server 拓扑下的 broadcast/allgather；自初始 commit 8cfd9951 起存在；纯静态分析定位，未在 NPU 上执行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/315
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hccl 的 src/ops/broadcast/template/aicpu/ins_temp_broadcast_nhr.cc 中，BatchSR() 同时做 TX 侧 Send 与 RX 侧 Recv，TX 侧本应构建两组 DataSlice：txSrcSlices 指向本地 buffer（读）、txDstSlices 指向远端 buffer（写）。第 419 行构造 SlicesList 时写成 SlicesList txSlicesList(txSrcSlices, txSrcSlices)，第二个参数取了源片而不是 txDstSlices，于是底层 SendRecvWrite/SendRecvRead 把数据写回本地地址，remoteSendBuffAddr 指向的远端 buffer 从未被写。issue 用同函数相邻构造对照（:296 RunAllGather、:350 BatchSend、:382 BatchRecv、:431 BatchSR 的 RX 侧均传 dst 侧 slice）证明这是单点复制粘贴错误，并追溯到 8cfd9951（2026-02-12）首次提交即存在。修复为第 419 行传 txDstSlices。
+  source: 2026-07-21 GitCode cann/hccl issue https://gitcode.com/cann/hccl/issues/315 （closed）
+  behavior: 多服务器环境下用 NHR 算法做 broadcast（或 allgather）时，部分非 root 的 rank 拿到的数据不是 root 广播的内容，而是本地 buffer 的旧值/未初始化值；接口返回成功、没有任何错误日志，只有在跨服务器拓扑上逐 rank 对比结果才会发现，单服务器或单机多卡测试完全正常。
+  trigger_surface: HCCL_ALGO_TYPE_NHR + HCCL_CMD_BROADCAST/HCCL_CMD_ALLGATHER + 跨服务器（server boundary crossing）拓扑
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

@@ -1,0 +1,59 @@
+id: INF-2016
+legacy_ids: []
+slug: hcomm_socket_agent_recvmsg_no_capacity_check
+aliases: []
+title: SocketAgent::RecvMsg 无容量校验致栈缓冲区溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: SocketAgent::RecvMsg
+  behavior: RecvMsg 只把对端声明的 revMsgLen 与协议上限 MAX_BUFFER_LEN（100MB）比较，接口没有目标缓冲区容量参数，随后按该长度把数据直接写入调用方传入的 msg
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: RecvRemoteAgentId 的 256 字节栈数组、RecvRemoteRankSize 的 4 字节 u32 都会被对端声明长度写穿（上限 100MB）；长度检查写在拷贝之后或完全没有，进程可能崩溃或带着被覆写的栈继续通信
+  visibility: 报错
+mitigation:
+  detect: 对 SocketAgent::RecvMsg 的调用点做容量审计（msg 容量 vs revMsgLen），用超长报文注入测试（对端声明 256B/4B 以上长度）观察栈是否被写穿
+  fix: issue 给出修复方向（增加容量参数、拷贝前校验、把 100MB 上限换成目标缓冲区大小）；未见 MR，未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 需对端（或异常报文）声明超过本端缓冲区容量的长度；同版本集群正常通信不易命中，rank 探测阶段最直接
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/932
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hcomm 的 socket_agent.cc:36-52 中 RecvMsg(void* msg, u64& revMsgLen) 先从 socket 接收由对端给出的 revMsgLen，唯一校验是 revMsgLen==0 或 > MAX_BUFFER_LEN（root_handle_v2.h:32，100MB），与调用方实际缓冲区大小无关，随后 socket_->Recv(msg, revMsgLen) 按对端声明长度直写。两个触发点：rank_info_detect_service.cc:190-203 用 char msg[MAX_AGENT_BUF_SIZE]（256 字节）接收，revMsgLen>=256 的检查写在 RecvMsg 返回之后，溢出已经发生；210-221 行 RecvRemoteRankSize 把 &rankSize（4 字节 u32，栈局部）传进去且没有任何长度检查，而协议上限允许 100MB。调用链经 Socket::Recv → HrtRaSocketBlockRecv 按 size 循环填满。
+  source: '2026-09-17 GitCode cann/hcomm issue #932（closed）。https://gitcode.com/cann/hcomm/issues/932'
+  behavior: rank 探测阶段若对端声明一个大于本端缓冲区的报文长度，本端会把多出来的字节直接写进 256 字节栈数组或 4 字节 u32 之后的栈内存；过程不返回错误（recv 本身成功），表现为进程莫名崩溃、栈上变量被改写，或带着已损坏的状态继续建链，事后很难归因到通信库。
+  trigger_surface: hcomm SocketAgent::RecvMsg 的 rank_info_detect 调用点（RecvRemoteAgentId / RecvRemoteRankSize）；对端声明长度超过本端缓冲区
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错

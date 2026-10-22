@@ -1,0 +1,56 @@
+id: INF-1998
+legacy_ids: []
+slug: ops_nn_fake_quant_cachemask_copyout_overrun
+aliases: []
+title: fake_quant 对齐 CopyOut 写穿通道边界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: fake_quant 对齐 CopyOut
+  behavior: tiling 把 calcLength 按 32B 上对齐成 totalLengthAligned；整除 tileLength 时整 tile 按 tileLength 做 CopyOut，越过本通道 calcLength 写后续内存
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3 + CANN 9.1.0-beta.3：out[0]=7.0 正确，但尾后 canary 由 123456 变 0.0、mask 由 0xAB 变 0；多通道时污染下一通道，接口仍返回 SUCCESS
+  visibility: 静默错误
+mitigation:
+  detect: 输出与 mask 尾部预填 canary（123456 / 0xAB），numel 取 32B 对齐且整除 tileLength 的长度跑 aclnnFakeQuantPerChannelAffineCachemask
+  fix: 待定（issue closed，未见 MR）：CopyOut 长度按 min(tileLength, calcLength-offset) 裁剪，多通道按通道边界分别封口
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 910B 非 regbase 路径 + CANN 9.1.0-beta.3 + numel 32B 对齐且整除 tileLength 的合法 shape
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4520
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4520（2026-08-03，closed）：Ascend910B3 + CANN 9.1.0-beta.3、ops-nn HEAD e16ef626bb3a，算子 quant/fake_quant_affine_cachemask 的 910B 非 regbase 路径。op_host tiling 先按 32B 上对齐得到 totalLengthAligned，kernel 的全 tile 循环统一用 CopyOut(..., tileLength)；当 totalLengthAligned 恰好整除 tileLength 时最后一块仍按 tileLength 写出，越过本通道 calcLength，落到下一通道或张量尾后 pad。作者用 build.sh 编包装进独立 vendor 后跑 aclnnFakeQuantPerChannelAffineCachemask，out[0]=7.0 符合预期，但尾后 canary 由 123456 变 0.0、mask 由 0xAB 变 0，进程退出码 42（BUG_REPRODUCED）。
+  source: 2026-08-03 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4520 （closed）
+  behavior: 做 w8a8 伪量化校准或逐通道仿射量化时，输出张量与 mask 的尾部几个元素被写成 0，多通道输入下上一通道会覆盖下一通道开头；单点比对和常规精度跑都看不出来，接口返回 SUCCESS 无告警，被污染的尾部随量化参数、mask 判定继续往下游传。
+  trigger_surface: aclnnFakeQuantPerChannelAffineCachemask + 910B 非 regbase + numel 32B 对齐且整除 tileLength
+  discovery: 2026-10-21 系统扫描 sweep_5（顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

@@ -1,0 +1,51 @@
+id: INF-1989
+legacy_ids: []
+slug: ops_math_clip_by_value_golden_bf16_dtype
+aliases: []
+title: clip_by_value 参考实现 BF16 返回 float32
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: clip_by_value_v2 golden
+  behavior: golden.py 先把输入提升为 float32，再用已被覆盖的 x.dtype 判断要不要转回 BF16，判断恒为假，BF16 用例的参考输出变成 float32
+effect:
+  objects:
+  - 测试判定
+  detail: ST CSV 中 16 条 BF16 输入/输出用例拿到 float32 参考值；dtype 比对与容差判据都被削弱，算子输出类型错也可能通过
+  visibility: 静默错误
+mitigation:
+  detect: 在 golden 回归里断言返回 dtype 与算子 def 声明的输出 dtype 一致；对 BF16 用例单独检查 y.dtype 而不是只看数值
+  fix: issue 建议保存转换前的 BF16 标记并在计算后转回 BF16，同时补 dtype 断言回归（closed，未核实是否已合入）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: cann/ops-math commit 77f7e4c，conversion/clip_by_value_v2，BF16 ST 用例；CANN Toolkit 未安装，只用 Python golden 复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3363
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math issue #3363 指出 conversion/clip_by_value_v2/tests/assets/golden.py 的 clip_by_value_v2_golden 在 BF16 输入时先把 x、clip_value_min、clip_value_max 转成 float32，之后又用已经转换过的 x.dtype 判断是否需要把结果转回 BF16——该判断恒为假，函数实际返回 float32。算子注册定义（op_host/clip_by_value_v2_def.cpp:35-38）把 y 声明为与输入同 dtype，tests/st/arch35/ttk_kernel_clip_by_value_v2_st.csv 第 2、3、16-29 行有 16 条 BF16 输入、BF16 输出记录。作者在本机以 ml_dtypes.bfloat16 构造 x=[-3,0,3]、clip 到 [-1,1]，实测 input dtype bfloat16、output dtype float32、数值 [-1,0,1]，据此认定这 16 条用例的参考输出类型错了。仓库 commit 77f7e4c2286fb5a6c5f473f6df25b07236fe49d7。'
+  source: 2026-09-29 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3363 （closed）
+  behavior: 算子的 ST 用例看上去全绿，但参考值本身是 float32：BF16 输出若被写成 float32，或用 float32 容差去比，测试都不会报错；下游看到的“已验证”并不能说明 BF16 路径的 dtype 行为正确。
+  trigger_surface: BF16 输入的 clip_by_value_v2 ST 用例；使用该 golden 做精度比对或回归的 CI
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

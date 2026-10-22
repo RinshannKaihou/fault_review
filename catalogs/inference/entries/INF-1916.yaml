@@ -1,0 +1,61 @@
+id: INF-1916
+legacy_ids: []
+slug: vllm_ascend_qwen3_reasoning_parser_thinking_budget_noop
+aliases: []
+title: qwen3 parser 不计数致 thinking 预算静默失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: qwen3 reasoning parser
+  behavior: Ascend 后端配置 --reasoning-parser qwen3 且请求带 thinking_token_budget 时，不累加 reasoning token，预算耗尽截断/注入 </think> 路径未激活
+effect:
+  objects:
+  - 输出内容
+  - 性能/资源
+  detail: budget 设 10/50/200 与不设时 reasoning 长度内容完全一致（700+ token），completion_tokens_details 为 null 或 reasoning_tokens=0；无报错，成本按 max_tokens 放大
+  visibility: 静默错误
+mitigation:
+  detect: 用 /v1/chat/completions 发 thinking_token_budget=50，量 reasoning 字段 token 数与 completion_tokens_details.reasoning_tokens；再用 /v1/completions 直连确认模型原始输出里确实有 <think> 标记
+  fix: issue open，无修复 PR；需让 Ascend 侧 parser 真正接管预算计数与截断（或在 parser 未生效时显式报错/告警）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.23.0rc1 / 0.21.0 + Qwen3.6-27B-w8a8 + --reasoning-parser qwen3 + thinking_token_budget
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13060
+  kind: github_issue
+relations: []
+original:
+  mechanism: '在 Ascend 后端上 --reasoning-parser qwen3 只是被加载，实际的 thinking token 计数与"预算耗尽时强制截断/注入 </think>"这条路径从未被激活：parser 不累加 reasoning token 数，因此 budget 判断永不成立，模型的 <think>…</think> 段落完整吐完才结束。报告用 /v1/completions 绕过 chat template 直连，确认模型原始输出里确实有 <think> / </think> 标记，所以不是模型不按格式生成；budget 设 10、50、200 和不设，reasoning 长度与内容完全一致，completion_tokens_details 在 v0.23 为 null、在 v0.21 为 reasoning_tokens: 0。移除 --speculative-config 后仍复现，v0.21.0 与 v0.23.0rc1 都能复现，模型架构被解析成 Qwen3_5ForConditionalGeneration。'
+  source: 2026-07-29 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13060 （open）
+  behavior: 用户设置 thinking_token_budget=50 想让模型少想一点，实际拿到 700 多 token 的完整推理过程，reasoning 字段一个字都没截；reasoning_tokens 统计要么是 null 要么是 0，监控上完全看不出预算没生效。没有报错、没有告警，只有账单和延迟按 max_tokens 上限付。对按 token 计费或对首字延迟敏感的服务是直接成本损失。
+  trigger_surface: Ascend 后端 + --reasoning-parser qwen3 + 请求里的 thinking_token_budget（配合 enable_thinking=true）
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 性能/资源
+        to: 输出内容
+    rewritten:
+    - behavior

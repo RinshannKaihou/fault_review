@@ -1,0 +1,68 @@
+id: INF-1409
+legacy_ids: []
+slug: vllm_fast_prefill_prompt_logprobs0_bypass
+aliases: []
+title: vLLM fast-prefill 漏拦 prompt_logprobs=0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: fast-prefill 请求准入校验
+  behavior: fast-prefill 禁用 prompt logprobs 的守卫只检查 truthy，prompt_logprobs=0 合法值绕过，V2 继续输出错误 prompt logprob，V1 命中断言崩溃
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: V2（CUDA 默认）HTTP 200 返回偏离数十 nat 的错误 prompt logprob，无提示；V1 EngineCore 死亡、所有客户端失去服务；echo=true 路由隐式继承同样绕过
+  visibility: 静默错误
+mitigation:
+  detect: 同模型双服务器（带/不带 --kv-sharing-fast-prefill）对照 prompt logprob
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: --kv-sharing-fast-prefill + prompt_logprobs=0 或 /v1/completions echo=true logprobs=0 / chat echo=true（top_logprobs 默认 0 继承）；gemma-4-E2B-it 实测
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62122
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.31.0 的 --kv-sharing-fast-prefill 文档声明不能提供 prompt logprobs，AsyncLLM.add_request（vllm/v1/engine/async_llm.py）以 `params.prompt_logprobs` truthy 判断拒绝；但 prompt_logprobs=0 是合法值（只要该 token 自身 logprob、无备选），为 falsy 直接放行。隐式设置该值的三条路由同样绕过：/v1/completions echo=true+logprobs=0；/v1/chat/completions echo=true（top_logprobs 默认 0 被继承为 prompt_logprobs）；/v1/chat/completions 显式 prompt_logprobs=0。后果按 runner 分裂：V2 model runner（CUDA 默认）HTTP 200 且每个 prompt logprob 错误（偏离数十 nat，响应无任何标记）；V1 runner（VLLM_USE_V2_MODEL_RUNNER=0）命中 gpu_model_runner.py 的兜底 `assert not self.num_prompt_logprobs`，EngineCore 死亡、/health 503 全体客户端受害。prompt_logprobs=1 两个 runner 都正确 400 拒绝。复现：gemma-4-E2B-it 双服务器 48GB 单卡对照，stdlib 复现脚本 attached。
+  source: 2026-10-17 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62122（open，0 评论）
+  behavior: 带 --kv-sharing-fast-prefill 启动服务后，请求 prompt_logprobs=0（或 completions echo=true、chat echo=true 隐式路径）时：默认 V2 runner 返回 HTTP 200，但响应里每个 prompt token 的 logprob 值错得离谱（与不带该 flag 的同模型服务器相比偏差数十 nat），响应中没有任何提示；V1 runner 则直接 EngineCore 崩溃 500，整个服务 /health 503 不可用。需要 prompt logprob 质量的下游（评分、蒸馏数据、排序）会拿到静默错值。
+  trigger_surface: --kv-sharing-fast-prefill + (prompt_logprobs=0 | completions echo=true+logprobs=0 | chat echo=true)；V1/V2 runner 后果不同
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - detail
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

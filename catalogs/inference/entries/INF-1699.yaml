@@ -1,0 +1,58 @@
+id: INF-1699
+legacy_ids: []
+slug: mhc_pre_sinkhorn_backward_output_never_written
+aliases: []
+title: MhcPreSinkhornBackward 输出 grad_x 全程未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: MhcPreSinkhornBackward
+  behavior: kernel 未执行 grad_x 写路径：initcheck 事件流显示输出 buffer MALLOC 后零写、无 MMAD、无 UB 到 GM 写指令，仅 host LOAD 读，输出保持未初始化值。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 调用成功且无报错，grad_x 全 0；example 不校验输出，训练中该路梯度恒为 0、参数不更新。不开 sanitizer 同样全 0；开 initcheck 或加非零断言可发现未写输出。
+  visibility: 静默错误
+mitigation:
+  detect: 开启 sanitizer 插桩跑 mssanitizer -t initcheck，逐算子核对输出 buffer 是否有写者；对输出加非零断言
+  fix: 待定（issue 建议算子侧排查 grad_x 输出路径为何未执行，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 仅 ascend950（arch35 apt 模板）上该 kernel 的输出路径不执行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5140
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5140（2026-09-09 closed，昇腾950PR，CANN 9.1.0，mssanitizer 26.0.0 / CANN 730 的 initcheck）：该 issue 汇总一批算子初始化检测结果并对每条告警定性。其中 MhcPreSinkhornBackward（编号 65）为确认的算子侧真缺陷：grad_x 输出 buffer 在 MALLOC 之后全程零写，事件级证据显示 kernel 事件流里没有 MMAD、也没有任何 UB 到 GM 的写指令，只有 host 侧 LOAD 读取该 buffer，grad_x 因而保持未初始化值（实测输出全 0）；不开 sanitizer 的普通版本跑同样输出全 0，说明不是工具插桩副作用。同批另有多条 host 只 MALLOC+STORE 部分字节导致 kernel 读未初始化 offset（如 GroupedMatmul 的 scaleBGlobal_）、算子读自身 workspace 未初始化区（MoeTokenPermuteWithRoutingMap 的 mask 区，workspace 清零后输出逐位一致，当前无害）、GroupedMatmulSwigluQuantV2 的 x2Scale 越出 host 提供区等，均已在 issue 中分类型定性。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5140 （closed）
+  behavior: 调用成功、无任何报错，但 grad_x 全是 0：example 不做输出校验所以看不出异常，接到训练里表现为该路梯度恒为 0、参数不 update；只有开 sanitizer 插桩（initcheck）或对输出加非零断言才能发现 kernel 压根没写这块输出。
+  trigger_surface: ascend950（arch35）编译的 MhcPreSinkhornBackward，用 mssanitizer initcheck 或输出非零断言即可复现
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度
+    rewritten:
+    - detail

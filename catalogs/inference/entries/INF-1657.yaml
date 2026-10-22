@@ -1,0 +1,58 @@
+id: INF-1657
+legacy_ids: []
+slug: ops_nn_index_empty_self_leaves_out_uninitialized
+aliases: []
+title: aclnnIndex 空 self 早退致非空 out 未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: 空张量早退缺输出回填
+  behavior: aclnn_index.cpp:544-549 在 self 空、out 非空时只置 workspaceSize=0 后 return ACLNN_SUCCESS；全文件无 Fill/ViewCopy 回填，输出 GM 不被触碰。
+effect:
+  objects:
+  - 数值结果
+  detail: 910_93、CANN 9.2.0：out 预置 NaN 或 12345 后调用，ret=0、workspaceSize=0，24/24 元素原样返回；非空 self 对照正常写入且 workspaceSize 非 0。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前把 out 预置哨兵值，调用后读回比对；同时看 workspaceSize 是否为 0（为 0 说明图里没有算子）。
+  fix: issue 6304 closed；建议对齐 ops-cv roi_align 样板（l0op::Fill 填 0 + ViewCopy 回 out）或显式报错拒绝该组合；未给修复 PR。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: partial
+  trigger_note: Ascend910_93 + CANN 9.2.0 + aclnnIndex 两段式直调 + self 为空（[0,4]）且 out 非空（[2,3,4]）
+  confidence: documented
+remarks: 与 INF-1478（aclnnDynamicQuant 空 x 早退不写非空 scaleOut）同为“空输入早退分支缺输出回填”，故挂 var；本条另有同仓 roi_align 正确样板对照，可判定为漏写而非设计。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6304
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1478
+pattern: PAT-INF-0179
+original:
+  mechanism: cann/ops-nn issue 6304（2026-09-29，closed）：环境 Ascend910_93、CANN 9.2.0、代码基线 ops-nn master（2026-09-29），C 直调 aclnn 两段式接口。index/index/op_api/aclnn_index.cpp:544-549 写的是 bool selfOrOutIsEmpty = self->IsEmpty() || out->IsEmpty(); if (selfOrOutIsEmpty) { *workspaceSize = 0; uniqueExecutor.ReleaseTo(executor); return ACLNN_SUCCESS; }——该分支只设 workspaceSize=0 后返回，全文件没有任何针对输出的 l0op::Fill / ZerosLike / ViewCopy；workspaceSize=0 即“图里没有算子”，调用方拿到的是 out 的未初始化 GM 残留（NaN 或上次调用的历史数据）。同仓正确样板 ops-cv objdetect/roi_align/op_api/aclnn_roi_align.cpp 在空张量早退时 l0op::Fill 填 0（L164/L169）→ l0op::ViewCopy 拷回 out（L194）→ workspaceSize 非 0（L197），写法差异明显，可判定为漏写。L543 注释称“空 tensor 在 kernel 中支持”，但实现随即早退、并不进 kernel，注释与实现矛盾。实测：self FLOAT[0,4]、indices INT64[2,3]、out FLOAT[2,3,4]，预置 NaN（aclrtMemset 0xFF）或哨兵 12345.0 后调用，ret=0、workspaceSize=0，24/24 元素保持不变；非空 self 对照 ret=0、workspaceSize=16777728、输出 0..3 正常。
+  source: 2026-09-29 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6304 （closed）
+  behavior: 用 aclnnIndex 做 index 取数时，如果 self 是空张量而调用方给的 out 非空，接口返回成功、workspaceSize 为 0，可 out 里一个字节都没被写过：预置 NaN 就原样读到 NaN，预置任意哨兵值就原样读到哨兵值。调用方无法从返回值区分“算完了”和“根本没算”，把未初始化显存当结果继续往下传。
+  trigger_surface: aclnnIndex 两段式接口 + self 为空张量（首维 0）+ out 非空；Ascend910_93、CANN 9.2.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

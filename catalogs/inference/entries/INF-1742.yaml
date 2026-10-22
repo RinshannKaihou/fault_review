@@ -1,0 +1,51 @@
+id: INF-1742
+legacy_ids: []
+slug: te_fused_reduction_index_split_wrong_address
+aliases: []
+title: 融合归约 kernel 轴索引拆分不全致 layer_norm 读错地址
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: TE 融合归约 load 地址 codegen
+  behavior: triton_experimental 把视图链与 layer_norm 融成一个归约 kernel，第三遍 normalize 的 load 地址残留未拆净的 // 与 % 复合式，把 batch 位混进空间位。
+effect:
+  objects:
+  - 数值结果
+  detail: 最小片段 max|d|=1.105e+01（fp32 应约 1.9e-06）；timm mobilevit_s bs=128 推理以 fp64 金标 tol=0.001 判定 fail_accuracy，max_abs=0.2739。
+  visibility: 静默错误
+mitigation:
+  detect: 对「多步 reshape/transpose 视图链 + 逐元素加 + layer_norm」构图，比较 compiled 与 eager 的 max|d|；TORCH_COMPILE_DEBUG=1 取 output_code.py 检查同一输入三遍 load 的地址表达式是否一致
+  fix: 待定（issue closed，正文未给修复 PR）；方向：融合轴上把 // % 残式化简到与首两遍一致，或在索引层保留 2D 归约形态
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: npu_backend=triton_experimental + 多级 reshape/transpose 视图链与 layer_norm 融合；910B2 / CANN 9.1.0-beta.1 / torch 2.13.0 / triton-ascend 3.2.2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4307
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4307（2026-08-23，closed，Ubuntu 22.04 aarch64 / 910B2 / CANN 9.1.0-beta.1 / torch 2.13.0+cpu / torch_npu 2.13.0 源码 master c8ec201682 / triton-ascend 3.2.2）：torch.compile(npu_backend=triton_experimental) 编译「多步 reshape/transpose 视图链 + 逐元素加 + layer_norm」时，融合归约 kernel 的第三遍（normalize）load 地址表达式残留编译期未拆净的 // 与 % 复合形式，且与正确地址不等价——融合轴把 batch 数位错误地混入空间数位。报告附 TORCH_COMPILE_DEBUG=1 得到的 output_code.py：同一块输入三遍 load，前两遍是干净的系数多项式（x8 + 2*x6 + 32*x9 + 64*x7 + 1024*r0_2 + 147456*x5），第三遍出现 2*(((x1+4*x0)//4)%16) + 32*x9 + 64*((x1+4*x0)//64) + ... + (x1%2)。最小片段 B,C,H,W=128,144,32,32 上 max|d|=1.105e+01（期望 fp32 量级 1.9e-06）。模型级印证：timm mobilevit_s bs=128 推理经同一后端编译后社区 accuracy 流程判 fail_accuracy，fp64 金标 tol=0.001，实测 max_abs=0.2739。'
+  source: 'Ascend/pytorch #4307（2026-08-23，closed） https://gitcode.com/Ascend/pytorch/issues/4307'
+  behavior: 把 timm/mobilevit 这类带多步 reshape+transpose 再接 layer_norm 的模块交给 triton_experimental 后端编译，能编译成功、能跑完，输出 shape/dtype 都对，但数值大面积偏离 eager；换 default 后端正常。表现为模型 accuracy 流程判 fail_accuracy、下游任务指标莫名下降，单看某一行输出又「像正常数」。
+  trigger_surface: triton_experimental 后端 + 多级 view 链（reshape/transpose）与 layer_norm 融合成单个归约 kernel
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

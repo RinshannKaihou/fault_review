@@ -1,0 +1,60 @@
+id: INF-1628
+legacy_ids: []
+slug: mindformers_indexshare_key_dropped_layout_vs_megatron
+aliases: []
+title: IndexShare 旧键名静默丢弃且层布局与 Megatron 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: mindspore
+    component: ConfigConverter / DSA 层布局
+  behavior: ConfigConverter 未映射键只记 warning，dsa_index_share_size 被丢弃、topk_freq 保持 1；skip_topk_offset 用 0-indexed，Megatron 1-indexed
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 12 层 freq4 offset1：本实现 FFSSSFSSSFSS、Megatron FSSSFSSSFSSS；层数 4~78 × freq 2~8 × offset 0~5 共 175 组里 135 组逐层不同；配置照常启动、IndexShare 实际未开启且无报错
+  visibility: 静默错误
+mitigation:
+  detect: 打印实际 dsa_index_topk_freq 与每层 is_index_leader 布局，与 Megatron is_dsa_skip_topk_layer 逐层对比
+  fix: 待定（issue 关联 PR 未在正文给出；待修项：旧键映射、1-indexed offset、键名统一、num_layers 整除限制、pipeline chunk 校验、负 offset 校验）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: dsa_index_share_size / dsa_index_skip_topk_offset 等配置从 Megatron 或 GLM-5 HF config 抄来时触发；纯 CPU 可复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2594
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'IndexShare（!8785 / !8803）的布局参数在 master 上有六处问题，均为纯配置层行为，CPU 即可复现：1) 被改名的旧键名被静默丢弃——模型配置走 ConfigConverter，未映射的键只记 warning，!8803 把 dsa_index_share_size 改名后旧配置照常启动，但 dsa_index_topk_freq 保持默认 1，IndexShare 实际没开启且不报错（最小复现：DeepseekV3ConfigConverter.convert({... ''dsa_index_share_size'': 4}, is_mla_model=True) 后打印 cfg.dsa_index_topk_freq 得 1）；2) dsa_index_skip_topk_offset 与 Megatron 同值不同布局，本实现在 0-indexed 层号上直接套 max(i - offset, 0)，Megatron 的 is_dsa_skip_topk_layer 是 1-indexed 且把 offset 钳到至少 1，12 层 freq4 offset1 本实现 FFSSSFSSSFSS、Megatron FSSSFSSSFSSS，对层数 4~78、freq 2~8、offset 0~5 共 175 组逐层对比有 135 组不同（全部为 offset≠0）；3) 键名与 Megatron 不一致，Megatron main 是 dsa_indexer_topk_freq / dsa_indexer_skip_topk_offset，本仓为 dsa_index_topk_freq / dsa_index_skip_topk_offset，GLM-5 HF config 的 index_topk_freq / index_skip_topk_offset / indexer_types 也无法加载；4) num_layers 不能整除 freq 时被拒绝（18 层 freq4 报 num_layers (18) must be divisible by dsa_index_topk_freq (4)），Megatron 无此限制；5) pipeline chunk 校验比较 layers_per_chunk % 组大小而非检查分界是否落在 Full 层，12 层 freq4 offset2 pp2 的合法布局被误拒、16 层同配置的非法布局被放行；6) 负 offset 未校验（offset: -1 被误报为 ''The first DSA layer must keep its own indexer''）。验证环境 910B / MindSpore 2.10 / CANN 9.0.0 / PyNative，master @ 3780d3f57。'
+  source: 2026-09-16 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2594 （closed）
+  behavior: 把 Megatron 或 GLM-5 HF config 里的 IndexShare 字段原样搬过来，训练照样启动、不报任何错，但共享根本没开（freq 还是 1），或者只有部分层按预期共享 indexer；显存和速度看着像没开，指标上和预期差一截。同一个 offset 值在本实现与 Megatron 给出不同的 Full/Shared 层序列，pp 切分时还会出现合法布局被拒、非法布局被放行。
+  trigger_surface: 'experimental_attention_variant: dsa + IndexShare 配置（dsa_index_share_size / dsa_index_topk_freq / dsa_index_skip_topk_offset）从 Megatron 或 GLM-5 HF config 迁移'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - effect
+    - visibility

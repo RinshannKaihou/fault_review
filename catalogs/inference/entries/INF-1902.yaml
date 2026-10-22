@@ -1,0 +1,58 @@
+id: INF-1902
+legacy_ids: []
+slug: vllm_ascend_xgrammar_unbounded_array
+aliases: []
+title: xgrammar 无 maxItems 数组无限膨胀至截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: xgrammar 结构化输出
+  behavior: xgrammar 对未声明 maxItems 的 array<string> 不设上界，语法允许无限追加元素，模型持续生成直至 max_tokens，唯一项耗尽后退化为两项交替复读。
+effect:
+  objects:
+  - 输出内容
+  detail: json_schema 请求返回数百至数千个 tags 元素并以 finish_reason=length 结束；唯一项用尽后输出两项交替重复，结构化响应不可用。
+  visibility: 静默错误
+mitigation:
+  detect: 对 array<string> 且无 maxItems 的 json_schema 请求设置大 max_tokens，统计数组元素数与 finish_reason
+  fix: 上游讨论增加语法循环检测或默认上界（vllm#40099、xgrammar#688 方向，均 open）；当前仅能在 schema 中显式写 maxItems
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.24.0 nightly-main + vllm-ascend e1bd15041、Qwen3-235B-A22B w8a8、8×A3 TP8、xgrammar 后端
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13646
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM 0.24.0（vllm-ascend nightly-main commit e1bd15041）部署 Qwen3-235B-A22B-Instruct w8a8，8×Ascend 910A3、TP=8，结构化输出后端为 xgrammar。请求 response_format=json_schema，schema 含 tags: {type: array, items: {type: string}} 且未声明 maxItems。xgrammar 生成的 JSON 语法允许数组无限追加元素，也没有循环检测，模型持续输出数百至数千个元素直到 max_tokens，finish_reason=length；唯一项词表耗尽后退化为两个元素交替重复。issue 关联 vllm#40099（loop detection，open）、xgrammar#160/#802（minItems/maxItems 与 grammar runaway，同机制）、vllm#17865（仅在声明 maxItems 时生效）。'
+  source: 2026-08-05 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13646 （closed）
+  behavior: 使用 json_schema 约束输出时，只要数组字段没有 maxItems，模型就会不停生成数组元素直到 max_tokens，响应被 length 截断；元素唯一值用完后变成两项来回重复，客户端拿不到可用的结构化结果。
+  trigger_surface: xgrammar 结构化输出 + array<string> 未声明 maxItems + 较大 max_tokens
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误

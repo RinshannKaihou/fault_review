@@ -1,0 +1,56 @@
+id: INF-2083
+legacy_ids: []
+slug: addlora_y_slice_size_unsigned_and_write_oob
+aliases: []
+title: AddLora 默认 y_slice_size 被转无符号致误判与越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: AddLora tiling + kernel
+  behavior: tiling 把 y_slice_size 转 uint32_t 后比较，默认 -1 变 4294967295 判非法；y_offset 只校验 >H3_，kernel 仍按 y_offset+H2Offset 写回
+effect:
+  objects:
+  - 数值结果
+  detail: 默认 y_slice_size=-1 直接 tiling 失败；y_offset=8、H2_=H3_=16 能过校验，实际写回 [8,24) 越过 y 第二维 16 的边界
+  visibility: 静默错误
+mitigation:
+  detect: 覆盖三组参数：y_slice_size=-1；y_offset==H3_；y_offset+H2_>H3_，检查 tiling 是否拒绝以及写回范围是否越界
+  fix: issue 未附修复 PR（closed，修复状态未核实）；建议先用 int64 原始 attr 校验再转 uint32，明确 -1 语义为 H2_ 或 H3_-y_offset，并补 y_offset+effective_update_size<=H3_ 的组合校验
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend 910 / 310P + master 分支 CANN，调用 AddLora 且使用默认 y_slice_size 或 y_offset 与 H2_ 之和超过 y 第二维
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/1579
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math master 分支的 AddLora：op def 与 GE 示例里 y_slice_size 默认 -1（add_lora_def.cpp: Attr("y_slice_size").AttrType(OPTIONAL).Int(-1)，proto 与 examples/test_geir_add_lora.cpp 同为 -1），但 add_lora_tiling.cpp 里 ySliceSize_ = static_cast<uint32_t>(*ySliceSizePtr) 之后才做 OP_CHECK_IF(ySliceSize_ > H3_)，默认值被转成 4294967295 后必然判非法。边界校验同样不完整：只检查 H2_ > H3_ 与 yOffset_ > H3_，因此 y_offset==H3_ 能过，且没有 y_offset+H2_<=H3_ 或 y_offset+y_slice_size<=H3_ 的检查；而 kernel 写回地址 dstGmOffset = batchIdxOri*y_column + H2Offset + y_offset（add_lora_310.h，另有 add_lora_base.h 的 dstOffset 同样含 y_offset），最小场景 y=[1,16]、H2_=H3_=16、y_offset=8、y_slice_size=16 时写回范围 [8,24) 已越过 y.shape[1]=16。'
+  source: '2026-05-17 GitCode cann/ops-math issue #1579 https://gitcode.com/cann/ops-math/issues/1579 （closed）'
+  behavior: 按算子默认参数直接调 AddLora，tiling 就报参数非法，而文档说 -1 是默认值，看不出该填什么；自己填一个“合法”的 y_offset 和 y_slice_size，图能跑、也没有任何报错，但写回位置已经越过 y 的当前行，破坏的是相邻内存里的数据，只有在后续结果里才表现为莫名的错值。
+  trigger_surface: AddLora 单算子调用（tiling 参数校验 + kernel 越界写回），910/310P 均适用
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

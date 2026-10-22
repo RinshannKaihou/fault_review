@@ -1,0 +1,57 @@
+id: INF-2055
+legacy_ids: []
+slug: ops_nn_dynamic_block_quant_infershape_wrong_dim
+aliases: []
+title: dynamic_block_quant 形状推导读错维度索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: block_quant InferShape
+  behavior: 3 维输入分支中 dim2 = GetDim(DIGIT_ZERO)（应为 DIGIT_TWO），dim0≠第三维时 scale 第三维按 CeilDiv(dim0,colBlockSize) 算
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: 3维输入调用 aclnnDynamicBlockQuant 且 dim0≠dim2 时，接口正常返回、量化也能跑完，scale 最后一维偏小，部分 block 的 scale 无真实数据；dim0<dim2 时存在 scale 缓冲区尾部越界写风险，表现为精度异常或偶发内存破坏而非报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对 3 维输入且 dim0≠dim2 的 case 检查 InferShape 输出的 scale 形状是否为 CeilDiv(dim2,colBlockSize)；与 CPU/参考实现比对
+  fix: 待定（issue closed，未见 MR）：第 57 行 GetDim(DIGIT_ZERO) 改为 GetDim(DIGIT_TWO)
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: dynamic_block_quant + 3 维输入 + dim0≠dim2 + 列块量化路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5025
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5025（2026-08-24，closed，静态缺陷扫描，置信度 90%）：quant/dynamic_block_quant/op_host/dynamic_block_quant_infershape.cpp 的 CheckShape。第 55 行 dim0 = inputXShape->GetDim(DIGIT_ZERO) 正确取第 0 维；第 57 行 int64_t dim2 = inputXShape->GetDim(DIGIT_ZERO) 用了索引 0 而非 2，dim2 被赋成 dim0；第 79 行 scaleShape->SetDim(DIGIT_TWO, Ops::Base::CeilDiv(dim2, colBlockSize)) 因此把 scale 第三维算成 CeilDiv(dim0,colBlockSize)。只要 dim0 与真实第三维不同，scale 形状就与实际数据需求不匹配，分配尺寸偏小（dim0<dim2）时存在越界写风险。入口经 IMPL_OP_INFERSHAPE(DynamicBlockQuant).InferShape(InferShapeForDynamicBlockQuant) 注册，可达；中间无校验拦截。
+  source: 2026-08-24 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5025 （closed）
+  behavior: 对 3 维张量做动态块量化（如 [batch, seq, hidden] 且 batch 远小于 hidden）时，接口正常返回、量化也能跑完，但 scale 的最后一维明显偏小，部分 block 的 scale 没有真实数据；dim0 更小时会在 scale 缓冲区尾部越界写，表现为精度异常或偶发内存破坏而不是报错。
+  trigger_surface: aclnnDynamicBlockQuant + 3 维输入 + dim0≠dim2
+  discovery: 2026-10-21 tail_3 顺序深读（历史索引回填，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

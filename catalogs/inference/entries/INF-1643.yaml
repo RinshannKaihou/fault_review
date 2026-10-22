@@ -1,0 +1,59 @@
+id: INF-1643
+legacy_ids: []
+slug: triton_ascend_a5_2d_reduction_lane_drop_k_pow2_lt8
+aliases: []
+title: A5 二维 tile 归约在 K_POW2<8 时丢车道
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 2-D tile 归约 lowering
+  behavior: A5 上从 [TPT,K_POW2] 二维载入的张量做 tl.sum/tl.atomic_add 归约，内层 constexpr 宽度 2 或 4（<8）时只有部分车道参与；reshape 一维不修，arange 补到 8 即恢复。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: MoE 路由直方图 T=512、K=2、E=8 统计出 256 而非 1024，compute_routing_metadata 与后续 gather/scatter 跟着错，约 75% 专家前向失配；同索引走一维 flatten+atomic_add 计数正确。
+  visibility: 静默错误
+mitigation:
+  detect: 对二维 tile 归约与一维 flatten 版本交叉对账；把内层 arange 宽度补齐后计数变化即为信号
+  fix: 规避：内层 arange 宽度补到 8 并保留 k<K 的 mask；无修复 PR（open）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 仅 Ascend A5（Ascend950PR_9579，bishengir-compile-a5 路径）+ 内层 constexpr 宽度 <8 的二维归约；同逻辑在 A3 计数正确
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 'INF-1376 只是在机制描述里把 #2247 当对照引用（它自身是 3-D 首轴归约 stride 交换），本条是 A5 上二维 tile 内层宽度 <8 的丢车道，机制与平台都不同，故按重复来源放行单独成条。'
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2247
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend 3.2.2（Triton 3.2.0、torch_npu 2.9.0.post4、openEuler 24.03、Python 3.11）在 Ascend950PR_9579 上走默认 A5 流水线 bishengir-compile-a5 --target=Ascend950PR_9579：当二维块的范围是 [TOKENS_PER_TILE, K_POW2] 且内层 constexpr 宽度 K_POW2 为 2 或 4（即 <8）时，对该块导出的 tl.sum 与 tl.atomic_add 归约只让一部分车道参与。三条反证把范围锁死在归约 lowering：同索引的一维 flatten + atomic_add 总量正确；二维 tl.load/store 转储与主机内存逐位一致（载入没错）；把内层 tl.arange 宽度补到 8 同时保留 k<K 掩码后计数恢复。tl.reshape 到一维不能修复。生产 MoE 用例 T=512、K=2、E=8、TOKENS_PER_TILE=512、K_POW2=2 统计出 256（应为 1024）；K_POW2>=8 的 pytest 形状（T=256、E=32、K=8）在 A5 上正确，A3 上 K=2 也正确，故为 A5 特有。
+  source: 2026-09-17 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/2247 （open）
+  behavior: Mixtral 式 MoE 模型在 A5 上跑 top-2 路由时，专家直方图只有应有总数的四分之一：每个 tile 的计数少算，compute_routing_metadata 交给 gather/scatter 的偏移因此错位，约四分之三的专家前向结果不对。整个过程没有编译错误、没有 NaN，shape 和 dtype 都合法，只有把直方图总数与 T×K 对账才会发现少了。
+  trigger_surface: Ascend A5 + 二维 [TPT,K_POW2] 块载入后的 tl.sum/tl.atomic_add，K_POW2∈{2,4}；A3 不复现
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+    - detail

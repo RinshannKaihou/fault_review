@@ -1,0 +1,60 @@
+id: INF-2058
+legacy_ids: []
+slug: vllm_ascend_layerwise_kv_event_reorder_garbled
+aliases: []
+title: Layerwise KV 传输偶发乱码，疑 event 同步乱序
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Layerwise KV 连接器
+  behavior: layerwise 逐层传输靠 event.synchronize 等待对端写完再算；报告者定位 event 偶现乱序，decode 在该层 KV 尚未落完时就开始 attention（未做插桩复现验证）
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: Minimax-M2.5 PD 分离、use_layerwise=true + use_ascend_direct、P/D 各 TP8：偶发 TTFT 明显变短且输出乱码；kv_load_failure_policy=recompute 仍命中，普通请求正常
+  visibility: 不可复现
+mitigation:
+  detect: 按层打点 event record/wait 序与 KV ready 时刻，比较 TTFT 分布；短 TTFT + 乱码同时出现即为该形态
+  fix: 待定（issue open）：报告者建议核查 event.synchronize 的乱序与逐层 ready 判定，附件含完整分析报告
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PD 分离 + MooncakeLayerwiseConnector（use_layerwise=true）+ use_ascend_direct + 双侧 TP8；偶发，非必现
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15402
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend issue 15402（2026-08-31，open）：Minimax-M2.5 在 PD 分离 + Layerwise KV 传输下偶发 TTFT 变短并输出乱码。kv-transfer-config 使用 MultiConnector，内层 MooncakeLayerwiseConnector，use_layerwise=true、use_ascend_direct=true，prefill/decode 各 dp_size=1、tp_size=8，kv_load_failure_policy=recompute。报告者判断为 event.synchronize() 偶现乱序：逐层传输本应等对端写完该层再继续，乱序时 decode 侧提前开始 attention，读到未完成的 KV，TTFT 因此异常变短。正文未给出插桩日志或代码行号，只附 mooncake_event_synchronize_issue_report.html 分析报告，属定位性猜测而非已证实根因。
+  source: 2026-08-31 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15402 （open）
+  behavior: PD 分离服务大部分请求正常，偶尔某个请求的首 token 来得特别快（TTFT 明显低于正常值），随后整段输出是乱码；重发同一请求又可能正常。日志里没有报错，KV 加载也显示成功，只有把 TTFT 与输出质量放在一起看才发现异常。
+  trigger_surface: Mooncake layerwise KV 传输 + use_ascend_direct + 高并发 PD 服务
+  discovery: 2026-10-21 tail_3 顺序深读（历史索引回填，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - title
+    uncertain:
+    - effect
+    - detail

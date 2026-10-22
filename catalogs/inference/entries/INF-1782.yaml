@@ -1,0 +1,58 @@
+id: INF-1782
+legacy_ids: []
+slug: vllm_f32_triton_tf32_default_mismatch
+aliases: []
+title: vLLM float32 模型 Triton kernel 默认 TF32 降精
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: 三个 Triton kernel 的 tl.dot
+  behavior: 三个 Triton kernel 的 float32 tl.dot 未设 input_precision，NVIDIA 上 Triton 默认 TF32（10 位尾数）；与 vLLM 自身 VLLM_FLOAT32_MATMUL_PRECI
+effect:
+  objects:
+  - 数值结果
+  detail: 固定种子复现：每 kernel 输出对 fp64 参考偏差约 1.5e-2×输出 RMS（IEEE 路径与 torch fp32 约 1e-5）；dtype=float32 服务（默认选 TRITON_ATTN）201 token prompt logprobs 默认 vs TRITON_F32_D
+  visibility: 静默错误
+mitigation:
+  detect: 与 TRITON_F32_DEFAULT=ieee 对照跑同请求比 logprobs
+  fix: 规避：环境变量 TRITON_F32_DEFAULT=ieee（同 kernel 即恢复 ~1e-5）；代码修复 PR 未见（待定）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: dtype=float32（float32 模型或 fp32 调试基准）+ Triton 后端（unified_attention/context_attention_fwd/fused_experts）；默认 dtype=fp16 服务选 FA 不触发该路径；0.32.0rc1.dev342
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: dtype=float32 常用于基准/评测对照与数值调试——该场景下基准自身带 1e-2 量级偏差会污染下游所有对比结论。与预期 dtype 差异类不同：这是显式请求 float32 而得到 TF32。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62582
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.32.0rc1.dev342+gf98ae6a9f（RTX 5080/cu130，也核 main）。三个 Triton kernel 的 float32 tl.dot 不带 input_precision：vllm/v1/attention/ops/triton_unified_attention.py 的 unified_attention（TRITON_ATTN 后端）、triton_prefill_attention.py 的 context_attention_fwd、fused_moe.py 后的 fused_experts Triton kernel。NVIDIA 上 Triton 对 float32 tl.dot 默认 TF32（10 位尾数）。固定种子复现：各 kernel 输出对 float64 参考偏差约 1.5e-2×输出 RMS；同数学 torch float32 约 1e-5；TRITON_F32_DEFAULT=ieee 时同 kernel 也 ~1e-5。dtype=float32 时 vLLM 选 TRITON_ATTN 后端（0.32.0rc1.dev342 实测 LLM(opt-125m, dtype=float32, enforce_eager) 日志），201-token prompt logprobs 默认 vs ieee 最大差 5.9e-3、mean 1.2e-4。与全局约定矛盾：VLLM_FLOAT32_MATMUL_PRECISION 默认 highest 且 gpu_worker 传 torch.set_float32_matmul_precision——PyTorch float32 matmul 在 vLLM 内跑 IEEE，而这三个 Triton kernel 跑 TF32。
+  source: 2026-10-20 每日扫描；https://github.com/vllm-project/vllm/issues/62582
+  behavior: 以 dtype=float32 服务模型（评测基准、数值调试常见）时，Triton attention、prefill attention 与 fused-MoE 的矩阵乘实际按 TF32（10 位尾数）执行：输出相对 float64 参考的偏差达输出 RMS 的约 1.5%，比 IEEE float32 路径差三个数量级，prompt logprobs 偏差最大 5.9e-3；设 TRITON_F32_DEFAULT=ieee 后同 kernel 恢复正常精度。无报错，float32 基准自身悄悄失准。
+  trigger_surface: vLLM dtype=float32 + Triton attention/prefill/fused-MoE kernel（默认 TRITON_F32_DEFAULT=tf32）
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 量化
+        to: 算子/内核
+      visibility:
+        from: 质量退化
+        to: 静默错误

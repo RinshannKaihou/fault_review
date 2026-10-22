@@ -1,0 +1,70 @@
+id: INF-1446
+legacy_ids: []
+slug: vllm_gdn_chunk_prefill_fp32_state_fp16_downcast_overflow
+aliases: []
+title: vLLM GDN chunk prefill fp32 状态被降 fp16 溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: chunk 路径状态 dtype 处理
+  behavior: GDN chunk/prefill 内核在 fp32 状态缓存下仍把循环状态降为激活 dtype：chunk_delta_h/chunk_o 缓冲按激活 dtype 分配、tl.dot 降型；公共 API 又把返回值转回 q dtype。
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  - 数值结果
+  detail: fp16 激活 + fp32 状态（~1e6，fp16 上限 65504）下 chunk 路径输出 100% 非有限（65536/65536）、final_state 非有限；同输入 fp32 参考全有限；--mamba-ssm-cache-dtype float32 不防护此路径
+  visibility: 数值异常
+mitigation:
+  detect: issue 附 kernel 级 repro（chunk vs fused_recurrent 对照，~20 行）；chunk 输出 isfinite 统计
+  fix: '修复方向 issue 内给出：扩展 #54146 的 dtype 门控（仅 initial_state.dtype==float32 时按状态 dtype 物化）到 chunk_delta_h/chunk_o/chunk.py 三处；#54146（decode 侧）已修，chunk 路径是其明示的后续；未实施（issue open）'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 0.31.0 + main 2026-10-17 确认未变；GDN 模型（Qwen3-Next/3.5）chunk/prefill 路径 + fp16 激活 + 状态幅值增长超出 fp16 范围（长 prompt 或大初态）；L40S 实测；--mamba-ssm-cache-dtype float32 用户命中
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62116
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0127
+pattern: PAT-INF-0157
+original:
+  mechanism: 'vLLM #62116（c2026-10-17）：GDN（gated delta net）模型即使设置 --mamba-ssm-cache-dtype float32（正是为防该问题的设置），prefill/chunked 路径仍可 fp16 溢出。根因（#54146 decode 修复时明示的 chunk 路径后续）：循环 SSM 状态在 chunk 路径 Triton 内核内以 fp32 累积，但若干中间缓冲与 dot 操作数在安全归一化前把 fp32 值静默降为激活 dtype（fp16/bf16）：(1) chunk_delta_h.py 每块状态缓冲 h 按 k 的激活 dtype 分配，内核两个内部 tl.dot 把 fp32 状态（b_h1..4）与修正项 b_v 降到 fp16 再累加；(2) chunk_o.py 输出缓冲 o 按 v 激活 dtype 分配，tl.dot(b_q, transpose(b_h)) 对可能 fp32 的 b_h 先降型再算未归一化读出；(3) chunk.py 的 chunk_gated_delta_rule 公共 API 无条件把返回值转回 q 的 dtype（正确 fp32 计算也会被撤销）。复现（L40S，vLLM 0.31.0 + Triton）：B,T,H,K,V=1,256,4,64,64，fp32 输入 + initial_state=fp32 randn×1e6（#54146 decode 内核自测同量级）；fp32 recurrent 参考 o_ref/final_state_ref 全有限断言通过；fp16 激活 + 同初态的 chunk 路径输出 65536/65536 全非有限、final_state 非有限——隔离到 chunk 路径自身精度处理。main 2026-10-17 三个文件未变。'
+  source: '2026-10-17 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62116 （open）；前置 #54146（decode 侧已修，chunk 后续明示）'
+  behavior: '在 vLLM 上跑 GDN 模型（Qwen3-Next/3.5 类）时，即使把 SSM 状态缓存设为 float32，长 prompt 的 prefill/分块处理仍会溢出：状态在块内计算中被降到 fp16（上限 65504），状态幅值增长到 ~1e6 后输出全部变 inf/NaN、循环状态损坏，与 decode 侧已修的 #54146 同样症状但从 prefill 侧触发。后续解码继承损坏状态持续产出垃圾。'
+  trigger_surface: vLLM 0.31.0/main GDN chunk/prefill 内核；fp16/bf16 激活 + 大幅值循环状态（长上下文）；--mamba-ssm-cache-dtype float32 不防护此路径
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 隐状态
+        to: KV状态
+    uncertain:
+    - subsystem

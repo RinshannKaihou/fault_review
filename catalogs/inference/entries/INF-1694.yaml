@@ -1,0 +1,61 @@
+id: INF-1694
+legacy_ids: []
+slug: flexattention_uneven_causal_kv_tail_grad_uninit
+aliases: []
+title: FlexAttention 不等长 causal 反向 KV 尾部梯度未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: FlexAttention 反向模板
+  behavior: triton_experimental FlexAttention causal 反向且 Q_LEN<KV_LEN 时，反向模板直接写入 empty_strided 分配的 dK/dV，无 query 覆盖的 KV 尾部未被可靠写入。
+effect:
+  objects:
+  - 梯度
+  detail: Q_LEN=384、KV_LEN=512 时 KV[384:512] 的 dK/dV 数值不确定；修复（预清零 dV、按 block 有无 query 决定是否置零 dK 并跳过 dV 写回）后 FlexAttention 专项测试 11 passed。
+  visibility: 不可复现
+mitigation:
+  detect: 不等长 causal（Q_LEN<KV_LEN）反向，检查 KV 尾部未被 query 覆盖区间（如 [384:512]）的 dK/dV 是否随分配历史变化；重复跑同一输入比梯度是否一致
+  fix: MR https://gitcode.com/Ascend/pytorch/merge_requests/46746 （未核实是否合入）：lowering 阶段预清零 dV，模板跟踪 KV block 是否存在 query block，无则 dK 置零并跳过 dV 写回，并补不等长 causal 反向回归测试
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: triton_experimental 后端 + FlexAttention + Q_LEN<KV_LEN 的 causal 反向（实测 Q_LEN=384/KV_LEN=512）；正向与等长场景不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5236
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5236（2026-09-29，open，triton_experimental 后端）：在 FlexAttention 的 Q_LEN < KV_LEN 不等长 causal backward 中，没有被任何 query 访问的 KV 尾部会保留未初始化梯度。典型场景 Q_LEN=384、KV_LEN=512，KV 位置 [384:512] 没有 query 访问。根因是实验后端反向模板直接写入 empty_strided 分配的 dK/dV，不可达的 KV block 没有可靠写入，导致尾部梯度不确定（取决于分配器返回的旧内存内容）。修复方案：lowering 阶段预清零 dV 输出；模板跟踪 KV block 是否存在 query block；无 query block 时把 dK 置零并跳过 dV 写回，保留预清零结果；并增加不等长 causal backward 回归测试。验证：迁移到独立目录后的 FlexAttention 专项测试 11 passed。'
+  source: 2026-09-29 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5236 （open）
+  behavior: 用 triton_experimental 后端对 Q_LEN=384、KV_LEN=512 的不等长 causal 场景做反向，KV 位置 384 到 511 这一段（没有任何 query 能看到的尾部）的 dK/dV 是不确定的：每次跑可能不一样，取决于这块显存之前被谁用过。它不报错也不 NaN，梯度看着是正常浮点数，但训练时这部分 KV 的梯度是垃圾，会把模型往错误方向推。修复后同一专项测试 11 项全过。
+  trigger_surface: FlexAttention + causal + Q_LEN < KV_LEN（存在无 query 覆盖的 KV 尾部 block）+ triton_experimental 反向
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    rewritten:
+    - behavior

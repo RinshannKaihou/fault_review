@@ -1,0 +1,58 @@
+id: INF-2079
+legacy_ids: []
+slug: quantize_add_layer_norm_arch35_int8_bitwise_mismatch
+aliases: []
+title: quantize_add_layer_norm INT8 逐 bit 差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: quantize_add_layer_norm
+  behavior: arch35 在 FP32 里完成归一化与 scale/offset 后走 RINT->half->int8，golden 先把归一化结果降精度回转再量化，舍入边界处的中间精度与顺序不同，少量 INT8 元素逐 bit 不一致
+effect:
+  objects:
+  - 数值结果
+  detail: 22条INT8未过binary_equal（黑盒17/177、白盒5/12），无memory OOB；FP16/D=768无zero_points每条约1/768元素不一致，BF16/D=128有zero_points约1/128不一致，BF16/D=768约3~4/768，一条99.16%元素一致
+  visibility: 静默错误
+mitigation:
+  detect: 对每个 shape 统计 INT8 输出与 golden 的逐 bit 不一致元素占比；注意同时看输出 1 的浮点残差会掩盖输出 0 的失败
+  fix: issue 未附修复 PR（closed，修复状态未核实）；报告者指出需用设备 dump 逐元素比对确认 golden 与 kernel 的舍入顺序，即定位线索而非已证明的唯一根因
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend950PR_9579 / arch35 + CANN 9.2.0，TTK 源码动态模式、seed 42；INT8 输出按逐 bit 一致验收
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6284
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: ops-nn commit 22ee78042bc2458fab05851154bcf99dd2d57828（已包含 A5 精度修复祖先提交 77cb2844），SoC Ascend950PR_9579，CANN 9.2.0，TTK 源码动态模式 -b=false -d=true -c=false --seed 42。quantize_add_layer_norm 的 INT8 输出 0 在 22 条用例上未通过 binary_equal：黑盒 177 条中 17 条失败、白盒 12 条中 5 条失败，均无 memory OOB。分布上 FP16/D=768 无 zero_points 每条约 1/768 元素不一致，BF16/D=128 有 zero_points 约 1/128，BF16/D=768 约 3~4/768，(38,67,85) 那条 99.16% 元素一致。已确认 arch35 通过独立 SCALE_TYPE 读 scales/zero_points，可排除旧版把 FP32 量化参数按 half 读的问题；剩余线索集中在量化前数值路径：arch35 在 FP32 中做归一化与 scale/offset 后 RINT->half->int8，而 golden 对非 FP32 输入先 norm.to(t).float() 回转再量化，舍入边界处中间精度/顺序不同。
+  source: '2026-09-29 GitCode cann/ops-nn issue #6284 https://gitcode.com/cann/ops-nn/issues/6284 （closed）'
+  behavior: 量化后的 layer_norm 输出整体看起来完全正常，余弦相似度、浮点残差都在容差内，但按 INT8 逐 bit 比对时总有个别元素差一格；这类差异在下游 attention/MLP 里不会报错，只会在长链路精度评测里表现为难以归因的轻微退化。
+  trigger_surface: Ascend950/arch35 的 quantize_add_layer_norm + INT8 逐 bit 验收（TTK 动态模式）
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    issue_unfixed:
+    - behavior

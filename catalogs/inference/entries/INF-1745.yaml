@@ -1,0 +1,64 @@
+id: INF-1745
+legacy_ids: []
+slug: ops_nn_swiglu_group_quant_grad_ub_war_missing_reverse_sync
+aliases: []
+title: SwigluGroupQuantGrad 输出读与次轮搬入复用 UB
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: SwigluGroupQuantGrad 流水
+  behavior: CopyOutGradX 搬出后只有 V_MTE3 正向同步、无 MTE3→MTE2，MTE2 侧不等 MTE3 读完就覆盖；外层循环复用的 xQueue buffer 下一轮 CopyInX 又搬入新输入，同一 UB 地址写后读。
+effect:
+  objects:
+  - 梯度
+  detail: 触发面：swiglu_group_quant_grad，外层循环复用同一 UB buffer。racecheck 在 float16 高性能模板报 2 条 Potential WAR（MTE3 读、MTE2 写同一 UB 地址 0x4000/0x6000）；运行不报错、不产生 NaN，补丁后无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 对 gradX 输出路径开 mssanitizer racecheck 跑多轮；只比对一次输出数值发现不了，竞态窗口依赖流水排布。
+  fix: issue closed；修复补丁 patch_add_mte3_mte2_sync.diff 在 CopyOutGradX 的搬出后补 MTE3_MTE2 同步（未给 MR 号）。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 950 + swiglu_group_quant_grad float16 高性能模板 + 外层循环多轮复用 xQueue
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6112
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6112（2026-09-21，closed）：MindStudio Sanitizer（mssanitizer）racecheck 在 kernel SwigluGroupQuantGrad_float16_high_performance_0 上检出 2 条 Potential WAR，均为 PIPE_MTE3 Read 与 PIPE_MTE2 Write 打在同一 UB 地址（WAR()+0x4000 与 +0x6000）。源码上 CopyOutGradX 第 466/467 行 DataCopyPad 把 gradX 从 UB 搬出到 GM，process 外层循环复用的 xQueue buffer 在下一轮 CopyInX（第 156/158 行）又被搬入新输入；CopyOutGradX 只有 V_MTE3 正向同步，搬出后没有 MTE3_MTE2，MTE2 侧不等待 MTE3 读完就覆盖。工具事件日志给出指令级证据：367/368 读 UB 0x4000/0x6000，486/487 写同地址，中间 MTE2 流水无等待。作者附补丁后 racecheck 报 No error detected。
+  source: 2026-09-21 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6112 （closed）
+  behavior: 同一个 gradX 输出缓冲在上一轮还没搬出 GM 时就被下一轮输入覆盖，被污染的是反向传播写回的梯度：产物既可能少一段也可能串到别的 tile，运行不报错、不产生 NaN，单次比对常常看着正常；只有在 racecheck 下才稳定复现成 UB 写后读告警。
+  trigger_surface: swiglu_group_quant_grad + 外层循环多轮复用同一 UB buffer
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - subsystem

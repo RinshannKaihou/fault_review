@@ -1,0 +1,53 @@
+id: INF-1940
+legacy_ids: []
+slug: msprobe_statistics_null_for_fp16_tensors
+aliases: []
+title: 统计量采集对部分 fp16 张量输出 null
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: msprobe statistics 采集
+  behavior: FULL_DECODE_ONLY 图模式 statistics 采集时，部分 fp16 张量 Max/Min/Mean/Norm 为 null，同 dtype 其他张量正常，日志仅提示 Invalid statistics detected
+effect:
+  objects:
+  - 指标/日志
+  detail: Qwen2.5-0.5B、tp2、mix 级采集的 dump 里 null 与非 null 混杂（Aten.empty 的 [1,448]、as_strided 的 [1,7,64] 为 null）；日志只给 Invalid statistics detected，看不出哪些算子没采到
+  visibility: 静默错误
+mitigation:
+  detect: 采集后统计 dump 中 null 的比例并列出受影响算子名；对 null 项改用 tensor 模式复采
+  fix: 待定（issue closed，正文未给修复 PR；报告者要求区分“低精度不可采”与“该算子采不到”两种原因）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msprobe statistics 模式（level mix）+ vLLM 图模式 cudagraph FULL_DECODE_ONLY + fp16 权重 + tp2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/615
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '用 config.json 指定 `task: statistics`、`level: mix`、statistics.list/slice 为空，通过 vLLM 的 `--additional-config ''{"dump_config_path": "./config.json"}''` 拉起 Qwen2.5-0.5B-Instruct 服务（`--dtype float16 --tensor-parallel-size 2 --compilation_config ''{"cudagraph_mode":"FULL_DECODE_ONLY"}''`），发一次 completions 请求触发采集。采集文件里部分 torch.float16 张量的 Max/Min/Mean/Norm 全为 null，例如 Aten.empty.2.forward 的 output（shape [1,448]）、Aten.as_strided.2.forward 的 input_args（[1,448]）与 output（[1,7,64]）；同一份 dump 里 Torch.vllm.unified_attention_with_output.2.forward 的 [1,7,64] fp16 输入却正常采到 Max 7.09375 / Min -5.81640625 / Mean 0.1075 / Norm 28.147。日志只有 [WARNING] Invalid statistics detected. Please use tensor mode to collect the affected data，原有解释把这统一归为“低精度类型场景”，无法覆盖“同为 fp16、部分正常部分 null”的现象。环境：vLLM + msprobe，fp16，tp2，图模式 FULL_DECODE_ONLY。'
+  source: '2026-09-22 GitCode Ascend/msprobe issue #615 https://gitcode.com/Ascend/msprobe/issues/615（closed）'
+  behavior: 开统计量模式采一遍服务，得到的 dump 里有些算子的 Max/Min/Mean/Norm 是 null，有些同样 dtype、同样 shape 的却正常，日志只会重复刷 Invalid statistics detected 并让人去看 tensor 模式；也就是说使用者既不知道哪些算子没采到，也无法判断 null 是真异常还是采集限制，很容易把空值当成“该算子无差异”放过。
+  trigger_surface: msprobe statistics 模式 + vLLM 图模式（cudagraph FULL_DECODE_ONLY）+ fp16 + tp2
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

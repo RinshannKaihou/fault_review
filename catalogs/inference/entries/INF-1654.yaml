@@ -1,0 +1,59 @@
+id: INF-1654
+legacy_ids: []
+slug: ms_matmul_empty_graph_scalar
+aliases: []
+title: 零尺寸 matmul 在图模式返回标量 0.0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: Graph/JIT matmul 空张量推导
+  behavior: Graph/JIT 的 matmul 形状推导对含 0 维的输入退化成标量输出，没有按 (0,3)@(3,2)→(0,2) 的矩阵乘法规则给出空矩阵。
+effect:
+  objects:
+  - 数值结果
+  detail: x (0,3)、y (3,2) 时 PyNative 返回 shape (0,2) 空矩阵，Graph/JIT 返回 shape () 的标量 0.0；空 batch 或空序列分支下游按 shape 取索引即出错。
+  visibility: 静默错误
+mitigation:
+  detect: 对 (0,3)@(3,2) 分别在 PyNative 与 @ms.jit 下执行并打印 shape；图模式给出 () 而不是 (0,2) 即命中
+  fix: 待定（issue closed，未见修复 PR/版本说明）；方向：图模式 matmul 的 shape 推导保留 0 维，不要退化成标量
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: CPU + GRAPH_MODE，matmul 输入含 0 维（空 batch/空序列）；PyNative 正确
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29315
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpore 2.8.0（CPU 后端，Python 3.12）：x=Tensor(zeros((0,3),float32))、y=Tensor(ones((3,2),float32))。PYNATIVE_MODE 下 ops.matmul(x,y) 返回 shape (0,2) 的空矩阵、asnumpy() 为 []；GRAPH_MODE 下 @ms.jit def f(a,b): return ops.matmul(a,b) 返回 shape () 的标量 0.0。issue 明确指出 (0,3)@(3,2) 按矩阵乘法规则应为 (0,2)，图模式把空矩阵结果错误地变成标量，两种执行模式结果不一致。issue 已 closed，正文未给出修复 PR 或修复版本。'
+  source: 2026-04-24 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29315 （closed）
+  behavior: 空 batch、空序列或全被 mask 掉的分支做 matmul 时，图模式拿到的不是空矩阵而是一个标量 0.0；后续 reshape、concat 或按 dim0 取索引会得到与 PyNative 完全不同的结构，值也只剩一个 0。因为 shape 是 () 而不是 (0,2)，连“结果为空的检查”都会走错分支。
+  trigger_surface: GRAPH_MODE / @ms.jit 下对含 0 维的输入做 ops.matmul；MindSpore 2.8.0 CPU
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核

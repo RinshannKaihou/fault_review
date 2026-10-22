@@ -1,0 +1,56 @@
+id: INF-2019
+legacy_ids: []
+slug: full_decode_only_tp2_first_generate_garbage
+aliases: []
+title: FULL_DECODE_ONLY+tp=2 首次离线 generate 输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 离线首轮 generate 执行路径
+  behavior: 报告者未定位到代码；只在离线 LLM、tp=2、cudagraph_mode=FULL_DECODE_ONLY、enable_sleep_mode=True 的第一次 generate 出现，第二次调用恢复正常
+effect:
+  objects:
+  - 输出内容
+  detail: 首个请求返回 /"breblecic"The"**"… 这类重复符号串、finish_reason=length，token_ids 呈 9,92 交替；同一进程第二次 generate 输出正常的思考文本
+  visibility: 静默错误
+mitigation:
+  detect: 离线场景用 FULL_DECODE_ONLY + tp=2 跑两次同一 greedy 请求（temperature=0、seed 固定），比对 token_ids 是否出现重复符号噪声；或先做一次 warmup generate 再比对
+  fix: issue 只给出规避项（改用在线 vllm serve、tp=1、或先跑一次 generate），无修复 MR，未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 离线 LLM + tensor_parallel_size=2 + cudagraph_mode=FULL_DECODE_ONLY + enable_sleep_mode；在线 serve 与 tp=1 不复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15560
+  kind: github_issue
+relations: []
+original:
+  mechanism: issue 给出最小复现：VLLM_WORKER_MULTIPROC_METHOD=spawn、VLLM_ASCEND_ENABLE_NZ=0，LLM(trust_remote_code=True, language_model_only=True, tensor_parallel_size=2, compilation_config={'cudagraph_mode':'FULL_DECODE_ONLY'}, enable_sleep_mode=True)，SamplingParams(temperature=0, max_tokens=100, seed=42)，对 'How are you?' 连续两次 generate。第一次输出 /"breblecic"The"**"… 的重复符号串且 finish_reason=length，第二次输出正常的 <think> 思考文本。报告者未定位到具体代码，只给出规避项：改用在线 vllm serve、把 tp 降到 1、或先跑一次 generate（后续调用正常）。说明缺陷位于首次执行路径（图捕获/唤醒）而非采样或权重本身。
+  source: '2026-09-02 GitHub vllm-project/vllm-ascend issue #15560（open）。https://github.com/vllm-project/vllm-ascend/issues/15560'
+  behavior: 离线脚本里第一次 llm.generate 拿到的不是正常回答，而是一串重复的符号与标点（/"breblecic"The"**"…），token_ids 里 9 和 92 交替出现，finish_reason 为 length；同一进程紧接着的第二次 generate 完全正常，因此很容易被误判成模型或采样参数问题。
+  trigger_surface: 离线 LLM + tensor_parallel_size=2 + FULL_DECODE_ONLY + enable_sleep_mode 的首次 generate
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

@@ -1,0 +1,63 @@
+id: INF-1408
+legacy_ids: []
+slug: vllm_cpu_lora_mixed_batch_leak
+aliases: []
+title: vLLM CPU 后端混批把 LoRA 施加到 base 请求
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: CPU LoRA 批处理路径
+  behavior: CPU 后端同一批内调度 LoRA 请求时，把 base 请求也按 adapter 计算，base 输出被替换为 adapter 输出
+effect:
+  objects:
+  - 输出内容
+  - 跨请求/跨样本数据
+  detail: base+LoRA 混批时非 LoRA 请求输出与 adapter 输出逐字节一致（35/40），无报错无警告；纯 base 或纯 LoRA 批正确
+  visibility: 静默错误
+mitigation:
+  detect: 对照 base-only 输出与混批输出是否一致（随机 adapter 显著化）
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: CPU 后端 --enable-lora + base/LoRA 混批；随机 adapter 实测 35/40 base 输出与 adapter 输出逐字节相同
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62225
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM CPU 后端在 --enable-lora 下，同一 step 批内同时含 base 请求与 LoRA 请求时，base 请求的计算也带上了 adapter：40 prompt 三阶段实测（base 单独、LoRA 单独、混合并发 16），混合阶段 base 请求输出 0/40 匹配 base-alone，35/40 与 LoRA-alone 逐字节一致（base 被服务成随机 adapter 的乱码输出）。纯 base 批（并发 1/8）与纯 LoRA 批、双 adapter 混批均正确，仅 base+LoRA 混合批错。报告含 make_random_lora.py 与 stdlib 复现脚本，vLLM 0.31.0 CPU backend（PyTorch 2.13.0+cpu），WSL2 环境。源码级根因（CPU LoRA 批处理把 gathered 请求统一应用 active slot）未在 issue 内定位，报告者观察到现象与完整量化对照。原观察来自真实 adapter 80-i 会话。
+  source: 2026-10-17 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62225（open，0 评论）
+  behavior: 启动 vLLM CPU 后端 --enable-lora 并在同一时刻混合发送 base 请求与 LoRA 请求时，base 请求返回的是 adapter 的输出而不是基座模型的输出：文本明显跑偏（随机 adapter 下变成乱码），HTTP 200 正常返回，日志无任何错误或警告。只发 base 或只发 LoRA 时结果正确；只有混批时错。用随机 adapter 做对照时 40 条 base prompt 混批后无一与正确输出一致，其中 35 条与 adapter 输出逐字节相同。
+  trigger_surface: CPU 后端 + --enable-lora + base 与 LoRA 请求同批调度（并发混合）；GPU 路径未测试
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - behavior
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

@@ -1,0 +1,62 @@
+id: INF-1910
+legacy_ids: []
+slug: msmodelslim_ir_rmsnorm_forced_fp32_output
+aliases: []
+title: IR RMSNorm 无条件把输出转 fp32 破 bf16 链路
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: ir.rms_norm 输出
+  behavior: ir/rms_norm.py 末尾对 weight*hidden_states 无条件 .to(torch.float32)，权重与输入都是 bf16 时输出仍变 fp32，与 T5LayerNorm 参考实现不一致
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: RMSNorm(8).to(bf16) 后 norm(x).dtype 为 float32，接 nn.Linear(bf16) 报 mat1 and mat2 must have the same dtype；CPU 链路（iter_smooth hook）整条量化流程跑不起来
+  visibility: 报错
+mitigation:
+  detect: 逐层打印 IR 模块输出的 dtype；CPU 链路报 dtype mismatch 时先看 RMSNorm/LayerNorm 类是否强制 fp32
+  fix: issue 建议删掉末尾 .to(torch.float32)、与 T5LayerNorm 对齐；未见 PR（issue 已关闭，未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim 的 ir RMSNorm + bf16 + CPU 链路（量化冒烟/iter_smooth hook）；commit 984b390e，py3.12 aarch64
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/565
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'msmodelslim/ir/rms_norm.py 第 47 行的实现是 return (self.weight * hidden_states).to(torch.float32)，即无论权重和输入的 dtype，输出都被强制转成 fp32。最小复现：norm = RMSNorm(8).to(torch.bfloat16)、linear = nn.Linear(8, 4, dtype=torch.bfloat16)、x = torch.randn(2, 8, dtype=torch.bfloat16)，norm(x).dtype 实际是 torch.float32，接着 linear(norm(x)) 报 RuntimeError: mat1 and mat2 must have the same dtype, but got Float and BFloat16。参考实现 transformers 的 T5LayerNorm 直接 return self.weight * hidden_states，不做强制提升，所以同结构模型在 HF/PTA 链路不会出现该问题。影响面是 CPU 推理/量化冒烟场景：iter_smooth 过程的 hook 链路会把 fp32 输出喂给下一层 bf16 Linear，整条量化流程在 CPU 上跑不起来；NPU 链路未观察到该现象。修复建议即去掉末尾的 .to(torch.float32)。'
+  source: '2026 GitCode Ascend/msmodelslim issue #565 https://gitcode.com/Ascend/msmodelslim/issues/565（closed；msmodelslim commit 984b390e，Ubuntu 22.04 aarch64 + py3.12）'
+  behavior: 在 CPU 上跑量化冒烟或 iter_smooth 之类的 hook 流程时，走到 RMSNorm 之后的 Linear 就报 mat1 and mat2 must have the same dtype, but got Float and BFloat16；单独测 RMSNorm 会发现模型和输入都是 bf16、输出却是 float32。同样的模型在 NPU 上量化正常，只有 CPU 链路挂。
+  trigger_surface: msmodelslim IR RMSNorm + bf16 模型 + CPU 链路（量化冒烟/iter_smooth hook）；NPU 链路不复现
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 量化
+        to: 算子/内核
+      effect:
+        from: 数值结果
+        to: 可用性/进度

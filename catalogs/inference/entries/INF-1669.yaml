@@ -1,0 +1,57 @@
+id: INF-1669
+legacy_ids: []
+slug: ms_ascend_baddbmm_bf16_epilogue_rounding
+aliases: []
+title: BF16 baddbmm epilogue 舍入偏离 FP32 参考
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: aclnnBaddbmm bf16 舍入
+  behavior: Ascend BF16 baddbmm 走 aclnn 默认计算模式时 self*beta 的 epilogue 提前按 BF16 舍入，与 FP32 计算后只舍入一次的结果不同。
+effect:
+  objects:
+  - 数值结果
+  detail: 3x16x16 用例输出 -1.3359375（FP32 后舍入一次为 -1.328125）；[1,768,768] 上 10 轮 Newton-Schulz 迭代相对误差 0.01399，改 CANN FP32-add 后 0.00416。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 bf16 baddbmm 用例与 FP32 参考计算比较；再对固定 [1,768,768] 做 10 轮迭代看误差累积，切换 CANN FP32-add 模式观察误差是否下降
+  fix: 待定（issue open，无修复 PR）；方向：对无 self 广播的形状改用 CANN cubeMathType=4（FP32-add）保持 bf16 输入输出，广播场景回退显式 FP32 计算
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 910B2 + bf16 baddbmm + 非精确 beta（3.4445）；PyNative 与 KBK 都复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29589
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore 2.10.0 + CANN 9.1.0-beta.3 + Ascend 910B2：BF16 mint.baddbmm 使用 aclnnBaddbmm 默认计算模式时，self*beta 的 epilogue 舍入偏离 FP32 参考值。最小复现是 ones(3,16,16)、eye(16) 的 bf16 三元组配 beta=3.4445/alpha=-4.775，输出 [0,0,0] 位置得 -1.3359375，而 FP32 计算后仅舍入一次到 BF16 应为 -1.328125。固定 [1,768,768] 的 10 轮 Newton-Schulz 迭代用例中，最终 ||NPU-GPU||_F/||GPU||_F 为 0.0139853456，改用 CANN FP32-add 模式后降到 0.0041635453。PyNative 与 KBK 均可复现。
+  source: 2026-08-07 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29589 （open）
+  behavior: BF16 下算 baddbmm，单次结果只是最后一位差一点（-1.3359375 对 -1.328125），看不出问题；但这类算子常被放在 Newton-Schulz 之类的迭代里，误差逐轮累积，10 轮后相对偏差到 1.4%，换成 FP32-add 模式才降到 0.4%。全程无报错、无 NaN，只能与 GPU/FP32 参考逐元素比对才暴露。
+  trigger_surface: Ascend 910B2 + bf16 的 mint.baddbmm（aclnn 默认计算模式），beta 为非精确系数；多轮迭代场景误差累积
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

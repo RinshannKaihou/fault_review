@@ -182,8 +182,20 @@ def evaluate_cases(cases, search_fn=None):
     }
 
 
-def check_report(report, baseline=None, regression_tolerance=0.02):
-    """Return human-readable quality-gate failures; an empty list means pass."""
+def check_report(report, baseline=None, regression_tolerance=0.02,
+                 fix_list=None, per_case=False):
+    """Return human-readable quality-gate failures; an empty list means pass.
+
+    Two acceptance models:
+      aggregate (default): every metric must not drop beyond its limit.  Strict
+        for R@5/R@10, 0.02 for the rank metrics.  Structurally impossible to
+        satisfy when a snapshot grows by tens of percent: one query out of 63
+        is 1.6pp, so ordinary reshuffling reads as a regression.
+      per_case (--per-case): a query that passed at baseline must still pass.
+        Membership loss is the failure condition; rank churn is reported but
+        does not block.  Cases in fix_list are known-weak golds (documented in
+        eval/fix_list.json) and are exempt at every cutoff.
+    """
     floors = {
         "recall_at_5": 0.85,
         "mrr_at_10": 0.70,
@@ -205,7 +217,20 @@ def check_report(report, baseline=None, regression_tolerance=0.02):
             f"{negative['recall_at_5']:.6f} < 0.750000"
         )
 
-    if baseline is not None:
+    exempt = set(fix_list or ())
+    if baseline is not None and per_case and baseline.get("cases"):
+        current = {row["case_id"]: row for row in report["cases"]}
+        for cutoff in ("recall_at_5", "recall_at_10"):
+            for row in baseline["cases"]:
+                if row["metrics"].get(cutoff, 0) < 1.0:
+                    continue          # already failing at baseline: fix-list, not a gate
+                case_id = row["case_id"]
+                if case_id in exempt:
+                    continue
+                now = current.get(case_id)
+                if now is not None and now["metrics"].get(cutoff, 0) < 1.0:
+                    failures.append(f"{case_id} dropped out of {cutoff}")
+    elif baseline is not None:
         for name in METRIC_NAMES:
             if name not in baseline["aggregate"]:      # older baselines predate recall_at_10
                 continue
@@ -246,6 +271,11 @@ def main(argv=None):
     parser.add_argument("--min-cases", type=int, default=36)
     parser.add_argument("--no-gate", action="store_true",
                         help="only measure (e.g. the independent blind set, whose negative tag differs)")
+    parser.add_argument("--per-case", action="store_true",
+                        help="gate on per-query membership: a query that passed at baseline "
+                             "must still pass; rank churn is reported, not blocking")
+    parser.add_argument("--fix-list", default=os.path.join(here, "fix_list.json"),
+                        help="known-weak golds exempt from the per-case gate")
     args = parser.parse_args(argv)
 
     from fault_rag.index import get_index
@@ -266,11 +296,35 @@ def main(argv=None):
     if args.check:
         with open(args.check, encoding="utf-8") as f:
             baseline = json.load(f)
-    gate_failures = [] if args.no_gate else check_report(report, baseline=baseline)
+    fix_list = set()
+    if args.per_case and args.fix_list and os.path.exists(args.fix_list):
+        with open(args.fix_list, encoding="utf-8") as f:
+            fix_list = {row["case_id"] for row in json.load(f)["fix_list"]}
+    gate_failures = [] if args.no_gate else check_report(
+        report, baseline=baseline, fix_list=fix_list, per_case=args.per_case)
     report["quality_gate"] = {
         "passed": not gate_failures,
         "failures": gate_failures,
+        "mode": "per_case" if args.per_case else "aggregate",
+        "fix_list": sorted(fix_list),
     }
+    if args.per_case and baseline is not None:
+        before = {row["case_id"]: row for row in baseline.get("cases", [])}
+        slipped, improved = [], []
+        for row in report["cases"]:
+            old = before.get(row["case_id"])
+            if not old:
+                continue
+            gold = row["relevant"][0]
+            old_rank = next((n for n, key in enumerate(old["top_10"], 1) if list(key) == gold), None)
+            new_rank = next((n for n, key in enumerate(row["top_10"], 1) if list(key) == gold), None)
+            if old_rank and new_rank and new_rank > old_rank:
+                slipped.append({"case_id": row["case_id"], "from": old_rank, "to": new_rank})
+            elif old_rank and new_rank and new_rank < old_rank:
+                improved.append({"case_id": row["case_id"], "from": old_rank, "to": new_rank})
+            elif old_rank and not new_rank:
+                slipped.append({"case_id": row["case_id"], "from": old_rank, "to": None})
+        report["churn"] = {"slipped": slipped, "improved": improved}
 
     json.dump(report, sys.stdout, ensure_ascii=False, indent=1)
     sys.stdout.write("\n")

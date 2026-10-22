@@ -1,0 +1,69 @@
+id: INF-1531
+legacy_ids: []
+slug: ops_nn_groupnormsiluquant_int8_lsb_deviation
+aliases: []
+title: GroupNormSiluQuant 方差误差被量化放大
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: GroupNormSiluQuant 量化输出
+  behavior: GroupNormSiluQuant 中分组归一化的方差/rstd 偏差经 scale 变换落到 int8 码值，方差误差被量化放大，窄方差输入下最明显。
+effect:
+  objects:
+  - 数值结果
+  detail: 1000 条全部执行成功，807 条（80.7%）判否：741 条 int8 主输出偏差中位 61 LSB、137 条整量程饱和、37 条 NPU 独有 NaN；通过组 int8 偏差恒为 0/1 LSB。
+  visibility: 静默错误
+mitigation:
+  detect: 把通过组的 int8 偏差当对照（恒 0/1 LSB），再看失败组的偏差分布是否随窄方差输入成片抬到几十 LSB；NaN 用例单独计数。
+  fix: issue 6068 已 closed，正文未给修复 PR；改方差算法还是量化 scale 计算未核实。
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 910B3 + CANN 9.1.0 + aclnnGroupNormSiluQuant（fp16 789/bf16 211、per-tensor 与 per-channel scale、窄方差分组）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: int8 输出没有逐元素容差概念，偏差只能按 LSB 计；报告用 cv_fused_double_benchmark 的三条误差比例判据判否，193 条通过组 int8 偏差恒 0/1 LSB 说明判据本身可用。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6068
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1529
+pattern: PAT-INF-0166
+original:
+  mechanism: cann/ops-nn issue 6068（2026-09-20，closed）：Ascend 910B3×1、CANN 9.1.0 镜像内系统算子 aclnnGroupNormSiluQuant，1000 条一次跑满（fp16 789 / bf16 211，3 维 947 / 4 维 53，group 80 种，eps 7 档，per-tensor scale 914 / per-channel 86），三输出为 int8 主输出与 mean/rstd。结果 PASS 193（19.3%）、FAIL 807（80.7%）、ERROR 0，summary 页 1000−193=807 与逐 case 解析对账一致。判否构成：37 条 NPU 输出 NaN 而 golden 与 benchmark 均有限，746 条三条误差比例越限（最高超阈 26 个数量级），741 条 int8 主输出偏差中位 61 LSB、137 条整量程饱和；通过组 int8 偏差恒为 {0,1} LSB，证明 harness 在同一配置下能给出逐位一致结论。报告判断机制为“方差误差被量化放大”：分组归一化的方差/rstd 偏差经 scale 变换后落到 int8 码值上，窄方差输入下最明显；未定位到代码行。注意该 workbook 的 failed cases / accuracy false cases 两个工作表为空，若以它们计数会把 807 条漏报成 0。
+  source: 2026-09-20 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6068 （closed）
+  behavior: 跑量化版分组归一化 GroupNormSiluQuant（fp16/bf16 输入、int8 输出）时，十次里有八次与 CPU/GPU 参考不通过：int8 主输出整片偏几十个 LSB、甚至整量程饱和，部分用例直接出 NaN，而算子和接口都返回成功。同一套配置下通过的那 193 条 int8 偏差只有 0 或 1 个 LSB，说明不是判据偏移。下游拿到的是码值已经偏掉的量化张量，不报错也不中断。
+  trigger_surface: Ascend 910B3 + CANN 9.1.0 + aclnnGroupNormSiluQuant + 窄方差分组归一化后量化（fp16/bf16 输入、int8 输出）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - visibility

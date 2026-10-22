@@ -1,0 +1,57 @@
+id: INF-1712
+legacy_ids: []
+slug: allgather_quant_mm_mx_scale_offset_pack
+aliases: []
+title: AllGatherMatmulV2 MX x2_scale 步进漏乘打包因子
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: mc2 MX scale 偏移计算
+  behavior: MXFP8 的 x2_scale 按 N-block 推进时 offsetScale 只乘 nOffset，漏乘打包因子 MXFP_MULTI_BASE_SIZE(=2)，下一个 N-block 读到错位的 E8M0 scale。
+effect:
+  objects:
+  - 数值结果
+  detail: WS=2 且 x2_scale 逐 K-block 变化时 rank0 与 rank1 的 y 有 567/2048 字节不同、最大偏差约 76(bf16)；identity scale 与 WS=4/8 逐字节一致，全程无报错。
+  visibility: 不可复现
+mitigation:
+  detect: 同输入跨 rank 比对 gathered y 的字节一致性（BI 准则 a），覆盖 x2_scale 逐 K-block 变化的 MXFP8 用例
+  fix: 'PR #4705 改为 offsetScale = nOffset*MXFP_MULTI_BASE_SIZE（非转置）或 nOffset*scaleK（transB），已合入 master 03b5c20；#6373 为兜底开关'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend950PR/DT + MXFP8 + world_size=2 + x2_scale 逐 K-block 变化（identity 或 WS=4/8 不触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/2872
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #2872（V300/Ascend950PR，MXFP8 量化）报告 aclnnAllGatherMatmulV2（torch.ops.npu.npu_all_gather_quant_mm）在同输入下跨 rank 输出不逐位一致：WS=2 + x2_scale 逐 K-block 变化时 rank0 与 rank1 的 gathered y 有 567/2048 字节不同、最大绝对差约 76（bf16），而 identity x2_scale(0x7F=1.0) 与 WS=4/8 均完全一致，同 rank 内 10 次重复运行也逐字节一致。2026-07-25 定位的真根因在 mc2/common/op_kernel/mc2_quant_batch_matmul_asw_block.h：MXFP8 每 N 位置打包 MXFP_MULTI_BASE_SIZE(=2) 个 E8M0 scale，推进到下一 N-block 时应步进 nOffset*MXFP_MULTI_BASE_SIZE，旧代码只乘 nOffset，导致 N-block 读到错位的 scale；identity scale 读错位置仍是 1.0，故不触发，x1_scale 沿 M 维不触发。修复为 PR #4705（合入 master 03b5c20），此前的 LOCAL/GATHER 双 cube 路径分歧（#6373）只是未定位根因前的 workaround。'
+  source: 2026-06-02 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/2872 （closed）
+  behavior: 同一次 all_gather_quant_mm 调用在两卡上得到不同的 y：rank0 与 rank1 的 gathered 结果有 28% 字节不同，最大偏差约 76（bf16 量级已明显偏离），但调用不报错、shape/dtype 正常；换 identity scale 或把 world_size 改成 4/8 后结果又逐字节一致，属于只有特定并行度加逐块 scale 才出现的跨 rank 不一致。
+  trigger_surface: Ascend950PR/DT + MXFP8 + world_size=2 + x2_scale 逐 K-block 变化 + transB 关；identity scale 或 WS=4/8 不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility

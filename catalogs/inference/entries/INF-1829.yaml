@@ -1,0 +1,60 @@
+id: INF-1829
+legacy_ids: []
+slug: vllm_ascend_random_sample_cross_stream_tensor_reuse
+aliases: []
+title: 随机采样张量跨流无 record_stream 被提前复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: random_sample 跨流生命周期
+  behavior: random_sample 在 global_stream 上分配并填充指数分布 q，消费流只 wait_stream 就 probs.div_(q)，未对 q 调 record_stream、释放前也不等消费流，分配器看不到跨流生命周期
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: temperature>0 的随机采样路径上，高并发/大分配压力下 q 的存储可能在消费流读完前被复用：出现超出正常随机性的采样结果与乱码、eager 高并发精度下降、同输入同种子不可复现；贪心不经过该路径
+  visibility: 不可复现
+mitigation:
+  detect: 高并发同种子重跑对比采样结果；或对 random_sample 的 q 加 record_stream 后跑同一压测看乱码是否消失
+  fix: 对 q 调用 q.record_stream(torch.npu.current_stream())，并在释放前让分配流反向等待消费流；上游 main 与 v0.18.0 均保留该实现，未核实修复 PR
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: temperature>0 随机采样 + 高并发 + 较大 KV/激活内存压力；temperature=0 不走该路径。CANN 9.0.0 / torch 2.9.0 / torch_npu 2.9.0.post4 / vllm 0.18.0 / vllm-ascend 0.18.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 报告者为源码分析+推断，未给出压测复现数据；机制与 torch 缓存分配器跨流语义一致。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13673
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 0.18.0 及 main 的普通随机采样（temperature>0）实现里，代码在 npu_stream_switch(global_stream()) 下创建并填充指数分布随机张量 q（q = torch.empty_like(probs); q.exponential_()），随后 torch.npu.current_stream().wait_stream(global_stream())，再在当前流上 probs.div_(q).argmax(dim=-1)。wait_stream 只保证 q.exponential_() 先于 probs.div_(q) 执行；q 在一个流上分配、在另一个流上消费，却没有调用 q.record_stream(torch.npu.current_stream())，释放 q 前也没有让分配流反向等待消费流完成。因此缓存内存分配器感知不到 q 完整的跨流生命周期，在高并发与较大内存分配压力下 q 的存储可能在消费流读完前被重新分配使用。该实现存在于 v0.18.0 等多个分支，main 分支仍保留。
+  source: 2026-08-06 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13673 （closed）
+  behavior: 开启温度的随机采样、并发较高时，偶发异常采样结果：输出乱码、eager 模式下精度下降，同一输入同一 seed 多次运行结果不一致。贪心采样（temperature=0）不受影响，所以按贪心做基线比对时看不出问题。
+  trigger_surface: temperature>0 随机采样 + 高并发内存压力 + eager
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出分布
+        to: 输出内容

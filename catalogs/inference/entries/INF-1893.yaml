@@ -1,0 +1,63 @@
+id: INF-1893
+legacy_ids: []
+slug: vllm_ascend_async_mtp_stale_accepted_counts
+aliases: []
+title: 异步 MTP 在 batch condense 后复用旧接受计数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: InputBatch/NPUModelRunner
+  behavior: condense() 先改写持久 InputBatch 行，_prepare_inputs 再按 prev_positions 重映射上一轮接受计数时读到被覆盖的默认值 1，使 Mamba/GDN 状态拷贝偏移错误。
+effect:
+  objects:
+  - 输出内容
+  detail: 高 batch 压缩/KV 压力下 Qwen3.5/3.6 hybrid 间歇返回重复、丢失或乱码 token：512 请求中 2 条损坏（KV 100%）；关闭 async scheduling 后 0/1024。
+  visibility: 静默错误
+mitigation:
+  detect: 固定 8196-token 前台请求 + 16 条长请求压满 KV，512 次 temperature=0 请求比对输出哈希；对照关闭 async scheduling
+  fix: 上一轮接受计数先写入独立 CPU/GPU 快照，按 prev_positions 重映射后再写回 InputBatch（issue 提议，open）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 'vLLM 0.23.0 + vllm-ascend 0.23.0rc1（含 #12255）、CANN 9.0.1、A3 TP2、Qwen3.6-35B-A3B-w8a8、prefix caching + async scheduling + MTP 3 tokens + FULL_DECODE_ONLY'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13863
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM 0.23.0 + vllm-ascend 0.23.0rc1（含 #12255）、torch-npu 2.10.0.post2、CANN 9.0.1、A3 2 卡 TP2、Qwen3.6-35B-A3B-w8a8，启用 --enable-prefix-caching、--async-scheduling、qwen3_5_mtp（num_speculative_tokens=3）、FULL_DECODE_ONLY 与 --num-gpu-blocks-override 288。上一轮接受计数被复制到 InputBatch.num_accepted_tokens_cpu；在下一次 _prepare_inputs 重映射前，异步 condense() 已更新持久 input-batch 行，新请求可把上一轮的行（如 row 11 接受 4）覆盖为默认 1，随后 prev_positions 重映射读到 1。该错误值改变 Mamba/GDN state-copy 偏移，导致请求重放或丢弃固定 token。NPUModelRunner 与 vLLM core 都有同一读路径；vLLM PR #38556 只同步了拷贝，未隔离可变行。压力复现 512 请求中 2 条输出不同（KV 100%），关闭 async scheduling 后 0/1024。'
+  source: 2026-08-09 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13863 （open）
+  behavior: 开启异步调度 + MTP + prefix caching 的 Qwen3.5/3.6 服务在高并发、KV 接近打满时，偶发返回重复、丢 token 或乱码内容，HTTP 仍 200、日志无报错；降低压力后不再出现。
+  trigger_surface: Qwen3.5/3.6 hybrid + async scheduling + MTP + prefix caching，高 batch 压缩与 KV 压力
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 运行时/执行
+    rewritten:
+    - component
+    uncertain:
+    - effect
+    - visibility

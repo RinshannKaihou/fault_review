@@ -1,0 +1,53 @@
+id: INF-1613
+legacy_ids: []
+slug: sgl_kernel_npu_recompute_w_u_equal_len_batch_index
+aliases: []
+title: recompute_w_u 等长路径 batch 索引恒 0 静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: wy_fast recompute_w_u
+  behavior: 等长分支（cu_seqlens=None）由 i_bh//H 求 batch，i_bh∈[0,H) 故 i_b 恒 0；beta/g_cumsum 已是 [B,H,T]，偏移仍按 [B,T,H] 加 bos=i_b*T，少乘 H。
+effect:
+  objects:
+  - 数值结果
+  detail: B>1 且 cu_seqlens=None 时多个 batch 的结果都落在 batch 0 的位置并互相覆盖，beta/g_cumsum 也读错 head 的行；不报错、无 NaN，只有与参考逐元素比对才可见（issue 附 assert_close 复现）；服务全走 varlen 不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 对 B>1 的等长输入单独跑一份与 CUDA/eager 参考的逐元素对比；varlen 用例覆盖不到这条分支
+  fix: 'issue 给出补丁：i_b=program_id(1)、i_t=i_t_o、bos_bh=i_b*H*T_max，并合并 #690 的 i_t 修复（open，未发布）；vllm-ascend 同源缺陷见 #14333'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: sgl-kernel-npu main + Ascend 910C；仅 cu_seqlens=None（等长）且 B>1 时触发，服务侧 packed varlen 路径不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sgl-kernel-npu/issues/709
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'python/sgl_kernel_npu/sgl_kernel_npu/fla/wy_fast.py 第 42-71 行 recompute_w_u_fwd_kernel_npu_kernel（sgl-kernel-npu main 分支，Ascend 910C / Atlas 800I A3）：等长分支写成 for i_bh in range(H): i_b, i_h = i_bh // H, i_bh % H，而 i_bh 取值只有 [0,H)，故 i_b 恒为 0；kernel 的 launch grid 是 (NT,B)，真正的 batch 下标在 tl.program_id(1)。同函数 recompute_w_u_fwd_npu 在调用前把 beta、g_cumsum 转置成 [B,H,T]（transpose(1,2).contiguous()），但 kernel 内偏移仍是 g + bos + i_h*T_max + global_offs_t 且 bos=i_b*T，按 [B,T,H] 语义算，缺 i_b*H*T_max 这一项。修法是 i_b=tl.program_id(1)、bos_bh=i_b*H*T_max，并合并 #690 里 i_t 未初始化的修复；同一 kernel 三个 bug 相互关联，vllm-ascend 有同源三处。'
+  source: 2026-08-16 GitHub sgl-project/sgl-kernel-npu issue https://github.com/sgl-project/sgl-kernel-npu/issues/709 （open）
+  behavior: 自己拼等长 batch 调用 recompute_w_u_fwd_npu（cu_seqlens=None、B>1）时，返回的 w/u 与参考不符但没有任何报错：多个 batch 的结果写到 batch 0 的位置并互相覆盖，beta/g_cumsum 读到别的 head 的行。SGLang 服务路径总传 cu_seqlens（packed varlen），所以线上不出现；离线脚本或自研推理栈会静默拿到错值，通常靠 loss 异常或逐元素对比才发现。
+  trigger_surface: sgl-kernel-npu fla wy_fast recompute_w_u 等长分支（cu_seqlens=None）+ B>1；910C 实测
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    issue_unfixed:
+    - detail

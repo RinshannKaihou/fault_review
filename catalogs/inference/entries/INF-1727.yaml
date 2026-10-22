@@ -1,0 +1,55 @@
+id: INF-1727
+legacy_ids: []
+slug: ms_load_model_plain_len_int32_truncation
+aliases: []
+title: MindIR 解密长度 size_t 转 int32 静默截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspore
+    component: ParseFromArray 长度转换
+  behavior: ParseModelProto/ParseGraphProto 用 static_cast<int32_t>(plain_len) 把 size_t 解密长度传给 protobuf，超过 INT32_MAX 时静默回绕成小值。
+effect:
+  objects:
+  - 模型权重
+  detail: 解密后超过约 2GB 的 MindIR 按错误长度解析，表现为加载失败或图数据损坏；没有任何溢出告警，小模型完全不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 构造解密后 >2GB 的 MindIR 走加载路径，或静态检查 load_model.cc 里 size_t→int32_t 的 static_cast；应改用 SizeToInt()
+  fix: 待定（issue open，无修复 PR）；方向：改用框架的 SizeToInt() 做安全转换，溢出时报错而不是截断
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: MindIR 加载 + 解密后长度超过 INT32_MAX（约 2GB）的模型文件；issue 标注与硬件无关
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29283
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindIR 加载流程里 ParseModelProto 与 ParseGraphProto 用 static_cast<int32_t>(plain_len) 把 size_t 类型的解密数据长度放进 protobuf 的 ParseFromArray。解密后数据超过 INT32_MAX（约 2GB）时这个强转静默回绕，传给 ParseFromArray 的长度小于实际数据，导致解析失败或数据损坏。issue 给出两处位置（mindspore/core/load_mindir/load_model.cc 的两个函数）与期望改法（改用 SizeToInt()，溢出主动报错），标注为历史问题、不依赖特定环境。
+  source: 2026-04-08 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29283 （closed）
+  behavior: 加载大模型的加密/解密 MindIR 时（解密后超过 2GB），模型加载报解析错误，或者加载出来的图数据不对；小模型完全正常，所以很容易被当成文件损坏或传输问题。整个过程中没有溢出或长度不匹配的告警。
+  trigger_surface: MindIR 加载 + 解密后长度 > INT32_MAX 的模型文件；与硬件无关（issue 标注历史问题）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

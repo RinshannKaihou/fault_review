@@ -1,0 +1,61 @@
+id: INF-2037
+legacy_ids: []
+slug: dsv4_dspark_compressor_state_tail_only_save
+aliases: []
+title: 大投机深度下 compressor 只存尾窗状态致输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: torch_npu
+    component: compressor SaveState
+  behavior: COFF::OVERLAP 分支的 SaveState 只持久化 tail 侧窗口；批量验证调用（dealTcSize>1）时首个 current block 的 kv/score 压缩状态没有写回 GlobalMemory
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: DeepSeek-V4-Flash w8a8+MTP/DSpark 大投机深度、长输出且 do_sample=false 时，默写《滕王阁序》前几段正常，中段起输出 2.、/w 与成串星号标点堆叠，后称输入并非完整原文且含杂梳理乱码；投机深度小不明显，越长越明显。
+  visibility: 质量退化
+mitigation:
+  detect: 对同一 prompt 用不同 num_speculative_tokens 做确定性解码比对（do_sample=false），检查长输出中段是否出现符号/数字重复；对比 compressor 写回的 kvState/scoreState block 数
+  fix: 报告者给出实验补丁（compressor_block_vec_perf.h SaveState 在 dealTcSize>1 时补写首个 current block 的 kv/score 状态），自称可能未修全；未核实是否合入
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: DeepSeek-V4-Flash-w8a8-mtp + DSpark/MTP 大 num_speculative_tokens（7）；0.13.0rc3 与 deepseekv4 镜像均复现；TP8
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9111
+  kind: github_issue
+relations: []
+original:
+  mechanism: DeepSeek-V4 的 DSA compressor（csrc/attention/compressor/op_kernel/arch32/compressor_block_vec_perf.h，SaveState，COMP::coff==COFF::OVERLAP 分支）为投机解码的批量验证写压缩 KV/score 状态时，只在 sIdx+validSeqCnt==bSeqUsed 的 tail 侧窗口写回 kvStateGm_/scoreStateGm_。num_speculative_tokens 较大（dealTcSize>1）时一次调用覆盖多个可能的接受前缀，首个 current block 的状态没有被持久化，后续 verify/下一次压缩读到与串行 one-token 压缩不一致的状态。报告者的实验补丁正是在 dealTcSize>1 时按 cmpRatio-headHolderSeqCnt 补写首块左右两段 kv/score 状态，并称在自己环境里修好了该问题但不确定是否完整。版本：0.13.0rc3 镜像与 deepseekv4 镜像（基于 0.18）均复现，TP8、max-model-len 128k/131072。
+  source: 2026-05-13 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/9111 （open）
+  behavior: 确定性解码（do_sample=false）下要求模型默写《滕王阁序》，前几段正常，中段开始输出 2.、/w 与成串星号标点堆叠，最后模型反过来声称「您的输入似乎并非完整原文，而是包含杂梳理乱码」。同一提示在投机深度小的时候不会明显劣化，长输出越长越明显。
+  trigger_surface: DeepSeek-V4-Flash w8a8 + MTP/DSpark 大 num_speculative_tokens + 长输出确定性解码
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

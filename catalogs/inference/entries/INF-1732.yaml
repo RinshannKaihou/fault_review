@@ -1,0 +1,53 @@
+id: INF-1732
+legacy_ids: []
+slug: npu_cumsum_fp16_accumulate_saturate
+aliases: []
+title: cumsum fp16 内部按 fp16 累加致饱和不出 Inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: aclnn Cumsum 累加 dtype
+  behavior: aclnn Cumsum 对 fp16 输入直接用 fp16 累加，部分和超过 65504 后饱和成 2048，既不提升到 fp32 累加，也不产生 Inf。
+effect:
+  objects:
+  - 数值结果
+  detail: 3717120 元素 fp16 对照：CPU 参考 max=inf、inf_count=3,586,185；NPU 直接 fp16 得 max=2048.0000、inf_count=0，allclose 为 False；先 .float() 再 cumsum 转回 fp16 则与 CPU 一致。
+  visibility: 静默错误
+mitigation:
+  detect: fp16 长序列 cumsum 与 cumsum(x.float()).half() 对比，看是否出现饱和平台而不是 inf
+  fix: 待定（issue open）；规避：cumsum 前 upcast 到 fp32 再转回 fp16
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: fp16 张量 + 元素数达百万级（累加和超 65504）的 torch.cumsum；torch_npu 2.7.1 / CANN 8.x / Ascend 910B
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2195
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2195（2026-06-01，open，torch_npu 2.7.1 / CANN 8.x / Ascend 910B，Python 3.11）：torch.cumsum 在 fp16 上直接走 CANN 的 aclnn Cumsum kernel，kernel 内部以 float16 累加，累计和超过 fp16 上限 65504 后进入饱和，输出停在 2048 左右而不是溢出成 inf。报告给出 3717120 元素的对照脚本：CPU 侧 cumsum(inp.float()).half() 得 min=0.3340、max=inf、inf_count=3,586,185；NPU 直接 fp16 得 min=0.3340、max=2048.0000、inf_count=0，allclose(rtol=1e-3, atol=1e-5) 为 False；先在 NPU 上 .float() 再 cumsum 后转回 fp16 则与 CPU 参考一致。即缺陷位于累加 dtype 选择（应 fp32 累加后回写 fp16），而非调用方用法。'
+  source: 'Ascend/pytorch #2195（2026-06-01，open） https://gitcode.com/Ascend/pytorch/issues/2195'
+  behavior: 用户对 fp16 张量做 torch.cumsum，得到一条在 2048 处被削平的长平台，没有 inf、没有告警；与 CPU 或 CUDA 的 cumsum 结果在序列中后段整体偏离，累积和越大偏差越大，只有先手动 upcast 到 fp32 才能复现 CPU 数值。做 fp16 掩码累积、概率前缀和、位置累加这类计算时，后续步骤直接吃到错值。
+  trigger_surface: fp16 torch.cumsum + 百万级元素（累计和超 65504）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

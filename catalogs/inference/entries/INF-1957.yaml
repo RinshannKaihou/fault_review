@@ -1,0 +1,51 @@
+id: INF-1957
+legacy_ids: []
+slug: triton_exp_minmax_drops_nan
+aliases: []
+title: triton_experimental 的 min/max 静默丢 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: min/max lowering（TE 后端）
+  behavior: min/max 的元素级与按维归约 lowering 使用裸 tl.minimum/tl.maximum，落盘为 MLIR arith.minnumf，该语义遇 NaN 时丢弃而非传播。
+effect:
+  objects:
+  - 数值结果
+  detail: 输入含 NaN 时 min/max 输出不含 NaN，torch.equal 与 eager 参考失败；训练 loss 变成 nan 后经该后端被静默抹掉，下游看到的是正常数值。
+  visibility: 静默错误
+mitigation:
+  detect: 构造首行全 NaN 的输入，跑 minimum/maximum 与 min(dim=0)/max(dim=0)，与 eager 做 torch.equal 并检查输出是否含 NaN
+  fix: 待定（issue 已 closed，正文未给修复 PR；报告建议改用具 NaN 传播语义的 minimum/maximum lowering）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 910B2 + CANN 9.1.0-beta.1 + torch/torch_npu 2.13.0 + triton-ascend 3.2.2 + TORCHINDUCTOR_NPU_BACKEND=triton_experimental；输入含 NaN
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4183
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #4183（2026-08-19 closed；Ascend 910B2、CANN 9.1.0-beta.1、PyTorch 2.13.0 / torch_npu 2.13.0、triton-ascend 3.2.2、TORCHINDUCTOR_NPU_BACKEND=triton_experimental）：torch.compile 走 triton_experimental 后端时，min/max（元素级 minimum/maximum 与按维 min/max 归约）的 lowering 直接使用裸 tl.minimum/tl.maximum，落盘为 MLIR arith.minnumf；arith.minnumf 遇 NaN 丢弃，而 PyTorch 的 torch.minimum / torch.min(dim) 要求 NaN 传播，CUDA inductor 后端生成的就是 NaN 传播形式。报告给的最小复现把 x[0] 置为 NaN 后，元素级 minimum 的输出不含 NaN、min(dim=0) 同样丢掉 NaN，torch.equal 与 eager 参考失败；报告未给修复 PR，issue 已 closed。'
+  source: 2026-08-19 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4183 （closed）
+  behavior: 在 triton_experimental 后端下，只要输入张量含 NaN，min/max 的输出就不含 NaN，数值看起来是正常结果，与 eager 和 CUDA inductor 后端不一致。实际影响是 NaN 信号被抹掉：loss 已经变成 nan 时经这一后端后下游看到的是普通数值，NaN 检查与发散告警都发现不了，属于静默的正确性错误，且只在含 NaN 的输入上出现。
+  trigger_surface: torch.compile + triton_experimental 后端下的 min/max（元素级与按维归约），输入含 NaN
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

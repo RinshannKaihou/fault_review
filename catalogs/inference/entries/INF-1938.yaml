@@ -1,0 +1,56 @@
+id: INF-1938
+legacy_ids: []
+slug: msmodelslim_faquantizer_no_type_check
+aliases: []
+title: FAQuantizer.quant 不校验入参类型静默跑完
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: FAQuantizer.quant
+  behavior: quant(states_tensor=1.0) 传入 float 而非 Tensor 时没有类型校验，量化流程照常执行完成并落盘，期望的 TypeError 不抛出
+effect:
+  objects:
+  - 模型权重
+  detail: 把 query_states 换成 1.0 后量化仍正常结束并产出 w8a8 权重；该层实际未按 FA3 路径量化，产物里没有任何日志或标记说明它被跳过
+  visibility: 静默错误
+mitigation:
+  detect: 量化后核对 quant_model_description 中各层是否都有 scale/量化标记，并抽查 FA3 层是否真的走了量化分支
+  fix: 待定（issue closed，正文未给修复 PR；同 issue 另两项参数校验/接口报错也未附修复链接）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim commit 692367f6 + 手写脚本调用 fa_quantizer.quant，向 states_tensor 传非 Tensor（自动化异常值用例）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/291
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '环境 Ubuntu 22.04、python 3.10、msmodelslim commit 692367f64f4172370df0e6a9381b33a62b4f2d61。在 Qwen2.5-7B-Instruct 的 w8a8+FA3 量化脚本里把 `query_states = self.fa_quantizer.quant(query_states, qkv="q")` 改成 `self.fa_quantizer.quant(states_tensor=1.0, qkv="q")`，期望抛 TypeError: states_tensor must be Tensor, not float.，实际没有任何报错，量化流程直接正常执行完成。即 FAQuantizer.quant 缺少入参类型校验，非法输入被静默接受。同 issue 另报两项：fa_quant/fa_amp 参数设为 model.config.num_hidden_layers 后执行报错、kvcache 调 quant_config.kv_quant() 执行报错，均属参数校验/接口问题。复现命令：`python Qwen2.5-7B-Instruct_quant_w8a8_fa3_param.py --model_path ... --save_path ...`。'
+  source: '2026-06-08 GitCode Ascend/msmodelslim issue #291 https://gitcode.com/Ascend/msmodelslim/issues/291（closed）'
+  behavior: 自动化异常值用例把 quant() 的输入从张量换成 1.0，本意是验证参数校验，结果量化照常跑完、打印成功、权重照常落盘：没有 TypeError、没有 warning，产物和正常量化看不出区别。等到推理精度对不上再回头看，才知道那一层 FA3 的量化根本没生效，而日志里没有任何地方提示它被跳过。
+  trigger_surface: msmodelslim FA3 量化路径 + 调用方传入非 Tensor 的 states_tensor（异常值/误用入参）
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

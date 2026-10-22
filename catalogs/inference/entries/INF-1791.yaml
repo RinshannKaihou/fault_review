@@ -1,0 +1,74 @@
+id: INF-1791
+legacy_ids: []
+slug: hcomm_allgather_aiv_rdma_servernum_oob_write
+aliases: []
+title: AllGather AIV RDMA serverNum 超配写越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: aiv_all_gather 写偏移假设
+  behavior: kernel 按 (i*rankSize_+blockIdx_)*len 计算写 output 偏移，隐含 userRankSize==serverNum*localRankSize 两级分解假设；PD 分离等部署下 level1 子通信域
+  objects[0]:
+    component: aiv_all_gather 写偏移假设
+effect:
+  objects:
+  - 数值结果
+  detail: 板端日志复现：单卡数据量 61440B 场景原代码 i=1..3 越界写至 output[8..31]（超出 480KB 输出缓冲约 1.4MB），触发 MTE invalid GM address；修复 host 侧折算 kernelServerNum=min(userRankSize/local
+  visibility: 报错
+mitigation:
+  detect: MTE invalid GM address 设备异常（PD 分离 AllGather 场景）；serverNum 对账日志（修复 MR 新增）
+  fix: 修复 MR https://gitcode.com/cann/hcomm/merge_requests/6144 （open：host 侧折算+死代码清理+对账日志；待上板回归，未发布）；姊妹 MR !6142 同题 closed
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: '910B AllGather AIV RDMA 路径 + PD 分离等 level1 成员数超配拓扑（userRankSize=8/localRankSize=8/level1ServerNum=4 实测）；一致拓扑不受影响；伴 #6146 兜底回退 MR'
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 主表现 fail-loud（MTE 异常），但越界写本身可踩邻近 output 内存——在缓冲布局变化时存在静默污染面，故收录（机制+板端复现完整）。
+evidence:
+- url: https://gitcode.com/cann/hcomm/merge_requests/6144
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/hcomm/merge_requests/6142
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/hcomm/merge_requests/6146
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: hcomm MR !6144（修复单含完整根因+板端日志）。AllGather AIV RDMA 路径（CollAllGatherAivRdmaExecutor → aiv_all_gather_910b_rdma）机内重排阶段按 (i*rankSize_+blockIdx_)*len 计算写 output 偏移，公式隐含 userRankSize==serverNum*localRankSize 的两级分解假设。PD 分离等部署下 level1 子通信域成员数（serverNum）可能大于 op 通信域实际跨 server 数：userRankSize=8、localRankSize=8、level1ServerNum=4 时 kernel 中 i=0 写 output[0-7] 正确，i=1..3 继续写 output[8..31] 而 AllGather 输出缓冲仅 userRankSize*len（8*len），越界写触发 MTE invalid GM address。修复（kernel 参数表无 userRankSize 无法内核自证边界，落在 host executor）：kernelServerNum=min(userRankSize/localRankSize, level1 子通信域成员数)，一致拓扑折算值与原值相同；清理死代码 sendSize、补 serverNum 对账日志。板端复现：userRankSize=8/localRankSize=8/level1ServerNum=4/单卡 61440B，原代码 i=1..3 越界写至 output[8..31]（超 480KB 缓冲约 1.4MB）。待上板回归。
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/hcomm/merge_requests/6144 ；同题 closed https://gitcode.com/cann/hcomm/merge_requests/6142 ；兜底 https://gitcode.com/cann/hcomm/merge_requests/6146
+  behavior: PD 分离等多 server 部署下走 AllGather AIV RDMA 路径时，若 level1 通信域成员数超过实际跨 server 数，kernel 会按错误公式往输出缓冲之外写最多数 MB 的数据：设备报 MTE invalid GM address 异常，同批通信结果不可信；一致拓扑（rank 数恰为 server×local）不受影响。
+  trigger_surface: 910B + AllGather AIV RDMA + PD 分离/level1 成员数超配拓扑
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - cause.objects[0].component
+  - date: '2026-10-20'
+    fields:
+    - cause.objects[0].component
+  - date: '2026-10-20'
+    fields:
+    - cause.objects[0].component
+  - date: '2026-10-20'
+    fields:
+    - cause.objects[0].component
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

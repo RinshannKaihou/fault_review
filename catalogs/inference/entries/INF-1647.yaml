@@ -1,0 +1,63 @@
+id: INF-1647
+legacy_ids: []
+slug: triton_ascend_same_program_reload_corrupted
+aliases: []
+title: 同 program store 后重读返回损坏值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 同程序 store→load 保序
+  behavior: 同一 program 内 tl.store 写 output_ptr 后立即从同一地址 tl.load，读回的不是刚写入的值（损坏且每次不同）；把归一化拆到第二个 kernel 就完全正确。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: FlagGems top-k 带 renormalize：sum_err 1.61e10、ref_err 3.18e9、repeat_diff 3.05e9，ids 仍全对；0 次重读时 2.38e-07，1 次重读即坏，重读越多越差。
+  visibility: 不可复现
+mitigation:
+  detect: 对“同一 program 内写后重读”的 kernel 做重复运行比较（repeat_diff）与只读回第 N 个值的消融；把归一化拆成第二 kernel 作对照
+  fix: 规避=把依赖刚写入值的计算拆到第二个 kernel（issue 内已验证 repeat_diff=0）；根因落在 backend/triton-adapter-opt/bishengir/runtime 尚未定论（closed）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 910B3 + CANN 8.5 + Triton 3.2（triton-ascend 3.2 系）；仅在 kernel 内对刚 store 的输出做同 program 重读（与另一 Triton kernel 的地址重合）时触发，不动权重、不改配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/1416
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0178
+original:
+  mechanism: FlagGems 的 fused_topk / topk_softmax kernel（经 vLLM-Plugin-FL 的 fused_topk 包装，也可直接调用）在 Ascend 910B3 + CANN 8.5 + Triton 3.2 上：kernel 先把原始 top-k 权重 store 到 output_ptr，随后在 renormalize 阶段从 output_ptr 重新 load 这些值再除以和；读回的值已经完全损坏（报告者用 readback-capture 直接展示了 tl.load(output_ptr) 返回的原始值就是错的）。消融：不重读时 sum_err=2.38e-07；只重读一次即 sum_err=3.18e9、ref_err=3.18e9、repeat_diff=3.05e9；重读 2/4/8 次误差继续增大，而 top-k ids 始终正确。把归一化拆到第二个 Triton kernel 后同负载完全正确（sum_err 2.38e-07、repeat_diff 0），说明缺陷在同 program 内 store→load 的保序/lowering，不在算法。报告附最小复现、ttir/triton IR 与 ttadapter linalg MLIR、以及按 CANN 版本二分的手工 bishengir-compile 重放日志，未把根因定到 backend / triton-adapter-opt / bishengir-compile / runtime 中某一处。
+  source: 2026-08-06 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/1416 （closed）
+  behavior: top-k / softmax 这类“先写中间结果、再读回来归一化”的 kernel 在 NPU 上输出值完全离谱：权重和达到 1e10 量级、与参考差 1e9，且每次重复运行结果都不同；但 top-k 的 id 一直是对的，所以下游往往先怀疑采样或 dtype。把归一化挪到第二个 kernel 立刻恢复正常，说明问题只在同一 kernel 内的写后重读。
+  trigger_surface: 同 program 内 tl.store 后立即 tl.load 同一输出地址（renormalize 式 kernel）；910B3 + CANN 8.5 + Triton 3.2
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    issue_unfixed:
+    - detail

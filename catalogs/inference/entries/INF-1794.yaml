@@ -1,0 +1,68 @@
+id: INF-1794
+legacy_ids: []
+slug: ops_math_pad_backward_empty_input_uninit
+aliases: []
+title: pad 反向/UnfoldGrad 空输入不写非空出参
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: 空输入早退路径
+  behavior: 空 tensor 输入（S2=0 等）配非空出参时 kernel 早退返回 ACLNN_SUCCESS 但不写非空输出——出参保留未初始化内存内容；修复补齐早退路径的输出初始化
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: '下游读到显存残留值（内容随历史分配变化、不可复现）；issue #3553（10-13 创建，本轮修复 MR merged 状态复核收录）；修复 MR 6509 已 merged（修复后早退路径初始化输出）'
+  visibility: 不可复现
+mitigation:
+  detect: 对空输入调用后校验输出是否被写（哨兵预填）
+  fix: 修复 MR https://gitcode.com/cann/ops-math/merge_requests/6509 （merged 2026-10-19；发布版本未核实）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: pad 系反向（pad_grad 等）与 UnfoldGrad + 空 tensor 输入 + 非空出参；返回码 0 成功
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 与 INF-1478（DynamicQuant 空 x 漏写 scale）同「空输入早退不写输出」模式，不同算子不同仓（ops-math vs ops-nn），不建 var（机制同为早退漏写但调用面独立）。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3553
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6509
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0275
+original:
+  mechanism: 'ops-math issue #3553（2026-10-13，closed）+ 修复 MR !6509（merged 2026-10-19T12:35）。pad 系反向算子与 UnfoldGrad 在空 tensor 输入（S2 为 0 等）配非空出参时：kernel 早退返回成功（两段式均 ACLNN_SUCCESS/0）但完全不写非空输出——调用方拿到的出参是未初始化内存内容，随显存历史分配变化、不可复现。修复 MR 6509 补齐早退路径的输出内存初始化（修复 pad 系反向及 UnfoldGrad 空 tensor 输入早退时未初始化输出内存的问题）。发布版本携带状态未核实。'
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-math/issues/3553 ；修复 https://gitcode.com/cann/ops-math/merge_requests/6509
+  behavior: 反向 padding 类算子在输入为空张量、输出缓冲非空时直接返回成功但什么都不写：调用方读到的"梯度"是显存里残留的旧数据，每次运行内容不同、无法复现，污染下游训练/推理且不产生任何错误码；修复后早退路径会正确初始化输出。
+  trigger_surface: CANN pad 系反向/UnfoldGrad + 空 tensor 输入 + 非空出参
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度

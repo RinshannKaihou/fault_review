@@ -1,0 +1,60 @@
+id: INF-2045
+legacy_ids: []
+slug: qwen36_mtp_first_request_empty_content
+aliases: []
+title: Qwen3.6 MTP 首次请求返回空 content
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 首请求 decode 路径
+  behavior: 服务启动后首个请求在 MTP 投机解码下未返回完整回答即结束；同一条 curl 立刻重发走正常路径
+effect:
+  objects:
+  - 输出内容
+  detail: content 为空串、completion_tokens=1、finish_reason=stop，HTTP 200；同一条 curl 第二次起正常返回完整回答
+  visibility: 静默错误
+mitigation:
+  detect: 服务拉起后第一条请求断言 content 非空；对比首请求与后续请求的 cudagraph_mode 与 completion_tokens
+  fix: 待定（issue 未给根因与修复）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Qwen3.6-27B bf16、TP2、max-model-len 262144、qwen3_next_mtp(2)、FULL_DECODE_ONLY、enable_thinking=false；A800T A2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9355
+  kind: github_issue
+relations: []
+original:
+  mechanism: 根因未定位。现场日志显示首个请求的 prefill 批 BatchDescriptor(num_tokens=14, num_reqs=None, uniform=False) 以 cudagraph_mode NONE 执行，随后 decode 批 num_tokens=3、num_reqs=1 走 FULL 图并 Replaying aclgraph，请求在 2 秒内以 finish_reason=stop、completion_tokens=1 结束，message.content 为空串；同一条 curl 立刻重发就走正常路径返回 30 个 token 的完整回答。配置为 Qwen3.6-27B bf16、TP2、DP1、max-model-len 262144、max-num-seqs 64、qwen3_next_mtp num_speculative_tokens=2、FULL_DECODE_ONLY 且 capture sizes 从 3 起、reasoning-parser qwen3、enable_thinking=false、关闭 prefix caching。
+  source: 2026-05-20 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/9355 （open）
+  behavior: 服务刚拉起后的第一条 /v1/chat/completions 返回 200，但 choices[0].message.content 是空字符串，usage 里 completion_tokens=1、finish_reason=stop；客户端把空回答当正常响应。紧接着重发同一条请求就正常返回完整答案，所以只看平均值或重试后的指标发现不了，只有抓首请求响应体才能看到。
+  trigger_surface: 服务启动后第一条请求（首个 prefill 批走 NONE 图、decode 走 FULL 图），MTP 投机解码
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 运行时/执行
+    rewritten:
+    - behavior

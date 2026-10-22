@@ -1,0 +1,60 @@
+id: INF-1944
+legacy_ids: []
+slug: vllm_ascend_dsv4_block_size_silent_override
+aliases: []
+title: DSv4 混合 KV 管理静默把 block-size 改成 32
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: block-size 传播（hybrid KV）
+  behavior: DSv4 传 --block-size 128 且未关 hybrid KV manager 时,CompressorStateCache 经 core.py 的 min() 把 block_size 静默改成 32,只打一条 warning
+effect:
+  objects:
+  - 性能/资源
+  detail: 用户以为按 128 的块粒度分配 KV，实际按 32 运行；块大小变化影响前缀缓存命中与调度粒度，服务不报错，只有翻日志才能看到一行 warning。
+  visibility: 静默错误
+mitigation:
+  detect: 启动后打印 cache_config.block_size 与 CLI 传入值比对,或用 --no-disable-hybrid-kv-cache-manager 与关闭该 manager 两组配置做对照
+  fix: 待定（issue open,附修复 PR 说明,未核实是否合入）；修复方向：hybrid KV manager 下尊重用户显式 --block-size,只在未指定时取 min()
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: DeepSeek-V4-Flash,启动带 --block-size 128 与 --no-disable-hybrid-kv-cache-manager;warning 来自 vllm-ascend utils.py:1390,改写点经 core.py 的 min() 传播
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14479
+  kind: github_issue
+relations: []
+original:
+  mechanism: issue 正文（以 PR 说明形式提交）描述:用 --block-size 128 且带 --no-disable-hybrid-kv-cache-manager 启动 DeepSeek-V4-Flash 时,日志打印 WARNING [utils.py:1390] For deepseek_v4 model, block size should be 32, 64 or 128. Setting block size to 32 for better performance.,随后 cache_config.block_size 被从 128 静默改写成 32。原因是 CompressorStateCache 给出的建议值经 core.py 里的 min() 传播,覆盖了用户显式传入的值,用户没有任何拒绝或显式感知的途径;issue 以修复 PR 的形式给出,但未核实是否已合入。
+  source: 2026-08-18 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14479 （open）
+  behavior: 按文档把 block-size 设成 128 启动 DeepSeek-V4-Flash,服务正常运行、没有任何报错,但实际跑的是 32 的块大小:前缀缓存命中、KV 分配和调度粒度都和预期不同,只有翻日志才能看到一行 warning,性能调优时很容易把差异归因到别处。
+  trigger_surface: DeepSeek-V4 系列 + 显式 --block-size + 未关闭 hybrid kv cache manager（--no-disable-hybrid-kv-cache-manager）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 配置/参数
+        to: KV缓存
+    rewritten:
+    - detail

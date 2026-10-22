@@ -1,0 +1,53 @@
+id: INF-1595
+legacy_ids: []
+slug: cann_grouped_matmul_swiglu_quant_a8w4_m1_quantscale_wrong
+aliases: []
+title: GroupedMatmulSwigluQuant A8W4 单 token 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: GMM SwiGLU A8W4 MSD 中段
+  behavior: 高置信根因假设：A8W4 MSD 中段把 SetQuantVector 反量化结果直接以 fp16 写入 workspace，随后乘 16 做高低位还原，放大表示误差并经 xScale、SwiGLU、量化传播。
+effect:
+  objects:
+  - 数值结果
+  detail: M=1/E=1/K=64/N=64/NZ/per-channel 用例 outputScale 单元素 max_abs 565.52、阈 4.88e-4 超约 1.16e6 倍；output（int8）max_diff=127 达上限；正常返回。单例证据。
+  visibility: 静默错误
+mitigation:
+  detect: M=1 单 token decode 形态 + NZ 权重 + per-channel 的 A8W4 最小用例；同时看 output 与 outputScale（Q_scale=max(|S|)/127）两个输出，dump 中段 mmOut workspace 与标杆 int32→fp32 中间值比对
+  fix: 待定（issue closed；H1 指向 mid 的 half workspace 与 tiling 的 DT_FLOAT16 C 输出需改更高精度，环境修复后需复跑圈定边界）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: aclnnGroupedMatmulSwigluQuant（CANN 9.0.0，Ascend 910B3）+ A8W4 + M=1 + FRACTAL_NZ 权重 + per-channel（QuantMode=1）+ K=64/N=64；仅 1 例完成判定，触发边界未圈定
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 单例证据（本轮 999 例因测试环境/用例设计未形成判定）；根因 H1 为源码静态比对 + 单例观测，未做改前改后对照
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5072
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5072（2026-09-07 closed）用 ATK 以 pyaclnn 调用 aclnnGroupedMatmulSwigluQuant（CANN 9.0.0，Ascend 910B3，torch 2.10.0，源码 v9.0.0 afe72144），CPU 标杆按文档“MSD 场景 A8W4”公式实现，标准为 single_bm high_performance（float32 输出 max_abs 阈 4.88e-4、EB 阈 6.10e-5）与 QUANTIZE（int8 max_diff 须为 0）。本轮 1000 例中仅编号 0（E=1、M=1、K=64、N=64、QuantMode=1 per-channel、format=1 FRACTAL_NZ）完成执行与判定且失败：outputScale（float32 [1]）max_abs_diff=565.5208740234375（超阈约 1.16e6 倍）、EB 同为 565.52、output（int8 [1,32]）max_diff=127 达 int8 上限；两侧调用均正常返回、无错误码。其余 999 例未判定：945 例远端执行服务 HTTP 404、44 例流同步失败 507015、10 例 N%8!=0 被 npu_quantize 拒绝。根因假设（源码行号属 v9.0.0 afe72144）：H1（高置信）NPU A8W4 MSD 中段把 SetQuantVector 反量化结果直接以 fp16 写入 workspace（op_kernel/grouped_matmul_swiglu_quant_a8w4_msd_mid.h:98 的 GlobalTensor<half> mmOutGM、243~246 行的 SetQuantVector→Iterate→GetTensorC；op_host/grouped_matmul_swiglu_quant_tiling.cpp:183 声明 C 输出 DT_FLOAT16），而标杆 per-channel 路径以 int32 精确累加后转 fp32 乘 w_scale 再 cast fp16；该 fp16 中间值随后在 ..._a8w4_msd_post.h:124-125 乘 16（DEFAULT_MUL_SCALE）做高低位还原，表示误差被放大 16 倍后经 xScale、SwiGLU、量化逐级传播。叠加因素：H5 量化除法方向（NPU 先算 quantScale=reduceMax/127 再取倒数乘回，标杆直接 127/max 相乘，多一次倒数舍入）；H6 fp32→fp16→int8 两段 cast 双舍入（utils.h:308-327）。outputScale 差 565.52 折算约等于两侧 max(|SwiGLU 输出|) 相差 7.2e4。'
+  source: 2026-09-07 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5072 （closed）
+  behavior: A8W4 量化的 grouped matmul + SwiGLU 在单 token（M=1）decode 形态下，量化输出和量化因子都错：量化因子（Q_scale）与参照差 565，是阈值的百万倍，int8 输出最大差 127 等于整个 int8 值域，等于说这一行量化结果基本是废的。算子正常返回、没有告警，只能靠比对发现；本轮只有 1 条用例跑出来，所以不确定是只在 NZ/per-channel 小规模触发还是普遍存在。
+  trigger_surface: A8W4 场景 + M=1 单 token + FRACTAL_NZ 权重 + per-channel 量化 + K=64/N=64 最小规模（单例，边界未圈定）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior

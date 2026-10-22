@@ -1,0 +1,58 @@
+id: INF-1483
+legacy_ids: []
+slug: op_plugin_atb_tensor_convert_dim_over_8_oob_write
+aliases: []
+title: ATB Tensor 转换超 8 维越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: AtTensor2AtbTensor 维数校验
+  behavior: AtTensor2AtbTensor 按输入维数逐维写 atb::Dims.dims[MAX_DIM=8]，不校验 dim>8；9 维起越界写 shape.dimNum 与后续字段。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 9 维及以上输入越界写 ATB shape 元数据，dimNum 被覆盖后 GetTensorSize 越界读，可致元数据损坏、非法地址或随机崩溃。
+  visibility: 报错
+mitigation:
+  detect: ATB 路径传入 >8 维 Tensor（如 _npu_quantize_per_tensor 的 9 维 scale）在 ASAN 下观察 dims[8] 越界写
+  fix: issue 建议写入前 TORCH_CHECK(at_tensor.dim() <= atb::MAX_DIM) 并补 9 维负向 UT；正文未给修复 PR（issue closed，合入与发布状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Any ATB op path taking a >8-dim Tensor; e.g. torch_npu._npu_quantize_per_tensor with 9-dim scale
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 主机侧内存安全缺陷：本身表现为崩溃风险，但会先静默破坏 shape 元数据后被下游越界读放大，故按故障收录而非纯报错类丢弃。
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/301
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'op-plugin issue #301（c2026-07-21，closed）：op_plugin/utils/custom_functions/atb/AtbCommon.cpp 的 AtTensor2AtbTensor 把 PyTorch Tensor 的 shape 逐维复制进 ATB Tensor（tensor.desc.shape.dimNum = at_tensor.sizes().size()，随后 for 循环写 tensor.desc.shape.dims[i]），但 ATB 的 atb::Dims 是固定长度数组 dims[MAX_DIM=8]；转换函数没有校验维数上限，输入超过 8 维时循环从 dims[8] 开始越界写。9 维输入可覆盖紧跟其后的 shape.dimNum，使后续 GetTensorSize 用损坏的维数信息做越界读；更高维输入会继续覆盖 deviceData、hostData、dataSize 乃至 Tensor 对象之外的内存。ParamSetter::Input 与 ParamSetter::Output 共用该转换函数，两条路径同时受影响。正文给出可复现入口：torch_npu._npu_quantize_per_tensor 的 per-tensor quant 路径可让 9 维 CPU scale 张量进入该函数。受影响基线 fcfa8025b35b3eeb4ab54b9361e6f8cf57a2235a 及含相同转换逻辑的版本，所有走 ATB Tensor 转换的 Ascend 设备；问题在进入 ATB Operation 的 Setup/Execute 前即可触发。'
+  source: 2026-07-21 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/301 （closed）
+  behavior: 在昇腾上使用走 ATB 的算子（例如按 per-tensor 量化调用 torch_npu._npu_quantize_per_tensor），只要喂进去的某个张量维度超过 8 维，主机侧转换就会写到固定长度 shape 数组之外：轻则算子的形状元数据被踩坏、后续取张量大小时读到垃圾值，重则非法地址、随机崩溃，或者把错误数据交给设备侧执行。8 维及以内完全正常，所以这个问题平时不会出现，只有高维输入（如 9 维 scale）才踩到。
+  trigger_surface: ATB 算子路径 + 输入/输出张量维数 > atb::MAX_DIM(8)；例：_npu_quantize_per_tensor 的 9 维 scale；所有 Ascend 设备
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect
+    - visibility

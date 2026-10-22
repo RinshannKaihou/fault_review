@@ -1,0 +1,62 @@
+id: INF-1911
+legacy_ids: []
+slug: msmodelslim_timestep_device_check_inverted
+aliases: []
+title: timestep 量化权重搬运判据写反，该搬的没搬
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: timestep 量化权重搬运
+  behavior: get_quant_weight 写成 if not ...device != device，等价于「设备相同才搬运」，真正需要 .to(device) 时被跳过，直接返回原设备上的 int8 权重
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: 权重设备与目标不同时不搬运，调用方拿到异设备张量后与目标设备张量运算会 device mismatch；即便未报错，量化权重也不在预期设备上参与计算（静态走查定位，未实机复现）
+  visibility: 报错
+mitigation:
+  detect: 调用 get_quant_weight 后断言返回张量 .device 与请求一致；对照同函数 :219 的 weight.device != 'cpu' 写法检查判据极性
+  fix: issue 给出的修法是去掉多余的 not（与同函数 :219 写法一致）；未见 PR（issue 已关闭，未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim timestep 量化路径（LinearQuantizerTimestep.get_quant_weight）+ int_weight_tensor 与目标 device 不一致；commit 0ef9aaa5，源码静态走查
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/508
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'msmodelslim/pytorch/llm_ptq/llm_ptq_tools/timestep/quantizer.py 的 LinearQuantizerTimestep.get_quant_weight(device) 负责在返回 int8 量化权重前把它挪到目标设备。第 222 行写的是 if not self.quant_weight.int_weight_tensor.device != device: self.quant_weight.int_weight_tensor = self.quant_weight.int_weight_tensor.to(device)。not (a != b) 等价于 a == b，语义变成「设备已经相同时才搬运」——判据反了：真正需要搬运（设备不同）时分支不进入，第 225 行直接返回仍在原设备上的张量；而分支被进入时，.to(device) 是一次空操作。同函数第 219 行 if self.weight.device != ''cpu'': 是正确写法，可见第 222 行多出的 not 是笔误。后果：调用方拿到设备不符合预期的量化权重，与目标设备上的张量运算时报 device mismatch；或者在未报错的路径上，量化权重没有按调用方预期落在计算设备上。触发条件是 timestep 量化中 get_quant_weight(device) 被调用且当前权重与目标设备不同。验证方式为布尔恒等推导 + 在 commit 0ef9aaa5 上逐行核对；未实机复现具体报错形态。'
+  source: '2026-08 GitCode Ascend/msmodelslim issue #508 https://gitcode.com/Ascend/msmodelslim/issues/508（closed；msmodelslim commit 0ef9aaa569d2，源码静态走查）'
+  behavior: 在 timestep 量化里调用 get_quant_weight(device) 时，返回的 int8 权重并不在请求的设备上：需要搬运的场景被跳过，后续与该设备上的张量做运算直接 device mismatch；而不需要搬运时反而执行了一次空的 .to(device)。因为只在特定设备组合下体现，且报错指向下游算子，很难联想到是这里的判据写反。
+  trigger_surface: msmodelslim timestep 量化 + get_quant_weight(device) 且权重当前设备与目标设备不同
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 模型权重
+      visibility:
+        from: 静默错误
+        to: 报错

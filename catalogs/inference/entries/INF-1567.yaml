@@ -1,0 +1,60 @@
+id: INF-1567
+legacy_ids: []
+slug: cann_moe_gating_top_k_sqrtsoftplus_overflow_tail_oob
+aliases: []
+title: MoeGatingTopK arch35 数值溢出与尾段越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: 通用
+    component: moe_gating_top_k arch35
+  behavior: normType=2 SqrtSoftplus朴素：x>88溢出、x<-15吸收；without_group softmax pass1行最大值float无掩码加载，expertCountAlign%64==32时尾段越界读行外残留。
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950 arch35上，normType=2输入含较大正值时输出Inf/NaN，含较大负值时输出0且相对误差100%；约11例同输入复跑不一致，batch尾行或k边界行成片NaN，算子返回成功。修复前ACLNN 499/500、E2E 429/481通过。
+  visibility: 数值异常
+mitigation:
+  detect: ttk 跑 normType=2 的大正值/大负值用例与 expertCountAlign%64==32 的 k 边界用例，比对 NaN/Inf 位置并重复执行查非确定性
+  fix: 待定（issue closed，正文未附修复 PR；其中 topk 并列值一例为 golden 比对误报，非算子缺陷）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend950DT + arch35 kernel + CANN 9.2.0；normType=2 且输入跨 exp 溢出/吸收区，或 expertCountAlign%64==32
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5271
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5271（2026-09-14 closed）在 Ascend950DT、CANN 9.2.0、ops-test-kit 下用源码编译的 --soc=ascend950 --ops=moe_gating_top_k 自定义算子包跑 ttk 全量测试（aclnnMoeGatingTopKV2 L1 500 例 + torch_npu.npu_moe_gating_top_k e2e 481 例），暴露三类问题：其一，kernel 与 golden 都用朴素 sqrt(ln(1+exp(x)))，fp32 下 x>88 时 exp(x) 溢出为 Inf，x<-15 时 1+exp(x) 的小量被吸收成 1.0、ln(1)=0，输出 0 而相对误差 100%，代表用例 moe_gating_top_k_00168；其二，without_group 路径 softmax 三趟中 pass1（行最大值）的 float 通路 LoadOneTensorForDtypeT 为无掩码全向量加载，expertCountAlign%64==32 时尾段 chunk 越界读到行外残留数据，脏数据含 NaN/Inf 时污染 Max 归约、整行 softmax 输出 NaN，同用例复跑时好时坏（用例 00295/00325）；其三，topk 并列值场景 golden 的 pre_compare 只按值降序排序，未处理并列段，索引逐位比对误报（属实现自由度，非算子缺陷）。修复前通过数 ACLNN 499/500、E2E 429/481。'
+  source: 2026-09-14 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5271 （closed）
+  behavior: 在 Ascend950 上用 aclnnMoeGatingTopKV2 或 torch_npu.npu_moe_gating_top_k：normType=2（SqrtSoftplus）且 gating 输入含较大正值时输出直接变成 Inf/NaN；含较大负值时输出被压成 0，与期望值相对误差 100%。另有约 11 例在同一输入下复跑结果不一致，dump 里 batch 尾行或 k 边界行成片 NaN，算子全程返回成功、无任何报错。
+  trigger_surface: Ascend950 arch35 kernel + normType=2 且输入跨 exp 溢出/吸收区，或 expertCountAlign%64==32 的 softmax 尾块
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - subsystem

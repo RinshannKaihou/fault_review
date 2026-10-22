@@ -1,0 +1,61 @@
+id: INF-1584
+legacy_ids: []
+slug: ms_dvm_flush_output_address_stomp
+aliases: []
+title: 融合 Flush 循环内释放输出地址致踩踏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: DVM Flush 输出地址
+  behavior: Flush 在 for 循环内用局部 auto device_address = dev_addr.lock() 持有输出地址，循环结束即释放；下一轮或 Codegen 申请 workspace 时拿到同一地址，输出互相覆盖。
+effect:
+  objects:
+  - 数值结果
+  detail: 多输出或带 workspace 的融合算子（InplaceAddExt+MatMul，fp16，512x1024/512x448）在 --opt_level=1 --enable_ops=MatMul 下与标杆比对失败。
+  visibility: 不可复现
+mitigation:
+  detect: 多输出/带 workspace 的融合算子逐输出与基线比对；打印 Flush 中每轮申请到的 device 地址看是否重复
+  fix: 待定（issue open，master 与 r2.8 均存在）；方向：把 weak_ptr 提升出的 shared_ptr 移到循环外或按输出持有
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend + MindSpore master/r2.8，DVM 无图融合；Flush 循环内局部 shared_ptr 提前释放导致 device 地址复用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/28999
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend PyNative 动态图 + DVM 无图融合（MS_DEV_PYNATIVE_FUSION_FLAGS="--opt_level=1 --enable_ops=MatMul"），master 与 r2.8：LazyFusionKernelAscend::Flush 为融合算子申请输出 device 地址时写 auto device_address = dev_addr.lock()，该 shared_ptr 是 for 循环体内的局部变量，本轮循环结束即释放；下一轮申请的输出地址或后续 Codegen 申请 workspace 时会拿到刚释放的同一地址，造成 device 地址踩踏。触发需融合算子多输出或存在 workspace。复现用 fp16、x0 (512,1024)、x1 (512,448)、x2 (1024,448)：y0 = InplaceAddExt()(x2, MatMul(True,False)(x0,x1))，compare_outputs 与标杆比对失败。
+  source: 2026-02-11 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/28999 （open）
+  behavior: 开了无图融合跑 MatMul+inplace 累加这类算子，输出精度偶尔对不上、重跑有时又好；只有多输出或需要 workspace 的融合算子才出现，看起来像随机精度问题，实际是两个输出/workspace 拿到同一块 device 地址互相覆盖。
+  trigger_surface: Ascend DVM 无图融合 --opt_level=1 --enable_ops=MatMul；融合算子多输出或带 workspace（如 InplaceAddExt+MatMul，fp16）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    uncertain:
+    - behavior

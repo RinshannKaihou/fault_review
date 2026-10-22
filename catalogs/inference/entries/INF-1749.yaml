@@ -1,0 +1,60 @@
+id: INF-1749
+legacy_ids: []
+slug: ops_nn_softmax_v2_aicpu_non_suffix_multi_axis
+aliases: []
+title: SoftmaxV2 AICPU 非后缀多轴归约混组错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SoftmaxV2 AICPU kernel
+  behavior: AICPU kernel 只把连续后缀轴当快路径；axes 为 [0,2] 这类非连续后缀时仍按后缀假设分组，把不同分组的元素混进同一次归一化。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: FP32 [2,3,4]、axes=[0,2]：首个输出 0.0949649，按未归约第 1 维独立分组算得 0.0494982，kernel 仍返回成功；连续后缀轴用例通过。
+  visibility: 静默错误
+mitigation:
+  detect: 用 axes 非连续后缀（如 [0,2]）的多轴用例与逐坐标参考实现比对；只测后缀轴用例全通过。
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/11271 （open）：保留后缀快路径，其余互异轴按未归约坐标分组重算，新增 [0,2] 回归用例。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: AICPU 通路 + axes 为非连续后缀的多轴 softmax（如 [0,2]）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6256
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6256（2026-09-28，open）：SoftmaxV2 的 AICPU kernel 对非连续后缀的多个归约轴会把不同分组中的元素混在一起，返回错误概率但仍报告成功。复现用 FP32 输入 [2,3,4]、x[i]=0.1*i、axes=[0,2]：预期按未归约的第 1 维分成 3 组分别沿第 0、2 维计算 softmax，实际首个输出为 0.0949649，独立坐标参考值为 0.0494982。AICPU Host UT 中 [2,3,4]/axes=[0,2] 回归用例在基线失败、连续后缀轴对照通过；修复 MR 11271 保留连续后缀轴快路径，其他互异轴按未归约坐标分组并用稳定的最大值、指数和计算，修复后 UT 30/30 通过。验证仅到 AICPU Host UT，未做设备端到端调用。
+  source: 2026-09-28 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6256 （open）
+  behavior: 对非连续后缀的多个轴做 softmax（例如 axes=[0,2]）时，归一化把不同分组的元素混在一起，概率和不再是 1、单个元素值与按未归约维分组的参考结果差到一倍量级；接口返回成功、输出里没有 NaN，只有逐坐标比对参考实现才能发现，后缀轴用例则完全正常。
+  trigger_surface: SoftmaxV2 AICPU + axes 非连续后缀
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出分布
+        to: 数值结果

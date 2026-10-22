@@ -1,0 +1,51 @@
+id: INF-2068
+legacy_ids: []
+slug: torchair_graph_dtype_inconsistent_e8m0
+aliases: []
+title: 图模式与单算子返回 dtype 不一致（e8m0 vs uint8）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: torchair 图模式 dtype 转换
+  behavior: torch 2.8 下 npu_grouped_matmul_swiglu_quant_v2 单算子路径输出原生 float8_e8m0fnu，torchair 图模式同一调用输出仍是 uint8，两条路径 dtype 映射不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: 同一脚本分别在单算子和 torch.compile(backend=npu_backend, fullgraph=True) 下打印 y_scale.dtype：前者 float8_e8m0fnu，后者 uint8；下游按 dtype 分支（view/类型转换）会静默走不同路径。
+  visibility: 静默错误
+mitigation:
+  detect: 同一算子分别跑 eager 与 torchair 图模式，比对输出张量 dtype 而非只比数值
+  fix: 待定（issue closed，未见修复 PR；图模式 dtype 映射需与单算子对齐到原生 e8m0）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch 2.8 + torch_npu（原生支持 torch.float8_e8m0fnu）+ torchair get_npu_backend + fullgraph=True
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/289
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch 2.7.1 以下版本没有原生 torch.float8_e8m0fnu，torch_npu 用 uint8 代替；2.8 起单算子路径能返回原生类型。报告者在 torch 2.8 环境用同一份 npu_grouped_matmul_swiglu_quant_v2 调用（x/weight 为 float4_e1m2fn_x2，weight_scale/x_scale 为 float8_e8m0fnu）做两组实验：单算子直接调用打印 y.dtype/y_scale.dtype 得到原生 torch.float8_e8m0fnu；把同一模块用 torch.compile(model, backend=npu_backend, dynamic=True, fullgraph=True) 编译后，同样的输出仍是 torch.uint8。即 torchair 的图模式 dtype 映射没有跟上新增的 e8m0 类型，与单算子路径分叉。
+  source: 2026-08-04 gitcode.com issue https://gitcode.com/Ascend/torchair/issues/289 （closed）
+  behavior: 写算子适配代码时，同一份脚本在 eager 下拿到 float8_e8m0fnu，改成图模式编译后拿到 uint8；数值本身没变，但按 dtype 分支的代码（view、类型提升、量化 scale 解析）会静默走另一条路，且没有任何告警。
+  trigger_surface: torchair 图模式（torch.compile + npu_backend）下的量化算子，torch>=2.8 原生 e8m0 类型
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,60 @@
+id: INF-1933
+legacy_ids: []
+slug: vllm_ascend_qwen25_special_token_garbage
+aliases: []
+title: Qwen2.5 特殊 token 入 prompt 后输出复读乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 特殊 token 输入处理
+  behavior: prompt 带 151644/151645 时,不论以 token id 还是文本传入,Qwen2.5-1.5B 在 NPU 上退化为反复输出同一乱码词;CPU/GPU 正常,Qwen3-0.6B 不受影响
+effect:
+  objects:
+  - 输出内容
+  detail: 0.14.0rc1 到 0.18.0rc1 多个版本都复现,单请求即触发,输出像“猞猁\n猞猁\n…”一直重复到结束;无报错、无 NaN,只是内容完全不可用
+  visibility: 静默错误
+mitigation:
+  detect: 构造含 151644/151645 的最小 prompt（token id 与文本两种形式）与去掉特殊 token 的对照,在同一 NPU 上跑离线 generate 比对;再在 CPU/GPU 上跑同脚本确认非模型问题
+  fix: 待定（issue open,作者未定位到具体代码）；规避：prompt 中不直接注入特殊 token id,交由 chat template 渲染
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.14.0rc1（另测 0.15/0.16/0.17/0.18rc1 同样复现）,Qwen2.5-1.5B-Instruct,PIECEWISE + ACL Graph,单卡；对照 Qwen3-0.6B 与 CPU/GPU 上的同脚本
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/8590
+  kind: github_issue
+relations: []
+original:
+  mechanism: issue 记录在昇腾上用 vllm-ascend 0.14.0rc1 跑 Qwen2.5-1.5B 时,只要 prompt 里出现 <|im_start|>(151644)或 <|im_end|>(151645),不论这些 id 是以 token id 数组传入还是以文本形式出现在 prompt 里,模型都会输出多语言复读式乱码而不是正常回答;同样脚本在 CPU/GPU 上结果正常,Qwen3-0.6B 在同样环境下也不受影响,说明不是模型或 tokenizer 本身的问题。作者后续在 0.14.0rc1 到 0.18.0rc1 的多个版本上重测仍复现,并给出最小复现:输入 ids [151644, 8948, 198, ...] 走 llm.generate,输出退化为反复的“猞猁”直到 max_tokens。日志里只有 Gloo 网络接口告警和正常的 ACL Graph 捕获、回放记录,没有任何异常或 NaN,因此属于输入侧处理后落到计算路径上的静默错值。
+  source: 2026-04-22 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/8590 （open）
+  behavior: 用 OpenAI 接口或离线 LLM 类跑 Qwen2.5-1.5B,只要请求里含有 Qwen 的特殊控制 token,回复就变成同一个词无限重复的乱码,读完也看不出报错;换成不含特殊 token 的普通对话、或换 Qwen3-0.6B、或换到 GPU 上跑,立刻恢复正常,所以很容易被误判成“模型抽风”。
+  trigger_surface: Qwen2.5 系列 + prompt 中携带 <|im_start|>/<|im_end|> 等特殊 token id；走 chat template 正常渲染时不触发
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 分词/模板
+        to: 运行时/执行
+    uncertain:
+    - behavior

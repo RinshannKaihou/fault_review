@@ -1,0 +1,62 @@
+id: INF-1777
+legacy_ids: []
+slug: tt_metal_llama_prefill_batch_dependent_logits
+aliases: []
+title: tt-metal Llama P100 batched prefill logi
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tt-metal
+    component: tt-metal vLLM TT 集成
+  behavior: P100 上 128 bucket 混批 prefill 时同一 prompt 的 logits 与单独 prefill 不同（max abs diff 0.4375）；1024 bucket 完全一致；disable_batched_pr
+effect:
+  objects:
+  - 输出分布
+  detail: 128 bucket 批 2/4：logits diff 0.4375，种子采样第 2 token 分叉、贪心第 27 token 分叉；重复运行各自位稳定；1024 bucket 全等；同 prompt 同 seed 的输出文本取决于批内其他请求
+  visibility: 不可复现
+mitigation:
+  detect: 同 prompt 单批 vs 混批 logits 比对
+  fix: 待定（P100 补 disable_batched_prefill 覆盖是候选规避；issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Blackhole p100a + tt-metal 9f98dee9c5 + Llama-3.1-8B + 128 bucket 混批 prefill；freq=always、非回归；根因未定位
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 与 sglang#43956（Qwen3.8-27B 分数依赖 batch shape，10-13 判定）跨栈同现象（批组成依赖的数值分叉），但库/硬件/机制均不同，不建 var。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61638
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal 9f98dee9c5，Blackhole p100a（KMD 2.8.0/FW 19.8.1）。Llama-3.1-8B-Instruct（LlamaForCausalLM.initialize_vllm_model，trace on）：prompt 单独 prefill 与同 128 bucket 内与其他 1/3 个短 prompt 混批 prefill 的 logits 不同——批 2 与批 4 均 max abs diff 0.4375，种子采样第 2 个 token 分叉、贪心第 27 个 token 分叉；1024 bucket 批 2/4 完全一致。重复运行各自位级稳定（freq=always，非回归）。disable_batched_prefill 覆盖 Llama-3.1-8B 在 P150/P300/P150x4/P150x8 但不含 P100。P100 侧批内数值分叉根因未定位。
+  source: 2026-10-20 每日扫描；https://github.com/tenstorrent/tt-metal/issues/61638
+  behavior: 在 P100 上经 vLLM TT 集成跑 Llama-3.1-8B 时，同一个 prompt 的 prefill 结果取决于批里还有谁：与其它短 prompt 混在同一个 128 bucket 里时 logits 最大偏差 0.4375，固定种子的采样在第 2 个 token 就换词、贪心在第 27 个 token 分叉；单批或 1024 bucket 完全一致。同样的 prompt 和 seed 会因其他请求的存在返回不同文本，且每种配置重复运行结果稳定。
+  trigger_surface: Blackhole p100a + Llama-3.1-8B + 128 bucket 混批 prefill（disable_batched_prefill 未覆盖 P100）
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - component
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

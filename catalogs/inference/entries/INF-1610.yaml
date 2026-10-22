@@ -1,0 +1,62 @@
+id: INF-1610
+legacy_ids: []
+slug: ms_msa_pta_systematic_loss_offset
+aliases: []
+title: MSA 与 PTA 同配置训练 loss 稳定偏低数个百分点
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: MSA 与 PTA 算子数值路径
+  behavior: 配置、权重、种子、BF16 与 softmax FP32 全部对齐后，MSA 的 loss 仍稳定单向偏低；候选来源是 BF16 累加顺序、FlashAttention、分布式优化器聚合与图执行差异，未定位到单一算子。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: CogVideoX-5B TP4：MSA loss 比 PTA 低 1.72%–1.79%（10 轮）与 4.58%（2 轮）；InternVL3 低 1.62%–1.94%（5 轮），方向从不翻转。
+  visibility: 静默错误
+mitigation:
+  detect: 同权重同种子双框架跑同一步数比较 loss 相对差；差异稳定、单向、随变异配置不变时可判为框架级偏移而非配置错误
+  fix: 待定（issue open）；已排除种子/Dropout/loss scale/权重/配置，FlashAttention 无法禁用（PTA 侧禁用即崩溃），未给出修复
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: 'MSA（MindSpeed-Core-MS r0.5.0 + MindSpore 2.8.0 + CANN 8.5.0 + 910B）与 PTA（MindSpeed-MM 2.3.0）同权重同配置对比；合并 InternVL3 issue #29333'
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29332
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MSA（MindSpore Adapter，MindSpeed-Core-MS r0.5.0 / MindSpore 2.8.0 / CANN 8.5.0 / 910B）与 PTA（PyTorch Ascend + MindSpeed-MM 2.3.0）在 CogVideoX-5B 和 InternVL3 上对比训练 loss。issue 列出已实施的对齐：HCCL_DETERMINISTIC=true、BASE_SEED=42、dropout 0.0、attention softmax FP32、全组件 BF16、固定 loss scale、convert_ckpt.py 转换权重并验证首层切比雪夫距离为 0、TP/PP/CP=4/1/1、micro/global batch=1/8、Adam beta 与 LR 逐项一致，每轮杀进程清 NPU 状态。在此前提下 CogVideoX 的 MSA loss 比 PTA 低 1.72%–1.79%（10 轮，标准差 0.025%）与 4.58%（2 轮），InternVL3 低 1.62%–1.63%（前 4 轮）与 1.94%（第 5 轮），方向始终为 MSA 更低。报告者把剩余差异归为框架实现层：BF16 累加顺序与舍入、FlashAttention kernel 的累加顺序、分布式优化器/梯度聚合时序、RMSNorm/Softmax/Rotary 实现差异、图执行与 Eager 执行差异；没有定位到具体算子，也没有修复 PR。本条合并同模板的 InternVL3 issue #29333。'
+  source: 2026-04-29 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29332 （open）
+  behavior: 同一份 PTA 训练好的权重转到 MSA，用同一批数据、同一超参和种子跑 2 步，MSA 报出的 loss 每次都稳定比 PTA 低一点——CogVideoX 差 4.6%、InternVL3 差 1.6%，十轮实验方向从不反转、波动只有万分之几；训练不报错、曲线也正常收敛，只能靠双框架逐轮对数才发现系统性偏移。
+  trigger_surface: MSA + MindSpeed-MM 多模态训练（CogVideoX-5B/InternVL3），910B，TP=4，BF16 + attention softmax FP32，与 PTA 同权重同步数对比
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    uncertain:
+    - subsystem

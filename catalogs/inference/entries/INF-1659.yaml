@@ -1,0 +1,52 @@
+id: INF-1659
+legacy_ids: []
+slug: ops_nn_index_add_arch22_index_unvalidated_oob_write
+aliases: []
+title: aclnnIndexAdd arch22 索引缺校验致越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: arch22 scatter_add 索引寻址
+  behavior: inplace_scatter_add_small_tail.h:88 等四处把 indices 按 uint32 取出后直接算 varGm[indexValue*N] 偏移，无 [0,M) 校验；arch35 有守卫，arch22 缺失。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 910_93、CANN 9.2.0、master 1e0c064：idx=M 时 var[1] 不更新、canary 12345→12365（越界写且 ret=0）；idx=-1 位模式 4294967295 致约 17GB 偏移，stream 同步报 507035 向量核异常。
+  visibility: 静默错误
+mitigation:
+  detect: var 尾部多分配两元素作 canary 并预置哨兵，传 idx=M 后读回；负索引用例强制 stream 同步看是否 507035。
+  fix: issue 6308 open；建议按 arch35 样板在取值后加 if (indexValue >= M) continue（uint32 下负值位模式天然被拦）；未给修复 PR。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: hw_specific
+  trigger_note: Ascend910_93 + CANN 9.2.0 + aclnnIndexAdd 走 arch22 inplace_scatter_add + indices 含 M（上界）或负值；arch35 路径有守卫不受影响
+  confidence: documented
+remarks: '与 #4767/#4766（同机理，910B3 + CANN 9.1.0-beta.3，均 closed）构成残留未修复族：作者在 9.2.0 + master 1e0c064 上仍复现。本条是索引直接当写偏移（越界写），与读侧缺校验的 6304/4456 后果不同。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6308
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue 6308（2026-09-29，open）：Ascend910_93、CANN 9.2.0、ops-nn master 1e0c064（2026-09-28），C 直调 aclnnIndexAdd 两段式。index/inplace_scatter_add 的 arch22 内核不做 indices 值域校验：op_kernel/inplace_scatter_add_small_tail.h:88/99/111/114 取 uint32_t indexValue = indicesLocal.GetValue(i); 后直接 DataCopyPad(this->varGm[indexValue * this->N], ...)，op_kernel/inplace_scatter_add_base.h:57 只 SetGlobalBuffer 无兜底；big_tail.h:131/140/175/185/187 同类。对照 arch35 守卫 op_kernel/arch35/inplace_scatter_add_simt.h:46 写的是 if (idx >= 0 && static_cast<uint64_t>(idx) < static_cast<uint64_t>(M))。实测 self/var[2,1] FP32、source[2,1]、dim=0、alpha=1.0、out=self，var 多分配 2 元素并预置 12345 作 canary：indices={0,1} 对照 var=[11,22]、canary 未改；indices={0,2}（M=2 上界）ret/ret2 均 0、sync 0，var[1] 未更新而 canary 12345→12365（越界写、无任何报错）；indices={0,-1} ret 均 0 但 sync 返回 507035 ACL_ERROR_RT_VECTOR_CORE_EXCEPTION。同机理历史 issue #4767、#4766 已 closed，本机仍复现，属残留。'
+  source: 2026-09-29 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6308 （open）
+  behavior: 用 aclnnIndexAdd 往 var 里按索引累加时，只要 indices 里有一个等于行数（比如 2 行给了 idx=2），接口照样返回成功，但那一行没更新，反而把相邻的显存写了——只能靠事先埋在后面的 canary 才看得出来；给 -1 更糟，偏移被算成 4G×N，设备直接报向量核异常 507035。
+  trigger_surface: aclnnIndexAdd 的 arch22 inplace_scatter_add 内核 + indices 越上界或含负值；Ascend910_93、CANN 9.2.0、master 1e0c064
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

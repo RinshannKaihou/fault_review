@@ -1,0 +1,63 @@
+id: INF-1677
+legacy_ids: []
+slug: npu_graph_replay_polluted_gather_index
+aliases: []
+title: NPUGraph 重放读到被复用内存的垃圾 gather 索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: NPUGraph 捕获/重放内存池
+  behavior: 捕获期 kernel 用到的 aclnn workspace/池地址未纳入图内生命周期，重放间被复用回收；relaxed 捕获模式吞掉捕获期 device 错误，坏图留到首次 replay 才引爆。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 首次 replay 即中断：copy_stream 上 AclrtSynchronizeStreamWithTimeout 报 507011，device 侧 gather_v3 CheckIdxValue 断言索引 3 越界（gxSize=3，算术上不可能产生，只能来自污染内存）。
+  visibility: 报错
+mitigation:
+  detect: 捕获前后保持同一进程的分配历史（先跑 eager 动态 shape 解码再建图），首次 replay 校验；或把动态值链（topk→div→gather）移出图，仅捕获地址静态算子后对比输出
+  fix: '待定（issue open）；规避：簿记类动态值链移出图外 eager 执行，图内只留 forward + K/V index_copy_ + 位置推进；正文请维护者确认 PR #32810 是否覆盖单流+分配器历史触发面'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: NPUGraph + graph(capture_error_mode='relaxed')；需同时具备 no_grad 全程加载/编码与捕获前 eager batch_beam_search 历史；910C/CANN 9.2.0/torch_npu 2.7.1.post4
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4629
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0181
+original:
+  mechanism: 'Ascend/pytorch #4629（2026-09-05，open，Ubuntu 24.04 aarch64 / Ascend 910C 双芯 / CANN 9.2.0 / torch 2.7.1+cpu / torch_npu 2.7.1.post4，transfer_to_npu 接入，torch_npu.npu.NPUGraph() + graph(capture_error_mode=''relaxed'')）：用 NPUGraph 捕获 FireRedASR2-AED 自回归解码单步后首次 graph.replay() 即失败——Host 侧 AclrtSynchronizeStreamWithTimeout(copy_stream) error 507011，Device 侧 AI Core aivec error，dump 显示 gather_v3_base.h:137 CheckIdxValue 断言 (0 <= val && val < gxSize_) failed，索引 3 越界（gxSize=3）。该 gather（s_ys.index_select(0, rows)）的索引 rows = topk(p_ids∈[0,9)) // 3 + stride 恒 ≤2，索引 3 在算术上不可能产生，只能来自被污染的内存。被捕获的 step 含 log_softmax→topk×2→div→gather/index_select→index_copy_ 动态值链，输入输出均为固定地址静态 buffer、图外逐 replay 刷新。12 组二分实验（每组独立子进程、捕获+3 次重放+数值校验）定案：失败需两个执行历史同时在场——模型加载与特征编码全程 torch.no_grad()，且捕获前同进程先跑过 eager batch_beam_search；所有算子组单独捕获重放全绿，完整 step_body 逐字复刻 + 严格捕获模式也全绿，唯完整 e2e 时序必挂。capture_error_mode=''relaxed'' 会吞掉捕获期的 device 错误，坏图存至首次 replay 才引爆。报告者判断与 #4379（多流入图 acl graph 内存复用，修复 PR #32810）同根因家族但触发面不同（本单单流、无 sleep/wakeup）。'
+  source: 2026-09-05 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4629 （open）
+  behavior: 把 ASR 模型的自回归解码单步用 NPUGraph 捕获后，第一次 replay 就直接挂掉：Host 侧报 copy_stream 上 AclrtSynchronizeStreamWithTimeout 错误 507011，Device 侧是 AI Core aivec error，日志里 gather_v3 的越界断言说索引 3 超出 [0,3)。但这个索引在算术上最多只能到 2（topk 结果整除 3 再加 stride），所以它不是算出来的，而是读到了被别的算子复用过的内存。捕获时开 relaxed 模式不会有任何提示，坏图一直留到 replay 才炸；把 topk→gather 这段动态值链移出图外后，同一时序下重放结果与 eager 逐位一致。
+  trigger_surface: NPUGraph 捕获含动态值链（topk→div→gather）的解码步 + 捕获前存在 eager 动态 shape 解码与 no_grad 加载历史；单流、无 sleep/wakeup 也可触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - behavior
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern

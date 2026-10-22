@@ -1,0 +1,60 @@
+id: INF-1849
+legacy_ids: []
+slug: vllm_ascend_vl_multi_lora_concurrency_batch_drift
+aliases: []
+title: 多 LoRA 多模态高并发下 temp=0 输出漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: vllm-ascend NPU 推理（未定位）
+  behavior: 同一请求 payload（temperature=0、seed 固定）在并发升高时偶发 decode 出不同 token 序列，发散位置每次不固定；缺陷未定位到具体代码。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: Qwen3-VL-8B + 4 个 LoRA：1 路 20 次 token 序列 SHA-256 全同，32 路出现不同序列且发散位置每次不同；GPU 对照 1/32 路均无发散。
+  visibility: 不可复现
+mitigation:
+  detect: 同 payload 在 1 路与 32 路各发 20 次，比对 decode token 序列 SHA-256；用 GPU 后端跑同样 payload 作对照。
+  fix: 待定（issue open，报告只给结构性信号，未定位到 LoRA 批拼装还是多模态 attention mask）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: quay.io/ascend/vllm-ascend:v0.23.0rc1（commit f4a08bddd，vLLM v0.23.0，CANN 9.0.1），910B2 单卡，TP=1，Qwen3-VL-8B bf16 + 4 LoRA，max-num-seqs 256、max-model-len 65535
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/12610
+  kind: github_issue
+relations: []
+original:
+  mechanism: 在 quay.io/ascend/vllm-ascend:v0.23.0rc1（commit f4a08bddd0cc65a0bd8c3d377b158ae5ca7527db，vLLM v0.23.0，CANN 9.0.1，Atlas 800T A2/910B2，容器内 1 张 NPU，HBM 65536 MB）上跑 Qwen3-VL-8B（bf16、TP=1、4 个 LoRA adapter、--max-loras 8、--max-cpu-loras 16、max-num-seqs 256、max-model-len 65535），同一份请求 payload（同 prompt、同图片、同 LoRA、temperature=0、top_p=1、top_k=0、seed 固定、max_tokens 固定）在并发升高时偶发 decode 出不同 token 序列。复现方式是对同一请求体在 1 路与 32 路各发 20 次，逐次比较 decode token 的 SHA-256：1 路 20 次一致，32 路出现不同序列，且发散位置每次不固定（响应前段到中段都有）。对照环境是 NVIDIA L20 + vLLM 0.19.0，同 payload 1 路与 32 路都没有发散。报告者明确不公开 prompt/图片/LoRA 名，只给结构性信号，因此缺陷未定位到具体代码；正文记录 v0.22.1rc1 上 32 路时漂移是主导现象，v0.23.0rc1 上变成偶发但仍可复现。
+  source: 2026-07-22 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/12610 （open）
+  behavior: 用 temperature=0、固定 seed 做“可复现”评测或回归时，同一请求在并发高的时候偶尔给出不同的 token 序列，重跑对不上；单发或低并发总是正常，GPU 后端同样的 payload 从不漂移。表现为评测分数抖动、告警复现不了，很难归因。
+  trigger_surface: Qwen3-VL 多模态 + 多个 LoRA adapter + max-num-seqs 256 + 高并发（32 路）；temperature=0 也不保证一致
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    - component
+    uncertain:
+    - subsystem

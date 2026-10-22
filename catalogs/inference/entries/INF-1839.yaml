@@ -1,0 +1,65 @@
+id: INF-1839
+legacy_ids: []
+slug: vllm_ascend_pa_batch_pad_over_8k_dp_mix
+aliases: []
+title: DP 混布下 attention pad 超 8K 使 PA 算子未执行出随机值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: attention 元数据 pad
+  behavior: 多 DP 混布时 num_input_tokens 取 max_num_tokens_across_dp，使 decode 输入 pad 过 8K，超 PA 算子 batchsize 上限，PTA 报错只进 atb log
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: attention out 大概率为随机数值，本 DP decode 请求输出精度异常、回答跑偏甚至乱码；服务不挂、请求均返回 200，INFO 级别日志看不到报错，仅 atb log 里有 PA 算子的 PTA 报错。触发面：DP 混布+跨 DP >8K prefill+本 DP 全 decode
+  visibility: 静默错误
+mitigation:
+  detect: 检查 atb log 中 PA 算子的 PTA 报错；对比本 DP 单独跑与跨 DP 混跑时 decode 输出
+  fix: 待定；修复应避免按 max_num_tokens_across_dp pad 到超过 PA 算子 batchsize 上限（issue closed，未见 PR 链接）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 单机混布多 DP + 部分 DP 正在做 >8K prefill + 本 DP 全 decode，使 num_input_tokens 超 8K；chunk size ≤8K 或各 DP 同步时不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 失败是算子调用级静默：报错只在 atb log 里，服务与请求都不失败，因此属于静默错值而非报错类。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/4803
+  kind: github_issue
+relations: []
+original:
+  mechanism: 单机混布多个 DP 时，num_input_tokens 取值为 max_num_tokens_across_dp。若当前 DP 上所有请求都在做 decode，而其他 DP 上有序列长度大于 8K 的 prefill，则 num_input_tokens 可能大于 8K；attention_v1.py 的 build_attention_metadata 会把输入 pad 到大于 8K。PA 算子的 batchsize 最大只支持 8K，pad 超过后会触发 PTA 报错，该报错只打印在 atb log 中、服务并不挂掉，实际上算子没有执行，attention out 大概率是随机数值，因此表现为精度问题。报告者对每个 all-reduce DP 的输入 tensor 做了对比截图，并给出 build_attention_metadata pad 处的代码截图。
+  source: 2025-12-08 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/4803 （closed）
+  behavior: 单机混布多 DP、另一个 DP 的长序列 prefill 超过 8K 时，本 DP 的 decode 请求输出精度异常，回答跑偏甚至乱码。服务健康、请求都返回 200，日志级别 INFO 下看不到报错，只有 atb log 里能找到 PA 算子的 PTA 报错。
+  trigger_surface: DP 混布 + 跨 DP 的 >8K prefill + 本 DP 全 decode
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

@@ -1,0 +1,59 @@
+id: INF-2071
+legacy_ids: []
+slug: vllm_ascend_dsa_cp_full_graph_replay_stale_metadata
+aliases: []
+title: DSA-CP 全图重放不等元数据拷贝致 DSV4 答错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: FULL graph 重放输入
+  behavior: DSA-CP 元数据构造把 query_start_loc 与 CP 后缀长度异步拷到 device，FULL decode 图重放不依赖这些拷贝事件；SMLA 稀疏索引每次前向新分配，图仍用捕获时地址。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 同一请求先在 32 并发跑过、再以 1/4 批重放同一 decode 图后，GPQA-Diamond 解析答案与 raw completion 明显不同；关图重放或开 DSpark 即恢复。
+  visibility: 质量退化
+mitigation:
+  detect: 按 32→1/4 批序切换请求复用同一 decode 图，比对 GPQA 解析答案与 raw completion；检查重放前 CP 元数据 H2D 拷贝是否存在事件依赖
+  fix: issue 提议：两处 CP 元数据拷贝改为同步、稀疏索引刷新到模型固定地址缓冲、FULL 图捕获时保证压缩组存在，并补 in-place 刷新单测（closed，未见合并记录）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend + DSA-CP + FULL_DECODE_ONLY + 关 DSpark；同一 decode 图被更小 batch 重用（32→1/4）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17729
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 在 DSA-CP（DSA 上下文并行）+ FULL_DECODE_ONLY 全图模式下，DSA-CP 的 metadata builder 把 query_start_loc 与 CP 后缀长度以异步 H2D 拷贝送到 device，而 FULL graph replay 没有对这两个 ad-hoc copy event 建立依赖；同时传给 SMLA 的 sparse-index 张量每次 forward 重新分配，图重放继续使用 capture 时的地址；C2 dummy capture 时压缩 cache 长度为 0 还会走进 Python empty-cache 分支并被一起捕获。报告者的判据是：同一模型同一请求参数，关闭图重放或打开 DSpark 结果都不同，故排除采样；先跑 32 并发再以 1/4 批重放同一图即可复现 GPQA-Diamond 精度下降与 raw 输出差异。
+  source: 2026-09-29 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17729 （closed）
+  behavior: 压测先跑 32 并发，再发 1/4 批的小请求，服务不报错、token 正常吐出，但 GPQA-Diamond 的答案与关闭图重放时相比明显变差，raw completion 也换了一套说法；使用者容易当成模型能力波动，而不是图重放读到了过期的 CP 元数据或稀疏索引。
+  trigger_surface: DeepSeek V4.1 Flash + DSA-CP + FULL_DECODE_ONLY + batch 由大到小复用同一 decode 图
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 质量退化

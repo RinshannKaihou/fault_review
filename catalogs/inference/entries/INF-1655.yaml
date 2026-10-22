@@ -1,0 +1,56 @@
+id: INF-1655
+legacy_ids: []
+slug: ms_dvm_assign_fused_div_bad_address
+aliases: []
+title: Assign 参与 DVM 融合后 Div 读到非法地址
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: DVM 图算融合 pass Assign 场景
+  behavior: 图算融合 pass 没有限制 Assign 后融，Assign 结果被融进子图后 Div 的第二个输入指向非法地址而不是 %0。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: assign→div→mul 链在 jit_level=O1 下输出与 O0 不一致；dev_view_inplace 分支的复现用例直接卡死，dump 的 DVM kernel 里 Div 输入地址非法。
+  visibility: 静默错误
+mitigation:
+  detect: 开 MS_DEV_GRAPH_KERNEL_FLAGS=--dump_as_text 对比 O0/O1 同一 assign→div→mul 网络的输出与 grad；再查 dump 出的 kernel 里 Div 输入是否为 Assign 的输出地址
+  fix: 待定（issue closed，未给修复 PR）；方向：图算融合 pass 对 Assign 后融场景加限制，或保证融合后输入仍指向 %0
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend + jit_level=O1（图算融合）且图里有 Assign 后融链路；O0 正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/20756
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore Ascend 后端 jit_level=O1（图算融合）下，网络上出现 Assign 后融场景：%0 = Assign(p0,p1) 后接 %1 = Div(p2,%0)、%2 = Mul(%1,p3)。经 DVM 算子编译后，Div 的第二个输入地址不是 %0 而是一个非法地址，issue 判断图算融合 pass 没有限制这种场景，结果是精度问题。dev_view_inplace 分支可用 case6 复现（abs → a-=b → b%=a → c/=b，5 个 8 维输入，比较 O0/O1 的 forward、grad 与 jit 后输出），用例表现为卡死，dump 出来的 dvm kernel 里 Div 输入地址异常。issue 已 closed，正文未给修复 PR。
+  source: 2025-11-07 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/20756 （closed）
+  behavior: 带参数原地更新（Assign）的网络开了图算融合后，同一份输入在 O1 下算出与 O0 不同的值，肉眼看着是普通精度问题，没有报错；换到 dev_view_inplace 分支的用例上直接卡死。dump 出的融合 kernel 才能看到 Div 的输入地址指向非法内存。
+  trigger_surface: Ascend + jit_level=O1（图算融合）且图中存在 Assign 后接 Div/Mul 的链路；dev_view_inplace 分支
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

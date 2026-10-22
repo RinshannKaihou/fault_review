@@ -1,0 +1,53 @@
+id: INF-1776
+legacy_ids: []
+slug: tt_metal_deepseek_b1_matmul_k8192_tail_drop
+aliases: []
+title: BH DeepSeek B1 matmul K=8192 丢弃尾 K tile
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: deepseek_v3_b1 单核 Matmul
+  behavior: K=8192 时单核 Matmul 不使用激活的第 8176–8191 列（最后一个 K tile），仅尾 16 列非零的激活输出全零；K=8160 正确（机制定位未给出）
+effect:
+  objects:
+  - 数值结果
+  detail: '[1,8192]×[8192,64]（SDPA 输出投影形状）：激活仅在末 16 列非零时输出全零（3/3）；K=8160 同输入正确（3/3）；随机输入误差小到现有 PCC 0.99 检查通过——静默漏检'
+  visibility: 静默错误
+mitigation:
+  detect: 构造仅在末 16 列非零的激活对照（issue 提供现成单测改法）
+  fix: 待定（issue closed 但未见修复链接与内容，修复状态未核实）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Blackhole p100a + deepseek_v3_b1 单核 Matmul + K=8192（N=32/64/64t 均中）；tt-metal 9f98dee9c5；是否回归未知
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 随机输入下误差低于既有 PCC 门槛是典型静默缺陷：单测通过 ≠ 数值正确。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61585
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal 9f98dee9c5，Blackhole p100a（KMD 2.8.0/FW 19.8.1）。models/demos/deepseek_v3_b1 的单核 Matmul（SDPA 后输出投影形状 [1,8192]×[8192,64]）在 K=8192 时不使用激活列 8176–8191：把激活做成仅末 16 列非零，输出全零（N=32/64/64-transposed 3/3 全零）；K=8160 同输入结果正确（3/3）。随机输入下误差足够小，现有 PCC 0.99 检查通过——缺陷在常规测试下静默。issue 已 closed，未见修复链接/内容，修复状态未核实；是否回归未知。复现：test_matmul.py::_run_matmul_single_core 把随机激活替换为 torch_a[:, -16:]=randn。
+  source: 2026-10-20 每日扫描；https://github.com/tenstorrent/tt-metal/issues/61585
+  behavior: 在 Blackhole 上跑 DeepSeek V3 B1 的单核 Matmul 且 K 恰为 8192 时，最后一个 K tile（16 列）的贡献被静默丢弃：如果输入信息只集中在这 16 列，输出直接全零；随机输入下误差很小，常规 PCC 0.99 精度检查发现不了。K=8160 同样输入完全正确。表现为模型精度轻微劣化且难以定位。
+  trigger_surface: Blackhole + deepseek_v3_b1 Matmul（custom_mm 单核）+ K=8192
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - component

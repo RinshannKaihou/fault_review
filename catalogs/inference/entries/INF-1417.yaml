@@ -1,0 +1,56 @@
+id: INF-1417
+legacy_ids: []
+slug: cann_ge_eager_dynamic_shape_output_realloc_missing
+aliases: []
+title: CANN GE 动态 shape 增大时输出缓冲不重分配越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: 通用
+    component: MallocOutputTensor 复用判据
+  behavior: 输出内存复用仅判 GetSize()>0：动态 shape 下每轮调用时 shape 增大仍复用旧缓冲，kernel 向过小缓冲越界写；TensorData::Free 不重置 size_ 还会把已释放内存误判可复用
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: RT2 动态 shape 图（4096→8192）第 2 轮起 kernel 写出界 16384B 缓冲，仅输出拷贝阶段被尺寸校验拦截报错；越界写本身可污染相邻内存
+  visibility: 静默错误
+mitigation:
+  detect: 动态 shape 递增图 + mssanitizer memcheck
+  fix: PR https://gitcode.com/cann/ge/merge_requests/5135 （open）：复用条件改为「已有内存尺寸不小于本轮逻辑尺寸」不足时重分配；UT+ut_exe_graph 676 用例通过、真机 RT2 修复前第 2 轮失败；未合入
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Eager/HostCpu 自定义算子 + 动态 shape 增大的图执行（每轮 MallocOutputTensor 被调）；RT2 真机复现（4096→8192→16384）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/merge_requests/5135
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: CANN GE 的 EagerOpExecutionContext::MallocOutputTensor 与 HostCpuOpExecutionContext::MallocOutputTensor 仅以 GetSize() > 0 判断输出内存可复用：静态图（内存上层预赋值）成立，但动态 shape 场景两接口每轮执行都会被调用，首轮按当轮 shape 分配后，后续 shape 变大仍复用旧缓冲，算子按新 shape 写出界。另 TensorData::Free() 只清 addr_/manager_ 不重置 size_，GetSize()>0 还会把已释放内存误判可复用。真机复现（RT2 动态 shape 图 + Eager 自定义算子，每轮 4096→8192）：首轮 16384B、次轮需 32768B，kernel 已向 16384B 缓冲写出界，仅在输出拷贝阶段被尺寸校验拦截（memory_copy.cc:588 报错）；反向验证首轮 shape 设最大（16384）后 8 轮全过，证明仅 shape 增大时暴露。修复 PR（cann/ge !5135，open）：复用条件改为按逻辑尺寸比较（不用对齐后尺寸，避免静态图误重分配），不足时重分配；新增两个 UT + ut_exe_graph 全量 676 用例通过。
+  source: 2026-10-17 GitCode cann/ge PR https://gitcode.com/cann/ge/merge_requests/5135 （open；真机复现日志+根因分析+UT）
+  behavior: 在动态 shape 图里跑 Eager/HostCpu 自定义算子且后续轮次 shape 比首轮大时，算子输出写超出缓冲区：越界写发生在 kernel 执行时无任何报错，多数情况要到结果拷出时才报一条 copy 尺寸不匹配的错误（或什么都不报），越界写期间可能已污染相邻内存数据。shape 不变或变小时正常。
+  trigger_surface: CANN GE Eager/HostCpu 自定义算子 + 动态 shape 增大；RT2 实测
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

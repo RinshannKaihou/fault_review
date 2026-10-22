@@ -1,0 +1,64 @@
+id: INF-1434
+legacy_ids: []
+slug: op_plugin_fp32_conv_hf32_silent_downgrade
+aliases: []
+title: op-plugin fp32 conv 全族静默 HF32 类降精度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: conv 族 aclnn 出口精度模式选择
+  behavior: fp32 conv1d/conv2d/conv_transpose1d/conv_transpose2d 在 NPU 上的 aclnn 出口按 HF32 类低位宽模式执行，未遵循 high_precision 精度模式配置；梯度同样被污染。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: rel 误差 6.0e-4~1.8e-3（≈2^-10.5 量级），双芯逐位相同（确定性、非随机噪声）；fp32 前向与反向梯度均偏离；set_option high_precision 已废弃不生效、jit_compile 路径无法逃逸
+  visibility: 静默错误
+mitigation:
+  detect: 同机 matmul/bmm/einsum 对照（逐位或 <2.7e-6 达标）可排除平台普遍性；conv 形态矩阵双端逐位比对
+  fix: 待定（issue open，要求 op-plugin 侧确认 conv 族 aclnn 出口选择是否遵循精度模式配置并文档化 fp32 conv 精度行为）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Atlas A3（Ascend910_9362 ×2）、CANN 9.1.0、torch 2.7.1 + torch_npu 2.7.1.post4；fp32 conv 族（conv1d/conv2d/conv_transpose1d/conv_transpose2d）；fp16 同形态正常；双芯 maxabs 逐位相同
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/593
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0314
+original:
+  mechanism: 'op-plugin fp32 conv 族（conv1d/conv2d/conv_transpose1d/conv_transpose2d）在 NPU 上存在 HF32 类静默降精度，rel 误差 6.0e-4~1.8e-3（≈2^-10.5 量级，mantissa 低位宽特征），且梯度同样被污染（conv2d 3 组种子稳定 + 其余三算子 24 个形态点复测同款）。已验证无效的规避：torch.npu.set_option({''ACL_OP_SELECT_IMPL_MODE'': ''high_precision''})（已废弃不生效）、jit_compile 路径。对照实验：matmul/bmm/einsum 族同机 fp32 逐位或 <2.7e-6 达标，非平台普遍现象，缺陷限定在 conv 族 aclnn 出口的精度模式选择。issue 建议 op-plugin 侧确认 conv 族的 aclnn 出口选择（HF32 vs FP32）是否应遵循精度模式配置、文档明确 fp32 conv 精度行为与控制手段、并做家族级跟踪（四算子同根因）。复现脚本位于 A3 真机 /mnt/workspace/a3hunt/round2-3/（conv 形态矩阵与双端输出）。'
+  source: 2026-10-18 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/593 （open）
+  behavior: 在 Atlas A3 上用 fp32 跑 conv1d/conv2d/conv_transpose1d/conv_transpose2d，输出与 fp32 参考的相对误差达 6.0e-4~1.8e-3（HF32 类低位宽量级），无任何告警或报错；反向梯度同样偏差。两次运行逐位相同（确定性），换芯片一致；同机 matmul/bmm/einsum fp32 精度正常，可排除平台普遍现象。设置 high_precision 精度模式选项无效（选项已废弃），走 jit_compile 也无法绕开。fp16 同形态正常。
+  trigger_surface: op-plugin conv 族 aclnn 路径；fp32；Atlas A3（910_9362）双芯、CANN 9.1.0、torch_npu 2.7.1.post4 实测
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

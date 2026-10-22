@@ -1,0 +1,53 @@
+id: INF-1765
+legacy_ids: []
+slug: vllm_rocm_attn_dsv41_encoder_swa_replay_kv_rewrite
+aliases: []
+title: SGLang ROCm DSV4.1 SWA replay 改写缓存 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: HipRadixBackend 回放写位置
+  behavior: ROCm 后端 folds_encoder_swa_replay=False，回放作为独立 forward 执行且其 out_cache_loc 指向被回放 token 的缓存槽，压缩器把重算值写回覆盖原 prefill 写入
+effect:
+  objects:
+  - KV状态
+  detail: '每次 prefix 命中把最近 ≤128 个缓存 token 的 main KV、压缩 KV、index keys 覆写为以回放起点截断滑窗重算的值；后续命中同前缀的请求读到改写值；CUDA 侧 #44857 已修（回放行写 padding slot 0），ROCm 未修'
+  visibility: 静默错误
+mitigation:
+  detect: 比较回放 prefill 前后缓存 c1/c2 字节（GB300 上修复验证即此法）
+  fix: 修复参照 CUDA PR https://github.com/sgl-project/sglang/pull/44857 （回放行 raw_out_loc 置 0 由 c1/c2/index-K store 跳过；ROCm 侧未移植，open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: ROCm（gfx950）+ --enable-encoder-swa-bounded-replay + prefix 命中；代码阅读定位（ef26f6ad49），未在 ROCm 硬件运行
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: '发现于代码阅读，未在 ROCm 实机复现（issue 自述）；CUDA 折叠路径同机制已在 #44857 修复且 GB300 验证（修复前每回放 prefill 3308–3712/3712 行变化，修复后 0）。closed 状态因 CUDA 侧修复，ROCm 独立路径仍开放。'
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/44870
+  kind: github_issue
+- url: https://github.com/sgl-project/sglang/pull/44857
+  kind: github_pr
+relations: []
+original:
+  mechanism: SGLang --enable-encoder-swa-bounded-replay 下，每次 prefix 命中重放最近最多 128 个缓存 token。ROCm 上 create_dsv4_backend 选 DeepseekV4HipRadixBackend（attention_registry.py:189-198），其 folds_encoder_swa_replay=False（base_attn_backend.py:66），回放作为独立 forward 运行（tp_worker.py:627-632）；该 forward 的 out_cache_loc 是被回放 token 的缓存槽（encoder_swa_replay.py:151-153），prefill metadata 又把 out_cache_loc 交给压缩器（deepseek_v4_backend_hip_radix.py:2201-2206），于是 c1/c2 与 index-K store 每次把重算行覆盖原缓存条目。CUDA 后端折叠路径同机制：#44857 让回放行的压缩器写位置为 padding 槽（raw_out_loc 0），c1/c2/index-K store 跳过该槽；GB300 验证修复前每次回放 prefill 有 3308–3712/3712 受检行变化、修复后 0。ROCm 侧需同样处理并确认含 split index-K store 的压缩器跳过槽 0；SWA 写不受影响（走 request-window 布局，deepseek_v4_backend_hip_radix.py:3042-3048）。定位方式为代码阅读（ef26f6ad49），未在 ROCm 硬件运行。
+  source: 2026-10-20 每日扫描；https://github.com/sgl-project/sglang/issues/44870 ；CUDA 侧修复 https://github.com/sgl-project/sglang/pull/44857
+  behavior: 在 ROCm 上开启 encoder SWA bounded replay 服务 DeepSeek-V4.1 时，每次请求命中同一长前缀，就会把该前缀尾部（最近约 128 个 token）的缓存 KV、压缩 KV 和索引键改写成按截断滑窗重算的新值；之后所有命中该前缀的请求都基于被改写的缓存生成，输出随命中次数漂移，全程无报错。
+  trigger_surface: ROCm + DeepSeek-V4.1 + --enable-encoder-swa-bounded-replay + prefix cache 命中
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

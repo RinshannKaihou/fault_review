@@ -1,0 +1,69 @@
+id: INF-1576
+legacy_ids: []
+slug: cann_block_sparse_attention_v3_all_zero_mask_output_unwritten
+aliases: []
+title: BlockSparseAttentionV3 掩码全 0 时输出未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: BlockSparseAttentionV3
+  behavior: blockSparseMask 全 0（无任何 block 参与计算）时，算子仍返回成功，但 attention_out 与 softmax_lse 未被写入。
+effect:
+  objects:
+  - 数值结果
+  detail: 56GiB NaN 预填后 attention_out 为 NaN，16KB NaN 预填后 softmax_lse 为 NaN；同输入 5 次调用 lse 在 0 与 355.1054 间交替；两组不同输入输出逐元素相同；mask 全 1 时相对误差 1.65e-3。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 blockSparseMask 全 0 并预填显存（大块 NaN 与按 lse 尺寸定向预填），检查输出是否随预填值变化；重复调用查 lse 是否在两次取值间摆动
+  fix: 待定（issue closed，未附修复 PR；建议对“参与 block 数为 0”分支显式清零输出或报参数错）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend910_93（CANN 9.2.0、torch_npu 2.7.1）+ cann_ops_transformer.block_sparse_attention + blockSparseMask 全 0（fp16/TND、block_shape=[128,128]、inner_precise=1）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5718
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1517
+pattern: PAT-INF-0171
+original:
+  mechanism: 'ops-transformer issue #5718（2026-09-28 closed）在 Ascend910_93 单卡（HBM 64GB）、CANN 9.2.0、torch 2.7.1+cpu / torch_npu 2.7.1.post5.dev20260613 上用 cann_ops_transformer.block_sparse_attention 调 aclnnBlockSparseAttentionV3（fp16、TND、Sq=Skv=128、Nq=Nkv=32、D=128、block_shape=[128,128]、inner_precise=1），blockSparseMask（int8 [1,32,1,1]）全填 0 并复用同一张量。现象与定位：输出与输入无关——两组完全不同的输入 attention_out 逐元素相同；同一输入连续 5 次调用 softmax_lse 在 0 与 355.1054 之间交替（独立进程复跑 3 次一致）；GM 预填实验直接证明输出未写——256MB 预填 0/65536/-1/3.4028235e38 时 out_absmax 分别为 0/7.5/1.875/nan，按 lse 尺寸 16KB 预填 65536 时 lse_absmax=65536；56GiB NaN 预填（覆盖 >87% HBM）后 out_isnan=True，16KB NaN 预填后 lse_isnan=True。全程无异常，CANN plog 中该算子无 ERROR 记录。对照：mask 全 1 时与 dense fp32 参考相对误差 1.65e-3，实现正确。文档 aclnnBlockSparseAttentionV3.md 的 blockSparseMaskOptional 只定义 1=参与、0=不参与与传 nullptr 视为不开启块稀疏，未定义全 0 的退化语义。'
+  source: 2026-09-28 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5718 （closed）
+  behavior: 当 block 稀疏掩码是全 0（没有任何 block 参与）时，算子照样返回成功，但 attention 输出和 softmax_lse 根本没被写：输出里出现的是调用前显存里的残留内容，可能是全零、可能是 NaN，也可能是上一次别的算子留下的数。同一份输入跑五次，lse 会在两个不同的值之间跳；把显存预填成 NaN，输出就是 NaN。换两组毫不相干的输入，attention_out 竟然逐元素相同。
+  trigger_surface: blockSparseMask 全 0（无 block 参与）这一退化配置；dtype/layout/block_shape 未参与判定
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - visibility

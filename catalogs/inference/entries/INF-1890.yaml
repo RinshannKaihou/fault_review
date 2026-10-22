@@ -1,0 +1,59 @@
+id: INF-1890
+legacy_ids: []
+slug: vllm_ascend_w4a8_combinev2_capacity_units
+aliases: []
+title: W4A8 CombineV2 混用 packed 行与 token 行容量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FUSED_MC2 CombineV2 W4A8
+  behavior: DispatchFFNCombineW4A8Kernel::CombineV2 把 INT4 packed 行累加值与 token 行容量 maxOutputSize 比较，提前截断后续本地专家，combine 输出损坏。
+effect:
+  objects:
+  - 输出内容
+  detail: 较大 prefill shape 的服务输出畸形；PD 分离+MTP 时被污染的 prefill 隐状态/KV 使后续 MTP 草稿接受数为 0；MTP 与 KV 传输非复现必需。
+  visibility: 静默错误
+mitigation:
+  detect: W4A8_DYNAMIC + FUSED_MC2 下对照 expert 路由，比较完整 fused 输出与未融合/CPU 参考
+  fix: 按 token 行计容量、按 packed 行计地址，分离两套计数（issue 提议，open 未见合入 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: A3 双机 DP2×TP8×EP16，W4A8_DYNAMIC，VLLM_ASCEND_ENABLE_FUSED_MC2=1，CANN 9.0.1，vLLM 0.23.0/vllm-ascend 0.23.0rc1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14869
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM-Ascend 0.23.0rc1（vLLM 0.23.0、CANN 9.0.1、A3 双机 DP2×TP8×EP16、W4A8_DYNAMIC、VLLM_ASCEND_ENABLE_FUSED_MC2=1、eager prefill）中，csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp 的 CombineV2 以 cumsumMM 得到 packed 行数，却与 token 行容量 params.maxOutputSize 比较并在 preSrcExpertSum + currentExpertM 超限时把 currentExpertM 置 0，导致较早专家 packed 计数超过容量后后续本地专家被截断。源码 commit 1a086ce8ab27a01d2b2fdef32797b6d989f4727f L1128-L1179。issue 指出与 #8320（padding token 溢出容量）及 workspace 别名复用是不同缺陷。'
+  source: 2026-08-25 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14869 （open）
+  behavior: W4A8 量化模型在较大 prefill shape 下返回畸形输出；若同时开启 PD 分离与 MTP，被污染的 prefill 隐状态/KV 会让后续 MTP 草稿位置接受数为 0。单独关闭 MTP 或 KV 传输不能消除原始故障。
+  trigger_surface: W4A8_DYNAMIC + FUSED_MC2 + 多专家本地路由（A3 DP2×TP8×EP16）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

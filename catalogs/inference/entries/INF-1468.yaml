@@ -1,0 +1,62 @@
+id: INF-1468
+legacy_ids: []
+slug: ttmetal_moreh_mean_backward_keepdim_false_padding_values
+aliases: []
+title: tt-metal moreh 反传 keepdim=False 读填充值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: output_grad 形状假设错误
+  behavior: keepdim=false 时不读真实 output_grad 形状、假设降维置 1；实际梯度的 32 值沿 tile 行排，假设形状竖排，广播读到 tile padding。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: mean_backward dim=3：992/1024 错（全 1 梯度错值 0.0、随机梯度 1.06e37，确定性）；norm_backward dim=3 max err 4.54；dim=1/2 精确；无异常
+  visibility: 静默错误
+mitigation:
+  detect: 与 torch backward 对照；检查 keepdim=False + 末维归约组合
+  fix: 待定（issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: moreh.mean_backward/norm_backward + keepdim=False + dim 含末维（dim=3 或 [2,3]）；TILE 布局；dim=1/2 精确；Blackhole
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 训练反传域算子，推理编目收录依据：tt_dnn 算子族缺陷同时影响任何调用该 op 的推理图（moreh 族亦用于非训练部署）；机制与错误值均静默
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61490
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal issue #61490（c2026-10-19，Blackhole）：ttnn.operations.moreh.mean_backward / norm_backward 在 keepdim=False 且沿末维（dim=3）时返回错误值。机制：get_output_grad_shape（moreh_mean_backward_program_factory.cpp:38、moreh_norm_backward_program_factory.cpp:59）在 keepdim==false 时不读真实 output_grad 形状，假设它是 input_grad 形状降维置 1（(1,1,32,1)）；实际 keepdim=False 的 dim=3 梯度是 (1,1,32)，TILE 布局下 32 个值沿 tile 一行排布，假设形状把它们排成一列，广播读到 tile padding。实测：全 1 梯度 (1,1,32) 期望全部 1/32=0.03125，992/1024 错且错值为 0.0；uniform(-1,1) 梯度（seed 3）错值 1.06e37；确定性跨运行一致；dim=1/2 精确；norm_backward(p=2) dim=3 每 0.5 量级梯度 max err 4.54；dim=[2,3]（2,3,64,64）max err 1.1e-4。'
+  source: 2026-10-19 GitHub tenstorrent/tt-metal issue https://github.com/tenstorrent/tt-metal/issues/61490 （open）
+  behavior: Tenstorrent 上调用 moreh mean/norm 反传（keepdim=False、对最后一维）时，四分之三以上的梯度元素悄悄变成 tile 填充值（全 1 梯度时是 0、随机梯度时可达 1e37 量级的垃圾），无任何报错；对其他维度归约则正确。
+  trigger_surface: ttnn moreh.mean_backward/norm_backward + keepdim=False + dim 含末维；TILE 布局；Blackhole
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度
+    uncertain:
+    - detail

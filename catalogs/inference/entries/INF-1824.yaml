@@ -1,0 +1,66 @@
+id: INF-1824
+legacy_ids: []
+slug: vllm_ascend_vision_encoder_fia_uniform_average
+aliases: []
+title: 视觉编码器 FIA 无 mask 时输出退化为均匀平均
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: AscendMMEncoderAttention
+  behavior: TND 布局、sparse_mode=0 且不传 attention mask 调用 npu_fused_infer_attention_score 时，算子返回 uniform-average，视觉编码器注意力失效。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 带图请求不报错、正常返回文本，但细节问答、OCR、图表理解明显答错，多图或多帧更差；同图在 GPU 后端能答对。最小复现下与 fp32 torch.softmax 参考误差约 3.1（fp16 正常约 3e-3），单序列与多图输入一致；LLM decode 路径不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 用独立小脚本比对该算子在 TND+sparse_mode=0+无 mask 下的输出与 fp32 参考；或逐层比对 ViT 注意力输出是否等于 V 的均值。
+  fix: 待定（issue 2026-08-06 open）：给该调用显式 mask / 改用 sparse_mode=3 或分页模式。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: TND 布局 + sparse_mode=0 + 不传 mask 的 FIA 调用（视觉编码器路径）；PyTorch 2.10.0 + torch_npu，Ubuntu 22.04 aarch64
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13699
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1548
+pattern: PAT-INF-0182
+original:
+  mechanism: AscendMMEncoderAttention 用 torch_npu.npu_fused_infer_attention_score 跑视觉编码器注意力，参数是 input_layout="TND"、sparse_mode=0，并且完全不传 attention mask。报告的最小复现（无需加载模型，H=16、D=128、T=2048 的 fp16 随机张量）显示该组合下算子返回 uniform-average：输出与 fp32 torch.softmax 参考的误差约 3.1，而 fp16 正常应为 ~3e-3，单序列与多序列（多图）输入一致。LLM decode 路径不受影响，因为它用 sparse_mode=3 加显式 mask 或分页模式，这也说明问题出在这种「无 mask + sparse_mode=0」的调用形态而非算子整体。issue 本身即标注为静默数值错误（图片请求能跑但注意力失效），2026-08-06 提交、open；本库 INF-1548 记录的是同一算子在 bool mask 形状 [1,1,1,S] 下 512 之后被忽略的另一种触发，报告者亦视其为同族。
+  source: 2026-08-06 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13699 （open）
+  behavior: 带图请求不报错、正常返回文本，但模型像没看见图片：细节问答、OCR、图表理解明显答错，多图或多帧输入更差；把同样的图在 GPU 后端上跑能答对，因此常被误判为模型能力或 prompt 问题。
+  trigger_surface: 视觉编码器注意力（AscendMMEncoderAttention）在 TND 布局、sparse_mode=0、无 mask 下调用 FIA
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail

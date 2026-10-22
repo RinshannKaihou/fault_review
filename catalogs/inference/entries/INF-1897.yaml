@@ -1,0 +1,56 @@
+id: INF-1897
+legacy_ids: []
+slug: ms_gpu_pynative_step_time_monotonic_growth
+aliases: []
+title: GPU 动态图单步耗时随步数涨 3~5 倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: PyNative 逐步执行路径
+  behavior: 2.8.0 起 GPU PyNative 下固定 batch/shape 的单步耗时随累计步数单调上升，主机 RSS 仅 +1%、显存零增长，排除内存泄漏；GRAPH_MODE 全版本平稳
+effect:
+  objects:
+  - 性能/资源
+  detail: GPU+PYNATIVE_MODE 多分支/多SE卷积网络，步数上千才显形：前期每步30~40ms，一两千步后升至120~180ms（1800步内3.3~4.6倍，多次run 1.5~5.1）；完整网络每1500步+90~94ms，去掉3个SE块仅+8.6~9.0ms；精度两边一致。
+  visibility: 性能退化
+mitigation:
+  detect: 画「每步耗时 vs 累计步数」曲线（平均吞吐会把单调增长摊平），同配置跑 GRAPH_MODE 作对照，并与 2.7.2 对比确认 2.8.0 回归
+  fix: 未修复（2.9.0 / 2.10.0 仍复现）；规避：改用 GRAPH_MODE（需固定输入 shape、补齐末批）或停留在 2.7.2
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: GPU 后端 + PYNATIVE_MODE（Ascend 与图模式不受影响）；多分支/多 SE 块结构放大退化，1800 步以上才显形，短 CI 抓不到
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29687
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 现象与二分：固定 batch、固定输入 shape 的 PYNATIVE_MODE 训练在 GPU 上单步耗时随已执行步数单调增长，1800 步内 3.3~4.6 倍（多次 run 区间 1.5~5.1），主机 RSS 仅 +1~2%、GPU 显存零增长，因此不是内存泄漏；回归边界为 2.7.2→2.8.0，2.9.0/2.10.0 未修；同一模型的 GRAPH_MODE（nn.TrainOneStepCell）在 2.6~2.10 全程平稳且单步比 pynative 起始值还快一倍以上（13~19 ms vs 30~43 ms）。退化只与累计步数相关，与是否每步新建 Tensor、是否用官方 dataset/sink 管道无关。模块消融（probe_module.py，单变量、三次重复）：完整网络每 1500 步增加 +90~94 ms，去掉 3 个 SE 块后只 +8.6~9.0 ms（相差约 10 倍）；单独去掉 BatchNorm2d 或 Dropout 无明显改善；SE 内部写法（x.shape+reshape / AdaptiveAvgPool2d / s[:,:,None,None] / mean）都不改变退化幅度，说明与 SE 带来的算子与权重张量数量相关，而非形状推导或池化算子本身。2conv 单分支 CNN 3600 步退化 0%（4.6→4.7 ms），toy 结构也只在 0~24%，所以单分支标准模型与短时冒烟测试都抓不到。复现脚本自包含（numpy+mindspore），STEPS/BLOCK 可调，每 300 步打印 ms/step 并采样 RSS 与显存。
+  source: '2026 GitCode mindspore/mindspore issue #29687 https://gitcode.com/mindspore/mindspore/issues/29687（open；MindSpore 2.6.0.dev/2.7.2/2.8.0/2.9.0/2.10.0 对照，GPU 后端）'
+  behavior: 用 GPU 跑动态图训练时，训练越跑越慢：前期每步 30~40 ms，跑到一两千步变成 120~180 ms，而显存和内存都没涨，机器也没换；换成图模式同一模型反而又快又稳，精度两边一致，只有速度变差。小模型、单分支网络基本看不出来，带多个 SE/门控块的双分支网络最明显。
+  trigger_surface: GPU 后端 + PYNATIVE_MODE + 多分支/多 SE 结构的卷积网络；步数上千才显形
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

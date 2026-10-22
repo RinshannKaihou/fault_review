@@ -1,0 +1,58 @@
+id: INF-1898
+legacy_ids: []
+slug: vllm_ascend_enable_lora_wrong_stop_token
+aliases: []
+title: --enable-lora 致提前截断与停止符错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: LoRA 路径停止符/采样
+  behavior: 启用 --enable-lora 后停止符选择变为 <|endoftext|> 而非 <|im_end|>，reasoning parser 失效并出现复读；即使不挂任何 lora-modules 也复现，根因未定位。
+effect:
+  objects:
+  - 输出内容
+  detail: 所有请求被提前截断：reasoning_content 为 null、<think> 混入 content、出现「重要重要」类复读；流式与非流式均复现，禁用 LoRA 即恢复正常。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 Qwen3 服务分别在 --enable-lora 开/关（含无 lora-modules）下发送相同请求，检查 finish_reason、stop token 与 reasoning_content
+  fix: 待定（issue 仅给出采样/停止符管线假设，open）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.14.1 + vllm-ascend 0.14.0rc1 镜像、910B3、Qwen3 系列；--enable-lora 开启即触发，无需实际 LoRA 权重
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/8863
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.14.1 + vllm-ascend 0.14.0rc1（镜像 quay.io/ascend/vllm-ascend:v0.14.0rc1-openeuler、torch 2.9.0、torch_npu 2.9.0、910B3）部署 Qwen3 系列。启用 --enable-lora 后每个请求都出现：停止符使用 <|endoftext|> 而不是 <|im_end|>，响应提前截断；--reasoning-parser qwen3 失效，reasoning_content 变为 null，原始 <think> 标签留在 message.content；生成文本出现「重要重要」「出现在出现在」等词级复读；流式与非流式均如此。关闭 --enable-lora 全部正常；仅开 --enable-lora 而不提供 --lora-modules、以及挂载 probe LoRA 时症状相同，说明触发者是 LoRA 代码路径本身而非权重。issue 推测该路径替换了采样/logits 处理/停止符处理组件，未定位具体代码。
+  source: 2026-05-01 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/8863 （open）
+  behavior: 开启 --enable-lora 的 Qwen3 服务对每个请求都提前结束：响应在 <|im_end|> 之前以 <|endoftext|> 停止，reasoning 字段为空、思考标签漏进正文，文本出现词级复读；关闭该开关即完全恢复。
+  trigger_surface: vllm-ascend + --enable-lora（无论是否加载 LoRA 权重）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误

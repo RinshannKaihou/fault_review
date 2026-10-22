@@ -1,0 +1,58 @@
+id: INF-1681
+legacy_ids: []
+slug: op_build_failure_poisons_process_npu_state
+aliases: []
+title: 算子建图失败后同进程 NPU 算子静默返回零/垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: DynamicGRUV2 建图失败态
+  behavior: fp32 DynamicGRUV2 因 DT_FLOAT 不支持、op store 无该算子而建图失败（EZ3002/500002），失败态未被清理且进程未按日志所述退出，同进程后续 NPU 算子返回值与 CPU 显著不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: norm=0.0000（CPU 1.9893）、CE=0.0000（CPU 3.3322）；try/except 重试同一 GRU 不再抛异常但输出≈零/垃圾（输入翻倍 maxdiff=4.4e-2），训练侧表现为 loss/ppl 不动的假收敛。
+  visibility: 静默错误
+mitigation:
+  detect: 捕获首次算子失败后在同进程跑 norm()、CrossEntropyLoss 与 CPU 同数据参照比较；重试同一算子后检查输出是否对输入翻倍不敏感
+  fix: 待定（issue open，正文未给具体修复）；规避：算子致命失败后必须重启进程，不要用 try/except 重试掩盖
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: nn.GRU(fp32) 首次 forward + 910C/CANN 9.1.0/torch_npu 2.7.1.post4；失败后同进程所有 NPU 算子受影响，重启进程恢复
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4738
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4738（2026-09-11，open，1×NPU 910C 40vCPU 240GiB / Python 3.11.4 / torch 2.7.1+cpu / torch_npu 2.7.1.post4 / CANN 9.1.0）：全新进程里 nn.GRU(28,512) fp32 首次 forward 在 torch.npu.synchronize() 处抛 RuntimeError，CANN 日志为 Unsupported_Operator(EZ3002)：op type DynamicGRUV2 is not found in this op store；Static shape check 指出 input x 的 DT_FLOAT 不支持，支持的只有 DT_FLOAT16 + FRACTAL_NZ；build op model failed, result = 500002。日志同时声明 "The process exits for this inner error"，但进程实际并未退出。此后同进程继续执行 randn(4,4).npu().norm() 与 CrossEntropyLoss，返回值与 CPU 同数据结果显著不一致（实测 norm 0.0000 vs CPU 1.9893、CE 0.0000 vs 3.3322，另一次运行 norm≈0.0118、CE≈-0.0075，数值随缓冲状态变化）。用 try/except 捕获异常后重试同一 GRU 实例不再抛异常，但输出≈零/垃圾：对输入翻倍不敏感（maxdiff=4.419e-02，健康值应明显变化），与 CPU 参照 maxdiff=2.420e-01（参照 absmax=0.2420）。报告者未给出失败态未被清理的源码级定位，机制待定；旁证 fp16 前向正常、反向报 DynamicGRUV2Grad 错（EH0012 aclrtAllocatorGetByStream failed）。正文明确要求每次运行之间重启进程。'
+  source: 2026-09-11 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4738 （open）
+  behavior: 新进程里第一次调用 fp32 的 nn.GRU 就报错（DynamicGRUV2 / 500002，DT_FLOAT 不支持），但进程没像日志说的那样退出。之后同一进程里再跑别的 NPU 算子，结果全是 0 或垃圾：randn(4,4).norm() 得到 0.0000（CPU 是 1.9893），CrossEntropyLoss 得到 0.0000（应为 3.3322）。用 try/except 包住重试同一个 GRU 不再报错，看着像成功了，可输出几乎不随输入变化（输入翻倍 maxdiff 才 4.4e-2），放到训练代码里就是 loss、ppl 一直不动却没有任何报错的假收敛。重启进程后一切恢复正常。
+  trigger_surface: fp32 RNN 类算子（DynamicGRUV2）在 NPU 上首次调用即失败 + 同进程内捕获异常继续跑；其后所有 NPU 算子受影响
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - behavior

@@ -1,0 +1,62 @@
+id: INF-1626
+legacy_ids: []
+slug: sgl_kernel_npu_ssm_state_pool_k_major_transposed
+aliases: []
+title: SSM 状态池按 K-major 索引读写转置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: fused_sigmoid_gating
+  behavior: 状态池实际是 [slots,HV,V,K]（V-major），kernel 载入与写回都用 o_k[:,None]*V + o_v[None,:]（K-major）；K==V==128 时不越界不报错，读写的都是 S.T。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 零初态时 output 正确，state 差 1.02，state^T 差 1.19e-07；随机初态后 output 相对误差 0.85，state^T 不再匹配。全程无报错、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 对照时同时比较 state 与 state^T；用零初态隔离 store、随机初态再放开 load 的两次实验可区分读写腿
+  fix: issue 给出交换两项的补丁（o_v[None,:]*K + o_k[:,None]，load 与 store 各一处），未见修复 PR（open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: sgl-kernel-npu fused_sigmoid_gating_delta_rule_update_npu（Kimi-linear 类 GDN decode）；K==V 时必然静默，K!=V 时越界；graph-capture decode 的 -1 padding lane 亦在复现里
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sgl-kernel-npu/issues/640
+  kind: github_issue
+relations: []
+original:
+  mechanism: sgl-kernel-npu 的 fused_sigmoid_gating_delta_rule_update_npu（线性注意力/SSM 的 recurrent 更新核，python/sgl_kernel_npu/sgl_kernel_npu/fla/fused_sigmoid_gating_recurrent.py 第 105-112 行 load、第 156-163 行 store）把 SSM 状态池当 K-major 寻址，而池子按 V-major 存成 [slots,HV,V,K]：偏移写成 idx*HV*K*V + i_hv*K*V + o_k[:,None]*V + o_v[None,:]，正确形式是 o_v[None,:]*K + o_k[:,None]。Kimi-linear 恰好 K==V==128，乘积相同，既不越界也不崩，只是把状态转置着读写。报告者先令 S0=0 隔离 store（output 正确、state 差 1.02 而 state^T 差 1.19e-07），再取随机 S0 让 load 参与（output 相对误差 0.85，state^T 也不再匹配），并给出含 -1 padding lane 的 graph-capture decode 复现脚本与补丁。
+  source: 2026-07-30 GitHub sgl-project/sgl-kernel-npu issue https://github.com/sgl-project/sgl-kernel-npu/issues/640 （open）
+  behavior: GDN/线性注意力模型在 NPU 上 decode 时输出逐渐偏离：单步看只是数值不准（相对误差可达 0.85），但 KV 以外的循环状态池里存的内容其实是正确状态的转置，跨 step 累积后长序列输出漂移、复读或答非所问，日志里没有任何报错或 NaN。换成 GPU 参考实现或把 state 转置回来对比即可确认。
+  trigger_surface: sgl_kernel_npu.fla.fused_sigmoid_gating_delta_rule_update_npu；K==V（如 Kimi-linear 128）时静默、K!=V 时越界
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+    rewritten:
+    - detail

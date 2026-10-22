@@ -1,0 +1,57 @@
+id: INF-1449
+legacy_ids: []
+slug: sglang_mm_hashes_client_controlled_cache_identity
+aliases: []
+title: SGLang mm_hashes 客户端可控缓存身份错图
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: mm_hashes 直写 item hash
+  behavior: tokenizer_manager 对调用方 mm_hashes 直接 set_hash 短路内容哈希；item.hash 是 image 段 padValue——声明同 hash 的两请求该段相同，第二个无论实际图像都命中第一个缓存。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  detail: 发图像 B 但声明曾用于 A 的 hash → 按 A 回答、B 像素被忽略；正常 completion 无警告；实测 cached_tokens 15→193（image 段缓存服务）、比 uncached 快；仅 native /generate 暴露
+  visibility: 静默错误
+mitigation:
+  detect: 同 hash 不同图的请求对照（回答内容与首图一致的即中招）；审查调用方是否可传 mm_hashes
+  fix: '上游修复未见（issue open）；参照先例：Kimi embedding 路径已拒绝 caller mm_hashes 重定向缓存身份（PR #34411）；OpenAI 兼容端点不暴露该字段（仅 native /generate）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: SGLang 多模态部署的 native /generate 端点；调用方提供 mm_hashes 字段（设计意图=外部 KV router 路由决策与 sglang prefix-cache key 一致）；OpenAI 兼容端点不暴露；无 flag/allowlist 门控
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: 跨请求数据污染（错图 KV 复用）与 10-12~14 HiCache/前缀复用族同属缓存身份错配，但此条根因是客户端可控字段直接成为缓存 key，属外部输入信任域。
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/44641
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang #44641（c2026-10-16）：多模态部署 native /generate 端点接受 mm_hashes 字段（每 image item 一个 hex 串、由调用方声明）。tokenizer_manager 直接应用调用方值（item.set_hash(int(hex_hash,16))），短路内部基于内容的 hash_feature() 重算——注释解释意图是让外部 KV router 的路由决策与 sglang prefix-cache key 对同一图像一致。schedule_batch 中 MultimodalDataItem.hash 决定 item 的 pad_value，image 段 token 序列即该 pad value 的重复——所以声明的 hash 就是 image 段的 prefix-cache 身份：两个请求 items 带相同 mm_hashes 值则 image 段 token 序列相同，第二个请求无论实际图像字节如何都命中第一个的缓存 KV。实测：发图像 B 但声明曾用于 A 的 hash，第三个请求返回第一张图的文本、cached_tokens 从 15 跳到 193（162-token image 段由缓存服务）、比 uncached 基线更快完成，响应为正常 completion 无警告无错误 finish_reason 常规 stop。范围：字段无 flag 门控无 allowlist；OpenAI 兼容端点不暴露（native /generate only）；Kimi embedding 路径已把此类视为需防止（PR #34411 拒绝 caller mm_hashes 重定向缓存身份），generic 路径无条件应用。'
+  source: 2026-10-16 GitHub sgl-project/sglang issue https://github.com/sgl-project/sglang/issues/44641 （open）
+  behavior: 在 SGLang 多模态服务的 native /generate 端点上，调用方在请求里带 mm_hashes 字段即可控制图像的缓存身份：下一个声明相同 hash 但实际发送不同图像的请求，会直接命中前一张图的缓存 KV，模型按前一张图回答，新图像像素被完全忽略。响应是正常 completion，无任何警告或错误，且因命中缓存返回更快。
+  trigger_surface: SGLang 多模态 native /generate；调用方提供 mm_hashes；多模态 prefix cache；两请求 image 段 hash 相同（无论字节）
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect

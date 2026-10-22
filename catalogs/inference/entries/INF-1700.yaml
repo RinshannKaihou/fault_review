@@ -1,0 +1,63 @@
+id: INF-1700
+legacy_ids: []
+slug: indexer_quant_cache_mxfp4_odd_headdim
+aliases: []
+title: indexer_quant_cache MX-FP4 半字节错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: indexer_quant_cache
+  behavior: MX-FP4 每字节打包 2 个逻辑元素，headDim 为奇数时相邻行起点交替落在字节高/低 4 位；kernel 把 cache 声明为 int8_t，只能整字节 CopyOut，无法表达半字节偏移。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: quantMode=3 且 cache.headDim=65 时 cache 输出精度仅 56.9%~62.5%（不同 stride 方案都到不了 100%），属系统性错位而非随机噪声；无报错，tiling 直接放行。
+  visibility: 静默错误
+mitigation:
+  detect: 对 quantMode=3 构造奇数 headDim，逐元素比对 cache 量化结果与 golden；同时检查分页 view 的 row/block stride 奇偶
+  fix: 在 host tiling（indexer_quant_cache_tiling_arch35.cpp）要求 quantMode=3 时 headDim 与分页 row/block stride 必为偶数，否则 GRAPH_FAILED（关联 MR，closed，未核实合入版本）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 仅 Ascend 950PR/950DT 支持该算子，且需 quantMode=3 + 奇数 headDim
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4137
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #4137（2026-08-05 closed，Ascend 950PR/950DT，CANN 9.2.0）：attention/indexer_quant_cache 在 quantMode=3（MX-FP4）模式下，cache 的 headDim 为奇数时产生精度错误与数据错位。根因是 MX-FP4 每字节打包 2 个 fp4 逻辑元素，headDim 为奇数时相邻逻辑行的起始位置交替落在字节的高 4 位与低 4 位，而当前 kernel 把 cache 声明为 GlobalTensor<int8_t>，只支持整字节地址的 CopyOut，无法表达半字节偏移；host tiling 对该输入组合没有任何拦截，于是静默产出错位数据。社区调研确认 CANN 内其它 FP4/MX-FP4 打包量化算子（dynamic_mx_quant、scatter_pa_kv_cache）都未支持半字节寻址，而是在 host tiling 阶段直接拒绝奇数尾轴输入。实测 headDim=65 时 cache 输出精度 56.9%~62.5%，各 stride 候选方案均无法到 100%。修复选择在 tiling 侧拒绝：quantMode=3 时校验 headDim 与 cache 分页 view 的 row/block stride 必须为偶数，不满足即 GRAPH_FAILED。'
+  source: https://gitcode.com/cann/ops-transformer/issues/4137 （closed）
+  behavior: MX-FP4 量化写 KV cache 时，headDim 取奇数（如 65）不报错、不崩，cache 里写进去的值却有 3~4 成元素是错的，表现为下游 attention 输出精度整体掉到 56.9%~62.5%；换偶数 headDim 立刻恢复 100%，因此容易被当成量化本身的正常误差而漏掉。
+  trigger_surface: quantMode=3（MX-FP4）、cache dtype FLOAT4_E2M1/E1M2、cache.headDim 为奇数（如 65），Ascend 950PR/950DT
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+      effect:
+        from: 数值结果
+        to: KV状态

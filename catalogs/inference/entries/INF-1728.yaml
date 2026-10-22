@@ -1,0 +1,57 @@
+id: INF-1728
+legacy_ids: []
+slug: unpermute_pad_getalign_zero_buffer
+aliases: []
+title: unpermute pad 路径 GetAlign 得 0 字节缓冲
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: unpermute pad tiling
+  behavior: tiling 用 GetAlign(num_tokens_each_front_core, maxNPerLoopForUb) 算每循环 token 数，该函数整数除法向下取整，每核 1 token 时结果为 0。
+effect:
+  objects:
+  - 数值结果
+  detail: paddedMode=true、num_experts=2、capacity=1 时 kernel 按 0 字节分配输出队列，mssanitizer 报 illegal read size 4 @0x0；示例输出 [0,0,2,2]，正确应为 [1,1,0,0]。
+  visibility: 静默错误
+mitigation:
+  detect: paddedMode=true 且每核 token 数远小于 maxNPerLoopForUb（极小 capacity）的用例要加输出断言；否则 mssanitizer 之外无法发现
+  fix: 按 max(each_loop, last_loop) 分配输出队列，或 host 侧在 num_tokens_each_front_core<maxNPerLoopForUb 时让 each_loop 兜底取实际值（issue 建议，未核实合入）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: A5/ascend950 + 9.1.0 分支 + paddedMode=true + num_experts=2、capacity=1 这类极小 shape
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4278
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #4278（A5、ascend950、基于 9.1.0 分支、cann 包 730 商法，closed）：mssanitizer 在 MoeTokenUnpermuteWithRoutingMap 上抓到 illegal read of size 4 @0x0，栈顶为 moe_token_unpermute_with_routing_map.cpp:67 的 op.Process()，即 TILING_KEY 1000（paddedMode=true）分支 KernelMoeTokenUnpermuteWithRoutingMapPad。根因是 host tiling 与 kernel 的 buffer 尺寸联动：_tiling.cpp:166 用 num_tokens_front_core_each_loop = GetAlign(num_tokens_each_front_core, maxNPerLoopForUb)，而 GetAlign 是 value1/value2*value2（整数除法向下取整）；本例 num_experts=2、capacity=1 使 rowVal=2，num_tokens_each_front_core=ceil(2/coreNum)=1，maxNPerLoopForUb≈UB/4≈49k，于是 GetAlign(1,49152)=0。kernel _pad.h:83 用该值 InitBuffer(unpermutedTokensOutQue, BUFFER_NUM, num_tokens_each_loop_current_core*sizeof(T)) 得到 0 字节缓冲，Compute()（_pad.h:117）再往里 SetValue + DataCopyPad，访问地址 0x0。旁证：示例输出 original unpermutedTokensData=[0,0,2,2]（probs 全为 1 时正确 gather 应为 [1,1,0,0]），因示例不做断言，功能错误被静默放过；生产大 shape 下 num_tokens_each_front_core>=maxNPerLoopForUb 不触发。'
+  source: 2026-08-12 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4278 （closed）
+  behavior: padded 模式的 MoE unpermute 在极小 shape（专家数 2、capacity 1、每卡只分到 1 个 token）下返回的行顺序是错的——示例输入 probs 全 1，期望 [1,1,0,0] 却得到 [0,0,2,2]；正常调用不报错，只有在 mssanitizer 下才看到 illegal read @0x0，生产大 shape 完全不复现。
+  trigger_surface: paddedMode=true + 每核 token 数远小于 maxNPerLoopForUb（num_experts=2、capacity=1 等极小 shape）+ A5/ascend950
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem

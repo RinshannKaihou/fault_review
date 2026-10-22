@@ -1,0 +1,57 @@
+id: INF-1644
+legacy_ids: []
+slug: triton_ascend_make_block_ptr_leftover_dma_alias
+aliases: []
+title: make_block_ptr 余量 DMA 别名到下一个 head
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: make_block_ptr 载入越界
+  behavior: make_block_ptr 的 leftover DMA 按满 tile 宽度取数：packed x[T,H,K]、K=60、BK=64 时 head 0 的 60:64 列就是同 token 的 head 1，别名值进入 tl.dot。
+effect:
+  objects:
+  - 数值结果
+  detail: QK=60 的 dot 变成 40060（4 个别名 lane 各贡献 100×100）；声明 shape=(T,K) 并开 boundary_check 会本地补零从而正确，说明错在余量未裁而掩码认为在界内。
+  visibility: 静默错误
+mitigation:
+  detect: 把末维逻辑长度声明为真实 K 并开 boundary_check 复跑对比；或对未对齐（K*elem_size 非 32B 倍数）的块载入做边界哨兵值检查
+  fix: 规避：shape 末维写逻辑 K + boundary_check=(0,1)，或把 K 对齐到 32 字节；issue 已 closed，未见修复 PR
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton-ascend 3.2.2 + CANN 9.1 + torch_npu 2.9.0.post4，910B；仅当末维长度不是 32 字节对齐（K=60 fp16=120B）、tile 宽度大于逻辑 K 且未开 boundary_check 时触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2261
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend 3.2.2（CANN 9.1、torch_npu 2.9.0.post4、ASCEND_LAUNCH_BLOCKING=1、910B）：tl.make_block_ptr 生成的 leftover DMA 取满一个 tile 宽度（BK），不裁到逻辑末维余量。packed 存储 x[T,H,K] 且 K=60、tile BK=64、stride=H*K 时，head 0 的 60:64 列在物理上就是同一 token 的 head 1，别名值被当作合法元素送进 tl.dot，QK 从 60 变成 60+4*100*100=40060（复现里 head0 填 1.0、head1 填 100.0）。报告者用对照排除了 boundary_check lowering 本身：把 shape 末维写成逻辑 K 并开 boundary_check=(0,1) 时，余量 lane 在本地被补零、结果正确；O(1) 失败只有两种写法——不开 boundary_check，或把 shape 末维直接声明成 BK（掩码因此认为余量在界内）。K=60 fp16=120B 不是 32 字节对齐，下一个对齐长度 128B=64 元素，余量正好 4 lane。
+  source: 2026-09-18 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/2261 （closed）
+  behavior: 注意力类 kernel 用 make_block_ptr 载入 packed Q/K（每 head 长度不是 32 字节对齐，如 K=60、80 之类）时，QK 结果出现与输入量级无关的巨值：单个 head 的 dot 从 60 跳到 40060 这种量级，softmax 直接被这些巨值支配，输出变成集中在个别位置或全 NaN 之外的乱码结果。整个过程不报错，只有把同样的数据在 GPU 上跑或改成带 boundary_check 的写法才会发现差别。
+  trigger_surface: make_block_ptr/tensor_ptr 末维未对齐 + tile 宽度 > 逻辑 K + 未开 boundary_check（或 shape 末维误写成 BK）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

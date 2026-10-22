@@ -1,0 +1,55 @@
+id: INF-1806
+legacy_ids: []
+slug: op_tiling_py_float16_const_sizeof_vector
+aliases: []
+title: float16 常量按 sizeof(vector) 拷贝致越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: CopyConstDataWithFloat16
+  behavior: TBE tiling Python 接口解析 float16 常量时用 sizeof(const_value)/sizeof(float) 求元素数，得到 vector 对象大小 24 字节除以 4 的固定值 6，与真实元素数 N 无关。
+effect:
+  objects:
+  - 数值结果
+  detail: 常量数组元素数为 1~5（如标量 [1.0]）时按裸指针越界读堆，越界字节被当常量参与 tiling；元素数大于 6 时数据被静默截断，tiling 与常量实际内容不符，且不报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对含 float16 标量常量的算子开 tiling 调试，比对 const_value 元素数与实际拷贝长度；mssanitizer memcheck 可抓越界读
+  fix: 待定（issue closed，正文给修复建议：改用范围 for 遍历 const_value 并 emplace_back 转换，与 ascendc_py.cc 同名函数一致；未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  trigger_note: TBE/tiling Python 接口传入 float16 常量张量，元素数 ≠ 6（常见标量常量即触发）
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/553
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ge graph_metadef/register/op_tiling/op_tiling_py.cc 的 CopyConstDataWithFloat16（第1149行起）：第1150行 const_value = json_array.get<std::vector<float>>() 的元素数 N 完全由外部 inputs JSON 决定；第1157行 const size_t size = sizeof(const_value)/sizeof(float) 取的是 vector 对象自身大小（64 位平台 3 个指针 24 字节）除以 4 得固定 6；第1158-1159行用裸指针 const_data_ptr[i]（等价 operator[]，无边界检查）读 i∈[0,6)。入口为 extern "C" TbeOpTilingPyInterfaceEx2New/Ex3/Ex4（2101/2091/2081）→ TbeOpTilingPyInterfaceEx2NewInner（2106→1474）→ ParseInputsAndOutputs（1493→1466）→ ParseConstTensorListV2（1471→1318）→ ParseConstShapeDescV2（1323/1326→1259，第1286行调 CopyConstData）→ float16 分支（1189-1190）。第1152-1154行只拦空 vector，外层 try/catch(...)（1492-1498）只捕 JSON 异常。同仓 ascendc_py.cc:44-54 同名函数用范围 for 遍历实际元素，可证此处为笔误。
+  source: 2026-09-06 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/553 （closed）
+  behavior: 算子 tiling 时只要传入 float16 常量张量，元素少于 6 个（例如只有 [1.0] 一个标量）就会读到 vector 堆缓冲之外，把脏字节当常量继续算；元素多于 6 个则只拷前 6 个，后面的常量丢失。两种情况下 tiling 都正常返回，直到结果与常量实际值对不上才可能被发现。
+  trigger_surface: TBE tiling Python 接口的 inputs JSON 里带 float16 常量（const_value 元素数不等于 6）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

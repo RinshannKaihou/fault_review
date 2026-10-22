@@ -1,0 +1,61 @@
+id: INF-1798
+legacy_ids: []
+slug: cann_ge_air_export_missing_contiguous_conversion
+aliases: []
+title: air 离线图丢 contiguous 转换，余弦仅 0.65
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: TorchAir air 导出/静态图构图
+  behavior: 转成静态图后，torch.compile 内部原本会做的 .contiguous 转换不再发生，tensormove 与 transpose 的执行顺序和输入被换掉，并非某个算子算错
+effect:
+  objects:
+  - 数值结果
+  detail: 只做减均值除方差的模块：torchair online 与 pytorch 完全对齐，torchair.dynamo_export 出 air 再用 atc 出 om 后余弦相似度只有 0.65；逐个算子 dump io 可见 om 先做 tensormove、online 先做 transpose
+  visibility: 静默错误
+mitigation:
+  detect: 同一模块分别跑 online torchair 与离线 air/om，逐算子 dump io 比对顺序与输入
+  fix: 待定（issue closed，正文未给出修复 PR；规避方式是留在 online 链路）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torchair.dynamo_export 导出 air 再 atc 转 om 的离线链路；online torchair 正常；CANN 8.3.RC1.alpha003 + torch 2.7.1 + 910B4
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/60
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN 8.3.RC1.alpha003 + torch 2.7.1，Ascend910B4-1：一个只做减均值除方差的 module，torchair online 推理与 PyTorch 完全对齐，但经 torchair.dynamo_export 导出 air、再用 atc 转 om 后推理，结果与 PyTorch 的余弦相似度只有 0.65。逐个算子 dump io 后发现 om 与 online 的算子执行顺序不同（om 先执行 tensormove，online 先执行 transpose），且第一个 transpose 的输入也不同；最终定位为 torch.compile 内部会自动转成 .contiguous，而转成静态图之后这次 contiguous 转换不再发生。issue 已 closed，正文未给出修复 PR。
+  source: 2026-01-16 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/60 （closed）
+  behavior: 同一模块、同一输入，online（torchair）结果与 PyTorch 完全一致，但离线 air/om 结果差很多，余弦相似度只有 0.65，表现为模型整体精度崩掉；从算子 dump 看不是某个算子算错，而是 tensormove 与 transpose 的执行顺序和输入被换掉了。
+  trigger_surface: torchair.dynamo_export 导出 air → atc 转 om 离线链路（CANN 8.3.RC1.alpha003、torch 2.7.1、910B4）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    rewritten:
+    - behavior

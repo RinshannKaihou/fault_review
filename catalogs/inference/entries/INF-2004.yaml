@@ -1,0 +1,62 @@
+id: INF-2004
+legacy_ids: []
+slug: slot_mapping_constexpr_key_explosion_stall
+aliases: []
+title: 槽位映射 constexpr 键爆炸致每次重编译全局冻结
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: triton
+    component: compute_slot_mapping 融合内核
+  behavior: 融合槽位映射内核把 NUM_REQS 与每步变化的 tile 大小声明为 tl.constexpr，首见组合生成新 Triton 缓存键并同步编译。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: 混部 prefill/decode 准入下，多 KV 分组模型周期性停顿，所有在途请求一起冻住约 5.5 秒后恢复；停顿时刻出现新 Triton 缓存目录，单节点可累积 135 个键，重启后复发。
+  visibility: 挂起
+mitigation:
+  detect: 对照 Triton 缓存目录新增时刻与请求停顿；剔除 stall 后吞吐应与 MRV2 一致（824 vs 818 tok/s）；检查内核签名是否把 NUM_REQS/tile 当 constexpr
+  fix: 待定（issue closed 未附修复 PR；建议 num_reqs/num_tokens 走 do_not_specialize 或收敛 tile 集合，未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: MRV1 + 两个以上非 Mamba KV 分组且无 DCP（走融合槽位映射）的模型，混部 prefill/decode 准入
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17527
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue 17527（2026-09-25，closed）。自 e5b903620（[Performance] Fuse DSV4 multi-group slot mapping，PR #15289）起，vllm_ascend/ops/triton/compute_slot_mapping.py 的 _compute_slot_mapping_fused_groups_adaptive_kernel 把 NUM_REQS 与 SMALL_TILE_BLOCK_SIZE（_next_power_of_2(tokens_per_req)，每步变化）都声明为 tl.constexpr，_select_slot_mapping_launch_config 又按步算 request_tile。混部准入下 num_reqs 在多个取值间游走而 num_tokens 贴近 max_num_batched_tokens，每个首见组合生成新 Triton 缓存键，键空间约为 max_num_seqs × 6 个自适应 tile；编译在 worker 内 subprocess.run 同步执行，把在途请求全冻住约 5.5 s（910B2）。一台节点的缓存已累积 135 个不同键。受影响版本：main 自 #15289 起、releases/v0.26.0rc 经 #15530 cherry-pick；v0.26.0rc2 早于它，故当时无 tag 携带。'
+  source: 2026-09-25 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17527 （closed）
+  behavior: DSV4 / DSV4-Flash / GLM-5-Next 这类多 KV 分组模型在混部压力下会周期性整段停顿：所有在途请求一起冻住约 5.5 秒，然后恢复，过一会儿再来一次。vLLM、vllm-ascend 和 CANN 都不打日志，只能在停顿时刻看到新的 Triton 缓存目录；重启后仍会复发，因为键取决于准入交错顺序。
+  trigger_surface: MRV1 融合槽位映射路径 + 混部 prefill/decode 准入
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核
+    rewritten:
+    - behavior
+    - detail

@@ -1,0 +1,57 @@
+id: INF-1688
+legacy_ids: []
+slug: eager_add_drops_channels_last_stride
+aliases: []
+title: eager add 改 strides 致 as_strided 读错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: add 算子 stride
+  behavior: NPU eager add 把 channels_last 输入的 stride 改成 NCHW 连续布局，torch.compile 路径保留原 stride。
+effect:
+  objects:
+  - 数值结果
+  detail: shape (8,384,20,20)：CPU stride (153600,1,7680,384)，NPU eager (153600,400,20,1)；按 (153600,1,61440,384,7680) as_strided 后 100% 元素不匹配。
+  visibility: 静默错误
+mitigation:
+  detect: 在 NPU 上对 channels_last 输入做 (x+1).stride() 并与 CPU 对比；或直接跑 as_strided 视图前后比对，NPU eager 与 compiled 结果会互相不一致
+  fix: 待定（issue open，无修复 PR）：eager add 应保持输入 memory_format/stride，与 CPU 及 compiled 路径一致
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: channels_last 布局输入 + NPU eager add（不带 torch.compile）+ 下游 as_strided 视图；910B，torch_npu 新旧两代 Inductor 后端均受影响
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2196
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2196（2026-06-01，open，Ascend 910B，Python 3.11，torch-npu + NPU device）：NPU eager 模式的 add 算子把 channels_last 输入的 stride 改成 NCHW 连续布局。CPU eager add 对 shape (8,384,20,20) 的 channels_last 输入保留 stride (153600,1,7680,384)，NPU eager 返回 (153600,400,20,1)；而 torch.compile 编译路径能正确保留 stride、与 CPU 一致。当后续用 as_strided (8,384,2,20,12)/(153600,1,61440,384,7680)/0 这个按 channels_last 布局设计的视图去读时，套在 NCHW 数据上 100% 元素错位。最小复现是 test_as_strided_npu 的 channels_last 用例：同一个 x_cpu 分别走 CPU eager、NPU eager、NPU compiled 三条路径，NPU eager 与 CPU/compiled 不一致，NPU compiled 与 CPU 一致。该现象在 channels_last 输入上 100% 复现，并导致 test_as_strided_npu 在旧、新两代 NPU Inductor 后端上都失败——因为用例的参考值本身由 NPU eager 执行得出，参考值就是错的。报告者未给出 stride 丢失的具体 kernel 分支定位。'
+  source: 2026-06-01 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/2196 （open）
+  behavior: 把 channels_last 布局的张量搬到 NPU 上做 x+1，返回张量的 stride 从 channels_last 变成 NCHW 连续，而同样的代码在 CPU 上（以及 NPU 上走 torch.compile）都会保留 channels_last。因此后续按 channels_last 公式写的 as_strided 视图取到的是完全错位的数据：100% 元素都对不上 CPU 结果。整个过程不报任何错，只是数值全错；在 NPU 上跑 test_as_strided_npu 会稳定失败，而且因为用例用 eager 结果当参考，参考值本身就是坏的。
+  trigger_surface: channels_last 内存格式输入 + NPU eager 逐算子执行（非 compile 路径）+ 依赖 stride 的下游 as_strided/slice 视图
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior

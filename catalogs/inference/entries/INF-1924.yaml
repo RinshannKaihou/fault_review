@@ -1,0 +1,60 @@
+id: INF-1924
+legacy_ids: []
+slug: vllm_ascend_cann910_dsv4_pd_output_corruption
+aliases: []
+title: CANN 9.1 镜像下 DSV4 PD 输出乱码且 DSpark 接受率塌陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: CANN 9.1.0 镜像
+  behavior: 同一模型、同一 vLLM/vllm-ascend commit、同一启动参数与请求，仅换成 CANN 9.1.0 镜像即复现乱码与接受率塌陷；内部根因未定位，报告只确认环境级回归边界
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 单条 temperature=0 请求返回 200 但 content=null、reasoning_content 为多语种乱码、finish_reason=length；DSpark 接受率从 60% 降至 0.48%（监控约 0.5%）。
+  visibility: 静默错误
+mitigation:
+  detect: PD 分离下用同一条确定性短请求（temp=0，max_tokens=128）对比 CANN 9.0.1 与 9.1.0 镜像的 content 与 DSpark accepted/drafted 比值
+  fix: 待定（issue closed，未见根因结论）；规避是按镜像回落 CANN 9.0.1 / torch-npu 2.10.0.post2
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: DeepSeek-V4-Flash-W8A8 + PD 分离 MooncakeConnector + DSpark 5 草稿 token + CANN 9.1.0 镜像
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14273
+  kind: github_issue
+relations: []
+original:
+  mechanism: '对照实验做得很干净：模型都是 DeepSeek-V4-Flash-W8A8，vLLM base commit 568afb3a、vllm-ascend 561bd00f 相同，启动参数相同（Prefill TP2/DP1/PP4 + EP + eager + async + 前缀缓存；Decode TP2/DP4/PP1 + EP + FULL_DECODE_ONLY；两侧 block_size=32、quantization=ascend、DSpark 5 个草稿 token、MooncakeConnector mooncake_protocol=ascend、enable_reduce_sample=false、proxy 走 sequential 模式），只换镜像：CANN 9.1.0 + torch-npu 2.10.0.post4 出错，CANN 9.0.1 + torch-npu 2.10.0.post2 正常。出错时 Prefill/Decode 日志都显示 HTTP 成功、KV 传输连接建立，无异常栈；输出以 BOS 开头接无关的多语种片段，DSpark 接受率从 60% 掉到 0.48%，说明草稿与验证对不上而不仅是解码噪声。报告明确不主张仅 CANN 是根因（torch-npu patch 版本也不同），只把它作为可复现的环境回归边界，并逐一排除了 #12827（reduce_sample 已显式关闭）、#9220/#13439（无 KV 传输/Mooncake 连接错误且首个请求即复现）。'
+  source: 2026-08-14 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14273 （closed）
+  behavior: PD 分离服务升级到 CANN 9.1.0 镜像后，一条"请计算 12345 + 67890"的 temperature=0 请求立刻返回 200，但 content 是 null，reasoning_content 里全是无意义的多语种碎片，一直吐到 max_tokens 才停（finish_reason=length）。同一条请求在同代码同参数的 CANN 9.0.1 镜像上返回 80235。监控上只看到接受率从 60% 掉到 0.5%、答案长度爆表，没有任何错误日志可查，回滚镜像即恢复。
+  trigger_surface: DeepSeek-V4-Flash-W8A8 + PD 分离（MooncakeConnector，mooncake_protocol=ascend）+ DSpark 投机解码 + CANN 9.1.0 / torch-npu 2.10.0.post4
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+    - visibility

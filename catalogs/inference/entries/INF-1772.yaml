@@ -1,0 +1,61 @@
+id: INF-1772
+legacy_ids: []
+slug: ops_math_inplace_uniform_nan_inf_endpoints
+aliases: []
+title: aclnnInplaceUniform NaN/±inf 端点静默全 NaN/i
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CheckParams 的 from>to 校验
+  behavior: 区间校验只有 from>to 一条比较：NaN 参与比较恒 false 绕过、-inf>to 为 false 放过、to=+inf 时 from>+inf 为 false 放过（from=+inf 被拒只是误打误撞），非法端点被当合法输入派
+effect:
+  objects:
+  - 数值结果
+  detail: A2（910B2，CANN 9.2.0 两段式直调）：from/to=NaN 与 from=-inf → 64/64 全 NaN 且两段返回 0；to=+inf → 64/64 全 inf；A3 复现 NaN 两条。契约：from<=to、NaN/±inf 超范围，from>to 应返 161002
+  visibility: 数值异常
+mitigation:
+  detect: 对输出做 NaN/Inf 扫描；调用栈无 161002 而输出全 NaN 是特征
+  fix: 待定（建议 !(from<=to)||!isfinite 双条件拒绝；issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Atlas A2（910B2 dev7）CANN 9.2.0 纯 C 两段式直调 + A3（910_9362/DAV_2201，CANN 9.2.0-beta.2）独立复现；tensor 版 seed/offset 走同一 CheckParams（aclnn_uniform.cpp:284）同缺口
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 上游因掩码运算/除零产生 NaN 端点传入时（权重初始化、dropout mask、采样场景），下游训练 loss 变 NaN 且调用栈无 161002，故障点与症状点相隔远。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3693
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnInplaceUniform/aclnnInplaceUniformTensor（random/dsa_random_uniform），CheckParams（aclnn_uniform.cpp）仅有 if(from>to) 一条区间校验。IEEE-754 语义下 NaN 参与的任何比较恒 false：from=NaN/to=NaN 均绕过该唯一校验被当合法输入派发；-inf>to 为 false 放过；to=+inf 时 from>+inf 恒 false 放过；from=+inf 被拒只是 +inf>to 恰好成立的误打误撞。tensor 版（aclnnInplaceUniformTensor）走同一 CheckParams（:284）同缺口。文档契约（aclnnInplaceUniform.md）：from<=to 硬约束（NaN<=1.0 为 false 即直接违约）、NaN/±inf 超出表示范围、from>to 应返回 161002。实机：Atlas A2（910B2 dev7）CANN 9.2.0 纯 C 两段式直调，selfRef=fp32[1,64] 预填 -123.0：from/to=NaN（三种组合）与 from=-inf → 64/64 全 NaN 且两段返回 0；to=+inf → 64/64 全 inf；0/1 对照 64/64 落在 [0,1)。Atlas A3（910_9362，DAV_2201，CANN 9.2.0-beta.2）独立复现 NaN 两条。来源：A3 三线挖掘报告（2026-10-18 UNI-NAN-01）+ 本次 A2 补测 -inf/to=+inf 边界。
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-math/issues/3693
+  behavior: 权重初始化、dropout mask 或采样等场景中，若上游计算（掩码运算、除零等）把 NaN 或 ±inf 传进 aclnnInplaceUniform 的 from/to 区间端点，接口不报 161002 而返回成功，整个输出张量被静默写成全 NaN（NaN 或 -inf 端点）或全 inf（to=+inf）；下游表现为 loss 变 NaN 但调用栈里看不到任何错误码，排查困难。
+  trigger_surface: 任意昇腾平台 + aclnnInplaceUniform/aclnnInplaceUniformTensor + from/to 端点含 NaN 或 ±inf
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail

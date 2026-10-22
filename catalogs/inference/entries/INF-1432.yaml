@@ -1,0 +1,58 @@
+id: INF-1432
+legacy_ids: []
+slug: triton_ascend_masked_store_slots_unwritten
+aliases: []
+title: triton-ascend masked store 漏写有效输出槽位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: masked vector store
+  behavior: 带 mask 的向量 tl.store 对每请求标量映射只写部分合法输出槽位：输出保留初始化哨兵值 -777 而非请求状态索引；同测试标量循环写法通过
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: vLLM DFlash _prepare_dflash_inputs_kernel 映射写出错；eager 与 graph capture 均失败（非 replay 特有）；独立复现器无 vLLM 依赖
+  visibility: 静默错误
+mitigation:
+  detect: 输出槽哨兵值扫描（-777 残留）
+  fix: 规避：标量循环替换 mapping store（同一测试通过）；上游修复未知（报告基于 3.6.0+dev20260922220228 日构建，issue 询问后续 daily wheel 是否已修，未见回复）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton-ascend 3.6.0+dev20260922220228 + masked 向量 tl.store 写每请求标量映射；vLLM DFlash speculator 路径发现，独立复现器含 request indexing/context/rejection mask/padding 写入；eager 与 relaxed graph 均复现
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2457
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend（3.6.0+dev20260922220228）上带 mask 的向量 store 写每请求标量时，部分合法输出槽位未被写入：输出保留初始化哨兵 -777 而非期望的请求状态索引；把该 mapping store 换成标量循环后同一测试全部通过。发现于 vLLM DFlash _prepare_dflash_inputs_kernel（vllm/v1/worker/gpu/spec_decode/dflash/speculator.py）的 mapping 写入测试；报告附无 vLLM 依赖的独立复现器（保留 request indexing、context/rejection mask、mapping store、padding 写入），eager 执行即失败（先测 eager 再捕获 graph，非 graph replay 特有；graph 用 relaxed 模式仅作诊断条件）。报告非最新源码构建，已询问后续 daily wheel 是否包含修复，无回复。
+  source: 2026-10-17 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/2457 （open；独立复现器+scalar workaround 对照）
+  behavior: 在 Ascend 上跑含 masked 向量 tl.store 的 Triton kernel（如 vLLM DFlash 投机解码的请求映射准备）时，部分本应写入的输出位置保持初始哨兵值 -777 不变：下游拿到错误的状态索引，投机解码映射错乱。eager 与图模式都错；把向量 store 改成标量循环就正确。
+  trigger_surface: triton-ascend + masked vector store（每请求标量映射形态）；vLLM DFlash speculator 实际路径
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - component

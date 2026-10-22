@@ -1,0 +1,58 @@
+id: INF-1891
+legacy_ids: []
+slug: vllm_ascend_cann91_megamoe_drops_later_experts
+aliases: []
+title: CANN 9.1 MegaMoe W4A8 丢弃后续专家输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CANN mega_moe (W4A8)
+  behavior: CANN 9.1 mega_moe W4A8 在较早专家占满容量后丢弃后续本地专家输出：expert_token_nums 仍正确，但对应 token 输出为 0；容量 7000 触发、14000 正常。
+effect:
+  objects:
+  - 数值结果
+  detail: EP2/topk=1、专家计数 [5000,2000,0,0] 且总行数未超 7000 容量时，专家 1 的 2000 个 token 输出为 0.0（对照 [2000,2000,3000,0] 为 0.65625）；容量 14000 时逐位一致。
+  visibility: 静默错误
+mitigation:
+  detect: EP2 W4A8 下对比不同专家计数与容量（7000/10000/14000），同时校验 expert_token_nums 与输出行
+  fix: 临时规避 enable_fused_mc2=0（--additional-config，优先于已弃用的 VLLM_ASCEND_ENABLE_FUSED_MC2=0），回退常规 MC2/ALLTOALL；CANN 二进制根因修复待定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend A3、CANN 9.1.0（V100R001C25B114）、vLLM 0.27.1、vllm-ascend main 6495829、W4A8/INT4 权重 + INT8 dispatch、EP2/topk=1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14926
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'CANN 9.1.0 A3 ops（innerversion V100R001C25B114、ops-transformer 20260720）的 cann_ops_transformer.ops.mega_moe 在 W4A8（INT4 权重、INT8 dispatch）路径上，当较早本地专家接收足够多 token 时会丢弃后续专家输出。最小复现 num_tokens_per_rank=3500、EP=2、topk=1、max_recv_token_num=7000：对照专家计数 [2000,2000,3000,0] 时专家 1 输出 0.65625，触发计数 [5000,2000,0,0]（总行数同为 7000）时 expert_token_nums[1] 仍为 2000 但输出变为 0.0；容量 10000 时 rank0 恢复、rank1 仍 0，容量 14000 时与对照逐位一致。这是当前 nightly 选择的 MegaMoe 路径，不是 #14869 的旧 dispatch_ffn_combine_w4_a8 算子。'
+  source: 2026-08-25 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14926 （closed）
+  behavior: W4A8 MegaMoe 推理在专家负载不均时静默丢掉后续专家负责的 token 输出（数值变为 0），expert_token_nums 计数看起来正常，服务不报错；长输出/大 batch 下表现为局部内容错误。
+  trigger_surface: CANN 9.1.0 + A3 + W4A8 MegaMoe（FUSED_MC2 路径），专家路由不均且接近 token 容量
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 量化
+        to: 算子/内核

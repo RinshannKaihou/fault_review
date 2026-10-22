@@ -1,0 +1,62 @@
+id: INF-1892
+legacy_ids: []
+slug: vllm_ascend_dspark_loader_overwrites_draft_head
+aliases: []
+title: DSpark 加载顺序用 target 权重覆盖 draft 头
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: DSpark draft head/HC 加载
+  behavior: load_weights() 把 target 顶层 head/embed/HC 与 mtp.* 草稿键映射到同一参数，target 键后到即覆盖已训练的 draft 头，结果依赖分片加载顺序。
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  - 性能/资源
+  detail: 多分片/多线程加载导致 target 键晚于 MTP 键到达时，草稿头与 HC 被替换；日志无权重加载错误，验证器仍拒绝错误提案，请求输出正确，但接受长度从约 5.1 塌到 1.1、C1 纯 decode TPOT 从 12.2ms 升到 48.7ms。
+  visibility: 性能退化
+mitigation:
+  detect: 用最小 CPU 复现脚本按 mtp-first / target-first 两种顺序调用 load_weights，检查 lm_head 是否保留 7.0；线上观察接受长度
+  fix: 记录已由 mtp.* 加载的目标参数、忽略后续 target 回退，仍允许后续 MTP 张量覆盖（issue 提议，open）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.28.0 + vllm-ascend 44f9bf5、CANN 9.1.0、2×8 910B3、TP8、DSpark K=7、draft eager + target FULL_DECODE_ONLY
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17094
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.28.0（commit 2cf0a691）与 vllm-ascend commit 44f9bf53、CANN 9.1.0、2 台 8×910B3、TP8、DSpark K=7（draft eager、target FULL_DECODE_ONLY、EP 开关均复现）下，DSparkDeepseekV4ForCausalLM.load_weights() 把 target checkpoint 顶层 head/embed/HC 键与 mtp.* 草稿键映射到同一目标参数；当 target 键晚于 MTP 键到达时静默覆盖已训练的 draft 参数。最小复现中 mtp.2.head.weight 与 head.weight 都映射到 lm_head.weight，draft_first=True 时最终值为 1.0 而非期望 7.0；真实模型上 8 个 draft-head 分片及 draft HC 参数与 checkpoint 不符。验证器仍拒绝错误提案，因此请求可成功但投机收益大部分丢失。
+  source: 2026-09-21 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17094 （open）
+  behavior: DSpark 投机解码的接受长度从约 5.1 塌到 1.1，C1 纯 decode TPOT 从 12.2ms 升到 48.7ms；生成内容仍正确，日志无权重加载错误，只有性能与接受率异常。
+  trigger_surface: DeepSeek V4 DSpark + 多分片/多线程权重加载（加载完成顺序变化）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 输出分布
+        to: 模型权重
+      visibility:
+        from: 静默错误
+        to: 性能退化
+    rewritten:
+    - detail

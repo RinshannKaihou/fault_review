@@ -1,0 +1,51 @@
+id: INF-1608
+legacy_ids: []
+slug: ms_quant_matmul_dtype_override_oob_read
+aliases: []
+title: quant_matmul dtype override 缺宽度校验致越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: mindspore
+    component: aclnn QuantMatmul dtype
+  behavior: GetQuantMatmulAclDtype 只把 override dtype 转成 aclDataType，不校验字节宽度；新路径按 override 重解释原 device buffer 而非 Cast 出新 tensor。
+effect:
+  objects:
+  - 数值结果
+  detail: override 宽于实际 dtype（如 int8 buffer 传 float16/int32）时 ACL 按 numel*itemsize 读 2~4 倍范围，读出相邻显存，结果被污染或非法地址 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 审查 x1_dtype/x2_dtype 等 override 是否与实际 tensor dtype 位宽一致；量化 matmul 输出与 dequant 参考比对，异常时看 ACL 是否报非法地址
+  fix: 待定（issue 只给建议：override 字节宽度必须与 tensor->data_type() 一致或按 4bit 规则展开 shape，否则 MS_EXCEPTION；确需变宽的场景保留 PyBoostUtils::CastTensor 路径）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 910B + MindSpore pyboost quant_matmul（commit 794864e2）；需调用方显式传更宽的 dtype override，静态复核结论为条件可触发
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29671
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: mindspore/ops/kernel/ascend/aclnn/pyboost_impl/customize/quant_matmul.cc:89（commit 794864e2_9c452665，910b，Python 3.12）：改动把 x1/x2 的 dtype override 语义从真实 Cast 改成按新 dtype 重解释同一块 device buffer——旧代码 PyBoostUtils::CastTensor(x1_val, x1_dtype) 会产出按目标 dtype 定尺的新 tensor，新代码直接构造 AclTensorWrapper{x1, GetQuantMatmulAclDtype(x1, x1_dtype)}，而 aclnn_tensor_wrapper.h:98-144 的 ConvertType 仍沿用原 shape/stride/storage_shape 与 device_address，只换 dtype。aclCreateTensor 按 numel(storage_shape)*itemsize(override) 计算张量覆盖范围，但这块显存是按真实 dtype 的 itemsize 分配的；GetQuantMatmulAclDtype(68-77) 对 override 与实际 dtype 的字节宽度没有任何一致性校验。当 override 更宽（实际 int8/uint8、override float16/int32）时读范围是 buffer 的 2~4 倍，device 侧越界读，结果被相邻显存污染或 ACL 报非法地址 crash。此外 IsFourBitType 只覆盖 ACL_FLOAT4_E2M1/E1M2、不含 ACL_INT4，int4 override 也不做 shape 展开。issue 的复核结论是『真但场景受限』，需用户显式误传更宽 dtype 才触发，无复现脚本。
+  source: 2026-09-07 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29671 （open）
+  behavior: 调用量化 matmul 时如果把 x1_dtype/x2_dtype 传得比真实权重宽（例如 int8 权重标成 float16），算子不报错、照常返回结果，但读的是权重 buffer 之外 2~4 倍的显存，输出被相邻数据污染；同一份权重不传 override 时结果正常，只有对比才能发现。
+  trigger_surface: Ascend 910B + MindSpore pyboost 自定义 quant_matmul 路径；调用方显式传入更宽的 x1_dtype/x2_dtype dtype override（如 int8 权重传 float16/int32）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

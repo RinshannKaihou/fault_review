@@ -1,0 +1,56 @@
+id: INF-2009
+legacy_ids: []
+slug: matmul_v3_input_k_eq_zero_clear_output_off_by_one_oob
+aliases: []
+title: mat_mul_v3 K=0 清零分支 off-by-one 越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: mat_mul_v3 K=0 清零
+  behavior: MatMulInputKEqZeroClearOutput 边界判断写成 coreIdx > usedAivNum，应为 >=；coreIdx==usedAivNum 时不返回，向 outputGM[totalDataAmount] 越界写
+effect:
+  objects:
+  - 数值结果
+  detail: totalDataAmount 被 everyAivDataCount 整除且 usedAivNum<AivNum（如 28/40）时，K=0 清零 kernel 在输出缓冲区末尾之外写一个元素，越界路径经 batch_mat_mul_v3、fused_mat_mul、mat_mul_v3 均可达
+  visibility: 静默错误
+mitigation:
+  detect: 构造 totalDataAmount 被 everyAivDataCount 整除、usedAivNum 小于硬件 AivNum 的 K=0 matmul，用越界检测（mssanitizer/canary）或与 CPU 清零结果比对缓冲区尾部
+  fix: issue 建议改为 coreIdx >= usedAivNum（closed）；修复 MR 与合入版本未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需 K=0（空乘）matmul 且 totalDataAmount 恰好整除、usedAivNum 小于 AivNum；arch35 内核
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5022
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn 的 matmul/mat_mul_v3/op_kernel/arch35/mat_mul_input_k_eq_zero_clear_output.h:55 边界检查写成 if (coreIdx > usedAivNum)，应为 >=。当 tailDataCount==0（totalDataAmount 被 everyAivDataCount 整除）且 coreIdx==usedAivNum 时判断为假不返回，第 64 行执行 outputGM[usedAivNum * everyAivDataCount] = outputGM[totalDataAmount] 越界写；缓冲区大小正是 totalDataAmount，合法下标 0..totalDataAmount-1。数据流上 totalDataAmount 与 aivNum 来自 tiling 数据（同文件 45-46 行），issue 给出 28/40 的可构造输入，并确认 batch_mat_mul_v3:368、fused_mat_mul:779、mat_mul_v3:253 三处调用可达。
+  source: '2026-08-24 GitCode cann/ops-nn issue #5022（closed）。https://gitcode.com/cann/ops-nn/issues/5022'
+  behavior: 输入 K 维为 0 的 matmul（空乘，走清零分支）在特定分核数下会写到输出缓冲区之外一个元素；过程无报错、无日志，返回结果看起来正常（K=0 时本应全 0），缓冲区相邻内存被静默改写。
+  trigger_surface: mat_mul_v3 K=0 清零分支；totalDataAmount 被 everyAivDataCount 整除且 usedAivNum 小于 AivNum 的分核配置
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

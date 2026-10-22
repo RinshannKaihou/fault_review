@@ -1,0 +1,64 @@
+id: INF-1524
+legacy_ids: []
+slug: torchnpu_set_float32_matmul_precision_silent_noop
+aliases: []
+title: matmul_precision/TF32 开关在 NPU 静默不生效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: matmul_precision 开关
+  behavior: NPU 无 TF32 张量核，set_float32_matmul_precision 与 backends.cuda.matmul.allow_tf32 被静默接受，既不改 kernel 选择也不给 warning。
+effect:
+  objects:
+  - 性能/资源
+  detail: NPU 上设置 highest/high/medium 三档 fp32 matmul 结果逐位相同（torch.equal 为 True）；torch.backends.cuda.matmul.allow_tf32 在 NPU 环境下仍返回 True 但无意义，用户据此得出的性能/精度对比结论失真。
+  visibility: 性能退化
+mitigation:
+  detect: 同一 fp32 matmul 在三档 precision 下比较 torch.equal 与耗时；从 CUDA 迁入的代码尤其要看
+  fix: 待定（issue closed，正文未给修复 PR；期望设置时给 warning 说明 NPU 无 TF32，或文档写明这些 CUDA 专有开关的行为）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: NPU 上调用 torch.set_float32_matmul_precision('high'/'medium') 或 torch.backends.cuda.matmul.allow_tf32=True；910B3/CANN 9.1.0，2.7.1 与 2.9.0 均复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5108
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5108（2026-09-24，closed，Atlas 800T A2/910B3，CANN 9.1.0，torch 2.7.1+torch_npu 2.7.1.post8，tf32 项在 2.7.1/2.9.0 均复现）：NPU 没有 TF32 张量核概念，但从 CUDA 迁来的代码常用 torch.set_float32_matmul_precision(''high''/''medium'') 或 torch.backends.cuda.matmul.allow_tf32=True 期望 fp32 matmul 走快速路径。实测在 512×512 fp32 matmul 上依次设 highest/high/medium，三次结果 torch.equal 全为 True（三档逐位相同），说明开关对 kernel 选择毫无影响；torch.backends.cuda.matmul.allow_tf32 在 NPU 环境下仍返回 True 但无意义。全程无 warning。报告者指出影响是用户误以为走了 TF32 快速路径，据此写出的性能/精度对比结论是错的，并与 #4666（FlexAttention 中 FP32 默认误选 TF32，反向问题）作了区分。'
+  source: 2026-09-24 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5108 （closed）
+  behavior: 把 CUDA 上惯用的 torch.set_float32_matmul_precision('high') 或 allow_tf32=True 搬到 NPU 上，代码照常跑、不报错也不告警，但 fp32 matmul 一点没变快、数值也一bit没变：highest/high/medium 三档输出逐位相同。于是按「开了 TF32」写出来的性能对比和精度对比结论都是假的，排查时也看不出开关被忽略。
+  trigger_surface: NPU 设备 + torch.set_float32_matmul_precision（highest/high/medium）或 torch.backends.cuda.matmul.allow_tf32；仅在 NPU 上表现为无效，CUDA 上正常
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 配置/参数
+        to: 算子/内核
+      visibility:
+        from: 静默错误
+        to: 性能退化
+    rewritten:
+    - detail

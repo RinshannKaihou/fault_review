@@ -1,0 +1,61 @@
+id: INF-1474
+legacy_ids: []
+slug: ops_math_addn_mixed_dtype_no_check_bit_reinterpret
+aliases: []
+title: aclnnAddN 混合 dtype 不校验静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: AddN dtype 校验缺失+返回值吞
+  behavior: CheckDtypeValid 只查白名单不比较输入间 dtype；dtype 比对检查的 return false 被当 ACLNN_SUCCESS 吞掉；白名单内混合 dtype 按 tensors[0] 重解释其它输入位模式。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32+int32(0x4B000000)→8388609.0；fp32+0x7FC00000→nan；fp16+fp32→fp32 拆两 fp16+越界读；uint8 被拒 161002——白名单内混合静默错
+  visibility: 静默错误
+mitigation:
+  detect: 调用侧核对各输入 dtype 一致；故意混 dtype 的白名单外值试探是否被拒
+  fix: 待定（issue open；修复建议：CheckDtypeValid 追加与 tensors[0] 逐项 dtype 比对 + 修 return false 被吞）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnAddN + 输入 dtype 彼此不同但均在白名单（fp32+int32、fp16+fp32 实测）；单 dtype 不触发；A3、CANN 9.2.0-beta.2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: '同日 #3675（同进程二次调用踩残留状态）为同算子另一独立机制（残留状态/崩溃域），正文已读：fail-loud 为主（EXEC 561103+coredump/SIGSEGV），留观不占静默号'
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3652
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-math issue #3652（c2026-10-19，实机 A3/Ascend910_93，CANN 9.2.0-beta.2，纯 aclnn_capi 两段式直调）：aclnnAddN 对"所有输入 dtype 必须一致"契约没有任何校验。资料侧声明：add_n_proto.h 要求 same shape and type；aclnnAddN.md 返回码表列 161002=tensors 中 Tensor 数据类型不一致。源码侧（math/add_n/op_api/aclnn_add_n.cpp）CheckParams：CheckShape 逐项比 shape（shape 一半落地）；CheckDtypeValid 只逐项查 ADD_N_DTYPE_SUPPORT_LIST 白名单、不比较输入之间 dtype（type 一半完全没落地）；OP_CHECK_DTYPE_NOT_SAME((*tensors)[0], out, return false) 只比 tensors[0] 与 out 且 return false 被当状态码 0==ACLNN_SUCCESS 吞掉。实测：x1=fp32(1.0)+x2=int32(0x4B000000)→8388609.0；x2=0x7FC00000→nan；x1=fp16(1.0)+x2=fp32(1.0)→1.0,2.875（fp32 位模式拆两个 fp16 且按元素数索引越界读）；x2=uint8(255)→161002 被拒。即只有某路 dtype 不在白名单才报错，两路都在白名单内就完全不校验。来源：aclnnAddN A3 三线挖掘报告（2026-10-18，ADDN-DTYPE-01）。'
+  source: 2026-10-19 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3652 （open）
+  behavior: 直接调 aclnnAddN 把两个 dtype 不同的张量（如一个 fp32 一个 int32、或一个 fp16 一个 fp32）相加时，接口不报资料声明的 161002，而是把第二个输入的比特位按第一个输入的类型重新解释：int32 位模式读成大数或 NaN、fp32 拆成两个 fp16 还伴随越界读，返回看似正常的错误数值。
+  trigger_surface: aclnnAddN（aclnn 直调或经框架分发）+ 输入 dtype 彼此不同但均在支持白名单；A3、CANN 9.2.0-beta.2 实测
+  discovery: 2026-10-19 每日扫描
+  notes:
+  - 2026-10-20 回访 2026-10-20：#3652 仍 open（u2026-10-20T03:21 有活动，正文未见修复链接）
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - original.notes

@@ -1,0 +1,61 @@
+id: INF-1562
+legacy_ids: []
+slug: ops_math_im2col_div_rtn_int_narrowing
+aliases: []
+title: im2col div_rtn 以 int 承接 int64 商余数窄化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: aclnn_im2col.cpp div_rtn
+  behavior: 模板 div_rtn 的返回类型是 T（调用处 T=int64_t），函数体内 q、r 却声明为 int，64 位商与余数被隐式窄化；dilation*(kernelSize-1)、2*padding 的乘法也无溢出保护
+effect:
+  objects:
+  - 数值结果
+  detail: padding/kernelSize/dilation 仅校验 >0 无上界，分子超过 INT32（约 2.1e9）时 outputHeight/Width 算错，推导出的 outShape 与实际 out 比对错乱：本应报错却通过，或合法输入被误拒
+  visibility: 静默错误
+mitigation:
+  detect: 传大 padding/kernelSize/dilation 使分子越过 INT32 边界，比对 aclnn 推导的 outputHeight/Width 与 64 位参考计算；同仓 experimental 版实现可作正确对照
+  fix: issue 给方案（closed，未见 PR 号）：把第 54-55 行的 q、r 改为 T，并参照 experimental/conversion/im2col 版本用 __int128/SafeMul 对分子乘法做溢出防护
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: conversion/im2col/op_api/aclnn_im2col.cpp:47-60（定义）与 :106-113（调用，T=int64_t）；需 padding/kernelSize/dilation 取大到分子超 INT32，正常卷积参数不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3190
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1539
+pattern: PAT-INF-0169
+original:
+  mechanism: conversion/im2col/op_api/aclnn_im2col.cpp:47-60 定义 template <typename T> static inline auto div_rtn(T x, T y) -> T，函数体内 int q = x / y; int r = x % y; —— 返回类型按 T（此处 int64_t）声明，中间商余却是 32 位 int，对 64 位商/余数做隐式窄化；:106-113 调用 div_rtn<int64_t>((inputHeight + 2*padding[0] - (dilation[0]*(kernelSize[0]-1)+1)), stride[0]) + 1 计算 outputHeight，同式算 outputWidth，其分子乘法（2*padding、dilation*(kernelSize-1)）也没有溢出保护。对照实现 experimental/conversion/im2col/op_api/aclnn_im2col.cpp:51-79 已改用 __int128/SafeMul，说明缺陷真实且修复方案已知。触发条件是 padding/kernelSize/dilation 只校验 >0、无上界，使分子超过 INT32 范围（约 2.1e9）。
+  source: 2026-09-15 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3190 （closed）
+  behavior: 给 im2col 传超大 padding/kernelSize/dilation（参数检查只要求 >0），outputHeight/outputWidth 被算成窄化后的错值，于是 outShape 和实际 out 的校验错位——该报参数错误的用例反而通过，或者合法输入被拒。算子不崩、不报 NaN，只是形状与数值口径静默偏掉。
+  trigger_surface: ops-math conversion/im2col 的 aclnn op_api 通路；padding/kernelSize/dilation 使 (input + 2*padding - dilation*(kernelSize-1) - 1) 超过 INT32
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

@@ -1,0 +1,63 @@
+id: INF-1928
+legacy_ids: []
+slug: mindformers_pipelinecell_multioutput_sixth_dropped
+aliases: []
+title: PipelineCell 只累加 5 路输出，第 6 路静默丢
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindformers
+    component: PipelineCell 多路输出累加
+  behavior: 非zbv、pipeline_stage>1且calculate_per_token_loss=True时GPTModel返回6路，PipelineCellWithMultiOutputs只累加并返回5路，6路静默return ret。
+effect:
+  objects:
+  - 可用性/进度
+  - 训练信号
+  detail: pp>1 且 calculate_per_token_loss=True（非 zbv）时编译失败：6 路解包拿到 shape () 标量，退化成 Unstack(axis=0) 报 x_rank 必须 >=1；修掉后 MTP per-token 嵌套 tuple 又触发并行 pass 越界
+  visibility: 报错
+mitigation:
+  detect: 打开 calculate_per_token_loss 后用 MS_SIMULATION_LEVEL=1 dryrun 编译（dp1 mp16 pp4 cp8），核对 wrapper 返回路数与 GPTModel 输出路数、以及 per-token 分支返回结构是否嵌套
+  fix: issue 自述已提 PR（两个 commit）：PipelineCellWithMultiOutputs 支持第 6 路并把超限从静默退化改为显式抛错、MTP per-token 分支改返回扁平 4 值；未给 PR 链接，合并状态未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: '静态图 mcore（use_legacy: False）+ pipeline_stage>1 + calculate_per_token_loss=True；叠加 num_nextn_predict_layers>=1 才暴露第二个缺陷'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2476
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '静态图 mcore 路径（use_legacy: False）打开 calculate_per_token_loss: True 后编译无法通过，串行踩到两个缺陷。缺陷一：GPTModel.construct 非 zbv 分支在该开关下返回 6 路（numerator0, denominator0, numerator1, denominator1, extra_loss, attention_loss），而 mindformers/wrapper/wrapper.py 的 PipelineCellWithMultiOutputs.construct 只累加到第 5 路、返回时只处理 len(output)==5，6 路时静默落到 `return ret`（即 numerator0 的 SumExt 标量），grads_for_mcore 按 6 路解包拿到的是 shape 为 () 的 Tensor，Python 解包退化成 Unstack(axis=0)，报 ValueError: For primitive[Unstack], the x_rank must be greater than or equal to 1, but got 0；只影响 pipeline_stage>1 且 pipeline_scheduler 非 zero_bubble_v（zbv 分支只返回 5 路），GradAccumulationCellWithMultiOutputs 有完全相同的 ≤5 上限。缺陷二：修掉缺陷一后 MultiTokenPredictionBlock.construct 在 per-token 分支返回嵌套 tuple（外层 3 元组、第 0 元又是 2 元组），而 MindSpore RedistributionNextNode 只用单个 make_tuple_index 记录 MakeTuple 位置（遇 MakeTuple 就赋值覆盖），嵌套两层时内外层配对失效，把 index 1 记到只有 1 个输出的 Muls（0.1 = mtp_loss_factor/mtp_num_layers）上，GetTensorInLayout 拿它索引 outputs_tensor_info()（size 1）越界，报 RuntimeError: The index out of range（parallel_processer.cc:1616）。复现：MS_SIMULATION_LEVEL=1、RANK_SIZE=512、dp1 mp16 pp4 cp8、40 层 MoE、seq_length=262144、micro_batch_num=4、1f1b、num_nextn_predict_layers=1，dryrun 即可，不需要真卡；把 num_nextn_predict_layers 置 0 后编译完全通过，证明失败节点属 MTP 而非报错里指向的 LR 调度。环境：openEuler 24.03 SP3 aarch64、Python 3.10、MindSpore 2.9.0/2.10.0 均复现、Ascend 910B2。'
+  source: '2026-07-30 GitCode mindspore/mindformers issue #2476 https://gitcode.com/mindspore/mindformers/issues/2476（closed；自述已提修复 PR，未给链接）'
+  behavior: 在 pp>1 的静态图训练里打开 calculate_per_token_loss（想按 token 归一化 loss）后训练起不来：编译阶段报一个 Unstack 的 x_rank 必须 >=1 的错误，报错栈和 analyze_fail.ir 指向的解包代码完全看不出是输出路数的问题。修掉这层后又冒出一个和 MTP 有关的 index out of range，而且报错里 fullname_with_scope 和 traceback 都指向 learning_rate/Muls，要靠把 num_nextn_predict_layers 置 0 才确认节点其实属于 MTP。整个过程里真正的原因是 wrapper 只认 5 路输出、第 6 路被静默丢掉。
+  trigger_surface: 静态图 mcore + pipeline_stage>1 + calculate_per_token_loss=True（叠加 MTP 时有第二个缺陷）
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 训练信号
+        to: 可用性/进度
+    rewritten:
+    - behavior
+    uncertain:
+    - subsystem

@@ -1,0 +1,58 @@
+id: INF-1673
+legacy_ids: []
+slug: te_int64_downcast_collapses_nondense_layout
+aliases: []
+title: int64 边界降档把非 dense 视图塌成 contiguous 致索引错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: boundary downcast 降档
+  behavior: kernel 参数边界把 *i64 降为 *i32 并用 Tensor.to(int32) 转换数据；重叠/非 dense 视图无法零拷贝被静默物化为 contiguous，stride 变化后仍按编译期旧 stride 寻址。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: Longformer triton_experimental 训练 accuracy 33.22 远超容差；int64 索引 2359296 中 96% 错，最大值 589823（应 1179647），int32 版 0 错；scatter 后梯度最大偏差 0.0043，12 层累计精度失败。
+  visibility: 静默错误
+mitigation:
+  detect: 对 as_strided 重叠视图 / gapped slice / broadcast 输入做 i64 索引生成，比较 compiled 与 eager 的 (out!=ref).sum()；或检查 downcast 转换缓冲的 stride 是否与源参数一致
+  fix: 待定（issue closed，正文未给修复 PR）；期望 boundary downcast 的转换缓冲保持参数原始 stride，而不是塌缩为 contiguous
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: triton_experimental 后端 + int64/float64 kernel 参数 + 非 non-overlapping-and-dense 布局（重叠 as_strided、gapped slice、expand）；Longformer 训练路径 backward index_put 的 arange(as_strided)
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4701
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4701（2026-09-08，closed，torch_npu master + triton_experimental 后端，torchbench huggingface AllenaiLongformerBase / allenai/longformer-base-4096，--accuracy --train --float32）：NPU 向量核不支持 int64/float64，TE 在 kernel 参数边界做降档（boundary downcast）——codegen 把 *i64 签名改写为 *i32，launcher 侧用 Tensor.to(torch.int32) 转换数据。问题在 Tensor.to() 对非 non-overlapping-and-dense 布局会静默塌缩为 contiguous：backward index_put 的索引 producer 是 arange(1179648, dtype=int64).as_strided((12,4,768,64),(98304,16384,64,1)).contiguous().view(-1) 这类重叠视图（view numel 2359296 大于 storage 1179648），.to(int32) 无法零拷贝、按逻辑值重新填充，stride 由 (98304,16384,64,1) 变为 (196608,49152,64,1)；而 Triton kernel 的 load 公式按编译期记录的旧 stride（x0+16384*x1+98304*x2）编译，套在物化后的缓冲上寻址含义改变，读到错误位置。最小复现：int32 版 bad=0、int64 版 2359296 个元素中 2260992 个错误、out_max 589823 而非 1179647。错误索引经 scatter 放大到 value.weight.grad max_abs=0.0043，12 层累计后表现为最终 accuracy 失败（指标 33.22）。正文指出输出侧 empty_like 与回写 tmp.to(src_dt) 也存在同根因的布局塌缩。'
+  source: 2026-09-08 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4701 （closed）
+  behavior: Longformer 用 triton_experimental 后端跑训练精度检查时 accuracy 指标掉到 33.22，远超容差；同一份数据换 int32 索引就完全正常。单独跑索引生成的那段图可以看到：2,359,296 个 int64 索引里有 96% 是错的，最大值只有 589,823（应该到 1,179,647），像是缓冲被重新排布后仍按旧步长去取。错误索引经 scatter 写进梯度，value.weight.grad 最大偏差 0.0043，12 层堆叠后表现为模型精度彻底崩掉，全程没有任何报错。
+  trigger_surface: triton_experimental 后端 + 大于 32 位的索引/dtype（int64、float64）+ 非 dense 布局（重叠 as_strided、gapped slice、expand）作为 kernel 参数
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

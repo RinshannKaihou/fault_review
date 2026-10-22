@@ -1,0 +1,61 @@
+id: INF-1464
+legacy_ids: []
+slug: triton_matmul_persistent_ragged_k_unpadded_silently_accepted
+aliases: []
+title: Triton persistent matmul 未 padding 输入静默错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: triton
+    component: ragged-K padding 检查失效
+  behavior: 'persistent kernel 需 ragged-K 按 slice 零 padding，但检查自 #8765 起永不为 None 不会失败；未 padding 输入把 slice 尾后至末 tile 的行静默加进该 slice 结果。'
+effect:
+  objects:
+  - 数值结果
+  detail: 3 个 100 行未 padding slice 全 1 输入：H100 默认选 persistent，y[e] 实测 [128,128,100]（期望 [100,100,100]）；非 persistent 正确；3.7.0 回归（3.6.0 拒绝）
+  visibility: 静默错误
+mitigation:
+  detect: 与无 TMA GPU（persistent 不可用）或非 persistent 路径对照；slice 长度非 tile 倍数时逐 slice 校验和
+  fix: 待定（issue open；未 padding 输入正是 make_ragged_tensor_metadata 的原生返回，易踩）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton_kernels.matmul persistent kernel（sm_90+ 默认启发式可为小输出大 K 选择）+ a/b_ragged_metadata 来自 make_ragged_tensor_metadata（未 padding）+ slice 长度非 block_k 倍数；3.7.0/main 回归
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12368
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'Triton issue #12368（c2026-10-19）：triton_kernels.matmul 的 persistent kernel 需要 ragged-K 输入按 slice 零 padding，但接受未 padding 输入并静默把每个 slice 末尾之后（直到其最后一个 K tile 末尾）的行加进该 slice 结果。其防护检查 "At least one input must be padded!" 永不失败：#8765 之后检查值为 slice_sizes_divisibility or 1，不再是 None。未 padding 输入易发生——make_ragged_tensor_metadata 的原生返回就是它，且在无 TMA 的 GPU 上结果正确（persistent kernel 不可用）。回归于 3.7.0（3.6.0 会拒绝）。复现：3 个 100 行 slice、全 1 输入，H100 默认启发式对该 shape 选 persistent：y[:,0,0] = [128.0, 128.0, 100.0]（期望 [100,100,100]）；前两个 slice 各累加了两个 block_k=64 tile 的 128 行；非 persistent kernel 返回 [100,100,100]。'
+  source: 2026-10-19 GitHub triton-lang/triton issue https://github.com/triton-lang/triton/issues/12368 （open）
+  behavior: 用 triton_kernels.matmul 的 persistent kernel 处理分组（ragged-K）矩阵乘、且分组长度不是 tile 倍数时，每组会多算进组尾到 tile 边界之间的行：100 行的组算出 128 的和，结果静默偏大。老版本会报错拒绝，3.7.0 起静默接受。
+  trigger_surface: triton_kernels.matmul persistent kernel（sm_90+、默认启发式可选）+ make_ragged_tensor_metadata 未 padding 元数据 + slice 长度非 block_k 倍数；3.7.0 回归
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核
+    uncertain:
+    - detail

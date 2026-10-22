@@ -1,0 +1,62 @@
+id: INF-1640
+legacy_ids: []
+slug: mindie_splitfuse_prefill_kv_early_into_decode_buffer
+aliases: []
+title: splitfuse 下 prefill 的 KV 过早写入 decode 侧缓冲
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: splitfuse state 传递
+  behavior: prefill 算完即把新 KV 写入 decode 侧共享缓冲，未等 decode 处理完当前 batch，decode 下一轮调度读到半新 state 而冲突。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: splitfuse + 异步调度下 decode 阶段响应延迟从约 200ms 涨到 5s 以上，随后请求超时引起连锁挂死（A3 双机混布、中等压力）。
+  visibility: 挂起
+mitigation:
+  detect: 监控 decode stage 的 response 延迟分布（200ms→秒级的抬升是前兆）；对同类请求比对 prefill/decode 两侧 KV 内容与调度轮次的 snapshot 是否一致
+  fix: issue open；正文建议在 prefill→decode 的 state 传递处加 barrier/fence（SharedCacheBuffer release 路径 atomic_thread_fence(release)、acquire 路径 acquire fence），未核实是否落地
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: 'A3 双机混布、splitfuse 开启、异步调度、中等请求压力（关联 issue #674 的 dsv32 精度测试挂死场景）；机制为报告者分析，未给源码定位与版本'
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: '机制为报告者基于日志的分析（原文措辞为「我的分析」），未做源码定位，故 confidence=speculative；上游 #674 只给了挂死现象与配置，本条是该现象的分析性解释，二者不合并。'
+evidence:
+- url: https://gitcode.com/Ascend/MindIE-LLM/issues/676
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '报告者分析 MindIE-LLM 的 splitfuse 实现（A3 双机混布、splitfuse 开启、异步调度、中等请求压力，对应 issue #674 的 dsv32+splitfuse 精度测试挂死场景）：prefill 算完的 KV cache 写入 decode 侧 shared buffer 时没有等 decode 侧处理完当前 batch，decode 还在算 output token 时 prefill 已经把新 token 的 KV 写进 buffer；decode 下一轮调度因此拿到半新的 state，产生调度冲突（报告者认为与 #675 的故障重调度是同一类 state 不完整问题）。正文明确是分析而非源码定位，也未给版本号；建议在 prefill→decode 的 state 传递处加 barrier/fence（SharedCacheBuffer release 路径 std::atomic_thread_fence(std::memory_order_release)，acquire 路径加 acquire fence），保证 decode 每轮调度看到完整 state snapshot。'
+  source: 2026-07-08 GitCode Ascend/MindIE-LLM issue https://gitcode.com/Ascend/MindIE-LLM/issues/676 （open）
+  behavior: 开启 splitfuse + 异步调度的双机混布服务，在中等压力下先看到 decode 阶段响应变慢：从正常的 200ms 一路涨到 5s 以上，然后某个请求超时，接着整条链路连锁挂死、不再出 token；没有报错日志指向具体算子，只有挂死前的延迟抬升可作前兆。
+  trigger_surface: splitfuse + 异步调度 + 双机混布，中等请求压力下让 prefill 与 decode 重叠执行
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: KV缓存
+    uncertain:
+    - effect

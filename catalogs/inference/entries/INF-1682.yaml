@@ -1,0 +1,60 @@
+id: INF-1682
+legacy_ids: []
+slug: ops_nn_apply_top_k_top_p_k_unclamped
+aliases: []
+title: ApplyTopKTopP 未钳制 k 致阈值下标越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: 通用
+    component: apply_top_k_top_p 阈值取值
+  behavior: aclnn Check/tiling/kernel 都不校验文档要求的 k∈[1,vocab]；kernel 用 sortedValue[vocabSize-k] 取阈值，k>V 时下标为负，越界读且全程不报错。
+effect:
+  objects:
+  - 输出分布
+  detail: 910B3 + CANN 9.1.0-beta.3 源码编译包：k=V+1/V*2/1e6 时 GetWorkspaceSize 仍返回成功并可 launch/sync；V=64、k=65 时静默接受并给出 finite_out=65 这类异常计数。
+  visibility: 静默错误
+mitigation:
+  detect: 把 k 设为 V+1 或更大调用 aclnnApplyTopKTopP，看第一段接口是否拒绝；返回成功即命中，再用 finite 计数对比期望。
+  fix: issue 4759 closed；正文建议在 Check/tiling 侧钳制或拒绝越界 k 并对齐资料（本地 draft，未提交 PR）。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: config
+  trigger_note: Ascend910B3 + CANN 9.1.0-beta.3 + apply_top_k_top_p_with_sorted/aclnnApplyTopKTopP + 控制标量 k 越界（k>V）
+  confidence: documented
+remarks: 缺校验的是控制标量而不是索引张量，所以不会被常规索引测试覆盖；后果是采样阈值取到负下标，输出分布被悄悄改写而非报错。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4759
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4759（2026-08-13，closed）：Ascend910B3、CANN 9.1.0-beta.3、ops-nn HEAD e16ef626bb3a，用 --pkg 编译并安装到 $ASCEND_HOME_PATH/vendors/cann_scan_repro_nn 后经 aclnn 路径调用（Finding IDX-ATKTP-001，Track A / novel-k-unclamped）。资料要求 apply_top_k_top_p_with_sorted 的 k 值域为 [1, logits.size(1)]，但 aclnn 的 Check* 系列、tiling、kernel 三处均未钳制：op_kernel/apply_top_k_top_p_with_sorted.h 中 kthValue = mGmSortedValue_[baseGmIdx_ + vocabSize_ - kValue] 直接用 vocabSize-k 作下标，k>V 时下标为负，属越界读、行为未定义。实测 k=V+1 / V*2 / 1e6 时 GetWorkspaceSize 仍返回 SUCCESS 且可正常 launch/sync（真机 exit 42），历史预期是 Sync 507015，但本环境更常表现为静默接受并产出异常 finite 计数（V=64、k=65 时 finite_out=65，即保留下来的元素数超过词表）。作者按 AP-001 反模式核对确认该路径始终可达，且这不是数据索引而是 control-scalar 缺界。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4759 （closed）
+  behavior: 在解码阶段调 top-k/top-p 采样（apply_top_k_top_p）时，如果上游把 k 传成 V+1、V*2 甚至 1e6 这类越界值，两段式接口照样返回成功、任务也能同步完成，不报任何参数错误；但阈值是从排序结果的 vocabSize-k 位置取的，下标已经越界，留下的候选数会变成 65 这种超过词表的值。采样分布因此被悄悄改写，表现为输出偶发乱字符或重复，而不是报错。
+  trigger_surface: aclnnApplyTopKTopP / apply_top_k_top_p_with_sorted + 控制标量 k>vocab（或 k<1）；Ascend910B3、CANN 9.1.0-beta.3
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

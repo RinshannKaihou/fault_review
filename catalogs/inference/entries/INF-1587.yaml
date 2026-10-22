@@ -1,0 +1,51 @@
+id: INF-1587
+legacy_ids: []
+slug: ms_masked_fill_backward_nan_mask_leak
+aliases: []
+title: MaskedFill 反向乘法掩码在 NaN/Inf 下漏梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: MaskedFillGrad 反向
+  behavior: 反向用 dout*mask 与 dout*(1-mask) 做乘法掩码，0*NaN、0*Inf 仍是 NaN/Inf，被掩码位置的异常值经广播规约进入最终梯度。
+effect:
+  objects:
+  - 梯度
+  detail: dout 含 NaN/Inf 时 mask 为 False 的位置梯度不为 0，dinput/dvalue 与 PyTorch 的 masked_select+sum、where+sum 结果不一致；issue 称所有后端都存在。
+  visibility: 数值异常
+mitigation:
+  detect: 构造 dout 含 NaN/Inf、mask 一半为 False 的反向用例，检查被掩码位置梯度是否严格为 0，并与 PyTorch 同算子对比
+  fix: issue 给出修复方案（dinput 用 MaskedFill/Select 先清零再广播规约，dvalue 用 Select(mask,dout,0)+SumExt 避开 MaskedSelect 动态 shape），master 与 2.8.0 复现，无合并 PR 编号
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: MindSpore master 与 2.8.0，所有后端；MaskedFill 反向用乘法掩码，dout 含 NaN/Inf 时掩码位置梯度不为 0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/28905
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore master 与 2.8.0，issue 称所有后端都存在：MaskedFill 的反向计算 dinput/dvalue 采用乘法掩码 dout*mask、dout*(1-mask)。IEEE754 下 0*NaN、0*Inf 仍是 NaN/Inf，掩码位置的异常值无法被清零，进一步广播规约后进入梯度结果，与 PyTorch 不一致。PyTorch 的 masked_fill_backward 对 dvalue 用 grad.masked_select(mask).sum()（Tensor 子类用 where(mask,grad,0).sum()），共同点是在 mask 为 False 处强制 0。issue 提出的修复是 dinput 用 MaskedFill/Select 先清零再广播规约、dvalue 统一 Select(mask,dout,0) 后 SumExt（同时规避 GE 模式 MaskedSelect 动态 shape 的 SumExt 适配问题），并补了 dinput NaN/Inf 敏感度、dvalue 自定义 sens、dvalue NaN/Inf、GE O2 dvalue 四类 ST 用例。
+  source: 2026-01-26 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/28905 （open）
+  behavior: 上游梯度里出现 NaN/Inf（例如 loss 已经炸了或 attention mask 全屏蔽）时，被 mask 掉的位置梯度不是 0 而是 NaN，反向继续传播后整个参数梯度变成 NaN；前向结果完全正常，只有看梯度或训练直接崩掉时才发现，和 PyTorch 同场景对不上。
+  trigger_surface: MaskedFill 反向且上游 dout 含 NaN/Inf；mask 中存在 False 位置；master 与 2.8.0，所有后端
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

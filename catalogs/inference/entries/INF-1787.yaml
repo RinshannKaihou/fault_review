@@ -1,0 +1,68 @@
+id: INF-1787
+legacy_ids: []
+slug: vllm_eplb_record_mode_silent_stall
+aliases: []
+title: vllm-ascend EPLB record 模式静默失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: EplbUpdator/Worker record
+  behavior: forward_before 不检查 record path 就生成并启动 D2D 专家权重迁移（loader 进入 TRANSFERRING），而 forward_end 在 record path 下跳过 update_expert_m
+effect:
+  objects:
+  - 模型权重
+  detail: DeepSeek-V2-Lite-Chat 4×910B3 实测：设 expert_map_record_path 后每个 server 从第二轮起日志 Current D2D weight update is on-going, cannot accept new update task，一次运行
+  visibility: 静默错误
+mitigation:
+  detect: 监控 D2D on-going 日志频次与已应用计划数（0 应用是特征）
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/19288 （open：record 模式 forward_before 提前返回、EplbWorker record_only 保持已安装布局为基准；3 个回归 UT 修复前失败修复后通过，ut/eplb 24 passed vs 19；未发布）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vllm-ascend EPLB + expert_map_record_path 设置（recording 模式）；动态 EPLB 无 record path 不受影响
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: recording 模式用途是先观察 EPLB 会怎么做再开启动态迁移——记录到的计划基于从未执行的布局，直接用于决策会误导。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/19288
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend PR #19288（修复单含完整根因+硬件复现）。设 eplb_config.expert_map_record_path 时：(1) EplbUpdator.forward_before 在 update_expert_weight_flag() 为真时生成 D2D 任务并调 asyn_expert_weight_transfer，不检查 record path——loader 进入 TRANSFERRING；(2) forward_end 在 record path 设置时跳过 update_expert_map_and_weight；(3) 该函数是唯一等待 P2P 请求并把 loader 拉回 WAITING 的代码——loader 终身停在 TRANSFERRING，首轮 isend/irecv 永不被等待，后续每轮日志 Current D2D weight update is on-going, cannot accept new update task 并直接返回；(4) EplbWorker.do_update 每次 EPLB 计划后无论是否被应用都置 old_expert_maps=new_expert_maps 并写 shared_dict["expert_maps"]——第二轮起按从未实际执行的布局规划。修复：forward_before record 模式弹队列但提前返回不生成迁移；EplbWorker 增 record_only（经 EplbProcess 从 expert_map_record_path 传入），recording 时仍发布计划供导出但以已安装布局为下轮基准。测试：TestEplbUpdatorRecordMode/TestEplbWorkerRecordOnly 三回归用例修复前失败、修复后过；tests/ut/eplb 24 passed（此前 19）。硬件复现：DeepSeek-V2-Lite-Chat、4×Ascend 910B3、policy 2、采集间隔 50——带 record path 每 server 第二轮起 on-going 日志、无任何权重更新轮完成；一次运行 84 计划 0 应用；无 record path 正常。'
+  source: 2026-10-20 每日扫描；https://github.com/vllm-project/vllm-ascend/pull/19288
+  behavior: 在 vllm-ascend 上配置 EPLB expert_map_record_path 开 recording 模式后，服务表面正常运行，但专家负载记录与规划从第一轮之后就全部失效：首轮权重迁移发起后再无人等待完成，后续所有更新请求被 on-going 日志拒绝，一次运行可累计 84 个计划而实际执行 0 个；记录导出的专家分布图基于从未落地的布局，用它决策后续动态迁移会错。
+  trigger_surface: vllm-ascend + EPLB + expert_map_record_path（recording 模式）
+  discovery: 2026-10-20 每日扫描
+  notes:
+  - '2026-10-21 回访 2026-10-21：PR #19288 仍 open（u2026-10-21T10:37 有更新），未合入。'
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: MoE路由
+    uncertain:
+    - effect
+    - behavior
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - original.notes

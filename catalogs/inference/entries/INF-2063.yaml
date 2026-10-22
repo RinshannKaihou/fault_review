@@ -1,0 +1,58 @@
+id: INF-2063
+legacy_ids: []
+slug: vllm_ascend_mla_preprocess_msprof_shape_na
+aliases: []
+title: 自定义 handler 下发算子使 msprof 采不到 shape
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: msprof kernel_details 采集
+  behavior: mla_preprocess 走 SetCustomHandler 直接跑 lambda，绕过 aclopCompileAndExecute，GE 不注册 tensor 元信息；msprof 里该算子 shape 为 N/A。
+effect:
+  objects:
+  - 指标/日志
+  detail: decode profiling 时，kernel_details 中 mla_preprocess_0_mix_aic 出现2028次、均值约103us、cube利用率约98%，但shape/OP State为N/A；无法确认batch/seq组合或按shape聚合。
+  visibility: 静默错误
+mitigation:
+  detect: 导出 kernel_details.csv，检查自定义 handler 下发的算子行是否有 Input/Output Shapes 与 OP State
+  fix: 报告给出方案：在 SetCustomHandler 的 lambda 前后用 aclprofRangePushEx + TENSOR_INFO 宏补 shape/dtype/format（参照 add_custom.asc），未给 PR
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend v0.18.0 + msprof + torch.ops._C_ascend.mla_preprocess（GLM5-W8A8 decode）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9026
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 的 csrc/mla_preprocess/mla_preprocess_torch_adpt.h 用 at_npu::native::OpCommand cmd; cmd.Name("mla_preprocess"); cmd.SetCustomHandler(lambda) 下发内核。OpCommand 有两条路径：有 customHandler 时直接调 lambda 返回，不走 aclopCompileAndExecute；只有后者会把 tensor 的 shape/dtype/format 注册给 GE。于是 msprof 采集到的 kernel_details.csv 里 mla_preprocess_0_mix_aic 的 Input Shapes/Output Shapes 为 N/A、OP State 为 N/A、Block Dim 为 0，而同一 Stream 上的 RmsNorm（102,6144;6144）、MatMulCommon（102,6144;128,6144）都正常带 shape。报告给出用 aclprofRangePushEx + aclprofEventAttributes(TENSOR_INFO) 在 lambda 外层补元信息的改法。
+  source: 2026-04-27 github.com issue https://github.com/vllm-project/vllm-ascend/issues/9026 （open）
+  behavior: 做 decode profiling 时，kernel_details 里能看到 mla_preprocess_0_mix_aic 跑了 2028 次、均值约 103us、cube 利用率约 98%，但 shape 一栏是 N/A；无法确认它实际吃的是哪个 batch/seq 组合，也无法按 shape 聚合，性能分析到这里就断了。
+  trigger_surface: vllm-ascend + msprof profiling，算子经 OpCommand::SetCustomHandler 下发（mla_preprocess）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

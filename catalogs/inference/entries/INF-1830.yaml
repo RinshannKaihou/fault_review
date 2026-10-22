@@ -1,0 +1,60 @@
+id: INF-1830
+legacy_ids: []
+slug: vllm_ascend_vl_text_only_skips_first_sp_allgather
+aliases: []
+title: VL 模型纯文本模式下首层漏做 SP AllGather
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: SP AllGather 判断
+  behavior: apply_impl 用 layer==0 and is_vl_model() 静态跳过 AllGather；纯文本模式（--language-model-only）下首层输入已被 ReduceScatter。
+effect:
+  objects:
+  - 隐状态
+  - 数值结果
+  detail: 首层 attention 的列并行投影吃到的是按 TP 切分的残缺输入，第一层输出即偏离；Qwen3.5 与 MiniMax-M3 都复现，非模型特定。幅度报告未量化。
+  visibility: 质量退化
+mitigation:
+  detect: 开 FlashComm1/SP 后用 --language-model-only 跑 VL 模型，逐步比对首层输入是否已 shard；对照关闭 SP 的输出。
+  fix: 待定（issue 2026-08-17 open）：首层是否需要 AllGather 应看运行期输入来源，而不是 is_vl_model() 的静态判断。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: FlashComm1 / 序列并行开启 + VL 模型以 --language-model-only 运行（首层输入来自模型自身 embedding）；Qwen3.5、MiniMax-M3
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14410
+  kind: github_issue
+relations: []
+original:
+  mechanism: 开启 FlashComm1 / 序列并行（SP）后，视觉语言模型的第一个语言模型 attention 层总是按静态模型属性 is_vl_model() 跳过 SP 的 AllGather：vllm_ascend 里 SequenceColumnParallelOp.apply_impl 的判断是 need_all_gather = not (extract_layer_index(self.layer.prefix) == 0 and is_vl_model() and "attn" in self.prefix)。这个假设在 VL 模型以纯文本配置运行时不成立——例如 --language-model-only 时首层输入来自模型自己的 embedding 层，该 embedding 输出先被 SP 路径 ReduceScatter 过，进入第一层时已经是 TP 分片状态，必须在列并行 attention 投影前 AllGather。报告强调问题与具体模型无关，用 Qwen3.5 与 MiniMax-M3 都复现了同一行为，并附上现有实现片段；issue 2026-08-17 open。
+  source: 2026-08-17 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14410 （open）
+  behavior: VL 模型带 --language-model-only（或多模态输入缺席、实际按纯文本跑）并开 FlashComm1/SP 时，生成质量下降、答案开始偏；关掉 SP 或改回原生多模态输入就恢复。全程不报错，日志里也看不到 mask/shape 告警，只看评测分数才会发现。
+  trigger_surface: FlashComm1/SP + VL 模型纯文本运行（--language-model-only）+ 首层 attention
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化

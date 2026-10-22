@@ -1,0 +1,61 @@
+id: INF-1894
+legacy_ids: []
+slug: ms_parallel_redistribution_dfs_no_visited_hang
+aliases: []
+title: 并行 redistribution DFS 缺 visited 致编译卡死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspore
+    component: RedistributionNextNode
+  behavior: 沿 node_users 递归展开 MakeTuple/TupleGetItem/Depend 时无 visited 去重，DAG 汇合点使工作量按路径数指数增长、同一状态重复追加 next_nodes
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: mcore pp>1、大 seq_length、多路 micro-loss 时编译卡死：单线程 CPU 100%、日志停在 insert mirror op for AddInfo44 后 ≥30 分钟无进展、不报错不退出；关掉后约 13 分钟出 step；DEBUG 疯狂刷 Depend 日志。
+  visibility: 挂起
+mitigation:
+  detect: 编译停在同一 mirror op 且单核满载时，用 MS_SUBMODULE_LOG_v={PARALLEL:0} 看是否只刷 IsParallelCareNode；对照关闭 calculate_per_token_loss 复测
+  fix: issue 提出按 (node, get_item_index, make_tuple_index) 三元组记忆化（复杂度从路径数指数降到状态数线性），正文称已提 PR 但未给链接（未核实是否合入）；临时规避为关闭 calculate_per_token_loss 或减小图规模
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 'MindFormers mcore 路径（use_legacy: False）+ pp>1 + 多路 micro-loss 输出（calculate_per_token_loss: True）；2.9/2.10 均复现，dryrun（MS_SIMULATION_LEVEL=1、RANK_SIZE=512）即可复现'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29574
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: mindspore/ccsrc/frontend/parallel/step_parallel_utils.cc 的 RedistributionNextNode() 是从 ParallelProcessor::StepRedistribution（parallel_processer.cc）进入的向下递归 DFS，用于穿透 MakeTuple / TupleGetItem / Depend / Return 找下一个 parallel-care 节点，整条递归没有任何 visited 集合；同文件 FindFuncGraphNextNode() 尾部也回调它，处在同一个递归环里。DAG 上同一节点被多个下游使用、多路又汇合时，遍历的是路径数而非节点数，汇合点增加即指数膨胀；重复到达同一 (node, get_item_index, make_tuple_index) 时每次还会往 next_nodes 追加完全相同的条目，产生重复 redistribution 工作。复现：MS_SIMULATION_LEVEL=1、RANK_SIZE=512，RANK_ID=0/128/256/384 各起一个 pipeline stage，dp1 mp16 pp4 cp8、40 层 MoE、seq_length=262144、micro_batch_num=4、1f1b；打开 calculate_per_token_loss 后网络输出从 4 路变 6 路，PipelineCellWithMultiOutputs 多建两条 micro-loss 累加链，共享同一批 MakeTuple/TupleGetItem/Depend 节点，汇合点显著上升。同一份配置只差这一行的对照：4 路输出 13 分钟出 step，6 路输出卡死。2.9 与 2.10 的该函数代码完全一致。
+  source: '2026 GitCode mindspore/mindspore issue #29574 https://gitcode.com/mindspore/mindspore/issues/29574（open，MindSpore 2.9.0/2.10，openEuler 24.03 aarch64，CANN 9.0.0/9.1.0-beta.3）'
+  behavior: '训练作业在大规模流水线并行配置下编译阶段卡死：进程还在、CPU 单线程 100%、日志停在同一句 insert mirror op for AddInfo44 之后再不前进，30 分钟以上没有任何进展，也不报错、不退出；把 calculate_per_token_loss 关掉、其余配置不变就能在约 13 分钟内编出 step。排障时打开 PARALLEL 子模块 DEBUG 会看到日志疯狂输出同一句 Parallel don''t care node: Depend。'
+  trigger_surface: MindFormers mcore 训练 + pp>1 + 多路 micro-loss（calculate_per_token_loss）+ 大 seq_length；dryrun 复现，不占卡
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 并行切分
+    rewritten:
+    - detail

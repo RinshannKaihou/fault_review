@@ -1,0 +1,64 @@
+id: INF-1923
+legacy_ids: []
+slug: mindformers_qk_clip_head_slice_coord_deadlock
+aliases: []
+title: qk_clip head 切片坐标系错位致死锁
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindformers
+    component: _local_head_slice 坐标换算
+  behavior: _local_head_slice 返回的已是 TP 局部 head 坐标，代码仍减 max_logits_val 的全局 TP 基址；tp4 时 rank2/3 得到越界空切片，本卡 max_logits 恒为全 0
+effect:
+  objects:
+  - 可用性/进度
+  - 训练信号
+  detail: 8 卡 tp4 + ulysses CP 训练第 1 步后死锁，部分卡 AICore 100%、其余空转不报错；max-logit dump rank0/1 各 4 行、rank2~7 为 0 行；换 tp2 或关 qk_clip 则完全正常
+  visibility: 挂起
+mitigation:
+  detect: 对比各 rank 的 max-logit dump 行数与全 0 层比例，或断言每个 rank 都有非零 max_logits；单卡 tp1 与 tp4 同权重对拍
+  fix: 'issue 给根因与代码定位，未附 PR；相邻 #2379 修的是“从不 rebase”，与本条“rebase 用错坐标系”机制不同（closed，修复未核实）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PYNATIVE + Muon qk_clip_enabled + tensor_parallel>=4 + 头维切分 CP（ulysses，或 hybrid 且 ulysses_degree_in_cp>1）；tp2 不复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2571
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'PYNATIVE_MODE deepseek_v3 训练，tensor_parallel=4 + context_parallel=2（context_parallel_method: ulysses）+ Muon qk_clip_enabled=True 时，训练在第 1 步结束后死锁：部分卡 AICore 持续 100%、其余空转，不再前进也不报错。8 卡 num_attention_heads=8 下第 1 步打印完 loss 与 max_attention_logit 后停止；各 rank 的 max-logit dump 行数为 rank0/1 各 4 行、rank2~7 为 0 行。根因在 FlashAttention._update_max_logits：softmax_val 是 CP mesh 上 head 维被 ulysses 切分的 DTensor，max_logits_val 是 TP mesh 上 Shard(0) 的参数，两者不在同一 mesh；_local_head_slice(softmax_val) 实测返回的已经是 TP 局部坐标（get_global_shape 给出的 head 数等于 TP 局部 head 数），代码却当作全局 head 坐标再减 max_logits_val 的全局 TP 基址。rank0 基址 0 → (0,1) 正确；rank1 基址 2 → (-2,-1) 负索引回绕到 0 碰巧正确；rank2/3 基址 4/6 → 越界空切片，本卡 head 全丢，max_logits_val 恒为全 0。随后 GPTModel.get_max_attention_logit() 用 `if mint.sum(mint.abs(local_param)) <= 0: continue` 按本地分片是否全 0 跳过该层，这个筛选在 rank 间不一致，而调用方 MaxLogitsMonitor._dump / TrainingStateMonitor._dump_max_attention_logit 会对入选项调用 param.full_tensor()（集合通信），部分 rank 跳过、部分进入 → 参与方不匹配 → 死锁。环境：Atlas 800T A2（910B2）×8、CANN 9.1.0、MindSpore 2.10.0、mindformers master 含 !8448。'
+  source: '2026-09-01 GitCode mindspore/mindformers issue #2571 https://gitcode.com/mindspore/mindformers/issues/2571（closed）'
+  behavior: 开 CP + tp4 + Muon qk_clip 训练时，第一个 step 正常打出 loss 和一行 max_attention_logit，然后整机就停在那里：有的卡 AICore 打满、有的卡空转，日志既没有报错也不再更新，只能人工 kill。换成 tp2 或关掉 qk_clip 就完全正常，所以最初会以为是 CP 通信或集群问题；实际是部分 rank 的 max_logits 被算成全 0 后跳过 dump，剩下 rank 在 full_tensor() 集合通信里等不到对端。
+  trigger_surface: PYNATIVE + Muon qk_clip + tensor_parallel>=4 + ulysses/hybrid 头维切分 CP
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（负索引回绕是tp4 rank1现象，tp2下完全正常，且无现有用例全过）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes

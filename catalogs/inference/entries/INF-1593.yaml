@@ -1,0 +1,60 @@
+id: INF-1593
+legacy_ids: []
+slug: cann_sparse_flash_mla_grad_meta_int32_softmax_norm_dtype
+aliases: []
+title: sparse_flash_mla_grad Meta 推导 int32 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: sparse_flash_mla_grad
+  behavior: Meta 用 sparse_indices.dtype（int32）创建 ori/cmp_softmax_l1_norm，FakeTensor 与 torch.compile 据此把两个 float32 输出推成 int32。
+effect:
+  objects:
+  - 训练信号
+  - 数值结果
+  detail: torchtitan DeepSeek-V4 SMLA 整网 torch.compile 下 dsa_indexer_aux_loss/mean 从 4.58e-4 变为 -4.51e10；只改 Meta 输出 dtype、kernel 不动即恢复 4.58e-4。
+  visibility: 静默错误
+mitigation:
+  detect: 在 meta device 上调 torch.ops.cann_ops_transformer.sparse_flash_mla_grad，检查 cmp_softmax_l1_norm 的 dtype 是否被推成 int32；整网看 aux loss 是否突然跳到 1e10 量级
+  fix: 待定（issue closed；最小修复是把两个统计量输出的 Meta dtype 固定为 torch.float32，并在下游 Meta 显式校验 float32 契约 + 补 FakeTensor 单测）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: ops-transformer torch_extension（CANN 9.2.0 master）+ torch.compile（TORCHINDUCTOR_NPU_BACKEND=ascendc）+ sparse indices 为 int32；eager 不触发，仅编译图受影响
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4188
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #4188（2026-08-07 closed，A3 实机 + CANN 9.2.0 master build 20260730143326087、torch 2.14.0.dev、torch_npu 2.14.0+git2eb3bc0、TORCHINDUCTOR_NPU_BACKEND=ascendc，master 500fc68 仍存在）指出 torch_extension/cann_ops_transformer/ops/sparse_flash_mla_grad.py 的 Meta 实现用 ori_sparse_indices.dtype / cmp_sparse_indices.dtype（int32）创建 ori_softmax_l1_norm / cmp_softmax_l1_norm，而 C++ 侧 ops/csrc/sparse_flash_mla_grad.cpp 用 .dtype(at::kFloat) 分配这两个输出、aclnnSparseFlashMlaGrad 文档也声明为 FLOAT32。在 torchtitan DeepSeek-V4 SMLA 整网 torch.compile 中，编译器按错误的 Meta dtype 规划后续 buffer，运行期算子却写 float32，后续计算按 int32 消费这些统计量，dsa_indexer_aux_loss/mean 从约 4.58e-4 变成约 -4.51e10；下游 sparse_lightning_indexer_kl_loss_grad 的 Meta 又用 attn_softmax_l1_norm.dtype 创建 softmax_out，继续传播错误 dtype（该算子文档要求 w/attn_softmax_l1_norm/dw/softmax_out 均为 float32）。仅 Meta dispatch 即可复现（不执行 device kernel）：sparse_indices int32 时 SMLA Meta cmp_softmax_l1_norm 打印 int32、SLIG Meta softmax_out 打印 int32。修复 Meta 输出 dtype 为 torch.float32、device kernel 不变后，dsa_indexer_aux_loss/mean=0.000458，eager/compile 单算子对比通过。'
+  source: 2026-08-07 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4188 （closed）
+  behavior: 在 torch.compile 下跑带稀疏 MLA 的整网训练/推理时，indexer 的辅助 loss 会从 4.58e-4 突然变成 -4.5e10 这种量级的数，loss 曲线直接失真；单算子 eager 跑却是对的，只有编译图里错。原因不是 kernel 算错，而是算子登记的 Meta dtype 把两个 float32 的 softmax 统计量说成 int32，编译器照着这个规划 buffer，脏 dtype 还顺着下游算子继续传播。
+  trigger_surface: torch.compile / FakeTensor 路径 + sparse indices 为 int32（几乎所有 MoE/稀疏注意力调用）+ 多个串联算子依赖 Meta dtype
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 数值结果
+        to: 训练信号

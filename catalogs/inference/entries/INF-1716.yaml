@@ -1,0 +1,60 @@
+id: INF-1716
+legacy_ids: []
+slug: fa_tnd_lse_offset_uses_abs_bidx
+aliases: []
+title: FA TND 布局 lseOffset 用绝对 bIdx 越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CombineSplitKVRes
+  behavior: CombineSplitKVRes 的 lseOffset 按绝对 bIdx 计算，TND 下应改用累积有效 S1；S1=0 的 batch 使有效 batch 偏移越过 LSE 缓冲区。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: TND、B=6、Q cumulative seqlen=[1,1,1,1,1,2] 开 LSE 时，batch5 的 LSE 未写入而保持预填的 3e+99（inf）；attention_out 正常，调用无报错。
+  visibility: 数值异常
+mitigation:
+  detect: TND 下构造含 S1=0 batch 的多 batch 用例并开 isSoftmaxLseEnable，检查 LSE 是否为预填哨兵值
+  fix: issue 给出方案：新增 lseBatchOffset 参数，TND/NTD 下取 actualSeqQlenAddr[bIdx-1]；是否合入未核实（#3682 补充报告不同长度 sequence 仍会互相覆盖）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: TND 布局 + 开启 LSE 输出 + 部分 batch 的 S1=0（arch35：910B/950）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/3681
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #3681（2026-07-08，arch35 ascend910b/ascend950，closed）：FlashAttention infer 在 TND 布局下，CombineSplitKVRes 计算 lseOffset = (bIdx*n2Size + n2Idx)*gSize + ... 时使用绝对 bIdx。TND 下一个 batch 的 Q 起点是累积有效 S1，而部分 batch 的 S1=0 不占序列，绝对 bIdx 与累积偏移不再相等，有效 batch 的 lseOffset 越界写到缓冲区之外，对应位置的 LSE 保留为预填的 inf（3e+99）。同路径的 attenOutOffset 已有 TND 处理，lseOffset 遗漏。复现：TND、B=6、Q cumulative seqlen=[1,1,1,1,1,2]（batch1-4 的 S1=0），开 isSoftmaxLseEnable，输出 LSE shape[2,10,1]，batch5 的 10 个点为 inf。修复方案为新增 lseBatchOffset，TND/NTD 下取 actualSeqQlenAddr[bIdx-1]。补充 issue #3682 报告仅修 S1=0 分支后，不同长度 sequence 在 combine 阶段仍可能算到同一 LSE 区域互相覆盖。'
+  source: 2026-07-08 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/3681 （closed）
+  behavior: TND 打包多条序列、其中有空 batch 时，打开 LSE 输出会看到部分 batch 的 LSE 整段是 inf（3e+99，即未被写过的预填值），而 attention_out 数值正常、调用过程无异常无日志；只有当序列里夹了 S1=0 的无效 batch 且开了 LSE 才出现。
+  trigger_surface: TND 布局 + isSoftmaxLseEnable + 存在 S1=0 的 batch（BSND/BNSD 不受影响）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出分布
+        to: 数值结果

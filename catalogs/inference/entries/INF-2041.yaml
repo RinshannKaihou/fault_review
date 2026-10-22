@@ -1,0 +1,58 @@
+id: INF-2041
+legacy_ids: []
+slug: vllm_ascend_mm_batch_second_req_empty_output
+aliases: []
+title: 多模态批量第二路请求输出为空
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: model_runner_v1 输入准备
+  behavior: V1多进程下两视频同批，调度输出含缓存请求且调度token数较正常多1；疑似拼接缓存请求token多算1个，使模型输入首维与调度记录不一致。
+effect:
+  objects:
+  - 输出内容
+  detail: 两个视频同批推理时第 1 路返回正常 JSON，第 2 路 output 为 None/空串；单独推理该视频、或 VLLM_ENABLE_V1_MULTIPROCESSING=0 时正常，全程无报错
+  visibility: 静默错误
+mitigation:
+  detect: batch>1 的多模态请求逐条比对返回条数与内容是否为空，并核对 total_num_scheduled_tokens 与 input_embeds 首维是否一致
+  fix: 待定（issue 只给现象与怀疑点，未附修复）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend/vLLM 0.12.0、V1 多进程、视频输入 batch=2；单进程模式不复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/5083
+  kind: github_issue
+relations: []
+original:
+  mechanism: V1 多进程（VLLM_ENABLE_V1_MULTIPROCESSING 默认开启）下把两个视频放进同一 batch 推理：报告者抓到的 SchedulerOutput 里带 scheduled_cached_reqs，total_num_scheduled_tokens=2818，而同输入的正常 SchedulerOutput 是 2817 且没有 scheduled_cached_reqs；他据此怀疑 _prepare_inputs（vllm/v1/worker/model_runner_v1.py）在拼接 cached req 的 token 时多算了 1 个，导致传给模型 forward 的 input_embeds 首维是 2818，而调度侧按 2817 记，第二个请求分不到输出。关闭 V1 多进程后同一 batch 正常，单独推理第 2 个视频也正常。版本 vllm/vllm-ascend 0.12.0。
+  source: 2025-12-16 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/5083 （closed）
+  behavior: 一次提交两个视频的批量推理，返回列表条数正确，但第二个视频的文本是空的：脚本打印「✅ 批次 1 输入输出数量匹配」「✅ 第 0 个视频输出正常」「❌ 第 1 个视频输出为空」。接口 200、没有异常，下游把这些空结果当正常响应写库，只有逐条检查输出长度时才会发现少了一条。
+  trigger_surface: V1 多进程 + 多模态（视频）batch>1
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

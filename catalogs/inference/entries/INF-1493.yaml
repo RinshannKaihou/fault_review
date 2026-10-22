@@ -1,0 +1,56 @@
+id: INF-1493
+legacy_ids: []
+slug: msprobe_overflow_check_reports_no_anomaly_on_nan_loss
+aliases: []
+title: loss 已 NaN 时 overflow_check 报无异常节点
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: overflow_check 分析路径
+  behavior: L1 statistics 采集时多 rank 打印 'The dump data(None) should be a dict'，overflow_check 仍判无异常节点、不生成分析文件
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: '训练 side 已由 loss_func 抛 ''Rank 3: found NaN in local forward loss''，msprobe 分析侧却报无异常节点、不产出分析文件，用户拿不到溢出算子定位'
+  visibility: 静默错误
+mitigation:
+  detect: 采集日志里搜 'The dump data(None) should be a dict'；对已 NaN 的 step 先确认 dump_data 目录有非空 tensor 数据再信 overflow_check 结论
+  fix: 待定（issue 未给修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: mindstudio-probe 26.0.0a2 + MindSpeed-LLM 训练（qwen3-4b-32k lora）；task=statistics、level=L1、statistics.tensor_list 为空；PyTorch 2.9.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/326
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'mindstudio-probe 26.0.0a2，PyTorch 2.9.0 + MindSpeed-LLM（qwen3-4b-32k LoRA）训练：采集配置为 task=statistics、level=L1、async_dump=false、extra_info=true、statistics.data_mode=[all]、summary_mode=statistics、tensor_list 为空。训练侧 loss_func 已经抛 ValueError ''Rank 3: found NaN in local forward loss calculation''，同时采集日志里每个 rank 反复出现 ''The dump data(None) should be a dict.'' 警告——即落盘阶段拿到的是 None 而非 dict。随后用 msprobe overflow_check -i ./step0/ -o ./ 分析，工具先报多条 ''Cannot find connected communication node for 2.Distributed.all_reduce.N.forward''，最后给出 ''Cannot find any anomaly node, no need to generate analyze file.''，完全不产出分析文件。issue 未给根因（是 L1 statistics 模式本身不含 overflow_check 所需的 tensor 数据，还是 dump 写入失败）与修复 PR。'
+  source: 2026-05-26 GitCode Ascend/msprobe issue https://gitcode.com/Ascend/msprobe/issues/326 （closed）
+  behavior: 训练已经因为 loss 变 NaN 报错退出，用户按文档用 msprobe 采了 L1 statistics 数据再跑 overflow_check 想找溢出算子，结果工具说「找不到异常节点，不需要生成分析文件」，只留下满屏 'The dump data(None) should be a dict' 的 WARNING。看起来像「模型没问题」，实际是溢出分析链路什么都没读到。
+  trigger_surface: msprobe statistics/L1 采集（tensor_list 为空）+ overflow_check 后分析；训练侧已出现 NaN loss
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

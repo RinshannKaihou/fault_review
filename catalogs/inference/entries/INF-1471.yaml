@@ -1,0 +1,69 @@
+id: INF-1471
+legacy_ids: []
+slug: op_plugin_cross_entropy_oob_target_silent_swallow
+aliases: []
+title: op-plugin cross_entropy 越界 target 静默吞掉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: target 边界校验缺失
+  behavior: target 越界时无主机端校验：mean 悄悄排除该样本，none 槽位填跨芯不一致垃圾值（npu:0=0.624 vs npu:1=1.797）＝真实越界读。
+effect:
+  objects:
+  - 数值结果
+  detail: mean 静默丢样本、none 非确定性垃圾（跨芯不一致）；A3 双芯复现；CPU 抛 IndexError
+  visibility: 静默错误
+mitigation:
+  detect: 入口自查 target < num_classes；与 CPU 对照（CPU 抛 IndexError）
+  fix: 待定（issue open；建议 op-plugin 入口加主机端 target 边界校验对齐 CPU 抛 IndexError）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: F.cross_entropy + target 越界（>= num_classes 或负）；mean/none 两种 reduction 表现不同；Atlas A3 双芯、CANN 9.1.0、torch_npu 2.7.1.post4
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 推理库收录理由：cross_entropy 用于 RL reward/评估管线与评测 harness；静默丢样本改变评测与训练信号
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/598
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0320
+original:
+  mechanism: 'op-plugin issue #598（c2026-10-19，Atlas A3 Ascend910_9362 ×2，CANN 9.1.0，torch 2.7.1 + torch_npu 2.7.1.post4，双芯一致复现、换输入复测确认）：x=randn(4,8)、t=[0,1,99,2]（99 越界，类别数 8）时 F.cross_entropy：CPU 干净抛 IndexError；NPU 静默吞掉越界样本——reduction=mean 悄悄排除该样本（结果可复现但与语义不符）；reduction=none 越界槽位填入跨芯不一致垃圾值（npu:0=0.624 vs npu:1=1.797）＝真实越界读、同输入不同芯结果不同＝非确定性。与 #592（index_select 越界崩核）同族（无主机校验→非法输入直达设备），那边 fail-loud 崩核、这边 fail-silent 更隐蔽。建议入口加主机端 target 边界校验对齐 CPU。复现脚本：/mnt/workspace/a3hunt/round5/。'
+  source: 2026-10-19 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/598 （open）
+  behavior: NPU 上算 cross_entropy 时把类别下标越界的 target 静默处理：mean 模式直接把这个样本从平均里剔掉（数值看着正常但语义错了），none 模式在该位置返回垃圾值且两张卡各不相同。CPU 会立刻抛 IndexError，NPU 什么都不说。
+  trigger_surface: torch_npu F.cross_entropy + target 越界；Atlas A3 双芯、CANN 9.1.0
+  discovery: 2026-10-19 每日扫描
+  notes:
+  - 2026-10-20 回访 2026-10-20：#598 状态未在增量窗口内变化
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - behavior

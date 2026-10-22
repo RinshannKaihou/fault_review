@@ -1,0 +1,63 @@
+id: INF-1698
+legacy_ids: []
+slug: moe_init_routing_quant_k_gt1_rowidx
+aliases: []
+title: MoeInitRoutingQuant K>1 行索引逆映射偏 1
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: pytorch
+    component: MoeInitRoutingQuant
+  behavior: K>1 时同一行号在 sortedRowIdx 中出现 K 次，基准用 stable argsort 加 last-write-wins，kernel 归并与 gather 的散写次序不同，逆映射偏 1。
+effect:
+  objects:
+  - 数值结果
+  detail: K>1 多专家路由输入下 158 条全失败，K=1 的 840 条通过；expandedRowIdxOut 158/158 失败、行索引整体差 1；expandedXOut 140/158 int8 错值，误差可达 149~255；expandedExpertIdxOut 0/158 失败。
+  visibility: 静默错误
+mitigation:
+  detect: 用 numpy stable argsort 加散写实现基准，MD5 逐位比对 expandedRowIdxOut 与 expandedXOut，覆盖 K>1
+  fix: 待定（issue 为缺陷报告，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: expertIdx 第二维 K>1（每 token 路由到多个专家）即触发，与 dtype、N、activeNum 无关
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5049
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5049（2026-09-07 closed）用 ATK 以 pyaclnn 调用 aclnnMoeInitRoutingQuant（CANN 9.0.0 的 moe/moe_init_routing_quant，Ascend 910B3，torch 2.10.0，ATK 26.4.30），基准执行器按算子说明公式实现、default 标准比较（先 MD5 逐位比对，不一致再算 max_diff/diff_percent）。1000 条用例中 998 条形成判定：840 通过、158 失败，失败与 K>1 完全重合（K=1 的 840 例零失败，K=2/3/4/8/64/128/256/512 各族 100% 失败）。失败精确落在行索引逆映射输出上：expandedRowIdxOut 158/158 失败、expandedXOut 140/158 错值、expandedExpertIdxOut 0/158。根因假设（数值证据充分）：算子说明为 expandedRowIdxOut[sortedRowIdx[i]]=i 的散写，K>1 时每个行号在 sortedRowIdx 中出现 K 次，基准用 np.argsort(kind=''stable'') 定序并按 numpy fancy-index last-write-wins 落值，NPU kernel（moe/moe_init_routing_quant/op_kernel/，4 路 MrgSort 归并 + srcToDst/gather）对重复索引的散写约定不同；编号 837（N=1、K=64）中 64 个 sortedRowIdx 全为 0，基准退化为 [63,0,...]，NPU 与之 63/64 元素不一致，说明分歧在重复索引散写而非等键排序。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5049 （closed）
+  behavior: 每 token 路由到多个专家（K>1）时，算子不报错、形状完全正确，但 expandedRowIdxOut 的行索引整体差 1，expandedXOut 里对应行的量化 int8 值也跟着取错源行，误差可达 149~255（覆盖 int8 大半动态范围）；K=1 时同一算子完全正常，因此只在多专家路由的模型上表现为下游 MoE 计算整体偏移。
+  trigger_surface: K>1（expertIdx 第二维大于 1）的多专家路由输入，dropPad 与 dropless 路径、fp16/bf16/fp32 均可触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: MoE路由
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

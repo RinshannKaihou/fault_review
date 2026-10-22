@@ -1,0 +1,54 @@
+id: INF-1937
+legacy_ids: []
+slug: vllm_ascend_qwen3vl_graph_ocr_repeat
+aliases: []
+title: Qwen3-VL 图模式下 OCR 复读至 max_tokens
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: ACL Graph 解码回放
+  behavior: 同一模型、同一图像、同一 prompt 与采样参数、同一 TP4,唯一差别是是否 --enforce-eager:关掉 eager 走图模式时贪心解码反复吐同一行直到 max_tokens,eager 下能正常结束
+effect:
+  objects:
+  - 输出内容
+  detail: temperature=0、top_p=1、max_tokens=128、512×512 图片的 OCR 请求在图模式下变成同一文本循环,ground truth “Sun Sand No Problems” 完全丢失;服务不崩溃、不报错
+  visibility: 静默错误
+mitigation:
+  detect: 同一 NPU 上分别以图模式与 --enforce-eager 各起一次服务,发同一条 OCR 请求比对是否在 max_tokens 前自然结束;对比两次的 token 序列
+  fix: 待定（issue open,未给修复 PR）；规避：对 OCR/多模态解码加 --enforce-eager
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Qwen3-VL-8B-Instruct,vllm-ascend（issue open,版本见正文）,TP4,max_model_len 8192,max_num_seqs 1,max_num_batched_tokens 4096,gpu_memory_utilization 0.6;图模式 vs --enforce-eager 对照
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10831
+  kind: github_issue
+relations: []
+original:
+  mechanism: issue 描述 Qwen3-VL-8B-Instruct 在昇腾上做 OCR 式生成时,开启图模式（不加 --enforce-eager）会一直重复同一段文本直到 max_tokens,而同一模型、同一张图、同一 prompt、同一采样参数、同一 tensor_parallel_size=4 下加上 --enforce-eager 就能正常结束。作者强调这不是崩溃或挂起:服务照常返回 200 和完整响应,只是解码内容错了。复现配置 max_model_len=8192、max_num_seqs=1、max_num_batched_tokens=4096、gpu_memory_utilization=0.6,请求 temperature=0、top_p=1、max_tokens=128,图片张量 [1,3,512,512],期望文本 “Sun Sand No Problems”;图模式下输出是同一行反复,直到 128 token 用尽,eager 模式下则给出短小的正常结果。因此问题落在 ACL Graph 捕获/回放这条解码路径上,而非模型权重或采样参数。
+  source: 2026-06-23 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10831 （open）
+  behavior: 用默认配置(图模式)部署 Qwen3-VL 做图片文字识别,返回的 OCR 结果会整段重复同一行,一直到 max_tokens 才停,答案完全不可用;同一请求加 --enforce-eager 重启后立刻正常,说明只是解码路径的差异,也没有任何报错提示。
+  trigger_surface: Qwen3-VL 系列 + 图模式（不加 --enforce-eager）+ 贪心解码的 OCR/多模态生成；eager 模式不触发
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

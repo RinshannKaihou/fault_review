@@ -1,0 +1,59 @@
+id: INF-1856
+legacy_ids: []
+slug: vllm_ascend_fused_slot_mapping_negative_pos_no_pad
+aliases: []
+title: 融合 slot-mapping 非环形组不补 PAD 位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: compute_slot_mapping
+  behavior: 融合多组 launch 共用一个 positions，负位置只在 circular 组换成 PAD_ID；非环形组把它当真实槽位，pos<=-block_size 时 block 表窗口还读出本请求行。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 混合 circular/non-circular 布局（DSV4.1 compressor 状态缓存 + MLA/SWA、GLM-5-Next tail + paged）喂负位置会得到错槽位；当前 MRV1 的 positions 非负，尚未在线触发。
+  visibility: 静默错误
+mitigation:
+  detect: 直接调 compute_slot_mapping_fused_groups，构造 circular+non-circular 混合布局并喂负位置，检查各组是否都返回 PAD_ID；与 per-group _compute_slot_mapping_kernel 对比。
+  fix: 待定（issue open）；方向：对非环形组同样把负位置写成 PAD_ID，因为 positions 由整个融合 launch 共享，无法按组约定调用方保证非负
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: '#16537（58e48b536）引入 circular 组与负位置处理后，vllm_ascend/ops/triton/compute_slot_mapping.py；clean main 39fef3f8f，Ascend 910B2，torch_npu 2.10 / CANN 9.1'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17528
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm_ascend/ops/triton/compute_slot_mapping.py 的融合多组 slot-mapping kernel 在 #16537（commit 58e48b536，GLM-5-Next circular tail cache）里学会了处理 circular 组和负位置：block_indices = tl.where(is_circular, 0, pos // block_size)，slot_ids = tl.where(is_circular & (pos < 0), PAD_ID, slot_ids)。问题在于 positions 由同一次融合 launch 的所有组共享，而负位置只在 circular 组被替换成 PAD_ID：在混合 circular/non-circular 布局里，非环形组会把负位置算成一个看起来合法的槽位，pos <= -block_size 时 block 表窗口的读还会越出本请求的行。正文指出这种混合布局在生产里存在——DSV4.1 的 compressor state cache 是 CircularBufferSpec 组，与 MLA、SWA 组融在同一次 launch（纯 DSV4 没有 circular 组，其 state cache 是 AscendSlidingWindowMLASpec）；GLM-5-Next 是 circular indexer tail + paged attention，上游测试 test_glm5next_tail_slot_mapping_triton.py 用的就是 is_circular = [1,0]。报告说当前是潜伏缺陷：MRV1 用 num_computed_tokens + query_pos 计算 positions，融合路径还看不到负位置，上游测试也只喂非负位置；一旦有调用方（例如 #16537 里被推迟的 speculative rollback）把负位置送进融合路径就会生效。正文给了不依赖模型与引擎的单 NPU 复现脚本，在 clean main 39fef3f8f（910B2、torch_npu 2.10 / CANN 9.1）上跑出非环形组未返回 PAD_ID；issue open，未给修复 PR。'
+  source: 2026-09-25 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17528 （open）
+  behavior: 目前线上还看不到：MRV1 送进融合路径的位置都不为负，所以输出正常。但一旦推测回滚之类的新调用方把负位置传进同一个融合 launch，环形组之外的那些组会拿负位置当真实槽位去读写 KV，造成槽位错位、别的 token 的 KV 被覆盖，且不报错——这类问题只在混合 circular/non-circular 布局的模型上出现。
+  trigger_surface: compute_slot_mapping_fused_groups + 混合 circular/non-circular KV 组（DSV4.1 compressor 状态缓存、GLM-5-Next tail）+ 负 positions
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存

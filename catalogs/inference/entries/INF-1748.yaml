@@ -1,0 +1,58 @@
+id: INF-1748
+legacy_ids: []
+slug: flex_attention_fp32_defaults_to_tf32_kernel
+aliases: []
+title: high 档下 NPU FlexAttention fp32 按 TF32 计算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: flex_attn 精度 helper
+  behavior: torch_npu/_inductor/kernel/flex_attention.py 前向与两处反向的默认参数复用 CUDA/global 精度 helper，在 high 档下把 fp32 输入按 TF32 生成 kernel。
+effect:
+  objects:
+  - 数值结果
+  detail: set_float32_matmul_precision("high") + fp32 输入 + NPU FlexAttention 编译路径下，结果与 eager 差两三个数量级（RMSE 6.2e-5 对 5.2e-8），fp32 精度断言失败；非 fp32 输入或不走编译路径则看不出异常。
+  visibility: 静默错误
+mitigation:
+  detect: 在 set_float32_matmul_precision("high") 下编译 fp32 FlexAttention，比较 compiled 与 eager 的 RMSE；对比 fp32 走 IEEE 默认值的结果
+  fix: 已修复：代码生成改用 NPU dtype 感知 helper——float32 默认 IEEE、其它 dtype 保持原行为，setdefault 保留用户显式设置（问题已定位到该文件并给出修复）；同环境 19 条增量用例 PASS
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.set_float32_matmul_precision("high") + fp32 输入的 NPU FlexAttention 编译路径；Ascend950PR_9579 / torch 2.13.0 / torch_npu 2.13.0+gite71fdac / Triton-Ascend 3.6.0 / CANN 9.2.0-weekly.20260902.01
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4666
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4666（2026-09-07，closed，Linux x86_64 / Python 3.11.15 / Ascend950PR_9579 / torch 2.13.0+cpu / torch_npu 2.13.0+gite71fdac / Triton 3.6.0 / Triton-Ascend 3.6.0+gitc747daae / CANN 9.2.0-weekly.20260902.01）：NPU FlexAttention 的 FP32 输入在 torch.set_float32_matmul_precision("high") 下，复用了上游 get_float32_precision() 的默认值得到 TF32，于是前向与两处反向的生成 kernel 都按 TF32 计算，与 NPU eager 的 fp32 精度不一致。定位在 torch_npu/_inductor/kernel/flex_attention.py：前向及两处反向的默认参数复用了 CUDA/global 精度 helper。修复使用 NPU dtype 感知的 helper——float32 默认 IEEE，其他 dtype 保持原行为，setdefault 保留用户显式设置。验证：同一隔离环境、单卡、新进程、独立缓存中恢复旧 helper 可复现失败；IEEE 默认值下原用例 PASS，Out/dQ/dK/dV/bias 梯度原断言均通过，19 条增量用例 PASS，未放宽容差也未新增 skip。'
+  source: 'Ascend/pytorch #4666（2026-09-07，closed） https://gitcode.com/Ascend/pytorch/issues/4666'
+  behavior: 在设了 set_float32_matmul_precision("high") 的推理/训练脚本里用 NPU FlexAttention 且输入是 float32，编译出来的 attention 结果与 eager 差两三个数量级的 RMSE（6.2e-5 对 5.2e-8），fp32 精度断言直接失败；换成非 fp32 输入或不用编译路径就看不出异常。
+  trigger_surface: set_float32_matmul_precision("high") + fp32 输入 + NPU FlexAttention 编译路径
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    - title

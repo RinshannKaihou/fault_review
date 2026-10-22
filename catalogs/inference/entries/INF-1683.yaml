@@ -1,0 +1,51 @@
+id: INF-1683
+legacy_ids: []
+slug: inductor_philox_replay_rng_stream_desync
+aliases: []
+title: 编译期 Philox 重放与 eager RNG 流不同步致 mask 错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: Inductor RNG codegen
+  behavior: Inductor 编译期对 uniform/rrelu_with_noise 的 Philox 重放未与 NPUGeneratorImpl 状态推进对齐，compiled 与 eager 消耗不同步的 RNG 流，mask 错位。
+effect:
+  objects:
+  - 数值结果
+  detail: 9 例 opinfo（dropout2d/3d、alpha_dropout、feature_alpha_dropout、rrelu）失配率恰好 60%（15/25、75/125、375/625），absdiff 最高 6.05；fallback_random=True 后逐位一致。
+  visibility: 静默错误
+mitigation:
+  detect: 同 seed 下 compiled 与 eager 逐位比对 dropout 族输出；或设 torch._inductor.config.fallback_random=True 复跑，若转为逐位一致即命中该缺口
+  fix: 待定（issue open）：把 bernoulli 族的 unsafe_rng_fallbacks 推广到 uniform（含各 overload）与 rrelu_with_noise，或提供 graph-safe 的 PhiloxNpuState 重放使 codegen 与 eager 消耗同一 RNG 流
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.compile + triton_experimental 与 default 两个后端均复现；图内 RNG 源为 aten.uniform / aten.rrelu_with_noise（不经 native_dropout 分解）；910B2/CANN 9.1.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5249
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5249（2026-09-29，open，Ascend 910B2 / CANN 9.1.0 / PyTorch 2.15.0.dev20260928+cpu / torch_npu 2.15.0+git6d59edd，default 后端旁证用 2.14.0）：torch_npu/_inductor 的编译期 RNG 算子处理与上游 torch/_inductor Philox codegen 的交互面存在缺口。9 例 opinfo 用例（triton_experimental 与 default 两个后端均复现）的 compiled 产物与 eager 数值不 close，junit 指纹显示失配率恰好 60.0%（15/25、75/125、375/625、12/20），是两条独立 mask 流错位的特征而非数值噪声。实测这些 op 族的图内 RNG 源为 aten.uniform（dropout2d/3d、alpha_dropout、feature_alpha_dropout 经 _dropout_helper → refs._uniform_helper）与 aten.rrelu_with_noise，均不经 aten.native_dropout 分解。op 级 A/B 探针（一 case 一进程 + fresh 编译缓存 + TORCHINDUCTOR_COMPILE_THREADS=1）：fallback_random=False 时 dropout2d f32 失配约 59%、absdiff 6.05，dropout3d 5.98，alpha_dropout 4.44，feature_alpha_dropout 4.47，rrelu 0.66；fallback_random=True 时全部 absdiff=0、逐位一致（走 npu 私有分解的 dropout 对照始终逐位一致）。结论：inductor 编译期对 uniform/rrelu_with_noise 的 Philox 重放与 eager 的 NPUGeneratorImpl 状态推进不同步，缺口在编译期 RNG codegen 侧而非算子实现侧；default 后端 9/9 同样失败，说明与后端选择、版本线无关。同机制先例：torch_npu/_inductor/triton_experimental/lowering.py 已对 bernoulli 族实施 unsafe_rng_fallbacks（整图禁用 graph capture 以保留 eager RNG 序列，注释记载分区重放会 advance the global generator）。'
+  source: 2026-09-29 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5249 （open）
+  behavior: 同一 seed 下，eager 跑 dropout 族算子和用 torch.compile 编译后的结果对不上：每 25 个元素里固定有 15 个不一样（失配上限 60%），最大差到 6 左右，换 dropout2d/3d、alpha_dropout、feature_alpha_dropout、rrelu 都一样。看起来像两条随机 mask 用了不同的随机数序列，而不是某个数算歪了。把 torch._inductor.config.fallback_random 打开改成 eager 分配随机数后，两边立刻逐位一致，说明问题在编译期生成随机数那一步。
+  trigger_surface: torch.compile 图内含 aten.uniform 或 aten.rrelu_with_noise（dropout 族、rrelu）；triton_experimental 与 default 后端均触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

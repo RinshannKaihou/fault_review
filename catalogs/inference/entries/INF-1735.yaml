@@ -1,0 +1,59 @@
+id: INF-1735
+legacy_ids: []
+slug: npu_int64_div_rounding_mode_via_fp32
+aliases: []
+title: int64 带 rounding_mode 的 div 内部走 fp32 致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: aten::div.Tensor_mode NPU
+  behavior: aten::div.Tensor_mode 的 NPU 内核把 int64 操作数 cast 成 fp32 再做除法，再用 fp32 结果转回 int64；fp32 只有 24 位尾数，2^24 以上的整数不可精确表示。
+effect:
+  objects:
+  - 数值结果
+  detail: a∈[2^32,2^40]、b∈[-10,-1] 的 100×100 int64，trunc/floor 下约 18% 元素与 CPU 不一致，(result==cpu_ref).all() 为 False；inductor 用例 test_div7_npu 亦失败。
+  visibility: 静默错误
+mitigation:
+  detect: int64 大值（>2^24，取到 2^32 以上）做 trunc/floor div 后与 CPU 逐元素比较
+  fix: 待定（issue open）；规避：改用 fp64 或整数安全路径自行实现带 rounding_mode 的整除
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: NPU eager + int64 张量 + rounding_mode=trunc/floor 的 torch.div，值域超 fp32 尾数精度（2^24）；torch_npu v2.7.1-26.0.0 / Ascend 910B
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2198
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2198（2026-06-01，open，torch-npu v2.7.1-26.0.0 / Ascend 910B）：aten::div.Tensor_mode 在 NPU eager 上的整数除实现内部把 int64 操作数 cast 成 f32 做除法，再 cast 回 int64。f32 尾数只有 24 位，取 2^32~2^40 的整数时输入本身已被舍入，商随之偏移。报告的最小复现：a=torch.randint(2**32, 2**40, [100,100])、b=torch.randint(-10,-1,[100,100])，两路 .to("npu:0") 后 torch.div(a_npu,b_npu,rounding_mode="trunc")，约 18% 元素与 CPU torch.div 不等，(result.cpu()==cpu_ref).all() 为 False；rounding_mode="floor" 同样受影响，且 test/inductor/test_torchinductor.py::NPUTests::test_div7_npu 亦因此失败。缺陷在算子内部的中间 dtype，调用方无法从参数上察觉。'
+  source: 'Ascend/pytorch #2198（2026-06-01，open；由 huyuchao/pytorch#9 转投） https://gitcode.com/Ascend/pytorch/issues/2198'
+  behavior: 对 int64 张量做 torch.div(..., rounding_mode="trunc"/"floor")，返回 dtype 仍是 int64、形状正确、无报错，但大数值区间的商随机地差几个整数；与 CPU 结果逐元素比较有约六分之一不同。用它算下标、步数、分块边界时后续 gather/scatter 取到错误位置，且在小值上测试往往看不出问题。
+  trigger_surface: int64 张量 + rounding_mode=trunc/floor 的 torch.div，操作数超过 2^24（示例 2^32~2^40）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - component
+    uncertain:
+    - detail

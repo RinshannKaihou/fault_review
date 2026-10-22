@@ -1,0 +1,54 @@
+id: INF-2008
+legacy_ids: []
+slug: cold_start_store_init_strands_pd_request
+aliases: []
+title: 冷启动 store 初始化叠加 bootstrap 超时致 PD 请求滞留
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: AscendStore/Mooncake
+  behavior: 首次真实 forward 时同步 ensure_store_initialized 与 P2P bootstrap 端点不可用重叠；bootstrap 查询失败与单请求传输错误都不向 scheduler 上报终态，请求一直等远端 KV
+effect:
+  objects:
+  - 可用性/进度
+  detail: decode 拿不到 prefill 的 KV，客户端 900 s 后超时（curl 28，0 字节）；/health 仍 200；producer 侧 KV 保留 480 s 后释放，取消后仍报 P side ready 超时
+  visibility: 挂起
+mitigation:
+  detect: 冷启动首个 PD 请求同时采样 prefill bootstrap 端点延迟与 decode 的 mooncake_connector 报错；看是否 /health 200 而请求 prefix 无进展、producer 端 KV 到期被释放
+  fix: 待定（issue 建议把 bootstrap 发现失败与传输错误作为终态上报 scheduler，并把 store 初始化移出请求路径；vLLM 侧改动待维护者拆分）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PD 分离 + AscendStore/Mooncake connector 冷启动首个请求，P2P bootstrap 端点短暂不可用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16040
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend issue 16040（2026-09-08，closed）。start_load_kv 里 _current_step_has_real_forward 由 forward_context 置位，get_finished 在首个真实 forward 后调 connector_worker.ensure_store_initialized()，与请求长度、缓存命中无关，因此短 prompt 也会触发 AscendStore 的同步懒初始化（MooncakeBackend.ensure_initialized）。同一时段 P2P bootstrap 端点出现采样失败：并发探针 12/13 号样本 5.0 s ReadTimeout，其它样本 1.8–6.2 ms。decode 侧 mooncake_connector.py:2711/2768 反复报 Failed to connect to bootstrap server / Failed to find remote engine_id，但 bootstrap 发现失败与单请求传输错误都没有把终态传给 scheduler。实测一次请求：prefill 54 s 完成，decode 到达 5.7 s 后首次 bootstrap 报错，producer 侧 KV 在 480 s 未发送后被释放，客户端 900 s 超时，之后仍报 Timeout waiting for P side ready。
+  source: 2026-09-08 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16040 （closed）
+  behavior: 冷启动后第一个 PD 请求会莫名其妙停住：客户端一直等不到首 token，最后在 900 秒超时（curl 报 28、收到 0 字节），而 /health 始终 200，看起来服务是健康的。prefill 那边其实已经算完，只是 KV 一直没送到 decode；即使客户端放弃，decode 仍会在后面报等待 P 侧就绪超时。
+  trigger_surface: PD 分离冷启动首个请求 + AscendStore 懒初始化 + bootstrap 端点瞬时不响应
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

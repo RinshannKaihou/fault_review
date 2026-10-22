@@ -1,0 +1,51 @@
+id: INF-1810
+legacy_ids: []
+slug: ge_roll_ignores_dims_flatten_shift
+aliases: []
+title: GE Roll 忽略 dims 退化为一维移位致精度异常
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: GE Roll 算子
+  behavior: dims 不为 0 时 Roll 忽略 dims，退化成按 flatten 的一维循环移位，多 axis 的 shift 落到错误元素上。
+effect:
+  objects:
+  - 数值结果
+  detail: TorchAir 图模式下 Swin 窗口注意力的 torch.roll(dims=(2,3)) 结果错位、模型精度下降；改用 cat 手工移位后精度恢复，eager 无此问题（910B3 / CANN 25.5.0）。
+  visibility: 静默错误
+mitigation:
+  detect: 图模式下对 dims≠0 的 roll 与 eager/cat 等价实现逐元素比对
+  fix: 规避：用 cat/slice 按 dim 手工实现 roll（报告者验证精度恢复）；待定（issue closed，正文未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  trigger_note: TorchAir 图模式 + ge.Roll(shifts, dims) 且 dims 非 0；910B3 + CANN 25.5.0
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/453
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: TorchAir 编译时报 aten::roll 的 ge_converter 未实现，用户用 @register_fx_node_ge_converter(torch.ops.aten.roll.default) 注册 return ge.Roll(self, shifts=shifts, dims=dims) 替代。图编译不报错，但 ge.Roll 在 dims 不等于 0 时忽略 dims 参数，退化为 flatten 后的一维 roll：按展平顺序做循环移位，而不是按 dims 指定的轴分别移位，多 axis 的 shift 因此落到错误元素上。定位到 Swin 类窗口注意力的两次 torch.roll(x, shifts=(-shift_size,-shift_size), dims=(2,3))；把这两处换成按 dim 用 torch.cat 拼接的等价实现后精度恢复正常。环境 Ascend 910B3、CANN 25.5.0。
+  source: 2026-06-22 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/453 （closed）
+  behavior: 图模式编出的模型能跑通、不报错，但整体精度对不上；逐算子排查后落在窗口移位：dims=(2,3) 的 roll 被当成展平后的一维移位，特征图整体错位，attention 之后偏差被放大。把 roll 换成 cat 拼接的等价写法后精度立即恢复正常，同一份代码在 eager 下直接用 torch.roll 也没有问题。
+  trigger_surface: TorchAir/GE 图模式下的 ge.Roll，dims 参数非 0
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

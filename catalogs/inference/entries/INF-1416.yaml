@@ -1,0 +1,55 @@
+id: INF-1416
+legacy_ids: []
+slug: torchnpu_copy_conj_view_unconjugated
+aliases: []
+title: TorchNPU copy_ 写共轭视图不取共轭
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: OpAPI copy_ 共轭目标处理
+  behavior: 对 complex 张量的 conj()/mH 视图调用 copy_ 时目标共轭位未处理：源逻辑值被原样写入底层存储，而读取该视图应得到共轭值
+effect:
+  objects:
+  - 数值结果
+  detail: 把 9+3j 写入 base.conj() 后底层存 9+3j（应存 9-3j），视图逻辑值与源不一致；触发于 torch_npu copy_ 以 complex64/complex128 的 conj()/mH 视图为目标，910B3 实测。
+  visibility: 静默错误
+mitigation:
+  detect: copy_ 到 conj 视图后检查底层存储字节与源共轭对照
+  fix: PR https://gitcode.com/Ascend/pytorch/merge_requests/48132 （open）：取清除共轭位的共享存储视图、源逻辑值共轭解析后走既有 copy 路径；基线 56/100 子用例断言失败、修复后全过（910B3 实测，未合入）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: complex 张量 + conj()/mH 视图目标 + copy_；TorchNPU 2c8682df 基线；910B3/CANN 9.2 实测 56 组失败
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/48132
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/pytorch/issues/5458
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'TorchNPU（基线 2c8682df9271e545e7f50f8c45e2395563a05483）对 complex 张量的 conj()/mH 视图调用 copy_ 时，目标的共轭位未被处理：将 9+3j 写入 base.conj()，底层 base 应存储 9-3j，原实现却写入 9+3j，导致视图的逻辑值与源张量不一致。修复 PR（gitcode Ascend/pytorch !48132，open，关联 issue #5458）在 OpAPI 和原生 copy_ 入口处理非空共轭目标：获取清除共轭位的共享存储视图，将源张量逻辑值共轭并解析后交给既有 copy 路径；物化临时源之前检查目标内部重叠与源/目标部分重叠。测试：新增 test/test_copy_conjugate.py 100 组子用例（complex64/128、conj/mH、共轭源、广播、CPU/NPU 双向、同步/异步、实数源、空张量、内存重叠），基线 wheel 56 组数值断言失败、修复 wheel 全过；36 passed + 126 subtests；Ascend 910B3、CANN 9.2、PyTorch 2.13.0+cpu。'
+  source: 2026-10-17 GitCode Ascend/pytorch PR https://gitcode.com/Ascend/pytorch/merge_requests/48132 （open；关联 issue https://gitcode.com/Ascend/pytorch/issues/5458 ）
+  behavior: 在 NPU 上把一个复数张量拷贝（copy_）到另一个张量的共轭视图（base.conj() 或 base.mH 的视图）时，写入的字节没有做共轭：拷完后通过视图读出来的值与源不相等（差一个共轭），底层存储里存的也是未共轭的值。不报错；复数域计算（信号处理、频域运算）由此静默错。
+  trigger_surface: torch_npu copy_ + complex64/complex128 + conj()/mH 视图目标；910B3 实测，机制在 OpAPI 层
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

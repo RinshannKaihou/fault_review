@@ -1,0 +1,56 @@
+id: INF-2065
+legacy_ids: []
+slug: vllm_ascend_profile_memory_removed_observability
+aliases: []
+title: 回退误删 profile_memory 使显存指标不再可观测
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: vllm
+    component: NPUWorker 显存 profiling
+  behavior: 'revert PR #11960 本意只删 forward 里的 memory_reserved，却把 profile_memory()、显存属性初始化和 execute_model 里的调用一并删掉。'
+effect:
+  objects:
+  - 指标/日志
+  detail: DEBUG 级别下查看 execute_model 期间显存时，不再打印 torch reserved/allocated，worker 上取不到这两个属性；服务本身正常跑、不报错，显存缓慢增长这个问题突然失去唯一观测手段。
+  visibility: 静默错误
+mitigation:
+  detect: DEBUG 日志里查 torch_reserved/torch_allocated 是否出现；或对 worker 取属性判断是否还存在
+  fix: 恢复 profile_memory() 与其在 execute_model 开头的调用（受 DEBUG 级别守卫），报告称 PR 在推进
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 'vllm-ascend 含 revert #11960（c1bd7c161）之后的版本；#9765 引入、#11960 误删'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13786
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend 的 #9765（c50023e34）在 NPUWorker 里加了 profile_memory()：初始化 self.torch_reserved/self.torch_allocated，并在 execute_model() 与 execute_dummy_batch() 里调用，按 DEBUG 级别打印 torch reserved/allocated 显存。#11960（c1bd7c161）本意只是回退 model forward 里的 torch.npu.memory_reserved()（该调用在 TPOT 上要多花约 0.5ms），但 revert 提交把 profile_memory() 方法、两个属性初始化、两处调用一并删掉。结果是 worker 上不再有 torch_reserved/torch_allocated，execute_model 也不再打印显存。'
+  source: 2026-08-12 github.com issue https://github.com/vllm-project/vllm-ascend/issues/13786 （closed）
+  behavior: 想在 DEBUG 日志里看 execute_model 期间的 torch reserved/allocated 显存时，发现这两行再也没有了，worker 对象上也取不到对应属性；服务本身正常跑、不报错，只是显存缓慢增长这个问题突然失去了唯一的观测手段。
+  trigger_surface: vllm-ascend NPUWorker，DEBUG 级别日志
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

@@ -1,0 +1,69 @@
+id: INF-1430
+legacy_ids: []
+slug: vllm_ascend_glm_kpool_empty_work_corruption
+aliases: []
+title: vllm-ascend GLM KPool 空 work 越界写污染相邻缓存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: PoolKeyIndexer 空 work 初始化
+  behavior: DSA-CP 使本地分片有 query 但无已完成 pooled key 时，PoolKeyIndexer 进入空 work 初始化路径，向 TND 输出分配之外写入
+effect:
+  objects:
+  - KV状态
+  - 模型权重
+  - 输出内容
+  detail: 孤立空 history 用例报非法写；模型中无关缓存权重变 NaN、请求输出重复 '!' 或非有限 logprobs
+  visibility: 数值异常
+mitigation:
+  detect: 空 local history / 零 query / 全 padding replay 回归；mssanitizer 守护 indexer
+  fix: PR https://github.com/vllm-project/vllm-ascend/pull/19073 （main）/ https://github.com/vllm-project/vllm-ascend/pull/19084 （v0.30.0）（均 open）：附加哨兵请求提供有效 work、空 pooled history 钳到 1 个有效物理池、以原始 positions/请求边界丢弃哨兵与合成 history；11 个 A3 精度/集成用例通过
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: GLM-5.3-Flash + KPool indexer + DSA-CP + MTP + graph 执行（A3 重现栈）；W8A8 权重 + BF16 KPool 验证，MXFP8 权重不适用
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: 与 INF-1398/#19065 的 '!' 输出表型同现但机制独立（空 work 初始化越界 vs scale 恢复）；同日多条 A3 KPool 修复 PR 相邻。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/19073
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend A3 栈上 GLM KPool（DSA context parallel）本地分片有 query 但无已完成 pooled key 时，CANN PoolKeyIndexer 进入空 work 初始化路径并向其 TND 输出分配之外写入：孤立空 history 用例报非法写；在模型中表现为无关缓存权重变 NaN、请求输出重复 ''!'' 或非有限 logprobs。修复 PR（#19073 main / #19084 v0.30.0，open）：附加带有效 work 的哨兵请求、把空 pooled history 钳到 1 个有效物理池、再用原始 positions 与请求边界丢弃哨兵与合成 history 候选（保护全 padding graph replay；pooled-key 评分与 top-k 仍由 CANN 完成）；prepare_nonempty_keypool_inputs 把输入拷贝/padding/长度钳制融合为单次 Triton launch（连续输入；跨步输入先规范化；graph replay 复用捕获分配）。测试：11 个 A3 NPU 精度/集成用例通过（CANN 9.2.0、torch_npu 2.10.0.post7、vLLM 0.30.0 dev 镜像）；8 个连续/跨步用例与独立 PyTorch 参考全六输出精确对照；mssanitizer 同步非缓存配置在守护 indexer 内无非法访问。'
+  source: 2026-10-17 GitHub vllm-project/vllm-ascend PR https://github.com/vllm-project/vllm-ascend/pull/19073 （open；A3 重现栈记录+11 用例验证）
+  behavior: A3 上跑 GLM-5.3-Flash 类带 KPool 索引器 + DSA-CP + MTP + graph 的配置时，一旦某 DP 分片出现非空 query 但空 pooled history（如部分导入未完成、边界请求），KV 池发生越界写：模型缓存里无关权重变 NaN、生成输出变成重复 '!' 或 logprobs 非有限，服务本身不崩溃。
+  trigger_surface: GLM KPool indexer + DSA-CP + MTP + graph capture/replay（A3）；空 local history / 零 query 请求 / 全 padding replay
+  discovery: 2026-10-17 每日扫描
+  notes:
+  - '2026-10-19 回访 2026-10-18：修复 PR #19073 已 closed 且 merged=True（v0.30.0 backport #19084 亦 merged），发布版本未核实'
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - original.notes

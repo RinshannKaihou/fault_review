@@ -1,0 +1,57 @@
+id: INF-1953
+legacy_ids: []
+slug: flashcomm_sp_missing_precondition_dp
+aliases: []
+title: FlashComm 序列并行缺前置约束致 DP 部署精度错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: sequence parallel 启用条件
+  behavior: 开 FLASHCOMM（序列并行）但 tp_size=1 或 MoE 未开 expert parallel 时没有校验，代码按 SP 语义切分/归约，结果与单卡不一致。
+effect:
+  objects:
+  - 输出内容
+  detail: DP8/TP1 且 VLLM_ASCEND_ENABLE_FLASHCOMM=1 的 Qwen3-30B 精度异常，量化与非量化都复现；A2 复现、A3 正常；修复后该组合被直接拦住。
+  visibility: 质量退化
+mitigation:
+  detect: DP 部署下逐条比对同一 prompt 与单卡/纯 TP 基线输出，同时记录 tp_size 与 --enable-expert-parallel 是否开启
+  fix: 'vllm-ascend PR #4014（[Bugfix] Add constraints for sequence parallelism，2025-11 已合入 main）：对 tp_size>1 与 MoE 需开 EP 加约束，升级到含该 PR 的版本'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.11.0 + Qwen3-30B（w8a8 与非量化）、DP8/TP1、VLLM_ASCEND_ENABLE_FLASHCOMM=1；A2 复现 A3 正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/4273
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #4273（2025-11-19，closed）：Qwen3-30B（msModelslim 量化，vllm-ascend 0.11.0，DP8/TP1，VLLM_ASCEND_ENABLE_FLASHCOMM=1，HCCL_OP_EXPANSION_MODE=AIV，--enable-expert-parallel）在 DP8 场景下精度异常；评论补充非量化模型同样复现，说明与量化无关。维护者 zhangxinyuehfad 确认 A2 上可复现、A3 上测试正常，并给出修复 PR #4014《[Bugfix] Add constraints for sequence parallelism》：该 PR 并不改算法，而是给序列并行加前置约束——要求 tp_size > 1，且 MoE 模型必须开 enable_expert_parallel，其它组合直接拦住。也就是说 SP/FlashComm 在 tp_size=1 的 DP 部署里本来没有有效的切分维度，代码仍按 SP 语义做切分与归约，产出与单卡不一致的结果，属于缺校验而非缺 kernel。issue 已随 PR 合入关闭。'
+  source: 2025-11-19 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/4273 （closed）
+  behavior: 按社区样例在 8 卡上把 Qwen3-30B 拉成 DP8/TP1 并打开 FLASHCOMM 后，服务能正常起来、请求也不报错，但回答质量明显不对，量化与非量化权重都这样；同一套权重换成 A3 或调整并行配置就正常。现场很难判断是量化精度还是并行配置，最后靠维护者比对 A2/A3 与 PR 里的约束条件才定位到「序列并行在 tp=1 时本来就不该启用」。
+  trigger_surface: DP8/TP1 + VLLM_ASCEND_ENABLE_FLASHCOMM=1（序列并行）+ MoE 模型
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility
+    - behavior

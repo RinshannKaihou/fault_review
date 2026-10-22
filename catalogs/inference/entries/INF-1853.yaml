@@ -1,0 +1,59 @@
+id: INF-1853
+legacy_ids: []
+slug: ops_nn_batch_norm_grad_v3_splitload_tail_modulo_zero
+aliases: []
+title: batch_norm_grad_v3 通道整除时不写回 dγ/dβ
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BNGradV3 splitLoad 写回
+  behavior: splitLoad 用 totalChannel % 1024 当末段长度，整除时得 0，判据 mod == copyNum-1 永不成立，dγ/dβ 的 StoreOneTensor 不触发。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 910B3 走 aclnnFastBatchNormBackward、每核 channel 为 1024 倍数（如 2048）时 dβ 保持哨兵 999（期望 ~12544），dγ 同样未写；grad_input 正常更新，接口返回成功。
+  visibility: 静默错误
+mitigation:
+  detect: 把 dγ/dβ 预填哨兵后跑每核 channel=1024k（k≥2）的 splitLoad 用例，读回是否仍是哨兵；非整除 shape 与 910B 上的 aclnnBatchNormBackward（legacy 路径）都正常。
+  fix: 待定（issue closed，未给修复 MR；作者建议按 torch 参考语义修正 splitLoad 末段写回判据并补该 shape 回归）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend910B3 + aclnnFastBatchNormBackward + splitLoad + 每核 channel 为 1024 整数倍且 >1024；910B 的 aclnnBatchNormBackward 走 legacy 算子不进该路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4518
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4518（closed）：norm/batch_norm_grad_v3/op_kernel/batch_norm_grad_v3_splitLoad_common.h 的 CopyOutDBias 与 CopyOutDWeight 里，末段长度写作 if (loopId == CeilDiv(this->totalChannel, MAX_CHANNEL_SIZE) - 1) { copyNum = this->totalChannel % MAX_CHANNEL_SIZE; }，随后以 if (mod == copyNum - 1) 决定是否 StoreOneTensor；当每核 totalChannel 为 MAX_CHANNEL_SIZE（1024）的正整数倍时 copyNum 为 0，mod == -1 永不成立，dγ/dβ 的最后一段乃至与尾段刷新相关的整段写回都不发生，而 grad_input 路径不受影响。作者在 Ascend910B3、CANN 9.1.0-beta.3、ops-nn HEAD e16ef626bb3a 上以 build.sh --pkg --soc=ascend910b --ops=batch_norm_grad_v3 编包并装到独立 vendor，用 aclnnFastBatchNormBackward 跑每核 2048 channel 的用例：trigger 组 dβ 保持哨兵 999、control 组约 12544，两组 dx 都有更新，进程退出码 42。issue 特别说明 910B 上 aclnnBatchNormBackward 走 legacy BNTrainingUpdateGrad/BNTrainingReduceGrad，必须用 Fast 变体才能进该路径。
+  source: GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4518 （closed）
+  behavior: BN 反向在特定通道规模下 dγ/dβ 完全没有被写回：输出缓冲里留的是调用方预填的值（哨兵/上一轮内容），grad_input 却是对的，所以算子看起来「跑成功了」，只有拿 dγ/dβ 与参考实现比才发现整块没更新；非整除通道数、或换用 legacy BN 反向接口都恢复正常，定位时很容易误判成上游梯度为零。
+  trigger_surface: batch_norm_grad_v3 splitLoad + 每核 channel 数为 1024 整数倍
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 梯度
+        to: 数值结果

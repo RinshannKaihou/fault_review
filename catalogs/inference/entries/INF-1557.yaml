@@ -1,0 +1,55 @@
+id: INF-1557
+legacy_ids: []
+slug: ops_math_reduce_std_v2_update_mask_double_decrement
+aliases: []
+title: ReduceStdV2Update 多轮 mask 重复递减漏算后半数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: ReduceStdV2Update kernel
+  behavior: UpdateMask<float>(remaining) 已按引用扣减剩余元素，kernel 又手工递减一次，元素数超单轮 FP32 mask 容量 64 时后半数据被跳过；FP16/BF16 tail-A 源步长按 FP32 算
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950DT + CANN 9.2.0：FP32 shape[8,16] 共 128 元素、dim=[1]、correction=1 时后半输出错误；bf16/fp16 shape(2,256,2,256,2)、dim=[1,3] 时输出索引 2/3/6/7 异常为 0，方差与标准差同时错
+  visibility: 静默错误
+mitigation:
+  detect: 对需要超过 64 个 FP32 lane 的多轮 mask 用例与 FP16/BF16 多轴 group 归约用例，与 CPU golden 逐元素比对，重点看输出尾部与索引 2/3/6/7 是否为 0
+  fix: issue 已 closed，正文未给 PR 链接：UpdateMask 后不再手工递减 remaining，tail-A 源步长按输入 dtype 的 32B 对齐宽度（FP16/BF16 为 16 元素）计算（合入版本未核实）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend950DT_9582 + CANN 9.2.0，Arch35 Ascend C kernel；触发面为超过单轮 64 个 FP32 mask 容量的多轮寄存器路径与 FP16/BF16 group tail-A 归约路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2593
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math ReduceStdV2Update 的 Arch35 kernel 有两类确定性精度错误。一是多轮 mask 计数被重复递减：AscendC::Reg::UpdateMask<float>(remaining) 本身会通过引用自动更新 remaining，kernel 在调用后又手工递减一次，处理元素数超过单轮 FP32 mask 容量 64 时，后续数据可能被直接跳过——输入 128 个元素时后半部分不参与计算，方差和标准差随之错误。二是 FP16/BF16 group tail-A 路径源步长算错：UB 中 tail-A 的 padding 按输入 dtype 的 32B 对齐生成，Phase1OutputToWorkspace 却按 FP32 计算 cache 源步长，FP16/BF16 实际对齐宽度应为 16 个元素、错误实现按 8 个元素算，workspace 搬运读到 padding 区域，部分输出变 0（用例中索引 2、3、6、7 异常）。复现环境 Ascend950DT_9582 + CANN 9.2.0，ops-test-kit e559b7f1f550；场景一 FP32 shape=[8,16]、dim=[1]、correction=1、if_std=true/false 两态；场景二 wb_reduce_std_v2_update_0165（bfloat16）与 _0201（float16），shape=(2,256,2,256,2)、dim=[1,3]。
+  source: 2026-08-11 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/2593 （closed）
+  behavior: 在 Ascend950 上对 128 个元素的 FP32 输入做 dim=[1] 的 reduce_std/var，输出前半段对、后半段错；换到 FP16/BF16 的多轴分组用例，输出里索引 2、3、6、7 直接变成 0，看起来像那几个位置的方差恰好为 0，实际是搬运读了 padding。没有报错也没有 NaN，只能靠和 CPU golden 逐元素比才发现。
+  trigger_surface: ops-math ReduceStdV2Update Arch35（Ascend950DT + CANN 9.2.0）；元素数超 64 的多轮 mask 路径、FP16/BF16 的 group tail-A 归约路径
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

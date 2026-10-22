@@ -1,0 +1,55 @@
+id: INF-1528
+legacy_ids: []
+slug: torchnpu_fill_uninitialized_memory_not_honored
+aliases: []
+title: fill_uninitialized_memory 在 NPU 不填 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: empty/resize_as 分配填充
+  behavior: DeterministicGuard(fill_uninitialized_memory=True) 下 NPU 的 torch.empty 与编译后 resize_as 扩展区均未按 torch 契约填 NaN，返回未初始化数据。
+effect:
+  objects:
+  - 数值结果
+  detail: torch.empty(100) 的「全为 NaN」断言失败；resize_as 从 [2] 扩到 [1,3,2,3] 后 16 个新增元素非 NaN；CPU 上同代码按契约得到 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 在 DeterministicGuard(fill_uninitialized_memory=True) 下检查 torch.empty 与编译 resize_as 的新增区域是否全 NaN
+  fix: 待定（issue closed，正文未给修复 PR 与根因）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.use_deterministic_algorithms(True) + fill_uninitialized_memory=True（DeterministicGuard）+ NPU 上的 torch.empty / resize_as；910B/CANN 9.0.0/torch_npu 2.7.1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2312
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2312（2026-06-08，closed，910B / CANN 9.0.0 / torch_npu 2.7.1）：开启确定性算法的 fill_uninitialized_memory=True 后，NPU 上未初始化内存没有被填成 NaN，行为不确定，不符合 torch 的契约。报告给的最小复现两例：eager 下 torch.empty(100, device=''npu'') 断言 torch.isnan(t).all() 失败；torch.compile(backend=''inductor'') 下 aten.resize_as 把 [2] 扩成 [1,3,2,3]，前 2 个元素是有效数据，其余 16 个本应是 NaN，断言失败。issue 未给出根因定位（填充逻辑缺失或未走到设备侧），也未说明影响范围，仅指出与 torch 要求不符。'
+  source: 2026-06-08 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/2312 （closed）
+  behavior: 打开确定性算法并把 fill_uninitialized_memory 设为 True 后，在 NPU 上 torch.empty 拿到的张量并不是 NaN，而是任意残留数据；torch.compile 下 resize_as 扩容出来的新区间同样不是 NaN。于是「用 NaN 填充暴露读未初始化内存」这套调试手段在 NPU 上失效：本该被 NaN 断言抓住的缺陷会以看似正常的数值继续往下跑，而同样代码在 CPU 上行为正确。
+  trigger_surface: torch.use_deterministic_algorithms(True) + fill_uninitialized_memory=True + NPU 上的 torch.empty / 编译后 aten.resize_as；CPU 不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,57 @@
+id: INF-1522
+legacy_ids: []
+slug: torchnpu_dvm_spec_reduce_overwrites_live_accumulator
+aliases: []
+title: DVM spec 归约覆盖仍存活的累加器输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: DVM spec 归约融合
+  behavior: spec 两阶段归约把第一阶段中间值写入输出 buffer，而输出与第二阶段仍需读旧值的 accumulator 是同一 primals_6，旧值被覆盖后重复累加。
+effect:
+  objects:
+  - 数值结果
+  detail: 辅助损失累加器 eager 2.2566e-4 → DVM 0.6538；单独损失的 DVM 值仍为 2.2566e-4；同 buffer 对照 0.54419416 变 128.04419（128 为第一阶段归约结果）。
+  visibility: 静默错误
+mitigation:
+  detect: 对 in-place 累加（out 与旧 accumulator 同一 buffer）的归约图做 A/B：禁止 reduction 与 mutation 垂直融合后对比数值
+  fix: 在 NpuDvmScheduling.can_fuse_vertical 拦截「mutation 目标是仍需读旧值的实际输入」的 reduction+mutation 融合（报告者本地规避）；issue open，master 5148ffb 未见该保护
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: DVM 后端（真实 DVM，非兼容层）+ spec 分阶段归约 + 输出与原 accumulator 别名（detach 的日志状态原地累加）；910B2/torch 2.12.0/CANN 9.1.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4958
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4958（2026-09-20，open，910B2 / torch 2.12.0+cpu / CANN 9.1.0 / torch_npu 从 v2.12 分支 commit f38033913dbefc3a74dbdc4d4838794790d834f8 构建，真实 DVM 后端）：适配 DeepSeek V4 indexer 辅助损失时，DVM 编译后原地累加出错——单独算的辅助损失与 eager 差 1.46e-11，但把结果加到已有 accumulator 后数值明显变大（eager 0.00022566445113625377，DVM 未保护 0.6538197994232178，加入别名融合保护后 0.000225664465688169）。生成 kernel dvm_fused_add_copy__div_mean_mul_squeeze_5 分两阶段（k.spec_next 分隔），调用 dvm_fused_add_copy__div_mean_mul_squeeze_5.run(buf29, buf33, primals_6, primals_6, stream=stream0)，旧 accumulator 与输出是同一个 primals_6；历史 A/B 定位到 spec 第一阶段把归约中间值写进输出 buffer，覆盖了第二阶段 add 仍要读的旧 accumulator。独立输出对照：初始 0.5 加 0.04419417 得 0.54419416，输入输出同 buffer 得 128.04419（128 正好是第一阶段对 128 个 1 的归约）。报告者本地在 NpuDvmScheduling.can_fuse_vertical 拦截该融合，并指出 master 5148ffb 的 mlir_fusion.py 未见同样保护、disable_post_reduce_fusion 默认关闭，但编译链其他部分已变，不能断定当前版本仍生成同样 kernel。'
+  source: 2026-09-20 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4958 （open）
+  behavior: 在 DVM 后端上编译带原地累加的计算图（把归约结果加进一个已存在的累加器，且输出和累加器是同一块 buffer），累加后的数值会明显偏大：日志里的辅助损失从 2.26e-4 变成 0.65，看起来像 loss 突然跳了三万倍量级。单独算这个损失又是对的，梯度与 carrier 输出差为 0，所以很容易误判成训练不稳定而不是编译器错值；把输出换成独立 buffer 或禁掉这处融合就恢复正常。
+  trigger_surface: DVM 后端 + spec 分阶段归约 + 输出与原 accumulator 别名（dst.copy_(x.sum()) 这类只写不读旧值的对照不触发）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

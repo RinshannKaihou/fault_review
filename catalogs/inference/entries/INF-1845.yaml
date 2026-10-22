@@ -1,0 +1,54 @@
+id: INF-1845
+legacy_ids: []
+slug: ops_math_random_calc_split_blocks_cap_partial_coverage
+aliases: []
+title: 随机算子分块达 8 上限仍成功致覆盖不全
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: random 公共 tiling 分块
+  behavior: CalcSplitBlocks 在 splitBlockCount 达到固定容量 8 后停止入栈，却无条件返回 GRAPH_SUCCESS，不检查待处理切片栈是否清空；kernel 只遍历这 8 块。
+effect:
+  objects:
+  - 数值结果
+  detail: 2 字节元素、输出 19,327,352,832 字节时函数成功返回并记 8 块，实际只覆盖 9,663,676,416 字节，其余区域未被写入；6 个 arch35 随机算子共用该 tiling。
+  visibility: 静默错误
+mitigation:
+  detect: 构造输出需要 ≥9 个 32-bit 可索引块的随机算子用例（大 shape 或 2 字节 dtype），检查返回值与输出后半段是否被写过；常规规模用例只用到 1~2 块。
+  fix: 待定（issue open，未给 MR）：循环结束后检查切片栈 top，非空则返回 GRAPH_FAILED，禁止部分分块以成功状态继续。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: arch35 随机算子（stateless_normal/uniform/truncated_normal_v2/exponential/sim_thread_exponential/stateless_random）+ 输出需超过 8 个 32-bit 可索引块
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: issue 为 open；作者只编译执行 host tiling 函数做独立复现，未调用 NPU，故本条只主张 tiling/覆盖链缺陷，不外推设备端表现。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3374
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math issue 3374（open）：random/random_common/op_host/arch35/random_tiling_arch35.cpp:159 的分块循环在 splitBlockCount 达到 MAX_SPLIT_BLOCKS 后退出，:180 却无条件 return GRAPH_SUCCESS，没有把「待处理切片栈 top 是否已清空」纳入成功判据；容量在 random/random_common/op_kernel/arch35/random_unified_tiling_data_arch35.h:57 固定为 8，kernel 侧 random_kernel_base.h:674-680 只遍历 splitBlockCount 个分块。共用该逻辑的 6 个 Arch35 调用点为 stateless_normal(:74)、stateless_uniform(:76)、stateless_truncated_normal_v2(:97)、stateless_exponential(:97)、sim_thread_exponential(:106)、stateless_random(:123) 的 tiling。作者在 commit 77f7e4c2 上把 TensorSliceState 与 CalcSplitBlocks 抽出编译成独立 host 探针：2 字节元素、输出合计 19,327,352,832 字节的输入，函数成功返回且只记录 8 块，覆盖 9,663,676,416 字节；恰好 8 块可完整覆盖的输入仍应成功。issue 同时列出与 #3196/#3200/#3146/#3159/#1668/#1905/#69 及 PR #5723/#5347/#3299 的去重差异说明。'
+  source: GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3374 （open）
+  behavior: 超大输出的随机数算子会「编译/执行都成功但结果只写了一半」：tiling 记下 8 个分块后照常返回成功，kernel 按这 8 块写，后面那段输出保持内存里的旧内容或未初始化值，接口不报错、没有异常日志。只在单次输出需要 9 个及以上 32-bit 可索引块时出现，日常小 shape 用例覆盖不到，使用方看到的是随机张量局部是垃圾。
+  trigger_surface: arch35 random 公共 tiling 分块 + 输出规模需要 >8 个 32-bit 索引块
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,54 @@
+id: INF-1899
+legacy_ids: []
+slug: ms_generatordataset_shared_dict_batch_shape_bloat
+aliases: []
+title: 数据集返回自身 dict 致 batch 形状逐轮膨胀
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindspore
+    component: GeneratorDataset 嵌套 dict
+  behavior: __getitem__ 直接返回 self 上的 dict（未拷贝）时，框架不与用户对象隔离，同一个嵌套 dict 每轮被再包一层，字段 shape 随迭代次数单调膨胀
+effect:
+  objects:
+  - 训练样本流
+  detail: batch(1) 下 5 条样本的 label（mask 形状 [1]）依次变 [1,1] 直至 [1,1,1,1,1,1]；单线程与 python_multiprocessing=False 多线程都复现，多进程或 copy.deepcopy 后正常
+  visibility: 静默错误
+mitigation:
+  detect: 逐条打印 batch 后嵌套字段的 shape，若维度数随迭代次数递增即命中；与多进程模式对比可快速确认
+  fix: issue 给出的规避是在 __getitem__ 中对返回的 dict 做 copy.deepcopy，隔离自定义数据集数据与框架数据；框架侧未见修复（issue 已关闭，未核实关闭原因）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: GeneratorDataset + 自定义 __getitem__ 返回自身属性 dict + dataset.batch(1)；单线程或 python_multiprocessing=False 的多线程模式
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/21689
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'GeneratorDataset 的自定义数据源在 __getitem__ 里直接返回绑定在 self 上的 dict（如 self._label = {''mask'': np.zeros((1,))}），没有做拷贝。batch 算子对返回的嵌套结构原地扩展，而被扩展的正是用户对象本身持有的同一个 dict，于是每取一条样本，同一个 dict 的嵌套层级就再加一层：Tensor(shape=[1]) → [1,1] → [1,1,1] …，5 条样本后 label.mask 的形状变成 [1,1,1,1,1,1]。三个模式的对照：单线程失败；num_parallel_workers=4、python_multiprocessing=False 的多线程模式同样失败（前两条 [1,1]、[1,1,1,1,1] 还出现不同步）；多进程模式成功，因为在子进程里对象被复制。把 __getitem__ 改成 return self._data[index], copy.deepcopy(self._label) 后输出正确，说明缺陷在框架侧对用户返回对象的别名处理，而不是用户数据结构本身有问题。'
+  source: '2025-06 GitCode mindspore/mindspore issue #21689 https://gitcode.com/mindspore/mindspore/issues/21689（closed；MindSpore 2.x，GeneratorDataset + batch）'
+  behavior: 用自定义数据集（GeneratorDataset）返回一个 dict 字段、再 dataset.batch(1) 时，取出来的 label 形状不对：第一条是 [1,1]，越往后嵌套越多，最后变成 [1,1,1,1,1,1]，而 data 字段是对的；同一份代码用多进程模式或者对返回的 dict 做一次 deepcopy 就正常。下游按固定 shape 组 batch 的模型会因此组不出 batch 或静默喂进错形状的标签。
+  trigger_surface: GeneratorDataset（random-accessible 自定义数据集）+ __getitem__ 返回自身属性 dict + batch(1)，单线程/多线程（非多进程）
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

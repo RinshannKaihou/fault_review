@@ -1,0 +1,58 @@
+id: INF-2061
+legacy_ids: []
+slug: vllm_ascend_sched_prefixcache_chunkprefill_degrade
+aliases: []
+title: scheduler 前缀缓存加分块预填输出退化成重复星号
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: scheduler 前缀缓存+分块预填
+  behavior: ascend_scheduler 同时打开 enable_prefix_caching 与 enable_chunked_prefill 时，输出与只开前缀缓存的基线不一致，问答末尾变成连续 '** ** **' 重复；单开前缀缓存正常。
+effect:
+  objects:
+  - 输出内容
+  detail: Qwen3-8B-Base、TP2、2048、eager：chunk_prefill+prefix_cache 输出在表格问答后接 'The age of Zack Blue is ** ** ** …'，e2e 断言失败；不开 chunked prefill 时与基线同。
+  visibility: 质量退化
+mitigation:
+  detect: e2e 用例三臂对照：基线 / 只开前缀缓存 / 前缀缓存+分块预填，逐 token 比对输出
+  fix: 待定（issue closed，未见修复 PR 关联）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend + ascend_scheduler_config.enabled=true + enable_prefix_caching + enable_chunked_prefill（Qwen3-8B-Base TP2 eager）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/2943
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 的 tests/e2e/multicard/test_prefix_caching.py::test_prefix_cache_with_ascend_scheduler 在 Qwen3-8B-Base、TP2、max_model_len 2048、enforce_eager 下做三臂对照：基线、ascend_scheduler+enable_prefix_caching、再打开 enable_chunked_prefill。第三臂与第二臂的 check_outputs_equal 断言失败：前两臂都输出完整 markdown 表格并回答 'The age of Zack Blue is ...'，第三臂在同一 prompt 后接出 'The age of Zack Blue is ** ** ** ** ...' 的连续星号，一直重复到 max_tokens。即 ascend scheduler 下「前缀缓存 + 分块预填」组合使输出退化，而单开前缀缓存正常，说明问题出在两者的交互路径（分块预填切分与前缀命中块拼接）。
+  source: 2026-09-12 github.com issue https://github.com/vllm-project/vllm-ascend/issues/2943 （closed）
+  behavior: 同一条表格问答，不开分块预填时模型正常给出年龄；一旦在 ascend scheduler 上同时打开前缀缓存和分块预填，回复末尾就变成一长串 '** ** **'，看起来像模型胡言乱语而不是报错，e2e 用例直接判定两臂输出不相等。
+  trigger_surface: vllm-ascend ascend_scheduler + enable_prefix_caching + enable_chunked_prefill 组合
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: KV缓存

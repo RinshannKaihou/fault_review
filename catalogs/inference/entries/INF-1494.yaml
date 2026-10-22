@@ -1,0 +1,71 @@
+id: INF-1494
+legacy_ids: []
+slug: op_plugin_paged_attention_splitfuse_v2_context_lens_graph
+aliases: []
+title: splitfuse_v2 context_lens 拷贝未入图致精度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: splitfuse_v2 context_lens
+  behavior: context_lens 由 host 同步拷贝到 device 的动作没被图捕获；图模式复用已捕获的图时该输入不按预期刷新，attention 仍按旧 context_lens 计算。
+effect:
+  objects:
+  - 数值结果
+  detail: 310P 上图模式调用 _npu_paged_attention_splitfuse_v2，context_lens 变化后输出仍按上一轮值计算，attention 结果与参考不一致；无报错、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 图模式下连续两次以不同 context_lens 调用该接口，比对第二次输出是否跟随输入变化；与逐轮 eager 执行对照可发现差异
+  fix: issue 为 closed，正文只给现象，未给修复 PR 与具体修法（合入与发布状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_note: 310P + 图模式执行 _npu_paged_attention_splitfuse_v2 + context_lens 逐轮变化（变长请求 / 动态 batch）
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/275
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1371
+pattern: PAT-INF-0160
+original:
+  mechanism: 'op-plugin issue #275（2026-07-12，closed）：环境只写了 310P。正文只有一句现象描述：使用 _npu_paged_attention_splitfuse_v2 接口时，context_lens 输入的同步拷贝未被图模式捕获，进而不按预期刷新，导致精度问题。即 context_lens 需要从 host 同步（sync copy）到 device，这个拷贝动作落在图捕获之外，图模式复用已捕获的图执行后续迭代时 context_lens 仍是捕获时的值，paged attention 的 splitfuse 分支按陈旧的序列长度做切分与累加。正文没有给出源码位置、偏差量级、复现脚本与修复 PR。'
+  source: 2026-07-12 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/275 （closed）
+  behavior: 在 310P 上把 _npu_paged_attention_splitfuse_v2 放进图模式跑：只要每轮迭代的 context_lens 会变（变长请求、动态 batch），图复用后的 attention 输出就跟不上输入，结果与逐轮 eager 执行不一致——没有报错、没有 NaN，形状也完全正常，只有数值对不上，因此通常到整网精度比对才暴露。
+  trigger_surface: 310P + 图模式执行 _npu_paged_attention_splitfuse_v2 + context_lens 逐轮变化
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 算子/内核
+    uncertain:
+    - detail

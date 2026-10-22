@@ -1,0 +1,57 @@
+id: INF-1481
+legacy_ids: []
+slug: vllm_parser_structural_tag_overrides_response_format_with_tools
+aliases: []
+title: vLLM tools 请求的 response_format 被组合覆盖
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: structural tag Or 组合
+  behavior: _apply_structural_tag 用请求 response_format 组 OrFormat(tool_call/output) 并清空原字段；Or 下 tool-call 分支合法，schema 永不被强制。
+effect:
+  objects:
+  - 输出内容
+  detail: 同带 tools 与 json_schema 的请求 schema 不生效：finish_reason=tool_calls、content=null；多轮 agent 单请求可烧 ~130K tokens；去掉 tools 后 schema 正确强制
+  visibility: 静默错误
+mitigation:
+  detect: schema 强制回合同请求分别带/不带 tools 对照 finish_reason 与 content
+  fix: 待定（issue open；0.32 nightly 新增 _glm_4_7_tool_tag builder + xgrammar 0.2.8 使组合对 GLM 生效——0.31.0 因无 builder 早退不受影响）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: GLM-5.3-Flash（glm47 tool parser）+ tools + response_format 同请求 + 0.32 nightly（xgrammar 0.2.8）；DFlash2 k=7 环境但复现不依赖投机；确定单轮触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 与 sglang#45235（xgrammar strict 传染非 strict 工具）不同库不同机制：vLLM 侧是 Or 组合吞掉 schema 强制
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62483
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM issue #62483（c2026-10-19，GLM-5.3-Flash，reasoning parser glm45 + tool parser glm47，xgrammar 0.2.8 backend auto，nightly 77154ca61 与 39983a5e7 均复现）：同时携带 tools 与 response_format(json_schema) 的请求 schema 不被强制，模型在 schema 回合自由流入 tool call（finish_reason=tool_calls、content=null）；同请求去掉 tools 数组则 schema 正确强制（const 强制 schema 产出精确强制串、finish_reason=stop）。多轮 agentic 复合：模型在 schema 回合反复重发 tool call，组合语法下结构永不完成，生成跑满 token 预算（单请求 ~130K tokens/4096 轮）。根因：Parser._apply_structural_tag（vllm/parser/abstract_parser.py ~L505-603）：tool parser 支持 structural tag 且请求带 tools 时组成 OrFormat([tool_call_tag, output_format])——output_format 取自请求自身 response_format——赋给 request.structured_outputs 并置空 request.response_format；Or 下 tool-call 分支合法，用户 schema 永不被强制。0.31.0 不受影响：组合代码已存在（db9527a468）但 structural_tag_registry 无 glm_4_7 builder、xgrammar 0.2.7 无 builtin，tools_structural_tag=None 早退、response_format 完好（仅 schema 语法）。0.32 nightly 加入 _glm_4_7_tool_tag builder（abstract_parser.py:1047）+ xgrammar 0.2.8 后对 GLM 生效。失败确定性单轮，不涉及 reasoning parser 路径。'
+  source: 2026-10-19 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62483 （open）
+  behavior: 给 GLM 模型同时传工具列表和 json_schema 输出约束时，schema 完全不生效：模型照样返回 tool_calls、content 为空；多轮 agent 工作流里模型在应输出 schema 结果的回合反复调工具，一直生成到 token 上限（可烧十几万 token）。去掉工具列表后同一 schema 立即严格生效。
+  trigger_surface: GLM-5.3-Flash + --tool-call-parser glm47 + 请求同时带 tools 与 response_format + vLLM 0.32 nightly（xgrammar 0.2.8）
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

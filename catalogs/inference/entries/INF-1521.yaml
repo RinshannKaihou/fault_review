@@ -1,0 +1,57 @@
+id: INF-1521
+legacy_ids: []
+slug: torchnpu_mlir_auto_fallback_no_buffer_write
+aliases: []
+title: MLIR 融合回退不写预分配 buffer 致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: mlir_auto_fallback 回退
+  behavior: MLIR 融合 kernel 调优失败后 mlir_auto_fallback 回退 _load_fx_graph，回退路径不遵守 kernel.run(..., bufN) 的写预分配 buffer 约定。
+effect:
+  objects:
+  - 数值结果
+  detail: 整图 resnet18 与 eager 偏差 0.98/1.008 或直接 NaN，单 stage 恒正确；dynamic=True 可规避；出错组合随权重与版本变化。
+  visibility: 静默错误
+mitigation:
+  detect: 整图 vs 逐 stage 编译同一模型，比对 max abs 与 NaN；开 dynamic=True 做 A/B；看 Tuning accuracy failed 日志
+  fix: 待定（issue closed，正文未给修复 PR；期望回退路径遵守 bufN 写约定，并对静默回退打告警）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: torch.compile(options={'npu_backend':'mlir'}) 整图（dynamic=False）+ resnet18 类含 BN 融合的模型；2.7.1.post8 与 2.9.0.post6 两条线均复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4831
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4831（2026-09-15，closed，Atlas 800T A2/910B3，CANN 9.1.0，torch 2.7.1+torch_npu 2.7.1.post8 与 torch 2.9.0+2.9.0.post6，triton 3.5.0/triton_ascend 3.2.2，torch-mlir 0.0.1）：按文档用 options={''npu_backend'':''mlir''} 对 resnet18 整图编译推理，输出错误值（与 eager max diff 9.814e-01）或 NaN（2.9.0 线实测 NaN 与 1.008e+00）。不变式：单算子、Conv+BN+ReLU、残差块、完整 BasicBlock、各 stage 单独编译全部正确，仅多 stage 编进同一张图时错。根因链：MLIR 融合 pass 把 BN+ReLU / BN+add+ReLU 打成融合 kernel（output_code.py 中 mlir_fused__native_batch_norm_legit_no_training_add_relu_2 等，全部经 async_compile.mlir_auto_fallback 包装，调用约定 kernel.run(输入..., bufN, stream=) 要求写预分配 buffer）；编译期日志出现 Tuning accuracy failed, no valid kernels found, using fallback（失败名单 100% 是 BN 融合族，调优按实际数据校验精度，故触发组合随权重与版本变化）；mlir_auto_fallback 调优失败后回退 _load_fx_graph，回退路径不写 bufN，后续算子读到未初始化/残留设备内存，NaN（未触碰内存）与错值（残留数据）两种表现都实测到，错误幅度跨进程在 0.28~2.0 间不稳定。dynamic=True 完全修复，TORCHINDUCTOR_LAYOUT_OPTIMIZATION=0 反而触发另一条 NaN 路径。'
+  source: 2026-09-15 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4831 （closed）
+  behavior: 用 MLIR 后端整图编译 resnet18 跑推理，能编译、能跑完、不报错，但输出是错的：与 eager 最大差 0.98，换到 2.9.0 配套版本直接出 NaN，同一份代码两次运行错误幅度还不一样。单独编译某个 stage 或单算子始终正确，只有把多个 stage 合成一张图才错；开 dynamic=True 就正常。日志里只有一行 Tuning accuracy failed ... using fallback，不会当成错误。
+  trigger_surface: torch.compile + npu_backend=mlir + 整图（多 stage 合图、dynamic=False）+ 含 BN 融合的模型；dynamic=True 或单 stage 编译不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility

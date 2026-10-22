@@ -1,0 +1,53 @@
+id: INF-1633
+legacy_ids: []
+slug: mindformers_graph_gqa_tp_ulysses_cp_precision
+aliases: []
+title: GQA 下 tp>1 叠加 Ulysses CP 推理精度不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspore
+    component: Ulysses CP 与 GQA 头切分
+  behavior: 静态图并行下同时开 tp>1 与 Ulysses CP（cp_ds>1）且 kv_head_num < head_num 时推理精度不正确；issue 未给源码定位，只给可复现配置与版本二分
+effect:
+  objects:
+  - 输出内容
+  detail: 静态图下 qwen1_5 72B、seq_length 32768、do_sample=False 在 8 卡 tp+Ulysses CP predict 输出与单卡不一致；开关 ulysses 结果不同，不报错、不 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: GQA 模型（kv_head_num < head_num）在 tp>1 + cp>1 下跑 predict，与单卡或 tp1 结果逐 token 比对
+  fix: 待定（issue closed，正文未给修复方式；二分显示 master_20240713153844 与 CANN 20240705 成功）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: 需静态图 + tp>1 + Ulysses CP + GQA；机制未在 issue 中说明，留观待补
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/179
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 静态图并行推理下，llama/qwen1_5 这类 GQA 模型（kv_head_num < head_num）同时开启 tensor parallel > 1 与 Ulysses 序列并行（cp_ds > 1）时精度不正确；issue 的判定条件是‘tp > 1 + cp_ds > 1 + kv_head_num < head_num 即可复现’，期望是开关 ulysses cp 后精度保持一致。正文没有给出源码定位或修复补丁，证据是可复现命令与版本二分：MindSpore 2.4.0.B011 + MindFormers dev_12be3272 + MindIE 1.0.RC2.B101 + CANN Milan&Florence V100R001C18SPC001B254 失败，而 MindSpore master_20240713153844_a4230c71d 与 CANN Milan_C18/20240705 成功、CANN 20240710 失败，说明差异随 MindSpore/CANN 版本在 GQA 的 KV 头复制与序列切分路径上引入。复现命令：research/qwen1_5 下 msrun_launcher.sh 拉起 run_qwen1_5_long_seq.py，predict_qwen1_5_72b_chat.yaml，run_mode predict，use_parallel True，do_sample False，auto_trans_ckpt False，seq_length 与 predict_length 均为 32768，8 卡。
+  source: 2024-11-29 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/179 （closed）
+  behavior: 同一个 72B GQA 模型、同一份权重，用 8 卡 tp + Ulysses CP 跑 32K 长序列 predict，生成内容与单卡对数不上；把 ulysses 开关换一下结果就变，kv_head_num 等于 head_num 的模型不受影响。整个过程不报错、不 NaN，看起来只是‘长序列推理效果差一点’，靠逐 token 与基准比对才能确认是并行精度问题。
+  trigger_surface: 静态图 + tensor parallel > 1 + Ulysses 序列并行（cp_ds > 1）+ GQA（kv_head_num < head_num），qwen1_5 72B，seq 32768，8 卡 910B1
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

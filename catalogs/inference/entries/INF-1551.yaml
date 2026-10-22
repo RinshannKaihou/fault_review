@@ -1,0 +1,61 @@
+id: INF-1551
+legacy_ids: []
+slug: vllm_ascend_split_qkv_rmsnorm_rope_pos_race
+aliases: []
+title: QKV 融合算子 RoPE 位置竞态致 Q/K 错转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: triton QKV 融合算子
+  behavior: get_element 从同一轮仍在填充的 UB tile 里标量读 RoPE position，MTE 传输与标量读之间没有排序，第二个外层迭代起读到上一轮的 position。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: num_tokens 超过形状相关阈值后 Q/K 每行按错误位置旋转，max|err| 达 9.4（算子自测容差 5e-2），6 次调用结果互不相同；V 不走 RoPE 所以正确。
+  visibility: 不可复现
+mitigation:
+  detect: 同输入重复调用 6 次，比对输出是否逐位一致，并与 fp32 RMSNorm+RoPE 参考比 max|err|；(12,1) 形状从 num_tokens=1024 起、(64,4) 从 257 起观察
+  fix: 待定；待修复项为 vllm_ascend/ops/triton/linearnorm/split_qkv_rmsnorm_rope.py 中 position 的取法，改成直接从 global memory 读标量可消除 UB 竞态（issue open，未见合并 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.20.2rc2.dev0+g367b8e62d 与 main@10b4fb2a9，CANN 9.1.0，bf16、head_dim=128、全 RoPE；(num_q_heads,num_kv_heads)=(12,1) 时 num_tokens≥1024、(64,4) 时 ≥257 触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16674
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm_ascend/ops/triton/linearnorm/split_qkv_rmsnorm_rope.py 的 split_qkv_rmsnorm_rope（vllm::qkv_rmsnorm_rope）先把 positions 用 tl.load 搬进 UB tile，再在 tl.range 循环里用 get_element(x,(i,)) 把它当标量读出来查 cos_sin_cache。x 每个外层迭代重新 load，但标量单元与该次 MTE 传输之间没有排序，从第二个外层迭代起可能读到上一轮的位置，导致整行 token 的每个 Q/K head 按错误角度旋转；V 不做 RoPE 因此不受影响。竞态需要 iter_num_per_vec>1，而每轮行数由 UB 预算决定，所以形状越大触发阈值越低。报告在 bf16、head_dim=128、全 RoPE 下与 fp32 参考对比：num_tokens=257 时 max|err| 8.03/6.84，1024 时 9.36/6.46，容差 5e-2，6/6 次失败且逐次输出不同；num_tokens=1、16 通过。该缺陷自该算子加入的 #4711（2025-12）起存在，main@10b4fb2a9 仍在。issue 给出自包含合成输入复现脚本与 "rows off by one position" 统计。'
+  source: 2026-09-16 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16674 （open）
+  behavior: 在同一 serve 里跑 bf16 长 prompt 推理时，输出会随机变味：不是报错，也不是 NaN，而是文本质量下降、乱答、重复，且同一请求重跑结果不同。触发取决于 token 数与 head 形状——单条短请求（num_tokens 很小）看起来完全正常，长 prompt 或高并发打包后才开始出错；因为只有 Q/K 被按错位置旋转，V 正常，所以任何只比对 V 或只看是否有异常的检查都发现不了。
+  trigger_surface: split_qkv_rmsnorm_rope / vllm::qkv_rmsnorm_rope 融合算子 + bf16 + 全 RoPE；num_tokens 超过随 (num_q_heads,num_kv_heads) 变化的阈值即触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - behavior
+    - detail
+    uncertain:
+    - subsystem

@@ -1,0 +1,54 @@
+id: INF-2005
+legacy_ids: []
+slug: circular_pad_oneside_pad_skips_bound_check
+aliases: []
+title: circular_pad 单侧 padding=0 跳过越界校验返回错误环绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: circular_pad tiling 校验
+  behavior: CheckLeftAndRight 只在 left>0 且 right>0 时才比较 left/right 与 inputW；一侧为 0 时整段校验被跳过，超界 padding 直接进 kernel
+effect:
+  objects:
+  - 数值结果
+  detail: left=3 > inputW=2、right=0 的 {1,1,2,2} fp32 输入下 API 返回 SUCCESS 且无告警，输出为错误环绕（0 1 2 1 2 0 3 4 3 4）
+  visibility: 静默错误
+mitigation:
+  detect: 对「单侧 padding=0 且另一侧 > inputW」的非法组合建参数校验用例，比对 aclnnCircularPad2d 输出与参考环绕实现，检查是否应拒绝
+  fix: issue 内提出将条件改为任一侧超界即失败（closed）；修复 MR 与合入版本未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需要单侧 padding=0、另一侧 padding 大于 inputW 的非法参数组合；CANN 9.1.0-beta.3 + Ascend910B3 源码编译单算子包
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2484
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: OPS_MATH/conversion/circular_pad/op_host/circular_pad_tiling.cpp 的 CheckLeftAndRight 条件写为 if (left > 0 && right > 0 && (left > inputW || right > inputW))，只有左右两侧都非 0 才做「不得大于 inputW」的比较。因此 left=3、right=0、inputW=2 时校验直接放行，GetWorkspaceSize/Launch/SynchronizeStream 全部返回 0，超界 padding 进入 kernel 生成错误环绕。环境为 CANN 9.1.0-beta.3、ops-math 2d1098d3e902、Ascend910B3，源码编译单算子包装入 ASCEND_CUSTOM_OPP_PATH 后复现，进程退出码 42。
+  source: '2026-08-03 GitCode cann/ops-math issue #2484（closed）。https://gitcode.com/cann/ops-math/issues/2484'
+  behavior: 用 aclnnCircularPad2d 处理 {1,1,2,2} 的 fp32 输入、padding={left=3,right=0,top=0,bottom=0}，接口不报错、返回成功，但输出张量出现错误的循环环绕值（0 1 2 1 2 0 3 4 3 4）；调用方看到的是参数被接受、数字看似合理但实际错。
+  trigger_surface: circular_pad tiling 的单侧 padding=0 且另一侧大于 inputW 的非法参数；CANN 9.1.0-beta.3 + Ascend910B3
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

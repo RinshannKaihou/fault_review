@@ -1,0 +1,51 @@
+id: INF-1882
+legacy_ids: []
+slug: npu_profiler_flops_hook_skips_gqa_attention
+aliases: []
+title: profiler FLOPs 钩子在 GQA/零长序列上不出数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: torch_npu
+    component: _flops_hook 公式
+  behavior: 算 FIA 的 FLOPs 时默认 q/k head 数相同，GQA 下用 kv_heads 解析 k_shape 触发 ValueError，钩子只打 WARNING 就不再出 FLOPs；0 长度序列另行报错。
+effect:
+  objects:
+  - 指标/日志
+  detail: GQA（hidden 512、28 head）profile 里 attention 行无 FLOPs，仅一条 Failed to calculate FLOPs 的 WARNING；含 0 长度序列则报 actual_seq_qlen 校验错误。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 profile 汇总表里 attention 行的 FLOPs/MFU 是否为空，并在 stderr 找 _flops_hook 的 WARNING
+  fix: 待定（issue closed，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch_npu profiler（_flops_hook/_flops_formulas）；npu_fusion_attention 且 kv_heads≠heads（GQA/MLA），或 batch 内存在 0 长度序列
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2608
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2608：torch_npu.profiler 的 FLOPs 估算链（_flops_hook.py 的 wrapper → _flops_formulas.py 的 npu_fusion_attention_flops → _calculate_common_layout_flops → _parse_dims → _head_dim）默认 q/k head_num 相同，没有考虑 GQA：_parse_dims 用 kv_heads 解析 k_shape 的 hidden size，_head_dim 抛 ValueError("Hidden size 512 must be divisible by the number of heads 28")，被 wrapper 捕获后只打一条 WARNING:torch_npu.profiler._flops_hook:Failed to calculate FLOPs for npu_fusion_attention 就不再产出 FLOPs。另外把 actual_seq_qlen 累积长度换算成实际序列长度后，单个 seq 可能为 0，此时直接 raise actual_seq_qlen and actual_seq_kvlen must contain valid cumulative lengths。报告者是在 mindspeed 训练（iteration 4/10）的 profile 里踩到这两条。'
+  source: 2026-07-03 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/2608 （closed）
+  behavior: GQA 模型（kv head 数与 q head 数不同）profile 出来 attention 那几行没有 FLOPs，只有一条 Failed to calculate FLOPs for npu_fusion_attention 的 WARNING 躺在 stderr 里；含 0 长度序列的 batch 干脆报 actual_seq_qlen… 错误。汇总表照常生成，只是 FLOPs/MFU 那几列偏小或空着，做性能分析时会误判 kernel 效率。
+  trigger_surface: torch_npu profiler（_flops_hook / _flops_formulas）；npu_fusion_attention 且 kv_heads≠heads，或 batch 内含 0 长度序列
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,63 @@
+id: INF-1423
+legacy_ids: []
+slug: ttmetal_sfpu_replay_buffer_cross_talk
+aliases: []
+title: tt-metal SFPU replay 体溢出覆写 FPU MOP 槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU replay buffer 槽位划分
+  behavior: accurate bf16 exp 的 replay 体（20-22 条）与 dequant 体（槽 15..19）越过 SFPU/FPU 分界槽 16，覆写 matmul/reduce 录制的 MOP 体；后续 tile 重放被污染程序
+effect:
+  objects:
+  - 数值结果
+  detail: exp(dequant) 后的 matmul/reduce tile 静默错（tile0 正确、tile1+ 错；reduce 行和 -26 vs 40），无 hang 无 assert（dequant 先 init 的反向序在 BH 上 hang）
+  visibility: 静默错误
+mitigation:
+  detect: tt-llk test_matmul_exp_interleave.py / dequant+reduce gtest（报告随附）
+  fix: 待定（issue 报告于 Wormhole n150 / Blackhole p100a shipped 代码）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: bf16 Dest 的 accurate exp 与 matmul 混用（Wormhole）；fp32 DEST 的 dequant 与 reduce 混用（WH/BH 双架构）；issue 内已有实测 gtest
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: 两个 issue 同机制（SFPU replay 体越界覆写 FPU MOP 槽），合并为一条，双证据。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61212
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61206
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal 数学 LLK 把每线程 replay buffer 按 ckernel::math::replay_buf_offset=16 分成 SFPU 半区 [0,16) 与 FPU 半区 [16,32)，matmul（matmul_configure_mop，16 条）与 reduce（reduce_configure_mop，8 条）在 init 时把 MOP 体录制到 FPU 半区并逐 tile 重放。两个 SFPU 算子的 replay 体越过该分界：(1) Wormhole accurate bf16 exp（ckernel_sfpu_exp.h _sfpu_exp_21f_bf16_tti_）整个循环体 20-22 条录在槽 0 起且到 16..19（SFPSETEXP/SFP_STOCH_RND/SFPSTORE/INCRWC 替换前 4 条 MVMUL），此后每个 matmul/reduce tile 重放被污染程序、静默错（Blackhole 副本录 16 条恰好放下）。(2) Blackhole/Wormhole dequant 体录于 DEQUANT_REPLAY_SLOT=15、体长 5 跨到 15..19：reduce_init<SUM,REDUCE_ROW> 后 dequant_tile_init 再 reduce_tile 时 MOP 重放 4 条 dequant SFPU 指令+4 条 MVMUL，行和静默错（实测 -26 vs 40，1024 datum 中 31 个不同）；反序（dequant init 先）在 shipped BH 上挂起。实测：Wormhole n150 上 mm_init+exp_tile_init 后逐 tile matmul_tiles+exp_tile(bf16 Dest)，tile0 对、tile1-3 错（test_matmul_exp_interleave.py，LoFi/HiFi4）；BH/WH 双板 dequant+reduce gtest 复现。
+  source: 2026-10-17 GitHub tenstorrent/tt-metal issues https://github.com/tenstorrent/tt-metal/issues/61212（exp 覆写 MVMUL 槽）与 https://github.com/tenstorrent/tt-metal/issues/61206（dequant 槽 15..19 跨界），均含新 gtest 实测
+  behavior: 在同一个计算 kernel 里混用 accurate exp 或 dequant 与 matmul/reduce（如 mm_init+exp_tile_init 后逐 tile matmul+exp，或 reduce_init 后 dequant 再 reduce）时，exp/dequant 之后的所有 matmul/reduce tile 输出静默错误：第一个 tile（在任何 exp/dequant 执行前算的）正确，其后的错；reduce 行和能差到 -26 vs 40。没有 hang、没有 assert（dequant 反向序在 Blackhole 上会挂起）。依赖同一 replay buffer 的 SFPU 与 FPU 算子交替执行的任何 kernel 都可能命中。
+  trigger_surface: Wormhole：bf16 Dest 的 accurate exp（非近似版）+ matmul 混用；BH/WH：fp32 DEST dequant_tile + reduce/matmul 混用；shipped 代码即含
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

@@ -1,0 +1,64 @@
+id: INF-1539
+legacy_ids: []
+slug: ops_nn_gather_elements_dim2_fastdiv_int32
+aliases: []
+title: gather_elements 二维大张量快除参数按 int32
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: gather_elements dim2 路径
+  behavior: dim2 场景直接用 tiling 里算好的快除参数，而 tiling 的计算固定按 int32；元素数超 int32 上限时快除索引错位。dim>2 场景在 kernel 内按 int64 重算，所以正常。
+effect:
+  objects:
+  - 数值结果
+  detail: 二维 x、元素数大于 int32 最大值（2^31）、index 末维非 2 的幂时精度失败；对齐 dim>2 实现后 ST 与冒烟通过。正文未给误差量级。
+  visibility: 静默错误
+mitigation:
+  detect: 构造二维 x 且总元素数 >2^31、index 末维非 2 的幂（3/5/7）的用例比对索引映射结果；末维为 2 的幂时快除退化，暴露不出来。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/11313 （merged）：dim2 场景并入 dim>2 路径，改用 kernel 内按 int32/int64 分别计算的快除参数
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 950 + gather_elements SIMT 模板（二维 x、元素数>2^31、index 末维非 2 的幂）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 原 issue 只有三行复现描述，机制来自修复 PR；未给具体误差量级与用例 shape。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6278
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/11313
+  kind: gitcode_pr
+relations: []
+pattern: PAT-INF-0169
+original:
+  mechanism: cann/ops-nn issue 6278（2026-09-29，closed）报的是现象：gather_elements 模板在输入 x 为二维、元素个数大于 int32 最大值、且 index 最后一维不是 2 的幂时精度失败，环境 Ascend 950，正文只写“按该场景设计用例即可复现”。修复 PR 11313（2026-09-28，merged）给出机制：kernel 对 dim2 场景与大于 dim2 的场景处理不同——大于 dim2 的场景在 simt 函数内自行计算快除（fast division）参数并区分 int32/int64，而 dim2 场景不自己算，直接使用 tiling 里预先算好的参数，tiling 侧的快除参数固定按 int32 场景计算，元素数超过 int32 上限后快除的商/余数就错位，索引映射随之出错。修复把 dim2 场景并入大于 dim2 的路径，对齐实现后精度通过，ST 与冒烟用例均通过。
+  source: 2026-09-29 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6278 （closed）；修复 PR https://gitcode.com/cann/ops-nn/merge_requests/11313 （merged）
+  behavior: 在 Ascend 950 上用 gather_elements 做二维大张量的按索引取值：只要总元素数超过 int32 上限（2^31）、而且 index 最后一维不是 2 的幂，取出来的元素就与参考对不上，且不报错；同 shape 把末维改成 2 的幂、或者元素数降到 2^31 以下就正常。属于大模型词表/embedding 规模下才偶发踩到的静默错值。
+  trigger_surface: Ascend 950 + gather_elements 二维输入 + 总元素数 >2^31 + index 末维非 2 的幂
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

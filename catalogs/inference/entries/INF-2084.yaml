@@ -1,0 +1,59 @@
+id: INF-2084
+legacy_ids: []
+slug: cann_masked_scatter_with_position_infershape_shapesize
+aliases: []
+title: masked_scatter 推导以元素总数当秩越界读 shape
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: masked_scatter_with_pos
+  behavior: InferShape 用 xShape->GetShapeSize()（元素总数）当 SetDimNum 参数和循环上界，而非 GetDimNum()；[2,3,4] 时 24>3，循环里 GetDim(i) 越界读 Shape 容器。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 任何元素总数大于秩的输入（几乎所有多维张量）都会在 Host 推导阶段越界读容器，输出 shape 依赖越界读到的内存，可能生成错误 shape 或宿主进程段错误。
+  visibility: 报错
+mitigation:
+  detect: 对 [2,3,4]、[N]（N>1）等输入跑 masked_scatter_with_position 的 Host InferShape UT，在 ASan 下看 GetDim 是否越界
+  fix: issue 修复建议：改用 GetDimNum() 作为 SetDimNum 参数与循环上界，并在读取前校验 rank（closed，未见合并记录）
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: 任意元素总数>秩的 masked_scatter_with_position 输入，Host InferShape 阶段即触发（shape [2,3,4] 即 24>3）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5018
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn 的 masked_scatter_with_position Host InferShape（index/masked_scatter_with_position/op_host/masked_scatter_with_position_infershape.cpp）第 34 行把 xShape->GetShapeSize()（各维乘积，元素总数）用作 SetDimNum 参数与第 40-41 行循环上界，而正确值是 GetDimNum()（秩）。shape 为 [2,3,4] 时 GetShapeSize()=24、GetDimNum()=3，循环到 i=23，第 41 行 xShape->GetDim(i) 对 i>=3 越界访问 Shape 内部容器；即使一维 [N]（N>1）也会读 GetDim(1) 到 GetDim(N-1)。第 35-37 行只检查 xShapeSize<0，不防这种混淆。函数通过 IMPL_OP_INFERSHAPE 注册为入口、框架直接调用，可达性确认；触发条件是任何元素总数大于维度数的张量。
+  source: 2026-08-24 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5018 （closed）
+  behavior: 构图阶段推导 masked_scatter_with_position 的输出 shape 时，宿主进程读到 Shape 容器之外的内存：轻则输出 shape 里出现离谱维度、后续 tiling/算子跟着失败，重则 host 段错误；算子本身还没开始算，使用者很难把问题归到 shape 推导。
+  trigger_surface: masked_scatter_with_position 构图 + 元素总数大于秩的常规多维输入
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 数值结果
+        to: 可用性/进度
+      visibility:
+        from: 静默错误
+        to: 报错

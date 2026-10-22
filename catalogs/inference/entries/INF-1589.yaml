@@ -1,0 +1,58 @@
+id: INF-1589
+legacy_ids: []
+slug: hccl_ccu_gettoken_swallow_result_uninit_token
+aliases: []
+title: CCU 取内存 token 吞错致未初始化 token 下发
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: 通用
+    component: CCU GetToken 基类模板
+  behavior: GetToken 对三条缓冲分支的 HcommCcuGetMemToken 返回的 CcuResult 一律不检查，无条件返回成功；取 token 失败时输出参数 token 不被写。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 取 token 失败后 CHK_RET 拦不住，未初始化的 token 被写进 CCU task args 并下发，执行期才以 CCU 内存访问异常或 kernel 启动失败暴露，日志定位不到取 token 处；src/ops 下 43 处调用受影响。
+  visibility: 报错
+mitigation:
+  detect: 在 GetToken 三条分支注入失败返回，观察上层是否继续下发 task；检查 token 是否在使用前初始化
+  fix: issue 建议三条分支按 CcuResult 转 HCCL 错误码并 CHK_RET 返回（含 CCU_E_PARA/PTR/INTERNAL/NOT_SUPPORT/NOT_FOUND/UNAVAIL 与驱动错误）；issue 已 closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: CCU 模板路径（CCU 引擎、AllGatherV/AllToAllV/Broadcast/ReduceScatter 等 43 处调用）且底层 HcommCcuGetMemToken 返回失败；基线 171f2ba3，静态审查定位
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/317
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hccl 的 src/ops/op_common/template/ccu_alg_template_base.cc:233-252，CcuAlgTemplateBase::GetToken() 在 input、output、HCCL buffer 三条分支调用 HcommCcuGetMemToken() 后都不检查返回的 CcuResult（该接口定义在 src/common/hcomm_dlsym/ccu_res_dl.h:21-27，失败态含 CCU_E_PARA、CCU_E_PTR、CCU_E_INTERNAL、CCU_E_NOT_SUPPORT、CCU_E_NOT_FOUND、CCU_E_UNAVAIL 及驱动错误，见 ccu_types_dl.h:26-43），而是无条件 return HCCL_SUCCESS。下游普遍按 uint64_t token; CHK_RET(GetToken(buffInfo_, token)); 的写法使用，失败被转成成功后 CHK_RET 失效，token 保持未初始化即被写入 CCU task args。issue 统计当前基线 src/ops 下至少 43 处 GetToken(buffInfo_, ...) 调用，覆盖 AllGatherV（如 ccu_temp_all_gather_v_mesh_1D_mem2mem.cc:91-100）、AllToAllV、Broadcast、ReduceScatter 多条 CCU 模板路径，属基类级缺陷而非单算子问题。
+  source: 2026-07-21 GitCode cann/hccl issue https://gitcode.com/cann/hccl/issues/317 （closed）
+  behavior: 走 CCU 引擎的集合通信（AllGatherV/AllToAllV/Broadcast/ReduceScatter）在底层取内存 token 失败时不会在参数准备阶段报错，接口返回成功继续下发，随后在 CCU 执行阶段以内存访问异常或 kernel 启动失败的形式崩出来，报错位置与真实原因相隔很远；少数情况下未定义的 token 恰好可用，则表现为难以解释的错值。
+  trigger_surface: CCU 模板执行路径 + HcommCcuGetMemToken 返回非成功（参数非法、指针非法、内部错误、不支持、找不到、不可用或驱动错误）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

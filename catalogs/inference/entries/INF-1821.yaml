@@ -1,0 +1,58 @@
+id: INF-1821
+legacy_ids: []
+slug: ascendstore_tp_mismatch_transfer_unreachable
+aliases: []
+title: KV 池重构后 TP 不对等传输路径不可达致前缀命中为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: AscendStore TP 不对等传输
+  behavior: '#11444 重构 KV 池初始化与传输线程构造后，Sending/RecvingThread 不再收到 TP 不对等 worker，start_load_kv 也不走 _load_kv_tp_mismatch，分条 I/O 不可达。'
+effect:
+  objects:
+  - KV状态
+  - 性能/资源
+  detail: Decode 侧只写出 head_or_tp_rank:0 的对象，下一轮 Prefill 查 8 个 key 只有 4 个存在（exists 4/8），前缀被判不命中、hit_tokens=0；日志一边报 TP mismatch detected，一边静默走普通传输路径。
+  visibility: 性能退化
+mitigation:
+  detect: 在多 connector PD 拓扑下比对 KV 池中 effective rank 的对象数与 lookup 的 exists_count；检查传输线程构造时 worker 是否为 None
+  fix: 待定（issue closed，正文未给修复 PR；需恢复三处 worker 注入与 _load_kv_tp_mismatch 分发，并补 TP 双向的生产链回归）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vllm-ascend main 8d838ee + PD 分离，MultiConnector（P2P + AscendStoreConnector）或 AscendStore 单独存取；Prefill TP=2、Decode TP=1、block_size=128、Qwen3-1.7B dense GQA；#11444 重构引入的回归
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15842
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #15842，复现于 main commit 8d838ee86935e872806a4c491d33782e69c59538。环境：PD 分离，Prefill TP=2、Decode TP=1，AscendStoreConnector + Mooncake backend，block_size=128，Qwen3-1.7B dense GQA。由 #11582 引入的 TP 不对等分条 KV I/O 实现仍在源码里，但 #11444 重构 KV 池初始化、传输线程构造与 load 分发时丢掉了三个生产入口：KVCacheStoreSendingThread 与 KVCacheStoreRecvingThread 构造时没有传入 TP 不对等的 worker，故分条 PUT 与异步分条 GET 不可达；KVPoolWorker.start_load_kv() 也不再路由到 _load_kv_tp_mismatch()，同步加载落到普通 GET。tp_mismatch 检测与 helper 都还在，所以初始化日志照报 TP mismatch，实际传输却走普通路径。在 MultiConnector 拓扑下 Decode(TP=1) 需把 KV 拆进 effective_tp=2 的 key 命名空间，缺发送线程 worker 时普通 PUT 只写 head_or_tp_rank:0，日志显示 put 只有单一 rank 的 key，下一轮 Prefill 查询 keys=4 multi_tp_keys=8、exists 4/8，响应 hit_tokens=0。原有测试直接往线程里注入 mock worker 或单测 helper，未验证从配置到线程构造与分发的生产链，故未拦住。'
+  source: 2026-09-05 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15842 （closed）
+  behavior: PD 分离下 Prefill 与 Decode 的 TP 不一致（典型 Prefill TP=2 / Decode TP=1）时，KV 池看似在工作：Decode 每 128 token 都打印 KV pool put 成功，初始化日志也明确报 TP mismatch detected 与 num_sub_keys。但下一轮 Prefill 去查同一段前缀时只有一半对象存在（exists 4/8），整段前缀被拒绝、hit_tokens=0，请求退化为全量重算。没有报错，从日志看像是「前缀缓存没命中」，实际是 TP 不对等的搬运路径根本没被调用。
+  trigger_surface: PD 分离 + AscendStore/MultiConnector + Prefill 与 Decode 的 TP 不一致（#11444 之后）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility

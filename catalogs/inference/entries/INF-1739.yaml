@@ -1,0 +1,51 @@
+id: INF-1739
+legacy_ids: []
+slug: ops_nn_scatter_nd_add_deterministic_mask_len
+aliases: []
+title: scatter_nd_add 确定性路径 mask 被消费致多行错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: scatter_nd_add 确定性量化 VF
+  behavior: QuantizeForSumVf/InverseQuantizeVf 把 maskLen 当参数传入，MicroAPI::UpdateMask 每调用一次就递减它，下一行沿用的是被消费后的残余值。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B + CANN 9.1.0 确定性模式下，tiling 使 rowLen>1 时只有第一行量化/反量化正确，第二行起全部错值；rowLen=1 不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 确定性模式跑 rowLen>1 的多行用例，逐行比对量化/反量化中间结果；rowLen=1 的常规用例看不出来。
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/6712 （closed，合入状态未核实）：每行循环开始把 maskLen 重置为 afterAxis/colLen。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 910B + CANN 9.1.0 + scatter_nd_add 确定性模式 + tiling 使 rowLen>1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/3662
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 3662（2026-06-29，closed）：Ascend 910B、CANN 9.1.0、scatter_nd_add 确定性模式。index/scatter_nd_add/op_kernel/arch35/scatter_nd_add_determinstic.h 的 QuantizeForSumVf 与 InverseQuantizeVf 两个 SIMD VF 函数存在 mask 计算 bug：AscendC::MicroAPI::UpdateMask 每次调用会消费（递减）maskLen，而 maskLen 是作为函数参数传入的，内层循环把它消费后，外层行循环进入下一行时 maskLen 已变 0 或残余值，导致后续所有行的 mask 设置错误。作者给出 rowLen>1 时只有第一行正确的结论，并提交修复 MR 6712，方案为每行开始时把 maskLen 重置为 afterAxis（或 colLen）。
+  source: 2026-06-29 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/3662 （closed）
+  behavior: 确定性模式（deterministic）下运行 scatter_nd_add，tiling 使 afterAxis 行内元素数 rowLen>1 时，第二行及之后的量化/反量化结果全部错误，与单行结果和参考实现对不上；用例精度不通过但不报错，也不产生 NaN，只有逐行比对中间量化/反量化输出才能定位到第二行起的系统性偏差。
+  trigger_surface: scatter_nd_add 确定性路径 + 多行（rowLen>1）tiling
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

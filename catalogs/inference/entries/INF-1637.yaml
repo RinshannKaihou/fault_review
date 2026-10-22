@@ -1,0 +1,69 @@
+id: INF-1637
+legacy_ids: []
+slug: triton_ascend_runtime_fp16_bf16_scalar_arg_wrong
+aliases: []
+title: 运行期 fp16/bf16 标量实参传值错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 运行期标量实参传递
+  behavior: 显式声明为 fp16/bf16 的运行期标量实参被错误解释，kernel 内 .to(tl.float32) 后存出的值不等于传入值；fp32 标量对照正常，3.2.2 与 3.6.0 均复现。
+effect:
+  objects:
+  - 数值结果
+  detail: 最小核只做 value.to(tl.float32) 再 store，传 1.5 得不到 1.5，fp32 对照正确；任何用半精度标量做 scale/eps 的 kernel 都会静默偏，无报错、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 对 kernel 的每个半精度标量实参做恒等回读用例（store 后与 Python 侧值比较）；单测里补 fp16/bf16 标量签名
+  fix: 规避=标量按 fp32 声明、kernel 内显式转型；无修复 PR（open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton-ascend 3.2.2 与 3.6.0；仅在 ASTSource.signature 里显式写 fp16/bf16 的运行期标量（不依赖 Python float 推断）时触发，fp32 正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2364
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1634
+pattern: PAT-INF-0176
+original:
+  mechanism: 在 Ascend NPU 上用 triton.compile 的 ASTSource 显式声明 signature={"output":"*fp32","value":"fp16"}（或 bf16），kernel 仅做 tl.store(output, value.to(tl.float32))，宿主传 1.5，则输出不是 1.5；同一脚本把 signature 改成 fp32 或 CUDA 上游 Triton 上跑 fp16/bf16 均正常。报告明确这是 incorrect-result 而非编译失败，且 3.2.2 与 3.6.0 两个版本都复现。因为没有 pytest 依赖、只需一个 kernel 和一行 signature，可判定问题落在 Ascend 后端对运行期半精度标量实参的打包/解包（launcher 与二进制对 fp16/bf16 标量的约定不一致），而不是用户 kernel 写法。
+  source: 2026-09-23 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/2364 （open）
+  behavior: kernel 里用半精度标量做缩放或 eps（例如 1.5 的 scale）时，输出整体按一个错误的比例缩放，数值看起来仍然“合理”，既不报错也不出 NaN；对照 fp32 标量的控制组完全正确，因此很难在真实模型里定位——通常表现为精度对不上、loss 稍差，而不是明显崩坏。
+  trigger_surface: 运行期标量实参显式声明为 fp16/bf16（ASTSource signature）；fp32 不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 编译器

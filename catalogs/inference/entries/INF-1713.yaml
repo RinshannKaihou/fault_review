@@ -1,0 +1,51 @@
+id: INF-1713
+legacy_ids: []
+slug: ms_addmm_input_grad_shape_broadcast
+aliases: []
+title: addmm 在 mat1 为 (1,x) 时 bias 梯度多出一维
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: mint.addmm 反向广播归约
+  behavior: addmm 反向对 input 的梯度没有按前向广播语义归约：mat1 为 (1,x) 时把 (1,N) 的行向量直接当 bias 梯度返回，没有沿第 0 维求和。
+effect:
+  objects:
+  - 梯度
+  detail: bias 形状 (256,) 时 grad_b 返回 (1,256)，与参数形状不一致；x、w 的梯度形状和 loss 都正常，只有 bias 梯度错，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对 mint.addmm(b, x, w) 用 value_and_grad 取三个位置的梯度，检查 grad_b.shape 是否等于 b.shape；mat1 取 (1,N) 时即可命中
+  fix: 待定（issue open，无修复 PR）；方向：input 梯度先按 mat1 的 shape 沿广播维求和再返回
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: mint.addmm，mat1 形状 (1,x)；MindSpore 2.7.0 + CANN 8.0.0，最新版本同样复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/21071
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 在 MindSpore 2.7.0 + CANN 8.0.0 上，x=(1,512)、w=(512,256)、b=(256,)，用 mindspore.value_and_grad 对 mint.addmm(b,x,w) 的平方均值求导：输出 loss 是标量、grad x 为 (1,512)、grad w 为 (512,256)，但 grad b 的 shape 是 (1,256)。issue 用 md5 对比各张量，只有 bias 梯度的 shape 与 bias 本身不一致，说明反向对 input 的贡献没有按广播维归约。issue 注明最新版本即可复现。
+  source: 2025-08-30 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/21071 （closed）
+  behavior: 用 mint.addmm 训练带 bias 的线性层、且 batch 维为 1 时，bias 的梯度形状从 (N,) 变成 (1,N)。优化器按参数形状更新时形状对不上，或者被静默广播，训练不报错但 bias 更新与参考实现不一致；其他参数的梯度和 loss 都正常，很容易被当成优化器问题排查。
+  trigger_surface: mint.addmm，mat1 形状 (1,x)；MindSpore 2.7.0 + CANN 8.0.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

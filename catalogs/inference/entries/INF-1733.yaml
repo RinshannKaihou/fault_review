@@ -1,0 +1,61 @@
+id: INF-1733
+legacy_ids: []
+slug: rope_grad_mode2_dcos_uses_rotated_x
+aliases: []
+title: ACLNN mode=2 常量输入+cos全广播下 dcos 归约用错 x
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: cann
+    component: RoPEGrad kernel/ACLNN
+  behavior: ACLNN mode=2(QUARTER)、常量输入且 cos 全广播时，运行时 dcos 归约实际用 rotate(x) 而非原始 x；kernel 源码正确，报告推测系 ACLNN 常量输入优化路径所致（未经源码确认）
+effect:
+  objects:
+  - 梯度
+  detail: ACLNN mode=2 100 条用例 97 PASS/3 FAIL；失败只在 dcos，dx/dsin 正常，MARE 恰为 2.0（符号相反）；仅常量输入 + cos=(1,1,1,D) 全广播触发，GEIR 与随机输入、cos=(1,1,N,D) 不触发；调用不报错。
+  visibility: 静默错误
+mitigation:
+  detect: mode=2 + 常量输入 + cos shape=(1,1,1,D) 全 broadcast 的 dcos 专项用例；同一用例走 GEIR 与 ACLNN 对比
+  fix: 待定（报告建议修 ACLNN 常量输入优化路径或在 tiling 中禁用该路径；未核实是否修复）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: cann 9.1.0 + Ascend950PR(957b) + ACLNN 路径 + mode=2(QUARTER) + 常量输入 + cos 全 broadcast
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4254
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #4254（cann-9.1.0、Ascend950PR/957b，closed）：RotaryPositionEmbeddingGrad 在 mode=2（QUARTER，rotate(x)=[-q1,q0,-q3,q2]）下，ACLNN 路径 100 条用例 97 PASS / 3 FAIL，GEIR 路径 10/10 PASS。失败只出现在 output[1]（dcos），dx/dsin 正常，MARE 恰为 2.0（符号相反），且只对「常量输入 + cos shape=(1,1,1,D) 全 broadcast（reduce 跨 S 与 N 两轴）」触发，随机输入与 cos=(1,1,N,D) 部分 broadcast 全通过。op_kernel/rotary_position_embedding_grad_apt.cpp:131-139 的 reduce 路径其实正确（dcos 用原始 x，dsin 用 usrWorkSpace=rotate(x)），故 kernel 源码无缺陷；验证实验把 golden 的 dcos 改成 reduce_sum(dy×rotate(x)) 后 3 个 FAIL 全变 PASS、22 个随机用例全变 FAIL，证明运行时 dcos 实际用了 rotate(x)。报告推测是 ACLNN API 处理常量输入时触发的优化路径把 dcos 的 x 换成了 rotate(x)（未经源码确认）。'
+  source: 2026-08-11 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4254 （closed）
+  behavior: 用 torch_npu 调 RoPE 反向、mode=2、cos 只给 (1,1,1,D) 这种全 broadcast 的常量张量时，返回的 dcos 符号整体反了（相对误差 200%），dx 与 dsin 却是对的；同一批用例换成随机 cos 或 cos=(1,1,N,D) 就全部通过，调用过程不报错，只有跟 golden 逐元素比对才会发现。
+  trigger_surface: cann 9.1.0 + Ascend950PR + ACLNN 调用 + mode=2(QUARTER) + 常量输入 + cos 全 broadcast (1,1,1,D)；GEIR 与随机输入不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail
+    - title
+    uncertain:
+    - subsystem

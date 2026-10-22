@@ -1,0 +1,54 @@
+id: INF-2097
+legacy_ids: []
+slug: mooncake_v1_kv_registration_from_logical_views
+aliases: []
+title: Mooncake V1 按逻辑视图注册 KV 区间而非物理基址
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MooncakeConnector 注册区间
+  behavior: _get_registered_kv_tensor_buffers() 遍历 kv_cache_tensors 并按 shared_by 解析层名，从最小逻辑张量地址起按描述符长度注册，没有回到物理分配的对齐基址。
+effect:
+  objects:
+  - KV状态
+  detail: 混合/Mamba/MTP 布局下同一分配被多个逻辑视图暴露（含对齐 padding 后的视图）时，注册的可能只是视图地址、同一 backing 被注册多次、或描述符长度被套到独立分配上，Mooncake 发布的范围与实际归属不符并多占注册条目。
+  visibility: 静默错误
+mitigation:
+  detect: 打印每个 kv_cache_tensors 视图的地址与长度，与恢复出的对齐基址比对：同一 backing 应只在基址注册一次，独立分配应保持分离
+  fix: 'issue 给出注册契约（按物理分配对齐基址、合并 aliases、独立存储分开、不用 shared_by 决定归属）；回归用例在 PR #15878 中被 skip，生产修复未随之提交（issue open）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: MooncakeConnector V1 + 混合/Mamba/MTP KV 布局（多个逻辑 KVCacheTensor 视图共享同一对齐分配）；vLLM v0.28.0 与 vllm-ascend main 的兼容组合
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16632
+  kind: github_issue
+relations: []
+original:
+  mechanism: 在 vLLM v0.28.0（commit 2cf0a6915ce544dc493a0990f2ea38d81601128a）与 vllm-ascend main（commit 660c4582aa580ce98edc9b681bb6ff6d03153575）的兼容组合上，MooncakeConnectorWorker._get_registered_kv_tensor_buffers() 走 kv_cache_config.kv_cache_tensors 并按 shared_by 解析层名，hybrid 分支从最小逻辑张量地址起、套用描述符长度做内存注册。这把逻辑 cache 布局与物理分配归属混在一起：Hybrid/Mamba/MTP 布局会把多个逻辑张量视图挂到同一个对齐分配上（包括对齐 padding 之后的视图），于是描述符遍历可能取到视图地址而不是真实分配基址、把同一块物理 backing 注册多次、或把描述符长度套到独立分配的存储上。报告者在 A3 上用真实 NPU 分配与 Mooncake TransferEngine 做审计，确认正确契约是同一存储的别名只在对齐基址注册一次、独立存储必须分开。
+  source: 2026-09-15 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16632 （open）
+  behavior: 使用 MooncakeConnector V1 做 PD 分离时，混合/Mamba/MTP 模型（多逻辑 KV 视图共享同一分配）的内存注册会按逻辑视图推导：注册区间可能与实际分配不一致，同一物理 backing 被重复注册，白白占用 Mooncake/HCCL 的注册条目；一旦发布给对端的区间不对应该分配真实拥有的内存，跨节点 KV 传输就可能读写错位，而服务本身不会报错。issue 没有给出端到端观察到数值错误的现场，只给出注册契约与 skip 的回归用例。
+  trigger_surface: MooncakeConnector V1 + Hybrid/Mamba/MTP KV 布局（多逻辑视图共享一个对齐分配），vLLM v0.28.0 组合
+  discovery: 2026-10-21 第三轮顺序扫描（final_tail，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

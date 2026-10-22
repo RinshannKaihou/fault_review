@@ -1,0 +1,60 @@
+id: INF-2094
+legacy_ids: []
+slug: vllm_ascend_310p_kv_budget_double_deduct_other_process_hbm
+aliases: []
+title: 310P KV 预算重复扣除他进程 HBM 致容量塌陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NPUWorker310 显存预算
+  behavior: 310P 专用 determine_available_memory() 用 total-free 取设备全局占用，再从本实例 KV 预算里扣一次，其他进程已占的 HBM 因此被重复扣除。
+effect:
+  objects:
+  - 性能/资源
+  detail: 43.24 GiB 设备上已有 19 GiB 他进程占用时，gpu_memory_utilization=0.5 只分到 0.09 GiB KV Cache，4096 上下文启动失败；提到 0.52 也只有 0.57 GiB，他进程一波动即再次失败。
+  visibility: 静默错误
+mitigation:
+  detect: 同卡留他进程占用后看启动日志的 requested_memory、non_kv_cache_memory 与最终 available_kv_cache_memory_bytes，KV 容量应约等于（预算-本实例 non-KV）/2
+  fix: issue 给出改法：310P 分支改为 (requested_memory - profile_result.non_kv_cache_memory)//2；#7308/#7372/#7427 为前序，未见对应 PR（issue closed，未核实是否已合入）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 310P3 的 EP/独立 HBM 路径，且同一 Device 上已有其他进程（MindIE 或其他 vLLM 实例）占用 HBM；单独占卡时预算正确
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14004
+  kind: github_issue
+relations: []
+original:
+  mechanism: '310P 专用 NPUWorker310.determine_available_memory()（vllm_ascend/_310p/worker_310p.py#L75-L115，main commit 7485331）在 profiling 期间算 non_torch_memory_before_empty_cache = total_memory - free_memory - torch_memory，再减去 profile_result.non_torch_increase 得到 non_torch_memory_cleared_by_empty_cache，最后 available = (requested_memory - non_kv_cache_memory - non_torch_memory_cleared_by_empty_cache) // 2。total_memory - free_memory 是设备全局占用，包含 MindIE 或其他 vLLM 实例持有的 HBM，而 non_torch_increase 只是本实例 profiling 期间的增量，于是既有进程占用被当成「空 cache 能回收的本实例占用」又扣了一次。该占用本已由启动条件 init_snapshot.free_memory >= requested_memory 限制，不应再从本实例预算里扣。通用 Ascend worker 的同类问题由 #7427 修复，310P 在 #7372 中整体覆盖了该函数因而没有继承修复（原问题 #7308）。实测 43.24 GiB 设备、mindie_llm_back 占 19313 MB、free 23.45 GiB 时，requested 21.62 GiB 通过启动检查，最终 KV 只有 0.09 GiB；按公式应约 9.95 GiB。'
+  source: 2026-08-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14004 （closed）
+  behavior: '310P 上把 Qwen3-0.6B（FP16，TP1）和 MindIE 共卡部署，gpu_memory_utilization=0.5 时服务只能拿到 0.09 GiB KV Cache，最大长度约 768，4096 上下文的启动直接失败；把利用率提到 0.52 只换来 0.57 GiB，启动余量不足 1 GiB，别的服务显存稍一波动就又起不来。设备在 npu-smi 里一直是 Health: OK，空闲 HBM 也确实够（23.45/43.24 GiB），失败信息只表现为 KV Cache 不够，看不出是预算算错。'
+  trigger_surface: 310P EP/独立 HBM + 同 Device 上已有其他进程占用 HBM 时的 vLLM 实例启动
+  discovery: 2026-10-21 第三轮顺序扫描（final_tail，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: KV缓存
+    uncertain:
+    - visibility

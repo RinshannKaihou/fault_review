@@ -1,0 +1,67 @@
+id: INF-1954
+legacy_ids: []
+slug: mooncake_hybrid_missing_failed_blocks
+aliases: []
+title: Mooncake hybrid 传输失败仍报完成且不报失败块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: hybrid connector 失败上报
+  behavior: 负向传输只记日志，finally 仍把任务标完成并回 DONE_RECVING；该 connector 未覆写 get_block_ids_with_load_errors，失败块集合恒为空。
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: 消费者把没真正收到的 KV 当成功完成，调度器拿不到失败块，无法重算或作废；多 connector 聚合也补不回从未上报的信息。
+  visibility: 静默错误
+mitigation:
+  detect: 注入 batch_transfer_sync_read 返回负值，检查 get_finished() 是否带出失败块、producer 是否收到 DONE_RECVING
+  fix: 待定（issue open；正文给出缺失上报点的行号与 CPU 复现脚本，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vllm-ascend mooncake_hybrid_connector（pinned rev f2f74a1）+ KV 传输返回负值/部分块失败的多组请求；正常传输路径不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17044
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1393
+pattern: PAT-INF-0186
+original:
+  mechanism: 'vllm-ascend issue #17044（2026-09-21，open）：pinned revision f2f74a16 的 mooncake_hybrid_connector.py 里，_transfer_kv_cache_all_groups 调 batch_transfer_sync_read，ret < 0 时 raise RuntimeError（699–706 行）；_handle_request 捕获后只 log（599–607 行），其 finally 仍然把任务标 done，在请求的任务计数/末位标记条件满足时更新 completion tracker，并向 producer 发 DONE_RECVING（608–619 行）。更关键的是该文件没有覆写 get_block_ids_with_load_errors，继承的默认实现返回空集合，而 vLLM base 契约（kv_connector/v1/base.py::get_finished）要求异步失败请求在同一 forward pass 内把失败块报出来；MultiConnector 聚合也无法重建从未上报的信息。报告者用 AST 抽取真实函数 + mock 外部依赖做了确定性 CPU 复现（只合成地址，不启动模型/NPU），并明确说明这不是对 507035 设备错误的因果解释。'
+  source: 2026-09-21 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17044 （open）
+  behavior: PD 混合部署里 consumer 侧一旦有块没传成功，日志里会出现一条 transfer 失败，但这一轮请求在 connector 看来仍是「接收完成」：completion tracker 前进、producer 收到 DONE_RECVING，而调度器查失败块得到空集，于是既不会重算也不会作废该请求。表现上是偶尔一次回答基于不完整或未初始化的 KV 继续 decode，HTTP 全 200、没有异常值，只能从 connector 日志与失败块上报的空缺里看出来。
+  trigger_surface: Mooncake Hybrid connector + 单次传输返回负值（部分块失败）的 PD 请求
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

@@ -1,0 +1,59 @@
+id: INF-1766
+legacy_ids: []
+slug: triton_sort_topk_not_permutation_negzero_nan
+aliases: []
+title: tl.sort/topk 对 ±0/NaN 行非排列（复制丢元）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: triton
+    component: _compare_and_swap 比较器
+  behavior: 每对元素各自独立决定换与否：左侧用 x>y、右侧用 not(y>x)，两比较在互不为大于时（±0 混合或 NaN）都为 false，两侧不一致导致左元素保留、右元素取左值
+effect:
+  objects:
+  - 数值结果
+  detail: 含 -0.0 与 +0.0 或 NaN 的浮点行排序/topk 后不再是输入排列：一个元素出现两次、另一个丢失（如 [1,-0.0,0.0,-2]→[-2,-0.0,-0.0,1]；[nan,1]→[nan,nan]）；tl.sort/tl.topk/tl.bitonic_merge 均中
+  visibility: 静默错误
+mitigation:
+  detect: 比较输出与输入的位模式多重集（按 int 视图排序）可检出
+  fix: 待定（修复需在比较中处理相等不可区分对；issue 提出于 main@6fe3348e6）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 同行同时含 -0.0/+0.0 或 NaN；main@6fe3348e6 复现（exit 1）；位模式对比验证非排列
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 与 tt-metal sort NaN padding 越界（10-14 已留观）不同库不同实现；归约/比较类边界（负零、NaN）系统性失守又一例。
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12397
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton main@6fe3348e6。tl.sort/tl.topk/tl.bitonic_merge 的 _compare_and_swap（standard.py L388-404）给每个元素配对 y 后按 (x>y)!=(flip^is_right) 保留或取对方：升序对的左侧判 left>right、右侧判 not(right>left)。有序不等值对两判一致；-0.0 对 +0.0 或含 NaN 时两个比较均为 false，于是左元素保留自身、右元素取左元素——一个值被复制、另一个被丢弃。复现（CUDA）：[1.0,nan,3,2,5,4,7,6]→[1,1,2,3,4,5,6,7]；[1,-0.0,0.0,-2,5,4,7,6]→[-2,-0.0,-0.0,1,4,5,6,7]（按 int32 位模式比较证实 NOT a permutation）。torch.sort 返回两个零并保留 NaN。修复方向：比较器需处理互不为大于的对。
+  source: 2026-10-20 每日扫描；https://github.com/triton-lang/triton/issues/12397
+  behavior: 用 tl.sort 或 tl.topk 排含 -0.0 与 +0.0（或 NaN）的浮点行时，输出行不再是输入的排列：某个元素被返回两次、另一个元素消失，例如 -0.0 出现两次而 +0.0 丢失、NaN 行变成 [nan,nan]。排序本身不报错，下游按排列假设消费结果时静默拿错数据。
+  trigger_surface: 任意后端 tl.sort/tl.topk/tl.bitonic_merge 浮点输入且同一比较对内出现 -0.0/+0.0 混合或 NaN
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核

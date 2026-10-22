@@ -1,0 +1,57 @@
+id: INF-1722
+legacy_ids: []
+slug: sfa_tail_minus1_not_shrink_s2realsize
+aliases: []
+title: sparse_flash_attention 遇 -1 未收缩有效长度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SFA arch35 KV gather
+  behavior: ProcessSparseKv 遇到 -1 只 break 停止 gather，不回写 runInfo.s2RealSize；该值仍由 s2BaseSize 与尾块裁剪决定，未 gather 的位置以脏数据参与 QK/softmax/PV。
+effect:
+  objects:
+  - 数值结果
+  detail: topk=2051 仅前 8 有效、其余 -1 时输出 max 达 1.9e29（仍 finite）；K=2、indices=[5,-1] 时输出 -872~156；均无报错、无 NaN/Inf。尾部仅少量 -1 时数值看似正常，但与截断到有效 topk 的结果相差 0.067。
+  visibility: 静默错误
+mitigation:
+  detect: 构造尾部大量 -1 的 sparse_indices，与截断到有效 topk 的等价用例比对；不能只用 isfinite 判定正确
+  fix: 建议：遇 -1 后同步收缩本 tile 的 s2RealSize 并对未填充位置做确定性填充；哨兵判断先看 raw index<0 再加 s2StartIdx（未核实修复）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend950 arch35 + sparse_flash_attention + TND + sparse_mode=3 + sparse_indices 尾部大量 -1（CANN 9.1.0）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5208
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5208（Ascend950 arch35，CANN 9.1.0，closed）：aclnnSparseFlashAttention / torch_npu.npu_sparse_flash_attention 文档要求 sparse_indices 有效值在前、无效值在后，kernel 把 -1 当提前结束哨兵。但 attention/sparse_flash_attention/op_kernel/arch35/sparse_flash_attention_service_vector_mla_arch35.h 的 ProcessSparseKv 只在 while(...&&!meetEnd) 里 break，未回写 runInfo.s2RealSize；而 sparse_flash_attention_kernel_mla_arch35.h 里 runInfo.s2RealSize=constInfo.s2BaseSize（尾块再裁到 s2EndIdx），与实际有效 indices 无关，于是后续 QK/softmax/PV 仍按 tiling 规划的完整 S2 计算，未 gather 的位置保留脏数据。另有哨兵隐患：tokenIdx = GetValue(...)+s2StartIdx，s2StartIdx!=0 时原始 -1 不再等于 -1，提前结束语义可能失效。实测 topk=2051、前 8 有效其余 -1 时输出 max 达 1.906e29、min -3.1e12；K=2、indices=[5,-1] 时输出 -872~156。对比 arch22 的 CalcSinnerTopKBegin 会基于有效 block 重算 sparseLen。'
+  source: 2026-09-11 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5208 （closed）
+  behavior: 稀疏注意力传入 padding 到固定 topk 的 indices（尾部一堆 -1）时，结果不报错、没有 NaN/Inf（isfinite 仍为 True），但输出数值被脏 KV 拉爆：极端用例 max 到 1e29 量级、小用例也到几百；尾部只有少量 -1 时数值看着正常，却与截断到有效 topk 的结果差 0.067，等于悄悄把无效位置也算进了 attention。
+  trigger_surface: Ascend950 arch35 + TND + sparse_mode=3 + sparse_block_size=1 + attention_mode=2 + sparse_indices 尾部 -1（topk 远大于有效数时最明显）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

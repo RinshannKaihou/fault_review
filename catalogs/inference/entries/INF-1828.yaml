@@ -1,0 +1,58 @@
+id: INF-1828
+legacy_ids: []
+slug: vllm_ascend_pd_proxy_recompute_rebuilds_from_text
+aliases: []
+title: PD 代理用解析文本重建重算请求致历史污染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: recompute 调度与代理
+  behavior: 调度器返回 new_token_ids=[] 与 stop_reason="recomputed" 丢弃历史，代理只累加解析 content 后用 messages[0][content]=prompt+文本 重建。
+effect:
+  objects:
+  - 输出内容
+  - 跨请求/跨样本数据
+  detail: decode 侧开启 recompute_scheduler_enable 且经示例代理重试时，重算请求不再从原 token 历史续写：重新分词改变 token 序列，reasoning_content、tool_calls 丢失，重算前那次生成的输出与新一次生成拼接在一起。
+  visibility: 静默错误
+mitigation:
+  detect: 开 recompute_scheduler_enable 后对比重算请求的 token 历史与实际下发文本；检查响应里 reasoning 流是否缺失。
+  fix: 待定（issue 2026-08-04 open）：应从 output_token_ids 续写，而不是从解析文本重建 message。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend releases/v0.23.0 d17a99c + vLLM v0.23.0，decode 侧 recompute_scheduler_enable=true，/v1/chat/completions；协议级问题，无需 NPU 执行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13466
+  kind: github_issue
+relations: []
+original:
+  mechanism: decode 侧开启 recompute_scheduler_enable=true 后，重算请求的续写不再基于原始 token 历史。recompute_scheduler.py 在 L339-344 已经拿到了被重算请求的 output_token_ids，但发给 API 层的 EngineCoreOutput 只带 new_token_ids=[] 和 stop_reason="recomputed"（L868-878），把历史丢掉；examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py 的代理（L973-1058）于是只从流里累加解析出的 content（delta.content / message.content / choice.text），并在收到 recomputed 标记时用 messages[0]["content"] = origin_prompt + generated_token 重建新请求。这与「从原 token 历史继续」不等价：重新分词会改变 token 序列，非 content 通道（reasoning_content、tool_calls）丢失，且重算前那次生成的输出会与新一次生成拼接在一起。报告给出一条完整可核对的 chat 请求示例，并指出这是正确性问题而非仅精度风险；环境为 vllm-ascend releases/v0.23.0 @ d17a99c + vLLM v0.23.0 @ 0fc695f，issue 2026-08-04 open。
+  source: 2026-08-04 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13466 （open）
+  behavior: 开启 decode 侧重算后，触发了重算的对话请求返回的回答与前面已生成的内容接不上：思考过程消失或与另一次生成的片段混在一起，工具调用字段丢失，多轮对话里模型像记得一段被改写过的历史。未触发重算的普通请求完全正常，所以只在压测或长会话里偶发。
+  trigger_surface: PD 分离 + decode 侧 recompute_scheduler_enable + 示例负载均衡代理的 chat 重试路径
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

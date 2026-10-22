@@ -1,0 +1,53 @@
+id: INF-1999
+legacy_ids: []
+slug: ops_nn_scatter_nd_update_arch32_no_per_dim_bounds
+aliases: []
+title: scatter_nd_update arch32 越界索引致别名错写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: scatter_nd_update arch32
+  behavior: arch32 内核把多维 indices 线性化成 linearIndex += idx*stride，不校验 idx∈[0,shape[dim])；越界维索引仍落在 var 的合法线性范围内，于是写到另一个元素
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3+CANN9.1.0-beta.3，aclnnScatterNdUpdate arch32：var[2,3] 传 [[0,3]] 或 [[0,-1]] 均 SUCCESS；[[0,3]] 写到 var[1,0]，退出码42；负索引不拒绝，另一合法元素被静默改写为 updates 的值。
+  visibility: 静默错误
+mitigation:
+  detect: 用逐维越界（dim1 size=3 传 3）和负索引各调一次 aclnnScatterNdUpdate，断言参数错误；再与 torch 语义对拍，检查非目标元素是否被改
+  fix: 在 host/tiling/kernel 入口按 var 各维 size 校验 idx∈[0,dimSize)，非法返回参数错误；issue closed，未附 MR，是否已修未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnScatterNdUpdate 走 910B arch32 路径且 indices 含逐维越界/负值；Ascend910B3 + CANN 9.1.0-beta.3 源码编译包；arch35 路径有 idx>=0 && idx<varInAxis 守卫
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 同族 P-011 已有 INF-1983（EmbeddingBag 不校验 indices）、INF-1661（Gather 越界索引）等，本条是 scatter_nd_update arch32 线性化的独立实现，机制不同。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4773
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4773（2026-08-13，closed，Track A / P-011）：Ascend910B3 + CANN 9.1.0-beta.3，ops-nn HEAD e16ef626bb3a，用 build.sh --pkg --soc=ascend910b --ops=scatter_nd_update 编包并安装到 vendors/cann_scan_repro_nn。index/scatter_nd_update/op_kernel/arch32/scatter_nd_update_large_index.h 与 scatter_nd_update_common.h 的 ComputeLinearIndexFromIndices 只累加 idxValue*stride、按 core 线性区间过滤，不做逐维 [0,shape[dim]) 校验；arch35 路径有 idx 范围守卫。复现 var[2,3]、indices [[0,3]] 与 [[0,-1]]：aclnn 均 SUCCESS，[[0,3]] 线性化为 0*3+3=3 写到 var[1,0]，退出码 42。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4773 （closed）
+  behavior: 使用者按普通 scatter 语义传越界维索引时不会得到报错，输出张量里另一个合法元素被静默改写成 updates 的值；负索引同样不拒绝。误差位置与输入索引没有可见对应关系，只能靠逐元素对拍才发现。
+  trigger_surface: aclnnScatterNdUpdate 910B arch32 路径 + indices 逐维越界或负值
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

@@ -1,0 +1,54 @@
+id: INF-2022
+legacy_ids: []
+slug: cudagraph_full_mode_garbled_output
+aliases: []
+title: cudagraph_mode=FULL 全图捕获后输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: ACLGraph 全图捕获
+  behavior: cudagraph_mode 设为 FULL 后 prefill+decode 整段被捕获重放，输出内容被破坏；改 FULL_DECODE_ONLY 即正常，具体失效点未定位
+effect:
+  objects:
+  - 输出内容
+  detail: Qwen2.5-32B-Instruct、A2 单机 8 卡 tp8：返回体是乱码与复读（如「历史对话曰用户需求」循环），无报错；同一请求在 FULL_DECODE_ONLY 下正常
+  visibility: 静默错误
+mitigation:
+  detect: 同一服务分别以 cudagraph_mode=FULL 与 FULL_DECODE_ONLY 起，发同一 chat 请求比对文本；FULL 下出现乱码/复读即命中
+  fix: 待定（issue closed 未附 PR；规避是改用 FULL_DECODE_ONLY）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.13.0rc1，--compilation-config 里 cudagraph_mode=FULL（含 capture_sizes），910B/A2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/6456
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend issue 6456（2026-01-31，closed）。Qwen2.5-32B-Instruct BF16，A2 单机 8 卡，vllm-ascend 0.13.0rc1，tp8、block-size 256、--enable-prefix-caching、--async-scheduling，同时开 VLLM_ASCEND_ENABLE_FLASHCOMM / DENSE_OPTIMIZE / PREFETCH_MLP 与 HCCL_OP_EXPANSION_MODE=AIV；compilation-config 里 cudagraph_mode=FULL、cudagraph_capture_sizes=[1,8,24,48,60,64,128,256,512,640,768,896,1024]。报告者已二分确认异常由 cudagraph_mode=FULL 引起：同一请求改 FULL_DECODE_ONLY 精度正常。issue 只给出乱码输出截图与启动脚本，未定位到具体 pass 或缓冲区，也未附修复 PR。
+  source: 2026-01-31 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/6456 （closed）
+  behavior: 把 cudagraph_mode 开到 FULL 后，服务能正常起、请求也返回 200，但正文是乱码和成段复读：一句话里反复出现「历史对话曰用户需求」，中间夹着不可读字符，看起来像 token 流被错位拼接。换成 FULL_DECODE_ONLY 或 eager，同样的 prompt 立刻恢复正常。
+  trigger_surface: vllm-ascend ACLGraph 全图模式（cudagraph_mode=FULL）+ Qwen2.5-32B BF16
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

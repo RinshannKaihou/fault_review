@@ -1,0 +1,55 @@
+id: INF-1656
+legacy_ids: []
+slug: ms_strided_slice_nop_skip_negative_stride
+aliases: []
+title: 负 stride 切片被当 Nop 跳过致数据未翻转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: StridedSlice Nop 判定
+  behavior: NopNode 判定只看 input/output shape 相等与 mask 参数为默认值，不看 stride 符号；负 stride 需要翻转数据，却被判为 Nop 跳过下发。
+effect:
+  objects:
+  - 数值结果
+  detail: input (2,3,4) 上 begin=(1,0,0)/end=(-3,4,5)/strides=(-1,1,1) 应返回倒序两片，实际原样输出；shape 与 dtype 都正常，只有与 numpy 切片对比才看得出。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 stride 含负值、但 output 与 input shape 相同的切片，比较算子结果与 numpy 等价切片；两者不等即命中（正向与反向 StridedSliceGrad 都要查）
+  fix: issue 给出的方案：在 CheckStridedSliceForwardOrBackWardIsNopNode 里加 stride 符号判断，stride 含负值即提前返回 false；此前为规避精度问题已在 PR https://gitee.com/mindspore/mindspore/pulls/86464 临时删除该优化
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: Graph 模式 + strided_slice 负 stride（如 [1:-3:-1]）；shape 相同才会被误判为 Nop
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/20951
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: mindspore.ops.strided_slice 的 NopNode 优化在 CheckStridedSliceForwardOrBackWardIsNopNode 里判断是否跳过算子下发，条件只有三条：input 与 output 的 shape.size() 相同、每个维度 shape 相同、begin_mask/end_mask/ellipsis_mask/new_axis_mask/shrink_axis_mask 全为默认值。负 stride 会翻转数据顺序，即使 shape 相同也必须执行，于是被误判为 Nop。复现用例 input_x 为 (2,3,4)，begin=(1,0,0)、end=(-3,4,5)、strides=(-1,1,1)，等价于 input_x[1:-3:-1][0:4:1][0:5:1]，应得倒序的两片，实际直接返回原张量。issue 提到此前为临时解决精度问题已在 PR 86464 删除该优化，反向 StridedSliceGrad 有 10 个输入需一并处理。
+  source: 2025-09-20 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/20951 （closed）
+  behavior: 切片里带负 stride（倒序取数）时，算子被优化跳过，输出就是原张量：shape 一样、dtype 一样、没有报错，但与 numpy 的等价切片对不上。反转序列、倒序取 token、flip 类数据增强在 graph 模式下静默拿到未翻转的数据。
+  trigger_surface: GRAPH 模式下 strided_slice 的 stride 含负值且 output 与 input shape 相同（触发 Nop 跳过优化）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

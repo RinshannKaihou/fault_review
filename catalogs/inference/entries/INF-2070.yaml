@@ -1,0 +1,58 @@
+id: INF-2070
+legacy_ids: []
+slug: torch_npu_inductor_mlir_resnet18_wrong_output
+aliases: []
+title: Inductor MLIR 后端编译 ResNet18 静默输出错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: inductor MLIR 后端
+  behavior: MLIR 后端把整张图捕获成 graph_count=1 的单图后直接下发，编译过程无异常也无数值校验，生成的代码在 FP32 上给出与 eager 完全不符的结果且不回退
+effect:
+  objects:
+  - 数值结果
+  detail: MLIR 后端编译 FP32 ResNet18 时输出与 eager 999/1000 元素不符；五轮独立编译 max_abs 在 2.48~4.20 波动，换输入仍全错；同环境 DVM 或默认 Triton 后端 max_abs ≤1.5e-06。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一权重分别跑 eager 与 compiled 输出并做 assert_close；监控编译后 max_abs 而不是只看编译是否成功
+  fix: issue 未附修复 PR（open，状态未核实）；报告者给出期望：MLIR 后端要么与 eager 在 FP32 容差内一致，要么显式报错/回退
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: TORCHINDUCTOR_NPU_BACKEND=mlir + torch-mlir 0.0.1；默认 Triton 与 DVM 后端不受影响，FP32/eval/静态 shape
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4766
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 环境 910B3（64GB）、驱动 25.2.0、CANN 9.1.0、openEuler 24.03 LTS-SP3 aarch64、PyTorch 2.9.0+cpu、torch_npu 2.9.0.post6、torchvision 0.24.0、torch-mlir 0.0.1。按官方文档设 TORCHINDUCTOR_NPU_BACKEND=mlir 编译 torchvision ResNet18（FP32、eval、1x3x224x224、fullgraph=True、dynamic=False），并显式关闭 allow_internal_format 与 conv/matmul 的 hf32。结果是编译成功、整图捕获 graph_count=1、稳态 1.205x 加速（eager 2.779 ms → compiled 2.307 ms，冷缓存编译约 41 分钟），但输出与 eager 999/1000 元素不符；共五轮独立编译 max_abs 在 2.48~4.20 间波动，换输入后同样全错。同环境切 DVM 后端或默认 Triton 后端 max_abs ≤1.5e-06，说明误差来自 MLIR 后端生成的代码而非模型或算子。
+  source: '2026-09-13 GitCode Ascend/pytorch issue #4766 https://gitcode.com/Ascend/pytorch/issues/4766 （open）'
+  behavior: 用 MLIR 后端编译后，模型照常跑、日志没有任何异常，延迟还比 eager 快两成；但把同一份权重同一份输入的 eager 输出拿来比，几乎每个元素都对不上（最大绝对误差 2.5 量级），换个输入依旧全错。只有在做 parity 校验时才会发现，直接上线就会拿到系统性错误的推理结果。
+  trigger_surface: TORCHINDUCTOR_NPU_BACKEND=mlir（Inductor MLIR/torch-mlir 后端）+ FP32 静态 shape 图编译
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

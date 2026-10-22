@@ -1,0 +1,51 @@
+id: INF-2035
+legacy_ids: []
+slug: opsnn_gather_elements_v3_index_range_unchecked
+aliases: []
+title: GatherElementsV3 负/越界索引静默读错元素
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: gather_elements_v3 kernel
+  behavior: device 侧只在 indexVal<0 时加一次 xGatherDim_，之后不校验是否落入 [0,gatherDim)：-1 被 wrap 成 3，正越界直接参与地址计算
+effect:
+  objects:
+  - 数值结果
+  detail: gatherDim=4、index=-1 时返回 SUCCESS 且 out[0][0]=6（等价按 3 读），index=4 时返回 SUCCESS 且 out[0][0]=0；-1000000 才在设备侧报 507035
+  visibility: 静默错误
+mitigation:
+  detect: 用 -1、-1000000、gatherDim 三档索引调 aclnnGatherElementsV3，断言返回参数错误并与 CPU torch.gather 逐元素比对
+  fix: 待定（issue 未附修复 MR；建议 wrap 后补 [0,gatherDim) 校验并返回参数错误）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnGatherElementsV3 / experimental gather_elements_v3 传入负或越界索引；910B3 + CANN 9.1.0-beta.3，源码编译 vendor 包
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4765
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: ops-nn experimental/index/gather_elements_v3/op_kernel/gather_elements_v3.h Compute 段（HEAD e16ef626bb3a）：int32_t indexVal = idxLocal.GetValue(i); if (indexVal < 0) indexVal += xGatherDim_; 随后直接 xRealOffset = xBase + indexVal * xPostDim_ + (postStart + i) 取 xGm_。wrap 之后没有 indexVal<0 || indexVal>=xGatherDim_ 的拒绝或钳位，非法索引可走通 GetWorkspaceSize/Launch/SynchronizeStream 全链路。复现用 910B3 + CANN 9.1.0-beta.3、自编译 gather_elements_v3 vendor 包（build.sh --pkg --ops=gather_elements_v3 --experimental，ASCEND_CUSTOM_OPP_PATH 指向该 vendor，移走 built-in 后仍复现），self={4,2} 值 0..7、dim=0。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4765 （closed）
+  behavior: 把越界或负的 index 传给 GatherElementsV3 时，接口不报参数错误：-1 被当成 3 读回 self[3][0]=6，+4 直接算出错误地址读回 0，结果为看似正常但错误的元素；极端负值 -1000000 才在 SynchronizeStream 处以 507035 暴露。对齐 torch.gather 的「拒绝非法索引」语义时，调用方拿不到任何提示。
+  trigger_surface: aclnnGatherElementsV3（experimental gather_elements_v3）负索引或正越界索引
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

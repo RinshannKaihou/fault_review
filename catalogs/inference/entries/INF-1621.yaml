@@ -1,0 +1,63 @@
+id: INF-1621
+legacy_ids: []
+slug: mindformers_hf_ckpt_master_weights_stale
+aliases: []
+title: 从 HF 检查点续训时 fp32 主权重未随模型参数刷新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspore
+    component: HF loader 主权重回填
+  behavior: HF checkpoint 不含优化器状态，fp32 master weights 已在加载前按随机初始化建好；no_load_optim=False 时判定无需刷新，首次 optimizer.step() 用旧主权重覆盖已加载参数
+effect:
+  objects:
+  - 优化器状态
+  - 模型权重
+  - 训练信号
+  detail: step1 loss 一致（11.818862），step2 从 11.710443 偏到 11.811662，之后与 no_load_optim=True 分叉；native 完整续训不出现，大规模训练下进一步表现为 OOM
+  visibility: 静默错误
+mitigation:
+  detect: 同种子同数据跑 no_load_optim=True/False 两步 A/B，比较第一次 optimizer update 前后的 model/master weights
+  fix: 分支 fix/hf-checkpoint-master-weight-sync：loader 返回是否真实加载优化器状态，全部本地 chunk 加载完后仅对未加载优化器状态的场景刷新一次 fp32 master weights（未核实合入）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 只在从 HF safetensors（weights-only）启动且 no_load_optim=False 时出现；native 完整续训不受影响
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2457
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: PyNative 训练从 Hugging Face checkpoint 加载模型参数，checkpoint 不含优化器状态；优化器的 FP32 master weights 在模型加载前已按随机初始化参数创建。当 no_load_optim=False 时现有逻辑认为不需要从模型参数刷新 master weights，但 HF loader 实际不加载任何优化器状态：第一次 forward/backward 用正确的 HF 权重，所以 step1 loss 正常；第一次 optimizer.step() 用加载前的旧 FP32 master weights，并把更新后的 master weights 回写模型参数；从 step2 起与 no_load_optim=True 分叉，大规模训练中进一步表现为 OOM。单机 8 卡 910B2 的 partial HF safetensors A/B（只改 no_load_optim）：True 得 11.818862 / 11.710443，修复后 False 得 11.818862 / 11.710468，修复前 False 为 11.818862 / 11.811662。基线 upstream/master commit 26354ff645e4d5f41622aacf5353ecdb636b5108，原始场景 256 卡集群 + 完整 HF safetensors。issue 同时说明 native loader 在‘配置要求加载优化器但 checkpoint 中优化器状态缺失或不完整’时不向上返回精确状态，不在本次 HF/weights-only 修复范围内。
+  source: 2026-07-22 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2457 （closed）
+  behavior: 从 HF safetensors 权重起训，第一步 loss 与控制变量完全一致，第二步开始就偏高：11.811662 对 11.710443，一路偏下去，看起来像学习率或数据顺序问题；把 no_load_optim 改成 True 反而正常。要定位得在第一次 optimizer update 前后把 model weights 和 fp32 master weights 一起打出来，才看得出 master weights 还是随机初始化那一份。
+  trigger_surface: 'PyNative Trainer + 带 FP32 master weights 的 AdamW/Muon + 从 HF safetensors 启动 + no_load_optim: False，8 卡 910B2（原场景 256 卡）'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 模型权重
+        to: 优化器状态
+    issue_unfixed:
+    - detail

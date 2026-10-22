@@ -1,0 +1,64 @@
+id: INF-1971
+legacy_ids: []
+slug: torchair_isfinite_missing_converter_silent_symshape
+aliases: []
+title: isfinite 缺 converter 致符号形状静默降级
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: ge_converter isfinite
+  behavior: aten/ 目录下缺 isfinite.py，符号形状推导按 _CONVERTERS 分发调用 aten.isfinite.default 查不到注册项，异常被 silent 降级函数吞成 warning。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: dynamic shapes 下图模式对 isfinite 的符号形状推导缺失，伴随 evaluate_expr(8*Max(1, s67) > 8) 求值失败（reshape 硬编码形状与动态维冲突），只在 warning 级别暴露。
+  visibility: 报错
+mitigation:
+  detect: dynamic shapes 图模式下对含 aten.isfinite 的图开 TORCH_LOGS 看是否有符号形状推导 warning；检查 ge_converter/aten 下是否存在 isfinite.py
+  fix: 待定（issue open；报告建议照 aten/isinf.py 新建 ge_converter/aten/isfinite.py 调 ge.IsFinite，该目录由 pkgutil 自动发现，无需额外注册）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torchair + Python 3.12.9 + Ubuntu 24.04；dynamic shapes 图模式下算子图中含 aten.isfinite.default
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/634
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/torchair issue #634（2026-08-10 open；Python 3.12.9、Ubuntu 24.04）：dynamic shapes 图模式编译含 aten.isfinite.default 的模型时符号形状推导失败。直接原因是 ge_converter/aten/ 目录下不存在 isfinite.py，infer_symbol_shape.py:325 执行 target(*meta_args, **meta_kwargs) 模拟算子调用时在 _CONVERTERS 分发表里查不到注册项，异常被 infer_and_gen_sym_shape_silent()（行 254-261）捕获后只降级为 warning。对比同类算子：isinf.py 已实现并调 ge.IsInf，isnan.py 与 isposinf.py 是占位 raise NotImplementedError，isfinite.py 缺失；auto_generated_ge_raw_ops.py 已生成 IsFinite API，可直接调 ge.IsFinite，prims/isfinite.py 虽有注册但抛 NotImplementedError 且属不同 dispatch key。伴随的符号表达式求值失败为 evaluate_expr(8*Max(1, s67) > 8)，即 reshape 的硬编码形状与 dynamic dim 冲突。'
+  source: 2026-08-10 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/634 （open）
+  behavior: dynamic shapes 图模式下编译带 isfinite 的模型时，符号形状推导这一步不产出该算子的符号形状，只在日志里留一条 warning；随后能看到 evaluate_expr(8*Max(1, s67) > 8) 求值失败、reshape 的硬编码形状与动态维冲突这类二次报错。因为第一层失败被降级成 warning，用户按报错去找 reshape 的形状问题，很难定位到是 isfinite 的 converter 没注册。
+  trigger_surface: torchair dynamic shapes 图模式的符号形状推导（算子图含 aten.isfinite.default）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 可用性/进度
+      visibility:
+        from: 静默错误
+        to: 报错
+    uncertain:
+    - detail

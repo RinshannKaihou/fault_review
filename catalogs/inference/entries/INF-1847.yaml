@@ -1,0 +1,57 @@
+id: INF-1847
+legacy_ids: []
+slug: vllm_ascend_kimi_k26_w4a8_pd_long_ctx_concurrency
+aliases: []
+title: Kimi-K2.6 W4A8 PD 长文高并发下输出退化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: vllm
+    component: HCCL 通信缓冲区
+  behavior: 长文 23k + 16 并发下 TP=8 all-reduce 数据量与 HCCL_BUFFSIZE=256 不匹配（报告推测），通信缓冲溢出使 P 端 KV 残缺，D 端据此 decode 出乱码。
+effect:
+  objects:
+  - 输出内容
+  detail: Kimi-K2.6 W4A8 PD 双实例 16 并发 23k token 退化率 9.4%（96/9）与 8.1%（160/13）；单实例、6 并发、12–19k 均 0，形态含 think 泄漏、重复坍缩、token 沙拉。
+  visibility: 质量退化
+mitigation:
+  detect: 按 上下文长度×并发×实例数 建矩阵跑同一批 prompt 统计退化率；同时对照 P 端 HCCL_BUFFSIZE 与 D 端收到的 KV 是否完整。
+  fix: 待定（issue closed，报告只给退化机制推测，未给修复 PR 或已验证的规避）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Kimi-K2.6 W4A8（MoE + Eagle3，num_speculative_tokens=3），vllm-ascend 0.23.0，Atlas 800 A2/910B，TP=8、DP=2、EP，PD 分离 + MooncakeConnectorV1，max-model-len=131072、HCCL_BUFFSIZE=256
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13002
+  kind: github_issue
+relations: []
+original:
+  mechanism: Kimi-K2.6 W4A8（MoE + Eagle3 投机解码，num_speculative_tokens=3）在 vLLM-Ascend 0.23.0、Atlas 800 A2（910B）、TP=8/DP=2/EP、PD 分离 + MooncakeConnectorV1 的部署上，长上下文（≥23k token）与高并发（≥16）同时满足时输出偶发退化，退化率 6%–10%。正文给出复现矩阵：串行 12k–19k 24 次 0 退化，6 并发 19k 18 次 0，16 并发单实例 19k 与 23k 各 32 次都是 0，而 16 并发双实例 23k 是 96 次 9 次失败（9.4%），复测 160 次 13 次（8.1%）；两个实例都会退化，max_num_seqs=8 不影响退化率，并发只有 3 的生产环境也退化过。三种形态：</think> 标记在 enable_thinking=false 时泄漏进 content（约 9%）、重复坍缩并泄漏英文系统提示片段、彻底 token 沙拉。报告给出的机制是推测：max-model-len=131072 让 KV 预分配很大、余量少，TP=8 all-reduce 数据量大而 HCCL_BUFFSIZE=256 太小，缓冲溢出导致 P 端 KV cache 残缺，残缺 KV 经 Mooncake 传到 D 端后 decode 出乱码；形态 1 另外归因于 Eagle3 num_speculative_tokens=3 时 reasoning-parser 高负载下漏剥。以上均未由源码或补丁证实。
+  source: 2026-07-28 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13002 （closed）
+  behavior: 长上下文请求在高并发、多实例的 PD 分离部署里偶尔变味：回答里冒出 </think> 标记，或者整段塌成重复模式并夹带系统提示的英文片段，最差是纯 token 沙拉。请求照常返回 finish_reason，日志没有报错，退化率约一成，所以往往先被当成模型本身不稳定。
+  trigger_surface: Kimi-K2.6 W4A8 + Eagle3 + PD 分离（MooncakeConnectorV1）+ 上下文 ≥23k + 并发 ≥16 + 双实例；max-model-len 131072、HCCL_BUFFSIZE=256
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - visibility

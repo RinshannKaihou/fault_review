@@ -1,0 +1,64 @@
+id: INF-1530
+legacy_ids: []
+slug: ops_nn_groupnormsiluv2_near_constant_variance
+aliases: []
+title: GroupNormSiluV2 近常数输入 rstd 偏离标杆
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: GroupNormSiluV2 方差计算
+  behavior: 内核在 fp32 标量用 E[x²]−E[x]²+eps 计算 rstd，输入围绕 ±1、宽≤0.002 时相减噪声与真方差同量级；与 float64 离差平方和标杆口径不同。
+effect:
+  objects:
+  - 数值结果
+  detail: 999 条中 978 条判定、32 条不通过（3.3%）：近常数族 9/36（rstd 差 0.0006~0.0093）、|x|≥60000 族 13/27（0.0394）、bf16 meanOut 6 例 0.0041~0.0067；32 例均 activateSilu=true。
+  visibility: 静默错误
+mitigation:
+  detect: 构造围绕 ±1、宽≤0.002 的输入并扫 eps（fp32 在 eps≤1e-4 全失败、eps≥1e-3 全通过）；标杆用 float64 定义式，别用同款原点矩算法。
+  fix: issue 5906 已 closed，正文未给修复 PR；是否改 Welford 或两遍式离差算法未核实。
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 910B3 + CANN 9.0.0 + aclnnGroupNormSiluV2（activateSilu=true、shape [2,8,16]/group=4、近常数输入或 |x|≥60000 的 fp16）
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-20'
+remarks: 报告自评置信度中高：族边界、对照组与源码机制三方一致，但 NPU 实际累加精度与观测差值的定量关系未证实；bf16 meanOut 6 例按报告归因为输出舍入路径差异，与相消族计数有交叉。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5906
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1529
+pattern: PAT-INF-0166
+original:
+  mechanism: cann/ops-nn issue 5906（2026-09-16，closed）：CANN 9.0.0、Ascend 910B3，ATK 以 pyaclnn 调用 aclnnGroupNormSiluV2，标杆在 GPU 侧把 x/gamma/beta 上转 float64 后调 aten.native_group_norm 并按定义式 Var=(1/n)Σ(x−E[x])² 计算。999 条本算子用例中 978 条完成精度判定，PASS 946 / FAIL 32（3.3%），全部 FAIL 均 activateSilu=true；对照组（混合精度 60 例、activateSilu=false 327 例）全通过。族 A 近常数非零均值（围绕 ±1、宽 0.001~0.002、shape [2,8,16]、group=4）9/36 失败，rstdOut 差 0.0006~0.0093，边界干净：fp32 在 eps=1e-5 与 1e-4 全失败、fp16 仅 eps=1e-5 失败、bf16 与 eps≥1e-3 全通过、围绕 0 的近常数 12/12 通过。源码 norm/group_norm_silu/op_kernel/group_norm_silu_b16.h 与 b32.h 的 ComputeOneLoop/ComputeMultipleLoop 在 fp32 标量算 rstd=1/sqrt(E[x²]−E[x]²+eps)，x∈[1,1.001] 时 E[x²] 与 E[x]² 都约 1.001，相减噪声与真方差同量级，而标杆在 float64 用离差平方和无此消去——这与 GroupNorm 条目属同一机制（两遍式原点矩消去），只是算子与标杆口径不同。族 B 输入绝对值 ≥60000（fp16 上限附近）13/27 失败，全样本最大 max_diff 0.0394；bf16 meanOut 6 例 0.0041~0.0067 为 bf16 最低位量级，报告归因为 fp32→bf16 与 float64→bf16 两条舍入路径差异。
+  source: 2026-09-16 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5906 （closed）
+  behavior: 用 aclnnGroupNormSiluV2 跑接近常数的输入（数值都贴着 +1 或 -1、波动不到 0.002）时，rstd 输出与 float64 标杆差到 1e-3~1e-2 量级，归一化主输出跟着偏；把输入改成围绕 0 或把 eps 调到 1e-3 以上就恢复正常，bf16 输入也不复现。fp16 输入绝对值逼近 60000 时主输出最大差 0.0394。所有失败都在不报错、不产生 NaN 的情况下发生，只有与 float64 标杆逐元素比对才能发现。
+  trigger_surface: Ascend 910B3 + CANN 9.0.0 + aclnnGroupNormSiluV2（activateSilu=true）+ 近常数输入（±1 附近、宽≤0.002、eps≤1e-4 的 fp32）或 |x|≥60000 的 fp16
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior

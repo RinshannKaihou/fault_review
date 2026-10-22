@@ -1,0 +1,56 @@
+id: INF-1415
+legacy_ids: []
+slug: ttmetal_vllm_gemma4_topk_clamp32
+aliases: []
+title: tt-metal Gemma4 设备采样静默把 top_k 钳到 32
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: tt-metal
+    component: SamplingGenerator 参数格式化
+  behavior: Gemma4 系 model_capabilities 未声明 max_device_top_k，插件把任意 top_k 送设备采样，format_sampling_params 把 <1 与 >32 的 top_k 改写为 32，无消息
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: top_k>32 请求实际只在 top-32 里采样（top_k=100 与 top_k=32 输出同分布）；插件侧已有路由修复（vllm-tt-plugin#140）但仅对声明了上限的模型生效
+  visibility: 静默错误
+mitigation:
+  detect: 对比 top_k=32 与更大 top_k 的输出分布
+  fix: '修复路由已存在：vllm-tt-plugin #140（2026-09-30 合入）对声明 max_device_top_k 的模型把超限请求送 host 采样；Gemma4/Gemma4DFlash/Gemma4DFlashContract/Gemma4MTP 均未声明，等待模型侧补声明'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: tt-metal Gemma4 及 DFlash/DFlashContract/MTP 子类 + vLLM TT 插件 sample_on_device_mode + top_k>32；plugin#140 已修路由但 Gemma4 族未声明上限仍漏
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/60365
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM TT 插件 sample_on_device_mode 下，TTModelRunner.check_perform_device_sampling 逐步决定设备/主机采样；设备采样器最多从 32 个最可能 token 中抽取，模型类通过 model_capabilities["max_device_top_k"] 告知上限，插件 vllm-tt-plugin#140（2026-09-30 合入）据此把 temperature!=0 且 top_k 超出 1..max 的行送 host 采样（正确性修复）。但 Gemma4ForCausalLM（models/demos/gemma4/tt/generator_vllm.py:264，capabilities 在 :342）声明 supports_sample_on_device: True 却未声明 max_device_top_k，Gemma4DFlashForCausalLM(:3568)、Gemma4DFlashContractForCausalLM(:3999)、Gemma4MTPForCausalLM(:4936) 复制该 dict 同样缺失；插件对未声明者不检查，任意 top_k 直送设备。设备路径：Gemma4Model 构建 SamplingGenerator（model.py:641）→ tt_transformers Generator 解码路径调 apply_decode_state（generator.py:2797）→ format_sampling_params（models/common/sampling/generator.py:322）把所有 top_k<1 与 >32 静默改写为 32。请求的 top_k 语义被无声改变。'
+  source: 2026-10-17 GitHub tenstorrent/tt-metal issue https://github.com/tenstorrent/tt-metal/issues/60365（源码行号级；plugin#140 修复边界与未声明模型清单）
+  behavior: '用 vLLM TT 插件按设备采样模式跑 Gemma4（含 DFlash/Contract/MTP 变体）时，用户请求 top_k 大于 32（如 100）会被静默当成 top_k=32 采样：输出仍正常生成、无任何日志或提示，但采样分布与请求不符，多样性/任务指标悄悄偏离；top_k<1 同样被改写。只有声明了 max_device_top_k 的模型才被 #140 的路由保护。'
+  trigger_surface: tt-metal Gemma4 族模型 + vllm-tt-plugin sample_on_device_mode + top_k∉[1,32]；插件 2026-09-30 后版本
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

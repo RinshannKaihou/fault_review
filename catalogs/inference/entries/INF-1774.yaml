@@ -1,0 +1,58 @@
+id: INF-1774
+legacy_ids: []
+slug: tt_metal_typecast_u32_upper_range_collapse
+aliases: []
+title: ttnn.typecast fp32→uint32 上半区间塌缩 2^31
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ckernel_sfpu_typecast.h
+  behavior: fp32→uint32 转换的尾数提取路径按 biased-exponent 移位结果门控 lane（exp-=32…CC_LT0），[2^31,2^32) 区间的指数档被排除在正确路径外，结果恒为 2^31
+effect:
+  objects:
+  - 数值结果
+  detail: WH/BH SFPU：ttnn.typecast fp32/bf16→uint32，输入 ∈[2^31,2^32) 时全部返回 2147483648（192/192、960/960 随机可精确表示 f32 全错）；<2^31 全对；bf16 同样塌缩；inf、nan 亦返回 2^31
+  visibility: 静默错误
+mitigation:
+  detect: 对 ≥2^31 的输入抽查转换结果
+  fix: 待定（issue open；根因定位至 ckernel_sfpu_typecast.h:249）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: fp32/bf16 → uint32 且值域落 [2^31,2^32)；非舍入/精度差异（0-1 ULP），是清晰边界 2^31 的错值缺陷；torch oracle 全对
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61736
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal wormhole_b0 llk ckernel_sfpu_typecast.h 的 calculate_typecast_fp32_to_uint32()（:249）：尾数提取路径以指数（exp-=32…CC_LT0，即 lane 仅在 biased-exponent 移位结果满足条件时启用）门控，[2^31,2^32) 区间被排除在正确转换外，输出恒 2147483648。实测（emulated device + WH n150）：2^31 本身正确；2684354560(1.25·2^31)/3221225472(1.5·2^31)/4294901760/4294967040(最大 f32<2^32) 全部返回 2147483648，torch oracle 正确；[2^31,2^32) 内 192 个随机可精确表示 f32 192/192 全错、独立 960 值 960/960 全错；[0,2^31) 稠密干净（1073741824→1073741824、2147483520→2147483520）；0.0→0 对；-1.0→4294967295（与 torch wrap 一致）；inf→2^31（torch 0）、nan→2^31（双方未定义，完整性列出）；bf16 3221225472 同样塌缩。该 u32 函数在 d9c2c92d 与 HEAD（41590f40 era）间字节相同。
+  source: 2026-10-20 每日扫描；https://github.com/tenstorrent/tt-metal/issues/61736
+  behavior: 把 float32 或 bfloat16 张量转成 uint32 时，凡是落在 [2^31, 2^32) 区间的值——包括完全可精确表示、完全在目标 dtype 范围内的值——全部被写成 2147483648：整整一半的目标表示范围静默塌缩成一个数；2^31 以下全部正确。不是 0-1 ULP 的舍入差异，而是以 2^31 为清晰边界的错值缺陷，调用方无任何告警。
+  trigger_surface: ttnn.typecast fp32/bf16→uint32 + 输入值 ∈ [2^31,2^32)（Wormhole/Blackhole SFPU）
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - component
+    - detail

@@ -1,0 +1,64 @@
+id: INF-1579
+legacy_ids: []
+slug: ms_dvm_ops_map_view_address_collision
+aliases: []
+title: view 算子共享 device_address 致融合取错输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: DVM ops_map_ 地址键
+  behavior: ops_map_ 以 device_address 裸指针为 key，slice/reshape 出的多个 view 共享同一地址却 shape 不同，后一个 view 命中前一个的 Load 节点。
+effect:
+  objects:
+  - 数值结果
+  detail: x1[10:18] reshape 成 (2,1,4) 与 x1[40:44] 的 (4,) 地址相同，AddExt 复用 (2,1,4) 的 Load，DVM 按错 shape 计算，输出错误。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一基张量切多个 slice/view 后混用，比较开关 DVM 融合的输出；或打印 ops_map_ 的 key 与命中的 Load shape
+  fix: 待定（issue open，master）；方向：key 改为 TensorPtr/alias 标识或 (address, shape, stride)
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend + MindSpore master，PyNative 开 DVM 无图融合；view 类算子（Reshape/Slice）输出共享 device_address 造成的 ops_map_ key 碰撞
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29175
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0168
+original:
+  mechanism: Ascend 动态图 + DVM 无图融合（MS_DEV_PYNATIVE_FUSION_FLAGS="--opt_level=1"），master：LazyFusionKernelAscend 构图时用 ops_map_ 判断输入是融合内部中间结果还是外部输入，key 是 device_address（裸指针）。view 类算子（Reshape/Transpose/Slice）的输出与输入是不同 TensorPtr 但共享 device_address。复现：x1 为 (100,) float32，y0=ops.reshape(x1[10:18],(2,1,4))、y1=x1[40:44]（(4,)），y2=AddExt(mul(x0,y0), y1)；mul 先把 y0 以 (2,1,4) 的 Load 写入 ops_map_[0xABCD]，AddExt 用 y1 的同一地址命中该条目，复用 (2,1,4) 的 Load 而不是新建 (4,) Load，DVM 后续按错 shape 计算。
+  source: 2026-03-04 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29175 （open）
+  behavior: 同一段 PyNative 代码对同一个大张量切出两个切片、其中一个还 reshape 过，再分别参与运算，开启无图融合后结果算错；因为两个切片地址相同、形状不同，错误表现为某个分支的数字整体对不上，没有异常也没有 shape 报错。
+  trigger_surface: Ascend PyNative + DVM 无图融合 --opt_level=1；同一基张量经 slice/reshape 产生多个共享 device_address 的 view 后混用
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 编译器

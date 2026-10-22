@@ -1,0 +1,62 @@
+id: INF-2064
+legacy_ids: []
+slug: vllm_ascend_repetition_penalty_ignores_output_ids
+aliases: []
+title: NPU runner 未回填已生成 token 致重复惩罚失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: NPUModelRunner._sample
+  behavior: NPUModelRunner._sample 未调 update_async_output_token_ids，sampling_metadata.output_token_ids 恒为 -1 占位符，重复惩罚读不到真实已生成 token
+effect:
+  objects:
+  - 输出内容
+  detail: V1 引擎 NPU 解码路径下设置 repetition_penalty=2 等重复惩罚时，生成仍大量重复同一段内容；日志无告警，采样参数看似生效；打印 output_token_ids 全为 -1。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 prompt 分别用 repetition_penalty=1.0 与 2 跑一次比较重复率，或在 sampler 内打印 sampling_metadata.output_token_ids 是否仍为 -1
+  fix: issue 未附修复 PR（open，状态未核实）；按报告者对比，把 GPUModelRunner 的 update_async_output_token_ids 调用补进 NPUModelRunner._sample 即可
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: V1 引擎 + NPUModelRunner 常规单/多卡部署；只有 repetition_penalty>1 时现象可见
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/7769
+  kind: github_issue
+relations: []
+original:
+  mechanism: 环境 vLLM 0.17.0、vllm-ascend 0.17.0rc2.dev8+g4e62a2ae1、torch_npu 2.9.0、CANN 9.0.0、openEuler 24.03 aarch64。复现脚本用 SamplingParams(temperature/top_p/top_k, min_tokens=20, max_tokens=50, logprobs=10, repetition_penalty=2) 走 llm.add_request + TokensPrompt(prompt_token_ids=...)，生成结果仍大量重复。报告者把 vllm/v1/sample/sampler.py 中 apply_logits_processors 下的 sampling_metadata.output_token_ids 打出来，发现全是占位符 -1；逐行对比 GPUModelRunner 与 NPUModelRunner 的 _sample 后确认 NPU 侧缺少 update_async_output_token_ids 这一步，惩罚项因此拿不到真实已生成 token（未该步则 penalty 计算全部基于占位符）。
+  source: '2026-03-28 GitHub vllm-project/vllm-ascend issue #7769 https://github.com/vllm-project/vllm-ascend/issues/7769 （open）'
+  behavior: 设置 repetition_penalty=2 后，模型回答仍明显重复同一句话或同一段落，和把惩罚关掉几乎没有区别；日志里没有任何告警，采样参数看起来也生效了。把采样器内部已生成 token 列表打出来会看到清一色 -1，等于惩罚函数始终在空历史上计算。
+  trigger_surface: V1 引擎解码路径（NPUModelRunner._sample）+ 任意 repetition_penalty/frequency_penalty 类 logits processor
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    rewritten:
+    - detail
+    uncertain:
+    - effect

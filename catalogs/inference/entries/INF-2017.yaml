@@ -1,0 +1,56 @@
+id: INF-2017
+legacy_ids: []
+slug: dsa_cp_workspace_lifetime_race_async_scheduling
+aliases: []
+title: DSA-CP 去同步后 ACLNN workspace 生命周期竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: DSA-CP workspace 生命周期
+  behavior: 移除 D2H 同步气泡后，ACLNN 算子 workspace 的申请/复用与异步调度、TASK_QUEUE_ENABLE=1、Fused MC2 的异步下发发生重叠，stream 未在分配器注册即被使用
+effect:
+  objects:
+  - 可用性/进度
+  detail: DeepSeek-V4服务在DSA上下文并行、异步调度、TASK_QUEUE_ENABLE=1、Fused MC2全开，3500输入/1输出、并发100压测时，前几个请求正常，约第9个后某worker抛UB/GM越界和分配器stream非法，随后HCCL看门狗终止、剩余请求全500。
+  visibility: 不可复现
+mitigation:
+  detect: 同时开异步调度、TASK_QUEUE_ENABLE=1、Fused MC2 + DSA 上下文并行，跑高并发短输出负载，观察 aclrtAllocatorGetByStream / UB-GM 越界与看门狗终止；也可用 A/B（保留/移除同步气泡）对比
+  fix: 'v0.23 由 #13289 回滚 #12536 暂时规避；main 分支缓解 PR #13290，前向修复未核实'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需 DSA 上下文并行 + 异步调度 + TASK_QUEUE_ENABLE=1 + Fused MC2 三者同时开启，且并发高、输出短
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13761
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend 的 #12536 去掉了 DSA 上下文并行路径上的一段 D2H 同步气泡（目的是减少同步等待），使 ACLNN 算子 workspace 的生命周期不再被同步点约束：workspace 的申请/复用与异步调度、TASK_QUEUE_ENABLE=1 的延迟下发、Fused MC2 的异步执行重叠，运行时出现 aclrtAllocatorGetByStream failed（Parameter stream is invalid，stream 未注册到任何分配器）、UB 读写越界、GM 地址超 48 位。因为算子异步执行，traceback 首个算子常是无关的 triton_rms_kernel。issue 给出受影响矩阵：v0.23 曾受影响、回滚后规避；v0.24 不含该改动不受影响；v0.25/v0.26/main 受影响，需要前向修复。'
+  source: '2026-08-07 GitHub vllm-project/vllm-ascend issue #13761（open）。https://github.com/vllm-project/vllm-ascend/issues/13761'
+  behavior: DeepSeek-V4 服务在 DSA 上下文并行 + 异步调度 + TASK_QUEUE + Fused MC2 全开时，压测（3500 输入、1 输出、并发 100）前几个请求正常，大约第 9 个之后某个 worker 抛 UB/GM 越界和分配器 stream 非法，接着 HCCL 看门狗终止、剩余请求全 500；同样的请求单独重跑又可能成功，看起来像随机故障。
+  trigger_surface: DSA context parallel + 异步调度 + TASK_QUEUE_ENABLE=1 + Fused MC2 同时开启的高并发短输出负载
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

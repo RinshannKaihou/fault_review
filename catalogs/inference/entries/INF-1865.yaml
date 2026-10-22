@@ -1,0 +1,56 @@
+id: INF-1865
+legacy_ids: []
+slug: ops_transformer_bsa_select_block_mask_infershape_block_grid
+aliases: []
+title: BSASelectBlockMask 输出 shape 用原序列长
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BSASelectBlockMask
+  behavior: Host InferShape 把 seqlenQ/seqlenKV 原始值直接写进输出最后两维，未按 blockShape 与 maxQ/maxK 序列长度算 block 网格。
+effect:
+  objects:
+  - 数值结果
+  detail: BNSD/TND 输入 [1,2,256,128]/[1,2,192,128]、blockShape=[128,64] 时输出 [1,2,256,192]，文档契约是 [1,2,2,3]；返回 GRAPH_SUCCESS，5 轮稳定。
+  visibility: 静默错误
+mitigation:
+  detect: 用不能被 blockShape 整除的序列长度跑 InferShape 用例，断言最后两维为 ceilDiv 后的 block 数；现有 3 个官方合法用例（整除口径）全部通过。
+  fix: 待定（issue closed，未给 MR）：InferShape 改为按 blockShape 与 maxQ/maxK 序列长度算 Xblocks/Yblocks。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: cann/ops-transformer 9.2 开发线 + Ascend910B3 + BNSD/TND 布局 + blockShape=[128,64]；作者未在匹配版本的设备上验证后果
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: issue 只确认「公开输出契约与 Host metadata 不一致」，未宣称设备端越界/崩溃；本条按此边界记录。与 INF-1597/INF-1728 无关。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4536
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer issue 4536（closed）：attention/bsa_select_block_mask/op_host/bsa_select_block_mask_infershape.cpp:63-80 把 sqLen、skvLen 直接设置到输出 dim2/dim3；而文档 attention/bsa_select_block_mask/docs/aclnnBSASelectBlockMask.md:299-306 规定 blockSparseMaskOut 输出为 [B,N,Xblocks,Yblocks]，Xblocks=ceilDiv(maxQSeqlen,blockShapeX)、Yblocks=ceilDiv(maxKSeqlen,blockShapeY)，执行侧 bsa_select_block_mask_tiling_base.cpp:227-228 也按 xBlocks/yBlocks 计算、内核按 yBlocks 算 mask 输出偏移，API 示例同样按 ceil 后的 block 数创建输出 tensor。作者在 commit a2ee2d92804d 上构建 Host UT（-DENABLE_TEST=ON -DOP_HOST_UT=ON -DASCEND_OP_NAME=bsa_select_block_mask，Toolkit/OPP 9.1.0、Ascend910B3、仅验证 Host InferShape），blockShape=[128,64]：BNSD query/key [1,2,256,128]/[1,2,192,128] 与 TND [256,2,128]/[192,2,128] 均返回 GRAPH_SUCCESS 但输出 shape 为 [1,2,256,192]；把期望设为 [1,2,2,3] 后 2 个契约用例重复 5 轮均失败并打印实际/期望。作者明确说明未将结论外推为匹配版本硬件上的内存越界或运行时崩溃。
+  source: GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4536 （closed）
+  behavior: 稀疏注意力选块 mask 的算子在图构建阶段返回的输出 shape 是原始序列长度而不是块数（256×192 对 2×3）：调用方按这个 metadata 建输出或做 shape 校验时，拿到的是一张比逻辑 block 网格大几十倍的描述，运行期容易出现 shape/tiling 不一致、编译期报形状对不上，或写出的 mask 后半段没人认；InferShape 本身返回成功、日志没有任何提示，现有的整除口径合法用例全部通过，因此只能靠构造不能整除的序列长度才看得到。
+  trigger_surface: aclnnBSASelectBlockMask + blockShape 不能整除 maxQ/maxK 序列长度（BNSD 与 TND 均触发）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

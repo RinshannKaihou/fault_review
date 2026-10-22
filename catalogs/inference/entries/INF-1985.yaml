@@ -1,0 +1,60 @@
+id: INF-1985
+legacy_ids: []
+slug: scatter_pa_kv_cache_slot_upper_bound_missing
+aliases: []
+title: ScatterPaKvCache normal 路径缺 slot 上界校验
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: cann
+    component: scatter_pa_kv_cache
+  behavior: normal 内核只写 if (slotValue < 0) continue 跳过负 slot，不对 slot >= num_blocks*block_size 拒绝，arch35 nz_non_contiguous 路径有上界检查
+effect:
+  objects:
+  - KV状态
+  detail: slotMapping 超出 [0, num_blocks*block_size-1]（如容量32槽时 slot=100）调用 aclnnScatterPaKvCache，GetWS/Launch/Sync 全 SUCCESS，实际写到块外。
+  visibility: 静默错误
+mitigation:
+  detect: 用 slot >= num_blocks*block_size 的 slotMapping 调 aclnnScatterPaKvCache，断言参数错误；比对 arch35 与 arch22 是否都拒绝
+  fix: 内核补 slot < maxTokens 上界判断并与负值一起 continue/报错；host 侧加 slotMapping 值域校验，统一两个 arch；issue closed 未附 MR，未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnScatterPaKvCache + cacheMode PA_NZ 的 arch22 normal 内核，slotMapping 含 ≥num_blocks*block_size 的值
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 与 INF-1387 同算子同症状：那条是 host 早退/numTokens 取自 key，本条是 normal 内核缺上界判断（arch35 有），按 var 挂接；两条均未见修复 MR
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4093
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1387
+pattern: PAT-INF-0185
+original:
+  mechanism: cann/ops-transformer issue 4093（2026-08-03，closed，Track A / P-011）。attention/scatter_pa_kv_cache/op_kernel/scatter_pa_kv_cache_normal.h L62 只写 if (slotValue < 0) continue，缺上界，slotMapping 直接作 keyCache/valueCache 的块内行偏移；README L238 规定 slotMapping ∈ [0, num_blocks*block_size-1]；arch35 的 nz_non_contiguous 路径有上界检查，normal 路径缺失。复现：ops-transformer HEAD 4b3d39658e1d，源码 --pkg 装独立 vendor 后调用 aclnnScatterPaKvCache，key/value [2,2,32] fp16、keyCache/valueCache [1,4,32,16]（num_blocks=1、block_size=32，max slot=31）、slotMapping [2] int32、cacheMode PA_NZ：legal slot=0 正常，slot=100 的 GetWS/Launch/Sync 全 SUCCESS，exit 42。
+  source: 2026-08-03 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4093 （closed）
+  behavior: 把新算出的 KV 按 slotMapping 写进 paged KV cache 时，slot 超出块表容量也不报错：接口返回成功，实际写到了块外，别的序列的 KV 或 workspace 被覆盖。症状是某些请求的 KV 内容莫名变了、续跑输出前后不一致，而错误发生点没有任何日志。
+  trigger_surface: aclnnScatterPaKvCache，slotMapping 超出 [0, num_blocks*block_size-1]
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

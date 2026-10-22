@@ -1,0 +1,58 @@
+id: INF-1747
+legacy_ids: []
+slug: ops_nn_index_add_arch22_uint32_n_wrap
+aliases: []
+title: aclnnIndexAdd arch22 以 uint32 承载 N 致静默漏算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: IndexAdd arch22 tiling
+  behavior: arch22 tiling 与 kernel 用 uint32 承载 M/N/K，N 是 var 尾维乘积；N≥2^32 时回绕成 N mod 2^32，内核只搬入并回写前 N' 个元素。
+effect:
+  objects:
+  - 数值结果
+  detail: 910_93 + CANN 9.2.0、FLOAT [1,N]：N=2^32+3 时只有前 3 个元素被累加、其余 4294967296 个漏算；N=2^32 时 N'=0，全部未累加；r2=0、sync=0。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 var 尾维乘积 ≥2^32 的 FLOAT 用例，采样首尾与 2^k 位置元素；小 shape 用例与 arch35 对照都发现不了。
+  fix: 待定（issue open，未给修复 PR）：建议 inplaceScatterAddSupport 拦截元素数 >2^32 走 fallback，arch22 tiling 升 uint64 对齐 arch35。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend910_93（DAV_2201）+ CANN 9.2.0 + arch22 IndexAdd + var 元素数 ≥2^32
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6309
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6309（2026-09-29，open）：Ascend910_93（DAV_2201）、CANN 9.2.0、ops-nn 基线 fed553be、C 直调 aclnn 两段式接口、FLOAT、dim=0、alpha=1.0、deterministic=0。aclnnIndexAdd 的 arch22 InplaceScatterAdd 在 op_host/arch22/inplace_scatter_add_tiling.cpp:30-33 以 uint32 承载 M/N/K/NAligned，:107-109 做的 N 累乘在 uint32 域回绕，:131-136 用回绕后的 N 算 NAligned 与 tilingKey；tiling 结构体 inplace_scatter_add_tiling.h:21-24 落盘 uint32，kernel 侧 inplace_scatter_add_base.h:129-133 与 inplace_scatter_add_small_tail.h:86/99/111/114 按 N*sizeof(VT) 搬运回写。arch35 对照实现已是 64 位。实测 N=4294967299 时 out[0..2]=1.0、out[3]/out[1<<28]/out[N-1] 均 0.0；N=4294967296 时全部 0.0。
+  source: 2026-09-29 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6309 （open）
+  behavior: 在 910_93 上用 arch22 通路做就地 index_add，张量元素数达到 2^32 量级后只有开头极少数元素被真正累加，其余全部保持原值：接口返回成功、流同步成功、设备与主机都没有任何报错，采样输出看到的是大片“没算”的零值，很容易被当成数据准备错误。
+  trigger_surface: aclnnIndexAdd arch22 + 元素数 ≥2^32 的大张量
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+    - detail

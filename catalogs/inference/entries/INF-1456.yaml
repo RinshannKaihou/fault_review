@@ -1,0 +1,55 @@
+id: INF-1456
+legacy_ids: []
+slug: vllm_kv_transfer_prompt_token_ids_replaces_prompt
+aliases: []
+title: vLLM prompt_token_ids 无连接器时替换渲染 prompt
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: prompt_token_ids 复用路径
+  behavior: 请求带 kv_transfer_params.prompt_token_ids 时 renderer 把 id 直接喂引擎替换渲染的 messages，跳过 template 与分词；无 connector 检查，任何 server 生效
+effect:
+  objects:
+  - 输入编码
+  detail: 客户端可发无害 messages 而模型跑在自选 token 序列上，chat template 与 system prompt 被移除；仅影响请求者自身响应（安全团队定级常规 issue）；0.27.0 引入、0.31.0 复现、main 仍缺检查
+  visibility: 静默错误
+mitigation:
+  detect: 对照带/不带 kv_transfer_params.prompt_token_ids 的渲染输出 token 序列（issue 附无 GPU 复现脚本）
+  fix: 上游修复未见（issue open，经安全团队转常规）；规避：入口层（网关）拒绝非 P/D 部署的 kv_transfer_params 字段
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM ≥0.27.0（0.31.0 复现、main 仍缺检查）；任意部署（无需 KV connector 配置）；请求体带 kv_transfer_params.prompt_token_ids；无 GPU 复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62307
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM #62307（c2026-10-18，先报安全团队、其定级仅请求者自身响应受影响故转常规 issue；无 GPU 复现：构建与 API server 相同的 OnlineRenderer 渲染同一 chat 请求带/不带 kv_transfer_params）。若 /v1/chat/completions 或 /v1/responses 请求携带 kv_transfer_params.prompt_token_ids，renderer 把这些 id 直接喂引擎替换渲染的 messages——跳过 chat template、truncate_prompt_tokens、分词。该 decode 侧复用本应限于配 KV connector 的 disagg P/d（docs/features/disagg_prefill.md 限定 /v1/chat/completions + connector 配置），但无检查 connector 是否配置或请求来自哪个端点——所有 server 生效：客户端可发无害 messages 而模型跑在自选 prompt 上（chat template 与 system prompt 被剥除）。0.27.0 #48145 引入；0.31.0 复现；main 371745eb 上 #55771/#59555 加了 shape 与词表检查但仍无 connector/端点检查。'
+  source: 2026-10-18 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62307 （open）
+  behavior: 在任何 vLLM server（不管有没有配 KV connector）上，请求方在 /v1/chat/completions 请求里加 kv_transfer_params.prompt_token_ids 字段，模型就实际运行在这串 token id 上，而不是渲染后的 messages：chat template、system prompt、截断与分词全部被跳过。请求正常返回 200，请求者拿到的回答基于被替换的 prompt。
+  trigger_surface: vLLM ≥0.27.0；任意部署 + 请求带 kv_transfer_params.prompt_token_ids；无 connector/端点校验
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

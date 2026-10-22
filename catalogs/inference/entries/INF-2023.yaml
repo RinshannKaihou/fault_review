@@ -1,0 +1,56 @@
+id: INF-2023
+legacy_ids: []
+slug: sfa_dispose_kv_b_proj_breaks_weight_sync
+aliases: []
+title: SFA 层 dispose(kv_b_proj) 致在线权重同步失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: AscendSFAImpl 后处理
+  behavior: process_weights_after_loading 推导 W_UK_T/W_UV 后 dispose kv_b_proj.weight 成空张量（shape [0]），参数仍注册，之后 load_weights 无合法目标存储
+effect:
+  objects:
+  - 模型权重
+  detail: VERL 推送更新后的 kv_b_proj.weight 时命中 param_data.shape == loaded_weight.shape 断言（目标 [0]、来源 [7168,512]），在线同步中断，rollout 停在旧权重
+  visibility: 报错
+mitigation:
+  detect: load_format=dummy 启动后检查 named_parameters 中 kv_b_proj.weight 的 shape 是否为 [0]；再调一次 load_weights 推真实权重看是否断言
+  fix: 待定（issue 建议仅在显式关闭 live reload 时才 dispose，并引入 weight_transfer 能力开关；未附 PR，未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: GLM-5.2（含 index_topk → AscendSFABackend）+ VERL/Megatron 实时权重同步 + load_format=dummy
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15463
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue 15463（2026-09-01，closed）。vllm_ascend/attention/sfa_v1.py:610-611（commit e8f47fc1）里 AscendSFAImpl.process_weights_after_loading() 从 kv_b_proj 推导 SFA 内核权重 W_UK_T/W_UV 后调 dispose_layer(kv_b_proj)；dispose_layer 执行 x.set_(torch.empty((0,), ...))，TP-local 参数从 [7168, 512] 变成 [0]，但参数名仍由 named_parameters() 暴露。VERL 从 Megatron actor 推送更新后的 kv_b_proj.weight 时，vLLM 能按名解析到参数，column-parallel loader 却无法把 [7168,512] 的分片写进空存储，命中 AssertionError: param_data.shape == loaded_weight.shape。issue 指出该假设只对纯推理成立，并给出保留该参数的内存代价约 7168×512×2 B = 7 MiB/层。'
+  source: 2026-09-01 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15463 （closed）
+  behavior: 用 VERL 跑 GLM-5.2 的 RL、rollout  worker 以 load_format=dummy 起服务时，训练侧把新权重推过来会直接报维度断言失败，kv_b_proj 的目标张量已经是空壳（shape [0]），整条 Megatron→vLLM 在线权重同步就断在这里；如果没人推权重，服务本身看起来一切正常。
+  trigger_surface: SFA 模型（GLM-5.2 等）+ VERL 实时权重同步 + load_format=dummy
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

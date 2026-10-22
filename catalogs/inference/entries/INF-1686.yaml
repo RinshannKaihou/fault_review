@@ -1,0 +1,52 @@
+id: INF-1686
+legacy_ids: []
+slug: ops_nn_selu_grad_zero_boundary_cmp
+aliases: []
+title: selu_grad 用 LT 判 outputs 致 0 点走错分支
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: arch35 selu_grad 分支判定
+  behavior: selu_grad.h:78 用 CMPMODE::LT 判 outputs<0，outputs==0 落 SCALE 分支；PyTorch elu_backward 用 <=0 走 SAP 分支。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: outputs==0 处 NPU 给 1.0507×grad、PyTorch 给 1.7581×grad（差 0.7074×|grad|）；int 型取 0 概率约 9%，288 例 2.76 亿元素中 4181.97 万个 mismatch 全落在 outputs==0。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 outputs 恰为 0（含 -0.0）的用例做逐位对比；int 型输入的随机用例里取 0 约占 9%，能放大该差异。
+  fix: issue 3976 closed；正文给出把 CMPMODE::LT 改为 LE（对齐 PyTorch elu_backward 的 <=0），未给修复 PR。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: partial
+  trigger_note: arch35 selu_grad + outputs 恰为 0（含 -0.0）；int32/int8/uint8 输入取 0 概率约 9% 使其高频出现，fp16 也可能偶发
+  confidence: documented
+remarks: 量化证据很硬：2.76 亿元素逐点统计，int 型 fail 的 mismatch 100% 在 outputs==0 位置、非 0 位置零 mismatch；这属于边界判定口径（< 与 <=）与竞品不一致，不是精度累积。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/3976
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 3976（2026-07-09，closed）：ops-nn 仓 activation/selu_grad 算子的 kernel 实现在 activation/selu_grad/op_kernel/arch35/selu_grad.h 第 78 行写 CompareScalar(selMask, outFp32, (float)0.0f, CMPMODE::LT, n);——即 outputs < 0 判为 SAP 分支，outputs >= 0（含 0）走 SCALE 分支；而 PyTorch 源码 aten/src/ATen/native/cuda/ElementwiseUnaryOps.cu 中 elu_backward(is_result=True) 用 bop <= 0 判定，即 outputs == 0 应走 SAP 分支 y = grad * (outputs + SAP)。后果：outputs == 0 的边界点 NPU 输出 SCALE*grad（1.0507×grad）、PyTorch 输出 SAP*grad（1.7581×grad），差异 0.7074×|grad|。对 int 类型（int32/int8/uint8）影响显著：离散值取 0 的概率约 9%，大量用例 bitwise mismatch；float 影响极小，但 float16 仍可能在 52M 元素中出现 1 个 -0.0（IEEE 754 下 -0.0 < 0 为 false）触发同一问题。数据验证：288 个非广播用例（6 dtype × 48 例）全量 NPU vs golden 三方对比，2.76 亿元素逐点统计中 outputs==0 位置 41,819,668 个 mismatch（占 100.0%），outputs!=0 位置零 mismatch。修复：把 CMPMODE::LT 改为 CMPMODE::LE。
+  source: 2026-07-09 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/3976 （closed）
+  behavior: 用 selu_grad（SELU 反向）时，如果前向输出里出现恰好等于 0 的元素，反向梯度会按 SELU 的线性段（1.0507×grad）算，而 PyTorch 按饱和段（1.7581×grad）算，单个点就差 0.7074×|grad|。整数输入（int8/int32）里 0 很常见（约 9%），所以这些用例成片 bitwise 不过；浮点用例基本看不出来，只有 fp16 在千万级元素里偶发一个 -0.0 才暴露。
+  trigger_surface: selu_grad 的 arch35 kernel + outputs 恰为 0 或 -0.0；int32/int8/uint8 输入最容易命中
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

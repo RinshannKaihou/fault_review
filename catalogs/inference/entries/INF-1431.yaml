@@ -1,0 +1,52 @@
+id: INF-1431
+legacy_ids: []
+slug: torchnpu_te_backend_view_copy_dce
+aliases: []
+title: TorchNPU TE 后端物化 view 原语致 copy_ 被 DCE 丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: triton_experimental 注册表
+  behavior: _register_npu_inductor_fallbacks 对不在名单的 lowering 一律 make_fallback，view/as_strided/diagonal 等 9 个纯布局原语被物化为 extern 临时量
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 对视图的 copy_ 写入落在临时量上被 DCE 丢弃，编译产物返回未变异的原 buffer——静默错误结果（非异常）；as_strided/diagonal scatter 族 opinfo 用例稳定失败而 default 后端同输入正确，TE 进程内 CPU 对照行同受染
+  visibility: 静默错误
+mitigation:
+  detect: 编译后检查视图 copy_ 是否生效；opinfo as_strided_scatter/diagonal_scatter 用例
+  fix: GENERATE_LIST 增 9 个布局原语条目（issue 验收口径：基线 FAIL 用例夜跑全绿 36/0、default/eager 零变化；实现 PR 另提）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: TORCHINDUCTOR_NPU_BACKEND=triton_experimental + view/as_strided/diagonal 族 copy_ 或 scatter 变异；Ascend 910B4 全量 opinfo 实测；issue 已 closed（修复验收 36/0）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: 10-16 留观（拟改判收录）→ 本轮按承诺改判：issue 正文验收口径完整（36/0）。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4941
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu triton_experimental（TE）后端的 _register_npu_inductor_fallbacks() 以「不在名单即 fallback」的门控把 9 个纯布局原语（view/as_strided/as_strided_/as_strided_copy/as_strided_scatter/diagonal/diagonal_scatter/alias/detach）物化为 eager extern 临时量；对视图的 copy_ 写入落在临时量上被 DCE 丢弃。Ascend 910B4 全量 opinfo（test/inductor/test_torchinductor_opinfo.py）实测 as_strided/diagonal scatter 族稳定失败，default 后端同输入正确，TE 进程内 CPU 对照行同受染。根因：TE 注册循环把「需要 triton 重写的 op」与「可通用布局 op」混在同一缺省名单面；正确形态是 9 原语入 GENERATE_LIST（与既有 slice/slice_scatter/select_scatter 同法），_unsafe_view 有 decomposition 自动跳过。issue 已 closed：修复后基线 FAIL 族（NPU 与 TE 进程内 CPU 对照行）夜跑全绿（逐例隔离复验 36/0），default 后端与 eager 零变化，TE 全量夜跑无新增确定性失败。
+  source: 2026-10-17 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4941 （closed 2026-10-13，验收口径完整）
+  behavior: 把 TORCHINDUCTOR_NPU_BACKEND 设为 triton_experimental 并编译含视图写入的计算（x = as_strided(buf, ...); x.copy_(src) 形态）时，编译产物返回未经变异的原 buffer：copy_ 的写入被编译器当成无副作用删掉，输出数值断言失败但没有任何异常抛出。同代码在 default 后端与 eager 下正确。
+  trigger_surface: torch_npu triton_experimental 后端 + view/as_strided/diagonal 族的 copy_/scatter 变异；910B4 实测，机制在后端注册表、与硬件型号无关
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

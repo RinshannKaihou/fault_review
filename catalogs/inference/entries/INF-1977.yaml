@@ -1,0 +1,53 @@
+id: INF-1977
+legacy_ids: []
+slug: matmul_weight_nz_out_dtype_not_checked
+aliases: []
+title: MatmulWeightNz 不校验 out 与推导 dtype 一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnMatmulWeightNz
+  behavior: WeightNz 校验链未校验 out 与推导 dtype 一致；对 out 仅做白名单，CheckWeightNzShapeValid 不含 out，ViewCopy 前无 Cast
+effect:
+  objects:
+  - 数值结果
+  detail: self/mat2=FP16、out=BF16 这类组合全部通过校验，matmulOut 为 FP16 被无 Cast 拷进 BF16 out，输出 dtype 语义不受算子保证
+  visibility: 静默错误
+mitigation:
+  detect: 用 FP16×FP16 输入配 BF16 out 调 aclnnMatmulWeightNz，断言返回参数错误；对照同族 batchmatmul 的 WeightNz 校验会拒绝该组合
+  fix: 在 CheckWeightNzDtypeValid 补 out == 推导 dtype（FP32 out 的 16 进 32 出范式除外）；issue closed 未附 MR，未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnMatmulWeightNz + 非 FP32 的 out（FP16×FP16→BF16、BF16×BF16→FP16），A2/A3 默认 cubeMathType
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6001
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6001（2026-09-18，closed）。matmul/mat_mul_v3/op_host/op_api/aclnn_matmul.cpp 的 WeightNz 校验链：L103-105 只做 OP_CHECK_DTYPE_NOT_SUPPORT 白名单；CheckWeightNzShapeValid(L291) 签名只有 (self, mat2)，out 不参与；archRule->CheckInput 落到 matmul_util.cpp L2467-2479 的 CheckInputTensorDtypeValid，对 out 仍只是白名单。收尾 L858-860 为 Reshape 后 l0op::ViewCopy(matmulOut, out)，前置无 Cast。以 self/mat2 FP16、out BF16、cubeMathType=ALLOW_FP32_DOWN_PRECISION 推演：UpdateOutputDtype（matmul_util.cpp L2630-2638）只在 outOriDtype==FP32 时保留 out 类型，故 matmulOut 为 FP16，ViewCopy 变成 FP16→BF16 跨 dtype 拷贝。资料 aclnnMatmulWeightNz.md L111 明确要求 out 与推导 dtype 一致；同族 batchmatmul 的 WeightNz 校验有该检查。
+  source: 2026-09-18 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6001 （closed）
+  behavior: 给 MatmulWeightNz 传一个 dtype 和输入推导结果对不上的 out（比如 fp16 输入配 bf16 输出）时，接口照常成功，中间结果按推导 dtype 算完再被跨 dtype 直接拷进 out，输出既不是正常 bf16 也不是 fp16 的结果；矩阵乘形状、量级都正常，只有和参考实现对拍才看得出。
+  trigger_surface: aclnnMatmulWeightNz，out 非 FP32 且与 self/mat2 推导 dtype 不同
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

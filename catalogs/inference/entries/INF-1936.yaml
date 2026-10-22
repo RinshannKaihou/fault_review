@@ -1,0 +1,58 @@
+id: INF-1936
+legacy_ids: []
+slug: msmodelslim_quant_artifact_generation_config
+aliases: []
+title: 量化产物 generation_config 覆盖采样致输出退化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: 量化产物 generation_config
+  behavior: msmodelslim 26.1.0 保存量化权重时原样带出含 top_k=2、top_p=0.6、temperature=0.8、do_sample 的 generation_config.json，vLLM 启动时用它覆盖默认采样参数
+effect:
+  objects:
+  - 输出内容
+  detail: GLM-4.6V W8A8 文本推理 content 恒 null、thinking 死循环（删 top_k/top_p 或加 repetition_penalty 1.2 才恢复）；图片推理各配置下 content=null、finish_reason=length，量化日志仍 SUCCESS
+  visibility: 质量退化
+mitigation:
+  detect: 量化产物落盘后检查 generation_config.json 是否携带非默认采样项；拉起服务时看 vLLM 是否打印 sampling parameters overridden by generation_config 警告
+  fix: issue 未给修复；实测删除 generation_config 中的 top_k/top_p 或加 repetition_penalty 1.2 可缓解文本侧（未核实是否为官方方案）；TP=8 另报 aclnnDequantSwigluQuantV2 lastdim 需整除 64 的 shape 错误
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim 26.1.0 一键量化（GLM-4.6V，w8a8，4 卡）后产物直接用 vLLM 拉起；量化本身 SUCCESS 无报错
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/465
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '环境 Ubuntu 22.04 aarch64、python 3.12、msmodelslim 26.1.0（commit 29e6c1dd）。用 `msmodelslim quant --model_path /mnt/weight/GLM-4.6V --save_path ... --device npu:0,1,2,3 --model_type GLM-4.6V --quant_type w8a8` 量化（校准集 8 张图片，default_text "Describe this image in detail."），量化日志显示 Save safetensors 成功、QUANTIZATION END、SUCCESS，产出 103GB。问题出在产物目录里的 generation_config.json：它带着 `{"top_k": 2, "top_p": 0.6, "temperature": 0.8, "do_sample": true}` 一起被保存下来，vLLM 拉起时报 ''Default vLLM sampling parameters have been overridden by the model''s generation_config.json: {repetition_penalty: 1.05, temperature: 0.8, top_k: 2, top_p: 0.6}''，即推理侧默认采样被这份配置覆盖。实测矩阵：BF16 基线文本/图片都正常；W8A8 各校准组合下文本与图片分别失败；手动改掉 generation_config 的 top_k/top_p 后文本恢复但图片仍 content=null；加 repetition_penalty 1.2 文本稳定。另在 TP=8 拉起时报 aclnnDequantSwigluQuantV2 shape 错误（lastdimSize of x must be divisible by 64，actual 352）。'
+  source: '2026-08-18 GitCode Ascend/msmodelslim issue #465 https://gitcode.com/Ascend/msmodelslim/issues/465（closed）'
+  behavior: 量化本身一路 SUCCESS，权重 103GB 正常落盘，可一拉起服务模型就“坏”了：GLM-4.6V 在 thinking 模式里出不来，content 一直是 null，finish_reason 变成 length，看起来像量化把模型精度毁了；其实换回 BF16 权重、只把量化产物里的 generation_config.json 采样项删掉或加个 repetition_penalty，文本就恢复正常。图片输入更顽固，所有校准配置组合下 content 都是 null，只有 reasoning 在自说自话。
+  trigger_surface: msmodelslim 量化产物直接交给 vLLM 拉起（generation_config.json 被一并保存并被推理框架优先读取）
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 量化

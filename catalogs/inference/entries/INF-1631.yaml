@@ -1,0 +1,56 @@
+id: INF-1631
+legacy_ids: []
+slug: triton_ascend_first_launch_drops_high_pid_programs
+aliases: []
+title: 首次启动丢失 pid≥group_tail 的 program
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: triton
+    component: 首次启动 program 落地
+  behavior: Inductor triton_experimental 编出的 odometer 式归约核首次启动时 pid>=group_tail 的 program 全部没落地，其输出单元保持旧值；同进程重启同一二进制即写全，ttir 逐行正确。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: broadcast 反向归约出现 35 行 f16/f32 错值（Mismatched 30/50=60%，恰为高 pid program 拥有的单元），连 aten.add 广播梯度都错，op/dtype 无关，5/5 复现。
+  visibility: 静默错误
+mitigation:
+  detect: 同一输入在首启动与同进程二次启动各取一次结果对比；或对广播反向归约族做逐元素对账（opinfo 已暴露 35 行）
+  fix: 规避=同进程二次启动或改回默认 inductor 后端；根因未定位（open）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TORCHINDUCTOR_NPU_BACKEND=triton_experimental + 910B4/CANN 9.1.0/triton-ascend 3.6.0；仅首次启动、仅 odometer 分组（grid 分两段 trip）的 kernel
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2292
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend 3.6.0 + torch 2.14.0a0 + torch_npu 2.14.0（gitb4c7212）+ CANN 9.1.0，Ascend 910B4，仅 TORCHINDUCTOR_NPU_BACKEND=triton_experimental。Inductor 编出的 triton_unk_fused_sum_0（XBLOCK=1、R0_BLOCK=10、num_warps=2、grid=(40,)）是标准 odometer 分组：pid<10 走 IF 分支 base=2*pid、trip=2，写 0-19 号单元；pid>=10 走 ELSE 分支 base=pid+10、trip=1，写 20-49 号单元。首次启动时 ELSE 段的 program 全部没有落地，20-49 号单元保持未写（stale），同进程内对同一二进制再次 launch 则完整写出。报告者已排除数学误编译：ttir 逐行正确，失败面只与 program id 分段有关。下游在 torch inductor NPU opinfo 上表现为 35 行确定性 f16/f32 错值（add/atan2/clamp/copysign/hypot/ldexp/max/min/nextafter/pow/xlogy/where 等），aten.add 的广播梯度同样错，5/5 复现且换进程位级一致。
+  source: 2026-09-19 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/2292 （open）
+  behavior: 用 torch.compile(triton_experimental) 在 NPU 上跑带广播的反向归约（例如简单的 a+b 求梯度），第一次编译后首次执行就有约 60% 的输出单元是旧值：梯度或结果里成片出现 30/50 不一致、数值像随机残留，而同一进程里再跑一次就全对。没有报错也没有 NaN，重新起进程又回到第一次的错误状态，非常容易误判成测试环境问题。
+  trigger_surface: triton_experimental 后端 + 首次 launch + odometer 分组 kernel（grid 分 pid<group_tail 两段 trip）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,60 @@
+id: INF-1616
+legacy_ids: []
+slug: msmodelslim_scale_absmax_missing_zero_guard_nan
+aliases: []
+title: 量化 scale 缺零值防护，全零输入写入 NaN 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: scale/absmax 计算（3 处）
+  behavior: 三处 scale/absmax 缺零值防护：MXFP4 dual_scale、flat_quant 激活侧、NF4 归一化；全零 block、通道或 token 时 0/0 得 NaN 并写进权重。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: 全零 block、全零通道或全零 token（如 padding、全零激活 token）参与量化时，权重/激活被写成 NaN；量化命令正常结束、无报错或警告，权重文件照常导出，直到逐张量检查或下游推理才暴露为 NaN/Inf 与乱码。任意硬件。
+  visibility: 数值异常
+mitigation:
+  detect: 量化产物导出后逐张量扫 NaN/Inf（mstools 查看权重）；或对全零 block/通道构造最小输入跑 scale 计算，同文件权重侧的 clamp(min=1e-5) 是正确写法参照
+  fix: issue closed；正文建议三处补 clamp(min=1e-5)（与 quantizer.py:281 权重侧一致），未核实修复 commit 与发布版本
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: msmodelslim commit 0ef9aaa569d2a36aa5c3884778ffb85d8d58914d（2026-08-28）；触发条件是待量化 block/通道/token 全为零，需要构造退化输入，非一行配置可触发；报告者为静态走查，未实机运行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/506
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: commit 0ef9aaa569d2a36aa5c3884778ffb85d8d58914d 上三处同型缺陷：msmodelslim/core/quantizer/impl/dualscale.py:110 的 MXWeightDualScaleMinmax 里 dual_scale = dual_block_max_val / MXFP4_MAX_NORMAL，block 全零时 dual_block_max_val=0 使 dual_scale=0，:111 的 weight_value.to(float32)/dual_scale 得 NaN；msmodelslim/pytorch/llm_ptq/llm_ptq_tools/flat_quant/components/quantizer.py:191 的 ActivationQuantizer.get_scale_zero 在 sym 分支算 scale=xmax/q_max 没有 clamp，而同文件 :281 的 WeightQuantizer.find_params 对完全相同的公式写了 .clamp(min=1e-5)；msmodelslim/pytorch/llm_ptq/llm_ptq_tools/quant_modules.py:535-539 的 NF4 normalize_data 直接 block_weight /= absmax。三处都是静态走查确认，未实机跑完整量化流程。
+  source: 2026-08-29 GitCode Ascend/msmodelslim issue https://gitcode.com/Ascend/msmodelslim/issues/506 （closed）
+  behavior: 含全零 block、全零通道或全零 token 的权重/激活在量化时被写成 NaN：量化命令正常结束、没有任何报错或警告，权重文件也照常导出，直到用 mstools 逐张量看或在下游推理里才暴露成 NaN/Inf 与乱码输出。同一文件里权重侧公式带 clamp、激活侧漏写，说明这是遗漏而非设计。
+  trigger_surface: 量化过程中出现全零 block / 全零通道 / 全零 token（如 padding、全零激活的 token）；任意硬件
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

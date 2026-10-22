@@ -1,0 +1,57 @@
+id: INF-1565
+legacy_ids: []
+slug: ops_math_round_aicpu_fp64_relative_epsilon_ties
+aliases: []
+title: Round AICPU 相对误差判 ties 误舍 FP64 近半整数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: round_aicpu.cpp 判等
+  behavior: IsValueEqualForDouble 把 fraction 与 0.5 的判等放宽到约 5e-15 相对误差，远大于相邻 FP64 间隔；紧邻半整数的合法 DOUBLE 值被当成精确 ties，按 ties-to-even 舍错一侧
+effect:
+  objects:
+  - 数值结果
+  detail: decimals=0 时 1.4999999999999998 返回 2（应 1）、-0.50000000000000011 返回 0（应 -1）、-2.5000000000000004 返回 -2（应 -3）；10 个回归用例 9 个通过，边界用例稳定失败
+  visibility: 静默错误
+mitigation:
+  detect: 用 std::nextafter 构造 ±半整数两侧的 FP64 输入做边界回归，与 ties-to-even 参考逐值比对；判等阈值必须在 1 ulp 以内或改为精确相等
+  fix: PR https://gitcode.com/cann/ops-math/merge_requests/6034 （open）：FP64 比较改精确相等，保留 NaN/Inf 分支与其他 dtype 既有逻辑，新增正负半整数两侧回归；改动限于 math/round/op_kernel_aicpu/round_aicpu.cpp 与 AICPU UT
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: math/round 的 AICPU kernel，DT_DOUBLE 输入、decimals=0；需输入落在半整数相邻可表示值（如 1.4999999999999998）才触发，普通 FP64 输入正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3349
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6034
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-math（源码 commit 9aad7870053b4259744f765ed0ac39bc885b4b8c）的 Round AICPU kernel 在 DOUBLE 输入上用相对误差 1e-14 判断小数部分是否等于 0.5：math/round/op_kernel_aicpu/round_aicpu.cpp 的 IsValueEqualForDouble 把 fraction 与 0.5 的差值放宽到约 5e-15，远大于相邻 FP64 可表示值的间隔，于是合法且紧邻半整数的值被当成精确 ties 进入 ties-to-even 分支，舍到错误一侧。Round 的 README 与 aclnnRound 头文件均声明支持 DOUBLE、等距取偶，AICPU OpDef 也注册了 DT_DOUBLE，因此这些输入完全在契约内。用 std::nextafter 构造半整数两侧值做 AICPU Host UT，baseline 在 1.4999999999999998、-0.50000000000000011、-2.5000000000000004 三个值上给出错误结果，10 个用例中 9 个通过、边界用例稳定失败；修复让 FP64 走精确相等后 10/10 通过。验证用 bash build.sh -u --opkernel_aicpu --ops=round -j2 与 cmake --build build --target math_aicpu_op_kernel_ut，未跑 device 执行与整包构建。
+  source: 2026-09-28 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3349 （open，关联 PR https://gitcode.com/cann/ops-math/merge_requests/6034）
+  behavior: 对 FP64 张量调用 round(decimals=0)，绝大多数值都对，但恰好落在半整数旁边的可表示值会被多舍一位：1.4999999999999998 得到 2、-0.50000000000000011 得到 0、-2.5000000000000004 得到 -2，都偏了一个整数。没有报错，只有在边界值上逐位比对才看得出。
+  trigger_surface: ops-math math/round AICPU kernel；DT_DOUBLE 输入、decimals=0、值紧邻半整数（nextafter 级差）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

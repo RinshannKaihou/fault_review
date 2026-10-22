@@ -1,0 +1,59 @@
+id: INF-1663
+legacy_ids: []
+slug: ops_nn_tensor_scatter_update_parallel_error_swallowed
+aliases: []
+title: TensorScatterUpdate 并行分支吞掉越界错误码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: AICPU UpdateOneOutput 并行
+  behavior: updates_nums>65536 时走 ParallelFor，其无条件返回 OK 覆盖 worker 写的 PARAM_INVALID；ret 还是非原子 uint32，多 worker 并发读写。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3 + CANN 9.1.0 内置算子：x[14000,5]、indices 含 14000 越界值、updates_nums=70000 时 RunGraph 返回 success，输出 10 个元素错；降到 ≤65536 则正确报 PARAM_INVALID。
+  visibility: 静默错误
+mitigation:
+  detect: 同一份越界 indices 分别用 >65536 与 ≤65536 的 updates 规模各跑一次比较 RunGraph 返回值；只测小规模会漏。
+  fix: issue 5084 closed；正文给出对齐 InitializeOutput/scatter_elements/scatter_nd_max：ret 改 std::atomic<uint32_t>、用局部变量承接单次结果、不让 ParallelFor 返回值覆盖；未给 PR 号。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: partial
+  trigger_note: TensorScatterUpdate 的 AICPU 实现 + updates 元素数 >65536 走并行分支 + indices 含越界值；CANN 9.1.0、Ascend910B3
+  confidence: documented
+remarks: 失败模式是“规模相关的行为不一致”：同一份坏输入小规模报错、大规模静默成功，小用例永远不暴露；作者指出同仓 InitializeOutput 等三处都用 atomic，此处为遗漏。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5084
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5084（2026-08-24，closed）：Ascend 910B3、CANN 9.1.0（问题在已发布版本上可直接复现），仓库 cann/ops-nn 的 index/tensor_scatter_update。AICPU 算子 UpdateOneOutput 在 op_kernel_aicpu/tensor_scatter_update_aicpu.cpp 中，当 info.updates_nums > kSplitSize（64*1024=65536 个元素）时走 CpuKernelUtils::ParallelFor 多线程分支：uint32_t ret = KERNEL_STATUS_OK; auto shard_copy = [&](...) { ... ret = UpdateOneOutput(info, args, i); ... }; ret = CpuKernelUtils::ParallelFor(*info.ctx, info.num_updates, 1, shard_copy);——ParallelFor 在 device/sharder 非空时无条件 return KERNEL_STATUS_OK，且其内部 barrier 保证所有 worker 先于该赋值完成，因此 worker 写入的 KERNEL_STATUS_PARAM_INVALID / KERNEL_STATUS_INNER_ERROR 100% 被覆盖成 OK。后果：同一份越界 indices 输入，updates 元素数 ≤65536 走串行分支正确返回 PARAM_INVALID，>65536 则静默返回 OK 并输出带错数据的结果。附带：ret 是非原子 uint32_t 被多 worker 并发读写（数据竞争），同文件 InitializeOutput 以及 scatter_elements / scatter_nd_max 的同构实现都用 std::atomic<uint32_t>，此处遗漏。实测 GE 图输入 x_shape={14000,5}、indices_shape={14000,1}、updates_shape={14000,5}（updates_nums=70000），indices 中一个改为 14000：日志给出 MISMATCH at [34990] got (-1.000000,-1.000000) want (70010.000000,-70010.000000)、SELF_CHECK total=70000 mismatch=10 -> FAIL，同时 RunGraph 返回 SUCCESS；合法输入对照 mismatch=0 且 PASS。
+  source: 2026-08-24 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5084 （closed）
+  behavior: 在图上跑 TensorScatterUpdate（AICPU 实现），只要 updates 超过 65536 个元素、indices 里带一个越界值，RunGraph 依旧返回成功、日志里只有 success，可输出里已经混进了错误元素（越界那一行和同 shard 被提前丢弃的尾部各得 -1 之类的值）。错误码被并行框架的返回值吞掉，上层只能靠逐元素自检发现；规模小的用例反而正常报错，容易误判为“已修好”。
+  trigger_surface: TensorScatterUpdate 的 AICPU 实现 + updates 元素数 >65536（走 ParallelFor）+ indices 含越界值；CANN 9.1.0、Ascend910B3
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - component
+    uncertain:
+    - behavior

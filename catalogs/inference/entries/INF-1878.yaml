@@ -1,0 +1,58 @@
+id: INF-1878
+legacy_ids: []
+slug: hcomm_do_release_nonblock_erase_forward_iteration
+aliases: []
+title: DoReleaseNonBlockTypeRes 正向 erase 漏释放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: ccu_res_batch_allocator
+  behavior: 循环上界取 erase 前的 reqSize，循环体内正向 erase 后又 i++：被跳过元素永不释放，且 i 会超过缩小后的 size()。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 同 die 持 4 个非零资源 [A,B,C,D] 时只释放 A、C，B 泄漏，第 3 轮 i=2 越界访问 size=2 的 vector；每次带 CCU 资源的通信域销毁都会走该路径。
+  visibility: 静默错误
+mitigation:
+  detect: 在同 die 注册 ≥2 个同类非零 CCU 资源后销毁通信域，统计 ReleaseRes 调用次数与残留条目；只有单个资源时看不出问题。
+  fix: 待定（issue closed，未给 MR）：改 erase-remove idiom，先遍历释放并置 num=0，再统一 remove_if。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: CCU 资源配置下发（同一 die 持有 2 个及以上同类型非零资源）+ 通信域销毁
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 复现为 godbolt 独立 demo（同一循环写法），未附真实通信域销毁的设备日志；越界后果按 vector 语义记为 UB。
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/107
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hcomm issue 107（closed）：src/framework/next/comms/ccu/ccu_device/ccu_res_batch_allocator.cc:579-596 的 DoReleaseNonBlockTypeRes 在循环前保存 const uint32_t reqSize = resInfos.size()，循环条件用 i < reqSize 作为上界，循环体内释放成功后执行 resInfos.erase(resInfos.begin() + i) 但 i 仍然自增。后果两重：erase 后原 i+1 位置元素前移到 i，被 i++ 跳过，永不被释放；多次 erase 后 i 超过当前 resInfos.size()，resInfos[i] 变成越界访问（vector 语义下为 UB，栈上表现为读到脏值或崩溃）。作者用 [A,B,C,D] 四个 num!=0 的资源逐步推演：第 1 轮释放 A 并 erase(0)，第 2 轮 i=1 释放 C（B 被跳过），第 3 轮 i=2 时 size 只剩 2，越界；并在 godbolt（gcc 14.2、C++17）给出可运行 demo 对比 buggy 与 erase-remove 版本。触发条件是同一 die 上持有 2 个以上同类型非零资源，作者称多 kernel 注册场景为常态、每次携带 CCU 资源的通信域销毁都会走到。
+  source: GitCode cann/hcomm issue https://gitcode.com/cann/hcomm/issues/107 （closed）
+  behavior: 带 CCU 资源的通信域反复创建/销毁后，资源没有真正释放干净：一部分 CCU 资源批记录被跳过、一直留在分配器账上（无日志、无返回值体现），另一部分批次还会越界读 vector，可能读到脏数据或直接崩。只有同 die 上同时持有 2 个以上同类资源时才出现，单资源的小用例完全正常，所以长时间运行的服务表现为资源逐渐耗尽、后续通信域创建或 CCU 算子下发开始失败。
+  trigger_surface: DoReleaseNonBlockTypeRes + 同 die 多个同类非零 CCU 资源
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 集合通信

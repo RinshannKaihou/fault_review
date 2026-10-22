@@ -1,0 +1,70 @@
+id: INF-1649
+legacy_ids: []
+slug: triton_ascend_extract_slice_returns_zeros
+aliases: []
+title: extract_slice 取出全零致 dot 结果错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: al.extract_slice lowering
+  behavior: 950PR、CANN 9.0.0、triton-ascend 3.2.2（20260611），extension.extract_slice 取块后参与 tl.dot 时，从非零张量切出的块为全零。
+effect:
+  objects:
+  - 数值结果
+  detail: M=N=K=4 的 addmm 用例：切片打印全零，Triton 输出 y 第 1、3 行为 0，第 0、2 行等于参考第 2、4 行（整体错位一半），与 torch 参考最大误差 0.884573、精度 FAIL；无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对 extract_slice 的结果先 store 出来自检（应为非零），再做 dot；小 shape（M=N=K=4）的 addmm 回归可稳定暴露
+  fix: 待定（issue closed，正文未给修复 PR）；短期规避=不用 extract_slice，改指针偏移载入
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 950PR + CANN 9.0.0 + triton-ascend 3.2.2（20260611）；仅 extension.extract_slice 取块后用于 tl.dot 的路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/649
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1645
+pattern: PAT-INF-0177
+original:
+  mechanism: triton-ascend 3.2.2（20260611 构建）+ CANN 9.0.0，Ascend 950PR：addmm 类 kernel 用 triton.language.extra.cann.extension.extract_slice 从 x2 切出 K×BLOCK_N 的块，device_print 显示切出的张量全是 0（x2 本身非零），随后 tl.dot(x1_blk, x2_slice) 只算出部分行，acc 第 2 行起全零。M=N=K=4 的最小用例里 Triton 输出 y 的第 1、3 行为 0、第 0、2 行等于参考的第 2、4 行（整体错位一半），与 torch 参考最大误差 0.884573、精度判定 FAIL。报告者给出两条观察：extract_slice 提取的 tensor 打印全零；dot 结果与正确值错位，说明缺陷在 extract_slice 的 lowering 而不是索引或 alpha/beta 计算。
+  source: 2026-06-17 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/649 （closed）
+  behavior: 用 extension.extract_slice 从大张量里切块再做 matmul 的算子在 950PR 上精度对不上：输出有一半行是全零（参考非零），另一半行的值来自别的行，最大误差接近 0.88；alpha/beta 与 stride 都按标准写法给。无报错无 NaN，调试时把切片单独 store 出来会看到整块都是 0，容易误判成输入没传进去。
+  trigger_surface: extension.extract_slice 取块后参与 tl.dot；950PR + CANN 9.0.0 + 3.2.2
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - component

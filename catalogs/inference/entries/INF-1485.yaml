@@ -1,0 +1,61 @@
+id: INF-1485
+legacy_ids: []
+slug: op_plugin_add_rms_norm_fused_vs_unfused_mismatch
+aliases: []
+title: add_rms_norm 融合与分离路径结果不齐
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: npu_add_rms_norm 融合路径
+  behavior: npu_add_rms_norm 把残差加与 RMSNorm 放在同一融合算子内完成；与先 x+residual 再 npu_rms_norm 的分离路径相比归一化结果数值不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: bf16、(4,4096)、eps=1e-6：残差加逐位一致，RMSNorm 输出 max abs 3.125e-2、max rel 7.8e-3，torch.equal 为 False。
+  visibility: 静默错误
+mitigation:
+  detect: 同一组 x/residual/weight 分别走融合与分离路径，比对 y 与 rstd 的 max abs/rel diff 及 torch.equal
+  fix: 待定（issue open，正文未给修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch_npu.npu_add_rms_norm 融合路径 + bfloat16（shape (4,4096), eps=1e-6，cann 9.1.0 A3 镜像）；对照 npu_rms_norm(x+residual)
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 残差加本身逐位一致，分歧只出现在 RMSNorm 归一化与 rstd 计算，指向融合算子的归约顺序/中间精度。
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/470
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1472
+pattern: PAT-INF-0159
+original:
+  mechanism: 'op-plugin issue #470（c2026-08-31，open，cann:9.1.0-a3-ubuntu22.04-py3.12 镜像）：torch_npu.npu_add_rms_norm(x, residual, weight, epsilon) 与 torch_npu.npu_rms_norm(x + residual, weight, epsilon) 两条等价路径结果不一致。复现脚本用 bf16、shape (4,4096)、eps=1e-6、固定 seed：融合路径返回 y_fused/rstd_fused/sum_fused，分离路径先 sum_ref=x+residual 再 npu_rms_norm。实测 ADD 结果 max abs diff 0、torch.equal 为 True（残差加完全一致），而 RMSNorm 输出 max abs diff 3.125e-2、mean abs 8.7e-4、max rel 7.8e-3、torch.equal 为 False；rstd 同样不完全一致。说明分歧不在残差加，而在融合算子内部的归一化计算（归约顺序或中间精度）。issue 未给出维护者定位结论，也未量化对端到端任务的影响。'
+  source: 2026-08-31 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/470 （open）
+  behavior: 同样一组输入，用融合算子 npu_add_rms_norm(x, residual) 和先手工相加再 npu_rms_norm(x+residual) 得到的结果对不上：相加那一步完全一致，但归一化后的输出在 bf16 上最大绝对偏差约 3.1e-2、最大相对偏差约 7.8e-3，逐位比较不相等。数值上看起来都合理、不会报错也不会出 nan，所以属于静默偏差；对依赖逐位等价性的场景（融合算子替换、精度回归）会直接判定失败。
+  trigger_surface: torch_npu.npu_add_rms_norm 融合路径 + bfloat16（(4,4096), eps=1e-6）；与 npu_rms_norm(x+residual) 对照；CANN 9.1.0 / A3 镜像
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

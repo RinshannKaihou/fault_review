@@ -1,0 +1,52 @@
+id: INF-1832
+legacy_ids: []
+slug: vllm_ascend_aot_cache_key_ignores_custom_op_selection
+aliases: []
+title: AOT 编译缓存键漏 enable_custom_op 致复用错图
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: AOT 缓存键
+  behavior: AOT 缓存键只由 env hash、compute_hash、版本+函数位置组成，决定 trace 到哪些 Ascend 内核的 enable_custom_op() 既不在键里，加载时也没有校验。
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: 同一缓存目录下换了自定义算子选择（开/关 Ascend 融合算子）仍会命中旧图，进程实际运行与当前环境应得的不同内核实现，前端表现为精度偏差或本该生效的融合路径静默不生效。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 AOT 命中日志中的 factors 与当前环境变量；同一缓存目录切换 enable_custom_op 后重跑基线精度。
+  fix: 待定（issue 2026-08-28 open）：把 enable_custom_op 纳入缓存键或在加载时校验。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 开启 AOT compile + 自定义算子开关（enable_custom_op）在同一缓存目录下变更；vLLM ba07e4a 版本的 caching.py/decorators.py 逻辑
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15188
+  kind: github_issue
+relations: []
+original:
+  mechanism: 开启 AOT compile 后，缓存图可以被加载进一个「按当前环境应当 trace 出另一张图」的进程，因为决定哪些 Ascend 内核被 trace 的 enable_custom_op() 既不在缓存键里，也不在加载校验里。报告的键构成来自 aot_compile_hash_factors()（vllm/compilation/caching.py:573）与 _model_hash_key()（decorators.py:255）：vLLM 自身环境变量的 hash（envs.compile_factors()）、vllm_config.compute_hash()、vLLM 版本 + forward.__qualname__ + forward.__code__.co_firstlineno。对照可见非 AOT 路径的 cache dir 是按 factors = [env_hash, config_hash, code_hash, compiler_hash] 组装的，而 enable_custom_op 这一项在两条路径里都没有被覆盖。结果是同一个缓存目录在切换自定义算子选择后仍命中旧图，进程实际执行与当前环境意图不同的内核实现。issue 2026-08-28 open。
+  source: 2026-08-28 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15188 （open）
+  behavior: 在一台机器上用某套自定义算子开关跑过之后，另一个进程/容器用不同开关启动，AOT 缓存仍然命中，编译阶段看起来「秒过」，但跑出来的结果与关掉缓存的基线不一致，或者某个融合算子该生效却没生效，且没有任何提示说明缓存被跨配置复用了。
+  trigger_surface: AOT compile 缓存目录复用 + enable_custom_op 选择变化
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

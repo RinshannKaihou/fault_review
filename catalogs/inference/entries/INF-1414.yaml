@@ -1,0 +1,56 @@
+id: INF-1414
+legacy_ids: []
+slug: flashinfer_ragged_attention_q_stride_dropped
+aliases: []
+title: FlashInfer ragged attention 忽略 query 步长
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: launcher Q 步长传递
+  behavior: launcher 从张量取 kStride/vStride 但从不设置 qStrideTokens/qStrideHeads，kernel 把非连续 Q 当 packed [tokens,heads,dim] 读取
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 非连续 query（transpose 后视图）时 attention 输出静默错；GLM-4.7-Flash gsm8k 83.6%→0.8%；不抛错
+  visibility: 静默错误
+mitigation:
+  detect: 对 query 传 packed 与 strided 两种布局对照输出
+  fix: vLLM 侧规避 q.contiguous()：https://github.com/vllm-project/vllm/pull/61634（已合入 vLLM，FlashInfer 侧修复未见）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 非连续 query 输入（如 Transformers 后端传 query.transpose(1,2).flatten(0,1) MLA prefill）；SM120/RTX 5080 与 vLLM 生产路径实测；main ba87a557 仍在
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6479
+  kind: github_issue
+relations: []
+original:
+  mechanism: flashinfer trtllm_ragged_attention（及内部调用它的 trtllm_ragged_attention_deepseek）对非连续 query 静默算错。csrc/trtllm_fmha_kernel_launcher.cu 的 trtllm_ragged_attention_launcher 从张量设置 kStride*/vStride* 但从不设置 qStrideTokens/qStrideHeads，kernel 按 packed [num_tokens, num_heads, head_dim] 读取 Q；paged launcher 则正确传 query.stride(0)/stride(1)。main ba87a557 仍如此。最小复现：同值两种布局（q 与 q.transpose(0,1).contiguous().transpose(0,1)，值相等、后者非连续）输出不同且错。实际命中路径：vLLM Transformers modeling 后端向 MLA prefill 传 query.transpose(1, 2).flatten(0, 1)，GLM-4.7-Flash gsm8k 从 83.6% 掉到 0.8%；vLLM 以 q.contiguous() 规避（vllm-project/vllm#61634）。
+  source: 2026-10-17 GitHub flashinfer-ai/flashinfer issue https://github.com/flashinfer-ai/flashinfer/issues/6479（含最小复现、源码定位、下游任务实测；报告时 main ba87a557 未修）
+  behavior: 给 trtllm_ragged_attention（或 trtllm_ragged_attention_deepseek）传入非连续布局的 query（例如 transpose 后的视图，值与 packed 完全相同）时，返回的 attention 输出是错的，不抛任何错误。经 vLLM 跑 GLM-4.7-Flash 实测：gsm8k 从 83.6% 跌到 0.8%。换成连续布局（.contiguous()）立即恢复正确。
+  trigger_surface: 非连续 query 张量传入 ragged attention API（Triton/Transformers 后端 MLA prefill transpose(1,2).flatten(0,1) 形态）；B200/SM120 等实测，机制与硬件无关（launcher 层）
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

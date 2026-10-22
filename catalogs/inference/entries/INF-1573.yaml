@@ -1,0 +1,59 @@
+id: INF-1573
+legacy_ids: []
+slug: cann_kv_rms_norm_rope_cache_regbase_cache_write_defects
+aliases: []
+title: KvRmsNormRopeCache regbase 越界写/错页/漏写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: KvRmsNormRopeCache 模板
+  behavior: Norm 模式 B 维校验降级为 OP_LOGW；recompute 的 batch stride 用 seqLength；PA_BLK_NZ 用 index 位置当页号；NZ 半宽未按 dk0 对齐；index 无上界校验。
+effect:
+  objects:
+  - KV状态
+  detail: Norm下cache B轴小于kv B时b=1/2/3写cache外；recompute且Skv≠Scache时batch1..3写进batch0段；NZ+fp16+dk=16时k_cache四页全零；index≥cache行数越界写GM；返回SUCCESS。
+  visibility: 静默错误
+mitigation:
+  detect: decode 形态（Skv=1、Scache=128）下构造 B≠cache 第 0 轴、PA_NZ + dk 非 2*dk0 倍数、index 越界三类用例，逐元素核对 cache 落点
+  fix: MR https://gitcode.com/cann/ops-transformer/merge_requests/8690 （9 条缺陷全部修复，含 6 条新增 UT 与 950 上板改前/改后对照）；其中缺陷 4 改为在 recompute tiling 新增 dk%(2*dk0)==0 校验，会拒绝此前能跑但结果错的 shape
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend950 + CANN 9.1.0 + KvRmsNormRopeCache regbase（full_load/recompute）；Skv≠Scache、cache B 轴不足、PA_NZ + dk 半宽不对齐等合法配置
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/3750
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #3750（2026-07-14 closed）对 KvRmsNormRopeCache 两个 regbase 模板（full_load / recompute，op_kernel/arch35/）做全量检视，在 Ascend950 + CANN 9.1.0 实机复现一组缺陷，共性为返回 SUCCESS 但 cache 写错位置、整行漏写或写到分配内存之外：(1) PR !3349 放开 Norm 模式 cache 的 N 维校验时把 B 维校验也删成 OP_LOGW（op_host/kv_rms_norm_rope_cache_base_tiling.cpp 的 CheckCacheValid 只 warn 不 return false），而 kernel 按 (b*N+n)*cacheLength*D 线性寻址，kv 的 B=4、k_cache 第 0 轴为 1 时 b=1/2/3 写到 cache 之外；(2) recompute 的 ScatterUpdateV/K 用 gmOffset=(batchIdx*seqLength+vCacheIdx)*dv，而 cache 形状为 [Bcache,N,Scache,D]，stride 必须是 cacheLength，Skv≠Scache（decode 时 Skv=1、Scache=128）时 batch 1..3 写进 batch 0 段；(1)(2) 互相掩盖，stride 改对后缺陷 1 立即变成真实越界（aic error 507035）；(3) recompute 的 PA_BLK_NZ 分支用 idx（index 的位置）而非 blockOffset（index 的值/页号）算偏移，实测 BlockNum=4/BlockSize=16、index 值 48 和 16 应写页 3 和页 1，实际写进页 0 和页 1；(4) NZ 下 dk 半宽未按 dk0 对齐，host 只校验 dk%dk0==0，fp16 cache + dk=16 时 tmpFactor/dk0 整除为 0，k_cache 四页全零；(5) index 只判 >=0，≥cache 行数时越界写 GM；(6) xPowBuffer 按 sizeof(T_KV) 分配却按两段 float 使用，UB 越界写（当前被后续 DataCopyPad 覆盖，无可观测失效）；(7) full_load 非量化路径对未 AllocTensor 的 LocalTensor 取址；(9) epsilon 未校验为正，非正数使分母为 0 或负数开方，inf/nan 写进 cache。复现：kv=[4,1,1,32832]、gamma=[32768]、cache_mode=Norm、k_cache=[4,1,128,64]、index=[10,20,30,40]，令 cos=1/sin=0 并给 rope 半区按 batch 填 b+1，实测 k_cache[0][21]=2.0、[0][32]=3.0、[0][43]=4.0（应在 batch 1/2/3）；k_cache 改 [1,1,128,64] 同样返回 SUCCESS。UT 的 Norm 用例全部 Skv=Scache=1，ST 中 Norm 模式无用例，故此前未发现。'
+  source: 2026-07-14 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/3750 （closed）
+  behavior: 在 decode 形态下用 KvRmsNormRopeCache（Norm 模式、Skv=1 而 cache 有 128 行）写 KV cache：几个 batch 的数据会挤进同一个 batch 的槽位，或整行 k_cache 一个字节都没写、读出来还是旧值/全零；页表里指向不同页的 token 被写进同一页。算子全程返回成功，只有拿 numpy 独立算一遍 cache 内容才能发现。cache 参数与 kv 的 batch 不一致时还会写到 cache 分配范围之外。
+  trigger_surface: KvRmsNormRopeCache regbase 模板 + Norm/PA_NZ 模式 + Skv≠Scache、cache B 轴小于 kv 的 B、dk 半宽非 dk0 倍数、index 越界等合法或未校验配置
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

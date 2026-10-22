@@ -1,0 +1,58 @@
+id: INF-1908
+legacy_ids: []
+slug: vllm_ascend_gdn_test_shape_only_false_pass
+aliases: []
+title: GatedDeltaRule 单测输入自相矛盾且只验形状
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: vllm
+    component: chunk_gated_delta_rule 单测
+  behavior: 用例构造 cu_seqlens=[0,1,2,3]（总长 3）却配 T=17 的 packed 张量，且只断言输出 shape；NPU 异步执行使 chunk_fwd_o 的越界故障不在断言处暴露。
+effect:
+  objects:
+  - 测试判定
+  detail: Ascend NPU 夜间单卡用例报告显示 PASSED，算子正确性未被验证；AICORE 507015（MPU address access invalid）仅在进程退出同步时以 warning 出现，或设 ASCEND_LAUNCH_BLOCKING=1 时硬失败。
+  visibility: 静默错误
+mitigation:
+  detect: 开启 ASCEND_LAUNCH_BLOCKING=1 重跑该用例，并校验 cu_seqlens[-1] 是否等于 packed seqlen T
+  fix: 修正测试输入（cu_seqlens 与 T 一致）并增加数值正确性断言（issue 提议，open）
+labels:
+  family: infra_off
+  trigger: 'no'
+  trigger_review: false
+  trigger_note: vllm-ascend 0.20.2rc1 / vLLM 0.20.2、CANN 9.0.0、torch_npu 2.10.0、A3；单测 test_chunk_gated_delta_rule.py::test_triton_fusion_ops
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10572
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 0.20.2rc1（releases/v0.20.2rc，vLLM 0.20.2、CANN 9.0.0、torch_npu 2.10.0、Ascend 910A3）的 tests/e2e/nightly/single_node/ops/singlecard_ops/triton/test_chunk_gated_delta_rule.py::TestChunkGatedDeltaRule::test_triton_fusion_ops 用 torch.randn(1,17,4,128) 构造 T=17 的 packed q/k/v，却传 q_start_loc=torch.range(0,3)（即 cu_seqlens=[0,1,2,3]，累计长度仅 3），违反 varlen 下 cu_seqlens[-1]==seqlen 的契约；同时 initial_state 为 3 个序列。用例只 assert 输出 shape 为 (1,17,8,128)/(3,8,128,128)，不校验数值。该输入使 chunk_gated_delta_rule_fwd 调用的 AscendC 算子 chunk_fwd_o 在 chunk_indices=None 时越界读 GM，报 AICORE 507015（MPU address access invalid）。由于 NPU 执行异步，CPU 侧 shape 断言看不到设备故障，测试显示 PASSED；故障只在进程退出同步时以 warning 出现，或 ASCEND_LAUNCH_BLOCKING=1 时硬失败。
+  source: 2026-08-05 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10572 （open）
+  behavior: CI/夜间单测报告 chunk_gated_delta_rule 融合算子用例通过，但实际上用例输入自相矛盾并触发设备越界访问，测试只比较 shape 所以没发现；算子正确性完全未被验证，故障被测试结果掩盖。
+  trigger_surface: Ascend NPU 夜间单测（GatedDeltaRule triton 融合算子，异步执行）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

@@ -1,0 +1,59 @@
+id: INF-1426
+legacy_ids: []
+slug: opplugin_max_min_empty_dim_allzero
+aliases: []
+title: op-plugin max/min 空 tensor 静默返回全 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: Max/Min 空输入校验
+  behavior: max/min空输入不校验：无dim且numel==0时8.5静默返回0.0（9.1报错）；带dim且size(dim)==0时8.5/9.1均静默返回values、indices全0；CPU/CUDA报错。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 错误值 0.0 与全 0 索引流向下游：阈值/边界判断误判、gather/index_select 全指向位置 0；上游空输入缺陷（如动态 batching seq_len=0）被掩盖而非暴露；8.5 与 9.1 均未修带 dim 场景
+  visibility: 静默错误
+mitigation:
+  detect: 空 tensor/size=0 维度上对照 CPU 行为
+  fix: 部分修复：PR !4922 仅覆盖无 dim + numel==0（9.1 dev 生效，8.5 未生效）；带 dim 归约 size=0 维度两版本均未覆盖
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 空 tensor t.max()（NPU 8.5 返回 0.0）与 t.max(dim=k) size(k)=0（8.5&9.1 返回全 0）；Ascend 910，torch 2.7.1，两 torch_npu 版本复现
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/381
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0158
+original:
+  mechanism: Ascend op-plugin 的 torch.max/torch.min（op_plugin/ops/opapi/MaxKernelNpuOpApi.cpp / MinKernelNpuOpApi.cpp）对空输入不校验：场景 A（无 dim + numel==0）NPU 8.5 静默返回标量 0.0，CPU/CUDA 抛 RuntimeError（NPU 9.1 经 PR !4922 已修复为报错）；场景 C（带 dim 归约 size(dim)==0，如 torch.zeros([0,5,3]).max(dim=0)）NPU 8.5 与 9.1 均静默返回 values 全 0 + indices 全 0，CPU/CUDA 报错。min 同理。影响：0.0 被当真实最大值参与阈值/上界校验导致误判；indices 全 0 使下游 gather/index_select/embedding lookup 全指向位置 0 产生语义错误；上游空输入缺陷（动态 batching seq_len=0、空集合取最大值）本应报错暴露根因，NPU 静默返回使错误传播更远；同代码三端行为分裂（CPU/GPU 报错、NPU 跑通但错）。环境：Ascend910、torch 2.7.1+cpu、torch_npu 2.7.1.post2.dev20260727（CANN 8.5）/2.7.1.post8.dev20260715（CANN 9.1）双版本复现。
+  source: '2026-10-17 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/381 （open；复现脚本+三端行为矩阵；关联 PR !4922 与 issue #75）'
+  behavior: 在 NPU 上对空 tensor 求 max/min（t.max()）时静默得到 0.0（CPU/GPU 报错）；对 size=0 的维度做带 dim 归约（t.max(dim=0)）时静默返回 values 全 0、indices 全 0（8.5/9.1 都如此）。下游若拿 0.0 做阈值判断会误判，拿全 0 索引做 gather/index_select 会全部取到位置 0 的数据，产生语义错误而非崩溃；空输入本应暴露的上游 bug 也被掩盖。
+  trigger_surface: NPU torch.max/min + 空 tensor 或 size=0 归约维度；动态 batching seq_len=0 等上游空输入场景
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern

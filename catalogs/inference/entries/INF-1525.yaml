@@ -1,0 +1,55 @@
+id: INF-1525
+legacy_ids: []
+slug: torchnpu_te_e8m0_ceil_log2_boundary
+aliases: []
+title: FP32→E8M0 用 ceil(log2) 致 2 的幂边界编码错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: E8M0 指数编码
+  behavior: FP32→E8M0 转换用 ceil(log2(x)) 求指数，log2 在 2 的整数次幂附近的浮点舍入会抹掉相邻 ULP 的边界差异，编码落到错误档位。
+effect:
+  objects:
+  - 数值结果
+  detail: 1.0 上方一个 ULP 的值本应编码到下一档，log2 舍入为 0 后与 1.0 同码；零、负数、非正规数、Inf、NaN 依赖普通正数路径的偶然结果。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 2 的整数次幂及其上下一个 ULP、零/负数/非正规数/特殊值，比对 E8M0 编码与按指数位/尾数位直接计算的结果
+  fix: 修复 MR https://gitcode.com/Ascend/pytorch/merge_requests/46466（改为直接取 FP32 的指数位与尾数位计算 E8M0，仅对 NPU FP32 输入生效）；合入与发布状态未核实
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: triton_experimental 后端把 NPU FP32 张量转 E8M0（MX 类 microscaling 的指数编码）；torch 2.14 开发版 + CANN 9.2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4985
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4985（2026-09-21，open，PyTorch 2.14 开发版 / CANN 9.2 / triton_experimental / Ascend NPU）：把 FP32 输入转换为 E8M0 指数编码时，实现用 ceil(log2(x)) 求指数；在 2 的整数次幂附近，log2 的浮点舍入可能丢掉边界差异。例如 1.0 上方一个 FP32 ULP 的值应向上编码到下一档，若 log2 结果被舍入为 0，就会得到与 1.0 相同的编码（少一档 scale）。零、负数、非正规数、无穷大与 NaN 也依赖普通正数路径的偶然结果，没有显式处理。期望改为对 FP32 的指数位与尾数位直接计算 E8M0 编码，使 2 的整数次幂及相邻值、非正规数与特殊值都得到确定结果；关联修复 MR 46466。'
+  source: 2026-09-21 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4985 （open）
+  behavior: 把 fp32 张量转成 E8M0 指数编码（MX 量化取 scale 用）时，落在 2 的整数次幂紧邻位置的值会编错档：本来该进下一档的数被编成和 1.0 同一档，scale 因此偏小一档。零、负数、非正规数和 Inf/NaN 也没有专门处理，结果取决于普通正数路径的巧合。整个过程不报错，只有和对指数位直接计算的结果对比才会发现。
+  trigger_surface: FP32→E8M0 scale 编码（triton_experimental 后端、NPU FP32 输入）；2 的整数次幂及其相邻 ULP、特殊值
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

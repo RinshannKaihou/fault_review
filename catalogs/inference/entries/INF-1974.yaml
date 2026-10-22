@@ -1,0 +1,58 @@
+id: INF-1974
+legacy_ids: []
+slug: hccl_allreduce_seq_executor_datasize_stale
+aliases: []
+title: AllReduce 执行器 dataSize_ 早算致传输长度取旧值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: ins_v2 AllReduce序列执行器
+  behavior: dataSize_ = dataCount_ * dataTypeSize_ 写在 dataCount_ 赋值之前，用默认 0 或上一次的 count 算长度
+effect:
+  objects:
+  - 数值结果
+  detail: 新对象调用时 dataSize_=0，等于不搬数据；复用对象按上一次 count 收发，多卡归约结果与单卡基线不符，接口全程 SUCCESS 无告警
+  visibility: 静默错误
+mitigation:
+  detect: 同一 executor 对象连续两次不同 count 的 AllReduce 交替调用，比对多卡结果与单卡推理结果；UT 断言 dataSize_ == count*SIZE_TABLE[dtype]
+  fix: 交换两行赋值顺序（dataCount_ 先赋值，再算 dataSize_）；issue 只给 diff 建议，未给 MR，是否已修未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: A2/A3 上走 ins_v2 序列执行器的 AllReduce，新对象首调与对象复用两种场景都会算错长度
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/295
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hccl issue 295（2026-07-15，closed）来自 HCCL 创新大赛代码缺陷提交。src/ops/all_reduce/executor/ins_v2_all_reduce_sequence_executor.cc L121-123 的三行顺序为 dataTypeSize_ 取自 SIZE_TABLE、dataSize_ = dataCount_ * dataTypeSize_、dataCount_ = param.DataDes.count，长度在计数赋值前算出；基类 executor_v2_base.h L82 把 dataCount_/dataSize_/dataTypeSize_ 都初始化为 0。提交附隔离用例 loop-control/test_initorder_006.cc 的三组输出：新对象 INT32 count=1000 得 dataSize_=0（应 4000）；复用对象 INT8 count=500 得 1000（应 500）；复用对象 FP32 count=777 得 2000（应 3108）。全仓 14 个 *_sequence_executor.cc 及其 _aicpu/_aicpu_3level 变体均为先赋 count 后算 size，仅此类颠倒。
+  source: 2026-07-15 GitCode cann/hccl issue https://gitcode.com/cann/hccl/issues/295 （closed）
+  behavior: 多卡训练/推理里同一 AllReduce 执行器被反复调用时，集合通信搬的字节数和本轮张量对不上：进程不报错、不挂起，但归约后的值与单卡基线不一致；新建执行器那次更彻底，长度算成 0 相当于这一步没做归约。定位只能靠逐层比对多卡与单卡结果，日志里看不到异常。
+  trigger_surface: ins_v2 AllReduce 序列执行器，count 变化或对象复用的多卡场景
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - component
+    uncertain:
+    - detail

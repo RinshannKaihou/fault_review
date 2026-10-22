@@ -1,0 +1,59 @@
+id: INF-1658
+legacy_ids: []
+slug: ms_tanh_expander_no_clamp_overflow
+aliases: []
+title: tanh 展开未裁剪输入，大值 exp 溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: tanh 展开/lowering
+  behavior: tanh 的展开实现用指数形式且不对输入做区间裁剪，幅值较大时 exp(2x) 溢出，与 Aclnn 先 clip 到安全区间的实现不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: 大幅值输入下展开结果与 Aclnn 不一致、数值不稳定，常规幅值区间两侧一致；issue 未给具体数值与最小用例，只说明可观察到差异。
+  visibility: 数值异常
+mitigation:
+  detect: 对同一 tanh 输入分别在展开路径与 aclnn 路径下执行，取 |x| 很大的边界值比较输出；出现溢出或与 aclnn 不一致即命中
+  fix: 待定（issue open，仅供方向：展开时按 aclnn 的区间对输入做 clip，再走指数形式）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: Ascend + tanh 走展开（lowering）路径；输入幅值需足够大才会触发 exp 溢出
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/28936
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore Ascend 平台 tanh 的展开（lowering）实现用指数形式计算：对输入 x 不做区间裁剪（clamp），幅值较大时 exp(2x) 溢出，数值稳定性变差，结果与 Aclnn/ACL 官方实现不一致。Aclnn 的实现会在计算前把 x 限制到一个安全区间，因此两边在边界输入（大正数/大负数）上会分叉。issue 指出问题更容易在大幅值输入场景暴露，影响高精度训练和需要与 ACL/Aclnn 对齐的场景，在 Ascend 上对比测试可观察到差异；正文未给最小复现 demo 和具体数值，只说明可补充对比脚本。环境为 Ascend NPU + MindSpore，相关组件是 tanh 的展开实现与 Aclnn。
+  source: 2026-02-04 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/28936 （open）
+  behavior: 同一份 tanh 在 Ascend 上，输入幅值大一点（远离 [-1,1] 的 logits、未归一化的 score）时，展开算出来的结果与直接用 aclnn 算子对不上，偶尔出现溢出；输入都在小范围内时两边又完全一致，因此只在特定样本上表现为精度抖动，不打日志也不报错。
+  trigger_surface: Ascend 平台上 tanh 走图算/展开路径且输入幅值超出安全区间
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核

@@ -1,0 +1,57 @@
+id: INF-1400
+legacy_ids: []
+slug: op_plugin_index_put_trailing_undefined_indices_fp32
+aliases: []
+title: op-plugin index_put 尾部 undefined 静默错写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: IndexPutKernelNpuOpApi 适配
+  behavior: 实数分支对 indices 列表中 undefined 位置填 shape[0] 占位后调用 aclnnIndexPutImpl，float32 且 indices 含尾部 undefined 时静默错写。
+effect:
+  objects:
+  - 数值结果
+  detail: '[idx,None] fp32 末行漏更新 maxdiff≈3；[idx,None,None] 通道交换 maxdiff≈1、exact 形状 maxdiff≈7 且一次 SIGSEGV；accumulate 两值均触发；影响 ATen 层调用方（Python 前端剥 None 不受影响）'
+  visibility: 静默错误
+mitigation:
+  detect: 对含 trailing None 的 indices 调用做 NPU/CPU 对照；未评估
+  fix: 待定（issue open，请求确认尾部 undefined 的 aclnn 表示契约；回归建议覆盖 len1/2/3 × 广播/精确 × accumulate × fp32/64）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: torch.ops.aten._index_put_impl_ float32 + indices 列表含尾部 undefined（None）或补满到 rank；Atlas 800I A2/910B4、CANN 9.1.0、torch_npu 2.10.0.post4 实测；float64 不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/586
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: op_plugin 的 IndexPutKernelNpuOpApi.cpp（基线 763f7ae）实数分支对 indices 列表中 undefined 位置填 shape [0] 占位张量后调用 aclnnIndexPutImpl。float32 下 indices 含尾部 undefined（[idx,None]、[idx,None,None]）时静默错写：[idx,None] 末行漏更新 maxdiff≈3，[idx,None,None] 通道交换 maxdiff≈1、value 为精确形状（无需广播）时 maxdiff≈7 并观察到一次 SIGSEGV（exit 139，仅一次不声称必崩）。accumulate=True/False 均触发。float64 全部正确；CPU 全部正确（v2.10.0 TensorAdvancedIndexingUtils.h make_info 补齐缺失 null 到 rank）。根因为 0 尺寸占位与 value 广播交互污染写入（报告者自标假说、未证实）。影响面：ATen 层 optional-index 的调用方（内部分解、扩展代码）；普通 Python index_put_ 前端会剥离尾部 None（python_variable_indexing.cpp/TensorIndexing.h 已核对），公开入口不直接产生该形态——报告者如实声明不声称普通 Python 用户普遍受影响。参数化脚本 issue_eval_a.py 每组独立进程，确定性复跑 maxdiff 一致。
+  source: https://gitcode.com/Ascend/op-plugin/issues/586
+  behavior: 在 NPU 上以 float32 调用 aten._index_put_impl_ 且 indices 带尾部 None（或补满到 rank）时，写入结果错误：指定行漏更新或通道错位，与 CPU 结果 maxdiff 达 1~7，无任何报错；value 为精确形状时还可能段错误（偶发一次）。同样代码 float64 或 CPU 全部正确。受影响的是 ATen 层 optional-index 调用方（内部分解、扩展代码），普通 Python index_put_ 前端会剥 None 不直接触发。
+  trigger_surface: op-plugin（CANN 9.1.0 配套）IndexPutKernelNpuOpApi 实数分支；float32；indices 列表含尾部 undefined 项或被补满到 rank；accumulate 任意；Atlas 800I A2（910B4）实测
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior

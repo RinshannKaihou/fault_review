@@ -1,0 +1,57 @@
+id: INF-1462
+legacy_ids: []
+slug: triton_loop_reduction_thread_locality_wrong_accumulate_op
+aliases: []
+title: Triton 循环内归约优化用循环算符累积致符号翻转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 归约外提累积算符选择
+  behavior: ThreadLocality 优化把归约跨线程部分移到循环后，用循环更新算符（-）而非归约算符（+）累积 partial：acc -= tl.sum 得 +512；acc += tl.max 得 -inf。
+effect:
+  objects:
+  - 数值结果
+  detail: 32×512 fp32 全 1 矩阵按行循环 4 块相减（每行应为 -512）实测得 +512.0；main @6fe3348e6 L40S 与 3.8.0 wheel/H100 同样输出；静默无诊断
+  visibility: 静默错误
+mitigation:
+  detect: 含循环内归约的 kernel 与 torch 参考逐值对照；负号/非匹配算符模式审查
+  fix: 方向 issue 给出：仅在更新是归约自身算符作用于 acc 时重写（#11370 曾实现后被 revert）；未实施（issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 循环内 tl.sum/tl.max 归约 + 更新算符与归约算符不同（-=、+= max、非纯累积式）；main @6fe3348e6 与 3.8.0 均复现；L40S/H100
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12348
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'Triton issue #12348（c2026-10-18）：循环内对加载 tile 沿末轴归约并累积的 kernel，acc -= tl.sum(x, 1) 静默返回错误符号的和、acc += tl.max(x, 1) 返回 -inf、acc = acc * 0.5 + tl.sum(x, 1) 编译失败。根因：TritonGPUOptimizeThreadLocality pass 把归约的跨线程部分移到循环之后，累积每线程 partial sum 时使用循环的更新算符（-）而不是归归约自身的算符（+）；acc += tl.max 同理用 + 代替 max。复现：32×512 fp32 全 1 矩阵、每行循环 4 块 128 列相减，每行应为 -512，main @6fe3348e6（L40S）与 3.8.0 wheel（H100 同）均输出 +512.0。修复方向（issue 内）：只在更新是归约自身算符作用于 acc 时重写（#11370 曾实现后被 revert）。'
+  source: 2026-10-18 GitHub triton-lang/triton issue https://github.com/triton-lang/triton/issues/12348 （open）
+  behavior: 在 Triton kernel 的循环里写 acc -= tl.sum(x, 1) 这类用非归约算符累积的归约时，结果符号整个翻转：应得 -512 的每行得到 +512；acc += tl.max 得到 -inf；第三种写法直接编译失败。无任何告警，数值看似合理。
+  trigger_surface: Triton（main @6fe3348e6、3.8.0）循环内 tl.sum/tl.max 归约 + 更新算符非归约自身算符；L40S/H100 复现
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

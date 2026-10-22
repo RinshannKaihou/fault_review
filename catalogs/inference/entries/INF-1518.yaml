@@ -1,0 +1,62 @@
+id: INF-1518
+legacy_ids: []
+slug: torchnpu_fia_long_seq_bf16_accum_precision
+aliases: []
+title: 长序列 bf16 融合 attention 精度远低于分解路径
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: npu_fused_infer_attn
+  behavior: 长序列 bf16 下融合 attention kernel 的累加精度显著低于 matmul→softmax→matmul 分解路径，误差随序列长度放大。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: S=8192、D=128、单头：分解路径 max abs 1.67e-7、平均相对 3.4e-6；融合 3.06e-4、1.09e-2（约 3000×）；自回归解码逐步放大，生成退化为重复输出。
+  visibility: 静默错误
+mitigation:
+  detect: 同一组 bf16 q/k/v 分别走融合算子与逐算子分解，与 CPU fp64 参考比对 max abs 与平均相对误差；长序列（S≥2048） 才明显
+  fix: 待定（issue open，无修复 PR；报告者请求算子提供 fp32 accumulate 选项或确认调用契约）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: npu_fused_infer_attention_score + TND 布局 + sparse_mode=0 + bf16 + 长序列（S=8192 实测，S≥2048 起明显）；910B2C/CANN 9.0.0/torch_npu 2.10.0.post4
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5238
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5238（2026-09-29，open，Ascend 910B2C / CANN 9.0.0 / torch 2.10.0+cpu / torch_npu 2.10.0.post4）：同一组 bf16 q/k/v（TND 布局、sparse_mode=0、D=128、单头），路径 A 用 matmul→softmax→matmul 逐算子分解，路径 B 用 npu_fused_infer_attention_score 单 kernel。与 CPU fp64 参考比：S=8192 时路径 A max abs 1.67e-07、平均相对 3.4e-06；路径 B max abs 3.06e-04、平均相对 1.09e-02，约 3000 倍，多个随机种子稳定复现。差异来自融合 kernel 在长序列上的累加/规约精度（报告者未给源码级定位，请求算子团队复核并评估 fp32 accumulate 选项）。报告指出在长序列自回归场景该偏差被逐步放大，下游表现为生成内容退化成重复输出。'
+  source: 2026-09-29 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5238 （open）
+  behavior: 同样一组 bf16 输入，用融合的 npu_fused_infer_attention_score 和手工 matmul+softmax+matmul 得到的结果对不上：短序列看不出来，序列到 8192 时融合路径相对误差约 1%，最大绝对误差是分解路径的约 1800 倍。数值看起来仍在合理范围、不报错不 NaN，但在长序列自回归生成里误差被逐步放大，最后表现为输出退化成反复重复同一段内容。
+  trigger_surface: 融合 attention 算子 + bf16 + 长序列（S≥2048，实测 8192）+ TND/sparse_mode=0；逐算子分解路径不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    uncertain:
+    - component

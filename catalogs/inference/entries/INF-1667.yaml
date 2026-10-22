@@ -1,0 +1,59 @@
+id: INF-1667
+legacy_ids: []
+slug: ops_nn_fused_cross_entropy_max_sum_subnormal_log_underflow
+aliases: []
+title: FusedCrossEntropyLoss 次正规 sum_exp 出 -inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: arch35 Log 指令与 1/sum_exp
+  behavior: 疑似 kernel 的 Log() 对非零 fp32 次正规 sum_exp_logits（<1.175e-38，如 1e-38）下溢为 -inf，1.0/sum_exp 上溢为 inf。
+effect:
+  objects:
+  - 数值结果
+  detail: 950PR + CANN 9.2.0，ttk bt=8/v=8、sum_exp=1e-38：loss 8/8 全 -inf（golden 约 -83~-92），softmax 8/8 为 inf；1e-36/1e-37 通过，1e-39 起同样失败，aclnn 通路一致。
+  visibility: 数值异常
+mitigation:
+  detect: 构造 sum_exp_logits∈(0,1.175e-38) 的用例跑 ttk kernel 模式比对 golden，检查 1e-37 与 1e-38 之间的阈值翻转。
+  fix: issue 6126 closed；正文只给疑似根因（Log 指令对次正规数下溢，建议在 910B 复核是否为硬件指令通用行为），未给修复 PR。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: hw_specific
+  trigger_note: Ascend950PR + CANN 9.2.0 + fused_cross_entropy_loss_with_max_sum + sum_exp_logits 为非零 fp32 次正规数（≤1e-38）
+  confidence: documented
+remarks: 与 INF-1535（CrossEntropyLoss 极端 logits 出 NaN）不是同一机制：那条是 log-prob 的 exp 稳定化，这条是 Log 指令对次正规数下溢；作者也说明 sum_exp=0 时两侧一致，仅“非零次正规”区间分歧。sum_exp 业务上通常 ≥1，属数值边界。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6126
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6126（2026-09-22，closed）：昇腾 Ascend 950PR（Ascend950PR_9579）、CANN 9.2.0（V100R001C11B134）、Python 3.12.9，算子路径 loss/fused_cross_entropy_loss_with_max_sum，用 build.sh --pkg --soc=ascend950 --ops=fused_cross_entropy_loss_with_max_sum 安装 .run 后用 ttk kernel 模式 + 算子自带 golden（tests/assets/golden.py）--compare close 比对。当 sum_exp_logits 输入为非零 fp32 次正规数（小于 1.175e-38，如 1e-38）时 loss 输出全为 -inf（预期约 -83~-92，loss=log(sum_exp)-predicted），softmax 部分溢出为 inf（softmax=exp(vocab-logits_max)/sum_exp）。失效阈值：sum_exp<=1e-38 失败、>=1e-37 正常，kernel 与 aclnn 两通路一致。疑似根因：kernel 的 Log() 指令（op_kernel/arch35/fused_cross_entropy_loss_with_max_sum_ar.h:252）对 fp32 次正规数输入下溢为 -inf（等价 log(0)），1.0/sum_exp 同理上溢 inf，而 torch golden 保持次正规数精度；sum_exp=0 时两侧行为一致（都是 -inf），只有“非零次正规”区间不一致。实测 ttk 输出 loss=[-inf ×8] vs golden=[-86.19,-92.50,-88.24,-90.16,-83.70,-87.87,-86.67,-82.50]，softmax=[inf ×8]，DYN_GOLD 0.0%/42.1875%、PRECISION_STATUS FAIL。
+  source: 2026-09-22 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6126 （closed）
+  behavior: 在 950 上跑融合交叉熵时，如果调用方传进来的 sum_exp_logits 落进 fp32 次正规区间（比如 1e-38 这种极小但非零的值），loss 会整批变成 -inf、softmax 变成 inf，而按公式它应该是 -87 左右和有限值；阈值很干脆，1e-37 以上全对、1e-38 以下全错。正常 softmax 分母恒 ≥1 不会碰到，属于把数值边界输入交进来才暴露的静默数值错误（无报错，只有 ttk 比对才发现）。
+  trigger_surface: fused_cross_entropy_loss_with_max_sum 的 arch35 kernel 与 aclnn 通路 + sum_exp_logits∈(0,1.175e-38)；Ascend950PR、CANN 9.2.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: 算子/内核
+    rewritten:
+    - behavior
+    issue_unfixed:
+    - detail

@@ -1,0 +1,59 @@
+id: INF-1447
+legacy_ids: []
+slug: vllm_nvfp4_kv_writer_reader_stride_mismatch_blnhc
+aliases: []
+title: vLLM nvfp4 KV 写读 stride 失配 BLNHC 布局损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: nvfp4 KV 写内核 HND 内部公式
+  behavior: nvfp4 KV 写内核按内部 head-major 公式推导 stride 与 scale 分区，reader 按实际 stride 缩放，仅 head-major 页一致；QSA 默认 BLNHC 下写读落位不匹配，K/V 落错字节。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: v0.30.0 QSA + nvfp4 KV 全上下文输出不连贯（短 prompt 也是），静默无异常；token-major K relerr 1.4644/V 1.2185（head-major 0.0895=正常量化误差）；算术全错、253k needle 0/N
+  visibility: 静默错误
+mitigation:
+  detect: 生产几何 writer→reader 往返对照（连续/head-major buffer 测试结构性失明，必须复现真实分配器物理布局）；头部症状=全长度输出垃圾
+  fix: 上游修复未见（issue open，v0.30.0 生产镜像实测）；规避未核实——BLNHC 是 QSA 后端 supported_kv_cache_layouts 首选，engine 默认解析即中招
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM v0.30.0 + --kv-cache-dtype nvfp4 + QSA 路径（Qwen3.8-Flash-Next-NVFP4，modelopt-mixed）；engine 默认 BLNHC token-major 布局（boot log 明示）；RTX PRO 5000 Blackwell SM120 ×2 TP2+EP 实测；已排除 QSA 读内核/MTP/逐层 scale
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61225
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1353
+pattern: PAT-INF-0028
+original:
+  mechanism: 'vLLM #61225（10-12 已编目 INF-1353/旧 8.100），本轮 GitHub Search 窗口（created:>=2026-10-11）覆盖其创建日，据本轮取回的完整正文按推理库范围复核收录为 var：C++ nvfp4 KV-cache 写内核（csrc/libtorch_stable/nvfp4_kv_cache_kernels.cu reshape_and_cache_nvfp4_dispatch）从 stride(2)>stride(1) 检测 HND/NHD 后，head/token data stride 与 data|scale 分区全部按内部 head-major 公式推导；标准 reader（vllm/utils/torch_utils.py nvfp4_split_data_scale）按实际张量 stride 缩放 data_dim/full_dim。两者仅对 head-major 物理页一致。QSA 后端 supported_kv_cache_layouts 首选 BLNHC（token-major：每 token 行 2H 头槽×full_dim 字节、K/V 槽按 token 交错、每槽打包 data+scale），engine 默认解析即选它——writer 内部公式把 head h/token t/scale 区放在与 reader 所查不同的字节，每次 K/V 写（含 block scale）落错位，reader 忠实读回垃圾。自建连续/head-major buffer 的往返测试自洽通过（结构性失明：token-major 页只由真实分配器产生）。生产几何 B=2,N=5568,H=2,D=256 往返：token-major K relerr 1.4644/V 1.2185（corrupt），head-major 0.0895/0.0895（纯 nvfp4 舍入）。已排除：QSA 读内核（PR #54846 数值正确，多块/多请求/4096 行 prefill/top-k 2048 对照 bf16 ≤6e-5）、MTP（关闭仍垃圾）、逐层量化 scale（checkpoint 无 per-layer K/V/q scale，默认 1.0 与通过往返一致）。v0.30.0 生产镜像（vllm/vllm-openai:v0.30.0）RTX PRO 5000 Blackwell SM120 ×2 TP2+EP 实测：任意上下文长度输出不连贯、静默（无异常/crash/Xid/AER，server 常驻返回貌似合理的 token 流）、简单算术与 needle 全败（253k token 0/N）。'
+  source: 2026-10-12 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/61225 （open；本轮窗口内正文完整取回）
+  behavior: 在 vLLM v0.30.0 上以 --kv-cache-dtype nvfp4 跑 QSA 路径模型（如 Qwen3.8-Flash-Next-NVFP4）时，默认 token-major KV 布局下所有上下文长度的输出都不连贯：短 prompt 也无法通过算术、常识等最简单检查，25 万 token 长文 needle 检索 0 命中。服务不报错不崩溃，持续返回貌似正常的 token 流。改用 head-major 布局的理论对照即恢复正常量化精度。
+  trigger_surface: vLLM v0.30.0 nvfp4 KV 写内核 + QSA 后端默认 BLNHC 布局；--kv-cache-dtype nvfp4；SM120 TP2+EP 实测
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

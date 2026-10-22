@@ -1,0 +1,63 @@
+id: INF-1624
+legacy_ids: []
+slug: msmodelslim_oasq_smooth_scale_paren_error
+aliases: []
+title: OASQ 平滑 scale 括号错位，缩放系数偏离设计
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: OASQScaleCalculator
+  behavior: OASQ 的 compute_smooth_scale 把变换套在整段比值上，而不是分别作用后相除，平滑系数偏离设计公式，低比特精度受损。
+effect:
+  objects:
+  - 输出内容
+  - 模型权重
+  detail: W4A4/MXFP 等低比特量化（如 Wan2.2 DAOS 配方）拿到错误的平滑系数，量化权重精度受损；量化流程不报错，正文未给精度下降量级。
+  visibility: 质量退化
+mitigation:
+  detect: 对已知输入手算 sqrt(w)/(sqrt(a)+ε) 与 log1p(w)/(log1p(a)+ε) 作为 golden，与 compute_smooth_scale 输出比对；端到端比对开启/关闭 oasq 两种情况下的量化精度
+  fix: issue closed；正文给出正确公式与涉及文件（msmodelslim/processor/anti_outlier/common/scale_computation.py），并指出 Wan2.2 适配器需实现 OASQInterface，未给 PR 与版本
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim commit 84b2f65060fff6a91ad7f1858c92bcede83f9d11，量化配置含 oasq（如 lab_practice/wan2_2/wan2_2_w4a4f4_mxfp_daos_t2v.yaml，Wan2.2-T2V-A14B）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: '同一 issue 还报 Wan2.2 新版适配器（Wan2_2BaseModelAdapter / Wan2_2ExpertSubAdapter / Wan2Point2Adapter）未实现 OASQInterface：回退 default 适配器后 include: blocks.*.ffn.* 匹配不到探测到的 source，OASQ 子图被滤空、流程不报错但 high 专家 OASQ 基本空跑。两个缺陷同源同 issue，合为一条并在机制里注明。'
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/538
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: msmodelslim commit 84b2f65060fff6a91ad7f1858c92bcede83f9d11，配置侧触发路径为含 oasq 的 Wan2.2 W4A4F4 MXFP DAOS 配方（--config_path lab_practice/wan2_2/wan2_2_w4a4f4_mxfp_daos_t2v.yaml）。缺陷 1 在 msmodelslim/processor/anti_outlier/common/scale_computation.py 的 OASQScaleCalculator.compute_smooth_scale：normal 通道写成 sqrt(w / sqrt(a) + ε)（正确为 sqrt(w) / (sqrt(a) + ε)），outlier 通道写成 log1p(w / log1p(a) + ε)（正确为 log1p(w) / (log1p(a) + ε)），即把变换套在整段比值上而不是分别作用后相除，smooth scale 偏离设计，影响后续低比特（W4A4/MXFP）精度。缺陷 2：Wan2_2BaseModelAdapter（T2V/I2V/TI2V）、Wan2_2ExpertSubAdapter 与旧 Wan2Point2Adapter 都未声明 OASQInterface，日志出现「does not implement OASQInterface. Fallback to default model adapter logic」，回退后按 default 自动探测 + include 过滤，blocks.*.ffn.* 匹配不到探测到的 source，OASQ 子图被滤空——流程不报错但 high 专家的 OASQ 基本空跑。
+  source: 2026-09-05 GitCode Ascend/msmodelslim issue https://gitcode.com/Ascend/msmodelslim/issues/538 （closed）
+  behavior: 用含 oasq 的 Wan2.2 量化配方（DAOS，high_noise_model）做 W4A4F4/MXFP 量化：命令照常成功、日志只在适配器路径上出现一句 Fallback to default model adapter logic，但 OASQ 的平滑系数算错、部分专家子图甚至完全没被平滑，结果是量化后视频生成质量下降；不会报错，也看不出量化流程有任何异常。
+  trigger_surface: 含 oasq 的量化配置（Wan2.2 DAOS 配方）+ 低比特 W4A4/MXFP；Wan2.2 per_expert 适配器还会因子图被滤空而空跑
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 模型权重
+        to: 输出内容
+    uncertain:
+    - behavior
+    - detail

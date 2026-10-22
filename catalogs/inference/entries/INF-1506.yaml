@@ -1,0 +1,63 @@
+id: INF-1506
+legacy_ids: []
+slug: op_plugin_layer_norm_empty_input_mean_rstd_shape
+aliases: []
+title: layer_norm 空输入 mean/rstd 返回错形状
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: native_layer_norm 空输入分支
+  behavior: M<=0（归一化轴之前各维乘积为 0）的分支把 mean_out/rstd_out 建成 shape {M} 的一维空张量，而参考实现保持输入维度、归一化轴置 1（(0,3,4) 应为 (0,1,1)）。
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950+对应CANN下，torch.native_layer_norm 空输入（M<=0，如[0,3,4]/[3,4]）前向不报错、输出为空，但 mean/rstd 返回一维{0}而非PyTorch参考实现[0,1,1]；下游按keepdim取用会错位，非空输入正常。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 shape [0,3,4]、normalized_shape=[3,4] 的空输入调 torch.native_layer_norm，检查 mean/rstd 的 shape 是否为 keepdim 形式
+  fix: 修复 PR https://gitcode.com/Ascend/op-plugin/pull/5841 （issue 为 closed；合入与发布状态未核实）；修法是在 M<=0 分支加 SoC 守护，Ascend950 起按输入维度算 mean_shape
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_note: 空输入（归一化轴前维度乘积 M<=0，如 [0,3,4] / normalized_shape=[3,4]）+ torch.native_layer_norm；Ascend950 起修复
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/495
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1426
+pattern: PAT-INF-0158
+original:
+  mechanism: 'op-plugin issue #495（2026-09-08，closed）：op_plugin/ops/opapi/LayerNormKernelNpuOpApi.cpp 的 native_layer_norm 在空输入场景（M<=0，M 为输入中归一化轴之前各维度乘积）下，把 mean_out/rstd_out 创建成 shape {M}（1-D 零元素张量），与框架参考实现的 shape（保持输入维度、归一化轴置 1）不一致。复现：Ascend950 上构造 input shape [0,3,4]、normalized_shape=[3,4]，调 torch.native_layer_norm(input, normalized_shape, weight, bias, eps)，期望 mean/rstd 为 [0,1,1]，实际为 {0}。修复方案是在 M<=0 分支加 SoC 版本守护 c10_npu::GetSocVersion() < c10_npu::SocVersion::Ascend950，950+ 走 else 分支按输入维度计算 mean_shape。关联 PR https://gitcode.com/Ascend/op-plugin/pull/5841。'
+  source: 2026-09-08 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/495 （closed）
+  behavior: 在 Ascend950 上把空 batch 送进 layer_norm（例如动态 batch 下这一轮恰好 0 条、input 是 [0,3,4]）：前向不报错，output 也是空的，但返回的 mean 和 rstd 是一维的 {0}，PyTorch 参考实现给的是保持维度的 [0,1,1]。下游若按 keepdim 形状取 mean/rstd（再 broadcast 回去做残差或统计）就对不上；非空输入完全正常。
+  trigger_surface: torch.native_layer_norm + 空输入（M<=0，如 [0,3,4] / normalized_shape=[3,4]）；Ascend950 + 对应 CANN
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

@@ -1,0 +1,61 @@
+id: INF-1785
+legacy_ids: []
+slug: ascend_pytorch_mimalloc_d2h_zero_pages
+aliases: []
+title: torch_npu D2H 后 Host 整页归零（mimalloc）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: CANN D2H 的 Host 脏页标记
+  behavior: PyTorch 2.10 起 ARM 默认 mimalloc，释放路径对 Host 内存打 MADV_FREE（LazyFree）；CANN 侧重新使用这些 Host 内存做 D2H 时未执行 mark dirty，LazyFree 标记残
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: A3+CANN 9.0.0：训练/推理无报错，内存压力较大时偶发精度尖刺；D2H 拷贝后 Host 侧出现大量 0 值，数量为页大小整数倍、变 0 区间按页对齐整页为 0；权重被读为 0 值
+  visibility: 静默错误
+mitigation:
+  detect: 对 D2H 后 Host 缓冲做页粒度校验/抽查；内存压力下偶发是特征
+  fix: 方案一：回退 ARM 默认 mimalloc 配置（改 PyTorch 原生取消 ARM 默认）；方案二：驱动层进程粒度开关 + torch_npu 感知 mimalloc 版本经环境变量透传 RTS 同步/异步路径防护（issue 给出两方案，落地状态未核实）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: ARM 平台 + PyTorch≥2.10（默认 mimalloc）+ 多线程 + 系统内存压力大 + 存在 D2H 拷贝；A3/cann 9.0.0/drv 25.5.1.1/openEuler 24.03/pytorch 2.10.0/pta 26.0.0
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 与 INF-1399（dlclose icache 不一致）同为「内存生命周期管理静默损坏」类；机制不同不建 var。页对齐整页归零 + MADV_FREE 根因链完整（含 pytorch#164741 关联）。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5567
+  kind: gitcode_issue
+- url: https://github.com/pytorch/pytorch/pull/164741
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #5567，A3、CANN 9.0.0、drv 25.5.1.1、openEuler 24.03、pytorch 2.10.0、pta 26.0.0、python 3.11。PyTorch 2.10 起 ARM 默认启用 mimalloc（关联 pytorch/pytorch#164741），该分配器在 tensor 析构等路径对释放的 Host 内存打 MADV_FREE（LazyFree）。训练/推理前序 step 释放的 Host 内存因 LazyFree 不立即回收/清零，后续 step 申请到仍带 MADV_FREE 标记的内存；CANN 侧（NPU 重新使用这些 Host 内存做 D2H 拷贝目的缓冲）未执行脏页标记（mark dirty），标记残留。系统内存被多方使用、压力较大时该内存触发回收，物理页内容被清零，PFN 指向 0x0，权重/数据被读为 0 值。现象：无显式报错；偶发精度尖刺；D2H 后 Host 侧大量 0 值且数量为页大小整数倍、按页对齐整页为 0。解决方案（issue 给出）：回退 ARM 默认 mimalloc；或驱动层进程粒度开关默认不处理、torch_npu 感知 mimalloc 版本经环境变量由业务控制并透传 RTS，同步异步路径均防护。'
+  source: 2026-10-20 每日扫描；https://gitcode.com/Ascend/pytorch/issues/5567 ；关联 https://github.com/pytorch/pytorch/pull/164741
+  behavior: ARM 机器上用昇腾跑训练或推理（PyTorch 2.10+，系统内存紧张、多线程、有 D2H 拷贝）时，偶发精度尖刺且全程无报错：设备到主机拷贝完成后，主机侧缓冲里出现整页整页的 0（按页对齐、数量是页大小整数倍），权重或中间数据被当成 0 继续用，最终表现为难以定位的偶发精度异常，复现依赖内存压力。
+  trigger_surface: ARM + PyTorch≥2.10 默认 mimalloc + CANN D2H + 系统内存压力大 + 多线程
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: 数值结果
+      visibility:
+        from: 不可复现
+        to: 静默错误

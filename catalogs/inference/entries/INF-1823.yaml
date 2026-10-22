@@ -1,0 +1,57 @@
+id: INF-1823
+legacy_ids: []
+slug: dispatch_ffn_combine_w4a8_rowsrc_offset_wrong
+aliases: []
+title: w4a8 dispatch_ffn_combine 后续 rank 偏移错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: DispatchAndCombine AIV 偏移
+  behavior: rowSrc 用 prevSum 累加本 AIV 收到的各 rank tokens，正确值为 preSumBeforeRank(dstEpIdx*expertPerRank+groupIdx)，故除首个接收 rank 外偏移全错。
+effect:
+  objects:
+  - 数值结果
+  detail: 非首个接收 rank 的 token 被按错误的起始偏移写入专家输入，专家读到错位/错源的 token，MoE 输出错值；无报错、无异常值。
+  visibility: 静默错误
+mitigation:
+  detect: 用小批量构造各 rank 分发 token 数不同的场景，比对每个专家实际收到的 token 与预期 rank/偏移映射
+  fix: 待定（issue open，正文只给正确公式与错误实现，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend + W4A8 的 dispatch_ffn_combine_w4a8_kernel（DispatchAndCombine，多 rank EP 分发）；单 rank 或只有一个接收 rank 时不暴露；正文未给版本/CANN
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10335
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #10335，W4A8 dispatch_ffn_combine 内核的 DispatchAndCombine 阶段。rowSrc 表示「发送给本 rank 某专家的 tokens 在发送方的起始偏移」，正确值应为 preSumBeforeRank(dstEpIdx * params.expertPerRank + groupIdx)。当前实现写成 uint32_t rowSrc = prevSum; prevSum += rows;，而 prevSum 保存的是本 AIV 接收的各 rank tokens 的累计值（coreIdx 号 rank 为首个接收的 rank，之后按 coreNum 递增），其初值只是 coreIdx 号 rank 发给本 rank 第 0 号专家的起始偏移。因此只有首次接收时 rowSrc 正确，后续 rank 在接收时的 rowSrc 全部错误，token 被写到错误的专家起始位置。报告者是逐个对照公式与实现得出的结论，未附运行时数值。'
+  source: 2026-06-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10335 （open）
+  behavior: 使用 W4A8 的 dispatch_ffn_combine 内核做 MoE 分发时，只要本 AIV 依次接收多个 rank 的 token，除第一个 rank 之外的分发偏移都是错的：发往本 rank 各专家的 token 被写到错误的起始位置，专家把别的 rank/别的专家的 token 当成自己的输入参与计算。整个推理照常返回文本、不报错也不出现 NaN，只有把各专家的实际输入与预期映射逐一对齐才能发现，属于典型的量化 MoE 静默错值。
+  trigger_surface: W4A8 dispatch_ffn_combine 内核 + 单个 AIV 接收多个 rank 的 EP 分发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem

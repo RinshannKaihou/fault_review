@@ -1,0 +1,60 @@
+id: INF-1636
+legacy_ids: []
+slug: mindformers_hash_routing_oob_no_check
+aliases: []
+title: 哈希路由删越界校验，越界 token 静默走错专家
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: mindspore
+    component: TopKRouter._hash_routing
+  behavior: PR !8691 为去掉 D2H host sync 删掉 max(flat_ids)>=actual_vocab_size 校验；index_select 越界在 Ascend 属未定义行为
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: input_ids 超过 actual_vocab_size（数据异常或 tokenizer 配置不匹配）时不报错，越界 token 静默拿到错误 expert 索引，路由错且无日志线索
+  visibility: 静默错误
+mitigation:
+  detect: host 侧抽样校验 max(input_ids) < actual_vocab_size；对哈希路由层记录 expert 分布与 tid2eid 命中范围
+  fix: 待定（issue closed；期望在不重新引入 D2H 同步的前提下加防御性守卫并可观测）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需开启哈希路由（浅层 hash routing）且 input_ids 越界；MindSpore 文档说明 Ascend 平台 index_select 不做越界检查
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2516
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'mindformers/pynative/transformers/moe/router.py 的 TopKRouter._hash_routing 通过 mint.index_select(self.tid2eid, 0, flat_ids) 从 tid2eid 表查 expert 索引。PR !8691（commit b62c88977）为避免 D2H host sync，删除了原有的越界校验 max_token_id = mint.max(flat_ids); if max_token_id >= self.config.actual_vocab_size: raise ValueError(...)。删除后 mint.index_select 在 Ascend 后端对越界索引产生未定义行为（MindSpore 文档原文：Ascend 平台不支持越界检查，若越界可能会造成未知错误），越界 token 会静默得到错误 expert 路由，没有任何报错线索；在数据异常或 tokenizer 配置不匹配、input_ids 超出词表时，模型会悄悄走错 expert 而不报错，极难排查。issue 的期望是在不重新引入 D2H host sync 的前提下增加防御性守卫，避免 Ascend 上的未定义行为并尽量给出可观测信号。基线 mindformers master（pynative 路径），NPU。'
+  source: 2026-08-16 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2516 （closed）
+  behavior: 数据或 tokenizer 配置有偏差、input_ids 出现超过 actual_vocab_size 的值时，训练/推理照常跑完，不报错也不警告，但那些越界 token 的哈希路由结果是错的——被分到无关 expert 上；loss 可能只是轻微异常甚至看不出来，排查时几乎没有任何日志线索可循。
+  trigger_surface: PyNative 哈希路由（TopKRouter._hash_routing）+ input_ids 越界（数据异常或 tokenizer 与 actual_vocab_size 不一致），Ascend NPU
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果

@@ -1,0 +1,59 @@
+id: INF-1620
+legacy_ids: []
+slug: msmodelslim_rmsnorm_semantics_mismatch_outlier_suppression
+aliases: []
+title: RMSNorm 语义与 Qwen3_5 不符，替换 norm 后精度异常
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: RMSNorm 语义（离群值抑制）
+  behavior: modelslim 的 RMSNorm 用标准计算，与 Qwen3_5RMSNorm 语义不符；离群值抑制会替换 norm，替换后输出偏离原模型，子图融合的 scale/shift 也未同步。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Qwen3.6-27B 走含离群值抑制的 W8A8 配置量化后精度异常、输出偏离原模型；量化流程照常完成、不报错，正文未给下降量级。
+  visibility: 质量退化
+mitigation:
+  detect: 量化前后对同一批 prompt 比对 logits/生成结果；或用带离群值抑制的配置量化后跑评测，同时核对该模型 RMSNorm 的实现语义（是否与 modelslim 的 RMSNorm 一致）
+  fix: issue closed；正文只要求按 Qwen3_5RMSNorm 语义修改 modelslim 的 norm 实现及 NormLinearSubgraphFusion 的 scale/shift，未给 PR 与版本
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim commit 030d6ea4e0f136558578070d371e1becb5797882，Qwen3.6-27B + 含离群值抑制的 W8A8 配置（msmodelslim quant --model_type Qwen3.6-27B）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 正文以 transformers 源码截图对照语义差异，未展开具体差异细节；只记录「标准 RMSNorm 与 Qwen3_5RMSNorm 语义不同 + 离群值抑制替换 norm」这一机制，不补猜缩放形式。
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/452
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: msmodelslim commit 030d6ea4e0f136558578070d371e1becb5797882：报告中给出命令 msmodelslim quant --model_path /home/data/Qwen3.6-27B --model_type Qwen3.6-27B --device npu --trust_remote_code True（配含离群值抑制算法的 W8A8 yaml）。报告者指出 modelslim 里的 RMSNorm 用的是标准 RMSNorm 计算，而 transformers 中 Qwen3_5RMSNorm 的计算方式不同（正文以 transformers 源码截图作为对照，未展开公式差异），因此任何在量化前替换 norm 的离群值抑制算法都会改变前向输出；同时 NormLinearSubgraphFusion 类里对 scale 和 shift 的计算基于旧语义，也应同步修改。报告未给定位行号与修复 PR，也未说明差异的具体形式。
+  source: 2026-08-10 GitCode Ascend/msmodelslim issue https://gitcode.com/Ascend/msmodelslim/issues/452 （closed）
+  behavior: 对 Qwen3.6-27B 用带离群值抑制的 W8A8 配置量化：量化过程本身跑通、产物能加载推理，但评测精度异常、输出明显偏离浮点模型；由于大部分离群值抑制算法都会替换 norm，凡是走这条路径的 Qwen3.5/Qwen3.6 系列模型都会踩到，表现是精度问题而不是报错。
+  trigger_surface: Qwen3_5RMSNorm 语义的模型（Qwen3.6-27B 等）+ 含离群值抑制（会替换 norm）的量化配置
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect
+    - behavior

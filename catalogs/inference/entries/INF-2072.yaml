@@ -1,0 +1,65 @@
+id: INF-2072
+legacy_ids: []
+slug: torchair_moe_zero_token_expert_ge_tiling
+aliases: []
+title: TorchAir专家零token时GE tiling无零值防御
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: TorchAir GE tiling
+  behavior: TorchAir 动态shape GE图对 matmul 做在线分块，运行期 token 维为0时，启发式含 total_tokens/block_size 型除法与 workspace 申请，缺少 dim_val==0 边界防御。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 稀疏 MoE 某专家分到 0 token 时进程硬崩（Tiling failed 502001）或设备侧静默越界；在模型里写 if tokens.shape[0]>0 规避会触发 Dynamo 图分裂回退 eager，MFU 下滑约 20%
+  visibility: 报错
+mitigation:
+  detect: 构造 (0, hidden) 输入跑一次 torch.compile 后模型，观察是否抛 Tiling failed 或 device page fault；同时在 profiling 里看是否出现 graph break 回退
+  fix: issue 未附修复 PR（closed，修复状态未核实）；报告建议 TorchAir 在 lowering 时为零维动态输入插条件控制流节点，或 GE tiling 对 dim==0 返回零 workspace 并 skip 该节点
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.compile(backend=torchair) + dynamic_shape=True，MoE 单专家 token 数为 0（高并发/高稀疏路由）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 机制部分为报告者的分析（按 GE 动态 tiling 调试日志推断），崩溃/图分裂/性能损失为报告者实测；无 C++ 侧源码定位。
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/633
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 环境 Ascend 910 系列 + torch_npu/torchair + CANN GE 图模式，torchair.CompilerConfig(dynamic_shape=True) 走 get_npu_backend()。MoE 中某专家在一个 micro-batch 内分到 0 个 token 时，输入变成 (0, hidden_dim)；eager 下 matmul 对 (0,K) 是合法短路，直接返回 (0,N) 且不下发计算，而 TorchAir 的 GE 静态/动态图会在该节点做在线分块，启发式里出现 total_tokens/block_size 型除法与 workspace 申请，没有对 dim_val==0 的边界防御，于是报 Tiling failed for node [Linear_fc] return code 502001、进程硬退，或生成非法微码触发 device page fault。为绕开底层缺陷而在专家 forward 里写 if tokens.shape[0] > 0 分支，会因分支依赖运行期 shape 触发 Dynamo 图分裂，TorchAir 在 eager/graph 边界反复下流同步并做 D2D 拷贝，报告测得 MFU 下滑近 20%。
+  source: '2026-08-10 GitCode Ascend/torchair issue #633 https://gitcode.com/Ascend/torchair/issues/633 （closed）'
+  behavior: 高并发、专家严重倾斜的 MoE 推理里，某个专家这一批没分到 token 时，编译后的模型不是安静返回空张量，而是直接以 Tiling failed 崩掉进程，或更糟——不报错但设备侧越界；为了不停服只能在模型代码里加 python 判空，加完又发现编译收益没了、吞吐掉两成。
+  trigger_surface: torch.compile(backend="torchair") + GE 动态 shape 图 + MoE 路由出现零 token 专家
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 可用性/进度
+      visibility:
+        from: 静默错误
+        to: 报错
+    rewritten:
+    - behavior
+    - title

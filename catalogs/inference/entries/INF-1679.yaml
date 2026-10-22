@@ -1,0 +1,59 @@
+id: INF-1679
+legacy_ids: []
+slug: event_wait_before_record_submit_race
+aliases: []
+title: Event.wait 早于 record 提交时未建流间依赖致脏读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: NPUEvent/StreamWaitEvent
+  behavior: Host 侧 aclrtRecordEvent 仍在驱动缓冲队列、尚未提交到 Stream A 时，消费流已下发 aclrtStreamWaitEvent；Event 非 active，等待被当 no-op 放行，硬件级流间依赖未建立。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 消费流在生产流写入前读共享 buffer，读到上一步旧值或中间值；训练侧梯度出现 NaN/Inf、loss 异常发散；Profiler 上消费算子与生产 fill_ 时间线重叠、wait 时长≈0。
+  visibility: 静默错误
+mitigation:
+  detect: 双流 fill_+record / wait 循环 1000 步校验 buffer[0,0] 是否等于当步值；Profiler 上看 wait 是否零时长并与生产算子时间线重叠
+  fix: 待定（closed，正文未给修复 PR）；建议 NPUEvent 维护 Host 侧 PendingSubmit 状态机、wait 时补物理栅栏或延迟下发；规避：event.wait 前后插 torch.npu.synchronize()（会破坏 Host-Device 重叠）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 多流 + Event 跨流同步 + Host 侧高负载（DataLoader 多线程、动态图编译、FSDP 切分）导致发射偏斜；910B/CANN 8.0.RC1/PyTorch 2.1-2.3；偶发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3842
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #3842（2026-08-08，closed，Ascend 910B 64GB / CANN 8.0.RC1 / PyTorch 2.1-2.3 / torch_npu master）：在 70B+ 参数流水线并行或通信-计算重叠训练中，用 torch.npu.Stream 与 torch.npu.Event 做流间异步同步。Host 侧负载高时（DataLoader 多线程读取、动态图编译、FSDP 权重切分），向不同 Stream 发射指令产生时间偏斜：默认流上已执行 event.record()，但 aclrtRecordEvent 还在 Host 驱动缓冲队列中、尚未提交到 Stream A 物理队列；与此同时 Host 线程已在消费流 Stream B 上调用 event.wait()（下发 aclrtStreamWaitEvent）。此刻底层 CANN 驱动与 Event 控制器检测到该 Event 在 Stream A 上尚未 Submit/Active，过早的 wait 未能建立硬件级流间依赖，而是返回非阻断错误或被处理为 no-op，Stream B 越过同步栅栏，在生产流写入 kernel 尚未结束甚至尚未启动时读取该 buffer。正文给出的复现是双流 1000 步 fill_(step)+record+wait 后校验 buffer[0,0]，统计不匹配步数；Profiler 特征是消费算子启动时间与生产流 fill_ 时间线重叠、aclrtStreamWaitEvent 有发射记录但 Duration 几乎为零。开发者被迫在 wait 前后插 torch.npu.synchronize() 规避，破坏 Host-Device 并发。建议方案：在 csrc/core/npu/NPUEvent.cpp 维护 Host 侧 Event 状态机（PendingSubmit），wait 时若 Event 未提交则补栅栏或延迟下发；或推动 CANN 让 aclrtStreamWaitEvent 对未 active 的 Event 也能把依赖挂到目标流队尾。'
+  source: 2026-08-08 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/3842 （closed）
+  behavior: 多流重叠训练时会出现随机、难以复现的精度问题：梯度里冒出 NaN/Inf，loss 偶发异常发散，重跑可能又正常。用 Profiler 放大看，消费流上的算子启动时间和生产流上写数据的 fill_ 时间线是重叠的，说明 wait 根本没挡住；那条 aclrtStreamWaitEvent 在 timeline 上有记录，但时长几乎是零。把 event.wait 前后硬插 torch.npu.synchronize() 后现象消失，但 Host 被完全阻塞、重叠优化等于失效。
+  trigger_surface: 多流 + Event 跨流同步 + Host 侧高负载发射偏斜；偶发，需高频双流生产-消费循环或大规模重叠训练
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility
+    - behavior

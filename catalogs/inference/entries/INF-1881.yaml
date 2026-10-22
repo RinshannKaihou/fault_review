@@ -1,0 +1,54 @@
+id: INF-1881
+legacy_ids: []
+slug: hccl_omnipipe_slice_calc_unguarded_oob_read
+aliases: []
+title: OmniPipe 切片计算漏边界守卫致越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: omnipipe_data_slice_calc
+  behavior: for 循环内 dataWholeSize[i] 被访问两次：第 63 行有 i<size() 守卫，第 68 行 offsetSize 累加漏了同一守卫，rankSize 大于 vector 长度时越界读。
+effect:
+  objects:
+  - 数值结果
+  detail: rankSize 比 dataWholeSize.size() 多 1~5 时 offsetSize 累加成垃圾值，后续切片信息全错（Test2/3）；vector 为空时解引用触发 SIGSEGV（Test4）。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 rankSize > dataWholeSize.size() 的输入（含空 vector）跑 OmniPipe 切片计算，逐项核对 offsetSize 与各切片起点；size()==rankSize 的常规用例不触发。
+  fix: 待定（issue closed，未给 MR）：把第 68 行累加移入 i<size() 守卫内，或入口处校验 size()>=rankSize。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: OmniPipe 数据切片路径 + rankSize 大于 dataWholeSize.size()（空 vector 时必崩）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 作者在隔离 C++14 模型（Windows/MinGW，用 vector::at 替代 ASan）复现，未在目标硬件上运行真实 hccl 库；形参与调用方可达性按源码判断，未做端到端证据。
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/294
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hccl issue 294（closed，2026 HCCL 创新大赛提交）：src/ops/op_common/omnipipe_data_slice_calc.cc:55-71 的 OmniPipeSplitSliceInfoListAssign 在 for (int i=0;i<rankSize;i++) 内两次访问 dataWholeSize[i]：L63 的 curSliceSize 受 if (i < dataWholeSize.size()) 守卫，L68 的 offsetSize = offsetSize + dataWholeSize[i] 没有同一守卫。当 rankSize > dataWholeSize.size() 时，L68 越界读到相邻内存的垃圾值，offsetSize 累加被污染，后续 emplace_back 出的每个切片起点/长度全错；dataWholeSize 为空 vector 时解引用其内部指针直接 SIGSEGV。作者用隔离的 C++14 模型（MinGW GCC、-O0 -g、以 vector::at 替代不可用的 ASan）跑四组矩阵：size=4/rank=4 正常；size=3/rank=4 越界 1 个元素、offset 错误；size=3/rank=8 越界 5 个、offset 为垃圾值；size=0/rank=4 完整越界并崩溃。修复建议为把累加移入守卫内（方案 A）或入口前置 size()>=rankSize 校验（方案 C）。
+  source: GitCode cann/hccl issue https://gitcode.com/cann/hccl/issues/294 （closed）
+  behavior: OmniPipe 通路在 rank 数与 dataWholeSize 长度对不上时不会报错，而是把越界读到的垃圾值累加进 offsetSize：此后每个 rank 切片的起始偏移和长度都被算错，通信收发的数据落错位置，结果是被搬运的片段相互错位或读到别人的数据，全程无异常返回。rank 数与 vector 长度一致时完全正常；vector 为空时则直接段错误退出，因此这个输入组合要么静默错、要么崩，属于同一处漏守卫的两种表现。
+  trigger_surface: OmniPipeSplitSliceInfoListAssign + rankSize 大于 dataWholeSize.size()
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

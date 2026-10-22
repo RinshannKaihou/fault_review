@@ -1,0 +1,56 @@
+id: INF-1754
+legacy_ids: []
+slug: te_broadcast_backward_odometer_lost_high_pid
+aliases: []
+title: TE 广播反向发射 3D tile 归约致梯度系统性错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: TE 反向归约发射
+  behavior: TE 的 npu_linearize 把重叠非零 stride（瓦片展开）广播对的反向归约发射成 3D tile；triton-ascend 对 leading-axis 归约 lowering 交换 stride 映射，归约落到错误轴上
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: triton_experimental 后端下 opinfo 33 行广播算子 float 反向失败，abs diff 最大 150+，pow f32 偏差达 8.06e6；最小复现 torch.add 广播梯度应为 10 恒得 1，等形 contiguous 输入或 default 后端正常。
+  visibility: 静默错误
+mitigation:
+  detect: 对重叠 stride 的广播对做前向+反向，与 eager 比梯度；再退到纯 triton 的 3D tl.sum(acc,0) 与 2D 形式对照
+  fix: 待定（issue open）；建议在 index 表达式内把 x 两维展平、acc 用 [RBLOCK,BX] 2D 归约（已上卡验证精确），或提供回退开关；编译器侧根因单见 https://github.com/triton-lang/triton-ascend/issues/2291
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TORCHINDUCTOR_NPU_BACKEND=triton_experimental + 广播对的输入带重叠非零 stride（瓦片展开）；910B4 / torch 2.14.0a0 / torch_npu 2.14.0+gitb4c7212 / CANN 9.1.0 / TritonAscend 3.6.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 与算子无关、与 dtype 无关：连 torch.add 的广播梯度都错，故归编译器发射而非算子实现。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4952
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4952（2026-09-19，closed，Ascend 910B4 / PyTorch 2.14.0a0+git / TorchNPU 2.14.0+gitb4c7212 / CANN 9.1.0 / TritonAscend 3.6.0，仅 TORCHINDUCTOR_NPU_BACKEND=triton_experimental 复现）：opinfo 全集中一批广播型二元算子的反向行在 TE 后端系统性数值错误——test_comprehensive_{atan2,hypot,copysign,nextafter,ldexp,xlogy,minimum,maximum,fmin,fmax,min_binary,max_binary,clamp,clamp_min,clamp_max,pow}_npu_float{16,32} 共 33 行梯度比对失败，abs diff 最大 150+。报告定性为与 op 无关、与 dtype 无关：最小复现中连 torch.add 都错（x 由 x.as_strided((10,1,5),(5,5,1)) 做瓦片展开、重叠 stride），广播梯度应为 10 却恒得 1，而等形 contiguous 输入前向+反向均正确，唯「瓦片展开（重叠非零 stride）广播对的反向归约」触发。触发层是 TE 的 npu_linearize 把此类反向归约发射成 3D tile（acc=[R0_BLOCK, real_block_x1, real_block_x0] + tl.sum(ACC,0)[SLICE]），发射件在 torch_npu/_inductor/triton_experimental/codegen/；default 后端与 CUDA 习惯的 2D [RBLOCK,XBLOCK] 形态不暴露该缺陷。脱开 inductor 的纯 triton 佐证：同一 offset 数学的 3D tl.sum(acc,0) 输出 50/50 全错（恰为按 stride-50 轴归约的展平结果），2D 形式 maxdiff 0.0，双跑逐位一致；sum 前仅 tl.reshape 不能绕开，须 index 层即 2D。根因在 triton-ascend 对 leading-axis 多维归约的 lowering（stride 映射交换），已单独立项 triton-ascend#2291（本文件命中项对应 #2292）。'
+  source: 'Ascend/pytorch #4952（2026-09-19，closed） https://gitcode.com/Ascend/pytorch/issues/4952'
+  behavior: 用 triton_experimental 后端编译带广播的逐元素算子（add/minimum/atan2/clamp 这些都算），前向看起来对，反向梯度却整体偏小或局部大错：广播维本该得到 10 的地方恒得 1，atan2 f32 有 30/50 个元素错，pow f32 偏差到 8.06e6。opinfo 里 33~35 行 float 反向行一起挂；把输入改成等形 contiguous 或换 default 后端就恢复正常，所以很容易被当成「某个算子精度问题」误判。
+  trigger_surface: triton_experimental 反向 + 广播对的输入为重叠非零 stride（瓦片展开/as_strided）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior
+    - detail
+    - title

@@ -1,0 +1,51 @@
+id: INF-1731
+legacy_ids: []
+slug: ms_mindir_compressed_tensor_destmaxlen
+aliases: []
+title: MindIR 压缩张量拷贝把逻辑字节数当目的容量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspore
+    component: 外部权重拷贝目的容量
+  behavior: CopyExternalDataToTensor 把 DataNBytes()（逻辑 shape 字节数）当 huge_memcpy 的 destMaxLen，而压缩张量真实分配量是 compression_data_size，两者不等。
+effect:
+  objects:
+  - 模型权重
+  detail: 压缩权重路径的目的缓冲区保护失效：当前因建 Tensor 与 srcLen 同源未越界，一旦长度分叉即堆溢出写；compression_data_size 更大时合法权重反被误拒。
+  visibility: 静默错误
+mitigation:
+  detect: 对带 external_data/raw_data 的压缩 MindIR 走加载路径，断言 destMaxLen 不超过真实分配量；或构造 compression_data_size 与 DataNBytes() 不等的权重
+  fix: 待定（issue open，无修复 PR）；方向：destMaxLen 传真实分配量（compression_data_size），并在 GetTensorDataFromUnencryptedFile 内加目的缓冲区校验
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 加载带 external_data 或 raw_data 的压缩 MindIR（compression_type 非 none）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29666
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindIR 外部权重读取拆成三条路径后，目的缓冲区容量校验没有收敛到真实分配量。CopyExternalDataToTensor 把 tensor_info->DataNBytes() 当 destMaxLen 传给 huge_memcpy；压缩分支 GenerateTensorPtrFromTensorProto 用 compression_data_size 分配 Int8 缓冲，DataItemSize() 为 1 时 DataNBytes() 约等于逻辑元素个数，既不是未压缩字节数也不是缓冲区大小。huge_memcpy/memcpy_s 只信任 destMaxLen，这道保护因此失效；同文件 raw_data 路径有同样问题，GetTensorDataFromUnencryptedFile 读文件前也不校验目的缓冲。当前不越界只因为建 Tensor、srcLen、length 三者同源。
+  source: 2026-09-04 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29666 （closed）
+  behavior: 加载带 external_data/raw_data 的压缩 MindIR 权重现在还能正常跑，但目的缓冲区容量校验实际上是失效的：一旦压缩分支的分配量或 length 取值分叉，就会变成堆溢出写；反过来 compression_data_size 大于逻辑字节数时，合法压缩权重会被 huge_memcpy 直接拒掉。两种表现都不会给出“容量校验”相关提示。
+  trigger_surface: 加载带 external_data 或 raw_data 的压缩 MindIR（compression_type 非 none）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

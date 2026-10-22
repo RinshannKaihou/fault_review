@@ -1,0 +1,55 @@
+id: INF-1585
+legacy_ids: []
+slug: cann_moe_gating_top_k_softmax_tie_index_mismatch
+aliases: []
+title: MoeGatingTopKSoftmax 等值 topK 索引错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: 通用
+    component: gating_top_k_softmax topK
+  behavior: gating 值域极小时 softmax 近均匀、概率经输出精度舍入后大量等值；kernel 的 topK 在等值处的选择与排序与标杆的稳定排序（等值按专家索引升序）不一致，选中值相同但索引归属不同。
+effect:
+  objects:
+  - 数值结果
+  detail: 正式轮 1000 例中 1 例、等值专项 483 例中 9 例失败；10 例全部仅 expertIdxOut 错位（max_diff 0.15~1.0，最低一致率 22.22%），yOut/rowIdxOut 的 max_diff 恒为 0；bf16、全零与常规值域零失败。
+  visibility: 静默错误
+mitigation:
+  detect: gating 取 [0,0.001]~[0,0.01] 极小值域使 softmax 近均匀，比对 expertIdxOut；同时看 yOut 是否逐位一致以区分“索引口径”与“数值误差”
+  fix: 待定（issue closed；需维护者明确等值时 topK 的 tie-break 口径，或让 kernel 与稳定排序一致）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: aclnnMoeGatingTopKSoftmax（CANN 9.0.0，Ascend 910B3）+ gating 值域非零且上界≤0.01；fp32 + FullLoad 路径失败率最高（10.9%），bf16 不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 等价于“等值 tie-break 属实现自由度还是缺陷”的口径问题：yOut 逐位一致说明不是数值精度问题
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5043
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5043（2026-09-07 closed）用 ATK 以 pyaclnn 调用 aclnnMoeGatingTopKSoftmax（CANN 9.0.0 moe/moe_gating_top_k_softmax，Ascend 910B3，torch 2.10.0），CPU 标杆沿最后一轴 fp32 算 softmax 后以 np.argsort(-softmax, kind=''stable'') 取前 k。正式轮 1000 例中 999 通过、1 例失败（编号 326）；针对等值场景加密的聚焦轮 483 例中 474 通过、9 例失败（107/301/348/356/386/411/413/417/451）。10 例形态一致：仅 expertIdxOut 比对失败（max_diff 0.15~1.0，编号 451 一致率仅 22.22%），yOut 与 rowIdxOut 的 max_diff 恒为 0——softmax 数值与行号正确，分歧只在 topK 的索引选择/排序。触发：10 例输入全部为 [0,0.001]/[0,0.002]/[0,0.005]/[0,0.01] 均匀采样（值域极小 ⇒ softmax 近均匀 ⇒ 概率经输出 dtype 舍入后大量等值），而全零值域 102 例、对称近零/常值/常规值域共 967 例零失败；fp32 + FullLoad 类路径失败率 10.9%（5/46），Perf 路径 1.9%（2/103），bf16 两路径 149 例零失败；k=1 的编号 301 也失败，说明分歧包含等值最大值的选择本身而非仅输出顺序。根因假设：kernel 在（近）等值处采用与稳定排序不同的选择策略；被选中概率值本身逐位一致。该现象在另一天独立生成的测试轮同样复现（正式轮 16/1000、专项轮 46/212）。文档只写 yOut,expertIdxOut=topK(softmax(x),k)，未规定等值时的 tie-break。'
+  source: 2026-09-07 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5043 （closed）
+  behavior: MoE gating 的原始分数很小时（比如都在 0~0.002 之间），softmax 出来的概率几乎相等，这时 topK 选出的专家编号会和参照实现错位：选中的概率值一模一样，但标成了别的专家，k=9 时单行最多 7 个索引不同。下游按专家编号分派就会把 token 送到错误的专家；算子的 yOut 和 rowIdxOut 完全正确，所以只对比数值指标看不出问题。
+  trigger_surface: gating 输入值域非零且上界 ≤0.01（softmax 近均匀、概率舍入后等值）；fp32 + FullLoad 类 kernel 最易触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

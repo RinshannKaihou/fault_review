@@ -1,0 +1,60 @@
+id: INF-1951
+legacy_ids: []
+slug: glm52_w4a8c8_mtp_long_ctx_repetition
+aliases: []
+title: GLM-5.2 W4A8C8 开 MTP 长上下文间歇复读不停
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: MTP 推测解码
+  behavior: 长上下文工具请求 + MTP 推测解码下 token 流进入周期性复读，引擎不产生终止符；parser 报出的残缺工具参数只是下游症状。
+effect:
+  objects:
+  - 输出内容
+  detail: 两次压测分别 9/1000、3/300 请求复读（约 0.9–1%），周期 8 或 768 token；HTTP 200 持续吐 SSE 但无 finish_reason/[DONE]；temperature=0 时 0/300。
+  visibility: 质量退化
+mitigation:
+  detect: 开 return_token_ids 抓原始 output.token_ids，检测周期 ≤64 的重复模式（max_pattern_size=64/min_pattern_size=8/min_count=4 可检出全部 3 个失败流）
+  fix: '待定（issue open；#13865 的接受计数修复已在现场版本里仍复现，parser 侧 #45915/#46351 也不能覆盖）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: GLM-5.2-W4A8C8 + deepseek_mtp 3 个草稿 token + 约 50k token 长上下文工具请求、默认采样温度；PD 与混部两种拓扑都复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14463
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #14463（2026-08-18，open）：GLM-5.2-W4A8C8 在 BFCL-v3 multi_turn_long_context 子集、64 并发下出现「accuracy repetitive」——输出一直重复到 max-output-tokens 32k。评论里 ZhengDeL 补了一份独立复现：vLLM-Ascend 0.23.0（A3 双机，DP4/TP8/DCP8、EP 开、deepseek_mtp 3 token、glm47 tool parser + glm45 reasoning parser，非 PD 混部），85 个工具 schema、约 50k 输入、并发 4，默认采样 9/1000 与 3/300 失败，temperature=0 时 0/300。用 return_token_ids 抓的原始流显示 engine 的 output.token_ids 在工具解析之前就已进入周期复读（一例 768 token 周期、一例 8 token 周期，100% 重复），HTTP 200 持续吐 chunk 但到 300s 客户端超时都没有 finish_reason/usage/[DONE]，因此排除了客户端 SSE 拼包、LiteLLM 重试与 parser 单独致因；#13865 的 _update_states_after_model_execute/_remap_num_accepted_tokens/_sync_num_accepted_tokens 在该版本里已存在，说明这条接受计数修复不足以解释。根因至 issue 关闭仍未定位。'
+  source: 2026-08-18 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14463 （open）
+  behavior: 生产 agent/工具调用负载下，GLM-5.2-W4A8C8 开 MTP 后大约每一千个请求里就有 9~10 个不再正常结束：流式响应一直以 HTTP 200 往外吐 chunk，客户端看到模型反复念同一段「我需要理解如何正确回应…」之类内容，直到 max_tokens 或客户端 300s 超时，期间没有 finish_reason、usage 或 [DONE]。token 流本身已经是周期性复读，工具参数只是被这段复读带成了残缺的多份，所以换 parser 或重试都不解决。
+  trigger_surface: GLM-5.2-W4A8C8 + MTP 推测解码 + 长上下文（约 50k 输入）流式工具请求 + 温度 > 0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 质量退化
+    rewritten:
+    - component

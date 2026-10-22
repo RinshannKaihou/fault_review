@@ -1,0 +1,56 @@
+id: INF-2075
+legacy_ids: []
+slug: vllm_ascend_memcache_lazy_init_rank_split_timeout
+aliases: []
+title: MemCache 首次请求懒初始化失败致 TP 分叉挂死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MemCache 懒初始化
+  behavior: 首个真实请求才初始化 MemCache，各 TP rank 各自重试、只看 rank 本地 store.init 返回值并 assert；部分 rank 完成、部分带新 AutoRank 重入后，后续集合通信顺序分叉。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 两个 Prefill 服务 8 个 TP 进程同时初始化：一个 TP4 组 assert 后 EngineCore 退出，另一组四 rank 完成时间相差 14.4s，随后 EI0002/507034、EngineDeadError，所有 Prefill API 退出。
+  visibility: 挂起
+mitigation:
+  detect: 记录每个 TP rank 的 store.init 返回码、AutoRank ID 与完成时间；确认首个真实请求前所有 rank 已完成初始化并处于同一集合通信序号
+  fix: issue 建议：初始化在标记 ready 前完成、把 assert 换成带 rc/rank 上下文的 MemcacheInitializationError、同 DP 内 TP rank 统一成功/失败/回滚重试并限界（closed，未见合并记录）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend AscendStore + MemCache（DSV4 compress 路径）首次真实请求懒初始化；任一 rank init 返回非 0 或 BM join 慢
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 与 INF-2039（MemCache 单 rank put 失败致 TP 失步）同属「单 rank 结果无 TP 级契约」但代码路径不同：本条在懒初始化与 assert，未挂变体。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14121
+  kind: github_issue
+relations: []
+original:
+  mechanism: 非 layerwise MemCache 在 DSV4 compress 路径上到第一个真实请求才懒初始化（pool_worker.py 传 lazy_init，memcache_backend.py 里 res = store.init(...) 后直接 assert res == 0）。各 TP rank 独立完成/失败/重试，没有 TP 级成功或失败共识：两个 Prefill 服务 8 个 TP 进程在同一秒开始初始化，一个 TP4 组的 TP0/TP1/TP2 报 BM join failed after remote result -2，store.init 返回非 0 后 assert 失败、EngineCore 退出；另一个 TP4 组 TP0 完成、TP1/TP2/TP3 失败后带新 AutoRank ID 重入，group size 与 BMEX key 集合变化并出现 SM_INNER_BUSY(-2013)，四个 rank 完成时间相差 14.4 秒，先进模型的 rank 已到 AllGather，落后的还在 ReduceScatter。原始 -2 来自旧 MemFabric 成员在 leave/uninitialize 后处理 JoinHandle，本 issue 聚焦 vllm-ascend 的放大路径。
+  source: 2026-08-12 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14121 （closed）
+  behavior: 服务启动和 /health 正常，第一个真实请求打进来后部分 Prefill 进程直接 AssertionError 退出、请求 500；另一套部署里四个 TP rank 陆续初始化成功但相差十几秒，随后整个 TP 组三分钟无进展，报 EI0002/507034 与 EngineDeadError，所有 Prefill API 退出，Decode 侧仍在。
+  trigger_surface: AscendStore + MemCache 懒初始化，首个真实请求时单 rank init 失败或 BM join 慢
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

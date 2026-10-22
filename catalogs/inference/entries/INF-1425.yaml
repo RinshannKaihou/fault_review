@@ -1,0 +1,66 @@
+id: INF-1425
+legacy_ids: []
+slug: hccl_single_rank_v_op_displacement_dropped
+aliases: []
+title: HCCL 单 rank V 算子忽略 displacement 错位读写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: 通用
+    component: SingleRankProc 本地拷贝分支
+  behavior: AllGatherV/ReduceScatterV/AlltoAllV 退化为单 rank 本地拷贝时只按 count 计算长度，直接用原始地址，未按 recvDispls/sendDispls 调整源/目的地址
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 单 rank 通信下数据写到错误下标（如应写下标 3、4 实写 0、1）或读错片段；缓冲区容量足够时拷贝成功不报错，结果不符算子语义
+  visibility: 静默错误
+mitigation:
+  detect: 非零 displacement 的单 rank V 算子调用后逐位置核对 recvBuf
+  fix: 待定（issue 建议按算子类型与位移计算有效源/目的地址并补三算子单 rank 非零位移回归）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 单 rank（world_size=1）AllGatherV/ReduceScatterV/AlltoAllV + 非零 displacement；HCCL 1510b4c8 源码定位；Ascend 950PR/950DT 环境报告
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: 训练库已以 TRN-0299 收录同机制；本条为推理库侧同机制条目（跨库 cross 关联），NPU 范围扩展改判（10-16 留观→范围变更收录）。
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/827
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0299
+original:
+  mechanism: HCCL SingleRankProc()（src/ops/op_common/op_common.cc:3537，版本 1510b4c8ae9f7a267ba974a086f345a28d715c62）对 AllGatherV、ReduceScatterV、AlltoAllV 只根据 count 计算拷贝长度、直接使用原始地址执行 HcommLocalCopyOnThread，未应用 displacement。上游参数准备代码（all_gather_v.cc:249-261、reduce_scatter_v.cc:245-307/371-373、all_to_all_v.cc:664-690/759-761）保留了原始 buffer 地址与位移，单 rank 退化为本地拷贝时位移语义仍有效：AllGatherV 漏加 recvDispls[0]×typeSize（写错接收位置）、ReduceScatterV 漏加 sendDispls[0]×typeSize（读错片段）、AlltoAllV 源目的双双漏加。例：sendCount=2、recvCounts={2}、recvDispls={3} 应写 recvBuf 下标 3、4，实写下标 0、1；缓冲区容量足够、底层拷贝成功、无任何报错。源码级逻辑定位（issue 报告，950PR/950DT 环境，未附实机输出对照）。
+  source: 2026-10-17 GitCode cann/hccl issue https://gitcode.com/cann/hccl/issues/827 （open；源码级定位+算子影响表）；训练库同机制条目 TRN-0299
+  behavior: 在单卡（单 rank）进程里调用 AllGatherV/ReduceScatterV/AlltoAllV 且 displacement 非零时，数据被拷到错误的缓冲区位置：该出现在下标 3、4 的元素出现在 0、1，或读取了错误的数据片段。调用正常返回、无报错，缓冲区不越界（容量足够时），但接收缓冲内容不符合算子语义；下游计算用错位置的数据，产生难以定位的精度异常。
+  trigger_surface: world_size=1 的 AllGatherV/ReduceScatterV/AlltoAllV + 非零 displacement；推理侧单卡通信退化路径
+  discovery: 2026-10-17 每日扫描
+  notes:
+  - 2026-10-20 回访 2026-10-20：hccl#827 已 closed（u2026-10-20T06:56）；关闭原因/修复链接未在批次索引注明，修复落地未核实
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - original.notes

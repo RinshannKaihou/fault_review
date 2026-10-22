@@ -1,0 +1,59 @@
+id: INF-2020
+legacy_ids: []
+slug: attention_update_empty_tensor_zero_block_div_zero
+aliases: []
+title: AttentionUpdate 空 Tensor 出零 block 并除零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: AttentionUpdate tiling
+  behavior: legacy 路径 blockDims=0 时仍做 totalLength % blockDims 与除法，UBSan 报除零；函数仍返回 GRAPH_SUCCESS 并把 block 数置 0
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: lse=[0]、localOut=[0,128]、updateType=0、sp=1 的空序列输入下 Host tiling 返回成功却给出 blockNum=0 的不可执行配置；文档声明支持空 Tensor，totalLength=128 时正常得 blockDims=40
+  visibility: 静默错误
+mitigation:
+  detect: 在 UBSan 构建下跑 legacy totalLength=0 的 AttentionUpdate Host tiling（AttentionUpdateTilingTest.LegacyFloatUpdateType0EmptyTotalLength），断言 blockNum>0 或明确 GRAPH_FAILED
+  fix: issue 关联 MR https://gitcode.com/cann/ops-transformer/merge_requests/10526（合入状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需 legacy compile info 路径 + 空序列（totalLength=0）输入；非空输入不复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4532
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer（commit a2ee2d92804d6d04fcc64e748628000539ab1464）的 attention/attention_update/op_host/decode_update_tiling.cpp:91-99 在 legacy 路径按 totalLength 计算 block 数，totalLength=0 时 blockDims 为 0，随后仍执行 totalLength % blockDims 与 totalLength / blockDims。Host UT（updateType=0、sp=1、lse=[0]、localOut=[0,128]、out=[0,128]）显示 ExecuteTiling 返回 GRAPH_SUCCESS 但 tilingInfo.blockNum=0，正数 block 断言失败；等价探针在 UBSan 下报 runtime error: division by zero，totalLength=128 对照得 blockDims=40。README 与接口文档声明 AttentionUpdate 支持空 Tensor，因此该输入不应触发除零或零 block 配置。'
+  source: '2026-08-24 GitCode cann/ops-transformer issue #4532（closed）。https://gitcode.com/cann/ops-transformer/issues/4532'
+  behavior: 带空序列（lse 长度为 0）的 AttentionUpdate 图在编译期做 Host tiling 时不报错，返回成功但下发一个 0 个 block 的配置；这类图要么在编译/下发阶段异常，要么执行时什么也不算，而接口文档写的是支持空 Tensor，使用者会以为空输入是合法 no-op。
+  trigger_surface: AttentionUpdate legacy Host tiling 的 totalLength=0 空 Tensor 输入
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 数值结果

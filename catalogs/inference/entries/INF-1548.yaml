@@ -1,0 +1,57 @@
+id: INF-1548
+legacy_ids: []
+slug: vllm_ascend_fia_bool_mask_ignored_past_512
+aliases: []
+title: FIA bool atten_mask 在 512 之后被静默忽略
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: FIA 算子 mask 处理
+  behavior: sparse_mode=0 且 bool atten_mask 形状为 [1,1,1,S] 时，算子只在 KV 位置 0–512 内应用 mask，超过 512 的部分不读 mask，也不报错不告警；512 是硬编码常数。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: L≤512 与 fp32 参考一致，L=513 起结果错误、绝对偏差最大约 0.25；pse_shift [1,1,1,S] 几乎每个长度都错，给足 head 维 [1,N,1,S] 才处处正确。
+  visibility: 静默错误
+mitigation:
+  detect: 固定 block_size 扫 KV 长度 L，在 L=512/513 两侧与 fp32 参考比绝对误差；同时比对 rank-2 [1,S] mask（该形状会被 561002 拒绝，属正确行为）
+  fix: 待定（issue open，无修复 PR）；规避：pse_shift 用完整 head 维 [1,N,1,S]，不要用 [1,1,1,S] 的 bool mask 承载设备侧 decode 长度
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Atlas A3 / 910C（npu-smi 报 Ascend910 / NPU Name 9382），CANN 9.0.0，torch 2.10.0 + torch_npu 2.10.0，Python 3.12；sparse_mode=0，bool atten_mask=[1,1,1,S]
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15503
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0182
+original:
+  mechanism: 'torch_npu.npu_fused_infer_attention_score 在 sparse_mode=0、atten_mask 为 bool 且形状 [1,1,1,S] 时，超过 KV 位置 512 的 mask 被静默忽略：L 不超过 512 时结果与 fp32 参考一致，从 L=513 起结果错误，绝对偏差最大约 0.25，且没有报错也没有告警。报告者用 block_size=16/32/64/128/256 与 capacity 2048/4096 逐一验证，512 这个界不随 block_size 也不随声明容量变化，是硬常数。同一次调用里另一个欠秩形状也错得很特别：pse_shift 为 [1,1,1,S] 时几乎每个长度都错，而给它完整 head 维 [1,N,1,S] 就处处正确，这也是报告者最终采用的规避方式。rank-2 的 bool mask [1,S] 会被拒绝（aclnnFusedInferAttentionScoreV3 561002），说明算子本身能识别不合法的形状，问题在于它接受 [1,1,1,S] 之后只处理了前缀。报告者认为这与 #13699（TND + sparse_mode=0 + 无 mask 返回均匀平均）同族，但触发条件不同；pse_shift 的对照显示 L=4095 时只有 mask 几乎不遮任何东西才正确，符合“张量只被查询了有限前缀”的推断。'
+  source: 2026-09-01 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15503 （open）
+  behavior: 把 decode 序列长度这类信息塞进 bool atten_mask 或 pse_shift 传给 FIA 的路径上，序列一旦超过 512 个 KV 位置，attention 就是在没有正确 mask 的情况下算出来的：输出文本看起来仍然流畅，只是答案错、偏移、或者在长上下文里抓错位置，没有任何异常日志。短序列（≤512）与全 head 维的 pse_shift 不受影响。
+  trigger_surface: npu_fused_infer_attention_score + sparse_mode=0 + bool atten_mask [1,1,1,S]（或 pse_shift [1,1,1,S]）；KV 长度 > 512
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern

@@ -1,0 +1,63 @@
+id: INF-2026
+legacy_ids: []
+slug: vllm_glm5_stream_tool_name_truncated
+aliases: []
+title: 流式工具调用把函数名截断成前缀
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: GLM5 流式 tool parser
+  behavior: stream=True 时增量解析在 function name 还没收齐就下发首个 chunk，客户端拿到的是函数名前缀；同一请求 stream=False 走完整解析，名字正确
+effect:
+  objects:
+  - 输出内容
+  detail: GLM-5 stream=True 时 function.name 被截断成 get（应为 get_weather），参数完整；stream=False 时名字正确，客户端按截断名找不到工具
+  visibility: 静默错误
+mitigation:
+  detect: 同一工具调用请求分别用 stream=True/False 发一遍，比对 function.name 是否一致；名字较长的工具（get_weather 这类）最容易暴露
+  fix: 待定（issue closed，未见 MR）：规避是 stream=False，或在客户端按完整工具名重新匹配前缀
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: stream=True + GLM-5 tool parser + 函数名跨多个增量 chunk；该复现跑在 CUDA/H200 的 vllm 0.19.1.dev1 上，属解析器逻辑而非 NPU 特有
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/8154
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-project/vllm-ascend issue 8154（2026-04-11，closed）：vLLM 0.19.1.dev1+g43a9b1af、transformers 5.4.0、Python 3.12.13，复现机为 CUDA（H200/H20）而非 NPU。用 GLM-5 的 tool call 请求（问北京天气，工具名 get_weather），stream=True 时客户端打印的 Function Name 是 get，参数 {"location": "Beijing"} 完整；同一请求 stream=False 时名字正确为 get_weather。说明流式路径在函数名尚未收齐时就已把增量 tool_call 下发，非流式路径因整体解析不受影响。issue 只给了现象与两种模式的对照，没有给出解析器源码定位。'
+  source: 2026-04-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/8154 （closed）
+  behavior: 用流式接口接 agent 时，工具调用看起来成功了，但 function.name 变成 “get” 这样的前缀，客户端按名字找不到工具，要么报未知工具要么把参数喂给错的处理函数；非流式一调就正常，所以很容易被当成客户端 bug。
+  trigger_surface: stream=True + GLM-5 tool call（函数名跨 chunk）
+  discovery: 2026-10-21 系统扫描 sweep_5（顺序深读）
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（原文未提 HTTP 200）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes

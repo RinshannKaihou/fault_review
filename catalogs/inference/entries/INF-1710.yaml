@@ -1,0 +1,55 @@
+id: INF-1710
+legacy_ids: []
+slug: ms_multistream_event_reuse_reset_order
+aliases: []
+title: 多流复用 event 时 reset 与 record 错位致等待超时
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: 多流 event 复用与 step 同步
+  behavior: step 结尾只同步计算流，非计算流的 event reset 未在 step 内执行完；下一 step 复用时 record 先于上次 reset 生效，同一 event 顺序错位。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 并行下发/多流场景偶现 event wait timeout：plog 报 event wait timeout occurred during task execution（timeout=1980s），随后流同步失败、进程退出；重跑同网络不一定复现。
+  visibility: 挂起
+mitigation:
+  detect: step 结尾统计已同步的 stream 集合；多流并行下发压测时按 event_id 抓 plog 的 wait timeout，并检查 reset 是否在 step 内完成
+  fix: issue 给出方案：step 结尾或 event 复用前在从流与默认流之间插入一对 record/wait（或改用 aclrtCreateEventExWithFlag），reset 后再补一对 event 把 reset 汇聚到主流；未见 PR 链接，发布状态未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend 910B + MindSpore 2.6/2.7.1/master，多流并行下发、step 之间复用 event；driver 25.2.0，DeepSeek 网络
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/20742
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore 2.6/2.7.1/master 在 910B、driver 25.2.0、DeepSeek 网络开启多流并行下发的场景下，step 结尾没有同步所有 stream：Python 层 asnumpy 只同步计算流。非计算流上的 reset event 在 step 内未执行完，影响下一 step 的 record，而 aclrtCreateEventWithFlag 创建的 event 要求前一次 reset 先于下一次 record。issue 附有正常/异常时序图，并给出修复方向（流间插入 record/wait 对，或改用 aclrtCreateEventExWithFlag），无 PR 链接。
+  source: 2025-11-11 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/20742 （closed）
+  behavior: 910B 上跑 DeepSeek 一类开启并行下发的网络，进程偶发卡在 stream 同步：plog 里出现 event wait timeout occurred during task execution, event_id=113, timeout=1980s，随后 stream synchronize 失败、进程报错退出。同配置重跑可能正常，日志里看不到算子算错，只是等待超时。
+  trigger_surface: Ascend 910B + MindSpore 2.6/2.7.1/master，多流并行下发并在 step 之间复用 event；driver 25.2.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 挂起

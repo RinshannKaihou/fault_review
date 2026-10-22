@@ -1,0 +1,59 @@
+id: INF-1752
+legacy_ids: []
+slug: inductor_dropout_decomp_no_device_gate
+aliases: []
+title: dropout 分解无设备门控污染 CPU 图并致数值发散
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: dropout 分解注册
+  behavior: 模块级无条件把全局 decomposition 表的 native dropout 换成体内直调 torch.ops.npu._npu_dropout，函数体无 input.device 门控，导入即改写 CPU 图。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: CPU 图被改写成 npu 私有算子后编译抛 MissingOperatorWithoutDecomp（3 例）；NPU 侧绕过 aten 参考语义，dropout 族 12 例 eager-vs-compiled 发散，dropout2d 最大绝对差 0.414（容差 1.5e-5）。
+  visibility: 静默错误
+mitigation:
+  detect: '同进程内同时跑 CPU 与 NPU 的 Inductor 变体；导入 torch_npu._inductor 后编译纯 CPU dropout 图，看是否出现 target: npu._npu_dropout.default'
+  fix: 待定（issue open，文中给出最小充分修复落点）：在 _override_native_dropout_decomp() 注册的分解函数体内加 input.device.type 门控，非 npu 输入回退 aten native decomposition；NPU 侧再对齐 RNG 流/数值语义
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: 同进程内同时存在 CPU 与 NPU（PRIVATEUSE1）Inductor 变体、且预导入 torch_npu._inductor；910B4 / torch 2.14.0a0 / torch_npu 2.14.0 / CANN 9.1.0 / triton-ascend 3.6.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 原文把 17 例分为三面：3 例 CPU 图被污染（本条目主机制）、2 例 TE 缺 lowering（#4935）、12 例数值发散归为私有分解与 aten 参考语义未对齐；此处只按原文口径陈述。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4939
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4939（2026-09-18，open，Ascend 910B4 / PyTorch 2.14.0a0+git / torch_npu 2.14.0 / CANN 9.1.0 / triton-ascend 3.6.0）：torch_npu/_inductor/decomposition.py 在模块级无条件调用 _override_native_dropout_decomp()（本版本约在 decomposition.py:965），把全局 decomposition 表中的 native dropout 分解替换为体内直接调用 torch.ops.npu._npu_dropout 的实现，且函数体没有 input.device 门控。后果三条：只要 torch_npu._inductor 被导入，CPU 计算图的 dropout 也被改写成 npu 私有算子，CPU lowering 表不认识 npu._npu_dropout，编译期抛 MissingOperatorWithoutDecomp（CPU 3 例）；NPU 前向 dropout 在 triton_experimental 后端因该私有算子无 lowering 同样编译失败（2 例，症状登记于 #4935）；npu 私有分解绕过 aten native 参考路径，RNG 流与数值语义不一致，dropout 族其余 12 例在 default 与 triton_experimental 两个后端都出现 eager-vs-compiled 数值发散（not close，最大绝对差 0.1~9.0 量级，如 nn_functional_dropout2d_npu_float32 为 0.4138，容差 1.5e-5）。作者给出的最小充分修复是给该分解加 input.device.type 门控，并另行为 NPU 侧对齐语义。'
+  source: 'Ascend/pytorch #4939（2026-09-18，open） https://gitcode.com/Ascend/pytorch/issues/4939'
+  behavior: '服务器上只要在同进程里 import 过 torch_npu._inductor，纯 CPU 的 dropout 编译也会失败，报 MissingOperatorWithoutDecomp: target: npu._npu_dropout.default；NPU 上则能编译能跑，但 dropout 后的激活与 eager 差到 0.1~9.0（容差 1.5e-5），训练 loss 曲线和推理 logits 都随之后移。因为有 dropout 的模型每层都踩，表现为整体质量下降而不是某一处报错。'
+  trigger_surface: 导入 torch_npu._inductor 后的同进程 CPU/NPU Inductor 编译 + dropout 族算子（含 alpha_dropout/rrelu/dropout2d/3d）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility
+    - behavior

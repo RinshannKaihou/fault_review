@@ -1,0 +1,61 @@
+id: INF-1461
+legacy_ids: []
+slug: sglang_nvfp4_marlin_small_block_scales_underflow_garble
+aliases: []
+title: SGLang NVFP4 Marlin 小 block scale 下全输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: Marlin FP4 scale 重标定
+  behavior: nvfp4_marlin_process_scales 以 (scales*2**7).view(int16)<<1 转 S0E5M3，假设顶位恒置位；小 block scale 违反假设，BF16 反量化下溢全输出垃圾。
+effect:
+  objects:
+  - 输出内容
+  detail: SM80-90 Marlin 路径全乱码：NVFP4 twin 192/192 请求错（~49,133/49,152 token）；ModelOpt 式大 scale 与 B200 W4A4 精确；vLLM 0.19.0+ 对同 checkpoint 精确
+  visibility: 静默错误
+mitigation:
+  detect: '同 checkpoint 对照 vLLM（带 #34577）或 B200 W4A4 路径；检查 weight_scale_2 是否为 1'
+  fix: 上游修复已存在：vllm-project/vllm#34577（幂二重标定 block scale 并除同因子全局 scale，MoE 层共享单因子，merged 2026-03-17）——SGLang 侧待移植（issue open 时 0.5.22/main 均未含）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: NVFP4（ModelOpt quant_algo）checkpoint + SM80-SM90 GPU（Marlin W4A16 回退）+ 小 block scale（如 weight_scale_2=1 导出）；B200 W4A4 不触发；sglang 0.5.22 与 main ba3fc94（2026-10-18）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 与 10-18 收录的 INF-1453/1454（SM86 FP8/AWQ Marlin 间歇错）不同：本条是确定性全量乱码、根因在 scale 重标定假设、上游已有对照修复可引
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/44998
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang issue #44998（c2026-10-18）：SM80 以下（至 SM90）GPU 上 SGLang 用 Marlin W4A16 kernel 跑 NVFP4（ModelOpt quant_algo: NVFP4）checkpoint。python/sglang/srt/layers/quantization/marlin_utils_fp4.py 的 nvfp4_marlin_process_scales 以 (scales * 2**7).view(int16) << 1 把 E4M3 block scale 转 S0E5M3 形式，假设每个非零 scale 满足 scale*2**7 >= 2（顶位置位）。per-tensor weight_scale_2=1 导出的 checkpoint block scale 小、违反假设，BF16 反量化下溢、全输出垃圾。vLLM 同款代码已由 vllm-project/vllm#34577（幂二重标定 + 全局 scale 同除、MoE 专家共享因子，merged 2026-03-17）修复；SGLang 0.5.22 与 main ba3fc94（2026-10-18）仍是无修复版本。probec probe twins 贪心 192 请求 × 256 token 实测：RTX 3090 与 H100 PCIe 的 Qwen3-0.6B twin NVFP4 均 192/192 请求首 token 起错（49,133/49,152 token）；RTX 3090 Qwen3-30B-A3B twin（MoE）192/192 错（49,135 token）；同 dense 权重 ModelOpt 式 scale（block scale 近 448）精确 0/49,152——两 checkpoint 反量化后权重一致、仅 scale 切分不同；B200 W4A4 路径两者皆精确。vLLM 0.18.1（修复前）同款失败同计数、0.19.0（含 #34577）精确。'
+  source: 2026-10-18 GitHub sgl-project/sglang issue https://github.com/sgl-project/sglang/issues/44998 （open）
+  behavior: 在 Ampere/Hopper 消费卡与数据中心卡上用 SGLang 跑以小 block scale 导出的 NVFP4 量化模型时，所有输出从第一个 token 起就是乱码：192 个请求全错、49,152 个 token 里约 49,133 个错。同样权重换成 ModelOpt 常规 scale 导出或 B200 原生 W4A4 路径则完全正确，vLLM 新版本对同 checkpoint 也正确。
+  trigger_surface: SGLang 0.5.22/main（ba3fc94）+ NVFP4 checkpoint（小 block scale，如 per-tensor weight_scale_2=1）+ SM80-SM90（Marlin 回退）；RTX 3090/H100 PCIe 实测
+  discovery: 2026-10-19 每日扫描
+  notes:
+  - 2026-10-20 回访 2026-10-20：#44998 仍 open
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - original.notes

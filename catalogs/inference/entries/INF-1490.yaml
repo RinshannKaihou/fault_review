@@ -1,0 +1,51 @@
+id: INF-1490
+legacy_ids: []
+slug: op_plugin_310p_quant_gmm_dequant_intermittent_wrong
+aliases: []
+title: 310P 量化分组 matmul 反量化偶发错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: 310P 量化分组 matmul 反量化
+  behavior: npu_quant_grouped_matmul_dequant 在 310P 上同输入多次调用结果时对时错：1000 轮循环里偶发命中错值，重跑同一组缓存输入又可能正确；正文未给出根因定位。
+effect:
+  objects:
+  - 数值结果
+  detail: per-token 动态量化 + int8 NZ 权重下反量化输出偶发错值（abs err 9.16、参考 0.11），无报错无 NaN，MoE 专家分支输出被静默污染；单次跑通不能说明正确。
+  visibility: 不可复现
+mitigation:
+  detect: 同输入循环复跑（正文用 for i in {1..1000} 反复起进程）并抓 'act vs ref, abs err' 日志行；只跑一次或只看是否报错发现不了
+  fix: issue 为 open，正文只给复现脚本与日志判据，未给根因与修复 PR（合入与发布状态未核实）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_note: 310P + torch_npu 2.8.0.post4 / CANN 9.0.0-beta.2 + npu_quant_grouped_matmul_dequant（per-token 量化、int8 权重 NZ 格式 29、多专家 group_list）+ 同输入反复复跑
+remarks: 根因未定位，条目只记录可复现的偶发错值现象、判据与复现方法；不写未证实的确定性来源。
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/78
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'op-plugin issue #78（2026-05-12，open）：环境 CANN 9.0.0-beta.2、torch 2.8.0、torch_npu 2.8.0.post4，硬件 310P。正文给出完整脚本 test_torch_npu_quant_grouped_matmul_dequant.py：allow_internal_format=True，token 由 moe_gating 分派，x 做 per-token 动态量化（absmax/127），权重 per-channel 量化后 transpose 再 npu_format_cast 到 NZ（format 29），调用 torch_npu.npu_quant_grouped_matmul_dequant(x, quant_weight_T, weight_scales, offsets, quant_mode=''pertoken'')，与 torch.matmul 逐专家的参考实现比对。脚本把输入与参考结果缓存成 .npy，第二次起复用同一组输入，因此排除了输入随机性；外层 for i in {1..1000} 反复起进程复跑，日志里出现 ''137:act vs ref, abs err 9.1640625, ref err 0.111163759076103'' 即判定出错。报告者明确说明大部分轮次正确、偶发错误，同样的测试输入正确与错误都可能出现；正文未给出根因定位（tiling、workspace 复用等只是候选面）。'
+  source: 2026-05-12 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/78 （open）
+  behavior: 在 310P 上用 npu_quant_grouped_matmul_dequant 跑 MoE 量化分组 matmul：完全相同的输入反复运行，大多数轮次结果与参考实现一致，少数轮次部分元素偏差极大——按报告者的判据 abs err 到 9 量级，而参考相对误差只有 0.11 左右。整个过程没有报错、没有 NaN/Inf，脚本照常打印结果，所以只跑一次或只看有没有异常是发现不了的；错值直接进下游专家分支。
+  trigger_surface: 310P + npu_quant_grouped_matmul_dequant（per-token 动态量化、int8 权重 NZ 格式 29、多专家 group_list）+ 同输入反复复跑；单次执行不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

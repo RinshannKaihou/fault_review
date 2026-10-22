@@ -1,0 +1,55 @@
+id: INF-1592
+legacy_ids: []
+slug: hcomm_roce_cqe_owner_period_wrong_sq_deadlock
+aliases: []
+title: RoCE CQE owner 翻转周期算错致通信卡住
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: 通用
+    component: Roce3GetOneCqe CQ 消费
+  behavior: Roce3GetOneCqe 用 cqDepth+1024 作 owner bit 翻转周期与取模掩码；驱动把请求深度 31744 向上取整成 32768 后该值变 33792，不再是 2 的幂，掩码与周期同时失效。
+effect:
+  objects:
+  - 可用性/进度
+  detail: A5 950PR NDA RoCE 上 16 rank AllReduce（INT32、count=268435456）必然卡死：消费索引 ≥1024 后只读 slot 0~1023，新 CQE 被判为旧回执，SQ credit 不归还，SQ(16384) 写满后通信挂死。
+  visibility: 挂起
+mitigation:
+  detect: 看建链诊断日志里 CQ_DEPTH 与 oldModelRingSize（CQ_DEPTH+1024）是否仍为 2 的幂；或统计 consIndex 超过 1024 后 CQE 是否还在被消费
+  fix: issue 给出修复：ownerPeriod 取 cqContext_->cqDepth、slot 用 consIndex % ownerPeriod、owner 期望值按 (consIndex/ownerPeriod)&1 计算，不再依赖“cqDepth+1024 是 2 的幂”；issue 已 closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: A5 950PR、NDA RoCE（Rdma1825Ops，UB DMA）、AICPU_TS 路径；驱动把 NDA_CQ_DEPTH_FOR_UBNIC=31×1024 向上取整为 32768 时触发；设备实测 + 必现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/867
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hcomm 的 src/legacy/ascend950/unified_platform/resource/connection/aicpu/rdma_vendor_1825_ops.h，Roce3GetOneCqe 是 RoCE 路径每次 poll CQ 判断“这条回执是不是新的”的底层函数。代码以 cqDepthReal = cqContext_->cqDepth + ROCE_CQE_MAX_GEN_NUM(1024)、cqeMask = cqDepthReal-1、calHwOwner = ((consIndex & cqDepthReal)==0) 计算期望 owner。请求深度是 31×1024=31744（NDA_CQ_DEPTH_FOR_UBNIC），选这个值正是为了让 31744+1024=32768=2^15 可用位掩码；但驱动实际分配 32768（向上取整到 2 的幂），cqDepthReal 变成 33792，掩码 0x83FF（bit10~14 清零）。建链诊断日志实测：SQ_DEPTH=16384, WQE_SIZE=64, CQ_DEPTH=32768, CQE_SIZE=64, oldModelRingSize=33792。残废掩码下 consIndex 0~1023 碰巧映射到 slot 0~1023；consIndex=1024 时 1024 & 0x83FF = 0，从 index 1024 起软件永远只读 slot 0~1023，而真正的新 CQE 写在 slot 1024~32767，这些槽里是 owner 为旧值的残留回执，owner 检查不过。
+  source: 2026-09-09 GitCode cann/hcomm issue https://gitcode.com/cann/hcomm/issues/867 （closed）
+  behavior: 16 rank AllReduce 传 1GB INT32 数据时进程不报错也不退出，npu-smi 看设备忙、通信卡住不动，HCCL_EXEC_TIMEOUT 到点才失败；同样的模型和数据在小数据量下正常，只有 CQ 环被消费过一圈（index 越过 1024）后必现，报错日志里看不到任何 CQE 相关的提示。
+  trigger_surface: A5 950PR + NDA RoCE + AICPU_TS + CQ 深度被驱动向上取整（CQ_DEPTH=32768 而请求 31744）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - title
+    issue_unfixed:
+    - detail

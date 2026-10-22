@@ -1,0 +1,58 @@
+id: INF-1597
+legacy_ids: []
+slug: cann_moe_token_unpermute_ep_grad_prob_slot_lost
+aliases: []
+title: MoeTokenUnpermuteWithEpGrad 非零梯度槽丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: probsGrad 累加与写回
+  behavior: probs 非 None 路径对每个槽位无条件调 ReduceSumFunc 并以标量偏移写单个 fp32，tiling 的保留槽位上限使 tokens×topk>1 时槽位复用、非零项被覆盖或写错位置；写回缓冲未清零。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 1000例执行成功，59通过941失败（94.1%）。probsGradOut应有一个非零槽位，实测丢失：866例大值域最大相对误差为1.0；或错位：绝对/相对最大误差位置899例全不同。permutedTokensGradOut最大相对误差1061.19、最大绝对误差659.78。n=1或全零通过
+  visibility: 静默错误
+mitigation:
+  detect: probs 非 None、tokens×topk>1 且 grad/permutedTokens 非零的用例，检查 probsGradOut 是否恰有一个非零槽位、位置是否与 sortedIndices∩rangeOptional 一致
+  fix: 待定（issue closed，正文未附修复 PR；三个假设分别指向标量偏移写回、目标 buffer 未清零、折半归约多读）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: aclnnMoeTokenUnpermuteWithEpGrad（CANN 9.0.0，Ascend 910B3）+ probs 非 None + paddedMode=false + tokens_num×topkNum>1 且输入含非零值；n=1 或全零不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5044
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5044（2026-09-07 closed）用 ATK 以 pyaclnn 调用 aclnnMoeTokenUnpermuteWithEpGrad（CANN 9.0.0 moe/moe_token_unpermute_with_ep_grad，probs 非 None 分支，Ascend 910B3，torch 2.10.0），CPU 标杆按文档公式 fp32 计算后转输出 dtype，标准 single_bm(vector_fused) 三项指标：1000 例全部执行成功，59 通过、941 失败（94.1%）。失败形态：按 rangeOptional=[0,1) 语义 probsGradOut 应恰有一个非零槽位，实测该非零项丢失（866 例大值域最大相对误差恰为 1.0）或错位（绝对/相对最大误差出现位置 899 例全不同）；permutedTokensGradOut 最大相对误差 1061.19，最大绝对误差 659.78。触发条件：tokens_num×topkNum>1 为必要条件（n=1 的 39 例全过），且需非零数据参与归约（全零 18 例全过）；与 dtype 无关（fp32/fp32 亦 92.6% 失败，排除精度转换因素）；与值域量级无关（常规 [-5,5] 失败 809/850）。probs 全零隔离用例（编号 360）中 permutedTokensGradOut 完全正确、仅 probsGradOut 错，把故障隔离在 probsGrad 计算路径自身。根因假设：op_kernel/moe_token_unpermute_grad_prob_not_none.h:331 对每个槽位无条件调 ReduceSumFunc(tmpBufferProbGradFp32[indicesIndex], ...)，op_kernel/moe_token_unpermute_grad_base.h:124-148 各 hiddensizeLen 分支以标量偏移写单个 fp32，配合 op_host/moe_token_unpermute_with_ep_grad_tiling.cpp CoreSplitInfoProbIsNotNone 的 indicesReserveNum/inputReserveNum 保留槽位（上限 256/512），tokens×topk>1 时槽位跨 token 复用/越槽写导致非零项被覆盖或写错位置；tmpBufferProbGradFp32 未清零（仅 tmpBufferProbGradReduceSumFp32 在 185 行清零）；BinaryAddFunc 的 halfLen=AlignUp(CeilDiv(totalLen,2),32) 对非 2 幂长度多读。'
+  source: 2026-09-07 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5044 （closed）
+  behavior: 算 MoE token unpermute 的反向时，probs 的梯度本该只在 sortedIndices 落进 EP 本地段的那个槽位有值、其余为 0，实测这个唯一非零的槽位要么是 0、要么数值跑到别的槽位上（最大误差位置和标杆完全对不上）；permutedTokens 的梯度也大范围错，最大相对误差到 1061。1000 条用例 941 条不过，连纯 fp32 也一样错，说明不是精度问题而是索引写回错了。tokens×topk=1 或输入全零时又全对。
+  trigger_surface: probs 非 None + tokens_num×topkNum>1 + 输入含非零值（paddedMode=false、rangeOptional=[0,1)）；dtype 与值域量级无关
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

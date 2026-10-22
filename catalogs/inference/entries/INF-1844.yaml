@@ -1,0 +1,54 @@
+id: INF-1844
+legacy_ids: []
+slug: ops_math_sqrt_cast_ceil_low_precision_bias
+aliases: []
+title: sqrt 低精度回写用 CAST_CEIL 致结果偏大
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: experimental sqrt kernel
+  behavior: 非 float32 路径把 fp32 中间结果 Cast 回 fp16/bf16 时用了 RoundMode::CAST_CEIL（向正无穷取整），而不是项目其余数学算子通用的 CAST_RINT。
+effect:
+  objects:
+  - 数值结果
+  detail: fp16 sqrt(2.0)：CAST_RINT 应得 1.4140625，实际 1.4150390625；所有不能精确表示的 sqrt 结果恒向上偏一个可表示步长，接口与日志正常。
+  visibility: 静默错误
+mitigation:
+  detect: 对 fp16/bf16 输入逐值与 fp32 结果按就近舍入比对，看是否恒为向上取整；mare/mere 类容差会掩盖 1 ulp 级系统偏差。
+  fix: 待定（issue closed，未给 MR）：sqrt.h:115 的 CAST_CEIL 改为 CAST_RINT。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: experimental/math/sqrt + dtype 为 float16/bfloat16（fp32 路径不走 Cast 分支）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: issue 只给源码逐行比对的机制与单点数值示例，未附设备实测记录，条目按源码事实记录，未外推误差量级。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/1505
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math issue 1505（closed）：experimental/math/sqrt/op_kernel/sqrt.h:109-118 在 !std::is_same_v<TYPE_X,float32_t> 分支里先用 CAST_NONE 把输入抬到 float32、按 fp32 做 Sqrt，再用 AscendC::Cast(yLocal, p1, RoundMode::CAST_CEIL, processDataNum) 窄回目标低精度（:115），即向正无穷取整；项目中其他数学算子在同样「fp32 中间结果回写窄类型」的场景统一用 CAST_RINT（就近、ties to even）。作者给出的对照：sqrt(2.0) 的 fp32 值 1.41421356…，fp16 最近可表示值 1.4140625（CAST_RINT 应返回它），CAST_CEIL 返回下一个 fp16 值 1.4150390625。issue 未附设备运行日志，结论由源码比对与手算该点得出。
+  source: GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/1505 （closed）
+  behavior: 用 fp16/bf16 跑 sqrt，结果普遍比正确舍入值大一点点：每个不能精确表示的值都被推到下一个可表示数，整张输出呈系统性上偏而不是随机抖动，接口返回成功、没有告警，精度回归按容差判常常照样通过；把输入换成 fp32 就完全正常，所以只在低精度推理路径上长期存在。
+  trigger_surface: experimental/math/sqrt + float16/bfloat16 输入
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

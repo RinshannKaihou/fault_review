@@ -1,0 +1,63 @@
+id: INF-1639
+legacy_ids: []
+slug: mindformers_fused_fsdp_allgather_buffer_freed
+aliases: []
+title: 融合 all-gather 源 buffer 提前释放，重计算读到残参
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspore
+    component: FSDP 融合 all-gather 拷贝
+  behavior: handle.wait() 只等 all-gather 完成；split_with_sizes_copy 刚入队就 free_all_gather_output() 把 ag_output resize 成 0，拷贝源提前失效
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: replay 的 linear_qkv 输出与首次 forward 逐元素不同（diff_count 6301、max_abs≈3.1e38），差异经 K/V 传到 EP token 计数，最终报 Allocated size does not match required size
+  visibility: 报错
+mitigation:
+  detect: 用 activation-checkpoint invocation id 逐层配对首次 forward 与 replay 的张量；检查 fused ag_output storage 的释放时机
+  fix: split_with_sizes_copy 完成前保持 ag_output 有效（stream event / 延迟回收 / 双 buffer）；A/B 中只保留 ag_output 后 936 个探针全一致（未核实合入）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需 activation recompute（full recompute）+ fused FSDP + EP/PP/CP 组合；deterministic=true 与 hcclDeterministic=1 都不能避免
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2488
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'PyNative MoE 同时开启激活重计算、FSDP 与 Expert Parallel 时，重计算 replay 阶段可能报 RuntimeError: Allocated size does not match required size，调用栈在 expert_parallel.py::_build_resort_routing_map -> mint.repeat_interleave(..., output_size=total_tokens)。用 activation-checkpoint invocation id 对首次 forward 与 replay 逐层逐张量配对后，首个差异出现在 DSA Attention 的 linear_qkv(x)：完整 attention 输入与完整 linear_qkv.weight 快照逐元素一致（diff_count=0），但 qkv_combo 已经不同（diff_count=6301、max_abs≈3.1e38），Router 的输入、unshard 权重、logits、routing scores、expert bias 与 TopK indices 均可逐元素一致，说明 Router 不是首个差异点。根因在 Hyper-Parallel 的 hyper_parallel/platform/mindspore/fully_shard/param_group.py 的 ParamGroup.foreach_all_gather_copy_out()：handle.wait() 只等 HCCL all-gather 完成，随后 split_with_sizes_copy(ag_output, metadata.inp_split_sizes, dim=1, out=out) 把从融合 ag_output 到各参数 buffer 的设备拷贝加入执行队列，代码立即调 self.free_all_gather_output() 把源 storage resize 为 0，replay 消费参数时可能读到未完成、已释放或被复用的内容，传播到 K/V、Router 输入与 expert token 计数后触发 EP split 不一致。复现场景 8 卡 32K、PP2+CP2+FSDP2+EP2、full recompute（32 卡 DSV4 亦出现）；A/B：原始实现 26 个 replay tensor 不一致、4 个 rank size mismatch，仅保留 ag_output 不立即 free 后 936 个探针全一致。'
+  source: 2026-08-03 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2488 （closed）
+  behavior: 开激活重计算 + FSDP + EP 训 MoE 模型，训练跑到一两步就报 Allocated size does not match required size，栈落在 expert_parallel 的 repeat_interleave；同一份 checkpoint 重跑位置会变，开了 training.deterministic=true 和 hcclDeterministic=1 也压不住。把 replay 与首次 forward 的张量配对后能看到 linear_qkv 输出出现 3.1e38 量级的异常值，而输入和权重都逐元素一致——参数看起来对，算出来的东西却不对。
+  trigger_surface: PyNative DeepSeek-V4（DSA/MHC/MTP/MoE）+ full recompute + fused FSDP + EP + PP/CP，8 卡 32K，MindSpore 2.10.0 + Hyper-Parallel fed8671b
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 并行切分
+      visibility:
+        from: 数值异常
+        to: 报错

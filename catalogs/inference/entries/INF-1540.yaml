@@ -1,0 +1,57 @@
+id: INF-1540
+legacy_ids: []
+slug: ops_nn_ttk_golden_fp64_truncated_to_fp32
+aliases: []
+title: TTK golden 把 fp64 标杆截回 fp32
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: 通用
+    component: 10 算子 TTK golden 参考实现
+  behavior: golden 内部一律 astype(float32)，把 TTK Promote 送进来的 fp64 输入降为 fp32；同时次级输出硬编码 float32、忽略用例声明的 output_dtypes。
+effect:
+  objects:
+  - 测试判定
+  detail: loss/norm/optim/quant 共 10 个算子的 golden 真值被截到 fp32，fp64 标杆优势消失；mean/rstd/scale/absmax 等次级输出 dtype 与声明不符，比较口径偏移，错误实现可能照样通过。
+  visibility: 静默错误
+mitigation:
+  detect: 查 golden 里 astype(float32)/_to_f32 这类强制降精度，以及次级输出是否读 output_dtypes；用 fp64 promote 用例复算真值，与 fp32 真值应有可见差异。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/11042 （merged）：统一 _to_compute 入口、归约助手改按输入 dtype，只改测试参考实现，不动 kernel/op_host
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: TTK 用例启用 Promote 提供 fp64 输入，或声明了非 float32 的次级输出 dtype（mean/rstd/scale/absmax）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 更正的是评测侧真值，不是被测算子；受影响算子清单以 PR 正文为准（deep_norm、batch_norm3_d/_grad、batch_norm_grad_ext2、apply_adam_w_quant、dynamic_quant_update_scatter(_v2) 等 loss/norm/optim/quant 共 10 个）。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/11042
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn merge request 11042（2026-09-22，merged）：修正 loss / norm / optim / quant 共 10 个算子的 TTK golden 参考实现，使 golden 严格按用例声明的 output_dtypes 生成真值，并在 TTK Promote 提供 fp64 时保留 fp64 精度；只改 <算子>/tests/assets/golden.py，不动 kernel 与 op_host。两类缺陷：一是忽略用例声明的输出 dtype，次级输出被硬编码成 float32——例如 norm/deep_norm/tests/assets/golden.py 的 _compute_deep_norm 把 mean/rstd 强制 .to(torch.float32)，deep_norm_golden 只从 output_dtypes[2] 取 y 的 dtype，output_dtypes[0]/[1] 被忽略；batch_norm3_d、batch_norm3_d_grad、batch_norm_grad_ext2 的 batch_mean/saved_var/saved_rstd/dscale/doffset，optim/apply_adam_w_quant 的 absmax_m/absmax_v，quant/dynamic_quant_update_scatter(_v2) 的 scale/offset 同样被强制 float32。二是把 TTK Promote 的 fp64 截回 fp32：golden 内部一律经 astype(np.float32)/.to(torch.float32)（_to_f32、_to_torch_float32、_to_numpy_float32 及一系列 dtype=np.float32 的归约助手），Promote 送进来的 fp64 输入被降为 fp32，cross_check 真值被截回 fp32。修法为统一计算 dtype 入口（_to_f32→_to_compute 等），归约/累加助手（_sum_fp32、_binary_fold_sum、_reduce_sum_* 等）由 np.float32 改为输入 dtype 驱动，fp64 原样保留、fp16/bf16 提升到 fp32。
+  source: 2026-09-22 GitCode cann/ops-nn merge request https://gitcode.com/cann/ops-nn/merge_requests/11042 （merged）
+  behavior: 给 loss/norm/optim/quant 里的算子写精度用例时，明明让 TTK Promote 送了 fp64 输入、也声明了 mean/rstd/scale 这些次级输出要用 bf16 或 fp64，比对结果却总在 fp32 精度上判——真值自己就被截回 fp32 了。于是实现只要在 fp32 量级对上就算过，fp64 标杆本该暴露的累积误差、次级输出的 dtype 错配全都看不见，测试给出的是“通过”的假结论。
+  trigger_surface: TTK 用例启用 Promote 提供 fp64，或声明非 float32 的次级输出 dtype，覆盖 deep_norm/batch_norm3_d/batch_norm_grad_ext2/apply_adam_w_quant/dynamic_quant_update_scatter 等 10 个算子
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

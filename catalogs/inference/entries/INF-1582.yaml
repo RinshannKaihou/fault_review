@@ -1,0 +1,53 @@
+id: INF-1582
+legacy_ids: []
+slug: cann_moe_finalize_routing_bf16_fp32_accum_policy
+aliases: []
+title: MoeFinalizeRouting bf16 中间精度口径不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: moe_finalize_routing
+  behavior: bf16 路径把输入与 bias/scales 全部上转 fp32 累加、写回只舍入一次；fp16 路径按原生 half 计算。同算子两种 dtype 的中间精度策略不同，文档未规定。
+effect:
+  objects:
+  - 数值结果
+  detail: bf16 331 例中 299 例超阈（90.3%，双指标阈值均 0.0078125=2^-7）；fp16 316 例逐位一致、fp32 353 例 max_abs≤2.83e-5；K=1 单步即差 2 个 bf16 ULP，误差随 K 与值域放大（max_rel 420）。
+  visibility: 静默错误
+mitigation:
+  detect: 同形状仅换 dtype（bf16/fp16/fp32）的对照用例；K=1 单步用例可直接暴露每算子一次的舍入差；按 bf16 ULP 统计差异
+  fix: 待定（issue closed；需先由维护者裁定 bf16 中间精度口径，再统一 kernel 或参考实现，并在文档写明 fp16 原生 / bf16 fp32 累加的差异）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: aclnnMoeFinalizeRouting（CANN 9.0.0 发布镜像，Ascend 910B3）+ 输入 dtype=bf16 且常规随机值域；fp16/fp32 不触发。是否构成算子缺陷取决于未写明的中间精度口径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 中间精度口径待维护者裁定：若“bf16 上转 fp32 累加”为预期行为则属参考实现口径问题，本条记录的是同一算子 bf16/fp16 两条路径策略不一致这一事实
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5045
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5045（2026-09-07 closed）用 ATK 对 aclnnMoeFinalizeRouting（CANN 9.0.0 发布镜像内置 moe/moe_finalize_routing，Ascend 910B3，torch 2.10.0）做 single_bm/high_performance 精度测试（小值域最大绝对误差与大值域最大相对误差双指标，阈值均 0.0078125=2^-7）：1000 例全部执行成功，701 通过、299 失败，失败 100% 为 bf16（331 例中 299 例，90.3%）；fp16 316 例 max_abs_diff 全为 0（逐位一致），fp32 353 例 max_abs≤2.83e-5。299 例误差 max_abs 均值 0.0687/中位 0.043/最大 4.875，max_rel 均值 1.525/最大 420；K=1（无累加）19 例失败，说明单步 scales*(expandedX+bias) 即产生 2 个 bf16 ULP。两侧源码核对：kernel 的 bf16 路径（moe/moe_finalize_routing/op_kernel/moe_finalize_routing_bf16.h）把输入逐个 CAST_NONE 上转 float，Add/Muls 与累加全程 float，输出一次 CAST_ROUND 回 bf16；fp16 路径（moe_finalize_routing_fp_db.h 等，模板参数 half）原生 half 计算，与参考的逐算子 fp16 同构，故逐位一致；参考实现按文档公式以输入 dtype 逐算子计算，每个累加项 scales*(expandedX+bias) 含两次 bf16 舍入。误差随 K（K=1 平均 0.025 → K=256 平均 0.186）与值域（expandedX ±10000 时 max_abs 4.875、max_rel 13.9；scales ±100 时 max_rel 420）放大。通过侧均为退化输入：scales 全零 4 例、近零 ±1e-6 3 例、全 1.0 常数 2 例、x2Optional NaN 5 例、极小形状 18 例。算子文档计算公式未规定乘加中间精度。'
+  source: 2026-09-07 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5045 （closed）
+  behavior: 同一个 MoE finalize 算子，bf16 输入下 90% 的常规用例与按文档公式逐算子算的参考结果差 2 个以上 bf16 ULP（阈 0.0078125），K 越大、数值越大差得越多——K=256 时平均绝对误差 0.19，大值域相对误差到 420；换成 fp16 输入则逐位一致、fp32 也在 3e-5 内。也就是说同一份数据换个 dtype，精度表现从完全一致掉到整体超阈，而算子不报任何错。
+  trigger_surface: 输入 dtype=bf16（含大值域 expandedX/scales）；K、形状、tiling 分支只影响误差大小，fp16/fp32 不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

@@ -1,0 +1,59 @@
+id: INF-1424
+legacy_ids: []
+slug: vllm_kv_connector_preempt_orphan_blocks
+aliases: []
+title: vLLM KV Connector 迟到失效上报留下可复用坏块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: invalid_blocks 扫描集
+  behavior: KV 加载失效上报迟到处理；_handle_invalid_blocks 只扫 running 与 kv_holding_waiting；abort/抢占释放块且 hash 保留时不执行 evict，迟到失效上报按物理块 ID 找请求。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 加载失败的块留在前缀缓存被后续同前缀请求命中并 decode 出损坏 KV；#61905 中无关请求 C 分到复用块后被迟到失败报告误杀（fail）或回退重算（recompute）；CPU 调度器探针实测
+  visibility: 静默错误
+mitigation:
+  detect: mock connector CPU 探针（issue 附脚本仓库）；追踪 invalid_block_ids 报告时刻与 owner 生命周期
+  fix: 部分修复在途：#61769 记录 abort 路径块 ID（未覆盖 preempt）；#61912 跟踪 preempt 路径修复；未见合入
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 外部 KV connector 报 invalid_block_ids + owner 在上报处理前被 abort（#61768）/块 ID 复用（#61905）/被抢占（#61912）；async 调度、kv_producer 角色实测
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: 三连 issue（#61768/#61905/#61912）同一生命周期主线合并收录；#61769 部分修复、#61912 为 preempt 变体跟踪。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61768
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/61905
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/61912
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM V1 KV connector 的加载失败上报在同一 step 输出中迟到处理，_handle_invalid_blocks（scheduler.py:3416 早退）只扫 running 与 kv_holding_waiting 中的请求，存在三个缺口。(1) #61768：owner 在失败加载的 step 内被 abort（如客户端断连）时，_process_aborts_queue 先 finish_requests 释放块（hash 保留），失效上报随后处理时 total_failed_requests==0 直接返回，evict_blocks 不执行——从未加载成功的块留在前缀缓存，后续同前缀请求命中并从坏 KV decode（CPU 调度器最小复现，fail/recompute 策略与 sync/async 均中）。(2) #61905：异步调度下上报在下一 step 调度后处理，_handle_invalid_blocks 按物理块 ID 找请求；kv_producer 顶层角色下被 abort owner 的块立即回池并在下个 schedule() 分给无关请求 C，迟到上报按块 ID 命中 C：fail 策略 C 被误杀 FINISHED_ERROR，recompute 策略 C 从 128 回退 64 token 重算（C 从未用过外部 KV）。defer_block_free（#45357）只保护 kv_consumer/kv_both 角色。(3) #61912：owner 在 schedule 与 update_from_output 之间被 KV 压力抢占时块同样已释放（PREEMPTED 在 waiting，hash 保留），#61769 只在 _free_request 记录块 ID，抢占路径漏记，7/8 块仍 hashed，owner 恢复后在 112-token 命中（48 valid）上继续、fail 策略下 owner 不被 fail。全部为 CPU scheduler+mock connector 探针实测（26.10 容器，main a97d19d7/0c2584929）。'
+  source: 2026-10-17 GitHub vllm-project/vllm issues https://github.com/vllm-project/vllm/issues/61768 、https://github.com/vllm-project/vllm/issues/61905 、https://github.com/vllm-project/vllm/issues/61912 （均 open，附 CPU 探针脚本与矩阵）
+  behavior: 使用会报块级加载失败的 KV connector（外部 KV 加载）时：请求被客户端取消或被调度器抢占后，它那批加载失败的 KV 块不会被清出前缀缓存，后续相同前缀的请求会命中这些从未成功加载的块，直接 decode 出损坏输出，无报错；另一种形态是失败报告迟到时块已被重新分配给别的无关请求，那个无辜请求会被误判失败（fail 策略下直接 FINISHED_ERROR）或被回退重算。三种触发（abort、块复用、抢占）都有 CPU 级复现脚本。
+  trigger_surface: 外部 KV connector（invalid_block_ids 上报）+ async 调度 + owner abort/抢占/块 ID 复用；kv_load_failure_policy fail/recompute 均受影响
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior

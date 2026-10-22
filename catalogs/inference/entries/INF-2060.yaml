@@ -1,0 +1,63 @@
+id: INF-2060
+legacy_ids: []
+slug: vllm_ascend_mooncake_kv_break_garbled
+aliases: []
+title: Mooncake KV 链路在 100 并发下断开致 D 节点乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: vllm
+    component: MooncakeConnector KV 传输
+  behavior: PD 分离 2P1D 下并发升到 100 时 mooncake 连接断开；plog 首个出错节点报 rtMemcpy 107030（capture mode 不支持该操作），P 侧 3s 超时改 10s 仍超时。
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: 服务启动无报错、32 并发正常；100 并发后 mooncake 开始报错、D 节点输出乱码，关闭 TLS 可临时恢复（报告称根因仍在查）。A3 + vllm 0.17.0rc1 + 2p1d（2+2）。
+  visibility: 静默错误
+mitigation:
+  detect: 并发阶梯压测（32→100），同时看 mooncake 连接状态、plog 的 rtMemcpy 返回码与 D 节点输出文本
+  fix: 临时关闭 TLS 可恢复（报告者称根因仍在查）；无修复 PR
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm 0.17.0rc1 + vllm-ascend + A3 + PD 分离 2P1D + MooncakeConnector，并发 100
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/7707
+  kind: github_issue
+relations: []
+original:
+  mechanism: A3 上 vllm 0.17.0rc1 + PD 分离（2P1D，2+2）跑 DeepSeek-V3.2：32 并发时一切正常，并发升到 100 后 mooncake 连接断开，D 节点开始输出乱码。plog 中首个出错节点为 RUNTIME MemCopySync 失败，rtMemcpy 返回 ErrCode=107030 'the current capture mode does not support this operation'（threadCaptureMode/exchangeCaptureMode/contextCaptureMode 均为 0），多次 cnt=416/72 的同步拷贝连续失败；P 侧 p_log 有 3s 超时，调到 10s 仍超时。报告者把乱码归因于 mooncake 连接断开后 KV 传输不完整，临时关闭 TLS 可恢复，根因仍在排查。
+  source: 2026-03-23 github.com issue https://github.com/vllm-project/vllm-ascend/issues/7707 （open）
+  behavior: 服务起得来、32 并发问答正常；压到 100 并发后 D 节点回复变成乱码，客户端看到的是正常 200 但内容是坏文本，同时 P 侧 plog 刷 rtMemcpy 107030 与超时。运维很难把「乱码」和「KV 传输拷贝失败」联系起来。
+  trigger_surface: vllm-ascend PD 分离 + MooncakeConnector + 并发 100（A3 2P1D）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 集合通信
+    rewritten:
+    - behavior
+    uncertain:
+    - title

@@ -1,0 +1,59 @@
+id: INF-1684
+legacy_ids: []
+slug: ops_nn_fake_quant_affine_cachemask_int64_narrow
+aliases: []
+title: FakeQuantAffineCachemask 元素数截到 uint32
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: tiling 整数窄化
+  behavior: tiling 把 GetShapeSize()/GetDim(0) 的 int64_t 直接赋给 uint32_t totalLength/headNum，无上限校验；元素数超 2^32 时截断，kernel 只处理部分元素。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B/910_93：元素数>2^32时触发；举例[1,16,24576,16384] FP16约12.9GB，6.4B元素截为2.1B、丢67%，仅处理部分元素，尾部未初始化，多核分配错乱，返回正常。
+  visibility: 静默错误
+mitigation:
+  detect: 构造元素数超 2^32（如 [1,16,24576,16384] fp16）的输入，检查输出尾部是否保持预置值；同时核对 tiling 里 totalLength 的位宽。
+  fix: issue 2988 closed；正文给出改 uint64_t totalLength/headNum 并加上限校验、kernel 侧 quantMin/quantMax 保持 int64；未给 PR。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: partial
+  trigger_note: 910B/910_93 + FakeQuantAffineCachemask + 元素数超 uint32 表达范围（>2^32）的大 shape
+  confidence: documented
+remarks: 问题由代码审查给出（三个窄化点 R1/R2/R3），R3（quantMin/quantMax int64→int32）作者自己标注典型场景不可达；本条只写 R1/R2 的实际后果，effect 里已注明 issue 未附实测。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/2988
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 2988（2026-05-30，closed）：910B/910_93，算子 quant/fake_quant_affine_cachemask。R1（HIGH）：op_host/fake_quant_affine_cachemask_tiling.cpp:109 写 uint32_t totalLength = 1; totalLength = xShape.GetShapeSize();——int64_t 返回值静默缩窄为 uint32_t，tiling 侧无任何上限校验；触发举例 shape [1,16,24576,16384] FP16 约 12.9GB（可放入 64GB 显存），元素数 6.4B 截断为 2.1B、丢失 67%，calcLength 随之错误，kernel 只处理部分元素，尾部未初始化，属静默数据损坏。R2（HIGH）：同文件:110 写 uint32_t headNum = 1; headNum = xShape.GetDim(0);——同样 int64_t→uint32_t 缩窄，且只检查 headNum == 0、无上限校验，loopNum / remainNum 计算错误导致多核间数据分配错乱。R3（MEDIUM）：op_kernel/fake_quant_affine_cachemask_base.h:40-41 把 tilingData->quantMin/quantMax 静态转 int32_t，需 quant 范围超 INT32_MAX 才触发（作者注明典型场景不可达）。修复：R1/R2 改 uint64_t 并加范围校验；R3 kernel 侧保持 int64_t 或加校验。
+  source: 2026-05-30 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/2988 （closed）
+  behavior: 用 FakeQuantAffineCachemask 处理一个元素数超过 2^32 的大张量（比如 12.9GB 的 fp16，实际能被 64GB 卡吃下），tiling 里元素数被 uint32 截断成 2.1B——算子只算前面一半多，后面的元素根本没被写，返回值却一切正常；多核切分也因为 headNum 被截断而错位。调用方只能从输出尾部是残留值（或掩码比例明显不对）才察觉。
+  trigger_surface: FakeQuantAffineCachemask + 元素数 >2^32（uint32 截断）的大 shape；910B/910_93
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

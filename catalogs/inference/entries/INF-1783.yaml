@@ -1,0 +1,59 @@
+id: INF-1783
+legacy_ids: []
+slug: tt_metal_embedding_llk_boundary_family
+aliases: []
+title: tt-metal SFPU 边界族：celu/i1/ldexp/silu 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU 激活/数学 LLK
+  behavior: 四个边界值缺陷：(1) celu alpha<0 时 Cody-Waite helper 只钳负侧（max(x,-87)），正向上溢参数回绕 8 位指数域返回有限错值；(2) i1 输入钳 ±88.5（exp 溢出点）而 i1 本身 |x|
+effect:
+  objects:
+  - 数值结果
+  detail: shipped 复现：celu(x=-100,alpha=-1)=+1.0（torch -inf，WH/BH 一致）；i1(|x|>88.5) 均返回 ±1.15e37；bf16 ldexp(inf,-0.00037)=3.38953e+38；Quasar silu(-inf)=NaN（应 0）。
+  visibility: 静默错误
+mitigation:
+  detect: 边界值探针（±inf、负 alpha、88~92 区间）对照 torch
+  fix: 待定（celu/i1 issue 给出具体修复公式未提 PR；silu 修复已从 tt-llk#1722 移植待 triage）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SFPU LLK 边界输入（±inf、x/alpha>89、88.5<|x|<91.9、-inf×0）；WH/BH 拷贝一致（celu/i1/ldexp）、Quasar（silu）； shipped 版本即在
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 与既有 10-16~19 收录的 sigmoid LUT ±inf（INF-1405）、softplus 尾部钳零（INF-1406）、acosh_bw 域保护（INF-1402）同属 SFPU 边界族但算子各异，不合并（每条独立算子+独立修复）。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61021
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61022
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61723
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61333
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal SFPU LLK 四条边界缺陷（均含具体机制与 shipped 复现）：(1) #61021 ckernel_sfpu_celu.h（WH/BH 一致）：经共享 Cody-Waite helper 求 alpha·expm1(x/alpha)，helper 只钳负侧 max(x,-87) 且 setexp 把 k+127 写入 8 位指数域（SFPSETEXP 取低 8 位），正向无界参数回绕：numpy 模型预测 k+127∈[256,383) 时 +|alpha|、更大时符号翻转，与设备逐位一致；celu 传 1/alpha 无符号检查。x=-100、alpha=-1 返回 +1.0（torch -inf）；x/alpha∈(88.38,88.72) 另有 NaN 带。修复：calculate_celu 内 min(alpha_recip*x,89) 钳位。(2) #61022 ckernel_sfpu_i1.h：输入钳 ±88.5（exp fp32 溢出点）而 i1(x)≈e^x/√(2πx) 到 |x|≈91.9 才超 FLT_MAX：|x|>88.5 全部返回常数 i1(88.5)≈±1.15e37（88.5~91.9 偏小最多 20×、应 ±inf 处有限）。修复：钳 ±92 并 exp(|x|-4)×e^4 后乘。(3) #61723 ldexp bf16 行（#61561 后续）：仍走 exp2(b)+FPU 乘，FPU 把 inf 当最大有限值：ldexp(inf,-0.00037)=3.38953e+38（torch inf）、ldexp(inf,inf)=0、ldexp(1.175e-38,192)=4。(4) #61333 tt_llk_quasar ckernel_sfpu_silu.h：sigmoid 得 0 后无条件 TTI_SFPMUL(-inf,0)→NaN（数学极限 0，torch 0.0）；修复（-inf lane 清零）已从 tt-llk#1722 移植待 triage。'
+  source: 2026-10-20 每日扫描；https://github.com/tenstorrent/tt-metal/issues/61021 ；https://github.com/tenstorrent/tt-metal/issues/61022 ；https://github.com/tenstorrent/tt-metal/issues/61723 ；https://github.com/tenstorrent/tt-metal/issues/61333
+  behavior: tt 硬件 SFPU 数学函数在边界输入上系统性返回错误但有限的值：负 alpha 的 celu 在 x<0 深处返回 +1.0 量级正值（应为 -inf）；i1 对 |x|>88.5 一律返回 ±1.15e37（部分区间应溢出为 inf）；bfloat16 ldexp 把无穷大乘成最大有限值甚至 0；Quasar silu 对 -inf 输入返回 NaN（应为 0）。所有情形无报错，激活值在边界静默错，被下游当正常数值继续算。
+  trigger_surface: tt SFPU 激活/数学算子 + 边界输入（±inf、x/alpha 溢出带、88.5<|x|<91.9、负 alpha）
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

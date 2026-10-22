@@ -1,0 +1,60 @@
+id: INF-1568
+legacy_ids: []
+slug: ops_math_angle_v2_complex64_signed_zero_branch_cut
+aliases: []
+title: AngleV2 complex64 丢负零符号致分支切割错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: angle_v2_complex.h 角落分支
+  behavior: complex 角落处理用与零的浮点比较来选 ±π 与符号，IEEE-754 比较把 +0 与 -0 视为相等，负零符号位丢失；实部为负无穷时也未恢复分支切割的 π 符号
+effect:
+  objects:
+  - 数值结果
+  detail: complex64 下 (-0,+0) 返回 +0 应为 +π、(-0,-0) 返回 +0 应为 -π、(+0,-0) 返回 +0 应为 -0、(-1,-0) 返回 +π 应为 -π；有限象限与 NaN 对照均与 torch.angle 一致
+  visibility: 静默错误
+mitigation:
+  detect: 对含 ±0 分量的 complex64 值逐位比对 torch.angle（看 -0 符号位与 ±π 的位模式），并覆盖负无穷实部的分支切割用例
+  fix: PR https://gitcode.com/cann/ops-math/merge_requests/6005 （open）：仅对零值分量读取符号位，非零仍走原比较；恢复负无穷实部的 ±π 分支切割；改动限于 math/angle_v2/op_kernel/angle_v2_complex.h
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: math/angle_v2 的 complex64 通路（angle_v2_complex.h）；需输入分量含 ±0 或实部为负无穷，普通有限象限输入与参考一致
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3320
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6005
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: INF-1436
+pattern: PAT-INF-0167
+original:
+  mechanism: cann/ops-math（源码 commit 9aad7870053b4259744f765ed0ac39bc885b4b8c）math/angle_v2/op_kernel/angle_v2_complex.h 的 complex 角落处理用与零的浮点比较来选择 ±π 和结果符号；IEEE-754 比较把 +0 与 -0 判为相等，负零的符号信息因此丢失，零值分量无法再区分从哪一侧趋近分支切割。文档 math/angle_v2/docs/aclnnAngleV2.md 把 COMPLEX64 列为支持输入，golden 用 torch.angle。在 Atlas 910B4 / CANN 9.2.0-beta.2 上对 24 个 complex64 值做探针：(-0,+0) 期望 0x40490fdb(+π) 实得 0x00000000、( -0,-0) 期望 0xc0490fdb(-π) 实得 +0、(+0,-0) 期望 0x80000000(-0) 实得 +0、(-1,-0) 与 (-inf,-0) 期望 -π 实得 +π；普通有限象限与 NaN 对照通过。补丁只改该头文件、零值分量改读符号位并恢复负无穷实部的 ±π，修复后 24 个向量全部与 torch.angle 一致。
+  source: 2026-09-28 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3320 （open，关联 PR https://gitcode.com/cann/ops-math/merge_requests/6005）
+  behavior: 对含 ±0 分量的 complex64 输入算 angle，结果与 torch.angle 不一致：(-0,+0) 本应是 +π 却给 +0，(-0,-0) 本应是 -π 也给 +0，(+0,-0) 本应是 -0 却给 +0，负实轴上的 (-1,-0) 从 -π 翻成 +π。普通象限的数值完全正常，所以只有专门构造 ±0 或分支切割的用例才暴露，下游按角度符号做分支的逻辑会被静默带偏。
+  trigger_surface: ops-math math/angle_v2 的 complex64 通路；输入分量含 ±0、或实部为负无穷（分支切割边界），Atlas 910B4 + CANN 9.2.0-beta.2
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

@@ -1,0 +1,56 @@
+id: INF-1671
+legacy_ids: []
+slug: te_simplify_loops_nonadjacent_merge_rope_index
+aliases: []
+title: 图模式 simplify_loops 合并非相邻轴致 RoPE 索引错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: simplify_loops/reindex
+  behavior: can_merge_dims 经 Max(1,e)->e 折叠放松后允许非相邻迭代轴合并，而 reindex() 按位置消费索引变量、只能表达相邻轴合并，索引变量被静默错绑。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: Llama-2-7b fp16 bs=1 seq=512 图模式 vs eager cos=0.75（应约 1.0）；同一 kernel 喂 BNSD contiguous 输入逐位正确、喂 mm 行主序输入全错；不抛异常，只掉精度。
+  visibility: 静默错误
+mitigation:
+  detect: 图模式与 eager 跑同一模型比 cos similarity；对可疑 kernel 分别喂 contiguous 与 mm 行主序视图，若前者逐位对后者全错即索引按错误 layout 生成
+  fix: PR https://gitcode.com/Ascend/pytorch/pull/47232 （open，未核实合入）：can_merge_dims 开头加相邻轴守卫（b-a!=1 拒绝）；修复后整模型 cos=1.000046、bitwise 确定
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: options={'npu_backend':'triton_experimental'} 的 torch.compile；RoPE 前置 kernel（neg/slice/transpose，s=512,n=32,d=64）输入为 mm 输出的 [S,4096] 行主序视图；910B2/CANN 9.1.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5209
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5209（2026-09-28，open，Ascend 910B2 / CANN 9.1.0 / torch 2.14.0.dev20260801+cpu / torch_npu 2.14.0.dev20260801+git1b64dad，backend=triton_experimental）：torch_npu/_inductor/triton_experimental/fx_passes.py 的 _patched_simplify_loops_impl 中，can_merge_dims 允许合并不相邻的迭代轴，但配套 reindex() 按位置消费索引变量，只能表达相邻轴、外层吸收内层的合并形态。根因是 _install_fold_max1_in_loop_merge 用 Max(1,e)->e 折叠放松了合并测试的数学条件（本意让 conv 输出轴可合并），放松后部分不相邻轴对也通过数学测试，索引变量被错绑到错误位置，生成的 kernel 按错误输入 layout 读取数据。上游原生 simplify_loops 只合并相邻轴。对照实验：同一 kernel 喂 BNSD-contiguous 输入 bitwise 全对，喂 mm 行主序输入全错，证明 kernel 数学正确、索引公式按错误 layout 生成。Llama-2-7b（fp16, bs=1, seq=512）图模式 vs eager 整模型 cos similarity 0.75；触发 kernel 为 RoPE 前置的 neg/slice/transpose（轴 s=512、n=32、d=64）。修复 PR #47232 加相邻轴守卫后 cos=1.000046、bitwise 确定。'
+  source: 2026-09-28 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5209 （open）
+  behavior: 同一份 Llama-2-7b fp16 权重（bs=1、seq=512），eager 和 torch.compile 图模式的输出对不上：整模型 cos similarity 只有 0.75，而正常情况下应接近 1.0。没有任何报错或 NaN，看起来就是"模型效果变差"。单独把出错的 RoPE 前置 kernel 拿出来，喂连续布局的输入结果逐位正确，喂 matmul 输出的行主序视图则全错，说明 kernel 本身没算错，是它按错误的布局公式去取数。
+  trigger_surface: triton_experimental 图模式 + 存在非相邻迭代轴可合并的循环（如 RoPE 前置 slice/transpose 作用在 mm 输出的行主序视图上）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

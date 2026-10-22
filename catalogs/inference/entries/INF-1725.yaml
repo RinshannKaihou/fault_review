@@ -1,0 +1,61 @@
+id: INF-1725
+legacy_ids: []
+slug: ms_unpaired_backward_hook_global_map_cleared
+aliases: []
+title: 嵌套反向清空全局 hook 表致外层 hook 静默丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: PyNative unpaired hook 表
+  behavior: unpair_backward_hook_grad_ 是全局静态 map，内层反向的 ProcessUnPairedCellHook 直接 clear() 整表，把外层引擎注册的 hook 一并清掉。
+effect:
+  objects:
+  - 指标/日志
+  detail: PyNative 下若 Cell 输入不参与求导且存在嵌套反向（自定义 bprop 内再调 GradOperation/Tensor.backward），外层 register_backward_hook 回调不再执行；日志无报错，监控面板该层梯度数据缺失，单层反向不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 外层 Cell 注册 register_backward_hook，在自定义 bprop 里再触发一次内层 GradOperation，检查 hook 回调日志是否缺少外层记录
+  fix: issue 给出修复：把 unpair_backward_hook_grad_ 改成按 engine_id 隔离的 std::map<size_t, OrderedMap<string, py::function>>，ProcessUnPairedCellHook 只处理当前引擎（状态 closed）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: PyNative + register_backward_hook + 嵌套 GradOperation/Tensor.backward；输入不参与求导的 Cell，Ascend 910B/master
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29245
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: PyNative 下 Cell 注册了 register_backward_hook 但输入不参与求导时，hook 被记为 unpaired，在反向结束时由 ProcessUnPairedCellHook 统一处理；它们挂在 PrimitivePy::unpair_backward_hook_grad_ 这个扁平全局静态 OrderedMap 上，不区分反向引擎。发生嵌套反向（自定义 bprop 里再调 GradOperation 或 backward）时，内层引擎处理完自己的 unpaired hook 后 clear() 清空整表，外层 hook 随之消失，外层反向结束时找不到可触发的 hook。修复为按 engine_id 的嵌套 map。环境 Ascend 910B、master。
+  source: 2026-03-25 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29245 （closed）
+  behavior: 在 Cell 上注册 register_backward_hook 做梯度监控，只要该 Cell 的输入不参与求导、并且网络里存在嵌套反向（自定义 bprop 内再求一次导），外层 hook 就不再被调用。日志里看不到任何错误，hook 回调就是没执行，监控面板上这一层的梯度数据直接缺失；单层反向不受影响。
+  trigger_surface: PyNative + register_backward_hook + 嵌套 GradOperation/Tensor.backward；输入不参与求导的 Cell
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 运行时/执行
+    rewritten:
+    - detail

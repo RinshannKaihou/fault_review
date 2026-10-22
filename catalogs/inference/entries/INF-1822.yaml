@@ -1,0 +1,56 @@
+id: INF-1822
+legacy_ids: []
+slug: vllm_ascend_gdn_recompute_w_u_unwritten_outputs
+aliases: []
+title: GDN recompute_w_u 首启漏写输出致首个请求全 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: recompute_w_u 内核
+  behavior: wy_fast.py 的 recompute_w_u_fwd_kernel 在进程首次真实 prefill 时漏写 u/w 输出的部分元素；输出由 empty_like 分配，残留未初始化内存。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 引擎启动后第一次推理 logits 全 NaN，greedy 退化成 token id 0（连续 '!'）；之后每个请求都正常，表现为像 warmup 的假象。单个 NaN 元素即可经 fwd_h→fwd_o→out_proj 污染整个隐状态。
+  visibility: 数值异常
+mitigation:
+  detect: 对 GDN chunk 流水线做分阶段 NaN/Inf 探针；比对首次 prefill 与后续请求的输出。
+  fix: 已合入的修复只是把 u/w 输出改为零初始化（仅掩盖后果）；漏写本身的根因仍待查（triton-ascend codegen / 启动同步）。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: v0.23.0，Qwen3.6-27B w8a8（qwen3_5 arch，GDN 线性注意力层），VLLM_ASCEND_ENABLE_NZ=0，spawn worker；910B + Triton
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17009
+  kind: github_issue
+relations: []
+original:
+  mechanism: '在 v0.23.0 上服务 Qwen3.6-27B（qwen3_5 架构，含 GDN 线性注意力层）时，进程启动后的第一次推理返回垃圾：logits 全 NaN，greedy 解码坍缩到 token id 0（连续 ''!''），其后请求全部正常。报告者用 GDN chunk 流水线内部的分阶段 NaN/Inf 追踪定位到 recompute_w_u_fwd_kernel（vllm_ascend/ops/triton/fla/wy_fast.py）在进程第一次真实 prefill 时没有写满 u / w 输出的部分有效元素，而输出是用 torch.empty_like() 分配的，那些位置保留未初始化内存；一旦含 NaN，经 u → AscendC fwd_h → fwd_o → out_proj matmul 就会污染整个隐状态。关联 PR 只把输出改为零初始化，报告明确指出这只是掩盖后果，漏写元素为何发生在首次启动仍未解释，并把它上升为「该栈上任何用 empty_like 分配且首启未写满的 Triton kernel 都可能静默漏垃圾」的一般性风险（issue 2026-09-20 open，自 #15560 派生）。'
+  source: 2026-09-20 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17009 （open）
+  behavior: 服务刚拉起时发第一个请求，返回的是一串 '!' 或全 NaN 的分数，看起来像没预热；第二次起完全正常，所以很容易被当作 warmup 或初始化抖动放过，实际是内核漏写导致读取了未初始化显存。
+  trigger_surface: 引擎进程的第一次真实 prefill（首启），GDN/线性注意力层的 recompute_w_u Triton 内核
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

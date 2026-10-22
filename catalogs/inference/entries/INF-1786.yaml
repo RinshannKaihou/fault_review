@@ -1,0 +1,73 @@
+id: INF-1786
+legacy_ids: []
+slug: ops_nn_conv_infershape_dw_fusion_nine_defects
+aliases: []
+title: CANN conv InferShape 与 DW 融合 pass 9 缺陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: conv infershape 与 DW 融合
+  behavior: conv infershape 与 DW 融合 pass 9 处缺陷：groups==0+unknownShape 时两道门均漏、ic==kc*groups 恰好通过时 kn%groups 除零 UB；属性指针未判空；校验失败反返回通过
+effect:
+  objects:
+  - 数值结果
+  detail: conv 类算子在动态 shape 且 groups=0、量化权重上游格式非标、dilations 缺失、非 4D filter 等构造下静默错值：布局错位进 kernel、bias 校验跳过、实现模式退化、shape 推导错，无 ERROR 日志，部分触发为崩溃/UB
+  visibility: 静默错误
+mitigation:
+  detect: 对融合前后图做等价性校验/输出与 eager 对照
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12390 （open：静态扫描+人工逐条溯源确认 9 处；opgraph 1218 UT 过、depthwise 68/68、ophost 8530 过；未发布）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 动态 shape+groups=0 / quant 上游非标准 format / dilations 缺失 / 非非 4D filter 等构造条件；issue+修复 MR 双源（静态审计）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: '静态审计型发现（同 tt-metal #58402 族方法），但含第 5 条「静默数据错误」明确传播链与修复 MR 验证；修复 MR 已过全量 UT。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6961
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12390
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'ops-nn issue #6961 + 修复 MR !12390（静态代码扫描发现、人工逐条溯源确认，涉及 conv 公共 infershape 与 3 个 Depthwise 融合 pass）。conv/common/op_host/conv_forward_infershape.cpp（被 Conv2D/Conv2DV2/Conv3D/Quant/Deformable 复用）：(1) CheckConvGroups 静态 shape 按 groups<=0 拦截（:755）而跳过条件是 groups<0（:765）——groups==0+unknownShape 时两道门均漏，ic==kc*groups 恰好通过时 kn%groups（:732）除零 UB；(2) GetConvDilations（:498）/ReportInputWithPadError（:779）GetAttrPointer 返回未判空调 GetSize/GetData——dilations 缺失或反序列化类型不匹配即空指针 UB；(3) CheckConvBiasDimLegal（:392）bool 函数内用 return ge::GRAPH_FAILED(-1) 的判空宏，隐式转 true——biasDesc null 时校验失败反返回通过。a_depthwise_fusion_pass.cpp：(4) ComputeFilterShapes（:303-316）filterShape[INDEX_0..3] 无 size() 校验，quant 分支遍历 AscendWeightQuant 所有输入上游只查 format 不查维数——非 4D 上游（标量 scale、2D 权重）越界 UB；(5) DealQuantNodeCase 先改 quant 输出/depthwise 输入 desc（newShape）后插 Reshape 桥——上游 format 不匹配时 Reshape 永不插入但 desc 已改，quant 节点输入按 preShape 产出、输出声明 newShape，布局错位静默传播到 kernel；且对 quant 全部输入（含 scale/offset）无差别处理，量化参数 shape 可能被误改；(6) InsertReshapeBetween（:245-265）RemoveEdge→CreateReshapeNode→AddDataEdge 非事务性，中途失败原图破坏无恢复。depthwise_to_conv2d_fusion_pass.cpp：(7) SetConv2dAttrs（:167）(void)SetAttr 丢弃返回值——失败时融合节点缺 op_impl_mode_enum，实现模式静默退化默认。depthwise_df_fusion_pass.cpp：(8) GetResizeDepthwiseFilterShape（:49-71）GetShape 配 GetOriginFormat 维映射且 dim 无正数校验——非 arch35 无兜底，非法 shape 直接写入 Reshape 属性；(9) SetNodeAttrs（:183-188）input_size（静态 D 算子输出 shape 核心）SetAttr 失败仅 DEBUG 日志且 void 无法上抛。修复 MR !12390 open：opgraph 1218 passed（depthwise 68/68）、ophost 8530 passed。'
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-nn/issues/6961 ；修复 https://gitcode.com/cann/ops-nn/merge_requests/12390
+  behavior: 昇腾图模式下 conv 类算子在特定构造（动态 shape 且 groups=0、权重经量化算子产出且上游格式非标、dilations 属性缺失、非 4D filter 等）会静默产出错误结果：布局错位的数据直接进 kernel、bias 校验被跳过、融合出的 Conv2D 实现模式退化、输出 shape 推导错误，全程无 ERROR 日志；部分触发条件（groups=0、空指针）则表现为崩溃或 UB。同一修复 MR 覆盖全部 9 处。
+  trigger_surface: CANN 图模式 + conv 公共 InferShape（多算子复用）+ 3 个 Depthwise 融合 pass + 各构造条件
+  discovery: 2026-10-20 每日扫描
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（原文无N=-1+x等细节，系静态扫描非复现）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    issue_unfixed:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes

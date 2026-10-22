@@ -1,0 +1,54 @@
+id: INF-2082
+legacy_ids: []
+slug: cann_batch_norm_v3_ful_reduce_divzero_bessel
+aliases: []
+title: BatchNormV3 reduceNum=1 除零出 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: batch_norm_v3 arch35
+  behavior: BatchNormV3FullReduce 构造函数用 reduceNum/(reduceNum-1) 算 Bessel 校正；r1=r0=1 时除零得 inf，tiling 只保证各维 >0。
+effect:
+  objects:
+  - 数值结果
+  detail: N=1,H=1,W=1 等合法形状走 FULL_REDUCE 时校正因子变 inf，污染 running mean/var 与 rstd，输出 inf/NaN；同类 BlockSplit 分支有 QuietNaN 保护。
+  visibility: 数值异常
+mitigation:
+  detect: 对 N=1,H=1,W=1（NCHW）或 N=1（ND）输入跑 batch_norm_v3 training，检查 running_mean/running_var 是否出现 inf；或直接单测 besselCorrectionFactor
+  fix: issue 修复建议：与 BatchNormV3RARBlockSplitR 一致，reduceNum==1 时返回 QuietNaN() 而不是做除法（closed，未见合并记录）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend950/arch35 batch_norm_v3 FULL_REDUCE 分支 + r1*r0==1（如 N=1,H=1,W=1）；合法输入即可触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5009
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn 的 batch_norm_v3 arch35 kernel（norm/batch_norm_v3/op_kernel/arch35/batch_norm_v3.h）里，BatchNormV3FullReduce 构造函数第 105 行用 static_cast<float>(reduceNum)/static_cast<float>(reduceNum-1) 计算 besselCorrectionFactor，reduceNum=r1*r0 来自 tiling data。tiling 侧 CheckShapeAllPositive 只校验各维 >0（保证 r1>=1、r0>=1），并不阻止 r1*r0==1；当输入 N=1,H=1,W=1（NCHW）或 ND 下 N=1 时 reduceNum=1，除零得到 infinity，再经第 217 行 CalculateRunningMeanVarWithRstdVF 进入 running mean/variance 与 rstd 的计算。同族 BatchNormV3BlockSplitR 用 patternR==1?QuietNaN()、BatchNormV3RARBlockSplitR 用 reduceNum==1?QuietNaN() 都有保护，BatchNormV3FullReduce 遗漏。入口 batch_norm_v3_apt.cpp:59 在 TILINGKEY_FULL_REDUCE 分支构造该对象，可达。
+  source: 2026-08-24 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5009 （closed）
+  behavior: 用小 batch 或单像素输入训练/推理带 BatchNorm 的模型时，输出与 running 统计量里出现 inf 或 NaN，loss 直接炸掉；形状本身完全合法（各维 >0），框架不报参数错误，只能从数值上发现。
+  trigger_surface: Ascend950 arch35 + batch_norm_v3 FULL_REDUCE + r1*r0==1 的合法形状
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,60 @@
+id: INF-2011
+legacy_ids: []
+slug: ops_nn_scatter_elements_v2_small_mode_no_index_check
+aliases: []
+title: scatter_elements_v2 SMALL_MODE 不校验索引范围
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: scatter_v2 ProcessSmall
+  behavior: 小 shape 走 ProcessSmall 时直接用 index 当 UB 偏移，缺 ProcessScatter 里 kIndex<0 || kIndex>=currentInput 的跳过判断，负索引与越界索引都被当成合法偏移使用
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3+CANN9.1.0-beta.3：self4x4全1，index[0][0]为-1/4时aclnnScatter返回SUCCESS并写坏输出；-1000000触发设备异常507035。PyTorch Tensor.scatter要求索引落在[0,self.size(dim)-1]。
+  visibility: 静默错误
+mitigation:
+  detect: 对 aclnnScatter 传 index[0][0]=-1 与 -1000000（其余为合法对角），比对返回码与输出；两条路径（ProcessSmall / ProcessScatter）都要试
+  fix: 待定（issue 为本地 draft，未向 gitcode 提单）：在 host/tiling/kernel 入口拒绝 [0,size) 之外的索引并返回参数错误
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnScatter → scatter_elements_v2 的 SMALL_MODE（小 shape）+ indices 含负值或越界值；910B3 + CANN 9.1.0-beta.3 源码编译包实测 exit 42
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4771
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1661
+pattern: PAT-INF-0187
+original:
+  mechanism: cann/ops-nn issue 4771（2026-08-13，closed）：Ascend910B3 + CANN 9.1.0-beta.3、ops-nn HEAD e16ef626bb3a，index/scatter_elements_v2 在 SMALL_MODE（ProcessSmall）路径上不做索引范围校验：kernel 直接把 index 值当 UB 偏移，而同文件 ProcessScatter 有 kIndex<0 || kIndex>=currentInput 的跳过逻辑。复现：self shape{4,4} fp32 全 1、src 仅 src[0][0]=999、dim=0、reduce=none，index[0][0] 取 -1 / -1000000 / 4，aclnnScatter 对负值与越界值返回 SUCCESS 并写坏输出，极端负索引触发设备异常 507035，进程退出码 42（BUG_REPRODUCED）。PyTorch Tensor.scatter 要求索引落在 [0, self.size(dim)-1]。作者以产物 .o 的 md5 与 vendor 安装目录一致、ASCEND_CUSTOM_OPP_PATH 指向 vendor 确认跑的是源码编译内核。与 INF-1661（aclnnGather 负/越界索引静默回绕）同属索引范围校验缺失，本条为 scatter 写路径的 SMALL_MODE。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4771 （closed）
+  behavior: 用 scatter 做 label 回填、one-hot 构造或 KV/位置表更新时，只要索引里带了 -1（常见的 padding 标记）或别的越界值，调用不报错，结果里却有一行被写成 999 或直接变成垃圾值；极端值才把设备打挂（507035），否则一路静默错到下游。
+  trigger_surface: aclnnScatter / scatter_elements_v2 SMALL_MODE + indices 含负值或越界值
+  discovery: 2026-10-21 系统扫描 sweep_5（顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

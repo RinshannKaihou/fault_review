@@ -1,0 +1,67 @@
+id: INF-1615
+legacy_ids: []
+slug: mindformers_graph_save_remove_redundancy_metadata_mismatch
+aliases: []
+title: Graph 平衡存盘 metadata 记录未落盘优化器状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspore
+    component: checkpoint 平衡存盘元数据生成
+  behavior: '!8743/!8746 把 network 包成 list 的语句挪到 save_checkpoint 开头，Graph 模式把 [cell] 交给 get_strategy_metadata；各 rank 分发计划漏登记 Muon 状态'
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  detail: 多 rank 抢写同一 .tmp 报 FileNotFoundError；muon_m.* 从未落盘（续训从零动量开始），accu_grads.* 被 metadata 索引却无文件，加载报参数字典为空
+  visibility: 静默错误
+mitigation:
+  detect: 校验 metadata.json 里每个键在分片文件中真实存在；从该 checkpoint 续训并与不中断训练逐步比对 loss/优化器状态
+  fix: 修复 !8791（master）、!8790（r2.1.0-beta1）；同类问题在 Somnus2020/mindformers!72（r1.9.0-beta1）已修，未核实是否发布
+labels:
+  family: infra_off
+  trigger: not_target
+  trigger_review: false
+  trigger_note: 训练侧存盘路径（no_save_optim/Muon）；checkpoint 元数据与分片一致性同样作用于推理权重加载
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2597
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0170
+original:
+  mechanism: '!8743/!8746 把 save_checkpoint 里 `network = network if isinstance(network, list) else [network]` 从 PyNative 分支挪到函数开头，Graph 模式因此也把 [cell] 传给 get_strategy_metadata 与 mindspore.save_checkpoint，两者都不接受 Cell 列表，首次存盘即抛 AttributeError: ''list'' object has no attribute ''compile_phase''。绕过崩溃后 checkpoint 与自身仍有四处不一致：各 rank 按自己的 get_strategy_metadata 推导分发，PP 下对优化器状态的视图不同，两个 rank 生成同一文件名并同时写同一个 .tmp（FileNotFoundError: ...-opt-...tmp）；strategy metadata 漏报部分优化器状态（如 Muon decoder 层的 muon_m.*），这些状态从未落盘；accu_grads.* 被写进 metadata.json 但没有任何文件包含它们；metadata.json 记录的是分发计划而非文件实际内容，save_checkpoint 静默丢弃的参数仍被记录。复现用 tests/st/test_multi_cards_cases/test_model/test_deepseek3/deepseekv3_train.yaml（dp2/mp2/pp2/ep2，8 卡）加 save_remove_redundancy: True、no_save_optim: False 与 safetensors CheckpointMonitor，第 10 步存盘崩溃；PyNative 不受影响（保存路径走 rank 0 集中分发）。硬件 8×910B2，MindSpore 2.10.0，CANN 9.1.0-beta.1，GRAPH_MODE + semi-auto parallel。'
+  source: 2026-09-21 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2597 （closed）
+  behavior: 'Graph 模式 + pipeline 并行 + 平衡存盘（新格式 checkpoint）第一次到第 10 步存盘就崩，报 AttributeError: ''list'' object has no attribute ''compile_phase''；即使绕过崩溃，多个 rank 会抢写同一个 .tmp 报 FileNotFoundError，Muon 的 muon_m.* 从未落盘导致续训从零动量开始，metadata.json 里还记着根本没有文件的 accu_grads.*，加载时报 The loaded parameter dict is empty after filter。全程没有精度告警，只能靠续训后 loss 与不中断训练对不上才发现 checkpoint 与自身不一致。'
+  trigger_surface: 'Graph 模式 semi-auto 并行 + PP>1 + checkpoint.save_remove_redundancy: True + no_save_optim: False + safetensors CheckpointMonitor，8 卡 910B2'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - title

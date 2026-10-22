@@ -1,0 +1,61 @@
+id: INF-1455
+legacy_ids: []
+slug: vllm_eagle_drafter_default_rope_base_10000
+aliases: []
+title: vLLM EAGLE drafter 缺省 RoPE base 10000
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: draft config rope 解析
+  behavior: EAGLE draft head 只从 draft config 取 rope，不从 target 复制；无 rope 键时双层默认落 10000——target 值无路径到达 drafter，静默 base 10000 运行
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: draft config 无 rope 键且 target rope_theta≠10000 时，drafter 静默按 base 10000 计算位置编码，与 target 不一致，草稿质量/接受率劣化，无日志提示；配置解析级，无 GPU 可确认
+  visibility: 质量退化
+mitigation:
+  detect: 对 draft config 缺 rope 键的组合，打印 get_rope 解析 base 对照 target（issue 附 ~30 行脚本）
+  fix: 上游修复未见（issue open，0.31.0/0.31.1.dev2/main bd5bbce6 同路径）；规避：给 draft checkpoint config.json 显式补 rope_theta 与 target 一致
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.31.0/0.31.1.dev2/main；EAGLE/EAGLE-3 投机；draft checkpoint config.json 无 rope_theta/rope_scaling 键而 target base≠10000；纯配置解析（无 GPU 复现）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61231
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM #61231（c2026-10-12，配置解析级、无 GPU 无权重复现，L40S 环境仅背景）。EAGLE/EAGLE-3 draft head 从 draft checkpoint 自身 hf_config 构建，rotary embedding 只来自 draft config 的 rope 键：vllm/config/speculative.py 把 draft config 包进 EAGLEConfig、不复制 target 任何 rope 键，hf_config_override 只按架构改 model_type/architectures；llama_eagle3.py 用 draft_model_config.hf_config 建 decoder 层；llama.py _init_rotary_emb 调 get_rope(..., rope_parameters=getattr(config,''rope_parameters'',None))；transformers 对无 rope 键的 LlamaConfig 填 rope_parameters={''rope_theta'':10000.0,''rope_type'':''default''}，vllm get_rope 又独立默认 rope_parameters.get(''rope_theta'',10000)——两层都落 10000，target 值无路径到达 drafter。draft config 无 rope 键时 drafter 以 base 10000 运行、无任何日志。issue 附两个 Hub config.json 的解析脚本复现（0.31.0 release wheel、0.31.1.dev2 source、main bd5bbce6 路径相同）。'
+  source: 2026-10-12 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/61231 （open）
+  behavior: 在 vLLM 用 EAGLE/EAGLE-3 投机解码且 draft 模型的 config.json 没写 rope_theta（而 target 模型用的不是 10000）时，drafter 悄悄按 base 10000 计算位置编码，与 target 不一致：草稿质量/接受率劣化，无任何日志提示。这是纯配置解析问题，不用 GPU 就能确认解析结果。
+  trigger_surface: vLLM EAGLE/EAGLE-3；draft config.json 无 rope 键 + target rope_theta≠10000；0.31.0~main
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - effect
+    - visibility

@@ -1,0 +1,56 @@
+id: INF-1834
+legacy_ids: []
+slug: vllm_ascend_kv_offload_copy_thread_dies_silently
+aliases: []
+title: KV offload 拷贝线程遇异常即静默死亡致后续传输停摆
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: NPUDmaCopyBackend
+  behavior: copy_backend.py:103-124 的 _copy_loop 在 daemon 线程里无异常处理；copy_blocks、wait_event 或解包抛异常即线程退出，append 不执行。
+effect:
+  objects:
+  - 可用性/进度
+  - KV状态
+  detail: 之后所有 offload/load 传输都无人处理：等待该 event 的请求挂住或读到未完成的搬移结果，offload 静默失效而服务不报错。
+  visibility: 挂起
+mitigation:
+  detect: 监控 _copy_loop 线程存活与队列积压；对 events_list 中未完成 event 计数。
+  fix: 待定（issue 2026-10-06 open）：循环体内加 try/except 并把异常上报，勿让线程静默退出。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 启用 NPU KV offload（kv_offload simple 后端，NPUDmaCopyBackend）；任何 copy_blocks 抛异常即触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17932
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm_ascend/distributed/kv_transfer/kv_pool/kv_offload/simple/copy_backend.py:103-124 的 NPUDmaCopyBackend._copy_loop 把整条 offload 拷贝流水线跑在一个 daemon 线程里，循环体内没有任何异常处理：item = self._queue.get() 之后解包 src/dst blocks、params、events，在 torch.npu.stream(stream) 下等待 wait_event 并调用 copy_blocks，然后记录 event 并 events_list.append((event_idx, event))。只要 copy_blocks（:121）、stream.wait_event（:120）或 :106-114 的解包抛异常，异常就会穿出 _copy_loop，:60-65 创建的线程直接结束，且 :124 的 events_list.append 永远不会执行，等待该 event 的调用方失去通知。之后所有 offload/load 传输都排进同一个队列却无人消费。issue 2026-10-06 open，报告明确这是「静默」失效：线程死亡不报错、不重启、不打日志。
+  source: 2026-10-06 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17932 （open）
+  behavior: 开了 KV offload 的服务运行一段时间后，offload 相关的请求开始变慢甚至卡住，队列越积越多，但引擎进程仍然活着、没有 traceback，只有在看线程或队列状态时才发现拷贝线程早就不在了；其间读回的 KV 可能是没搬完的块。
+  trigger_surface: NPU KV offload（simple 后端 DMA 拷贝线程）+ 任意一次 copy 异常
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: KV状态
+        to: 可用性/进度

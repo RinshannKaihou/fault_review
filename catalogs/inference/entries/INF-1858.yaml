@@ -1,0 +1,56 @@
+id: INF-1858
+legacy_ids: []
+slug: ops_nn_foreach_addcmul_scalar_int32_fp32_roundtrip
+aliases: []
+title: foreach_addcmul_scalar int32 丢低位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: addcmul_scalar int32 路径
+  behavior: int32 的标量 addcmul 路径把中间量送进 float32 计算再回整型，|x|>2^24 时低位被舍入掉，接口仍返回成功。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3：x1=0、x2=x3=1、scalar=16777217（2^24+1）时输出 16777216，差 1；N=1 即可复现，与 foreach 列表长度上限无关。
+  visibility: 静默错误
+mitigation:
+  detect: 用 >2^24 的 int32 值（如 2^24+1）走标量路径与主机整型语义逐值比对；小整数与 fp32 用例完全正常。
+  fix: 待定（issue closed，未给 MR）：int32 路径应全程整型计算，不经 float32 中间量。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnForeachAddcmulScalar + int32 张量 + 元素量级 >2^24
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: issue 未给源码行号（原文指向同目录 FINDING.md），机制按「int32 经 float32 中间量往返」记录，未补猜具体文件位置。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4519
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4519（closed）：foreach_addcmul_scalar 的 int32 标量路径（out = x1 + scalar*x2*x3）把中间结果放进 float32 计算后回写整型，float32 只有 24 位有效位，|值|>2^24 的整数被舍入到相邻可表示值。作者在 Ascend910B3、CANN 9.1.0-beta.3、ops-nn HEAD e16ef626bb3a 上以 build.sh --pkg --soc=ascend910b --ops=foreach_addcmul_scalar 编包并安装到独立 vendor，用 aclnn 接口跑 x1=0、x2=x3=1、scalar=16777217（=2^24+1）的 int32 用例：期望 16777217、实得 16777216，进程退出码 42（BUG_REPRODUCED）；用例刻意取 N=1，以排除 foreach 列表容量相关因素。issue 正文把行号指向同目录 FINDING.md，未在正文给出具体源码位置与修复方案。
+  source: GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4519 （closed）
+  behavior: 对 int32 张量做带标量的 addcmul，只要数值超过 2^24，结果就会差 1 或几个低位：例如 16777217 算成 16777216，接口返回成功、不报错、没有 NaN，与主机上同样的整型运算对不上；量级较小的整数和 fp32 输入完全正常，所以整型用例通常只用小数值，问题长期藏着。
+  trigger_surface: aclnnForeachAddcmulScalar 标量路径 + int32 且 |值|>2^24
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

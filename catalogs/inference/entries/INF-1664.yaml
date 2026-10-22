@@ -1,0 +1,57 @@
+id: INF-1664
+legacy_ids: []
+slug: ms_pynative_reducesum_stale_after_index_add
+aliases: []
+title: PyNative 下 index_add 后 ReduceSum 读到旧值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: PyNative index_add 数据依赖
+  behavior: PyNative 中 index_add 与其后的 ReduceSum 之间缺少正确数据依赖，ReduceSum 读到 index_add 之前的输入缓冲。
+effect:
+  objects:
+  - 数值结果
+  detail: 两模式打印的 y 完全一致，但 ReduceSum(y,0) PyNative 得 [16,15,22]、Graph 得 [23,18,29]；错值恰等于 sum(x)+sum(updates)。
+  visibility: 静默错误
+mitigation:
+  detect: index_add 之后立刻 ReduceSum，分别在 PyNative 与 Graph 下执行并比较；两者不等即命中，同时核对错值是否等于 sum(x)+sum(updates)
+  fix: 待定（issue open，无修复 PR）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: PyNative + index_add 后接 ReduceSum；Graph 模式正确，两条模式比较即可暴露
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29433
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore 2.8/2.9 的 PYNATIVE_MODE：ops.index_add 之后接 ops.ReduceSum，两种模式返回的 y 完全相同（[[-6,9,12],[3,4,5],[26,5,12]]），但 ReduceSum(y, axis=0) 分出两条结果——PYNATIVE_MODE 得 [16,15,22]，GRAPH_MODE 得 [23,18,29]。按 y 逐列求和应为 [23,18,29]，Graph 正确。issue 进一步指出 PyNative 的错值恰好等于 sum(original x, axis=0) + sum(updates, axis=0) = [9,12,15]+[7,3,7]=[16,15,22]，说明 ReduceSum 在 index_add 之后仍在操作旧语义/旧中间表示，而不是新张量。issue 展示的 y 本身两模式逐元素一致，所以不是显示问题。
+  source: 2026-05-29 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29433 （open）
+  behavior: 先 index_add 再求和这种写法（scatter 累加后规约）在动态图下求和结果与静态图对不上，而 index_add 的输出本身两边一模一样；错值正好等于把原始输入和 updates 分别求和再相加，看起来像一个合理的数，只有逐列手算才发现少了索引合并。
+  trigger_surface: PyNative 模式下 ops.index_add 紧跟 ops.ReduceSum，输入为 2D float 张量（issue 复现为 3x3）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

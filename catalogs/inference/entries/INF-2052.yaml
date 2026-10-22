@@ -1,0 +1,63 @@
+id: INF-2052
+legacy_ids: []
+slug: vllm_ascend_pangu_moe_dp_garbage_hidden
+aliases: []
+title: Pangu MoE 数据并行下隐状态变 1e37 后卡死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: pangu_moe 前向 DP 取值
+  behavior: 数据并行路径把 DP token 数从 attn_metadata.max_tokens_across_dp 改读 get_forward_context().max_tokens_across_dp；报告者将差异指向该取值改动。
+effect:
+  objects:
+  - 隐状态
+  - 可用性/进度
+  detail: 执行日志中 layer1 output hidden_states（bf16，[68,5120]）为 -5.871449287631183e+37，layer2 input 同值；dummy run 正常，真实请求卡在第二层 input layernorm；报告者称 0.9.2rc1 可跑通。
+  visibility: 挂起
+mitigation:
+  detect: DP>1 时抓各层 hidden_states 的绝对值上界，正常应远小于 1e3；出现 1e37 量级即命中
+  fix: 回退到 0.9.2rc1（报告者实测可跑通）；未见修复 PR
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.9.1rc2 + Pangu Pro MoE + data-parallel-size 8 + enable-expert-parallel + enforce-eager（A2 单机）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/3107
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 0.9.1rc2 的 vllm_ascend/models/pangu_moe.py 在数据并行路径上，把原先取自 attn_metadata.max_tokens_across_dp 的 DP token 数改成读 get_forward_context().max_tokens_across_dp。报告者用 --data-parallel-size 8 --enable-expert-parallel --enforce-eager 拉起 Pangu Pro MoE：dummy run 能跑过，真实请求进来后 trace 打印 layer1 output hidden_states 为 -5.871449287631183e+37（bf16，[68,5120]），layer2 input 仍是同一数值，随后停在第二层 input layernorm 不再前进。同配置换到 0.9.2rc1 可以跑通，报告者据此把差异指向这处 DP token 数取值改动，未再给出更细的图内定位。
+  source: 2026-09-22 github.com issue https://github.com/vllm-project/vllm-ascend/issues/3107 （closed）
+  behavior: 压测时服务既不返回错误也不退出，日志最后几行是 layer1/layer2 的张量打印，值已经是 1e37 量级的垃圾数；请求从此挂住，卡在第二层 input layernorm，不再产出 token，只能放弃该请求。
+  trigger_surface: vllm-ascend data-parallel-size>1（DP8）+ Pangu Pro MoE + expert parallel
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 数值异常
+        to: 挂起
+    rewritten:
+    - behavior
+    uncertain:
+    - subsystem

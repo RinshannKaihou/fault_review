@@ -1,0 +1,56 @@
+id: INF-1959
+legacy_ids: []
+slug: triton_exp_outer_rsplit_oob_grad
+aliases: []
+title: OUTER split-reduction 越界写致梯度错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: rsplit outer 适用性判定
+  behavior: rsplit outer 适用性判定只看 reduction 类型与规模，不限制 live 输出数与 reduction-tree 结构；partial+combine 按输出序取首个 output buffer。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: hf_Bert fp32 训练：前向输出仍正确，首步梯度已大量失配，第 3 步 loss 突变、第 4 步起 NaN；同模型 eager 训练正常。
+  visibility: 数值异常
+mitigation:
+  detect: 跑原生 TorchBench BERT 系列 FP32 训练 accuracy（hf_Bert），对比 eager 的 prediction/loss/梯度/参数更新；前向对得上但梯度整体失配是特征
+  fix: 待定（issue 已 closed，正文只给三条期望行为，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend 910B2 + CANN 9.1.0 + PyTorch/torch_npu 2.13 自编包 + TORCHINDUCTOR_NPU_BACKEND=triton_experimental，hf_Bert FP32 训练
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3813
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #3813（2026-08-10 closed；Ascend 910B2、CANN 9.1.0、PyTorch 2.13 分支自编包、backend=triton_experimental、FP32 training accuracy）：hf_Bert 的失败 backward kernel 同时物化一个 2048x768 的 pointwise clone/permute 输出、一个 1x768 reduction 输出和一个含多个 reduction-tree 节点的 [4,512] 归约。_npu_rsplit_outer_applicable() 只检查 reduction 类型、输出 x 规模和 reduction 规模，没有限制 live output 数量与 reduction-tree 结构；partial+combine 重写随后按输出顺序选 output_buffers[0]，把 2048x768 的 pointwise store 重定向到仅 48x768 的 partial workspace，造成越界写与错误 combine；同时嵌套 reduction 循环没有应用 r0_lo/r0_hi，每个 core 重复处理完整 reduction 范围。issue 还记录同一批次的另两个确定性缺陷（dual-view fold 造未注册 Symbol、in/out 边界降型丢输入内容）。'
+  source: 2026-08-10 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/3813 （closed）
+  behavior: 原生 TorchBench BERT 系列里只有 BERT_pytorch 通过，hf_Bert 在第 3 步 loss 突变、第 4 步起 NaN，eager 训练完全正常。前向输出一开始还是对的，首步梯度已经大量失配，所以从 loss 曲线上看像突然发散，实际是 backward 融合 kernel 越界写坏了 partial 缓冲；报告用 --accuracy --train --float32 复现。
+  trigger_surface: triton_experimental 后端对同时含多个 live 输出与嵌套 reduction-tree 的 OUTER split-reduction 做 partial+combine 重写（hf_Bert backward）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常

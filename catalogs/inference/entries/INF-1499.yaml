@@ -1,0 +1,66 @@
+id: INF-1499
+legacy_ids: []
+slug: op_plugin_moe_finalize_routing_meta_scale_none_shape
+aliases: []
+title: finalize_routing meta 空 scale 推导错形状
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: pytorch
+    component: moe_finalize_routing_meta
+  behavior: scale 为空、expanded_permute_rows 为 (E,C,H) 时，meta 直接把输入形状 (E,C,H) 当输出返回，而实际算子输出是 (R,H)，meta 推导与真实输出不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: 空 scale 场景下 fake/meta 张量拿到 (E,C,H) 而非 (R,H)，图模式按错误形状分配与推导，下游 reshape/索引对不上；非空 scale 路径正常。
+  visibility: 静默错误
+mitigation:
+  detect: 对 npu_moe_finalize_routing_meta 在 scale=None、expanded_permute_rows=(E,C,H) 下比对 meta 推导形状与实际算子输出形状
+  fix: issue 为 closed，正文未给修复 PR（合入与发布状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_note: scale=None + expanded_permute_rows 形状 (E,C,H) + meta/fake tensor 推导（torch.compile / 图模式）；非空 scale 不触发
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/224
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0163
+original:
+  mechanism: 'op-plugin issue #224（2026-07-01，closed）：正文一句——npu_moe_finalize_routing_meta 当 scale 为空且 expanded_permute_rows 的 shape 为 (E,C,H) 时，返回值的 shape 为 (E,C,H)，与实际的输出 shape (R,H) 不一致。也就是说 meta 实现（fake tensor / 图模式下的形状推导）在没有 scale 的分支里直接沿用了 expanded_permute_rows 的三维形状，而真实 kernel 的输出是按路由行数 R 展平的二维 (R,H)。正文没有给出源码位置、E/C/H/R 的具体取值、复现脚本与修复 PR。'
+  source: 2026-07-01 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/224 （closed）
+  behavior: 在 NPU 上按 MoE finalize routing 的常规用法传 scale=None 时，走 meta 推导（torch.compile / 图模式 / fake tensor）拿到的输出形状是 (E,C,H)，而 eager 真正算出来的是 (R,H)。形状对不上之后，编译出的图要么按 (E,C,H) 继续推导导致后面 reshape/索引错位，要么在形状校验处才炸；非空 scale 的调用不受影响。
+  trigger_surface: npu_moe_finalize_routing_meta + scale=None + expanded_permute_rows 为 (E,C,H)
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: MoE路由
+    issue_unfixed:
+    - detail

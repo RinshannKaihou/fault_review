@@ -1,0 +1,51 @@
+id: INF-1862
+legacy_ids: []
+slug: npu_sparse_mask_drops_explicit_zero_rows
+aliases: []
+title: NPU sparse_mask 丢显式全零行致 SparseAdam 首步失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: sparse_mask 稠密转稀疏路径
+  behavior: 稠密输入走 mul_out_sparse：先按稠密相乘再把结果 to_sparse(sparse_dim)，mask 指到的全零行在转换时被删，输出的 indices/values 不再对应 mask 结构。
+effect:
+  objects:
+  - 数值结果
+  detail: 二维稠密表 + 一维行 COO mask：全零行被删除（全表全零时 indices 变 [[]]，仅第 1 行全零时变 [[3]]，CPU 均为 [[1,3]]）；原生 SparseAdam 首步即 size mismatch 报错。
+  visibility: 静默错误
+mitigation:
+  detect: 同输入在 CPU/NPU 各做一次 sparse_mask，比 _indices()/_values()；分别取全表全零、单行全零、行内部分零三例
+  fix: 待定（issue open，未给修复 PR）。临时规避：按 mask indices 用 index_select 取行并保留原 indices（报告者探针已验证可与 CPU 数值对照通过）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch 2.12.0 + torch_npu 2.12.0 + CANN 9.1.0（Ascend910_9362）；二维稠密输入 + 一维行稀疏 COO mask，且 mask 覆盖的行内容为全零
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4669
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'GitCode Ascend/pytorch #4669（torch 2.12.0 / torch_npu 2.12.0 / CANN 9.1.0，Ascend910_9362）：NPU 的 Tensor.sparse_mask 对二维稠密输入 + 一维行稀疏 COO mask 会删掉 mask 指定的全零行。源码核查指向 op-plugin 子模块 1831123f 的 op_plugin/ops/opapi/sparse/SparseTensorUtils.cpp：mul_out_sparse() 先把稀疏 mask 转稠密相乘，再对结果调 dense_result.to_sparse(sparse_dim)，to_sparse 只保留非零元素，于是「mask 指到但内容为零」的行整行消失。CPU 侧 sparse_mask 是与 mask_template 相乘的实现，保留 mask 的全部 indices 与显式零 values，两边结构语义不一致。报告者的最小复现覆盖全零、全一、单行全零、行内部分元素为零四种情形，只有含全零行时丢索引；Embedding(sparse=True) 的真实反向梯度同样触发。2.7.1/2.9.0 上该路径直接在 SparsePrivateUse1::mul.out 报 unsupported，2.12.0/9.1.0 稀疏乘法探针能过但零值结构问题仍在。'
+  source: 2026-09-07 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4669 （open）
+  behavior: 拿二维 embedding 表做 sparse_mask 再交给原生 SparseAdam，第一步 step() 就报 The size of tensor a (2) must match the size of tensor b (0)：动量初始化后的 values 行数和梯度行数对不上。直接 print 稀疏张量能看到 mask 指到的全零行整行消失（indices 从 [[1,3]] 变成 [[]] 或 [[3]]），但没有任何报错或告警，同一段代码在 CPU 上结构完整。
+  trigger_surface: torch_npu 2.12.0 + CANN 9.1.0；二维稠密张量 .sparse_mask(一维行 COO mask)，mask 覆盖的行内容为全零
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

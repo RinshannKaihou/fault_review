@@ -1,0 +1,54 @@
+id: INF-1875
+legacy_ids: []
+slug: torchair_superkernel_reduce_scatter_input_overwritten
+aliases: []
+title: super_kernel 组内 reduce_scatter 输入被覆写致精度错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: super_kernel 通信算子输入复用
+  behavior: super_kernel 组里连发 all_gather/all_reduce/broadcast/reduce_scatter/all_to_all 时，reduce_scatter 的输入张量未被当作需保持的输入，被同组后续算子覆写。
+effect:
+  objects:
+  - 数值结果
+  detail: A5 + CANN 9.0.0 + torch 2.7.1：reduce_scatter 结果与期望不符，同组其它通信算子正确；把该输入改成 detach().clone() 后精度正常，去掉 super_kernel 作用域也正常。
+  visibility: 静默错误
+mitigation:
+  detect: 同图开/关 used_superkernel 比对各通信算子输出；对可疑输入加 detach().clone() 看是否恢复
+  fix: 待定（issue closed，未给出 torchair 侧 pass 定位）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: A5 + CANN 9.0.0 + torch_npu 2.7.1；torchair 图模式 + scope.super_kernel 内连续下发多个集合通信算子（含 reduce_scatter_tensor）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/412
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/torchair #412（A5、CANN 9.0.0、torch/torch_npu 2.7.1、Python 3.13、Ubuntu 24.04）：torchair 图模式下把 all_gather、all_reduce、broadcast、reduce_scatter_tensor、all_to_all、all_to_all_single 串在同一个 torchair.scope.super_kernel("sp1", "None") 作用域里执行时，reduce_scatter 的结果精度异常，同组其它通信算子输出正常。判定性证据：把传给 reduce_scatter 的输入从 dict_result[''reduce_scatter_input_tensor''] 改成 .detach().clone()（即让通信算子持有私有缓冲）后精度恢复；不用 super_kernel、走普通图模式也正常。这说明同组内后续算子复用了 reduce_scatter 的输入缓冲，输入在 reduce_scatter 读取前/期间被覆写。issue 未给出 torchair 侧具体 pass 或源码位置。'
+  source: 2026-04-03 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/412 （closed）
+  behavior: 多卡图模式下把几个集合通信算子放进一个 super_kernel 作用域，reduce_scatter 出来的结果就是错的，而同一组里的 all_gather/all_reduce/broadcast/all_to_all 都对；不报错也没有 NaN。给这个输入加一个 detach().clone()、或干脆不用 super_kernel，结果就恢复正确——现象看起来像「某个通信算子的输入被兄弟算子写掉了」。
+  trigger_surface: A5 + CANN 9.0.0 + torch 2.7.1；torchair 图模式 + scope.super_kernel 内连续下发多个集合通信算子
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

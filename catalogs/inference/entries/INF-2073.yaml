@@ -1,0 +1,61 @@
+id: INF-2073
+legacy_ids: []
+slug: vllm_ascend_dflash_share_lm_head_acceptance_collapse
+aliases: []
+title: DFlash 草稿 lm_head 被 target 覆盖致接受率跌至 1.7%
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: DFlash proposer lm_head
+  behavior: _maybe_share_lm_head 无条件把 draft 的 lm_head 换成 target 的 lm_head；RedHat DFlash 草稿用专门的 32000 行 lm_head，替换后 logits 映射到错误词表。
+effect:
+  objects:
+  - 性能/资源
+  - 输出分布
+  detail: mean accept length 从 3.3/3.8 掉到 1.02，整体接受率 25%→1.7%，verifier 几乎拒绝所有提案；输出内容仍正确，只有投机收益消失、TTFT 与生成时延恶化。
+  visibility: 性能退化
+mitigation:
+  detect: 看启动日志是否打印 Loading EAGLE or DFLASH LM head weights from the target model；对比 mean accept length 与整体接受率，并核对 draft_vocab_size 与 target 词表大小
+  fix: '回归：PR #9795（4ed6eb07）修过该问题，PR #9946（367b8e62）的 patch 重构把它覆盖；issue 建议只在 draft 未自带 lm_head 时共享（open，未恢复）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend + DFlash 推测解码 + 草稿自带独立 lm_head（draft_vocab_size=32000，如 RedHatAI/Qwen3-8B-speculator.dflash）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 与 INF-1892（DSpark load_weights 顺序覆盖 draft 头）现象相近但代码路径不同：本条是 proposer 运行时无条件共享，未挂变体。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/11374
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend v0.20.2rc 的 AscendSpecDecodeBaseProposer._maybe_share_lm_head 会无条件把 draft 模型的 lm_head 参数替换成 target 模型的 lm_head；RedHat 风格 DFlash 草稿（draft_vocab_size=32000，示例 RedHatAI/Qwen3-8B-speculator.dflash）训练时使用了自己的 32000 行 lm_head，被替换后 draft 的 logits 映射到 target 词表上，verifier 几乎全部拒绝。启动日志会出现 Loading EAGLE or DFLASH LM head weights from the target model. 作为标识。该问题曾被 PR #9795（commit 4ed6eb07）修复，PR #9946（commit 367b8e62）消除 patch 行为的重构又把修复覆盖，至今未恢复。'
+  source: 2026-07-03 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/11374 （open）
+  behavior: 开着 DFlash 推测解码跑 bench，输出文本本身仍通顺正确，但 mean accept length 只有 1.02（HumanEval 期望 3.3、GSM8K 3.8），整体接受率从约 25% 掉到 1.7%，等于没有投机；TTFT 与生成时延随之明显变差，日志里除那行 LM head 加载提示外没有任何报错。
+  trigger_surface: vllm-ascend DFlash 推测解码 + 草稿自带独立 lm_head/受限词表
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出分布
+        to: 性能/资源
+    uncertain:
+    - detail

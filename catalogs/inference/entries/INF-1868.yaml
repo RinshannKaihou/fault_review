@@ -1,0 +1,54 @@
+id: INF-1868
+legacy_ids: []
+slug: inductor_triton_clip_text_branch_mismatch
+aliases: []
+title: Inductor-Triton 编译 CLIP 文本分支输出偏差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: inductor Triton 文本编码分支
+  behavior: Inductor-Triton 对 CLIP 文本编码子图（token embedding、位置编码、causal encoder、ln_final、projection）生成的 kernel 与 eager 数值不一致，图像分支不受影响。
+effect:
+  objects:
+  - 输出内容
+  detail: torch_multimodal_clip（CLIP ViT-B/32）文本向量 max|Δ|=0.0268，atol=rtol=1e-3 下 allclose 失败；图像分支一致，DVM/NPUGraphs/NPUGraph_EX/AOT_Eager 四后端均通过。
+  visibility: 静默错误
+mitigation:
+  detect: 编译输出与 eager 文本向量逐元素比 max|Δ| 与 allclose；再换 DVM/NPUGraphs 后端作对照
+  fix: 待定（issue open，未给出错 kernel）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch 2.7.1 + torch_npu 2.7.1.post8 + CANN 9.1.0（Ascend 910）；torch.compile(backend=inductor, npu_backend=default) 编译 CLIP 文本分支
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4771
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4771（26.2.0 众测；torch 2.7.1+cpu / torch_npu 2.7.1.post8 / CANN 9.1.0 / Ascend 910）：torch_multimodal 的 clip_vit_b32（CLIP ViT-B/32）在 torch.compile(backend="inductor", options={"npu_backend": "default"}) 下能编译并推理，图像编码分支与 eager 一致，文本编码分支（token_embedding + positional_embedding、经 encoder 的 is_causal 前向、ln_final 后按 text.argmax 取 eot 位置再做 projection）与 eager 不符，文本向量 max|Δ|=0.0268，atol=rtol=1e-3 下 allclose 失败。报告者用同一模型适配、固定种子与相同输入分别跑 DVM、NPUGraphs、NPUGraph_EX、AOT_Eager，图像与文本均通过，因此问题只在 Inductor-Triton 这条路径。报告未给出具体出错的融合 kernel 或源码定位，也未给逐算子二分。'
+  source: 2026-09-14 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4771 （open）
+  behavior: 同一份 CLIP 模型、同一个文本输入，编译后的文本向量和 eager 差到 0.0268（阈值 1e-3 就不过），而图像向量完全一致；换成 DVM/NPUGraphs/NPUGraph_EX/AOT_Eager 任一后端都正常。编译不报错也不崩，只有做数值对照才发现，下游的检索/相似度会跟着偏。
+  trigger_surface: torch_npu 2.7.1.post8 + CANN 9.1.0（Ascend 910）；Inductor-Triton（npu_backend=default）编译 CLIP 文本编码分支
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

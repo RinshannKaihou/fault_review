@@ -1,0 +1,51 @@
+id: INF-1538
+legacy_ids: []
+slug: ops_nn_layer_norm_epsilon_default_1e12
+aliases: []
+title: LayerNorm epsilon 默认 1e-12 偏离两代口径
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: layer_norm_def eps 默认值
+  behavior: rt2.0 算子定义把 epsilon 默认值写成 Float(1e-12)，与 rt1.0 proto 的 1e-7、同仓 LayerNormV3/V4 的 1e-5 都不一致；未显式传 eps 的调用方拿到过小的 eps。
+effect:
+  objects:
+  - 数值结果
+  detail: 未显式传 epsilon 时默认值落到 1e-12：方差极小的输入 rstd 由 eps 主导，fp16 下 rsqrt 更易溢出或失真；PR 只改单行默认值，未给实测偏差量与回归结果。
+  visibility: 静默错误
+mitigation:
+  detect: 核对调用链是否显式传 epsilon；对近常数输入比较 LayerNorm 与 LayerNormV3/V4 的 rstd，默认值差异只在方差极小时显现。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/10846 （closed）：Float(1e-12)→Float(1e-7)，B1 环境回归待合入后随版本验证
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: rt2.0 norm/layer_norm 算子定义 + 调用方未显式传 epsilon；近常量/极小方差输入（尤 fp16）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 只报默认值口径不一致，未附实测偏差；PR 自述“无接口与行为面变化，仅未显式传 eps 的调用方默认值变化”。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/10846
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn merge request 10846（2026-09-20，closed）：rt2.0 的 norm/layer_norm/op_host/layer_norm_def.cpp:55 把 epsilon 默认值写成 Float(1e-12)，与 rt1.0（canndev LayerNorm 正式版 proto，默认 1e-7，对齐 MindSpore）不一致；同仓 LayerNormV3 / LayerNormV4 两代都是 1e-5，PyTorch 也是 1e-5。PR 认为 1e-12 无行业先例且过小，fp16 下方差加 epsilon 后 rsqrt 存在溢出与精度异常风险，改为 Float(1e-7)，单行修改。PR 自述“无接口与行为面变化（仅未显式传 epsilon 的调用方默认值变化）”，只做了 pre-commit 检查，B1 环境回归标注为合入后随版本验证，未附数值比对。
+  source: 2026-09-20 GitCode cann/ops-nn merge request https://gitcode.com/cann/ops-nn/merge_requests/10846 （closed）
+  behavior: 按默认参数调 LayerNorm（不显式传 epsilon）时，实际生效的 eps 是 1e-12，而同一套 CANN 里 rt1.0 的 LayerNorm 默认 1e-7、LayerNormV3/V4 默认 1e-5，PyTorch 是 1e-5。输入方差正常时看不出差别；一旦方差极小（近常量输入）或跑 fp16，rstd 就被过小的 eps 顶到边界，输出与其它实现/其它版本对不上，而调用方完全不知道自己用的默认值和别人不一样。
+  trigger_surface: rt2.0 LayerNorm + 未显式传 epsilon + 极小方差输入或 fp16
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

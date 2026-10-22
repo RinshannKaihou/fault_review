@@ -1,0 +1,62 @@
+id: INF-1460
+legacy_ids: []
+slug: vllm_fp8_per_tensor_moe_cuda_graph_padding_amax_cross_request
+aliases: []
+title: vLLM FP8 per-tensor MoE padding 污染 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: MoE amax 混入 padding 行
+  behavior: CUDA graph padding 行参与 MoE 动态 per-tensor amax：padding 内容是上一步残留 hidden states，上一请求内容改变下一请求的量化 scale。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 同一贪心 prompt 答案随前一请求内容变化、首 token 即分叉：114 对中 88 对不同（21 对首 token）、270 对中 269 对不同；enforce-eager 与 per-block/bf16 干净；SKIP_PADDING=0 仅缩小不消除
+  visibility: 不可复现
+mitigation:
+  detect: 固定 probe 后接不同 primer 对照输出/logprob；开 --enforce-eager 对照归零
+  fix: 待定（issue open；VLLM_MOE_SKIP_PADDING=0 仅将效应缩至亚 nat 级（61/114 对、无首 token 分叉、max 0.75 nat）不消除——修复须把 padding 行从 amax 排除；0.31.0 L40S/RTX 6000 Ada 实测）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: --quantization fp8_per_tensor + MoE + CUDA graphs（非 eager）+ 短 prompt 补 padding 到 capture size；VLLM_MOE_SKIP_PADDING 默认/0/1 三态实测；0.31.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62124
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM issue #62124（c2026-10-17，L40S，0.31.0）：--quantization fp8_per_tensor 下 MoE 专家用动态 per-tensor FP8 scale。CUDA graphs 内同一短贪心 prompt 的答案取决于前一请求内容，且首 token 即不同。机制：probe 步被 padding 到下一个 capture size；padding 行参与 per-tensor amax 计算，其内容是上一步输入 id 残留的 stale hidden states（VLLM_MOE_SKIP_PADDING=1 时 skip 写、留旧值）或未写 workspace（=0 时），因此上一请求内容改变本请求量化 scale。实测矩阵：[1,2,4,8] capture 尺寸 8 短 prompt × 6 primer：19 case 114 对中 88 对不同、21 对首 token；[8,16]：45 case 270 对 269 对不同、65 对首 token；3 个新起 server 产生相同偏差集。对照：--enforce-eager 0/114 不同（逐位一致）；RTX 6000 Ada 无量化 bf16 与 fp8_per_block 干净；VLLM_MOE_SKIP_PADDING=0 效应缩小至 61/114 对（无首 token 分叉、max 0.75 nat）不消除。修复须把 padding 行从 amax 排除。'
+  source: 2026-10-17 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62124 （open）
+  behavior: 用 fp8_per_tensor 量化跑 MoE 模型并开 CUDA graph 时，同一个问题的贪心回答会随着服务刚处理过的其他请求内容而变：前面跑过不同 prompt，后面同一 prompt 的第一个 token 就可能不同，偏差可大到选中原本概率差 10 nat 以上的词。关掉 CUDA graph（enforce-eager）后逐位稳定。
+  trigger_surface: vLLM 0.31.0 --quantization fp8_per_tensor + MoE + CUDA graphs + 短请求 padding 到 capture size；L40S/RTX 6000 Ada 实测
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    uncertain:
+    - effect

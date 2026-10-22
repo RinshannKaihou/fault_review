@@ -1,0 +1,57 @@
+id: INF-1397
+legacy_ids: []
+slug: ops_nn_matmulv3_mode4_nan_fill_history_a_tail_uninit
+aliases: []
+title: MatMulV3 mode4 前序 NaN fill 历史污染输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: MatMulV3 TO_MUL A 尾部
+  behavior: MatMulV3 mode4 下疑似 TO_MUL 路径 A 的 K 尾部未初始化，NaN×0 污染整块归约。
+effect:
+  objects:
+  - 数值结果
+  detail: mode4+NaN 历史 50/50 次失败、常量矩阵脚本 10/10 触发；mode0 同历史正常、mode4 零历史正常；UB dump：A 尾部残留 NaN、B 尾部全零、C 尾部 NaN、归约输出 NaN；仅 A 清零后 5/5 恢复
+  visibility: 数值异常
+mitigation:
+  detect: 同一 stream 前置一次大尺寸 NaN fill 再做 matmul 对比零 fill 对照；未评估
+  fix: 待定（issue open；参考内核加 A 尾部清零 5/5 恢复，安装二进制版本对应待维护方核对）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: CANN 9.1.0 / Ascend950DT_9574；FP32 cube_math_type=FORCE_GRP_ACC_FOR_FP32（mode4）+ 同 stream 前序 NaN fill（如 64M 元素 torch.full）；389 非整块 K 维实测；mode0 不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6698
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN 9.1.0 / Ascend950 上，FP32 [1,389]@[389,16]（left@right → aclnnMatmul → MatMulV3）在 FORCE_GRP_ACC_FOR_FP32（mode4）下受同一 stream 前一个无关 NaN fill 影响：真实矩阵输入全部有限且不变，输出 16 个 NaN。验证两路：(1) 原安装 CANN 9.1.0——真实捕获训练输入 mode4+NaN 历史 50/50 次失败，模式/历史对照（mode0 同历史、mode4 零历史、清零后恢复）全部正常；无需输入文件的常量矩阵脚本 10/10 触发。(2) 本地参考源码（ops-nn 3a4d438）按原安装包实际 tiling 重编译直调诊断内核——UB dump 抓到 A 尾部残留 NaN、B 尾部全零、乘加后 C 尾部 NaN、归约输出 NaN；仅增加 A 清零 5/5 次恢复正确。证据边界：dump 来自独立编译参考内核而非安装二进制插桩；原 9.1.0 安装 kernel 与源码精确版本对应待维护方核对。最强根因判断：TO_MUL 路径 A 的 K 尾部未初始化，NaN×0 污染整块归约。
+  source: https://gitcode.com/cann/ops-nn/issues/6698
+  behavior: 在 Ascend950（CANN 9.1.0）上用 fp32 cube_math_type=FORCE_GRP_ACC_FOR_FP32 做 matmul，若同一 stream 前面跑过一次会产生 NaN 的填充（如 torch.full 64M 元素 NaN），随后输入全有限的矩阵乘法输出 16 个 NaN——输入矩阵逐位检查确实有限且未变。换 mode0 或前面不做 NaN fill 输出即正常，做一次零 fill 也能恢复。约 100% 可触发（50/50、10/10）。
+  trigger_surface: MatMulV3 mode4（FORCE_GRP_ACC_FOR_FP32）；FP32；K 维非整块（389）；同 stream 前序 NaN fill 留下的 UB 残留；Ascend950DT/CANN 9.1.0 实测；训练捕获输入与合成常量输入均复现
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior

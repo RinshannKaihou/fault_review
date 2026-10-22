@@ -1,0 +1,53 @@
+id: INF-1526
+legacy_ids: []
+slug: torchnpu_grouped_matmul_swiglu_quant_zero_rows_nan
+aliases: []
+title: FP8 swiglu 量化分组矩阵乘含 0 行出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: swiglu_quant_v2 融合算子
+  behavior: quant_dtype=float8_e4m3fn、dequant_dtype=float32 时，x 中存在 0 值行会使对应 output 变成 NaN，与三算子分解路径不等价。
+effect:
+  objects:
+  - 数值结果
+  detail: 第 0 行（全零行）对应的输出为 NaN；等价的 grouped_matmul→swiglu→dynamic_quant 分解路径正常；无报错。
+  visibility: 数值异常
+mitigation:
+  detect: 构造含全零行的 x 跑 v2 融合算子，与 grouped_matmul+swiglu+dynamic_quant 分解结果比对；检查输出是否含 NaN
+  fix: 待定（issue open，正文未给根因与修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: npu_grouped_matmul_swiglu_quant_v2 + float8_e4m3fn 量化 + x 含 0 值行；对比 npu_grouped_matmul+npu_swiglu+npu_dynamic_quant 三算子路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2409
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2409（2026-06-16，open）：调用 torch_npu.npu_grouped_matmul_swiglu_quant_v2(x, weight, weight_scale, x_scale, group_list, quant_dtype=torch.float8_e4m3fn, dequant_dtype=torch.float32)，当 x 中存在 0 值行时，output 对应位置结果为 NaN。报告给出的等价分解路径为 npu_grouped_matmul(split_item=2, group_list_type=0, group_type=0, output_dtype=bfloat16) → npu_swiglu → npu_dynamic_quant(dst_type=float8_e4m3fn)，该路径正常。issue 正文只给了算子调用与等价路径，未给根因定位、复现脚本的随机数据构造细节或偏差统计，机制待定。'
+  source: 2026-06-16 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/2409 （open）
+  behavior: 用 FP8 的融合算子做分组矩阵乘 + swiglu + 动态量化，只要输入里有整行为 0 的行，输出对应位置就是 NaN；同样输入拆成 grouped_matmul、swiglu、dynamic_quant 三步算则正常。算子不报错，NaN 直接进下游激活，表现为后续全变 NaN 或 loss 异常，而触发条件只是「有一行是 0」，在 padding/稀疏专家场景很容易碰到。
+  trigger_surface: npu_grouped_matmul_swiglu_quant_v2 + float8_e4m3fn/dequant float32 + x 含 0 值行；逐算子分解路径不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    issue_unfixed:
+    - detail

@@ -1,0 +1,57 @@
+id: INF-1737
+legacy_ids: []
+slug: npu_amp_autocast_downcasts_float64_to_fp16
+aliases: []
+title: autocast 把 fp64 张量降为 fp16 违背 PyTorch 语义
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: amp autocast cast 白名单
+  behavior: torch.npu.amp.autocast 的实现把 float64 张量也向下转型，未将 float64 列入不 cast 的白名单，而官方 autocast 语义只对 fp32 做 cast、float64 应保持不动。
+effect:
+  objects:
+  - 数值结果
+  detail: autocast(dtype=float16) 区内 torch.tensor(1.0, dtype=float64) 变成 float16；依赖 fp64 精度的统计量（loss scale、归一化分母）在区内被降精度，误差持续累积。
+  visibility: 静默错误
+mitigation:
+  detect: autocast 区内打印 tensor.dtype，与 CPU autocast 的 dtype 决策对比
+  fix: 待定（issue closed，正文未给 PR）；建议在 torch_npu/csrc/amp/ 下把 float64 加入不 cast 白名单
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.npu.amp.autocast(dtype=float16/bf16) 区内使用 float64 张量（混合精度训练里的 scale、分母等统计量）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2663
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2663（2026-07-08，closed）：torch.npu.amp.autocast 的实现把 float64 张量也做向下转型。PyTorch 官方 autocast 语义是只对 fp32 做 cast（fp32→fp16/bf16），float32 与 float64 中被 cast 的只有 fp32，float64 保持不动。报告给出复现片段：with torch.npu.amp.autocast(dtype=torch.float16): x_f64 = torch.tensor(1.0, dtype=torch.float64, device=''npu'')，期望仍为 float64，实际被 cast 成 float16。作者给出的定位方向是检查 torch_npu/csrc/amp/ 下的 autocast 实现，把 float64 加入不 cast 的白名单。混合精度训练中靠 fp64 保精度的统计量（loss scaling 的 scale、某些归一化的分母）因此被降精度，误差在区内逐步累积。'
+  source: 'Ascend/pytorch #2663（2026-07-08，closed） https://gitcode.com/Ascend/pytorch/issues/2663'
+  behavior: 在 torch.npu.amp.autocast 区里创建的 float64 标量或张量，取出来 dtype 已变成 float16，数值被截断；同一个脚本在 CPU/CUDA 的 autocast 下 dtype 保持 float64、结果一致，所以迁移过来的混合精度代码只有 NPU 上悄悄掉精度。表现为 loss 或归一化数值缓慢偏移，没有任何告警。
+  trigger_surface: torch.npu.amp.autocast 区内构造或使用 float64 张量
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior

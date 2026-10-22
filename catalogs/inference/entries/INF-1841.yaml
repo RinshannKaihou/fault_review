@@ -1,0 +1,55 @@
+id: INF-1841
+legacy_ids: []
+slug: vllm_ascend_rotary_triton_vs_ascend_branch_repeat
+aliases: []
+title: rotary 走 Triton 分支结果与 AscendC 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: rotary_embedding.py 实现分支
+  behavior: rotary_embedding.py 按环境里装的是 triton 还是 triton-ascend 走不同实现分支；镜像默认两者共存时落到 Triton 分支，该分支与 Ascend C 实现在同一输入上结果不一致
+effect:
+  objects:
+  - 输出内容
+  detail: G8600 镜像默认环境（triton 与 triton-ascend 同时存在）推理出现重复输出/乱码；卸载 triton 只留 triton-ascend 改走 AscendC 分支后恢复正常，两实现本应等价
+  visibility: 静默错误
+mitigation:
+  detect: 比对两分支在同一输入上的 rotary embedding 输出；或卸载 triton 后看乱码是否消失
+  fix: 待定；报告者期待两实现结果一致（issue open，未见 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: G8600 镜像默认同时安装 triton 与 triton-ascend，代码走 Triton 分支；只装 triton-ascend 时不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 证据以截图为主（分支代码与输出对比），正文给出的是分支选择 + 乱码因果，未给数值 diff 量级。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/8047
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 的 rotary_embedding.py 里存在两套实现分支：一套调用 Triton kernel，一套调用 Ascend C（triton-ascend）实现。G8600 镜像默认环境里 triton 与 triton-ascend 同时存在，代码会走下面（Triton）分支；把 triton 卸载、只保留 triton-ascend 后改走上面（Ascend C）分支。报告者认为无论 Triton 实现还是 Ascend C 实现，位置编码结果应当一致，但实测走 Triton 分支时出现推理重复输出（乱码）现象，并附图对比两条分支的代码与输出。issue 正文未给出两种实现的数值 diff 量级，也没有给出修复 PR。
+  source: 2026-04-08 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/8047 （open）
+  behavior: 在默认镜像（triton 与 triton-ascend 共存）上推理，输出出现重复句子、整段复读甚至在长文本里乱码；同模型同参数把 triton 卸掉只留 triton-ascend 后恢复正常。因为没有任何报错，容易被当成模型本身的行为。
+  trigger_surface: rotary_embedding 实现分支选择 + triton 与 triton-ascend 共存
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

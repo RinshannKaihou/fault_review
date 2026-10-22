@@ -1,0 +1,53 @@
+id: INF-1596
+legacy_ids: []
+slug: hcomm_roce_remote_device_memcount_wrong_field
+aliases: []
+title: RoCE 远端 device 内存计数写错字段致永不拷贝
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: 通用
+    component: RoCE 远端通道资源填充
+  behavior: channel_manager.cc:378 的第二个 GetIndOpRemoteMemDetails 把 DEVICE 内存数写进 remoteUserHostMemCount、覆盖 host 真实计数。
+effect:
+  objects:
+  - 数值结果
+  detail: 独立算子场景下 remoteUserDeviceMemCount 恒为 0，DeepCopyH2DChannelRoce 的 >0 判断永不成立，远端 device 用户内存不会被拷到设备，算子读到未初始化或旧值；host 拷贝长度同时错位。
+  visibility: 静默错误
+mitigation:
+  detect: 建链后检查 linkRoce.remoteUserDeviceMemCount 是否非 0，或对比 remoteUserHostMem 与 DeviceMem 的计数是否被同一数值覆盖
+  fix: issue 给出单点修复：第 378 行第三参数改为 &linkRoce.remoteUserDeviceMemCount；issue 已 closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 独立算子（IndOp）场景 + RoCE 远端用户内存，且 host/device 用户内存数量不同；基线 5ca34aab，静态审查定位，未在 910B/950 实机验证
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/612
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hcomm 的 src/coll_communicator_mgr/resource_mgr/remote/rank_pairs/channel_manager.cc:376-378，ChannelManager::BuildOpRemoteChannelRoceResParam 依次调用两次 GetIndOpRemoteMemDetails 填充 linkRoce：第一次取 HOST 类型写 remoteUserHostMem 与 remoteUserHostMemCount，第二次取 DEVICE 类型写 remoteUserDeviceMem，但计数参数仍写成 &linkRoce.remoteUserHostMemCount，即 DEVICE 数量覆盖了 HOST 计数。结构体初始化时 remoteUserDeviceMemCount 默认为 0，而下游 DeepCopyH2DChannelRoce（:510）用 hostChannelRoce.remoteUserDeviceMemCount > 0 作为是否需要把远端 device 用户内存拷到设备的条件，条件恒假 → IndOp 场景下远端 device 用户内存永远不被拷贝。同时 host 侧拷贝大小被换成 device 的数量，若两者不等则 memcpy_s 长度错位（偏小读到旧数据、偏大越界）。issue 指出 377/378 两行参数列表只差第 2、3 个，属典型复制粘贴错误，且注释明确写了 remoteUserHostMem 与 remoteUserDeviceMem 需要手动释放。
+  source: 2026-07-27 GitCode cann/hcomm issue https://gitcode.com/cann/hcomm/issues/612 （closed）
+  behavior: 独立算子走 RoCE 通道时，远端 rank 的 device 端用户内存看起来建链成功，实际从没被同步过来，算子在设备上读到的是未初始化内存或上一轮的旧值，结果错但没有报错；如果 host 与 device 用户内存数量不同，host 侧还会按错误长度拷贝。
+  trigger_surface: IndOp（独立算子）RoCE 远端通道 + remote user device memory（remoteUserDeviceMemCount 默认 0 的路径）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    issue_unfixed:
+    - detail

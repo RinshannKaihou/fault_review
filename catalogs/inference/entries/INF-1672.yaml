@@ -1,0 +1,57 @@
+id: INF-1672
+legacy_ids: []
+slug: ms_leaky_relu_alpha_float32_rounding
+aliases: []
+title: float64 输入下 leaky_relu 的 alpha 先按 f32 舍入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: leaky_relu alpha 标量转换
+  behavior: CPU 后端 PyNative 与 Graph 下，float64 输入且非精确 Python 浮点 alpha（0.2）时，alpha 先转 float32 再扩展到 float64 参与计算。
+effect:
+  objects:
+  - 数值结果
+  detail: x 为 float64、alpha=0.2 时 PyNative 与 Graph 输出都偏离 float64 公式 3.725290298461914e-09，误差量级正好对应 alpha 的一次 f32 舍入。
+  visibility: 静默错误
+mitigation:
+  detect: float64 输入 + 非精确 alpha（0.2）与 np.where(x>=0,x,alpha*x) 的 float64 结果比较；出现 ~1e-9 量级偏差即命中，再换 alpha 为可精确表示的 0.5 做对照
+  fix: 待定（issue open，无修复 PR）；方向：float64 输入时 Python alpha 直接按 float64 转换，不经 float32
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: CPU + float64 输入 + alpha=0.2 这类非精确 Python 浮点；PyNative 与 Graph 均复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29607
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore 2.9.0 / 2.10.0（PyPI 官方 CPU 轮子，Python 3.11.15，Ubuntu 24.04 WSL2）：x 为 float64（np.linspace(-1.25,1.1,6).reshape(2,3)）、alpha=0.2 时，ops.leaky_relu 在 PyNative 和 Graph 下输出 dtype 都是 float64，但与 np.where(x>=0,x,np.float64(0.2)*x) 的最大绝对误差为 3.725290298461914e-09。issue 指出该误差恰好对应先把 alpha 转成 float32 再扩展到 float64：0.2 的 float32 表示与 float64 表示不同，单精度舍入被带进双精度计算。两个版本均复现，无修复 PR。
+  source: 2026-08-14 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29607 （open）
+  behavior: 双精度链路上调用 leaky_relu，alpha 传 Python 浮点 0.2，输出 dtype 仍是 float64、值域也正常，只有和手写双精度公式对比才看到 3.7e-09 的偏差。对需要 float64 精度基线的回归（数值对齐、梯度校验、与 PTA float64 对拍）会被这一位误差卡住，且很难判断是算子还是自己公式写错。
+  trigger_surface: float64 输入 + 非精确 Python 浮点 alpha（0.2）；PyNative 与 Graph 都受影响，CPU 后端
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior

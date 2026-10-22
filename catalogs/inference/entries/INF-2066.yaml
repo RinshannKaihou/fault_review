@@ -1,0 +1,51 @@
+id: INF-2066
+legacy_ids: []
+slug: vllm_ascend_store_load_async_prefill_hang
+aliases: []
+title: AscendStore load_async 下 PD prefill 挂死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: AscendStore load_async 路径
+  behavior: P 节点内存池化、load_async=true 时，同一请求的 'KV pool load spec created' 每秒重复打印约 50 分钟不再推进；P 侧停在 shm_broadcast 等待，D 侧停在 acl_graph。
+effect:
+  objects:
+  - 可用性/进度
+  detail: bs64 压测约 8 分钟后全部请求 hang 且不恢复，P、D 节点同时卡死只能手动 kill；进程没有异常退出，日志只有重复的 load spec 行。
+  visibility: 挂起
+mitigation:
+  detect: PD 分离 + load_async=true 下压测，同时抓 P 侧 pool_scheduler 重复行与两端 py-spy 栈
+  fix: 待定（closed，未见修复 PR；报告给的规避是 load_async=false）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend PD 分离（P 内存池化 + AscendStoreConnector）+ load_async=true + 多轮对话 bs64
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15802
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'PD 分离部署，P 节点开启内存池化，AscendStoreConnector 的 load_async 设为 true，用多轮对话 bs64 压测约 8 分钟后请求全部 hang。P 侧 pool_scheduler.py 每秒重复打印同一 reqid 的两行：''Total tokens 46338, kvpool hit tokens: 23168, need to load: 23168'' 与 ''KV pool load spec created ... load_async=True use_layerwise=False''，从 08:34:22 一直持续到采样结束 09:23:57（约 50 分钟）；此前的空闲段还打过 Delaying free of 181/182 blocks。py-spy 显示 P 侧 EngineCore 停在 patch_shm_broadcast 的 acquire_read/dequeue → get_response，D 侧停在 acl_graph.__call__ 里的 all_reduce/all_gather/synchronize，4 个 D 节点在几秒内先后进入 shm_broadcast.wait 并保持。即 KV 池加载请求反复重建 spec 但从不推进，随后两端互相等待。'
+  source: 2026-08-28 github.com issue https://github.com/vllm-project/vllm-ascend/issues/15802 （closed）
+  behavior: 压测到第 8 分钟，所有请求同时不再返回，Running/Waiting 数字冻住，npu-smi 上卡还在但没进展；P 和 D 节点全部卡死，只能手动 kill 才能恢复，日志里没有任何异常退出或报错，只有同一请求的 KV 池加载计划被一秒一次地重复打印。
+  trigger_surface: vllm-ascend PD 分离 + 内存池化 + AscendStoreConnector load_async=true，多轮对话高并发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

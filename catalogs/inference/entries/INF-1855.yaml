@@ -1,0 +1,54 @@
+id: INF-1855
+legacy_ids: []
+slug: ops_nn_flce_loss_grad_highperf_zero_workspace_ub_overrun
+aliases: []
+title: fused_linear_ce_loss 反向清零越界写 UB
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: fused CE loss grad 高性能
+  behavior: 高性能分支以 Duplicate 固定清零 16384 个 half（32768 字节），而 copyBackBuf 仅按 VOut512BAlignedSize*2+32 分配，V≤16128 时缓冲不足，清零越界。
+effect:
+  objects:
+  - 数值结果
+  detail: 高性能分支且 V≤16128（合法区间）时，每次启动越界清零最多约 32224 字节：轻则落入 UB 空闲池无现象，full case 下 quebindSoftmax 近占满 UB，可冲出末端清掉其他 TBuf 数据致偶发错值；日志无提示，V=256、V=19392 用例均测不出。
+  visibility: 静默错误
+mitigation:
+  detect: 对高性能分支（传可选 softmax 输入即路由过去）跑 V=128/256/16128 与 V=19392 多 shape 用例，用 mssanitizer 或 tiling 侧 buffer 容量断言检查；单 shape 验收（V=19392）不越界。
+  fix: '待定（issue closed，未给 MR；缺陷由 PR #10029 引入）：zeroElems 取 min(16384, VOut512BAlignedSize) 或按容量分块清零，并修正「copyBackBuf 容量内」的错误注释。'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: fused_linear_cross_entropy_loss_grad 高性能分支（调用时传可选 softmax 输入）+ V≤16128，V 为 fp16 最后一维
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 机制为源码静态推演（两份 head 逐行复核一致），未附设备实测；越界落在 UB 空闲池时当前用例观察不到后果，故按「可能破坏其他 TBuf 内容」记录。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6060
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue 6060（closed）：matmul/fused_linear_cross_entropy_loss_grad/op_kernel/fused_linear_cross_entropy_loss_grad_high_perf.h 在 L160 以 pipe.InitBuffer(copyBackBuf, tilingData.VOut512BAlignedSize * OUT_BYTE_SIZE + SIZE_32) 分配缓冲（config.h L45 的 OUT_BYTE_SIZE=2），HighPerf 版本 L207-209 / 后续 head L215-216 却写 const uint32_t zeroElems = 16*1024; Duplicate(zb,(HalfType)0,zeroElems)，即固定写 16384 个 half=32768 字节。tiling.cpp L176-179 给 VOut512BAlignedSize = ceil(V*2/512)*512/2 = ceil(V/256)*256 个元素，故 V≤16128（63×256）时缓冲仅 ≤63×512+32=32288 字节 < 32768，越界量最大约 32224 字节。copyBackBuf 是最后一个 UB 分配（updateBuf→quebindSoftmax 队列→copyBackBuf），full case 下 quebindSoftmaxByteSize 按 (ubByteSize-TBUF_BYTE_SIZE)/BUFFER_NUM 设计、几近占满 UB，越界可冲出 UB 末端。issue 由 PR 检视日报（2026-09-19 §3.1.1 P0-1）发起，作者对 PR #10029 head b3d56fb0 与最新 head 5124640 两份源码逐行复核结论一致，并指出 L0 ST 用例 V=256 越界但落在空闲池、TTK 验收 V=19392 不越界，形成单 shape 测试盲区。'
+  source: GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6060 （closed）
+  behavior: 走高性能分支且 hidden 维不大（V≤16128，属于支持的合法区间）时，每次启动都会在 copyBackBuf 之外多清 32KB 级内存：运气好只是踩进 UB 空闲池，运气不好冲出 UB 末端，属于未定义行为——可能把别的 TBuf 数据清掉导致结果偶发错值，也可能毫无现象，因此现有单 shape 用例（V=256、V=19392）都测不出来，日志里也不会有任何提示。
+  trigger_surface: fused_linear_cross_entropy_loss_grad 高性能分支 + V≤16128
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+    - detail

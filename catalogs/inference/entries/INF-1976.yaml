@@ -1,0 +1,54 @@
+id: INF-1976
+legacy_ids: []
+slug: apply_top_k_top_p_null_pk_check_swallowed
+aliases: []
+title: ApplyTopKTopP 双空校验只打日志，过滤被静默跳过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: cann
+    component: aclnnApplyTopKTopP
+  behavior: CheckNotNull 检出 p、k 同时为空只调 OP_LOGE，缺 return false，函数落到 return true；后续各道校验都按非空分支跳过
+effect:
+  objects:
+  - 输出分布
+  detail: p、k 同为 nullptr 时返回 ACLNN_SUCCESS：logits 尾维为 1 时 out 被原样直拷、top-k/top-p 完全未做；尾维>1 时透传空指针给 l0op，报内部错误码
+  visibility: 静默错误
+mitigation:
+  detect: 以 p=nullptr、k=nullptr 调 aclnnApplyTopKTopP，断言返回 161001（资料要求）；检查 out 是否等于未过滤的 logits
+  fix: 补 return false（并按资料返回 ACLNN_ERR_PARAM_NULLPTR/161001，而非日志里的 161002 语义）；issue closed 未附 MR，未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 采样链路只传 logits、p 与 k 都不传（或都被置空）时触发；logits 尾维为 1 时表现为静默放行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5999
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5999（2026-09-18，closed）。index/apply_top_k_top_p_with_sorted/op_api/aclnn_apply_top_k_top_p.cpp L47-55 的 CheckNotNull 里，L50 命中 p==nullptr && k==nullptr 后只执行 OP_LOGE(ACLNN_ERR_PARAM_INVALID, "The inputs, p and k, should not be nullptr at the same time.")，没有 return false，L54 直接 return true；CheckParams 后续 CheckDtypeValid/CheckShapeValid/CheckFormatValid 均以 if (p != nullptr)/if (k != nullptr) 包住，双空时逐项跳过，L136 返回 ACLNN_SUCCESS。同文件 7 处 OP_LOGE 只有 L51 之后没有返回语句。资料 docs/aclnnApplyTopKTopP.md L195-203 规定该组合应返回 161001。放行后 logits 尾维为 1 时走 L181-182 的 ViewCopy(logitsContiguous, out) 直拷分支并返回成功，尾维>1 时把空的 pContiguous/kContiguous 传给 l0op::ApplyTopKTopPWithSorted，失败只表现为 ACLNN_ERR_INNER_NULLPTR。
+  source: 2026-09-18 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5999 （closed）
+  behavior: 采样算子少传一个可选参数（p 和 k 都没给）时，接口不报错而是直接成功：logits 尾维为 1 的那批请求，输出就是原始 logits，top-k/top-p 一步都没做，采样分布完全不受控；尾维更大的请求则拿到一个内部错误码，看不出是入参非法。两种都让调用方以为过滤已经生效。
+  trigger_surface: aclnnApplyTopKTopP，p 与 k 同时为空
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

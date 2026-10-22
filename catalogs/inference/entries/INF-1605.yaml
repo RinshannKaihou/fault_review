@@ -1,0 +1,57 @@
+id: INF-1605
+legacy_ids: []
+slug: torchair_graph_dfs_topology_order_mismatch_across_ranks
+aliases: []
+title: 图模式 DFS 拓扑序两卡不一致致通信算子错序
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: 图模式 DFS 拓扑排序
+  behavior: torchair 图模式用默认 DFS 拓扑排序，且为内存优先的非稳定实现；两卡 HcomAllToAllV 输出 shape 不同时排序结果不同，本应一致的算子执行序在两卡间错开。
+effect:
+  objects:
+  - 数值结果
+  detail: 同一脚本里三个无执行序依赖的 HcomAllToAllV 在两卡上被排成不同顺序，集合通信收发次序对不上，出现精度问题；图编译成功、无告警，只在多卡结果对比时暴露。
+  visibility: 静默错误
+mitigation:
+  detect: dump 两卡的图执行序（GE 图或 profiling 的 task 序列）比对通信算子顺序是否一致
+  fix: 待定（issue 只给原因：DFS 非稳定拓扑 + 内存优先调整顺序；是否改为稳定拓扑或对通信算子加序未在 issue 说明）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torchair 图模式 + 单个图内多个无执行序依赖的 Hcom* 通信算子 + 各卡算子输出 shape 不同；CANN 9.0.0、torch_npu 2.7.1、EulerOS 2.12、2 卡
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/349
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torchair 图模式在把 PyTorch 图转成 GE 图时使用默认的 DFS 拓扑排序。当图里存在多个彼此没有执行序依赖的 HcomAllToAllV 算子时，排序本应给出与输入图一致、且各卡一致的顺序；但 torchair 的 DFS 是非稳定拓扑排序，其内存优先（mem-priority）机制会依算子输出 shape/内存需求调整拓扑序。由于两卡的 HcomAllToAllV 输出 shape 存在差异，同一张图在两卡上排出不同的算子顺序，集合通信的收发次序于是错开，出现精度问题（issue 环境：CANN 9.0.0、torch_npu 2.7.1、Python 3.11、EulerOS 2.12、两卡）。issue 复现脚本仅做三处无依赖的 HcomAllToAllV，未给日志；根因由报告者定位到 DFS 非稳定拓扑与内存优先调整顺序。
+  source: 2026-03-02 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/349 （closed）
+  behavior: 图模式下把多个互不依赖的 all-to-all/all-to-all-v 放在同一个 forward 里时，两卡的通信算子执行顺序不一样，alltoall 的收发对不上，输出数值错但形状合法、没有报错，只有在两卡结果对比或与 eager 对比时才发现；把通信算子拆到不同子图或加显式依赖后现象消失。
+  trigger_surface: torchair 图模式 + 图内多个无执行序依赖的 Hcom* 通信算子 + 各卡输出 shape 不同（触发内存优先重排）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

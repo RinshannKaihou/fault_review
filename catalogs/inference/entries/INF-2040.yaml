@@ -1,0 +1,53 @@
+id: INF-2040
+legacy_ids: []
+slug: qwen35_mtp_prefix_cache_mamba_postprocess_compile_assert
+aliases: []
+title: 前缀缓存加 MTP 触发 mamba 后处理内核编译断言
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: triton-ascend AxisInfo
+  behavior: prefix caching 使 mamba_cache_mode 变 align，hybrid 模型加投机解码走 postprocess_mamba_fused_kernel，triton-ascend 转换时 AxisInfo 越界断言
+effect:
+  objects:
+  - 可用性/进度
+  detail: hybrid/GDN 模型 + prefix caching（mamba align）+ MTP 投机解码：启动、图捕获、/health 正常；首个真实请求返回 500，出现 SmallVector.h:291 断言、Worker 意外退出、executor 关闭；去掉任一配置可稳定运行。
+  visibility: 报错
+mitigation:
+  detect: 在 hybrid/GDN 模型上同时开 --enable-prefix-caching 与 --speculative-config，发首个真实请求；预热不覆盖该 kernel，必须用真实请求验证
+  fix: '待定（issue 只做根因分析；上游 vLLM PR #40172 引入该融合 kernel，vllm-ascend 源码已注明 Ascend 后端不支持）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.19.1rc2.dev607、vLLM 0.22.1、triton-ascend 3.2.1、910B4、Qwen3_5 GDN hybrid W8A8 + MTP
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10908
+  kind: github_issue
+relations: []
+original:
+  mechanism: '链路是 upstream 行为叠加出来的：--enable-prefix-caching 使 vLLM config.py:355 把 mamba_cache_mode 置为 align（日志里也有 Mamba cache mode is set to align 与 patch_mamba_config.py 把 attention block size 设为 1536）；hybrid 模型加 speculative_config 时 vllm/v1/worker/gpu_model_runner.py 在 align 分支调用 mamba_utils.postprocess_mamba_align_gpu，该函数由 upstream vLLM PR #40172 引入的 @triton.jit postprocess_mamba_fused_kernel 实现；不走 align 时这一步在 CPU 上做，所以只开 MTP 不编译该 kernel。triton-ascend 3.2.1 转换这个 kernel 时在 PtrOffsetInfo::AxisInfo 的 SmallVector 上 idx<size() 断言失败，Worker 直接死。GDN prefill kernel 在启动时能编过、图捕获也能完成，编译发生在首个真实请求（warmup 不覆盖）。'
+  source: 2026-06-24 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10908 （closed）
+  behavior: 服务启动、CUDA graph 捕获、/health 都正常，看起来已经就绪；客户端发第一个 /v1/chat/completions 就收到 500，日志里没有 Python traceback，只有 SmallVector.h:291 的 C++ 断言和 Worker proc died unexpectedly，随后 executor 关闭。把 prefix caching 或 speculative-config 任意一个去掉就能稳定跑，因此很容易被当成「配置组合不支持」而不是编译缺陷。
+  trigger_surface: hybrid/GDN 模型 + --enable-prefix-caching（mamba align）+ MTP 投机解码，triton-ascend 编译 postprocess_mamba_fused_kernel
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

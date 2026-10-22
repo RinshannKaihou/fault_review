@@ -1,0 +1,69 @@
+id: INF-1634
+legacy_ids: []
+slug: triton_ascend_launcher_value_folded_arg_shift
+aliases: []
+title: launcher 打包被折叠参数致后续实参错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: triton
+    component: make_launcher 参数打包
+  behavior: make_launcher 只按 signature 判断是否占位，而编译器把非常量却被 value-fold 的实参从二进制参数表删掉；两表不一致后，被折叠参数之后的每个实参整体前移 4 字节。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: sam：3 个注入 grid 参数错位，外层 trip 变 196×48×1=9408（应 48），原地 softmax 反复处理收敛到均匀，逐元素最大差约 0.49，后续 32 个 encoder 块级联成 NaN，attention probability 相对 rms 误差约 52%。
+  visibility: 数值异常
+mitigation:
+  detect: 比对 launcher 打包的 slot 数与二进制实际参数个数（hermetic A/B 可直接调 make_launcher 检查是否多出字段）
+  fix: 'PR #2387 归一化 constants 键（到达时为 1-tuple）并在两处打包点跳过被折叠下标（open，未发布）'
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: triton_experimental 后端 + torch.compile(dynamic=False) 产生实现核（persistent-kernel 重写追加 grid 参数）+ 实参被常量折叠但未标 constexpr；910B2/CANN 9.1.0/3.6.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2407
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0176
+original:
+  mechanism: 'triton/backends/ascend/driver.py 的 make_launcher 仅凭类型表 signature 决定哪些实参打进入参缓冲（凡类型不是 constexpr 就发一个 slot），而实参在二进制里是否真的占位由另一张表 constants 决定：编译器把被 value-fold 的实参折进 kernel body 并从参数表里删掉，但 signature 里仍留具体类型如 i32，两表因此不一致——二进制 ABI 是 (ptr, xnumel)，launcher 却按 (ptr, xnumel, r0_numel) 打包，被折叠实参之后的每个参数整体前移一个 4 字节字。触发场景是 torchbench sam（ViT-H，inductor）里的原地 softmax（mutated_arg_names=[''in_out_ptr0'']），persistent-kernel 重写（AutoBlockifyParallelLoop）在运行期参数之后追加 3 个 grid 参数，正好被挤位：@36 处 launcher 塞 r0_numel=196，二进制读成第一个注入 grid 参数，外层 trip 变成 g5*g6*g7=196*48*1=9408 而非 48。环境：Ascend 910B2、CANN 9.1.0、torch 2.14.0/torch_npu 2.14.0、triton-ascend 3.6.0、Python 3.12、TORCHINDUCTOR_NPU_BACKEND=triton_experimental、torch.compile(dynamic=False)。PR #2387 归一化 constants 键并在两处打包点跳过被折叠下标。'
+  source: 2026-09-28 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/2407 （open）
+  behavior: SAM（ViT-H）在 NPU 上走 torch.compile 后精度崩：attention probability 的相对 rms 误差约 52%，逐元素最大差 0.49，后续 32 个 encoder 块把它级联成 NaN，torchbench 直接 fail_accuracy；同一模型 eager 正常。三次运行结果位级一致，所以不是随机噪声；错值来自原地 softmax 被重复处理 196 倍后收敛到均匀分布，从日志里看不出任何参数错位的痕迹。
+  trigger_surface: triton_experimental 后端 + 实现核（persistent rewrite 追加 grid 参数）+ 存在被 value-fold 但未标 constexpr 的实参
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

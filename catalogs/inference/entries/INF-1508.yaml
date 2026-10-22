@@ -1,0 +1,60 @@
+id: INF-1508
+legacy_ids: []
+slug: msprobe_verl_dump_json_empty_without_warning
+aliases: []
+title: verl 集成下 dump.json 为空且无告警
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: verl 里的 debugger 挂载
+  behavior: 在 verl 的 generate 外层对 rank0 做 debugger.start/stop 后，dump.json 只写元数据、data 为空对象，全程无告警
+effect:
+  objects:
+  - 指标/日志
+  - 测试判定
+  detail: A5 机器 vllm 单独采集正常、接入 verl 后 dump.json 为 {task:statistics, level:mix, framework:pytorch, dump_data_dir:null, data:{}}，无从比对
+  visibility: 静默错误
+mitigation:
+  detect: 采集后检查 dump.json 的 data 是否为空对象、dump_data_dir 是否为 null；不要以「dump.json is at ...」日志当作采集成功
+  fix: 待定（issue 未给修复 PR；正文只有用户改造的 verl 侧代码片段）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: A5 机器 + vllm 推理接入 verl 训练回路（用户自改 generate 外层）；mindstudio-probe 26.0.0a2 级别工具；level=mix、task=statistics
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/43
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: A5 机器上 vllm 单推理内容正常，接入 verl 后异常，于是用 msprobe dump 过程数据做对比：vllm 里采集正常，verl 里无数据。用户的改造方式是在 self.update_sampling_params(...) 上下文里 import PrecisionDebugger 与 seed_all，rank 0 建 PrecisionDebugger(dump_path=..., level='mix')，从 inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.get_model() 取到模型后 debugger.start(model=model, token_range=[1,2])，生成完再 debugger.stop()/debugger.step()。结果 dump.json 内容为 {"task":"statistics","level":"mix","framework":"pytorch","dump_data_dir":null,"data":{}}——元数据写出来了、data 是空对象。日志每步只打 'dump.json is at /home/.../dump_data_3/step0'，没有任何 error/warning 提示采集为空。issue 未给根因（token_range 与 verl generate 的 token 视图不匹配、hook 未命中模型、或 path 写错）与修复 PR。
+  source: 2026-02-12 GitCode Ascend/msprobe issue https://gitcode.com/Ascend/msprobe/issues/43 （closed）
+  behavior: 按参考改法把 msprobe 接进 verl 的 generate 流程后，每一步都打印 dump.json is at ... step0，看着采集在跑，打开文件却只有一个 task/level/framework 的壳，data 是 {}，dump_data_dir 是 null，一条张量统计都没有。同一台机器用 vllm 单独跑能正常采集，于是用户容易以为是 verl 的模型对象特殊、或者要调 token_range，而工具这边不给任何失败提示。
+  trigger_surface: msprobe PrecisionDebugger 在 verl 训练回路（vllm 后端 generate）里的 rank0 挂载；level=mix、task=statistics；token_range=[1,2]
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 测试判定
+        to: 指标/日志

@@ -1,0 +1,57 @@
+id: INF-1627
+legacy_ids: []
+slug: msmodelslim_quarot_optional_merge_last_wins
+aliases: []
+title: 多卡保存浅合并清空 optional，QuaRot 矩阵失联
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: DistributedAscendV1Saver
+  behavior: _merge_json_files 对顶层 optional 做浅 update，最后一个 rank 的空 optional 覆盖 rank0 写入的 quarot rotation_map；相对路径又按 rank_i 错位。
+effect:
+  objects:
+  - 模型权重
+  detail: 多卡 + quarot + ascendv1_saver 的产物里 optional/quarot.safetensors（约 205MB）已导出，但 quant_model_description.json 的 optional 为 {}；不报错，加载方按描述文件找不到该矩阵。
+  visibility: 静默错误
+mitigation:
+  detect: 多卡量化后直接读产物顶层 quant_model_description.json，检查 optional 是否为空、其中相对路径是否相对最终保存目录；再核对 optional/ 目录里是否真有对应文件
+  fix: issue closed；正文给修复方案：_merge_json_files 对顶层 optional 取并集而非 last-wins，on_quarot_extra_info_wrapper 的相对路径改按 config.save_directory 计算，并称已在 4 层多卡复现后验证，未核实合入版本
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim upstream master commit 62c58713，world_size>=2（--device npu:0,1,2,3）+ quarot + ascendv1_saver，Kimi-K3 W4A8 flex_quarot 配置；单卡不复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/492
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: msmodelslim upstream master commit 62c58713（缺陷在 master 上仍存在）：4 层 Kimi-K3 减层模型，msmodelslim quant --device npu:0,1,2,3 --config_path kimi_k3_w4a8_flex_quarot.yaml --trust_remote_code True，导出 AscendV1 权重。根因在 DistributedAscendV1Saver._merge_json_files：它用顶层浅 update() 按 rank 0..N-1 顺序合并各 rank 的 rank_i/quant_model_description.json；optional/quarot.safetensors 由处理 QuaRot 分支的 rank 0 写入顶层 optional/ 目录并只记录在 rank 0 自己的描述文件里，其余 rank 的 optional 都是 {}，于是最后一个 rank 的空 optional 整体覆盖掉 rank 0 的非空内容；_cleanup_rank_dirs 只清理 rank_i/，顶层 optional/quarot.safetensors 保留下来。报告者还指出合并后 optional 内记录的相对路径按 rank_i 目录计算（../optional/quarot.safetensors），相对最终保存目录错位。修复：顶层 optional 按 scope 取并集，相对路径改为相对 config.save_directory 计算；报告者称已在 4 层多卡复现并重新量化验证。
+  source: 2026-08-26 GitCode Ascend/msmodelslim issue https://gitcode.com/Ascend/msmodelslim/issues/492 （closed）
+  behavior: 多卡（world_size>=2）配 quarot + ascendv1_saver 做分布式量化：命令全部成功，底层产物里 optional/quarot.safetensors 也确实生成了（约 205MB），但顶层 quant_model_description.json 的 optional 字段是 {}，即描述文件与产物目录自相矛盾，用这份描述文件去加载的流程拿不到 QuaRot 全局旋转矩阵；单卡量化不会遇到。
+  trigger_surface: world_size>=2 + quarot + ascendv1_saver 组合（多卡分布式量化 AscendV1 导出）；单卡不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

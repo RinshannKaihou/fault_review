@@ -1,0 +1,55 @@
+id: INF-1962
+legacy_ids: []
+slug: ngram_spec_decode_garbage_output
+aliases: []
+title: ngram 推测解码输出与 prompt 无关的杂串
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: ngram prompt_lookup 草案
+  behavior: ngram 推测用 prompt_lookup_max/min 在 prompt 内取草案 token 后，草案与验证结果拼接出错，与 prompt 无关的 token 被接受并输出。
+effect:
+  objects:
+  - 输出内容
+  detail: prompt '123412'、temperature=0、max_tokens=12 时输出「34这条路的长度是1000米…forbidden, 123oud, 1AMENT, 1itol」这类杂串。
+  visibility: 静默错误
+mitigation:
+  detect: short prompt + temperature=0 跑 ngram 推测，与非推测输出逐 token 比对；出现与 prompt 无关的 token 即命中
+  fix: 'vllm-ascend PR #4090（已合入：Fix ngram precision issue and open e2e ngram test）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.11.0rc1 区间 + Qwen3-1.7B、enforce-eager、speculative_config method=ngram（prompt_lookup_max=5/min=2，num_speculative_tokens=2）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/4037
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #4037（2025-11-06，closed）：离线 LLM 脚本（Qwen3-1.7B，tensor_parallel_size=1，enforce_eager=True，distributed_executor_backend=mp，speculative_config={method: ngram, prompt_lookup_max: 5, prompt_lookup_min: 2, num_speculative_tokens: 2}，SamplingParams temperature=0/max_tokens=12）对 prompt ''123412'' 生成出「34这条路的长度是1000米，每块砖的面积是10 forbidden, 123oud, 1AMENT, 1atos, 1itol,」——既与被测 prompt 无关，也不是任何合理续写，说明 ngram 猜测链取到的草稿及其接受/拼接把无关 token 直接送出。环境为 torch 2.7.1+cpu / torch_npu 2.7.1.dev20250724 / vllm 0.11.1rc3.dev / vllm-ascend 0.11.0rc1.dev209。评论 zhaomingyu13 指出已由 PR #4090《[main][Bugfix] Fix ngram precision issue and open e2e ngram test》修复。'
+  source: 2025-11-06 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/4037 （closed）
+  behavior: 按官方示例跑 ngram 推测解码时，贪心（temperature=0）输出变成一串和问题毫无关系的碎片，夹着中英文与数字（forbidden、123oud、1AMENT 之类），而同一模型关掉 speculative_config 就正常。因为服务不报错、token 也都在词表内，看日志完全看不出异常，只能在离线脚本里比对生成文本才会发现，属于推测解码路径上的静默错值。
+  trigger_surface: ngram 推测解码（prompt_lookup_max/min 草案）+ 贪心采样 + 短 prompt
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误

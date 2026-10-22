@@ -1,0 +1,56 @@
+id: INF-1842
+legacy_ids: []
+slug: vllm_ascend_pd_blocksize_config_mismatch
+aliases: []
+title: P/D 两端 block size 配置不一致致 KV 传输错位乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MooncakeHybrid 块对齐
+  behavior: 官方 DeepSeek-V4-Pro A2 部署文档的 Prefill 侧默认命令不带 block size，Decode 侧默认带 block size；两端按不同块粒度组织 KV，传输后布局与接收端预期不一致
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: A2 上按文档默认配置做 PD 分离，经 proxy 转发到 decode 的请求返回乱码；把两端 block size 配成一致后正常（issue open，未见量级数据）
+  visibility: 静默错误
+mitigation:
+  detect: 启动前核对 P/D 两端 --block-size（或 kv_transfer_config 中的块参数）是否一致；出现乱码时先比对该配置
+  fix: 待定；规避是按文档自行在 Prefill 侧补上与 Decode 相同的 block size（issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: PD 分离 + MooncakeHybridConnector + Prefill 侧未显式配置 block size 而 Decode 侧配置（官方 A2 文档默认脚本即此状态）；两端一致时不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 证据是配置对照 + 现象复现，issue 正文没有给 KV 布局的具体差异，机制表述按报告者原话。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14545
+  kind: github_issue
+relations: []
+original:
+  mechanism: 按 vllm-ascend 官方文档 docs/source/tutorials/models/DeepSeek-V4-Pro.md 的 A2 默认配置做 PD 分离：Prefill 侧启动命令不带 block size，Decode 侧默认带 block size。报告者指出这使 A2 PD 分离模式下两端 KV transfer 不一致，经 proxy 转发调用即产生乱码。正文附了两侧完整启动脚本（DeepSeek-V4-Pro-w4a8-mtp、MooncakeHybridConnector、prefill dp4/tp8 + decode dp8/tp4、--no-enable-prefix-caching、speculative-config mtp），差异点在 Prefill 未显式配置块大小。issue 未给出两端 KV 布局的具体字节差异，也未给修复 PR。
+  source: 2026-08-19 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14545 （open）
+  behavior: 按官方 A2 PD 分离脚本启动 DeepSeek-V4-Pro 后，通过 proxy 发请求得到乱码回答；服务健康、KV transfer 日志正常，没有任何报错提示配置不一致，只有把两端 block size 对齐才恢复。
+  trigger_surface: PD 分离 + Prefill/Decode block size 不一致 + MooncakeHybridConnector
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,59 @@
+id: INF-1770
+legacy_ids: []
+slug: ascend_pytorch_nd_tile_rsplit_noncontig_wrong
+aliases: []
+title: torch_npu ND tile rsplit 非连续输入静默算错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: npu_rsplit_partial 代码生成
+  behavior: prefer_nd_tiling/tile_reductions 开启后，ND tile 归约走 rsplit 多核路径时对非连续输入（permute 后）静默算错，torch.compile 不报错、与 eager 不一致；断点尚未定位
+effect:
+  objects:
+  - 数值结果
+  detail: 910B2 单卡 torch.compile 下 sum(dim=(1,2))：连续输入 abs_diff=0；permute 后非连续三进程 rel 5.4%/6.5%/13.8%；单变量 r0 扫描仅 r0=32 档（rsplit 多核路径）rel=0.1123 错，其余档 1e-7
+  visibility: 静默错误
+mitigation:
+  detect: torch.compile 结果与 eager 逐元素比对（连续输入对、非连续错是特征）
+  fix: 待定（建议修复前对非连续输入保守回退非 rsplit 路径；两开关默认 False）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 910B2 + torch 2.15.0.dev + torch_npu 2.15.0.dev + triton-ascend 3.6.0 + CANN 9.2.0-beta.2 + TORCHINDUCTOR_NPU_BACKEND=triton_experimental + prefer_nd_tiling/tile_reductions 显式开启 + 输入非连续
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 发现于硬件解耦任务组合核看护（#5540/MR !48211）覆盖实验；该用例在 NPU 仓有意不镜像，原因即此缺陷。两开关默认关闭，影响面限于显式开启用户。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5558
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/issues/5540
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend 910B2 单卡、torch 2.15.0.dev20260917、torch_npu 2.15.0.dev（gitec69335）、triton-ascend 3.6.0、CANN 9.2.0-beta.2、TORCHINDUCTOR_NPU_BACKEND=triton_experimental。开启 torch._inductor.config.triton 的 prefer_nd_tiling 与 tile_reductions 后，多核 ND tile 归约路径在非连续输入下静默算错（torch.compile 不报错、结果与 eager 不一致）。编译产物确认：Runner.call 共两个内核 triton_unk_fused_sum_0/1，前者 inductor_meta['npu_rsplit_partial']=True 且签名带 ws_ptr，npu_rsplit_partial 由 torch_npu 代码生成设置（triton_experimental/codegen/triton.py L5550/6707/7204/7206），工作区按 rsplit_id 开槽每槽 x 宽 16（768=16×48）。实测：x=randn(32,16,64) 连续时 abs_diff=0；t=x.permute(1,0,2)（16,32,64）非连续时三独立进程（各全新编译缓存）abs_diff=6.94769/9.32319/6.14914（rel 6.53%/13.84%/5.42%）。单变量（非连续、r1=64 固定、只变 r0）：r0=16/48/64/96 全部 rel≈1e-7 正常，仅 r0=32（该档走 rsplit 多核路径）rel=0.1123 错；同组 r0 连续输入下全 0。尚未定位断点：切分区间边界、工作区槽位与合并读回口径、或非连续 stride 两侧不一致——需维护者定位；若是槽位/读回口径则非数值竞争而是部分数据未被计入合并，若是载入 stride 则与非连续触发更吻合。建议修复前对非连续输入保守回退或文档标注。
+  source: 2026-10-20 每日扫描；https://gitcode.com/Ascend/pytorch/issues/5558 ；发现背景 https://gitcode.com/Ascend/pytorch/issues/5540
+  behavior: 在昇腾上用 torch.compile（triton_experimental 后端）并显式打开 prefer_nd_tiling 与 tile_reduductions 后，对非连续输入（如 permute 之后的张量）做归约（如 sum(dim=(1,2))）会静默得到错误结果：相对误差 5%~14%，且只有特定切分档位（如 r0=32 走 rsplit 多核路径）出错、其他档位和连续输入完全正确；torch.compile 无任何报错，直接与 eager 结果比对才能发现。
+  trigger_surface: Ascend + triton_experimental 后端 + prefer_nd_tiling/tile_reductions 显式开启 + 非连续输入 + 归约走 rsplit 多核档位
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - effect.detail
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior

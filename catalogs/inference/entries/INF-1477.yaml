@@ -1,0 +1,61 @@
+id: INF-1477
+legacy_ids: []
+slug: ops_nn_loss_norm_arch35_sync_reduction_precision_defects
+aliases: []
+title: ops-nn Loss/Norm 算子 arch35 跨核同步与规约精度缺陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: 跨核规约 SyncAll 与精度缺陷
+  behavior: SyncAll 前未排空 MTE3，0 号核读到未落地 partial（偶现）；SFL (hi,lo) 残差槽未清零、Poisson 裸加、SFLGrad rightPadding 滥写、MultilabelMargin 块对齐超 k。
+effect:
+  objects:
+  - 数值结果
+  detail: 固定种子 219 例 --pc 2 两轮红例集合不一致；SFL 1198 例 111 红（D≥1000、reduction=none）；Poisson rmse 比值 4.55~8.31（限 1.5）；SFLGrad 小 D VEC_ERROR
+  visibility: 静默错误
+mitigation:
+  detect: 固定种子多轮/多并发度对照判定一致性（--pc 2 两轮红例集不同即同步缺陷特征）；SFL 用 D≥1000 reduction=none 用例扫描
+  fix: 待定（issue open；环境 Ascend950PR、CANN 9.3.0、ops-test-kit）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend950 arch35 路径 + PoissonNllLoss/MultilabelMarginLoss/SoftmaxFocalLoss/SFLGrad；同步缺陷依赖时序/负载偶现；SFL 精度 D≥1000+reduction=none；CANN 9.3.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 一 issue 聚合 6 算子两类缺陷，作为 arch35 跨核规约家族单条收录；细节按算器分述于 original
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6879
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-nn issue #6879（c2026-10-19，Ascend950PR，CANN 9.3.0，ops-test-kit kernel/geir 子命令）：arch35(A5) 路径 6 个 Loss/Norm 算子两类缺陷。一、跨核同步：PoissonNllLoss、MultilabelMarginLoss 的跨核规约是"各核 partial 写 workspace（DataCopyPad，__out_pipe__(MTE3) 异步出口）→ SyncAll() → 0 号核读回合并"，栅栏前没有排空 MTE3，0 号核可能读到其他核未落地的值；错误与时序/负载相关，固定种子 219 例 --pc 2 跑两轮红例集合不一致（一轮 219/219 全绿、一轮 1 例红），--pc 1 固定输入连跑 4 遍逐位一致（本方计算确定）。PoissonNllLoss 另有一处收尾同步用固定 EVENT_ID0（同文件其余 5 处由 FetchEventID 分配），与在飞同号事件冲突时漏同步。二、规约精度：(1) SoftmaxFocalLoss ce/fw 低位残差槽未按 tile 清零，(hi,lo) 读改写把 UB 残留当上轮残差累加，全量泛化 1198 例 111 例红（全部集中 reduction=none 且 D≥1000 精确路径，元素通过率低至 0%）；(2) PoissonNllLoss reduction=sum/mean 段内整段 ReduceSum 块间无补偿裸加、段间 partial+=，绝对误差随块数/段数增长，三方 cross_check rmse 比值 4.55/6.01/8.31（限值 1.5，mare/mere 仅 0.001 量级，即绝对误差约竞品 8 倍）；(3) SoftmaxFocalLossGrad 搬入参数把整条行距差值写进 rightPadding（该字段只能补到 32B 块边界），int32 目标缓冲 stride-len≥8 档位（D=1/2/4/6/21）全线 VEC_ERROR；(4) MultilabelMarginLoss 块对齐长度向上取整让 B 超过 k，块内顺序累加成为主导误差项。'
+  source: 2026-10-19 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6879 （open）
+  behavior: 昇腾 950 上跑 PoissonNllLoss/MultilabelMarginLoss 时同一用例同一随机种子两轮判定一轮全绿一轮报红（并发下偶现、单核跑固定输入完全确定）；SoftmaxFocalLoss 大维度（D≥1000）reduction=none 用例大面积超差（111/1198 例红、元素通过率可到 0%）；Poisson 求和型绝对误差约为三方竞品 8 倍；SFLGrad 一批小 D 形状直接 VEC_ERROR。
+  trigger_surface: Ascend950PR arch35 + PoissonNllLoss/MultilabelMarginLoss/SoftmaxFocalLoss(/Grad)；同步缺陷并发偶现（--pc≥2）；SFL 精度 D≥1000 + reduction=none；CANN 9.3.0
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    uncertain:
+    - behavior

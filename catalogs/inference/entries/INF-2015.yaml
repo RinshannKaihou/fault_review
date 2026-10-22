@@ -1,0 +1,53 @@
+id: INF-2015
+legacy_ids: []
+slug: all_gather_matmul_v2_subbyte_dtype_size_zero
+aliases: []
+title: 子字节 dtype 下 CheckHCCLSize 算成 0 字节拦截失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: all_gather_matmul_v2
+  behavior: GetSizeByDataType对子字节类型返回1000+bit数，DT_INT4为1004；CheckHCCLSize判断<1000为假后算(1004-1000)/8=0，sizeOfSingleM为0，两道256MB预拦截恒为假
+effect:
+  objects:
+  - 可用性/进度
+  detail: mxfp4/int4 的 all_gather_matmul_v2 不再在 tiling 期拦下超大 K×M，CheckHCCLSize 对子字节类型退化为直接返回 GRAPH_SUCCESS，问题推迟到运行期在 HCCL/CCU 侧暴露
+  visibility: 报错
+mitigation:
+  detect: 对 DT_FLOAT4_E2M1/DT_INT4 输入构造超过 256MB 单次通信量的 K×M，断言 tiling 阶段返回 GRAPH_FAILED；并检查 1 字节及以上类型仍被拦截
+  fix: issue 给出根因与同文件两处正确口径（closed）；修复 MR 未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需子字节 dtype（mxfp4/int4）且单次通信量超 256MB 的超大 K×M
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5479
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer 的 mc2/all_gather_matmul_v2/op_host/op_tiling/all_gather_matmul_tiling_base.cpp 中 CheckHCCLSize()（419-450 行）按 ge::GetSizeByDataType 的返回值分支：对小于 1 字节的类型该函数返回 1000+bit 数（DT_INT4 返回 1004）。代码 428 行判断 <1000 为假，走 else 分支 433-435 行计算 (1004-1000)/8=0，于是 sizeOfSingleM=kValue×rankDim×0=0，437 行与 444 行的两道 256MB 预拦截（ALL_GATHER_HCCL_MEM_LIMIT）恒为假，函数实际等价于直接返回 GRAPH_SUCCESS。同文件另有两处对子字节类型的正确换算口径，说明是局部单位换算错误而非有意放宽。
+  source: '2026-09-20 GitCode cann/ops-transformer issue #5479（closed）。https://gitcode.com/cann/ops-transformer/issues/5479'
+  behavior: 用 mxfp4/int4 权重跑 all_gather_matmul_v2、K×M 大到单次通信量超过 256MB 时，tiling 阶段不再报「x1 size must not exceed 256MB」而是一路成功，等到真正通信才在 HCCL/CCU 侧失败；表现为「编译/下发都过了，跑起来才崩」，256MB 的预拦截文案在该场景下成了死代码。
+  trigger_surface: all_gather_matmul_v2 tiling 的 CheckHCCLSize；DT_FLOAT4_E2M1 / DT_INT4 等子字节 dtype + 超过 256MB 的单次通信量
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

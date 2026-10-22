@@ -1,0 +1,57 @@
+id: INF-1674
+legacy_ids: []
+slug: ops_nn_scatter_reduce_common_sort_missing_sync
+aliases: []
+title: scatter_reduce 排序漏 MTE3→V/S 同步致竞态错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: scatter_reduce 排序同步
+  behavior: SortLocalRuns() 循环尾只发 MTE3→MTE2，未约束下一轮 V/S 对同一对 UB 的写；DataCopyPad 未读完缓冲即被 Sort/Adds/补哨兵覆写，落盘排序键与索引被污染。
+effect:
+  objects:
+  - 数值结果
+  detail: arch35 内核：var 6288948 行、M 5375 万时连跑三次分别错 4/2/13 行，错误值双向、同一执行内多行写成同一值；M<500 万常规泛化集发现不了；ScatterMax/Min/Mul/Div 共用该内核。
+  visibility: 不可复现
+mitigation:
+  detect: 用 M 大于 500 万的 indices 反复跑同一用例（≥3 次）比对输出；M 在百万级的常规用例无法暴露该竞态。
+  fix: issue 5687 closed（跟踪 9.2.0 分支同步 master 修复，未给 MR 号）；另附 foreach_div_list_inplace 未开 0 ULP Div 档（3126 万元素中 8.29% 偏 1 ulp）与 23 个算子 golden 六类缺陷。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: partial
+  trigger_note: arch35 目录下 scatter_reduce_common 内核（ScatterMax/Min/Mul/Div）+ indices 元素数 M 上千万 + 9.2.0 分支未同步该修复；A2 不受影响
+  confidence: documented
+remarks: 9.2.0 分支从 master 分出后仅有 3 个提交，master 已前进 42 个提交，本批修复未同步，因此发布分支上仍带这个竞态；master 侧已修。可见性按“不可复现”记（同输入多次结果不同）。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5687
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5687（2026-09-08，closed）：9.2.0 分支自 4f7c6f64c 从 master 分出后仅有 3 个提交，而 master 已前进 42 个提交、两者差 206 个文件，本批 23 个算子与 scatter_reduce_common 共享内核的修复均未同步到 9.2.0。缺陷：index/scatter_reduce_common/op_kernel/arch35/scatter_reduce_common_sort.h 的 SortLocalRuns() 在循环尾只发了 SetFlag<MTE3_MTE2>/WaitFlag<MTE3_MTE2>——MTE3→MTE2 只保证下一轮输入搬入不覆盖 UB，未约束下一轮的 V 管道（Sort/Adds）与 S 管道（SetValue 补哨兵），而它们写的正是同被 DataCopyPad 搬出的 shiftSorted/originUb，本轮搬出尚未读完就可能被覆写，导致落盘排序键与原位置索引被污染，少数 var 行折进别行 update。旁证：同文件 SortMergeTree() 循环尾发的是 MTE3→S（它只用 S 写 UB，够用），反衬 SortLocalRuns() 漏了 MTE3→V 与 MTE3→S。实测 var 6288948 行 / M 5375 万同用例连跑三次：错 4 行 [9572,12311,16681,18208]、错 2 行 [2150,7608]、错 13 行，同一次执行中多行被写成同一值，错误值双向（既有偏大也有偏小）；M 小于 500 万时数次执行难以复现。该内核为 ScatterMax/ScatterMin/ScatterMul/ScatterDiv 共享（MODE_MUL/MAX/MIN 走同一路径、DIV 共用排序阶段），位于 op_kernel/arch35/ 专属目录，不影响 A2。issue 同时记录 foreach_div_list_inplace_regbase.h 直接调 Div 未传 DivConfig（落 DEFAULT/INTRINSIC，dav-3510 为 1 ULP 保真舍入，3126 万 fp32 元素中 8.29% 偏 1 ULP）与 23 个算子 golden 的六类缺陷。
+  source: 2026-09-08 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5687 （closed）
+  behavior: 在 950/arch35 上做 ScatterMax/Min/Mul/Div 的 reduce（var 628 万行、indices 5 千多万），同一条命令连跑三次分别错 4 行、2 行、13 行，错的行每次都不一样，同一次执行里还有多行被写成同一个值——看上去像硬件偶发，实际是内核里少一条同步。indices 规模在百万级时怎么跑都不复现，所以常规泛化集完全看不到这个问题，只有大规模型号/大词表的 scatter 才会踩到。
+  trigger_surface: arch35 的 scatter_reduce_common 排序内核（ScatterMax/Min/Mul/Div）+ indices 元素数千万级 + 发布分支未同步修复；A2 不受影响
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

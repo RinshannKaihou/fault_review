@@ -1,0 +1,65 @@
+id: INF-1912
+legacy_ids: []
+slug: vllm_ascend_moe_ep_bare_all_reduce_double_sum
+aliases: []
+title: MoE EP 下裸 TP all-reduce 二次求和致输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: AscendFusedMoE finalize
+  behavior: Ascend 的 EP 通信策略在 finalize 里已跨 rank 聚合并输出，模型层随后再调裸 tensor_model_parallel_all_reduce 又求和一次，值放大约 tp_size 倍
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  - 输出内容
+  detail: MiniMax-M2.1 等在 FusedMoE 后手调 tensor_model_parallel_all_reduce 的 MoE 模型，16 卡 Ascend 910B 开 EP 且 TP=16 时输出乱码；关 EP 正常，无异常、无 NaN、无日志告警。
+  visibility: 静默错误
+mitigation:
+  detect: 同请求对比开/关 --enable-expert-parallel 的输出；检查模型 forward 是否直接调 tensor_model_parallel_all_reduce 而非 maybe_all_reduce_tensor_model_parallel
+  fix: issue open，无修复 PR；方向是上游模型改用 self.experts.maybe_all_reduce_tensor_model_parallel（GPU 上行为不变），或在 vllm-ascend 加模型级 override
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend v0.14.0rc1 + MiniMax-M2.1 fp8 + TP16 + --enable-expert-parallel；EP 的 combine 与裸 TP all-reduce 叠加
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/6710
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm_ascend 用 AscendFusedMoE 覆写 forward_impl，自带 MC2 / AlltoAll / FusedMC2 通信策略。EP 模式下这些策略的 finalize 已经通过 dispatch/combine（all-to-all）把所有 rank 的专家输出聚合好，FusedMoE.__call__ 返回的就是完整结果；它另提供 maybe_all_reduce_tensor_model_parallel，按通信类型决定是否再做 TP all-reduce（MC2/AlltoAll/FusedMC2 直接原样返回，AllGather 才做 all-reduce）。GPU 上 EP 且 TP>1、DP=1 时 dispatch/combine 因 dp_size>1 被跳过，各 rank 只算本地专家子集，所以模型里那句裸 tensor_model_parallel_all_reduce 是必要的；Ascend 后端改变了这个契约，在 EP 下总是走自己的 dispatch/combine，同一句裸 all-reduce 就把已经完整的输出在 tp_size 个 rank 上再求和一次，数值放大约 16 倍（TP16 复现），logit 分布被破坏。受影响的是上游 minimax_m2.py 与 step3_text.py 这类在 FusedMoE 之后手调 tensor_model_parallel_all_reduce 的模型。
+  source: 2026-02-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/6710 （open）
+  behavior: MiniMax-M2.1（fp8、256 专家、top-8）在 16 卡 Ascend 910B 上以 --tensor-parallel-size 16 --enable-expert-parallel 起服务，任何请求的输出都是乱码；去掉 --enable-expert-parallel 就恢复正常。无异常、无 NaN、无日志告警，用户只能看到模型像坏了一样胡说。Step3.5 一类同写法的 MoE 模型同样中招；这是 Ascend 上 EP 与 TP 组合的通用陷阱，不是某个模型的特例。
+  trigger_surface: Ascend EP（MC2/AlltoAll/FusedMC2 finalize 已聚合）+ 模型层裸 tensor_model_parallel_all_reduce + TP>1
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 集合通信
+        to: 并行切分
+      effect:
+        from: 输出分布
+        to: 数值结果
+    rewritten:
+    - detail

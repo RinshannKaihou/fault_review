@@ -1,0 +1,60 @@
+id: INF-1724
+legacy_ids: []
+slug: fd_lse_sentinel_neg_fltmax_mismatch
+aliases: []
+title: FD 全遮挡行 LSE 哨兵 -FLT_MAX 与 +inf 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: arch35 FD LSE VF
+  behavior: arch35 公共 FD LSE 用位模式 0xFF167699（约 -2e38）判全遮挡行，而 FA softmax 约定的无效行哨兵是 0xFF7FFFFF（-FLT_MAX），FD 行遂写成 -FLT_MAX。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: Flash MLA FP16、Q BNSD[5,18,509,576]、KV PA_BBND 下 45810 个 LSE 点中 390 个错误，全为 FD 覆盖的全遮挡行；改非 FD 调度后错误为 0，正常行前后差 3.8e-6。
+  visibility: 静默错误
+mitigation:
+  detect: 构造全遮挡行（causal+长 KV+FD 调度）并开 LSE 输出，检查全遮挡行取值是否为约定的 +inf，同时比对正常行
+  fix: PR 12021（master）/12022（9.2.0）：统一 vf_flash_decode_arch35.h 中 5 处 LSE 哨兵判断为 -FLT_MAX_NEW，移除旧位模式与指针强转
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: arch35 + Flash MLA FP16 + PA_BBND + causal mask + 开 LSE + 全遮挡行由 FD 路径计算
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5296
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5296（2026-09-14，arch35，closed）：arch35 公共 FD（FlashDecode）LSE 计算用位模式 0xFF167699（约 -2e38）来识别全遮挡行，而标准 FA softmax maximum 对无效行约定的哨兵是 0xFF7FFFFF（-FLT_MAX）。两套哨兵不一致导致 FD 路径把全遮挡行的 LSE 算成 -FLT_MAX，同一输入中不经 FD 的行却输出约定的 +inf，下游按 +inf 判无效行的逻辑对 FD 行失效。复现：Flash MLA FP16，Q BNSD[5,18,509,576]，KV PA_BBND[7750,64,1,576]、页轴 stride 3，KV 长度 [3436,992,491304,3,128]，causal mask，scale=1/24，seed=1491；基线 45810 个 LSE 点中 390 个错误，均为 FD 覆盖的全遮挡行；把 metadata 改为完整 KV 的非 FD 调度后错误为 0，正常行 FD/非 FD 最大绝对差 3.814697265625e-6。修复统一 attention/common/op_kernel/arch35/vf/vf_flash_decode_arch35.h 中 5 处哨兵判断，复用文件内 -FLT_MAX_NEW；PR master 12021、9.2.0 12022。'
+  source: 2026-09-14 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5296 （closed）
+  behavior: Flash MLA 开 LSE 做 decode、又走到 FD 拆分调度时，被 causal mask 完全遮住的行 LSE 返回 -FLT_MAX 这个巨大负数，而未走 FD 的行返回 +inf；两者混在同一份输出里，下游若按 +inf 过滤无效行会漏掉这些行，把它们当成有意义的 logsumexp 值参与后续计算，且调用不报错。
+  trigger_surface: arch35 + Flash MLA FP16 + PA_BBND 分页 + causal mask + 开 LSE + KV 长度差异大导致 FD 调度 + 存在全遮挡行
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出分布
+        to: 数值结果

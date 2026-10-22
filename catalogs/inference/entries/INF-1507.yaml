@@ -1,0 +1,84 @@
+id: INF-1507
+legacy_ids: []
+slug: mssanitizer_initcheck_padding_segment_false_positive
+aliases: []
+title: 未初始化检测把搬运 padding 段与模板算子判成未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: initcheck 搬运数据段建模
+  behavior: initcheck 对搬运指令写入范围与 padding 段建模不足，将 LOAD_L1_2D 加载的 padding 段或单核执行不会走到的地址段判为未初始化。
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: catlass 09_splitk_matmul、49_ascend950_flash_attention_infer 与 kv_rms_norm_rope_cache_story 在无未初始化数据的算子上稳定报未初始化，padding 段与单核 --block-id 场景最集中。
+  visibility: 报错
+mitigation:
+  detect: 用同一算子分别带 --block-id 与不带、以及 -t memcheck 交叉验证：memcheck 无越界而 initcheck 报未初始化时优先怀疑 padding 段建模。
+  fix: 待定（#209 为让检测工具识别搬运类指令 padding 数据段的需求，未见公开修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 950/910 + catlass、cann-samples 算子；mssanitizer -t initcheck，--block-id/-DCATLASS_ARCH=3510 等编译期使能
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/mssanitizer/issues/55
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/156
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/189
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/204
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/209
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/213
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1504
+pattern: PAT-INF-0165
+original:
+  mechanism: initcheck 判定“某地址没被写过”依赖对搬运指令写入范围与 padding 段的建模。#213 给出机制层面现象：LOAD_L1_2D 指令加载 padding 地址段时误报未初始化告警——padding 段本就不会被真实数据写入，工具仍对其做未初始化检查。#209 是与之对应的能力需求：让初始化检测支持识别搬运类指令的 padding 数据段，侧面证实该段当时不在识别范围内。其余为同类现象在具体算子上的表现：#55 catlass 09_splitk_matmul（Ubuntu 22.04.5，bash scripts/build.sh 09_splitk_matmul --enable_mssanitizer 后 mssanitizer -t initcheck 256 512 1024 0）报未初始化；#156 cann-samples kv_rms_norm_rope_cache_story 报未初始化；#189 CATLASS 49_ascend950_flash_attention_infer 报未初始化；#204 CATLASS 53_ascend950_fp8_mx_matmul 在 -DCATLASS_ARCH=3510 编译、加 --block-id=1 使能单核后报未初始化。四条 issue 的预期结果均为“没有未初始化”。
+  source: 2026-03-17 GitCode Ascend/mssanitizer issue https://gitcode.com/Ascend/mssanitizer/issues/55（closed）；2026-07-17 issue https://gitcode.com/Ascend/mssanitizer/issues/156（closed）；2026-08-19 issue https://gitcode.com/Ascend/mssanitizer/issues/189（closed）；2026-08-30 issue https://gitcode.com/Ascend/mssanitizer/issues/204（closed）；2026-09-07 issue https://gitcode.com/Ascend/mssanitizer/issues/209（closed）；2026-09-16 issue https://gitcode.com/Ascend/mssanitizer/issues/213（closed）
+  behavior: 对已经正确初始化、结果也正确的算子跑 mssanitizer -t initcheck，会报出对某段 UB/L1 的未初始化读写，而那段地址正好是搬运指令的 padding 区（或单核执行时不会走到的那部分）。把 --block-id 去掉或换 memcheck 交叉验证时结论会变，说明告警来自工具对数据段范围的假设，而不是算子真的读了没写的内存。对 kv_rms_norm_rope_cache 这类带 padding 的算子，团队会反复花时间排除假告警。
+  trigger_surface: Ascend 950/910 + mssanitizer initcheck；LOAD_L1_2D 等搬运指令带 padding 段的算子、catlass/cann-samples 模板算子；--block-id 单核执行
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

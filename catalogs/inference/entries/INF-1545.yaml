@@ -1,0 +1,65 @@
+id: INF-1545
+legacy_ids: []
+slug: vllm_ascend_pd_swa_stale_block_nan
+aliases: []
+title: PD SWA 传输块裁剪顺序错致消费陈旧 KV 出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake PD block id 裁剪
+  behavior: request_finished_all_groups() 先 SWA clip 再按 prompt 长度裁剪，_compute_transfer_block_ids() 不裁 SWA 组，尾部 clip 因此选中未写入的陈旧块。
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  detail: 陈旧 SWA 块 ID 作为 remote_block_ids 传给 D 端，npu_sparse_attn_sharedkv 消费脏块后第 0 层 attention 输出全 NaN，下游 speculative 输出可能全 -1，请求卡住；并发请求才复现。
+  visibility: 数值异常
+mitigation:
+  detect: 对 SWA 组比对 prompt trim 与 SW clip 的先后顺序（prompt_len=129、block_size=128 时旧顺序得 [102,103]、正确应为 [100,101]）；dump 被消费块检查是否含 NaN/大 BF16 值
+  fix: 待定（issue closed，正文说将为 main 与 releases/v0.20.2rc 提交 PR，未给编号）；修复：所有 KV 组先按 P 端实际 prompt 长度裁剪，再对 SWA 做窗口 clip
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend NPU PD 分离 serving，DeepSeek V4 Flash + hybrid/SWA KV cache；vllm-ascend base 77ff2865、release base releases/v0.20.2rc，本地校验用 vLLM 0.20.2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10253
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0173
+original:
+  mechanism: PD 分离 serving 中，并发请求会在 decode 侧产出 NaN 隐状态后卡住；单请求通常不触发，并发才可复现。最先出现非有限值的位置是 decode 侧第 0 层 SWA/original KV attention：输入 hidden_states、q、SWA cache、block_table、slot_mapping、seq_lens 全有限，经 npu_sparse_attn_sharedkv 之后 attention 输出全 NaN，target.layer0.self_attn 的隐状态随之 NaN，下游 speculative 输出可能全 -1，请求卡死。根因在 MooncakeConnectorScheduler.request_finished_all_groups() 与 _compute_transfer_block_ids()：前者在按实际 prompt 长度裁剪 block id 之前就调用了 get_sw_clipped_blocks()，后者裁剪非 SWA 组却原样保留 SWA 组；当 P 端截断后仍留着按原始 prompt 长度分配的 block id 时，SWA 尾部 clip 会选中未写入或陈旧的尾部块，这些陈旧块 ID 作为 remote_block_ids 发到 D 端后被消费。最小元数据例子：prompt_len=129、block_size=128、SWA 块 [100,101,102,103]，旧顺序（先 clip）得 [102,103]，期望（先按 prompt trim）得 [100,101]。用户侧算子 dump 显示最后一个部分块本身是干净的，而前一个被消费的块含 NaN 和很大的 BF16 有限值；把该块清零后 NaN 消失，因此证据指向消费陈旧/dirty SWA KV，而不是部分块算子本身的缺陷。
+  source: 2026-06-09 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10253 （closed）
+  behavior: PD 分离 + hybrid/SWA KV cache 的部署里，并发压测下偶尔有请求卡死不动，或者返回全是 -1 / 空内容；日志里 attention 层看不到明显异常输入（q、cache、block_table 都有限），只有 attention 输出变 NaN。单发一条请求基本不复现，必须是并发。
+  trigger_surface: PD 分离 + hybrid/SWA KV cache（DeepSeek V4 Flash 等）+ 并发请求；P 端 prompt 截断后 SWA 组未按 prompt 长度裁剪
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

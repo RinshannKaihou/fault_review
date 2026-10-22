@@ -1,0 +1,68 @@
+id: INF-1617
+legacy_ids: []
+slug: mindformers_tp_dedup_ckpt_dsa_shard_lost
+aliases: []
+title: TP 去冗余存盘丢 DSA 参数分片，重载首 loss 跳到 12.4
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspore
+    component: DSA attention TP 布局登记
+  behavior: DSA replicated-TP 分支只给 self_attention 装 PrepareModuleInputOutput，只变换激活、不登记 attention 参数的 TP Replicate 布局
+effect:
+  objects:
+  - 模型权重
+  - 训练信号
+  detail: FSDP 全局 layout 缺 tp 维，remove_redundancy 把不同 TP rank 当冗余：linear_qkv.weight 两 chunk 同为 62.883965（应 43.835247/62.883965），DSA2 重载首 loss 0.48→12.405167
+  visibility: 静默错误
+mitigation:
+  detect: 检查 checkpoint metadata 的 mesh names 是否含 tp、同层各 chunk 校验和是否重复；续训首 step loss 与保存前最后一步比对
+  fix: 显式登记 DSA self-attention 参数为 TP Replicate，并让 DSA2 weight absorb 读 linear_kvb.weight 时转 local Tensor；修复后 step121 loss 0.484146（未核实发布）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: '需 tensor_parallel>1 + FSDP + checkpoint.remove_redundancy: true；关 TP 或关去冗余都可规避'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2498
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1615
+pattern: PAT-INF-0170
+original:
+  mechanism: 'PyNative DSA 在 TP2 + FSDP2 + DP replicate2、checkpoint.remove_redundancy: true 下训练保存正常，DSA2 加载同一 checkpoint 首 loss 从约 0.48 跳升到 12.405167，仍以 DSA1 dense 路径加载也得到 12.400653，说明异常在保存/重载而不在 DSA1→DSA2 的计算语义。根因：parallelize.py 的 _apply_layers_tp 里 DSA replicated-TP 分支只给 self_attention 安装 PrepareModuleInputOutput，该 style 只处理激活的输入 AllGather 与输出 Shard，不登记 attention 参数的 TP Replicate 布局，FSDP 因而生成缺少 TP 维的 checkpoint global layout；开启 remove_redundancy 后不同 TP rank 被当作普通冗余副本，一个 FSDP 唯一分片丢失、另一个重复保存——MLA checkpoint 的两个 chunk sum 为 43.835247 与 62.883965，DSA1 checkpoint 两个 chunk 均为 62.883965，metadata mesh names 为 [''dp_replicate'',''fsdp'']（缺 tp）。复现链路 MLA→step100 存盘、DSA1 从 MLA 加载训到 step120 存盘、DSA2 从 DSA1 加载从 step121 续训；环境 Ascend 910B 单机 8 卡、MindSpore 2.10.0、Hyper-Parallel r1.0.0。'
+  source: 2026-08-06 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2498 （closed）
+  behavior: 同一个 DSA1 checkpoint，训练时 loss 一路正常到 0.454393，用 DSA2 或 DSA1 重载续训，step121 的 loss 直接变成 12.4 左右，像是权重被换了一半；关掉 checkpoint 去冗余或干脆不用 TP 就恢复正常，看不出任何报错。事后量 linear_qkv.weight 才发现两个 TP chunk 校验和完全相同，本应不同的那份分片被覆盖掉了。
+  trigger_surface: 'PyNative DSA（experimental_attention_variant: dsa）+ tensor_parallel 2 + FSDP2 + checkpoint.remove_redundancy: true，8 卡 910B'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility

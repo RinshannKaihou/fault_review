@@ -1,0 +1,57 @@
+id: INF-1569
+legacy_ids: []
+slug: ms_gathernd_reduce_sum_empty_indices_mode_mismatch
+aliases: []
+title: gather_nd 空索引后 reduce_sum 两模式差 1
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: GRAPH_MODE 空输入 ReduceSum
+  behavior: indices 为空时 gather_nd 输出 (0,4)，图模式 ReduceSum 对零元素输入返回 1.0、PyNative 返回 0.0；两种模式的零元素归约语义没有对齐。
+effect:
+  objects:
+  - 数值结果
+  detail: MindSpore 2.8.0 CPU：同一 jit 函数在 indices shape (0,2) 下 PyNative sum=0.0、Graph sum=1.0，只有 ReduceSum 收到 zero shape 的 WARNING，无报错，靠 assert_allclose 暴露。
+  visibility: 静默错误
+mitigation:
+  detect: 对空 indices/零元素归约同时跑 PyNative 与 GRAPH_MODE 并比对结果；日志出现 ReduceSum zero shape WARNING 时按可疑处理，不要当成无害提示
+  fix: 待定（issue open，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: MindSpore 2.8.0 CPU wheel + Python 3.12；gather_nd 后接 reduce_sum 且 indices 为空张量时触发，PyNative 与 GRAPH_MODE 混用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29336
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore 2.8.0（CPU 后端，Python 3.12）：target_fn 依次做 ops.add、ops.gather_nd、ops.reduce_sum，先用正常 indices 在 PyNative/Graph 各跑一次，再用 Tensor(np.empty((0,2), int32)) 的空 indices 跑。gather_nd 两侧都输出 shape (0,4) 的空张量，框架打印 ReduceSum 输入含 zero shape 的 WARNING；随后 PyNative 的 reduce_sum 返回 0.0，Graph 的 jit 版本返回 1.0，np.testing.assert_allclose 报 Mismatched elements 1/1、Max absolute difference 1.0。issue 没有给源码定位和修复 PR；正文对哪一侧返回 1.0 的表述与输出块相反，输出块显示 PyNative 0.0、Graph 1.0。
+  source: 2026-05-02 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29336 （open）
+  behavior: 把带 gather_nd 的模型从 PyNative 切到 GRAPH_MODE（或反向）后，indices 为空的那一步 reduce_sum 结果从 0.0 变成 1.0，其余 step 完全正常；程序不报错，只有 loss/统计量在那一步莫名偏 1，靠双模式对比测试才会命中。
+  trigger_surface: gather_nd + reduce_sum 链路遇到空 indices（shape (0,2)）；PyNative 与 GRAPH_MODE 混用同一函数；MindSpore 2.8.0 CPU
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem

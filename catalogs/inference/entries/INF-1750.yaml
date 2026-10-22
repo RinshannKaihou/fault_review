@@ -1,0 +1,58 @@
+id: INF-1750
+legacy_ids: []
+slug: indcutor_npu_stride_layout_attr_mismatch
+aliases: []
+title: Inductor-NPU 生成代码 stride/布局与 eager 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: Inductor-NPU 布局与属性推导
+  behavior: Inductor-NPU 为 out-variant、linalg 与池化等算子生成的输出沿用转置/私有布局未还原，零维简并场景布局推导越界，索引/维度属性又被降为 int32。
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: Inductor-NPU 编译 out-variant/linalg/池化/resize_ 算子（零维简并维、符号 shape）时 23 例失败：12+ 例 stride 与 eager 不符，3 例 IndexError，2 例 dtype int64≠int32，1 例 resize_ 不支持。
+  visibility: 静默错误
+mitigation:
+  detect: NPU 上跑 test_torchinductor_opinfo/dynamic_shapes 的 npu 变体，对输出同时比 stride 与 dtype 属性，而不只比数值
+  fix: 待定（issue open，建议转需求）：torch_npu/_inductor 集成层对齐 eager 的 stride/布局语义、按 int64 下发索引属性、补 resize_ 降级路径
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: Inductor-NPU（default 与 triton_experimental 均命中）+ 多加速器解耦后的 npu 用例变体；910B2 / CANN 9.1.0 / torch 2.14.0a0+git69231fe / torch_npu 2.14.0+gitee7bc39
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 23 例同根因合并跟踪；issue 的建议处理方式是转需求（对齐语义/补支持），非单一补丁。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4922
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4922（2026-09-18，open，CANN 9.1.0 / PyTorch 2.14.0a0+git69231fe / TorchNPU 2.14.0+gitee7bc39 / OpPlugin 随源码构建 / TritonAscend 3.5.0 / Ascend 910B2 / Python 3.12.13）：pytorch/pytorch PR #194025~#194030 对 6 个 Inductor 测试文件做用例解耦改造后，NPU（privateuse1）变体可自动派生执行；实测 23 个用例失败于 Inductor-NPU 生成代码的输出 stride/布局/属性与 eager 不一致。分四类：子类 1 输出 stride 与 eager 不一致 12+ 例（linalg_matrix_norm/linalg_norm/linalg_pinv/linalg_qr/svdvals/nonzero_static/pca_lowrank/svd_lowrank，报「expected size 5==5, stride 5==1 at dim=0」；fmod/log10/remainder 的 batch_invariance/determinism/eager_equivalence 行，以及 max_pool2d4_dynamic_shapes）；子类 2 布局生成缺陷导致 IndexError: tuple index out of range 3 例（masked_sum/cosine_similarity/norm）；子类 3 属性值不匹配 2 例（adaptive_max_pool3d/max_pool3d 的 dtype 报 torch.int64 != torch.int32）；子类 4 resize_ 语义不支持 1 例。原因分析：NPU codegen/aliasing 对 stride 约定与 eager 参考不一致（转置布局未还原），零维简并维布局推导越界，下发链路把索引/维度属性降为 int32，且缺 Tensor.resize_() 的降级路径。'
+  source: 'Ascend/pytorch #4922（2026-09-18，open） https://gitcode.com/Ascend/pytorch/issues/4922'
+  behavior: 同一段 PyTorch 代码在 CPU/eager 下输出是连续布局，NPU 编译后输出成了转置或私有布局、stride 与 eager 对不上；下游依赖 is_contiguous、view/reshape 或直接拿 strides 做对齐的代码会算错或抛扭曲错。max_pool3d 系列返回的 dtype 属性还从 int64 变成 int32。单看数值有时相等，所以「结果对不对」与「张量语义对不对」在这一层分叉。
+  trigger_surface: Inductor-NPU 编译 out-variant/linalg/池化/resize_ 算子，零维简并维与符号 shape 场景
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

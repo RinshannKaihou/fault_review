@@ -1,0 +1,61 @@
+id: INF-1988
+legacy_ids: []
+slug: vllm_ascend_metrics_negative_counter_hang
+aliases: []
+title: 指标负增量致 prometheus 抛错挂死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: vllm
+    component: prompt token 来源计数
+  behavior: 开 index cache 后前缀复用 token 可能大于本轮新 prompt token，增量算成负值，counter 的 inc(增量) 收到负值触发 prometheus 客户端校验异常，之后 counter 不再增长、服务不再回包
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: v0.18.0 + GLM5.1-w4a8 A3 PD 1P1D 现网压测约 10 分钟后请求不再返回；async_llm 的 record() 抛异常，指标停更但进程不退出
+  visibility: 挂起
+mitigation:
+  detect: 监控 counter_prompt_tokens_by_source 的增量是否出现负值；对 metrics record() 包异常计数并在请求回调链路加超时告警
+  fix: 待定（issue closed，正文未给修复 PR 编号）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: v0.18.0 开启 index cache，GLM5.1-w4a8，A3 单机 PD 分离 1P+1D，现网压测负载
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10788
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'issue #10788 记录 v0.18.0 开启 index cache 后，glm5.1-w4a8 在 A3 的 PD 分离（1×1P+1×1D）部署上现网压测约 10 分钟挂死。调用栈定位到 async_llm.py:700 回调输出结果时调用指标埋点 logger_ref[0].record()，进而走到 vllm/v1/metrics/loggers.py:1159 附近的 counter_prompt_tokens_by_source[source][engine_idx].inc(增量)，prometheus 客户端对负数校验后抛异常。报告者的怀疑是 prefix cache / 共享 KV 缓存的增量统计口径有缺陷：统计值为“当前轮真实输入 token − 缓存命中复用 token”，极端情况下复用 token 大于本轮新 prompt token，差值为负。'
+  source: 2026-06-22 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10788 （closed）
+  behavior: 压测跑一段时间后服务不再回包：客户端请求一直挂着不结束，进程与端口都还在，没有 OOM 或崩溃日志；只有指标侧出现 prometheus 负值校验异常，之后 counter 不再增长，运维视角像是“服务活着但不干活”。
+  trigger_surface: vLLM v0.18.0 + vllm-ascend 对应版本，开启 index cache 与 prefix caching，PD 分离；需要足够长的压测让前缀复用 token 超过单轮新 prompt token
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（原文只说抛异常后counter不再增长，未提回调线程退出）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    issue_unfixed:
+    - behavior
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - cause.behavior
+    - original.notes

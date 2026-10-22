@@ -1,0 +1,87 @@
+id: INF-1504
+legacy_ids: []
+slug: mssanitizer_memcheck_oob_and_free_false_positive
+aliases: []
+title: 内存检测在特殊指令与高阶 API 上成片误报越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: memcheck 指令地址/长度建模
+  behavior: memcheck 将合法访问误判为越界、非法读写或非法释放；MOV_FP 指令触发时工具内部 memSize 溢出成极大值，据此报 L0C 越界读。
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: catlass/ops-nn/shmem/aclnn 融合与 mc2 算子在合法输入上稳定报 illegal read/write、非法释放或 out of bounds，按打印地址对 InitBuffer 空间并不越界；真越界被同批误报稀释，910B 与 910C 结论还不同。
+  visibility: 报错
+mitigation:
+  detect: 把告警里的地址+size 与源码 InitBuffer/访问范围逐条核对，并用同算子换搬运方式（nd2nz→逐块拷贝、关 compact 模式）复测同一用例。
+  fix: 待定（各 issue 均以“误报”闭环，未见公开修复 PR；#196/#207 为扫网专项，归因指向搬运指令地址模型）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 910B/910C/950PR + catlass、ops-nn、ops-transformer、shmem、aclnn 融合算子；mssanitizer memcheck（26.0.0 等）；ReduceSum 路径为 A3 + CANN 9.1.0.beta1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/mssanitizer/issues/8
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/15
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/68
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/80
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/120
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/119
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/152
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/164
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/196
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/207
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0165
+original:
+  mechanism: 同一工具模式的成组误报，共同机制是“合法访问被判非法”。①#8：触发 MOV_FP 指令时工具内部 memSize 溢出成极大值，据此报 L0C 越界读。②#15：cube 算子用 nd2nz 搬运 API 从 GM 搬数据（commit 44337db0dd46aa554953893c06e958766d294a53），日志 DMA_MOV_ND2NZ_D 中 src 为 GM 0x300044a00000、D:10 N:120、loop4Stride:2400，工具认为 GM 搬运越界，实际无越界。③#119/#164：kernel 调 ReduceSum 高阶 API（A3、CANN 9.1.0.beta1、mssanitizer 26.0.0-4bff1390f4d7e50134df5aa2b6a524d59eb037a8），报 UB illegal write of size 128 at 0x2f080，调用栈落在 basic_api/dav_c220/kernel_operator_vec_reduce_，按用户打印的地址与 InitBuffer 空间实际不越界。④#120：A5 上带 __builtin_cce_atom_ 前缀的原子指令，正常范围内的访问也报 illegal_write_and_read。⑤#196：950 上 ops-transformer 算子 DataCopyPad 的 Compact 模式被判写越界。⑥#207：ops-nn conv3d_transpose_v2 报 L1 越界。⑦#68：shmem allgather 用例两个 kernel 均报 “No error detected”，随后仍打出 illegal read of size 1048584 at 0x0 on GM，block 与 code 位置为空。⑧#80：aclnnWeightQuantMatmulAllReduceAddRmsNorm 报非法释放。⑨#152：mc2 ReduceScatter 在 910B 报非法释放、910C 又检测不出越界。
+  source: 2026-01-22 GitCode Ascend/mssanitizer issue https://gitcode.com/Ascend/mssanitizer/issues/8（closed）；2026-01-30 issue https://gitcode.com/Ascend/mssanitizer/issues/15（closed）；2026-03-27 issue https://gitcode.com/Ascend/mssanitizer/issues/68（closed）；2026-04-13 issue https://gitcode.com/Ascend/mssanitizer/issues/80（closed）；2026-05-28 issue https://gitcode.com/Ascend/mssanitizer/issues/120（closed）；2026-05-29 issue https://gitcode.com/Ascend/mssanitizer/issues/119（closed）；2026-07-13 issue https://gitcode.com/Ascend/mssanitizer/issues/152（closed）；2026-07-25 issue https://gitcode.com/Ascend/mssanitizer/issues/164（closed）；2026-08-27 issue https://gitcode.com/Ascend/mssanitizer/issues/196（closed）；2026-09-01 issue https://gitcode.com/Ascend/mssanitizer/issues/207（closed）
+  behavior: 拿工具跑本来正确的算子，屏幕上会刷出 illegal read/write、illegal free 或 “out of bounds of size N”，有的还带完整调用栈，但只要按日志里的地址和长度去对 kernel 里 InitBuffer 分配的空间，就会发现那次访问完全在界内。这类告警在 catlass 模板库、ops-transformer/ops-nn 的搬运类算子、shmem 通信算子、aclnn 融合算子上都能稳定复现，同一算子换搬运 API 或换芯片后结论还会变。结果是真有越界时很难从成片误报里分辨。
+  trigger_surface: Ascend 910B/910C/950PR + mssanitizer memcheck；catlass/ops-nn/ops-transformer/shmem/aclnn 融合与 mc2 算子；ReduceSum 等高阶 API 与原子内建指令路径
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

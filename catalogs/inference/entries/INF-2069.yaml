@@ -1,0 +1,61 @@
+id: INF-2069
+legacy_ids: []
+slug: vllm_ascend_dsv4_compressor_varlen_basesize_kv_drift
+aliases: []
+title: DSV4 compressor 变长批尺寸不复位致压缩 KV 漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: DSA compressor 分块尺寸
+  behavior: SetBaseSize 只在批内各序列 used 长度全相同时缩小 mBaseSize，变长批被判为不同长度后跳过该分支、沿用默认 128，同一请求的压缩结果随批组成改变。
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: 同一请求单独 prefill 与混在变长批中 prefill，compressor 输出的 compressed_kv 有 3 个 bf16 元素不同、最大绝对差 4.88e-4；差异写入压缩 KV 后传导到后续 attention 与 logits。
+  visibility: 静默错误
+mitigation:
+  detect: 同一请求分别在单请求与变长混批下 prefill，逐元素比对 compressor 输出的 compressed_kv，并对比首 token 与 logprob
+  fix: issue 给出改法：去掉等长门控、按批内最大 used 长度计算候选 base size；报告者离线回放与 TP16DP2EP 实权重 smoke 已验证一致（issue open，未核实是否合并）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend + DeepSeek V4 W4A8 + DSA compressor 变长混批 prefill（批内 used 长度不等）；单请求或等长批不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9496
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 的 DSA compressor 算子（csrc/attention/compressor/op_kernel/compressor_kernel_perf.h）中 CompressorKernelPerf<COMP>::SetBaseSize() 先判断批内各序列 used 长度是否全部相同（sameSeqUsed），只有全等时才按 firstBatchSeqUsed 缩小 constInfo.mBaseSize；对 cu_seqlens=[0,12,23] 这类变长批 sameSeqUsed 变为 false，小 M 的 base size 调整被整体跳过，保持默认 mBaseSize=128。报告者固定 wkv_weight/wgate_weight/ape/norm_weight/rope_sin/rope_cos/state_cache_before 等输入逐一比对，确认 divergence 首次出现在 _C_ascend.compressor 内部，旧输出 compressed_kv 有 3 个 bf16 元素相差 0.00048828125；改成按批内最大 used 长度计算后，离线回放 single_vs_batch diff_count=0，并在 TP16DP2EP 实权重上首 token 与 logprob 一致。
+  source: 2026-05-24 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/9496 （open）
+  behavior: 同一个活跃请求单独发送时回答正常，但混在变长批里 prefill 后，压缩 KV cache 里该请求的条目与单独执行不同，随后 attention/logits 被带偏，长上下文问答给出看似合理的错误答案，日志与指标没有任何报错。
+  trigger_surface: DeepSeek V4 W4A8 + DSA compressor + 一次 prefill 内多条序列 used 长度不等（含 0 长度行）
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    uncertain:
+    - subsystem

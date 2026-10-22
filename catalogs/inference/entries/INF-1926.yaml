@@ -1,0 +1,58 @@
+id: INF-1926
+legacy_ids: []
+slug: vllm_ascend_dsv4_preview_effort_prompt_mismatch
+aliases: []
+title: Preview 检查点被套用新版 reasoning-effort 前缀
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: DSV4 effort 前缀映射
+  behavior: effort 到 prompt 前缀的映射对新旧两代检查点无条件统一，Preview 编码器的默认/high 被当成最大档注入前缀，max 又映射到 Beyond maximum
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: 'V4 Preview 检查点且 #13993 后 effort 缺省/high/max 时，GPQA 准确率下降，大量样本答案被 max_tokens 截断；请求参数合法、HTTP 200 无告警，仅对比历史分数或 dump prompt 可见多出 Absolute maximum 前缀。'
+  visibility: 质量退化
+mitigation:
+  detect: 对同一 prompt 分别用 Preview 与 -0731/-0813 权重渲染，断言注入的 Reasoning Effort 前缀与请求档位一致；可用 config.json 是否含 dspark_* 字段判定检查点代次
+  fix: issue open；方向是按 config.json 里是否存在 dspark_block_size / dspark_markov_rank / dspark_noise_token_id / dspark_target_layer_ids 选择映射表，#13993 的新表只用于含 dspark_* 的检查点
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: releases/v0.26.0rc 820a21d6（#13993 之后、#14624 仍未修）+ DeepSeek V4 Preview 系检查点 + reasoning_effort 默认/high/max
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14951
+  kind: github_issue
+relations: []
+original:
+  mechanism: '#13993 给 DeepSeek V4 加 thinking 支持时，把 post-Preview 的 reasoning-effort 映射无条件套到所有 DeepSeek V4 检查点上。两代检查点的编码器对同名 effort 的含义不同：V4 Preview 里 high（也是 API 默认档）不注入任何前缀、max/xhigh 才注入 "Reasoning Effort: Absolute maximum..."；post-Preview（V4-Flash-0731、V4-Pro-0813）改成 high 就注入 Absolute maximum、max 注入 Beyond maximum、xhigh 归到 post-Preview 的 high。于是 Preview 请求只要不写 effort 或写 high，就会被注入它自己编码器里代表最大档的前缀，模型被要求"想到极限"，再叠上 thinking 就一路想下去。报告在 releases/v0.26.0rc 820a21d6 上验证，并能读到修复前的实际映射（default 与 high 都成了 absolute-maximum，max 成了 beyond-maximum）。检查点代次可以从 config.json 区分而不依赖模型路径：Preview 系没有 dspark_* 字段，-0731/-0813 有 dspark_block_size、dspark_markov_rank、dspark_noise_token_id、dspark_target_layer_ids。'
+  source: 2026-08-25 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14951 （open）
+  behavior: '用 V4 Preview 权重跑评测时，什么都没改，GPQA 的准确率却掉了，大量样本的答案被 max_tokens 截断在半截推理里——因为默认档被当成最大档注入了前缀。用户侧完全静默：请求参数合法、HTTP 200、没有任何告警，只有对比历史分数或直接 dump 渲染后的 prompt 才看得出多了一段 "Reasoning Effort: Absolute maximum..."。同一份 vllm-ascend 上换成 -0731/-0813 权重反而是对的，所以问题只在旧检查点上显形。'
+  trigger_surface: DeepSeek V4 Preview 系检查点 + reasoning_effort 缺省/high/max（#13993 之后）
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化
+    rewritten:
+    - detail

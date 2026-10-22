@@ -1,0 +1,61 @@
+id: INF-1454
+legacy_ids: []
+slug: sglang_marlin_moe_sm86_intermittent_wrong_expert_output
+aliases: []
+title: SGLang Marlin MoE SM86 间歇错误专家输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: Marlin MoE SM86 间歇错值
+  behavior: AWQ W4A16 MoE 走 moe_wna16_marlin 在 SM86 间歇错 token；Triton WNA16、vLLM Marlin、bf16 全精确；单请求逐次仍错，GEMM 隔离精确，根因未定位
+effect:
+  objects:
+  - 输出内容
+  detail: 多数 run 有 1-18 请求从某 decode 步起错 token；批内无关请求常同 step 同时错；单请求逐次 11/192 仍错（4 prompt×24 重复，每 prompt 3-6 种输出、2-5 次错）；重跑错请求不同、部分 run 干净
+  visibility: 不可复现
+mitigation:
+  detect: probec 探针 twin（AWQ 可精确表示权重 + 已知输出）批量 greedy 对照；--quantization moe_wna16 切 Triton 路径
+  fix: 规避（实测）：--quantization moe_wna16 切 Triton WNA16 MoE 内核（0/0 精确）；上游修复未见（issue open）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: SGLang 0.5.22；AWQ 4-bit group128 MoE checkpoint 走 moe_wna16_marlin；SM86（RTX 3090）实测；greedy；非确定性（run 间漂移）；另一主机同样复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: '与 #45000（FP8 Marlin SM86 间歇错 token，--disable-overlap-schedule 0/5 精确）同仓同期同方法论、不同量化格式；两条共享非确定性间歇模式，机制是否同源未知（不同内核），分立两条。'
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/44999
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang #44999（c2026-10-18，RTX 3090，0.5.22，probec 探针 twin：Qwen3-30B-A3B shape 2 层/128 experts/top-8，AWQ 4-bit group128 权重可精确表示、每 token 输出已知——偏离即引擎错误非数值差异）。moe_wna16_marlin 路径多数 run 有 1-18 请求从某 decode 步起错 token。对照矩阵：--quantization moe_wna16（Triton WNA16）0/0；vLLM 0.31.0 同 checkpoint 走其自带 Marlin MoE 0/0/0；bf16 源 checkpoint 0/0/0——缺陷限定 SGLang Marlin MoE。非确定性：重跑错的请求不同、部分 run 干净；--disable-radix-cache 1、--disable-cuda-graph 1、--mem-fraction-static 0.5（0 与 18 两极）都仍错；--max-running-requests 1 单请求逐次跑 11/192 仍错（4 prompt × 24 次重复：每 prompt 3-6 种不同输出、2-5 次错）——排除纯 batching 因素；批内无关请求常同 step 同时错。GEMM 隔离测试精确（tools/marlin_determinism 摘要），怀疑内核与调度/缓存管线交互，根因未定位。'
+  source: 2026-10-18 GitHub sgl-project/sglang issue https://github.com/sgl-project/sglang/issues/44999 （open）
+  behavior: 在 RTX 3090（SM86）上用 SGLang 0.5.22 跑 AWQ 4-bit MoE 模型（Marlin MoE 内核）时，多数运行里少数请求的生成从某个 decode 步开始变成错误 token：批处理时无关请求常在同一步一起出错；一条请求单独跑 24 次会有 2-5 次错且错误输出各不相同；重跑错的请求不一样、偶尔整轮干净。换 Triton WNA16 内核或用 vLLM 跑同 checkpoint 完全精确。
+  trigger_surface: SGLang 0.5.22 moe_wna16_marlin；AWQ W4A16 MoE；SM86；greedy；默认或精简配置均复现
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    rewritten:
+    - detail

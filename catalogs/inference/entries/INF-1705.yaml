@@ -1,0 +1,53 @@
+id: INF-1705
+legacy_ids: []
+slug: mhc_pre_backward_uint64_trunc_uninit_mask
+aliases: []
+title: MhcPreBackward 偏移截断与未初始化 MaskReg
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: MhcPreBackward kernel
+  behavior: uint64_t的D_/N_/fusionSize_/nD_传给仅支持uint32_t的部分AscendC API参数时被截断致偏移量算错；三处Duplicate的maskPre/maskPost/maskComb未初始化即当作掩码。
+effect:
+  objects:
+  - 数值结果
+  detail: shape (1,1,4,64) 与 (1,1,4,16384) 同时循环跑 10 次：前者一次 pass 一次 fail，后者一直 fail；同一输入重复执行结果不一致，无报错。
+  visibility: 不可复现
+mitigation:
+  detect: 同一输入多轮复跑并交替 shape，统计 pass/fail 抖动；检查 MaskReg 是否初始化、偏移是否被截断
+  fix: 待定（issue 只给现象与代码位置，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 大 hidden（16384）与两个 shape 交替执行时稳定复现，小 shape 表现为间歇性
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/2000
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #2000（2026-04-21 closed）：MhcPreBackward 的 kernel 代码存在两处会带来精度问题的写法：(1) D_、N_、fusionSize_、nD_ 等变量声明为 uint64_t，但部分 AscendC API 的参数只支持 uint32_t，传参时被截断，偏移量因此算错；(2) MicroAPI::Duplicate<P>(alphaPreReg, alphaPre, maskPre) 等三处使用的 maskPre/maskPost/maskComb 未初始化就被当作掩码。复现方式：shape (1,1,4,64) 与 (1,1,4,16384) 同时跑，循环 10 次——(1,1,4,64) 表现为一次 pass 一次 fail，(1,1,4,16384) 表现为一直 fail。issue 正文给出 xCopyParams.blockCount/blockLen/srcStride/dstStride 的赋值片段作为证据，环境为任意环境。'
+  source: https://gitcode.com/cann/ops-transformer/issues/2000 （closed）
+  behavior: 同一份输入连跑两次结果会变：小 shape (1,1,4,64) 一次过、一次不过，大 shape (1,1,4,16384) 则稳定不过；没有报错也没有 NaN，只是与参考值差一点，典型的需要多跑几轮才发现的偶现精度问题。
+  trigger_surface: MhcPreBackward，hidden 较大（16384）或两个不同 shape 交替执行时
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior

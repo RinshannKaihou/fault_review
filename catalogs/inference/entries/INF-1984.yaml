@@ -1,0 +1,54 @@
+id: INF-1984
+legacy_ids: []
+slug: expint_clamp_dead_branch_saturate
+aliases: []
+title: expint 钳位后比较 +inf 成死分支，大值恒返 Ei(88)
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: expint kernel
+  behavior: 边界判定拿钳位后的 xFp32 与 +inf 比较，clamp(88) 后永假；EXP_CLAMP=88 硬截断使 x∈(88,93.2] 恒输出 Ei(88)
+effect:
+  objects:
+  - 数值结果
+  detail: x=+inf 走不进 +inf 分支；x=89 返回约 1.9e36 而真值 5.1e36（误差约 63%），接口不报错；proto 另声明 DT_DOUBLE 但无 double 内核
+  visibility: 静默错误
+mitigation:
+  detect: 用 x∈(88,93.2] 与 x=+inf 的 fp32 输入与 scipy fp64 的 Ei 对拍，看是否饱和到同一常数
+  fix: 用钳位前的原值判 +inf；x∈(88,93.2] 按 exp(x-88) 缩放重算、x>93.2 按 IEEE 给 +inf；PR https://gitcode.com/cann/ops-math/pull/5679 ，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: math/expint 的 FP16/BF16/FP32 内核，输入超出钳位常数 88 或为 +inf
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3241
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math issue 3241（2026-09-18，closed，ascendc-code-review P1 编码红线）。math/expint/op_kernel/expint_kernel.h 先用 EXP_CLAMP=88 把输入钳位，随后边界判定却拿钳位后的 xFp32 与 +inf 比较，比较永假，x=+inf 分支成为死代码；同时 88 的硬截断让 x∈(88,93.2] 的有限输入一律输出 Ei(88)≈1.9e36，x=89 真值 5.1e36，相对误差约 63%。同批还给出 arch35 expint_tiling_key.h 的非标准 DTYPE_X 模板实例化、expint_apt.cpp 的 _apt 命名，以及 op_graph/expint_proto.h 声明 DT_DOUBLE 但 kernel 无 double 实现。复现方式为对 x∈(88,93.2] 的 fp32 输入与 scipy fp64 的 Ei 比对。
+  source: 2026-09-18 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3241 （closed）
+  behavior: expint 喂进接近溢出边界的值时不报错而是回声式饱和：89 这种仍应算得出有限真值的输入，返回的却是 Ei(88) 那个常数，误差六成以上；+inf 输入也进不了专门处理它的分支。数值上表现为大输入段整段被压平，下游 loss/比例计算随之偏移，日志里没有任何提示。
+  trigger_surface: math/expint，输入 >88 或 +inf
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,58 @@
+id: INF-1458
+legacy_ids: []
+slug: vllm_nccl_packed_weight_sync_buffer_reuse_corrupts_moe
+aliases: []
+title: vLLM packed NCCL 权重同步缓冲复用静默写坏 MoE 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: packed NCCL 接收缓冲跨流复用
+  behavior: 接收缓冲在重放拷贝仍在飞时被 caching allocator 归还复用，下一 pack 的 NCCL 写覆盖未消费字节，重放读到新数据写坏专家权重。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 权重更新后 weight checker 报不匹配、同更新推理副本输出互相不一致；仅 fused MoE w13_weight 受影响；num_buffers=2 下专家层跨 ≥k+2 pack 稳定触发
+  visibility: 静默错误
+mitigation:
+  detect: 权重更新后 weight checker 比对；多副本同更新推理输出互查
+  fix: 待定（issue open；缓解：增(num_buffers 使层跨 pack 数 < k+2；issue 起源于 RL 部署 packed NCCL + Triton unquantized MoE backend）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: packed=True NCCL 权重更新 + layerwise reload（checkpoint-format NCCL 默认）；num_buffers=2 默认；trainer 每专家层 ≥k+2 packs 布局触发；4×H100 实测
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62554
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM issue #62554（c2026-10-19，4×H100 NVLink，v0.27.2rc1.dev，NCCL 2.30.7）：RL 部署 packed NCCL 权重更新后 weight checker 报权重不匹配、同更新的推理副本互相不一致，仅 fused MoE w13_weight 受影响。机制：packed_nccl_broadcast_consumer 把每个 pack 收进 num_buffers 个 slot stream 之一的 fresh torch.empty，再以视图传给 post_unpack_func；layerwise reload（online_process_loader）保留视图直到该层权重齐全，然后在完成该层的 pack 回调里于该 pack 的 stream 上重放缓冲加载并立即丢弃视图（info.reset()）。当一层跨多个 pack 时：(1) 另一 slot stream 上的缓冲失去最后引用，caching allocator 把它归还该 stream 池——allocator 不知道排在别的 stream 上的重放仍在读它；(2) 该 stream 的下一次接收（pack N+1）常分到同一块，NCCL 在重放拷贝仍在飞时写入 pack N+1，拷贝读到 pack N+1 字节。num_buffers=k 时暴露条件为 pack 偏移 ≥k 且非 k 的倍数，即层须跨 ≥k+2 packs。默认 num_buffers=2 在某 trainer 发送布局下稳定触发、另一布局不触发。'
+  source: 2026-10-19 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62554 （open）
+  behavior: RL/在线学习场景用 packed NCCL 更新 MoE 权重后，部分专家权重静默变为错误内容：weight checker 报不匹配，多个收到同一更新的推理副本彼此答案不同。默认双缓冲配置下，当每层权重的传输跨越足够多个 pack 时稳定发生，无任何报错。
+  trigger_surface: packed NCCL 权重更新（packed=True）+ layerwise reload + MoE（fused w13 拼装层）；trainer 发送布局每专家层 ≥num_buffers+2 packs；v0.27.2rc1.dev3331 实测（main 的 packed_tensor.py 同样复现）
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

@@ -1,0 +1,63 @@
+id: INF-1614
+legacy_ids: []
+slug: msmodelslim_layer_wise_calib_isinstance_always_false
+aliases: []
+title: 逐层校准 isinstance 条件恒假，校准被静默跳过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: llm_ptq layer_wise_calib
+  behavior: layer_wise_calib 用 and 连接两个 isinstance 判断，两个量化器类互不为子类，条件恒假，逐层校准循环体一次都不执行。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: 走 layer_wise_calib 的逐层校准实际不校准，量化参数退回未校准默认值；不报错、不打日志，只在端到端评测上表现为精度劣化。
+  visibility: 质量退化
+mitigation:
+  detect: dump 校准前后每个 LinearQuantizer/Conv2dQuantizer 的激活与权重 scale，若两次完全一致即说明循环体没执行；现有单测用 MagicMock 只断言不抛异常，覆盖不到该分支
+  fix: issue closed；正文建议 quant_modules.py:620 的 and 改成 or，未核实修复 commit 与发布版本
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim commit 0ef9aaa569d2a36aa5c3884778ffb85d8d58914d（2026-08-28），量化配置走 layer_wise_calib 逐层校准路径（quant_modules.py:615）；报告者为静态走查，未实机运行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/503
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0175
+original:
+  mechanism: 'msmodelslim commit 0ef9aaa569d2a36aa5c3884778ffb85d8d58914d（2026-08-28）：msmodelslim/pytorch/llm_ptq/llm_ptq_tools/quant_modules.py:615 的 layer_wise_calib 在 :620 用「if not (isinstance(module, Conv2dQuantizer) and isinstance(module, LinearQuantizer)): continue」过滤待校准模块，而 :334 的 LinearQuantizer 与 :453 的 Conv2dQuantizer 都直接继承 nn.Module，不存在同时满足两个 isinstance 的对象，条件恒为 False、not(...) 恒为 True，:622-:625 的 _layer_wise_activation_calib / _layer_wise_weight_only_calib 每轮都被 continue 跳过，函数等价于只做 .to(_OFFLOAD_DEVICE) 搬运。报告者在 0ef9aaa5 上逐行核对，未实机跑量化流程，「精度劣化」为静态推断；仓内单测对该函数使用 MagicMock 且只断言不抛异常，覆盖不到该分支。建议修改为 or。'
+  source: 2026-08-29 GitCode Ascend/msmodelslim issue https://gitcode.com/Ascend/msmodelslim/issues/503 （closed）
+  behavior: 量化配置只要走到 layer_wise_calib：量化流程照常跑完、权重正常导出、日志里没有任何异常，但逐层激活/权重校准根本没发生，量化参数用的是未校准默认值，最终只在评测分数上看出精度下降，定位成本很高；确认需要 dump 校准前后的 scale 做比对。
+  trigger_surface: 量化配置命中 layer_wise_calib 逐层校准路径（quant_modules.py:615）；不依赖硬件、dtype 或模型
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

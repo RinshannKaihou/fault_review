@@ -1,0 +1,54 @@
+id: INF-1980
+legacy_ids: []
+slug: rope_with_sin_cos_cache_positions_unchecked
+aliases: []
+title: RopeWithSinCosCache 不校验 positions 范围
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: cann
+    component: rope_with_sin_cos_cache
+  behavior: positions 作为 cosSinCache 行索引按 uint64 直接寻址，内核无 < maxSeqLen 与 >=0 检查，host 侧也不校验取值
+effect:
+  objects:
+  - 数值结果
+  detail: positions=100（表长 2）或 -1 时 GetWS/Launch/Sync 全 SUCCESS，RoPE 取到表外行的 cos/sin，旋转角完全错但形状量级正常
+  visibility: 静默错误
+mitigation:
+  detect: 构造 positions 越界（≥cosSinCache.dim0）与负值用例，断言接口拒绝；对拍同位置合法输入的 RoPE 输出
+  fix: 内核取行前补 0 <= positions < cosSinCache.dim0 校验并在 host 侧提前拒绝；issue closed 未附 MR，未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnRopeWithSinCosCache + isNeoxStyle + positions 超出 cosSinCache 行数或为负；Ascend910B3 + CANN 9.1.0-beta.3
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4094
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer issue 4094（2026-08-03，closed，Track A / P-011）。posembedding/rope_with_sin_cos_cache/op_kernel/rope_with_sin_cos_cache_f_bf16.h 约 L235 把 positions 直接当 cosSinCache 行索引，按 uint64 展开偏移，既没有 < maxSeqLen 上界也没有 >=0 下界检查；文档要求 positions < cosSinCache.dim0。复现：ops-transformer HEAD 4b3d39658e1d，build.sh --pkg --soc=ascend910b --ops=rope_with_sin_cos_cache 安装独立 vendor 后调用 aclnnRopeWithSinCosCache，positions [2] int64、query/key [2,64] float、cosSinCache [2,32]（maxSeqLen=2）、headSize=32、isNeoxStyle=true：合法 pos=0 正常，pos=100 与 pos=-1 的 GetWS/Launch/Sync 均为 0，exit 42。
+  source: 2026-08-03 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4094 （closed）
+  behavior: 带 sin/cos 缓存的 RoPE 在 positions 越界或为负时不报错：内核把越界值当成行号去表里取 cos/sin，取到的是别的（或表外）位置的旋转角，q/k 被按错误角度旋转。输出形状、数值量级都正常，长上下文续跑或位置回绕时才看得出来，表现为注意力结果整体偏移。
+  trigger_surface: aclnnRopeWithSinCosCache，positions 越界/负值
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

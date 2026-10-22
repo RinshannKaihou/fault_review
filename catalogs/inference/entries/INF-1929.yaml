@@ -1,0 +1,60 @@
+id: INF-1929
+legacy_ids: []
+slug: vllm_ascend_decode_dp_silent_stall
+aliases: []
+title: Decode DP rank 静默停摆,请求滞留不完成
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: 异步调度与 MTP 解码推进
+  behavior: MTP 叠异步调度与 Mooncake 时,Decode 各 DP rank 保留 running 请求却不再产出 token,既不完成也不显式失败,健康检查仍 200,调度器继续把新请求发给它
+effect:
+  objects:
+  - 可用性/进度
+  detail: 15/16 个 rank 在 14:31–14:35 的每个 15 秒窗口内 generation 与完成计数零增量且 running>0;router 116 次 Decode 全落到唯一健康的 DP1;无 EngineDead、HCCL 超时
+  visibility: 挂起
+mitigation:
+  detect: 按 engine 标签每 15 秒抓 vllm:num_requests_running / vllm:num_requests_waiting / vllm:generation_tokens_total / vllm:request_generation_tokens_count,对 running>0 且增量为 0 的 rank 告警;核对各 rank 的 DecodeFinishTime 缺口
+  fix: 待定（issue closed 未给修复）；#12725 评论中的规避是关闭异步调度或 MTP、或补 sampling 流同步
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.23.0 + vllm-ascend 0.23.0rc1,A3;prefill 3 节点 DP4/TP4 eager + 1 token MTP + prefix caching,MooncakeHybridConnector;decode 1 节点 DP16/TP1 + EP,FULL_DECODE_ONLY;模型 DeepSeek-V4-Flash W8A8 MTP
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13964
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'issue 记录 DeepSeek-V4-Flash W8A8 + 单 token MTP + Mooncake P/D 分离在 A3 上的静默失去活性:decode 侧 DP rank 逐个进入“running 请求数大于 0、但 generation 与完成计数都不再增长”的状态,HTTP 健康检查与 metrics 仍返回 200,router 继续把请求发给它们,直到只剩一个 rank 在真正干活。量化证据:2026-08-10 12:57:31 起 engine 2/5/12/14 已处于该状态;14:31:16–14:35:01 窗口内 16 个 rank 有 15 个 running>0 且 15 秒增量全为 0,期间 router 记录 116 次 Decode send 与 116 次 Decode finish 全部指向 DP1,D0 接收 105 个请求、106 次 KV 传输也全由 DP1 承担;日志里没有 EngineDeadError、traceback、HCCL timeout 或 vector-core timeout,唯一的告警是与 sampling_params 相关的温度警告,作者推测可能和 #12725 讨论的 NaN/MTP 有关但未开 VLLM_TRACE_FUNCTION 验证张量内容。相近报告 #12725、#13648(受影响 rank 保留未完成请求并跑 dummy batch)、#13826(DP ACLGraph 变长同步)被列为可能同源,未确认同一根因。'
+  source: 2026-08-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13964 （closed）
+  behavior: 长稳压测跑到一段时间后,一部分 Decode rank 的吞吐掉到 0:请求被它们收下却永远不结束,客户端只能等到超时;服务端口、健康检查和 metrics 都正常,监控上看到的是 running 请求数缓慢堆积、generation token 曲线走平,直到所有流量被迫集中到最后一个健康 rank 才彻底不可用。
+  trigger_surface: DeepSeek-V4-Flash W8A8 + 单 token MTP + 异步调度 + Mooncake P/D 分离 + Decode DP16/TP1/EP;需要在持续变长混合负载下有足够并发让多个 Decode rank 同时忙
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 运行时/执行
+    uncertain:
+    - behavior

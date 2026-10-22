@@ -1,0 +1,66 @@
+id: INF-1581
+legacy_ids: []
+slug: ms_dvm_input_cache_ignores_shape_override
+aliases: []
+title: 融合输入缓存忽略逻辑 shape 覆盖致广播错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: DVM Input 缓存复用
+  behavior: Input(x, shape_override) 的缓存 key 只有 Tensor*，命中时不比较逻辑 shape；同一 tensor 先按 [1,C,1,1] 进融合，后续默认 Input(x) 复用了广播版 NDObject。
+effect:
+  objects:
+  - 数值结果
+  detail: BatchNormElemt 把 mean/invstd 以 [1,C,1,1,…] 送入，后续 Add(mean,delta) 期望 [C]，却拿到广播版输入，输出 shape 与基线不一致。
+  visibility: 静默错误
+mitigation:
+  detect: 在 BatchNormElemt/BatchNormElemtGrad 后接同一 tensor 的默认输入算子，比较开关融合的 shape 与数值；方阵 MatMul transpose view 同类
+  fix: 待定（issue open）；短期方案：调用 Input(...,shape) 时不读写 ops_map_ 缓存；MatMul 只在真正 transpose view 时传 shape override
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend + MindSpore master，DVM 无图融合；Input(..., shape) 的逻辑 shape 未进入 ops_map_ 缓存 key
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29281
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1579
+pattern: PAT-INF-0168
+original:
+  mechanism: Ascend DVM lazy fusion，master：LazyFusionKernelAscend::Input() 用 ops_map_ 复用输入缓存，key 只有 Tensor*，传入的 shape override 只在 cache miss 建 Load 时使用，cache hit 不比较。于是同一 tensor 在同一 pending fusion 内先以 Input(x,...,shape_override) 进入、再以默认 Input(x) 进入时，第二次错误复用第一次按逻辑 shape 建出的 NDObject，后续 shape/broadcast 推导错误。典型场景：BatchNormElemt/BatchNormElemtGrad 把 mean/invstd/weight/bias/sumd_dy/sum_dy_xmu 等 1D tensor 以 new_shape=[1,C,1,1,...] 送入 DVM，之后 Add(mean, mean_delta) 期望原始 [C]；MatMul 的 transpose view 在方阵下 shape 数值不变但语义不同。基于新增 shape-input reuse 用例在 Ascend 稳定观察到 BatchNormElemt 路径复用错误。
+  source: 2026-04-08 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29281 （open）
+  behavior: 训练脚本里 BatchNorm 类融合算子后面紧跟对同一个 1D 参数（mean/invstd）的普通加法，开启融合后这一步输出 shape 变成 [1,C,1,1]、和基线对不上，后续 broadcast 全跟着错；关掉融合或换新 tensor 就正常，日志没有任何提示。
+  trigger_surface: Ascend DVM 无图融合 --opt_level=1；BatchNormElemt/BatchNormElemtGrad 的 1D 输入按 [1,C,1,1,…] 覆盖 shape 后，同一 tensor 再以默认 shape 参与后续算子
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 编译器

@@ -1,0 +1,57 @@
+id: INF-1741
+legacy_ids: []
+slug: ops_nn_scatter_nd_update_deterministic_var_idx_uninit
+aliases: []
+title: scatterNdUpdate 确定性路径残留索引致误写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: scatterNdUpdate 确定性分支
+  behavior: 确定性分支的 varIdxGm 未显式初始化，非法索引行在 compute 阶段读到上一轮残留的合法索引，被当成有效更新写回。
+effect:
+  objects:
+  - 数值结果
+  detail: deterministic_level=3：先跑合法索引 [10,11,12,13]，再跑全 -1，槽位 10 仍被写入 7.0；关闭确定性则无误写，返回码始终正常。
+  visibility: 静默错误
+mitigation:
+  detect: 确定性开启时连跑两组用例（先合法索引、再全 -1），检查是否仍有槽位被改写；单组用例和无确定性对照都看不出来。
+  fix: issue closed；修复把 varIdxGm 全局内存初始化为 -1 并新增 tiling 字段 indicesAxis（未给 MR 号，合入状态未核实）。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 950 + deterministic_level=3 + 相邻两次调用间存在非法/负索引行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5564
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5564（2026-09-04，closed）：Ascend 950。ScatterNdUpdate 确定性场景下 varIdxGm 没有显式初始化，非法索引行在 compute 阶段可能读到上一轮残留值导致误写；修复新增 tiling 字段 indicesAxis 并把 varIdxGm 全局内存初始化为 -1。作者给的两步复现：第一次合法索引 [10,11,12,13] 后非零槽位为 [10,11,12,13]；第二次索引全 -1 后仍出现“被改动槽位 [10]，值 [7.0,7.0,7.0,7.0]”，与 update 填的 7.0 一致，说明残留索引把上一次的更新重放了一次；关闭确定性后无误写。
+  source: 2026-09-04 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5564 （closed）
+  behavior: 开启确定性（deterministic_level=3）后，一串原本应当“什么都不写”的非法索引（全 -1）调用仍会改写输出中的某个槽位，值恰好等于上一轮 update 的内容；关闭确定性就恢复正常，因此这类误写只在确定性通路出现，接口返回码始终是成功。
+  trigger_surface: scatterNdUpdate + deterministic_level=3 + 非法/负索引行
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

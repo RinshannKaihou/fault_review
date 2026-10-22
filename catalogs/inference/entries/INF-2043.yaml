@@ -1,0 +1,66 @@
+id: INF-2043
+legacy_ids: []
+slug: a3_sparse_attn_sharedkv_cfa_mte_out_of_range
+aliases: []
+title: A3 CFA 路径 SparseAttnSharedkv MTE 地址越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SparseAttnSharedkv CFA
+  behavior: 现场跑的是内嵌旧 CFA（mBase=64，未含 477b924 的 64 位偏移与 mixed block 更新）；越界是旧 CFA 地址计算还是 q/QSL/metadata 批次身份不一致尚未闭环
+effect:
+  objects:
+  - 可用性/进度
+  detail: A3+DSV4-Flash W8A8+DSpark+FULL_DECODE_ONLY，DP14/device14/stream46/AIV15 报 0x800000 MTE 越界；dump 后 Python 见 507057，EngineCore/DP API 退出；两节点同指纹，无需复位板卡可恢复
+  visibility: 报错
+mitigation:
+  detect: 比对 exception dump 的 workspace 大小反推 CFA 实现代际（0x2180000 对应 mBase=64）；按 kernel hash + device/stream/AIV 归并首错，区分首错与后续 507057
+  fix: 待定（issue 建议升级到含 477b9246a2d1 的 ops-transformer；越界点仍需算子维护者用原始 MTE fault address 闭环）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Atlas A3 + DeepSeek-V4-Flash W8A8 + DSpark + FULL_DECODE_ONLY，vllm-ascend 2026-05-18 内嵌旧 CFA 构建
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4307
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 两次独立故障（2026-08-12 06:45:50 与 09:32:15 UTC）首错都是 Decode rank 的 SparseAttnSharedkv CFA kernel 在 AIV15 上 MTE GM 地址越界（error code 0x800000，kernel hash SparseAttnSharedkv_7d53da98...），固定落在逻辑 DP14/device14/stream46，两小时后 Python 在 NPUEvent.synchronize() 看到 507057 并退出 EngineCore。exception dump 的 workspace 大小 0x2180000 逐字节反推出运行的是 vLLM-Ascend 2026-05-18 内嵌的旧 CFA 实现（mBase=64，非 SCFA）；ops-transformer 公共仓 477b9246a2d1（2026-05-25）对同一 A3 CFA/SWA 路径做过 mBase=256、original/compressed mixed block、PA_ND 搬运起点、64 位偏移、AIV mask 与 invalid-row 的整套更新，现场构建未包含。报告者明确说越界究竟来自旧 CFA 对合法 original/compressed KV 边界的地址计算，还是 q/QSL/metadata/graph entry 的批次身份不一致，仍需维护者用原始 mte_error_info GM fault address 才能定论；cu_seqlens_q 的 dump 呈现「15×8 新批头 + 27×1 旧批尾」的复用状态，若 kernel 仍按 nominal 28 消费，120→16 会产生 actS1Size=-104 并足以造成 q/output 越界。
+  source: 2026-08-13 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4307 （closed）
+  behavior: 长时间跑 DSpark 投机解码的 Decode 实例会突然失去一个 DP：PLOG 里先是 task exception、AIV core_id=15 MTE DDR address out of range、fault kernel=SparseAttnSharedkv，接着 701 MB 的 exception dump，8 秒后 Python 侧 507057、EngineDeadError，该 DP 的 API 退出。同一 kernel hash 在两个物理节点复现、指向同一逻辑 rank 与同一 AIV，且不用复位板卡就能恢复，容易被误判成硬件故障。
+  trigger_surface: Atlas A3 + DeepSeek-V4-Flash W8A8 + DSpark speculative decode + FULL_DECODE_ONLY，旧 CFA 构建
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

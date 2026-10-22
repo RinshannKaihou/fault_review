@@ -1,0 +1,53 @@
+id: INF-1646
+legacy_ids: []
+slug: triton_ascend_block_k256_bias_add_dropped_rows
+aliases: []
+title: BLOCK_K=256 特化丢弃 bias 加法前四行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: codegen BLOCK_K 特化
+  behavior: 3.2.2 + CANN 8.5.0 在 bf16 输出路径上，c += bias（1D bias 隐式广播）在 BLOCK_K=256 特化里每 tile 前 4 行的加法被整体丢弃；BLOCK_K=128 正常。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3+CANN8.5.0，40行独立最小核复现：BLOCK_K=256、bf16输出、1D bias广播加法时，每tile前4行像没加bias而非随机噪声；无报错无NaN，某些token位置系统性偏低、精度指标小幅下降；BLOCK_K=128正常，易被当成autotune选参问题。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 kernel 在 BLOCK_K=128/256 两档分别跑逐元素对比；matmul+bias 类输出改 autotune 前先做固定 BLOCK_K 回归
+  fix: 规避=避免 BLOCK_K=256 特化（退回 128）；issue closed，正文未给修复 PR
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton-ascend 3.2.2 + CANN 8.5.0 + 910B3；仅 BLOCK_K=256 特化 + bf16 输出 + 1D bias 隐式广播加法
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/1863
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend 3.2.2 + CANN 8.5.0（Ascend 910B3）的 codegen 缺陷：kernel 在 bf16 输出路径上做 c += bias（bias 为 1D tensor、隐式广播的加法），当 BLOCK_K 特化为 256 时，每个 tile 的前 4 行的加法被整体丢掉；同一 kernel 用 BLOCK_K=128 特化则零失败。报告者用 40 行独立最小 kernel 复现（只有 tl.dot + scale + to(bf16) + bias add，不含仓库任何代码），签名与元素数与真实 kernel 完全相同，因此排除了上层调用或 mask 写法的干扰。
+  source: 2026-08-30 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/1863 （closed）
+  behavior: 带 bias 的 matmul（linear/attention 输出投影）在 NPU 上用 BLOCK_K=256 的配置跑时，输出每个 BLOCK_M×BLOCK_N tile 的最上面 4 行少了 bias 项，看起来“像没加 bias”而不是随机噪声；模型整体表现为某些 token 位置系统性偏低、精度指标小幅下降。无报错无 NaN；把 BLOCK_K 改回 128 后完全正常，很容易被当成 autotune 选参问题。
+  trigger_surface: BLOCK_K=256 特化 + bf16 输出 + 1D bias 广播加法；910B3 + CANN 8.5.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

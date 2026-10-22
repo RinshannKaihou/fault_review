@@ -1,0 +1,59 @@
+id: INF-1532
+legacy_ids: []
+slug: ops_nn_groupnormswishgrad_golden_fp16_by_shape
+aliases: []
+title: SwishGrad 参考按元素数才升 fp32 致假失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: 通用
+    component: ATK 参考执行器 dtype 提升
+  behavior: 参考执行器只有 count>1（4D 及以上）才把输入升 fp32；2D/3D 的 fp16/bf16 用例里参考按半精度算、内核按 fp32 算，两侧精度不同却被记成算子超差。
+effect:
+  objects:
+  - 测试判定
+  detail: 125 条中 52 条 accuracy False；52 条被拆成四族，最大两族根因在参考侧：2D/3D 的 fp16/bf16 用例相对误差超阈（fp16 0.002~0.018，bf16 0.007~0.18）；成对 3D/4D 用例仅 3D 失败，4D 走 fp32 参考通过。
+  visibility: 静默错误
+mitigation:
+  detect: 查参考执行器是否按 shape/元素数决定升精度；用同 shape 的 3D 与 4D 成对用例对照，只 3D 失败即说明是参考侧 dtype 而非算子。
+  fix: issue 6069 已 closed，正文未给参考执行器的修复 PR；报告另称 swishScale 在 tiling 按 float 读而 API 声明 double，未核实。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 910B3 + CANN 9.1.0 + ATK 26.7.8 的 aclnnGroupNormSwishGrad 参考执行器；仅 2D/3D 输入命中该 cast 分支
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 这条记的是评测侧的假阳性，不是算子计算故障：同一 harness 在 4D 用例上全过。报告同时列出的 swishScale double/float 与 skip-flag 两条属算子侧候选，量级与所述机制不自洽，未采信。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6069
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6069（2026-09-20，closed）：Ascend 910B3、CANN 9.1.0、ATK 26.7.8，aclnnGroupNormSwishGrad 跑 125 条，全部执行成功、accuracy False 52 条。报告把 52 条拆成四族，其中最大的两族根因在参考侧：executor_aclnnGroupNormSwishGrad.py:107 只在 count>1（4D 及以上）时才把输入 cast 到 fp32，2D/3D 的 fp16/bf16 用例因此用半精度参考，而内核 group_norm_swish_grad.h:167 用 LocalTensor<float> 恒按 fp32 算，两侧精度口径不同，相对误差超阈（fp16 阈值 2^-9=0.001953125，实测 0.002~0.018；bf16 阈值 0.00396728515625，实测 0.007~0.18）。成对 3D/4D 用例 15/16、32/33、34/35 只有 3D 失败，4D 因走 fp32 参考全过，交叉印证了 cast 条件就是分野。另两族（case 120/121 的 swishScale 按 float 读、case 122~124 的 skip flag）报告自称是算子问题，但 0.1/2.0 这类 swishScale 的 float 截断解释不了 max_rel_diff 3.39，量级与机制不自洽，本条目只记为候选。
+  source: 2026-09-20 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6069 （closed）
+  behavior: 跑 GroupNormSwishGrad 的精度回归时，2D/3D 的 fp16、bf16 用例成片报“精度不通过”，相对误差 0.002~0.18；同样输入改成 4D 就全过。看着像算子在半精度下算错，实际是测试参考实现按元素数决定要不要升 fp32，3D 以下用的是半精度参考值。按这个结论去追算子会白追，真正被掩盖的是参考侧的 dtype 口径。
+  trigger_surface: ATK 参考执行器对 2D/3D 输入不升 fp32（仅 count>1 才 cast）+ fp16/bf16 用例；4D 及以上不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - visibility

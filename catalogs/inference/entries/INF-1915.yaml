@@ -1,0 +1,59 @@
+id: INF-1915
+legacy_ids: []
+slug: vllm_glm53_thinking_false_tag_leak_into_tool_args
+aliases: []
+title: GLM-5.3 thinking=false 致 </think> 漏进工具参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: GLM-5.3 模板与 glm47 parser
+  behavior: 模板在 add_generation_prompt 处无条件写 <think>，enable_thinking=false 从未被消费；parser 在 thinking=False 时删掉 THINK_* 终止符，残留标记按普通文本流过
+effect:
+  objects:
+  - 输出内容
+  detail: 请求 enable_thinking=false 仍返回 200，content 与 tool_calls.function.arguments 里出现重复 </think></think>；官方 API 对同等请求直接拒绝，调用方无从分辨
+  visibility: 静默错误
+mitigation:
+  detect: 对 GLM-5.3 发 enable_thinking=false 请求，检查原始 SSE 与拼接后的 content/reasoning/tool arguments 是否含 </think>；或断言该请求形状应被拒绝
+  fix: issue closed；方向：兼容层把 enable_thinking=false 归一化成 true 并告警，或按官方契约明确拒绝；parser 侧禁止协议标记进入 content 与工具参数
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: GLM-5.3-Flash w8a8 + --reasoning-parser glm45 --tool-call-parser glm47 + 请求 enable_thinking=false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16592
+  kind: github_issue
+relations: []
+original:
+  mechanism: 两层边界同时失守。其一在 chat template：GLM-5.3 官方模板在 add_generation_prompt 处无条件输出 <|assistant|><think>，不判断 enable_thinking 的取值（GLM-5.2 模板还有 {{- '<think></think>' if (enable_thinking is defined and not enable_thinking) else '<think>' -}} 这个分支，GLM-5.3 没有），所以 thinking=false 的语义在 token 化之前就丢了。其二在 parser：vllm/parser/glm47_moe.py 的 glm47_moe_config() 在 thinking=False 时把 THINK_* 终止符从终止符集合里删掉，一旦标记真的出现在流里就无法识别和消费，只能当普通文本透传，甚至被拼进 tool_calls.function.arguments。报告用原始 SSE 逐帧确认了 </think> 出现在服务端输出里，并做了 100 次重放：恢复官方模板、只发 enable_thinking=true 时 100/100 干净，说明不是传输或客户端拼接问题。问题源头在模型模板与上游 parser，报在 vllm-ascend 是因为该栈上可复现。
+  source: 2026-09-15 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16592 （closed）
+  behavior: 调用方按常规关闭思考（enable_thinking=false），拿到 HTTP 200 的正常响应，但回复里混着重复的 </think></think>；更糟的是这段标记会出现在工具调用的 arguments 字符串里，下游按 JSON 解析时直接报错或把标记当参数内容。没有 4xx、没有告警、没有任何字段能区分"成功"和"被污染"，只能靠人工读输出发现。官方 API 对 thinking.type=disabled 是明确拒绝的，本栈却静默返回坏内容。
+  trigger_surface: GLM-5.3/GLM-5.3-Flash + 请求里 enable_thinking=false（官方不支持的请求形状）+ glm47 reasoning parser
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

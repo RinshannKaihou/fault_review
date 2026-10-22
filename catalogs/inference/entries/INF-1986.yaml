@@ -1,0 +1,60 @@
+id: INF-1986
+legacy_ids: []
+slug: aclrt_batch_api_num_silent_narrowing
+aliases: []
+title: aclrt 批量接口 num 窄化后静默只处理前几项
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: aclrt 批量接口
+  behavior: 公开参数为 size_t，实现不查范围直接转下层 uint32_t/int32_t，UINT32_MAX+2 变成 1 或按掩码取小值后继续执行
+effect:
+  objects:
+  - 可用性/进度
+  detail: 请求批量复位/导入 4294967297 项时接口返回 ACL_SUCCESS 而实际只处理 1 项，调用者以为全部完成；跨进程句柄或 Notify 状态与预期不一致
+  visibility: 静默错误
+mitigation:
+  detect: 对每个批量接口用 UINT32_MAX+1/+2 的 num 调用，断言返回参数错误；mock 下层接口断言未被调用
+  fix: 转换前检查 num <= UINT32_MAX（或 INT32_MAX）并返回参数错误，补边界回归；runtime 侧已给 MR https://gitcode.com/cann/runtime/merge_requests/4455 ，合入未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclrtNotifyBatchReset / aclrtMemSetPidToShareableHandle(V2) / aclrtIpcMemSetImportPid / aclrtNotifySetImportPid / aclrtIpcMemImportPidInterServer，num 超出 32 位可表示范围
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/runtime/issues/862
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/runtime/issues/861
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/runtime/issues/863
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/runtime/issues/864
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/runtime 一批同型缺陷（issue 861/862/863/864，2026-08-24 前后，closed）。aclrtNotifyBatchReset 的 num 为 size_t，src/acl/aclrt_impl/notify.cpp L83-91 未查范围直接转下层 uint32_t（src/runtime/api/api_c_event.cc L161-177）；910B3 + CANN 9.1.0 实测 num=4294967297 被转成 1，返回 0（ACL_SUCCESS），只复位 1 个 Notify。aclrtMemSetPidToShareableHandle 及 V2 的 size_t pidNum、aclrtIpcMemSetImportPid/aclrtNotifySetImportPid 的 size_t num 超出 int32_t、aclrtIpcMemImportPidInterServer 的 aclrtServerPid.num 同型，均被回绕或掩码成小数量后返回成功；aclrtNotifyBatchReset 的 mock 探针捕获到下层 uint32 参数为 1。
+  source: 2026-08-24 GitCode cann/runtime issue https://gitcode.com/cann/runtime/issues/862 （closed）；同型 https://gitcode.com/cann/runtime/issues/861 、https://gitcode.com/cann/runtime/issues/863 、https://gitcode.com/cann/runtime/issues/864
+  behavior: 一进程多卡（每 rank 一个进程）场景下，批量设置共享内存/Notify 导入 pid 的接口传了超出 32 位范围的 num：接口返回成功，实际只处理了截断后的前几项。调用方按「全部设置成功」继续建通信域，后续访问没被导入的那部分句柄时才以挂起、507xxx 或数据错的形式暴露，排查时很难回到这个参数上。
+  trigger_surface: aclrt 批量接口的 size_t num 超出 uint32_t/int32_t
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

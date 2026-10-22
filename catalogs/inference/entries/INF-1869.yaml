@@ -1,0 +1,51 @@
+id: INF-1869
+legacy_ids: []
+slug: npu_grad_and_value_logsumexp_kl_div_mismatch
+aliases: []
+title: JSD loss 上 torch.func 梯度与 autograd 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: logsumexp+kl_div 反向
+  behavior: logsumexp 与 kl_div 组合成 JSD loss 时，torch.func.grad_and_value 的反向与 torch.autograd.grad 不一致；两者单独使用都正常，根因未定位。
+effect:
+  objects:
+  - 梯度
+  detail: B,T,H,V=8,128,1024,4096 fp32 下前向 loss 两种方法完全相同，反向约 0.5% 梯度元素超出 atol=1e-5/rtol=5e-4；仅 NPU 出现，CPU/GPU 无此问题。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 loss 分别用 torch.func.grad_and_value 与 torch.autograd.grad 求梯度比 max|diff|；对 logsumexp、kl_div 单独做隔离对照
+  fix: 待定（issue closed，未定位根因、未见修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch 2.6.0 + torch_npu 2.6.0 + CANN 8.3 RC1（Atlas 800I A2）；grad_and_value + 同时含 logsumexp 与 kl_div 的 JSD loss（fp32）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/1532
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #1532（torch 2.6.0 / torch_npu 2.6.0 / CANN 8.3 RC1 / Atlas 800I A2，EulerOS v2r10）：用 torch.func.grad_and_value 计算 JSD loss（student/teacher 各做 log_softmax，logsumexp 得混合分布，再进 kl_div；B,T,H,V=8,128,1024,4096，float32）的梯度，与 torch.autograd.grad 的结果在 NPU 上存在系统性差异，约 0.5% 梯度元素超出 atol=1e-5/rtol=5e-4。报告者给出的隔离矩阵：前向 loss 两种方法完全相同；logsumexp 单独使用正常；kl_div 单独使用正常；只有两者组合进同一个 loss 才偏差；仅 NPU 出现，GPU/CPU 无此问题。issue 未定位到具体 kernel，也没有对应修复。'
+  source: 2026-01-31 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/1532 （closed）
+  behavior: 前向 loss 上完全看不出区别（两种算法算出的 loss 一模一样），但 backward 之后梯度对不上：fp32、atol=1e-5/rtol=5e-4 的严格容差下约 0.5% 梯度元素超差，用这种梯度做蒸馏训练会持续引入偏差。只有把 logsumexp 和 kl_div 放进同一个 loss 才复现，单独用哪个都正常。
+  trigger_surface: torch_npu 2.6.0 + CANN 8.3 RC1（Atlas 800I A2）；torch.func.grad_and_value + 含 logsumexp 与 kl_div 的 JSD loss
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

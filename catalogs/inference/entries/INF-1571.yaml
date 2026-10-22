@@ -1,0 +1,59 @@
+id: INF-1571
+legacy_ids: []
+slug: ops_math_cdist_grad_exp_log_pow_precision
+aliases: []
+title: cdist_grad 以 exp(log) 近似 pow 致梯度精度劣化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: cdist_grad 反向 DAG
+  behavior: GENERAL(0<p<2) 与 LARGEP(p>2) 反向用 Exp(Muls(Log(ratio), p-1)) 近似 pow，误差约 2-4 ULP；torch 的 _cdist_backward 用表驱动 std::pow
+effect:
+  objects:
+  - 梯度
+  detail: p=2.6133、float32 走 NORM_MODE_LARGE_P 分支时 NPU 均方根误差 3.91e-4，GPU A100 为 8.40e-5，劣化约 4.65 倍，ATK 双标杆精度（比例阈值 2.0）不达标
+  visibility: 静默错误
+mitigation:
+  detect: 对 p 落在 (0,2) 与 (>2) 两段的 fp32 反向用例（如 p=2.6133）与 aten._cdist_backward 比均方根误差比值（阈值 2.0），golden 用 CPU fp64
+  fix: issue 给方案（closed）：改用 Vec::Power（DOUBLE_FLOAT_TECH，约 1 ULP）替代 exp/log，保留 ratio+mask 结构以保证 cdist==0 时不产生 0/0=NaN（合入状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: math/cdist_grad 的 GENERAL(0<p<2) 与 LARGEP(p>2) 两条 DAG，float32；p=2.6133 的 NORM_MODE_LARGE_P 分支实测，p 落在阈值端点的用例更易触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 均为反向算子精度口径，与 INF-1395（cumsum 越界写）无关；本条只收 cdist_grad 的 pow 近似劣化。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2110
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math math/cdist_grad 的 GENERAL(0<p<2) 与 LARGEP(p>2) 两条 DAG，反向梯度原先用 Exp(Muls(Log(ratio), p-1)) 近似 pow，单次误差约 2-4 ULP；对照 torch.ops.aten._cdist_backward 使用的 std::pow（表驱动、内部扩展精度、<1 ULP），整算子均方根误差劣化约 4.65 倍——实测 NPU fp32 的 Actual_均方根误差 3.91e-4，GPU A100 为 8.40e-5，ATK 双标杆精度（均方根误差比例阈值 2.0）因此不达标。复现：p=2.6133、float32，走 NORM_MODE_LARGE_P 分支，golden 为 CPU fp64、bench 为 GPU A100 fp32，均方根误差比例 4.65 > 2.0。修复方向是改用高精度 Vec::Power(DOUBLE_FLOAT_TECH，约 1 ULP) 替代 exp/log，同时保留现有 ratio+mask 结构，保证 cdist==0 时不产生 0/0=NaN。
+  source: 2026-07-01 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/2110 （closed）
+  behavior: 在 NPU 上算 cdist 的反向梯度，算子不报错、数值量级也对，但和 CPU fp64 golden 比均方根误差是 GPU 的 4 倍多（3.91e-4 vs 8.40e-5）；p 越接近阈值端点越明显。表现为训练侧的 ATK 双标杆精度用例不达标、梯度更新方向被系统地偏一点，很难与别的原因区分。
+  trigger_surface: ops-math math/cdist_grad 反向；float32、p∈(0,2) 的 GENERAL 与 p>2 的 LARGEP 两条 DAG（实测 p=2.6133）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误

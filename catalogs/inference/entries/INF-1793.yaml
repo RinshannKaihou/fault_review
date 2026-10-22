@@ -1,0 +1,63 @@
+id: INF-1793
+legacy_ids: []
+slug: ops_nn_bn3d_training_reduce_overflow
+aliases: []
+title: BN3D 训练 reduce 中间累加溢出不恢复
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BN3DTrainingReduce FP32 累
+  behavior: FP32 部分和先溢出后不能恢复：[FLT_MAX,0,FLT_MAX,-FLT_MAX] 真实和有限但中间序溢出；修复以 DAV3510 有界 384 位累加恢复受影响通道再舍回 FP32（保留真实 NaN/Inf/超范围），split-
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950PR_9579 实测：原 4 条冻结用例 9 个错误非有限通道；修复后 9 通道全部恢复为精确和的 FP32 舍入值；95 例三方 90 PASS（5 FAIL 保留：CPU FP64=0/GPU NaN 分歧等既有判据问题，未改 golden）
+  visibility: 数值异常
+mitigation:
+  detect: 抵消型大幅值输入探针（FLT_MAX 对减）
+  fix: 修复含于 https://gitcode.com/cann/ops-nn/issues/6955 配套 MR !12382（open；A100 对照验证；未发布）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend950PR_9579 + BN3DTrainingReduce + FP32/BF16 + 大幅值抵消输入；独立 Master/Revise CANN 20260923 周包+GPU A100 对照
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 训练域条目（BN3D 训练 reduce），但抵消型累加溢出与 ttnn mean/sum 全轴归约（当日收录）跨平台同构；证据完整（冻结用例+三方+修复前后对照）。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6955
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12382
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'ops-nn issue #6955 + MR !12382。BN3DTrainingReduce 中间累加溢出：[FLT_MAX,0,FLT_MAX,-FLT_MAX] 真实和有限，原 FP32 部分和先溢出后不能恢复。修复：DAV3510 的 FP32/BF16 sum 输出非有限时以有界 384 位累加恢复受影响通道再舍入为 FP32，保留真实 NaN/Inf/超范围结果；split-reduce 在最终合并后处理；tiling 为 SIMT 缓存和栈预留 40KiB UB；新增可复现溢出分支测例生成器；FP16 不进入恢复分支、square_sum 算法不变。环境：任务目录独立 Master/Revise CANN 20260923 周包、Ascend950PR_9579、GPU A100-PCIE-40GB 对照。验证：BN3D Host UT 59/59；三方 95 例 90 PASS（原冻结 4 例 3/4；最小复现 12/12；新分支 21/24；普通/边界 54/55；全 BINARY_MATCH+TTK OOB PASS）——原 9 个错误非有限通道全部恢复为精确和 FP32 舍入值；5 FAIL 保留为判据分歧（NPU 精确舍入 vs CPU FP64=0/GPU NaN 等）未改 golden。另含 InplaceSub 图模式负数/环绕索引语义、InplaceAdd 有符号边界溢出修复。'
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-nn/issues/6955 ；配套 https://gitcode.com/cann/ops-nn/merge_requests/12382
+  behavior: 3D BatchNorm 训练 reduce 在含 FLT_MAX 量级正负相消输入时，中间 FP32 部分和先行溢出且无法恢复：真实有限的和被算成 inf/nan（9 个错误非有限通道实测），下游梯度随之报废；修复后有界累加恢复精确和，普通输入行为不变。GPU 参考实现可算出正确有限值。
+  trigger_surface: Ascend950PR + BN3DTrainingReduce + FP32/BF16 + 大幅值抵消输入
+  discovery: 2026-10-20 每日扫描
+  notes:
+  - '2026-10-21 回访 2026-10-21：issue #6955 仍 open（u2026-10-21T09:16 更新，标题改为''修复 BN3D 累加溢出及图路径并完善三算子 golden''），修复发布状态未核实。'
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - original.notes

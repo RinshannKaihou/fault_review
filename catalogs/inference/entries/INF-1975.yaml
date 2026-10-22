@@ -1,0 +1,52 @@
+id: INF-1975
+legacy_ids: []
+slug: lightning_indexer_sparse_count_guard_accepts_zero
+aliases: []
+title: lightning_indexer sparse_count 守卫放行非法值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: lightning_indexer tiling
+  behavior: 守卫布尔式写成 !((>0&&<=2048)&&%1024!=0)||>8192，等价于接受 0 与 1024 的负倍数；同仓 quant 版为 !(>0&&<=LIMIT)
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: sparseCount=0 时 GetWS/Launch/Sync 全 SUCCESS 并产出空稀疏选择；-1024 被 tiling 接受后 device 报 507015；合法 1024 正常
+  visibility: 静默错误
+mitigation:
+  detect: 构造 sparseCount=0/-1024 的 aclnnLightningIndexer 两段式调用，检查 GetWorkspaceSize 是否返回参数错误；对照 quant_lightning_indexer 同参数被拒
+  fix: 把条件改成与 quant_lightning_indexer 一致的 !(sparseCount>0 && sparseCount<=LIMIT)；issue closed 未附 MR，未核实合入版本
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: lightning_indexer 稀疏模式（sparseMode=3）+ sparseCount 为 0 或 1024 负倍数；Ascend910B3 + CANN 9.1.0-beta.3
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4095
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer issue 4095（2026-08-03，closed，Track A / novel-sparse-count-guard）。attention/lightning_indexer/op_host/lightning_indexer_tiling.cpp L286-292 的复合条件把下界判断写反：!((>0 && <=2048) && %1024!=0) || >8192，对 0 与 -1024 均取真值放行；对照 attention/quant_lightning_indexer/op_host/quant_lightning_indexer_tiling.cpp L318-322 写的是 !(>0 && <=LIMIT)。复现：ops-transformer HEAD 4b3d39658e1d，build.sh --pkg --soc=ascend910b --ops=lightning_indexer 打包安装到独立 vendor 后调用 aclnnLightningIndexer，query/key [1,2,1,128] fp16、weights [1,2,1]、layout BSND、sparseMode=3：合法 1024 正常，0 全链路 SUCCESS，-1024 在 GetWS/Launch 均 SUCCESS、Sync 报 507015。
+  source: 2026-08-03 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4095 （closed）
+  behavior: 稀疏注意力索引器的 sparse_count 传 0 或负数时接口不报参数错误：0 会一路成功并给出空的稀疏选择结果，负值先被 tiling 接受、到 device 上才以 507015 失败。调用方如果按返回码判断，会把一次非法配置当成正常执行，top-k 选择为空或错位后落到后续 attention 里，只能靠结果比对发现。
+  trigger_surface: aclnnLightningIndexer 稀疏模式，sparseCount=0 或 1024 的负倍数
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

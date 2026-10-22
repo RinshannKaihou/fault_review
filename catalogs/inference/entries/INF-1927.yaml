@@ -1,0 +1,58 @@
+id: INF-1927
+legacy_ids: []
+slug: vllm_ascend_megamoe_sym_buffer_garbled
+aliases: []
+title: MegaMoe 融合 MC2 启用后请求乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: MegaMoe 融合 MC2 缓冲
+  behavior: MegaMoe 融合 MC2 疑似缓冲区溢出；mega_moe_max_tokens=8192 相对 458752 的安全上界低约 56 倍，代码注释称溢出会精度退化，且怀疑不止缓冲区溢出。
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: Kimi K3 W4A8 在 A3 4P4D 下每条请求都乱码(贪心 1+1=? 亦然),关掉 enable_fused_mc2 即恢复;首轮 prefill 约 1 分钟后以 vector-core 507035 崩溃,伴 glibc corrupted size
+  visibility: 静默错误
+mitigation:
+  detect: 同一 build 只切 enable_fused_mc2 做 A/B;抓各 EP rank 的 sym-buffer 分配日志核对 ep_world/global_bs 一致,并核算 mega_moe_max_tokens 是否低于 num_max_tokens_per_rank×ep_world×topk×expert_per_rank
+  fix: 待定（issue open）；规避：关闭 fused MC2（enable_fused_mc2=false），或把 mega_moe_max_tokens 提到安全上界以上
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.27.1 + vllm-ascend 0.27.1(nightly 67dd25526,含 cherry-pick 5a9de6576 的 Kimi K3 MegaMoe 使能),CANN 9.3.0 weekly 20260916.01;A3 8 节点×16 NPU,4P4D,DP4/TP16+DCP16,MooncakeConnectorV1,dspark draft=7,enable_fused_mc2=2 + enable_prefill_mc2=true
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16914
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'issue 记录开 MegaMoe（enable_fused_mc2: 2 + enable_prefill_mc2: true）后 Kimi K3 W4A8 在 Atlas 800I A3 上每条请求都返回乱码,重复请求每次必乱,首次运行 4 个 prefill API server 在首个请求后约 1 分钟全部中止并以 aclrtSynchronizeEvent 507035 报 AI-vector-core 异常,退出时 glibc 报 corrupted size vs. prev_size。隔离实验:同一代码 build、同一 CANN,把 enable_fused_mc2 置 false 后直连 prefill 与走 P→D 代理两条路径都输出正确,decode 侧不变且稳定;已知 mint 的 mega_moe_max_tokens=8192 相对 458752 的安全上界低约 56 倍,代码注释明写溢出会导致精度退化,且 sym-buffer 分配日志显示各 rank ep_world=64、global_bs=0,分配需在各 EP rank 间一致。作者同时排除了 attention 路径、KV 传输、HCCL 通信 kernel 与 SiTUGLU 能力检查,但指出连 1+1=? 这种极小请求也乱,怀疑不只是缓冲区溢出。'
+  source: 2026-09-18 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16914 （open）
+  behavior: 开 MegaMoe 后服务能正常拉起并接受请求,但任何请求拿到的都是乱码文本(如“有损gt迫不及待="";”这类混排字符),贪心解码也一样;压测时 prefill 节点随后以 vector-core 异常整进程退出,日志里只有 aclrtSynchronizeEvent 507035 和 glibc heap 损坏,没有 Python traceback。把 enable_fused_mc2 关掉,同样的权重、同样的请求立即恢复正常输出。
+  trigger_surface: Kimi K3 W4A8 + A3 PD 分离(4P4D)+ enable_fused_mc2=2/enable_prefill_mc2=true;单请求即触发,与并发无关
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    - title

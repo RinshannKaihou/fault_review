@@ -1,0 +1,59 @@
+id: INF-1463
+legacy_ids: []
+slug: triton_warp_specialize_second_consumer_offset_double_add
+aliases: []
+title: Triton warp_specialize 第二 consumer 偏移叠加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: sliceOp 行偏移映射共享
+  behavior: sliceOp 把 off_m→off_m+64 记入第二 consumer 全部克隆 op 共享的映射；指针偏移本已按行切片，克隆时再加 64，第二组 64~127 行被存到 128~191 行。
+effect:
+  objects:
+  - 数值结果
+  detail: 128×128 tile warp_specialize=False 全对、=True 行错位写出 tile 边界 64 行、无错误消息；descriptor load 与 pointer store 混用即触发
+  visibility: 静默错误
+mitigation:
+  detect: warp_specialize True/False 对照 + NaN 预填输出缓冲检测未写/错写行
+  fix: 待定（issue open；规避 warp_specialize=False）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Hopper + warp_specialize=True 且 tile 分两个 consumer warp group（BLOCK_M=128/num_warps=4）+ 描述符访问与指针访问混用同一行偏移；main 复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: '同日 #12351（warp_specialize 循环结果未用即整循环连同 store 被删除）为同 pass 另一独立缺陷，正文未逐段深读、留观下轮族化评估'
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12369
+  kind: github_issue
+- url: https://github.com/triton-lang/triton/issues/12370
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'Triton issue #12369（c2026-10-19）：Hopper 上 warp_specialize=True 把 tile 分给两个 consumer warp group（如 BLOCK_M=128 + num_warps=4）时，第二 consumer 计算的每 tile 64~127 行被存到 128~191 行。机制：descriptor 访问只携带块起始坐标，pass 给第二 consumer 的副本 off_m + 64；指针访问携带每行偏移（off_m + tl.arange(0,128)）且 pass 已把该 arange 切片到 [64,128)；但 sliceOp 把 off_m -> off_m+64 记录进所有为第二 consumer 克隆的 op 共享的映射，指针偏移因此加两次 64。复现（单 program、descriptor load + pointer store、控制组 warp_specialize=False）：False 时 C 的 128 行全部正确写入；True 时行错位写出 tile 边界（192 行缓冲的 guard 区被写入）。'
+  source: 2026-10-19 GitHub triton-lang/triton issue https://github.com/triton-lang/triton/issues/12369 （open）；同题相邻 https://github.com/triton-lang/triton/issues/12370 （open）
+  behavior: Hopper 上开 warp_specialize 的 Triton kernel，如果 tile 行被拆到第二个 warp group、且同一行偏移同时用于 tensor descriptor 读取和指针写入，输出的后半行整体错位存到 64 行之外的位置，等于把结果写坏到邻近内存，全程无报错。
+  trigger_surface: Triton main Hopper + warp_specialize=True（tile 分两个 consumer warp group）+ descriptor 访问与指针访问共用行偏移变量
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - detail

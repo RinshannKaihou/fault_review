@@ -1,0 +1,53 @@
+id: INF-1556
+legacy_ids: []
+slug: ops_math_expint_arch35_exp_overflow_nan
+aliases: []
+title: expint 大输入 exp 上溢与对齐区未初始化致 inf/NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: expint arch35 kernel
+  behavior: Compute 求 e^x 未做上界钳位，x>88 越过 FP32 上限变 inf 污染后续运算；FP16/BF16 结果 Cast 前未按目标 dtype 钳位；CopyIn 只搬有效元素，64 对齐尾部未初始化即参与向量运算引入 NaN
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950(arch35) 上 FP32 输入 x=90/100 输出 inf/NaN；FP16 结果超 65504 时 Cast 溢出为 inf；x=1e-9/1e-8 被 1e-10 近零阈值误判为 -inf；长度非 64 倍数的输入尾部 NaN 污染有效输出
+  visibility: 数值异常
+mitigation:
+  detect: 对 x>88、结果超输出 dtype 上限、0<|x|<1e-8、长度非 64 倍数四类输入与 CPU golden 逐元素比对（单算子 aclnn 调用即可）
+  fix: PR https://gitcode.com/cann/ops-math/pull/4165 （fix expint bug，closed）：引入 EXP_CLAMP=88.0f 钳位 x、CopyIn 以 1.0f 预填对齐区、ApplyBoundaries 改 x==0.0f 精确判等、Compute 改用 yLocal 缓冲、Cast 前按目标 dtype 上限钳位（合入与发布状态未核实）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 仅 Ascend950（arch35）通路：math/expint/op_kernel/expint_kernel.h 与 op_host/arch35/expint_tiling_arch35.cpp；FP32 x>88、FP16 结果超 65504、x≈1e-9、长度非 CMP_ALIGN(64) 倍数
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2383
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/pull/4165
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-math math/expint 在 Ascend950（arch35）上有六处缺陷叠加：Compute 调用 Exp(tmp2, xFp32, n) 求 e^x 而上界无钳位，x>88（如 90、100）时 exp(x) 超过 FLT_MAX 变 inf，污染后续 e^x/x 与乘法，输出 inf/NaN；ProcessFp16Bf16 把 FP32 结果直接 Cast 到 FP16/BF16，结果超 65504 即溢出为 inf；Compute 原用 resultBuf 作结果缓冲，在 Ascend950 上数据错误，需改用 yLocal；ApplyBoundaries 用 NEAR_ZERO_THRESHOLD=1e-10 配合 Abs(x)<=1e-10 判零并置 -inf，把 1e-9、1e-8 等合法小值误判为零点；CopyIn 的 DataCopy 只搬 currentNum 个元素，UB 对齐到 CMP_ALIGN(64) 后尾部填充区为未初始化内存，参与向量运算引入 NaN/随机值；IMPL_OP_OPTILING(Expint) 注册缺 visibility("default")。涉及文件 op_kernel/expint_kernel.h、op_host/arch35/expint_tiling_arch35.cpp。
+  source: 2026-07-27 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/2383 （closed，附修复 PR https://gitcode.com/cann/ops-math/pull/4165）
+  behavior: 在 Ascend950 上调用 expint：输入取 90、100 这类大值时输出直接是 inf 或 NaN；FP16 输入在结果大于 65504 的区间 Cast 后变 inf；x 取 1e-9 这种合法小值却被换成 -inf；输入长度不是 64 的整数倍时，对齐尾部带来的 NaN 会污染本该正确的有效输出。全程没有任何报错或告警，只有和参考实现逐元素比对才看得出。
+  trigger_surface: ops-math expint（Ascend950/arch35 单算子通路）；FP32 x>88、FP16 结果超 65504、0<|x|<=1e-8、元素数非 64 倍数
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

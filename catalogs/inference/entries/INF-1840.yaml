@@ -1,0 +1,62 @@
+id: INF-1840
+legacy_ids: []
+slug: vllm_ascend_allreduce_nondet_moe_gate_topk
+aliases: []
+title: allreduce 非确定性致 MoE topk 专家选择抖动约 1% 坏例
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: vllm
+    component: allreduce 非确定性
+  behavior: allreduce 输出偶发异常波动并传导到融合算子 moe_gate_topk，专家选择随之抖动；把 topk 拆成小算子后坏例概率显著下降，开 HCCL_DETERMINISTIC=true 后 3000+ 坏例不再复现（此前 5%）
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 复杂编码/agent 任务中约 1% 概率出现精度类坏例：toolcall 与 think 标签丢失、重复输出、指令遵从下降；首 token 后 logits 偶发 0.5~1 的显著波动
+  visibility: 不可复现
+mitigation:
+  detect: 开启 HCCL_DETERMINISTIC=true 复跑坏例集：坏例消失即可判定为非确定性通信；或对比 moe_gate_topk 前后 logits 波动
+  fix: 待定；规避手段是 export HCCL_DETERMINISTIC=true（报告者实测 3000+ 坏例 0 复现），代价是明显性能损失
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vllm-ascend v0.11 / v0.18.rc1 + MiniMax M2 系列与 Qwen3.5 系列 MoE 模型 + 复杂 agent 任务（长上下文多轮）；A2 910B3。坏例率约 1%，未开确定性通信
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 报告者是端到端定位（替换算子 + 开确定性开关），未给到 allreduce 内部具体出错位置；开确定性后不复现是强证据但非源码级根因。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/8359
+  kind: github_issue
+relations: []
+original:
+  mechanism: 以 vllm-ascend v0.11 与 v0.18.rc1 搭编码服务，模型为 MiniMax M2 系列与 Qwen3.5 系列（A2 910B3）。复杂编码/agent 任务中约 1% 概率出现精度坏例（toolcall 与 think 标签丢失、重复输出、指令遵从下降）。定位过程：每个 first token 之后的 logits 偶发 0.5~1 的显著波动；进一步检查算子发现融合算子 moe_gate_topk 的专家选择波动明显，根因指向上游 allreduce 通信算子的异常输出。两组实验：(1) 把 moe_gate_topk 替换为若干小算子后精度退化概率显著降低；(2) export HCCL_DETERMINISTIC=true 后用 3000+ 坏例测试集验证不再复现（此前复现率 5%）。据此判断 vllm-ascend 底层通信存在偶发非确定性，导致门控专家选择跳变。报告者同时指出确定性计算会带来明显性能损失。
+  source: 2026-04-17 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/8359 （open）
+  behavior: 线上编码服务偶发回答质量事故：约 1% 的复杂任务请求出现 toolcall 参数丢失、think 标签缺失、整段重复输出或答非所问，同一请求重试往往就正常，因此看起来像模型随机性而不是 bug。加载 moe_gate_topk 小算子替换版或打开 HCCL_DETERMINISTIC 后问题消失，但吞吐下降。
+  trigger_surface: MoE 模型 + allreduce（TP/DP 通信）+ 非确定性通信开关关闭 + 长上下文 agent 任务
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 不可复现
+    uncertain:
+    - effect

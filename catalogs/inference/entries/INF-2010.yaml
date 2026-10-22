@@ -1,0 +1,56 @@
+id: INF-2010
+legacy_ids: []
+slug: vllm_ascend_fullgraph_chunked_prefill_accuracy_collapse
+aliases: []
+title: FULL_DECODE_ONLY+chunked 精度 96→57
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: FULL_DECODE_ONLY+chunked
+  behavior: Qwen3-30B-A3B在dp4、max-num-seqs 512下同时启用FULL_DECODE_ONLY与enable_chunked_prefill时，gsm8k推理结果异常；未定位到具体pass或kernel。
+effect:
+  objects:
+  - 输出内容
+  detail: gsm8k：eager 96.13、fullgraph 不叠 chunked 95.68、fullgraph+chunked 56.71；结果里出现 prompt 从未问过的“What is the capital of France”类回答；max-num-seqs 256 正常、512 出错。
+  visibility: 质量退化
+mitigation:
+  detect: 同模型在 eager / fullgraph / fullgraph+chunked 三档各跑一遍 gsm8k，比较分数并抽查与 prompt 无关的回复；max-num-seqs 256 与 512 各测一次
+  fix: 待定（issue closed，正文未给修复 PR）：规避是不同时开 chunked prefill 与 FULL_DECODE_ONLY，或把 max-num-seqs 压到 256
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Qwen3-30B-A3B + dp4 + max-num-seqs 512 + cudagraph_mode=FULL_DECODE_ONLY + ascend_scheduler_config.enable_chunked_prefill；max-num-seqs 256 时正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 机制未定位：正文只给三档精度与并发档位对照，没有任何源码/日志定位，待后续回访。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/3444
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-project/vllm-ascend issue 3444（2025-10-14，closed）：Qwen3-30B-A3B，-dp 4、max-model-len 8192、max-num-seqs 512、gpu-memory-utilization 0.9，--compilation-config ''{"cudagraph_capture_sizes": [512,128,96,64,48,32,8,4,1], "cudagraph_mode": "FULL_DECODE_ONLY"}''，additional-config 打开 ascend_scheduler_config.enable_chunked_prefill，ais_bench batch=128*4 跑 gsm8k。三档对照 eager 96.13 / fullgraph(no chunked) 95.68 / fullgraph(chunked) 56.71。正文只描述现象与档位差异，未定位到具体 pass 或 kernel，只把 max-num-seqs 从 512 降到 256 后不再出现。'
+  source: 2025-10-14 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/3444 （closed）
+  behavior: 服务能正常拉起、不报错，但压测答案整体跑偏：分数从 96 掉到 57，且能抓到与提问完全无关的回答（数据集里根本没有 “What is the capital of France” 这类题）；只有把并发档位降下来才恢复。
+  trigger_surface: cudagraph_mode=FULL_DECODE_ONLY + ascend_scheduler_config.enable_chunked_prefill + max-num-seqs 512
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

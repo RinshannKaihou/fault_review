@@ -1,0 +1,57 @@
+id: INF-1760
+legacy_ids: []
+slug: ops_nn_ttk_golden_dual_baseline_collapse
+aliases: []
+title: 11 算子 TTK golden 四类缺陷致精度结论失真
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: TTK golden 与三方标杆对照
+  behavior: golden 无条件 astype(float32) 撤销了 Promote、三方腿抬档后不回窄，两者逐位相同使 cross_check 分母塌陷；另有整型强转 fp32 丢位、空张量崩溃、compose 与融合内核算法不对等。
+effect:
+  objects:
+  - 测试判定
+  detail: TTK 精度任务中，有量纲 rmse 比值随输出量级放大（lamb_next_m_v fp16 98.79）仍 PASS；3200/3200 行 |b-g|=0；整型用例 2^30+100 变 2^30+128，整型 dtype 结论从未被真正验证；空张量用例直接判 golden 失败。
+  visibility: 静默错误
+mitigation:
+  detect: 查 golden 里是否无条件 astype(float32)、看 ttk-compare.log 是否 |b-g| 恒 0；rmse 比值远大于 mare/mere 即是塌陷指纹。
+  fix: 待定（issue closed，未给 MR）：golden 保留 Promote 后 dtype、三方腿按内核精度口径 compose，并补空张量与整型用例。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: TTK GEIR 通路 + 11 个 foreach/scatter/lamb 算子 + fp16/fp32/int32 dtype + golden 与三方标杆同源降精度
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5635
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5635（2026-09-07，closed）：Atlas A5（ascend950）、CANN 9.2.0、TTK GEIR 通路（--binary=release）、三方标杆 A100-PCIE-40GB torch 2.13.0+cu126、代码基线 3d6e07b36。tests/assets/golden.py 在 11 个算子上存在四类缺陷：空张量 numel=0 直接抛异常判 GOLDEN_FAILURE，而算子侧对空张量按结构合法放行；整型入参强转 fp32 后计算，>2^24 的 int32 静默丢低位（2^30+100 变 2^30+128）；golden 侧 _to_fp32/_t 无条件 astype(float32) 撤销了 TTK 的 Promote，三方侧 .to(torch.float32) 抬档后不回窄，使 golden 与 third_party 逐位相同（ttk-compare.log 3200/3200 行 |b-g|=0），cross_check 分母被夹到精度标准 err，有量纲的 RMSE 比值随输出量级线性放大；compose 用 torch.addcmul 的融合 FMA 而内核是两次乘法加一次加法、中间量全程留 fp32，窄类型上逐步溢出。受影响算子含 foreach_addcdiv_list、foreach_addcmul_list、scatter_div/max/min/mul、lamb_apply_weight_assign、lamb_next_m_v(_with_decay)、lamb_next_right、lamb_update_with_lr_v2。
+  source: 2026-09-07 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5635 （closed）
+  behavior: 这些算子的 TTK 精度任务给出的红绿结论不能直接信：一方面有量纲的 rmse 比值被放大到几十上百（lamb_next_m_v fp16 98.79、lamb_next_right fp16 20.28、lamb_apply_weight_assign fp16 9.03）却仍然 PASS，另一方面整型 dtype 的结论从来没被真正验证过，空张量用例直接判 golden 失败。看起来是“算子精度问题”的红例，实际是评测侧真值与标杆塌陷造成的假红/假绿。
+  trigger_surface: TTK golden 与三方标杆 + 整型/空张量/融合算子用例
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

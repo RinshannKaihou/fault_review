@@ -1,0 +1,57 @@
+id: INF-2014
+legacy_ids: []
+slug: moe_token_permute_grad_num_topk_not_validated
+aliases: []
+title: MoeTokenPermuteGrad 未校验 num_topk 非正值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MoeTokenPermuteGrad 推导
+  behavior: InferShape 用输入首维直接除以 num_topk 属性，未校验 num_topk>0；num_topk=0 时在除零路径上仍返回 GRAPH_SUCCESS 并给出 [0,4]，-1 时给出 [-8,4]
+effect:
+  objects:
+  - 数值结果
+  detail: 非法 num_topk 下 Host 推导返回成功但输出 shape 为 [0,4] / [-8,4]，构图可继续，直到后续阶段才出现形状不一致；文档要求非正值属参数错误
+  visibility: 静默错误
+mitigation:
+  detect: 对 num_topk=0/-1 的 MoeTokenPermuteGrad InferShape 用例断言 GRAPH_FAILED，并保留 num_topk=1/8 成功对照
+  fix: issue 关联 MR https://gitcode.com/cann/ops-transformer/merge_requests/10528（合入状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需 num_topk<=0 的非法属性（MoE 反向），正常训练不会主动传入
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4533
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer 的 moe/moe_token_permute_grad/op_host/moe_token_permute_grad_infershape.cpp:22-35 读取 num_topk 后直接用输入第一维做除法，没有 num_topk>0 的校验。commit a2ee2d92804d6d04fcc64e748628000539ab1464、Ascend910B3 上的 Host UT 显示：permuted_output_grad [8,4]、sorted_indices [8]、padded_mode=false 时，num_topk=0 返回 GRAPH_SUCCESS 且输出 shape 为 [0,4]（除零路径未定义），num_topk=-1 返回 GRAPH_SUCCESS 且 shape 为 [-8,4]；合法对照 num_topk=8 返回 [1,4]。语义相同的 MoeInitRoutingV2Grad 文档与实现均要求 topK>0 并视非正值为参数错误。
+  source: '2026-08-24 GitCode cann/ops-transformer issue #4533（closed）。https://gitcode.com/cann/ops-transformer/issues/4533'
+  behavior: 传入 num_topk=0 或 -1 的 MoE 反向节点时，图编译/形状推导不报错，输出被推导成 [0,4] 或负维度，构图继续往下走；真正的问题要到执行或后续算子拿到非法维度时才暴露，排查时容易误判成上层模型或数据问题。
+  trigger_surface: MoeTokenPermuteGrad 的 Host InferShape/Tiling 入口收到 num_topk<=0 属性
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - detail

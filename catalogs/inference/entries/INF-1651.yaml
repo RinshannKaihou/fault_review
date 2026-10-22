@@ -1,0 +1,53 @@
+id: INF-1651
+legacy_ids: []
+slug: ms_select_const_fold_broadcast_shape_loss
+aliases: []
+title: 常量折叠的 select 广播后形状与数值被破坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: Graph Const 常量折叠 select
+  behavior: GRAPH_MODE 下 ops.select 输入为闭包常量且需广播时，前端 evaluator 错误收缩输出 shape，并把 -0.0 与 NaN 改写为 0.0。
+effect:
+  objects:
+  - 数值结果
+  detail: cond (2,1)、x (1,3)、y (2,3) 时 PyNative 与 Graph(Arg) 得 (2,3) 的 [[1,-0,nan],[4,-5,6]]，Graph(Const) 只剩 (1,3) 一行且 -0.0、NaN 全变 0.0。
+  visibility: 静默错误
+mitigation:
+  detect: 把 select 的输入写成闭包常量跑一次 Graph(Const)，与传参版比较输出 shape 与逐元素值；shape 变小或 -0.0/NaN 被抹平即命中
+  fix: 待定（issue open，无修复 PR）；方向：常量折叠复用运行时的 broadcast 推导，不要自行折叠 shape
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: CPU + GRAPH_MODE，select 的 cond/x/y 均为闭包常量且 shape 需广播（Graph Const 常量折叠）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29395
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: ops.select 的三条执行路径不一致：PYNATIVE_MODE 与 GRAPH_MODE 传参（Graph Arg）都会把 cond (2,1)、x (1,3)、y (2,3) 广播到 (2,3)，输出 [[1.0,-0.0,nan],[4.0,-5.0,6.0]]；把同一组常量写成无参 @ms.jit 的闭包输入（Graph Const 常量折叠）后，前端 evaluator 把输出 shape 错误地收缩成 (1,3)，并丢掉了真实数据——-0.0 与 NaN 都被改写成 0.0。issue 给的最小复现只用 numpy 构造这三个张量，环境为 CPU、Python 3.12 的 2.9/2.10，未说明内部哪个 pass 收缩了 shape。
+  source: 2026-05-18 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29395 （open）
+  behavior: 同一段 select 代码，只要张量是闭包常量而不是入参，编译后输出少了一整行（(2,3) 变 (1,3)），而且 -0.0 与 NaN 变成 0.0；下游按 (2,3) 取数就会越界或读到重复行，按数值判断分支则把 NaN 当成正常 0。传参版本完全正确，因此很难怀疑到编译期折叠。
+  trigger_surface: GRAPH_MODE 下 ops.select 的三个输入都是闭包常量且需要广播（触发 Graph Const 常量折叠）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior

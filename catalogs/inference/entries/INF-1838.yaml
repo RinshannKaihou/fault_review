@@ -1,0 +1,62 @@
+id: INF-1838
+legacy_ids: []
+slug: vllm_ascend_sliding_window_dual_fia_path_divergence
+aliases: []
+title: sliding_window 令同请求走两套 FIA 致 temp=0 结果分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: sliding_window 分支
+  behavior: 带 sliding_window 时同一模型按 batch 状态走两种 FIA 调用（BSH 无 mask vs TND causal sparse_mode=3），数学等价但非位对齐。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 每次调用约 1 个 bf16 ulp（层 23 实测 2^-12）的差异经残差流放大（层 61 达 4.0），在 top-2 logprob 恰好相等的 tie 点翻转 argmax，于是 temperature=0 的相同请求并发时分叉。
+  visibility: 不可复现
+mitigation:
+  detect: 同 prompt 并发 8/16 条 temperature=0 请求比对输出；比对两种 FIA 调用形态下同 token 的注意力输出。
+  fix: 已验证规避：从 config.json 去掉 sliding_window（窗口实际从未截断）；根因修复待定（issue 2026-09-16 open）。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: checkpoint config.json 含 sliding_window 字段；temperature=0；并发 8/16；bf16 权重
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16704
+  kind: github_issue
+relations: []
+original:
+  mechanism: 当 checkpoint 的 config.json 带 sliding_window 字段时，模型的 decode 路径按该步的 batch 状态分裂成两种 FIA 调用形态：DecodeOnly 步的 62 层全部走 _forward_fia_slidingwindow（BSH 布局 (N,1,1536)、不传 causal mask、pre_tokens=sliding_window），而混部 prefill+decode 的 ChunkedPrefill 步全部走通用 TND 的 npu_fused_infer_attention_score（packed 布局、causal 2048 triu mask、sparse_mode=3）。报告明确指出两者都算得数学正确（窗口从未真正截断），但互不位对齐：每次调用约 1 个 bf16 ulp，rank-1 层 23 的注意力输出实测差 0.000244 = 2^-12，经残差流逐层放大到层 61 的 4.0。于是同一个逻辑 token 的算法取决于它的 decode 落在混部步还是纯 decode 步，ulp 级差异在 top-2 logprob 恰好相等（≤1 ulp）的 tie 点翻转 argmax，表现为 temperature=0 的相同请求并发时输出不同。issue 2026-09-16 open，已验证的规避是去掉 config.json 里的 sliding_window。
+  source: 2026-09-16 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16704 （open）
+  behavior: temperature=0、同一个 prompt 并发发 8 或 16 条，多轮下来输出并不完全一致，出现分叉；分叉点都能对应到 top-2 logprob 相同的 tie，且每轮分叉位置不同，看起来像随机不确定，实际是两条内核对同一 token 算了不同位。
+  trigger_surface: config.json 含 sliding_window + 混部/纯 decode 混合批（chunked prefill）+ bf16
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 算子/内核
+    uncertain:
+    - effect

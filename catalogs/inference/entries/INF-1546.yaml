@@ -1,0 +1,60 @@
+id: INF-1546
+legacy_ids: []
+slug: vllm_ascend_zero_draft_rng_advance
+aliases: []
+title: 零 draft 请求仍推进采样 RNG 致输出不可复现
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: sample_recovered_tokens
+  behavior: 对每个请求先执行 temp_q.exponential_(generator) 再用 torch.where 丢掉，num_draft_tokens=0 的请求虽然不采用 temp_q，其 generator 状态已被一次整表抽样推进。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 同一 seed 下，某个请求在推测解码步里有没有 draft 会改变它后续的采样序列：零 draft 请求的随机流被多抽一次，输出与参考/重跑不一致。
+  visibility: 不可复现
+mitigation:
+  detect: 对 num_draft_tokens=0 的请求在 sample_recovered_tokens 前后比对 generator 状态（或重放同一 seed 的采样序列）；#4587 之前的逐请求实现可作为语义参考
+  fix: 待定（issue open）；修复：恢复逐请求判断，只有 num_draft_tokens[i]>0 时才调用 exponential_，并补零 draft 不推进 RNG 的回归测试
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.25.1 752a3a50 + vllm-ascend release 50e0ce60 / main bdab2347，PyTorch 2.10.0 + torch_npu 2.10.0.post2，Ascend 910B3；推测解码 + 采样 temperature>0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13608
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'sample_recovered_tokens() 在请求没有 draft token 时也会推进该请求的 seeded generator。当前实现先对每个 generator 做 temp_q.exponential_(generator=generator)，再用 torch.where(has_draft_mask[i], temp_q, q[i]) 选择：当 num_draft_tokens[i]==0 时 torch.where 丢掉了 temp_q，但 exponential_ 已经按整个词表规模抽了一次，per-request RNG 状态被推进。这是 #4587 向量化引入的回归——在此之前实现显式保留了零 draft 请求的 generator 状态（注释写明不要为该请求生成随机数）。报告同时指出该缺陷可以用 generator 状态的单测和代码走查确认，不依赖硬件；并推测它可能贡献了 #13441 观察到的输出变化，但因为缺少原始 token id 与零 draft 轨迹，未断定因果。'
+  source: 2026-08-05 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13608 （open）
+  behavior: 用固定 seed 跑推测解码时，同一请求同一输入重跑会得到不同结果，而且差异出现在后续若干步：某些请求在这一步没有 draft（被语法约束全部裁掉、或本来就没有 draft），它们的随机流却被悄悄多抽了一次，于是之后的采样序列整体偏移——表现为“同 seed 不可复现”，或换 batch 组合（谁和谁同批、谁有没有 draft）结果就变。贪心解码不受影响。
+  trigger_surface: 推测解码 + temperature>0 采样，且 batch 中存在 num_draft_tokens=0 的请求（draft 被裁光或首步无 draft）；固定 seed 重跑即可观察到不一致
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出分布
+        to: 输出内容

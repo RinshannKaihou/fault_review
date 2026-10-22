@@ -1,0 +1,59 @@
+id: INF-1762
+legacy_ids: []
+slug: vllm_full_graph_fa3_split_kv_wrong_logits
+aliases: []
+title: vLLM FULL 图+FA3 split-KV 回放步 logits 大错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: FULL graph 回放与 FA3 combin
+  behavior: combine kernel 的 tile scheduler 按图捕获时的 dummy batch 选择，而非按实际回放批形状选择
+effect:
+  objects:
+  - 输出分布
+  detail: FULL 图回放部分步 logits 错数个 nat、argmax 改变；触发 A：prefix 命中恰好 2 个新 token；触发 B：max_num_seqs≤16 的混合批；关 split-KV 或 FULL_AND_PIECEWISE 正常
+  visibility: 静默错误
+mitigation:
+  detect: 对 FULL 图回放步比对 eager logprobs 可发现；现无内置检测
+  fix: 规避：--attention-config.flash_attn_max_num_splits_for_cuda_graph=1（默认 32，图内关 split-KV）；修复 PR 未见（待定）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: FULL cudagraph_mode+FA3 后端+split-KV；v0.30.0 容器，H100/H200 复现
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62626
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.30.0（vllm/vllm-openai:v0.30.0），8×H100/H200，FLASH_ATTN（FA3，vllm-project/flash-attention@506341a）。--compilation-config.cudagraph_mode=FULL 时部分回放捕获图的 step 返回错误 logits：误差数个 nat、argmax 不同、有时正确 token 掉出 top-20。报告者判定 combine kernel 的 tile scheduler 由捕获时的 dummy batch 决定而非实际回放批。两个触发器：A. prefix-cache 命中后恰好 2 个新 token（任意 max_num_seqs）；B. 小 max_num_seqs（≤16，部分 64 大图）普通 prefill 混合批回放。Qwen3-8B 网格 6 prompts×缓存长度 64/128/176×q=1..32 中 q=2 在 17 点中 11 点错、误差≥3 nat；其余 q 在 bf16 噪声内（≤0.19）。默认 FULL_AND_PIECEWISE 与 FlashInfer 不受影响。flash_attn_max_num_splits_for_cuda_graph=1（关图内 split-KV）修复。
+  source: 2026-10-20 每日扫描；https://github.com/vllm-project/vllm/issues/62626
+  behavior: 服务开启 FULL CUDA graph 与 FA3 时，命中前缀缓存后只有 2 个新 token 的请求（或小批 mixed prefill 回放）会拿到明显错误的 logits：贪心解码换 token、logprob 偏差达数个 nat，正确答案可能掉出 top-20；换成默认编译模式或限制图内 split 数后恢复正确。用户侧看到的是同样请求在不同图回放配置下答案不一致，且无任何报错。
+  trigger_surface: cudagraph_mode=FULL + FA3 + split-KV（默认 max_num_splits=32）；prefix 命中 q=2 或 max_num_seqs≤16
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 算子/内核

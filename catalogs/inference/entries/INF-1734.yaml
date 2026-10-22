@@ -1,0 +1,62 @@
+id: INF-1734
+legacy_ids: []
+slug: ms_dvm_fusion_pp_mtp_step2_divergence
+aliases: []
+title: DVM 融合在 PP+MTP 第 2 步起确定性数值突变
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: PyNative DVM 延迟融合边界
+  behavior: PyNative DVM 延迟融合在流水阶段与 MTP 分支的边界上没有维护好输出地址生命周期与依赖同步，第 2 个优化器步骤起计算结果突变。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 8×910B3、PP2+MTP、开 MS_DEV_PYNATIVE_FUSION_FLAGS=--opt_level=1 时第 2 步 loss 10.45→17.21、grad_norm 3.34→81.96，另一 EOD 用例第 1 步全 NaN；关融合 100 步正常。
+  visibility: 数值异常
+mitigation:
+  detect: PP>1 + num_nextn_predict_layers>0 + PyNative DVM 融合时同时检查第 1、2 步的 loss 与 grad_norm；只跑前向/反向不比对第 2 步会漏
+  fix: 待定（issue open，无修复 PR）；已验证规避是 PP+MTP 工作负载取消 MS_DEV_PYNATIVE_FUSION_FLAGS；issue 建议核查 lazy_fusion 在流水/MTP/优化器步骤边界的地址生命周期与刷新时机
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend 910B3 + MindSpore 2.10 + PyNative + PP>1 + MTP + MS_DEV_PYNATIVE_FUSION_FLAGS=--opt_level=1；CANN 9.0.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29534
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore 2.10.0（r2.10 日包，commit 6df146cf）+ CANN 9.0.0，8×Ascend 910B3，PyNative BF16，PP2 + MTP（num_nextn_predict_layers>0），MS_DEV_PYNATIVE_FUSION_FLAGS=--opt_level=1。第 1 步与单卡基线完全一致，第 2 步起 loss 10.450935→17.210445、grad_norm 3.336905→81.961357；关融合后 100/100 步正常。只开 Dense 或只开 GroupedMatmul 都能独立触发，故不是单个算子；隔离显示 MTP 是必要条件，辅助 loss/专家偏置、MF PR 8570、HP r1.0.0 均被排除，PP 分片梯度与单卡逐参数误差约 1.5e-7。issue 指向 lazy_fusion_op.cc / lazy_fusion_kernel.cc / lazy_fusion_flags.cc 的延迟融合执行与同步边界。
+  source: 2026-07-19 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29534 （open）
+  behavior: DeepSeek V3 小规模回归在 8 卡 910B3 上跑 PP2 + MTP、开 PyNative DVM 融合时，第 1 步 loss 和单卡基线一模一样，从第 2 步开始 loss 跳到 17.2、梯度范数从 3.3 涨到 82；另一个 EOD 用例第 1 步就全 NaN。进程不报错也不退出，常规功能门禁完全看不出来，只有逐步比对 loss/grad_norm 才能发现。
+  trigger_surface: Ascend 910B3 + MindSpore 2.10 + PyNative + PP>1 + MTP + MS_DEV_PYNATIVE_FUSION_FLAGS=--opt_level=1；CANN 9.0.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - subsystem
+    - effect
+    - visibility

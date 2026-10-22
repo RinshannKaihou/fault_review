@@ -1,0 +1,69 @@
+id: INF-2028
+legacy_ids: []
+slug: vllm_ascend_dsa_cp_a2_greedy_degenerate_repetition
+aliases: []
+title: A2 开 DSA-CP 后 greedy 解码退化为重复循环
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: enable_dsa_cp（自动开 SP）
+  behavior: enable_dsa_cp 在 A2 上打开后（日志 Auto-enabling SP）greedy 解码退化成重复循环；关 dsa_cp 且不开 dspark 也退化，只有关 dsa_cp 并开 dspark 正常，未定位根因
+effect:
+  objects:
+  - 输出内容
+  detail: 贪心解码下开 dsa_cp 输出 ", like, and, and, and…" 重复；block 32 无投机输出 " to the 2c (??) (??)…"；thinking 开启时表现为通顺但跑题的英文 reasoning，掩盖退化
+  visibility: 质量退化
+mitigation:
+  detect: temperature=0 + 短 prompt（thinking=false，5 token）+ 逐项关特性（dsa_cp / dspark / block_size）对照，直接看是否重复坍塌；thinking 模式下的通顺跑题文本会掩盖问题
+  fix: 待定（issue open）：报告给出的可用配置是关 dsa_cp 并开 dspark、num_speculative_tokens=7
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: DeepSeek-V4-Flash-0731-w8a8 + A2 910B3 + vLLM 0.27.1 / vllm-ascend 0.27.1rc1，PD 分离；dsa_cp 打开或 dspark 关闭时退化，二者都关时正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: bisect 显示 dsa_cp 与 dspark 两个开关都能改变结果，单变量归因不成立；机制待回访。与 INF-1836（PCP 不开 EP 精度 94→73）同属 A2 上下文并行类，但触发开关与症状不同。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17616
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-project/vllm-ascend issue 17616（2026-09-28，open）：8×Atlas 800T A2（910B3），vLLM 0.27.1 + vllm-ascend 0.27.1rc1 源码构建，DeepSeek-V4-Flash-0731-w8a8（ModelSlim W8A8，config_id deepseek_v4_flash_dspark_w8a8），6 prefill + 2 decode、TP8+EP、MooncakeHybridConnector。在单个 prefill 实例上直接 curl 做逐项 bisect：(1) block 128、max_model_len 1048576、enable_dsa_cp=true、无投机 → “, like, and, and, and…” 重复；(2) block 32、524288、dsa_cp=false、无投机 → “ to the 2c (??) (??)…” 另一种退化；(3) block 32、524288、dsa_cp=false、dspark num_speculative_tokens=7 → 通顺，为现用配置。日志显示仅 (1) 打 “DSA-CP is enabled. Auto-enabling SP.”（ascend_config.py:586）。三档说明 dsa_cp 不是唯一变量，正文未给源码定位。
+  source: 2026-09-28 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17616 （open）
+  behavior: 贪心解码下回答直接变成重复串或问号串，服务不报错；如果 chat template 保留 thinking 模式，退化会以“通顺但跑题”的英文 reasoning 呈现，使用者容易当成模型能力问题而不是缺陷。
+  trigger_surface: A2 + DeepSeek-V4-Flash w8a8 + enable_dsa_cp=true（或 dspark 关闭）+ greedy 解码
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（原文未给出 prompt 为你好）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化
+    issue_unfixed:
+    - detail
+    uncertain:
+    - subsystem
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes

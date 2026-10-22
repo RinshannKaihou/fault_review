@@ -1,0 +1,72 @@
+id: INF-1501
+legacy_ids: []
+slug: op_plugin_matmul_backward_meta_stride_inherit
+aliases: []
+title: matmul_backward meta 继承输入非连续 stride
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: matmul_backward_meta
+  behavior: meta 实现直接返回 torch.empty_like(self)/empty_like(other)，把输入的非连续 stride 继承给梯度输出；实际反向 kernel 产出的是连续 tensor，元信息与真实结果不符。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 非连续输入下两个梯度张量被推导为非连续而实际连续，图模式后续算子按错误 stride 推导，产生连锁的形状/访存假设错误；单算子 eager 对比看不出。
+  visibility: 静默错误
+mitigation:
+  detect: 输入非连续（transpose 后未 contiguous）时比对 matmul_backward_meta 推导的 stride 与实际执行结果的 stride
+  fix: issue 为 open，正文未给修复 PR；报告者要求 meta 在 shape/stride/dtype 上与实际执行保持一致（合入与发布状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_note: self 或 other 非连续（如 transpose 后未 contiguous）+ matmul_backward 的 meta / 图模式推导；连续输入不触发
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/30
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1499
+pattern: PAT-INF-0163
+original:
+  mechanism: 'op-plugin issue #30（2025-12-30，open）：环境 910B/C、CANN 930 版本、op-plugin 7.2.0 分支。正文给出 meta 实现：@impl(m_aten, "matmul_backward") def matmul_backward_meta(grad, self, other, mask): return (torch.empty_like(self), torch.empty_like(other))。empty_like 会保留输入 tensor 的 memory format 与 stride，所以当 self/other 是非连续 tensor 时，meta 推导出的两个梯度输出被标成非连续，而实际反向执行产出的是连续 tensor。报告者指出这会让后续算子的推导产生连锁问题，期望 meta 在 shape、stride、dtype 上都与实际一致。正文的重现步骤与日志均写「暂无」，未给修复 PR。'
+  source: 2025-12-30 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/30 （open）
+  behavior: 在 NPU 上对非连续输入（例如先 transpose 再直接喂进 matmul）求梯度：看数值往往是对的，但图里的元信息不对——meta 说两个 grad 继承了输入的非连续布局，实际 kernel 给的是连续张量。后续接的算子按错误的 stride 假设继续推导（图模式/编译下尤其明显），问题一路传到下游，很难回溯到这个 meta 实现。
+  trigger_surface: matmul_backward 的 meta / fake 推导 + self 或 other 非连续（stride 与 size 不匹配连续布局）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度
+    uncertain:
+    - detail

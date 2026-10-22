@@ -1,0 +1,55 @@
+id: INF-1808
+legacy_ids: []
+slug: transpose_shape_check_returns_success
+aliases: []
+title: 转置 shape 校验失败仍返回成功并产出数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: TransposeWithShapeCheck
+  behavior: TransposeWithShapeCheck 发现目标 shape 与 permutation 推导结果不一致时只打 ACL_ERROR_GE_SHAPE_INVALID 日志、不返回错误，继续转置并返回 SUCCESS。
+effect:
+  objects:
+  - 数值结果
+  detail: 隔离程序里合法 dst_shape {3,2} 与非法 {2,3} 都返回 0x0、都输出 12 字节 {1,4,2,5,3,6}；常量 transpose/permute 的 host folding 会把转置数据配上错误 shape 描述继续下发。
+  visibility: 静默错误
+mitigation:
+  detect: 对 TransposeKernel/PermuteKernel 传入与 permutation 推导不一致的 dst_shape，断言返回 ACL_ERROR_GE_SHAPE_INVALID 且不产生数据
+  fix: 关联 MR https://gitcode.com/cann/ge/merge_requests/4535 （未核实是否已合入/发布）；规避：调用方保证目标 shape 等于 permutation 推导结果
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  trigger_note: 常量 transpose/permute 的 host folding 路径传错 dst_shape；CANN 9.1.0 / 910B3 / commit bb8e9a0
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/536
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ge base/formats/format_transfers/format_transfer_transpose.cc:198-212 的 TransposeWithShapeCheck 检测到目标 shape 与 permutation 推导结果不一致后只记录 ACL_ERROR_GE_SHAPE_INVALID（145021）日志，没有返回错误，随后继续执行 transpose 并返回成功；直接调用它的 compiler/host_kernels/transformation_ops/transpose_kernel.cc:134-149 与 permute_kernel.cc:106-118 只依据返回值判断是否生成输出。复现环境 cann/ge commit bb8e9a0fdb1ee12e7d79f9e39eb3cc9bfa87b69b、CANN 9.1.0 / OPP 9.1.0、Ascend 910B3、npu-smi 25.5.2、dav-2201、GCC 11.4.0。备注指出同文件 FormatTransferTranspose::TransFormat 的另一条路径经 IsTransShapeDstCorrect 正确返回 shape 错误，问题只在直接用 TransposeWithShapeCheck 的 host kernel 路径。
+  source: 2026-08-24 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/536 （closed）
+  behavior: 6 个 DT_FLOAT16 元素 {1,2,3,4,5,6}、输入 shape {2,3}、permutation {1,0}：传正确目标 shape {3,2} 返回 0x0、输出 12 字节 {1,4,2,5,3,6}；传错误目标 shape {2,3} 同样返回 0x0、输出同样 12 字节。隔离程序里 valid 与 invalid 两行日志的 status、length、values 完全一致，control_pass=true、bug_observed=true，非法调用既不失败也不阻止产出，后续图元数据与实际数据排列对不上。
+  trigger_surface: 常量 transpose/permute 的 host 折叠（TransposeKernel、PermuteKernel）传入与 permutation 不一致的目标 shape
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核

@@ -1,0 +1,55 @@
+id: INF-1763
+legacy_ids: []
+slug: vllm_rocm_aiter_unified_attn_32bit_span_overflow
+aliases: []
+title: vLLM ROCm AITER unified attn 32 位跨度误判
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: _unified_attention_gfx950
+  behavior: kernel 以 k.nelement()*element_size()<=2^31-1 判断可用 32 位加载，但 vLLM 传的是整池 K/V 视图：视图元素数减半而字节跨度覆盖整个池，2–4GiB 池通过检查后 2GiB 后块偏移溢出
+effect:
+  objects:
+  - 数值结果
+  detail: gfx950 上每层 KV 2–4GiB 时 attention 输出错值（kernel 对 fp32 参考 max error 0.49，TRITON_ATTN 0.009）；Qwen3-32B+EAGLE3 接受长度 2.30 降至 1.64–1.72；6.2GiB 池（视图跨度过大反而不进 3
+  visibility: 静默错误
+mitigation:
+  detect: 与 TRITON_ATTN/ROCM_ATTN 比对 kernel 输出或 EAGLE 接受长度可发现
+  fix: 修复 aiter PR https://github.com/ROCm/aiter/pull/6661 （按 k/v 字节跨度门控，含单测；open，vLLM 需等 aiter 发版+pin 升级后才生效，未发布）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: MI355X/gfx950 + ROCM_AITER_UNIFIED_ATTN + 每层 KV 池 2–4GiB（Qwen3-32B TP 配置 657472 token≈2.5GiB 命中；块 id≥32768）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62606
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM nightly-rocm100-0cbac6cd1（0.30.1rc1.dev558），aiter 0.1.23（vLLM pin 的 0.1.25/0.1.26 同码），MI355X。gfx950 上 aiter unified_attention 走 _unified_attention_gfx950，该 kernel 在 k.nelement()*k.element_size()<=2**31-1 时使用 32 位 buffer load。vLLM 把 K/V 作为同一 packed cache 的 strided 视图传入：每个视图元素数是池的一半但字节跨度覆盖整个池。于是 2–4GiB 池通过检查，2GiB 之后块的偏移溢出。Qwen3-32B 形状（8 KV 头、head size 128、bf16、block 16）下即块 id≥32768。Qwen3-32B+EAGLE3（池 657472 token，每层约 2.5GiB）实测：kernel 对 fp32 参考 max error 0.49（TRITON_ATTN 0.009）；1.6M-token 池（6.2GiB/层）同批通过。端到端 EAGLE3 接受长度：1k 输入并发 64 从 2.30 降到 1.64–1.72，8k 并发 16 从 2.10/2.11 降到 1.66–1.71。修复 aiter#6661 按字节跨度门控并带单测；vLLM pin aiter 发布标签，修复需 aiter 发版+pin 升级后到达。
+  source: 2026-10-20 每日扫描；https://github.com/vllm-project/vllm/issues/62606
+  behavior: 在 gfx950 上用 ROCM_AITER_UNIFIED_ATTN 服务且某层 KV cache 落在 2–4GiB 区间时，attention 输出静默错误：单独 kernel 对比误差 0.49（其他后端 0.009），投机解码接受长度明显下降，端到端输出质量变差；同样负载在更大池（跨出 32 位检查窗口）或其他 attention 后端下正常。是否命中取决于模型、TP 与 gpu-memory-utilization。
+  trigger_surface: gfx950 + ROCM_AITER_UNIFIED_ATTN + 每层 KV 2–4GiB（视图元素数过检但字节跨度超 2GiB）
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

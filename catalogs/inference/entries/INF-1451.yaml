@@ -1,0 +1,55 @@
+id: INF-1451
+legacy_ids: []
+slug: vllm_ngram_greedy_second_think_close_drift
+aliases: []
+title: vLLM 投机+预算双 </think> 注入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: 预算强制与 draft 窗口交互
+  behavior: 投机解码（V1）+ thinking_token_budget 下，自然 </think> 在被接受 draft 内且预算同窗口耗尽时，仍在更晚行强制注入 </think>——输出两个 </think>；greedy 投机与非投机不一致。
+effect:
+  objects:
+  - 输出内容
+  detail: Qwen3-0.6B + ngram k=3 + budget=91：'...</think>\n\n</think>\n\n59' vs 非投机 '...</think>\n\n59'，3 prompt 全中；触发需 </think> 已在上下文（工具调用后第二轮典型）
+  visibility: 静默错误
+mitigation:
+  detect: 输出含两个 </think> 直接可见；对照同 prompt 非投机输出
+  fix: 上游修复未见（issue open，v0.31.0 CPU/macOS 复现，Linux CPU wheel 同）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 0.31.0；投机解码（V1 model runner：ngram 等）+ thinking_token_budget；自然 </think> 落在被接受 draft 内且预算同窗口耗尽；</think> 需已在上下文（多轮/工具调用后）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61116
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM #61116（c2026-10-11，0.31.0，V1 model runner + 投机 + thinking_token_budget；macOS arm64 CPU（无 Triton 故 V1）与 Linux x86_64 CPU wheel 复现；ngram 0.31.0 或 VLLM_USE_V2_MODEL_RUNNER=0）。模型在 draft 窗口内自然结束推理（自然 </think> 被接受 draft 携带）且预算在同窗口内耗尽时，vLLM 仍在更晚的行强制 </think>，输出出现两个 </think>；greedy 下投机输出与非投机不同（投机解码应保持 greedy 一致）。复现：Qwen3-0.6B ngram k=3 budget=91，3 个 prompt 全部 ''...</think>\n\n</think>\n\n59'' vs 非投机 ''...</think>\n\n59''。prompt 是一次工具调用后的第二轮——</think> 已在上下文中、ngram 可提议它。'
+  source: 2026-10-11 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/61116 （open）
+  behavior: 在 vLLM 开投机解码并设置 thinking_token_budget 时，若模型在草稿窗口内自己写出了 </think>（被接受）而预算恰在该窗口耗尽，最终输出会再补一个 </think>：文本里出现两个 </think>，且 greedy 结果与非投机运行不一致。典型触发是多轮对话或工具调用后的第二轮（上下文里已有 </think>）。
+  trigger_surface: vLLM 0.31.0 V1 runner；投机解码 + thinking_token_budget；自然 </think> 在接受 draft 内 + 预算同窗耗尽 + 上下文已含 </think>
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

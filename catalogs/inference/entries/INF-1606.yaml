@@ -1,0 +1,59 @@
+id: INF-1606
+legacy_ids: []
+slug: torchair_axis_align_transpose_semantics_lost
+aliases: []
+title: 轴对齐调轴使中间张量 store/load 索引序错乱
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: ascendc 后端轴对齐调轴
+  behavior: 轴对齐调轴改写中间变量的 store 与 load 索引顺序时两边不一致，transpose 语义在 codegen 后丢失，输出按未转置布局读写。
+effect:
+  objects:
+  - 数值结果
+  detail: 打开 gelu decompose 后，用 ascendc 编译含 transpose 且后接布局敏感算子的模型时，图模式输出与 eager 对不上；数值偏差稳定存在但不夸张，不报错、不 NaN，形状正确，只有 allclose 或下游 loss 异常才会发现。
+  visibility: 静默错误
+mitigation:
+  detect: 对该类模型同时跑 eager 与 npu_backend=ascendc，比较 max_err；关闭 gelu decompose 可作对照
+  fix: 待定（issue 只说明调轴方法与 index 序不一致，未附修复 PR 或补丁）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.compile(npu_backend="ascendc") + 图中 transpose 后接 matmul 等对布局敏感的算子 + 打开 gelu decompose；输入 (128,6,23) 形状
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/846
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'torchair 的 ascendc 后端（Inductor NPU 扩展）在做轴对齐（调轴）优化时，会为算子插入中间张量并重排其访问顺序以对齐到硬件友好的轴。issue 定位到当前调轴方法会让同一个中间变量在 store 与 load 两侧的 index 顺序不一致：写入时按调轴后的顺序，读回时按调轴前的顺序（或反之），于是 transpose 语义在 codegen 后丢失，后续算子拿到的是未转置布局的数据。触发用例（issue 给出完整脚本）：LayerNorm(normalized_shape=23) → 一条分支 input1.transpose(0,1) 后接 layernorm/gelu/matmul，另一条分支 layernorm+tanh，用 torch.compile(model, options={"npu_backend": "ascendc"}) 编译，输入 data1=randn(128,6,23)、data2=randn(23,23)，并先打开 gelu 算子的 decompose；与 eager 逐元素比较 max_err 可复现偏差。'
+  source: 2026-09-29 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/846 （closed）
+  behavior: 用 ascendc 后端编译带 transpose 的模型时，图模式输出与 eager 对不上：数值偏差稳定存在但不夸张，既不报错也不出 NaN，形状完全正确，只有做 allclose 或看下游 loss 异常才会发现；同一个模型去掉 transpose 或换后端就正常。
+  trigger_surface: torch.compile(npu_backend="ascendc") + transpose 后接布局敏感算子 + gelu decompose 打开
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

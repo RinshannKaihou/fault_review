@@ -1,0 +1,66 @@
+id: INF-1399
+legacy_ids: []
+slug: torchair_autotune_dlclose_icache_hbm_inconsistency
+aliases: []
+title: torchair autotune dlclose 致 icache 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: autotune 落选 kernel 卸载
+  behavior: autotune选优后，codegen_cpp_wrapper生成的release()立即dlclose落选kernel的.so；HBM代码段释放可复用，芯片无icache一致性校验，HBM与icache不一致时执行行为未定义。
+effect:
+  objects:
+  - 数值结果
+  detail: 使用torchair编译加速的训练或推理任务，autotune选优完成后偶发输出精度异常或aic error；同一代码重跑结果可能不同，取决于dlclose后HBM代码段是否被复用，难以稳定复现；精度异常时无其它告警。
+  visibility: 不可复现
+mitigation:
+  detect: 复跑观察是否仅在 autotune 后出现；对比关闭 autotune 输出；未评估
+  fix: '修复 PR（master #3844、26.2.0 #3845，issue 标注关联）：dlclose 延迟到进程退出（retired_kernel_handles 容器 + DeInit 统一释放），合并状态未核实'
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: torchair inductor autotune（AscendC TopN 选优）路径；落选候选 kernel 已被 profiling 执行过（代码已进 icache）且 .so 被 dlclose 后 HBM 复用；偶发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/868
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/torchair/merge_requests/3844
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'torchair 的 AscendC TopN autotune 选优完成后，codegen_cpp_wrapper 生成的 release() 调用（compiler/_autotune.py、compiler/_kernel.py 调用）对落选候选 kernel 的 .so 立即执行 dlclose。落选 kernel 在 profiling 阶段已被执行、其 device 代码已进入 icache；dlclose 释放 HBM 上的代码段且该内存可被复用；由于芯片未做 cache 一致性校验，HBM 代码段与 icache 不一致时执行行为未定义——表现为偶发精度异常或 aic error。修复最小改动：release() 将落选句柄登记进新增的 retired_kernel_handles 容器（不再立即 dlclose，选优语义不变），进程退出（wrapper.so 卸载）时由扩展后的 DeInit() 统一 dlclose。关联 PR：master #3844、26.2.0 #3845（合并状态未核实）。'
+  source: https://gitcode.com/Ascend/torchair/issues/868 （关联 PR https://gitcode.com/Ascend/torchair/merge_requests/3844 、/3845）
+  behavior: 使用 torchair 编译加速（inductor autotune，AscendC TopN 选优）的训练或推理任务，在 autotune 选优完成后偶发出现输出精度异常或 aic error 报错；同一代码重跑结果可能不同，问题是否出现取决于 dlclose 后 HBM 代码段是否被复用，难以稳定复现。精度异常时无其它告警。
+  trigger_surface: torchair（26.x 线）inductor autotune 路径；落选候选 kernel 的 .so 被立即 dlclose 且其 HBM 代码段随后被复用；Ascend 芯片（无 icache 一致性校验）；训练与推理共有（本库收推理侧影响）
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - '2026-10-17 回访 2026-10-17：issue #868 closed（10-15）、修复 PR #3844/#3845 均 merged（10-15T12:13Z）；dlclose 延迟到进程退出的修复已合入 torchair master，发布版本未核实。'
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 编译器
+    rewritten:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-10-17'
+    fields:
+    - original.notes

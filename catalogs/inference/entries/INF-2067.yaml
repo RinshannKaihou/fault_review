@@ -1,0 +1,58 @@
+id: INF-2067
+legacy_ids: []
+slug: vllm_ascend_mega_moe_max_tokens_default_overflow
+aliases: []
+title: mega_moe_max_tokens 默认值小于实际接收量致 507057
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: mega_moe_max_tokens 默认值
+  behavior: 该参数作为每 rank 最大接收 token 数参与 HCCL 对称内存握手；默认 6144，而 8192 token/step × topk16 ÷ EP16 恰为每 rank 8192，窗口溢出后集合通信状态被破坏。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 首个长 prefill 请求即 hard crash：Worker 报 SUSPECT REMOTE ERROR 507057，在飞 30/30 请求全失败；配置文档只说欠配会造成 token 截断式精度下降，未提示会崩。
+  visibility: 报错
+mitigation:
+  detect: 起服务时按 max_num_batched_tokens×topk÷EP 算出每 rank 接收量，与 mega_moe_max_tokens 比较，欠配即在首个长 prefill 前改掉
+  fix: '改为默认 65536 或 0（auto）；A3 上 0 不额外占 HBM。相关 PR #17162 只加了负值启动校验与 0=auto 文档'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.27.1 + vllm-ascend megamoe 分支 + CANN 9.2.0 + A3 EP16 + Kimi-K3 W4A8 + max_num_batched_tokens=8192 + topk=16
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17202
+  kind: github_issue
+relations: []
+original:
+  mechanism: mega_moe_max_tokens 并不是调优旋钮，而是作为 max_recv_token_num 传给 CANN MegaMoe 算子，参与集合通信的对称内存握手（moe_comm_method.py 的 get_symm_buffer_for_mega_moe），声明本 rank 在 MoE dispatch 后最多接收多少 token；该值在所有 EP rank 上必须一致且不小于实际接收量。实际接收量在满载下是确定的：prefill chunk 8192 token × dispatch 复制 topk16 = 131072 个 token-expert 对，EP16 均分后每 rank 8192。0.27.1 时代默认值 6144 < 8192，对称接收窗口溢出，HCCL 集合通信状态被破坏，报 SUSPECT REMOTE ERROR 507057，报告 rank（TP6）并非根因。配置文档与 warning_once 只描述欠配会导致 token 截断式精度下降（软失败），与实际硬崩不符。
+  source: 2026-09-30 github.com issue https://github.com/vllm-project/vllm-ascend/issues/17202 （open）
+  behavior: 按默认配置起服务、发第一个长 prefill 请求，Worker 直接报 SUSPECT REMOTE ERROR 507057，在飞的 30 个请求一起失败、引擎死亡且不可恢复；报错位置离真正的配置项很远，第一反应会去查 HCCL 网络，而配置文档只说调小会掉精度。
+  trigger_surface: CANN MegaMoe 对称内存路径 + A3 EP16 + 长 prefill（max_num_batched_tokens 8192、topk16）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 配置/参数
+        to: MoE路由

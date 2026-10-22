@@ -1,0 +1,57 @@
+id: INF-1607
+legacy_ids: []
+slug: torchair_bmm_epilogue_fusion_batch_broadcast_guard
+aliases: []
+title: BatchMatMul epilogue 融合未拦 batch 轴广播
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: matmul epilogue 融合守卫
+  behavior: epilogue 融合守卫只用 rank 与前置 batch 维比较判断，epilogue 输入 rank 大于 MatMul 输出 rank 的广播情形被放行，融合 kernel 读到错误数据。
+effect:
+  objects:
+  - 数值结果
+  detail: bmm+where 且 where 的额外输入沿 batch 轴广播（[1,1,1,1024] 对 [40,1024,1024]）时，融合出的 CV kernel 取值错位，max_rel≈1.2e4；关闭融合即与 CPU 参考一致，运行期无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对 bmm+epilogue（where/expand）同时跑开/关 MatMul 融合，比较 max_rel；检查 epilogue 额外输入 rank 是否大于 matmul 输出 rank
+  fix: 待定（issue 只给根因与复现，修复应补 rank 更大/广播维度的拦截条件，未附 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Inductor NPU 后端开启 MatMul/BatchMatMul epilogue 融合 + epilogue 额外输入沿 batch 轴广播；CANN 9.2.0、torch_npu 2.9.0、x86_64
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/836
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torchair 的 Inductor NPU 后端在 NPUScheduling._matmul_epilogue_fusion_status 里判断 MatMul/BatchMatMul 能否与 epilogue 融合，其拦截输入 batch 轴广播的逻辑用 FX/IR 层的 V.graph.get_buffer().get_size() 做 rank 比较：len(inp_size) < len(matmul_size) 时拒绝；len 相等且前导 batch 维不等时拒绝。当 epilogue 额外输入的 rank 大于 MatMul 输出 rank（例：bmm 输出 reshape 成 [1,40,1024,1024]，where 的另一输入 expand 成 [1,1,1,1024]，rank 更大）时，两条判断都不成立，广播情形被放行并融合进 CV kernel，kernel 生成的地址/步长按非广播布局计算，读到错误数据。issue 给出完整复现：torch.bmm([40,1024,128],[40,128,1024]) → reshape(1,40,1024,1024) → torch.where(bool[1,1,1024,1024], view_10, arg7_1.expand(-1,-1,1024,-1))，用 torch.compile(backend=tng.get_npu_backend())；开启 MatMul 融合时 max_rel≈1.2e4，关闭融合与 CPU 参考一致（4.6e-1 为参考自身误差）。环境 CANN 9.2.0、torch_npu 2.9.0、Python 3.12、x86_64。
+  source: 2026-09-26 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/836 （closed）
+  behavior: 图模式下把 bmm 和 where/expand 这样带广播的 epilogue 写在一起时，输出数值大面积错（相对误差能到 1e4 量级），形状和 dtype 都对、程序不报错；把融合关掉或用 eager 跑同一组输入结果正常，因此很容易被当成模型自身问题。
+  trigger_surface: Inductor NPU 后端 MatMul/BatchMatMul epilogue 融合 + epilogue 额外输入沿 batch 轴广播（rank 大于 matmul 输出 rank）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - title

@@ -1,0 +1,63 @@
+id: INF-2013
+legacy_ids: []
+slug: torch_npu_workspace_allocator_ptrs_race
+aliases: []
+title: NPUWorkspaceAllocator 指针表无锁并发
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: NPUWorkspaceAllocator
+  behavior: allocated_ptrs（.cpp:549 的 flat_hash_map）无同步保护；replace_allocated_ptr 在 DeviceWS 锁释放后才跑，与 free、empty_cache 并发读写
+effect:
+  objects:
+  - 数值结果
+  detail: 多线程 malloc/free 时 find/erase/operator[] 无锁访问 allocated_ptrs（类无 mutex），取到错误 device 或漏记指针，workspace 被释放到错误设备、偶发越界写；无报错、随机复现
+  visibility: 不可复现
+mitigation:
+  detect: 多线程反复 malloc/free workspace 张量并穿插 empty_cache，用 TSan 或指针表长度断言观察 find/erase 与 clear 的交叉
+  fix: 待定（issue 给出方案：在 replace_allocated_ptr、get_allocated_device、empty_cache 的 clear 内部加锁，不能在外层 malloc/free 整体持锁以免 std::mutex 重入死锁；empty_cache 改为只清对应 device）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch_npu NPUWorkspaceAllocator + 多线程并发 malloc/free workspace + 额外线程触发 empty_cache
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5092
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend/pytorch issue 5092（2026-09-24，open）：NPUWorkspaceAllocator.cpp:549 声明 ska::flat_hash_map<void*, int> allocated_ptrs，类本身没有 mutex；只有内部 DeviceWorkspaceAllocator 有 std::recursive_mutex，那把锁不保护 allocated_ptrs。三条无锁路径：malloc→replace_allocated_ptr（449→551-558，find+erase+operator[]）、free→get_allocated_device（535→560-567，find）、empty_cache→allocated_ptrs.clear()（456）。replace_allocated_ptr 在 DeviceWorkspaceAllocator::mutex 释放之后执行，完全裸露在并发中。issue 还指出 empty_cache 的 clear 会清掉所有 device 的条目，应只清对应 device；并分析加锁必须放在 helper 内部，外层整体持锁会因 std::mutex 不可重入而死锁。
+  source: 2026-09-24 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5092 （open）
+  behavior: 多线程推理或训练里 workspace 张量频繁分配释放时，偶尔出现释放到错误设备、后续算子读到别的流的 workspace 或直接越界写，表现为随机的结果不对或偶发 crash；重跑同样的负载未必复现，日志里也没有相关报错，很难和分配器联系起来。
+  trigger_surface: torch_npu NPUWorkspaceAllocator + 多线程 malloc/free + empty_cache
+  discovery: 2026-10-21 系统扫描 sweep_5（顺序深读）
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（原文未提 rehash，机制细节无据）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes
+  - date: '2026-10-21'
+    fields:
+    - effect.detail

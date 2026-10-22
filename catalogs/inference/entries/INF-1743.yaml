@@ -1,0 +1,55 @@
+id: INF-1743
+legacy_ids: []
+slug: ops_nn_bn_training_update_grad_scalar_tail_v_s_race
+aliases: []
+title: bn_training_update_grad 标量尾处理漏 V→S 同步
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: bn_training_update_grad
+  behavior: 标量尾处理覆写 tailG/tailP 前没等上一轮向量 ReduceSum 读完，标量写与向量读并发提交，上一块部分和被混入当前块 lane。
+effect:
+  objects:
+  - 数值结果
+  detail: arch35/950、ND 布局、归约轴 R==1、N≥2·VL_FP32 时两轮形态随机丢/重计 lane，误差随运行时刻变化；N<2·VL 单轮不触发。
+  visibility: 不可复现
+mitigation:
+  detect: R==1 且 N≥2·VL_FP32 的 ND 用例连跑多轮比对输出；单轮或小 N 用例看不出随机性。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/10809 （合入状态未核实）：3 处标量覆写前插入 SetFlag/WaitFlag<HardEvent::V_S>。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: arch35（950PR/950DT）+ bn_training_update_grad + ND + R==1 + N≥2·VL_FP32
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6021
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6021（2026-09-20，closed）：arch35（Ascend 950PR/950DT）、CANN 版本与本仓 master 配套。norm/bn_training_update_grad 的 arch35 kernel 在 ND 布局、归约轴 R==1、N 较大（N≥2·VL_FP32）时，标量尾处理路径覆写尾缓冲 tailG/tailP 前缺少等待上一轮向量 ReduceSum 读取完成的 V_S 同步，标量写与向量读并发提交，导致上一块的部分和混入当前块 lane，实测两轮形态随机丢/重计 lane。修复在 ProcessScalarTinyR 路径、ND R==1 大 N 按 VL_FP32 分批归约的每一轮、以及按 nRowsCap 分批末批 rem>0 的尾缓冲复用处共 3 处插入 SetFlag/WaitFlag<HardEvent::V_S>。
+  source: 2026-09-20 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6021 （closed）
+  behavior: 同一份 ND 输入、R 轴只有 1、N 较大的 batch-norm 训练更新，多次运行得到的部分和不一致：有时丢计某个 lane、有时重复计入，误差随运行时刻变化，没有任何报错；把 N 降到小于 2·VL_FP32 或改成非 ND 布局就稳定，因此常规小规模用例复现不出来。
+  trigger_surface: bn_training_update_grad arch35 标量尾处理 + 多轮向量归约
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,61 @@
+id: INF-1872
+legacy_ids: []
+slug: npugraph_ex_static_kernel_dump_replays_inplace_graph
+aliases: []
+title: npugraph_ex 静态 kernel dump 重放图改坏输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: 静态 kernel 取算子 JSON
+  behavior: static_kernel_compile 为取算子 JSON 把整张 FX 图多执行一遍，原地算子没有输入隔离，调用方张量被写穿，结果按被改后的输入算出。
+effect:
+  objects:
+  - 数值结果
+  detail: 含 x.add_(1) 的模型在 static_kernel_compile=True、fullgraph 下调用后输入从 arange(4) 变成 +1 的值，输出与期望不符；关掉静态 kernel 正常，全程无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 编译前后对传入张量 clone 比对；或对含原地算子的图开/关 static_kernel_compile 各跑一次比输出
+  fix: 待定（issue closed，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torchair npugraph_ex + static_kernel_compile=True（dump 路径每次必走）；forward 内含原地修改输入的算子
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/800
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1604
+pattern: PAT-INF-0184
+original:
+  mechanism: 'Ascend/torchair #800：npugraph_ex 后端的静态 kernel 编译（options={"static_kernel_compile": True, "disable_static_kernel_compile_cache": True}，fullgraph=True、dynamic=False）为了拿到算子 JSON，会把 FX 图先按单算子执行一遍；这一步没有对原地算子做输入隔离，也没有在跑完后恢复输入。模型 forward 里含 x.add_(1) 时，这遍「取 JSON」的执行直接改写了调用方传入的真实张量，随后正式执行又在这个已被改过的输入上算，输出与期望不符；调用方事后读自己的输入也是被改过的值。报告的最小复现用 arange(4) 作输入，断言 assert_close(actual_input, original+1) 暴露输入被写穿、actual 与 expected 不符；issue closed，未给出修复说明。'
+  source: 2026-09-19 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/800 （closed）
+  behavior: 编译期就悄悄改掉了你自己的输入张量：跑完 compiled(x) 之后 x 已经不是原来的值（被 +1 过），所以输出也对不上，模型里只要有一个原地算子（add_、copy_、原地归一化之类）就会中招。全程不报错，关掉静态 kernel 编译就正常；排查时很难想到是「取算子 JSON 那一步多跑了一遍图」。
+  trigger_surface: torchair npugraph_ex + static_kernel_compile=True；forward 内含原地修改输入的算子
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

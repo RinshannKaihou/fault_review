@@ -1,0 +1,65 @@
+id: INF-1756
+legacy_ids: []
+slug: inductor_mlir_backend_wrong_output_nan
+aliases: []
+title: MLIR 后端整图编译标准 CNN 输出 NaN 与错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: Inductor MLIR 后端图级编译
+  behavior: npu_backend=mlir 整图编译产物与 eager 完全不同：resnet18、mobilenet_v2 输出 NaN，或输出量级整体改变、最大相对误差 12682.66；逐算子与部分 stage 组合编译均正确。
+effect:
+  objects:
+  - 数值结果
+  detail: resnet18 bs8 fp32：eager absmax 0.162 对 mlir 0.715，最大相对误差 12682；错误幅度跨进程在 0.28~2.0 间变化、同进程两次仅差 2.98e-07；dynamic=True 可规避，Triton/DVM/NPUGraphs 后端均 PASS。
+  visibility: 数值异常
+mitigation:
+  detect: 标准 CNN 在 npu_backend=mlir 下与 eager 比 max|diff| 与 isnan；再按 stage 二分（stem/layer1..4 单独编译均正确，合并到 layer3 才错）
+  fix: 待定（issue open）；规避：dynamic=True，或改用 Triton/DVM/NPUGraphs/TorchAir-GE 后端；建议把 resnet 类标准模型的 MLIR 正确性纳入 CI
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: torch.compile(options={"npu_backend":"mlir"})（或 TORCHINDUCTOR_NPU_BACKEND=mlir）+ torch_mlir 0.0.1 + 标准 CNN 整图；910B3 / CANN 9.1.0 / torch 2.9.0 / torch_npu 2.9.0.post6（26.1.0）/ triton_ascend 3.2.2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: '#5063（resnet18 NaN）、#5214（mobilenet_v2 跨模型 NaN）、#4825（resnet18 错值 0.28~2.0，已二分到临界编译组合）合并为一条；#4825 标题标注「重复-请忽略」，三条同后端同症状。'
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5063
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/issues/5214
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/issues/4825
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5063（2026-09-23，open，HiDevLab A3 / Ubuntu 22.04 / CANN 9.1.0 / torch 2.9.0+cpu / torch_npu 2.9.0.post6 / triton_ascend 3.2.2 / torch_mlir 0.0.1）、#5214（2026-09-28，open，Ubuntu 22.04.5 aarch64 / CANN 9.1.0 / torch 2.9.0+cpu / torch_npu 2.9.0.post6 / triton_ascend 3.2.2 / Ascend 910B3）、#4825（2026-09-15，closed，Atlas 800T A2 910B3 / CANN 9.1.0 / torch 2.9.0 / torch_npu 2.9.0.post6 / triton_ascend 3.2.2 / torch-mlir 0.0.1）：torch.compile(backend="inductor", options={"npu_backend":"mlir"}) 整图编译标准 CNN 后输出与 eager 完全不同。resnet18 bs8 fp32 上 max_abs_diff=NaN、正确性 FAIL（#5063），输出量级整体改变：eager absmax 0.1621512770652771 对 mlir absmax 0.7145952582359314，最大相对误差 12682.66（#4825）；mobilenet_v2 bs32 3×224×224 同样 NaN（#5214）。#4825 的系统二分表明：逐算子（conv/linear/bn/relu/pool）、单 stage、stem+layer1+layer2 各自编译都正确，只有 stem+layer1+layer2+layer3 合并成同一张图才出错，错误幅度跨进程在 0.28~2.0 间变化、同进程内两次运行稳定在 2.98e-07，dynamic=True 可规避；同环境同模型 Inductor-Triton（max diff 1.776e-15）、Inductor-DVM、NPUGraphs/NPUGraph_EX/AOT_Eager、TorchAir-GE 全部正确，可把缺陷定位在 MLIR 编译路径（融合/数据类型处理/Tiling），而非模型、输入或硬件。'
+  source: 'Ascend/pytorch #5063（2026-09-23，open）、#5214（2026-09-28，open）、#4825（2026-09-15，closed） https://gitcode.com/Ascend/pytorch/issues/5063 https://gitcode.com/Ascend/pytorch/issues/5214 https://gitcode.com/Ascend/pytorch/issues/4825'
+  behavior: 用 mlir 后端编译 resnet18/mobilenet_v2 这类标准 CNN，编译状态是 COMPLETED、不报错，跑完也不崩，但输出整片 NaN 或整体量级都变了（eager absmax 0.16 对 mlir 0.71）。同环境换任一其它后端逐位一致，所以只有把 compiled 输出与 eager 对比、或下游指标突然崩掉才会发现；同一进程里错误值稳定复现，跨进程幅度还会变。
+  trigger_surface: npu_backend=mlir 整图编译（多个 stage 合并进同一张图）+ fp32 标准 CNN 推理
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - behavior

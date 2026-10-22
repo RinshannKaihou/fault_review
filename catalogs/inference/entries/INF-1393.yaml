@@ -1,0 +1,79 @@
+id: INF-1393
+legacy_ids: []
+slug: vllm_ascend_ascendstore_multi_group_load_error_swallowed
+aliases: []
+title: vllm-ascend AscendStore 多 KV 组加载失败不上报
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: AscendStoreConnector 错误上报
+  behavior: lookup 命中但部分块 batch_get 返回 -704，connector 仅记日志；多组请求不经 get_block_ids_with_load_errors() 上报，scheduler 不知前缀不完整
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 多 KV cache 组模型（Kimi-K3 W4A8 内部 checkpoint）decode 继续用无效/未初始化 KV 生成损坏输出；重复同 prompt 可复现，换前缀绕过
+  visibility: 静默错误
+mitigation:
+  detect: 扫描 connector 日志中被跳过的失败块；v0.30 scheduler 可检测跨组 invalid block 重算（需 connector 先上报）；未评估
+  fix: 待定（issue open 无修复链接；期望 connector 上报失败块后由 scheduler 重算请求）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 多 KV cache 组（hybrid）模型 + AscendStoreConnector(mooncake, use_layerwise=false, load_async=false) + lookup 命中但部分对象缺失（-704）；4 节点 DP4/TP16 Kimi-K3 W4A8 实测
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/18794
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/19101
+  kind: github_pr
+relations: []
+pattern: PAT-INF-0186
+original:
+  mechanism: vllm-ascend AscendStoreConnector（非 layerwise、同步 load_async=false、Mooncake backend、register_buffer）在 hybrid/多 KV cache 组请求下：Mooncake lookup 报前缀命中，但后续 AscendStore 后端加载可对部分块返回 -704 OBJECT_NOT_FOUND。当前代码记录失败块日志，却在 len(block_ids_by_group)!=1（即多组）时不通过 get_block_ids_with_load_errors() 上报。vLLM scheduler 因此不知道已加载前缀不完整，decode 继续用无效/未初始化的 KV 产生损坏输出。结构性条件是一个请求跨越多个 KV cache 组。可用 CPU 单测 mock 后端 get() 对两组请求部分失败复现（无需真实 Mooncake 不一致注入）。
+  source: https://github.com/vllm-project/vllm-ascend/issues/18794
+  behavior: 带多 KV cache 组的模型（如内部 Kimi-K3 W4A8 checkpoint）配合 AscendStoreConnector+Mooncake 的服务，当前缀对象在远端缺失时：lookup 仍报命中、日志里出现被跳过的失败块，但请求不重算，decode 直接用残缺 KV 继续生成——输出内容损坏且无用户可见错误。重复同一 prompt 稳定复现坏路径；换一个前缀避开失效远端对象后输出恢复正常。
+  trigger_surface: vLLM-Ascend 0.27.1rc1 / vLLM 0.27.1 / CANN 9.1.0；多 KV cache 组（hybrid）模型；AscendStoreConnector + mooncake backend + use_layerwise=false + load_async=false；Mooncake 对象 lookup 命中与 batch_get 结果不一致（如 -704）
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - '2026-10-17 回访 2026-10-17：修复方向演进为隔离 Memcache 传输失败（#19101 main / #19090 v0.30.0，均 open）；issue 本体 open 无状态变化。'
+  - '2026-10-19 回访 2026-10-18：隔离传输失败修复 #19101 closed merged（main），v0.30.0 backport #19090 亦 merged；发布未核实'
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出内容
+        to: KV状态
+  updates:
+  - date: '2026-10-17'
+    fields:
+    - evidence
+  - date: '2026-10-17'
+    fields:
+    - original.notes
+  - date: '2026-10-19'
+    fields:
+    - original.notes
+  - date: '2026-10-21'
+    fields:
+    - pattern

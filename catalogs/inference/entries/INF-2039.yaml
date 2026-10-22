@@ -1,0 +1,65 @@
+id: INF-2039
+legacy_ids: []
+slug: vllm_ascend_memcache_put_rank_desync_engine_exit
+aliases: []
+title: MemCache 单 rank put 慢或失败致 TP 失步退出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MemCache save 路径
+  behavior: request_queue.join() 只等 task_done 被调用，不检查 batch_put 返回码也没有超时；单 rank 慢或 put 失败后各 TP rank 在后续 HCCL 集合通信的时序与序号上分叉
+effect:
+  objects:
+  - 可用性/进度
+  detail: 单TP rank put慢或失败：注入220s延迟并返回-7后，T+102s STUCK，T+218s EI0002/507001，T+230s EngineDeadError、4个Prefill API全部退出；put返回-1时请求仍200，保存失败被完全吞掉。
+  visibility: 挂起
+mitigation:
+  detect: 统计每个 TP rank 的 batch_put_from_layers 返回码与耗时；对 put 加超时和 TP 内失败共识，检查 save 完成后各 rank 的集合通信序号是否一致
+  fix: '待定（issue 指出 #13119 只恢复了 join 屏障，没有界定期限、没有 save 结果、没有 TP 级失败共识）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend AscendStore + MemCache 非 layerwise save 路径，后端 put 失败或长尾；P/D 分离 Prefill 侧
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14106
+  kind: github_issue
+relations: []
+original:
+  mechanism: 非 layerwise 的 AscendStore + MemCache save 路径（pool_worker.py 里 kv_send_thread.add_request 后 request_queue.join()；memcache_backend.py 的 store.batch_put_from_layers 失败只 logger.error 不返回；kv_transfer.py 的 m_store.put 后 task_done）把 Queue.join() 当成「KV 已保存成功」，实际上它只表示 task_done 被调用，既不带返回码也没有超时。每个 TP rank 有独立的队列和线程、key 也按 rank 分片，因此单个 rank 的后端长尾或失败会让各 rank 在后续 HCCL 集合通信上以不同时间/不同序号进入。报告者在隔离环境注入单 rank 220s 延迟并返回 -7，两次复现同一崩溃链：T+102s STUCK → T+180s SynchronizeExecutedTask 三分钟超时 → T+218s EI0002/507001 → T+230s EngineDeadError、4 个 Prefill API 全部退出（16 个 Decode API 与 MemCache 仍存活）；注入期间 0 个 error cqe、0 个 COMPERR。
+  source: 2026-08-12 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14106 （open）
+  behavior: 生产上先看到 MemFabric device_sdma CQE status 9 / BatchCopyData failed / MemCache put failed -1，几分钟后整个 TP 组三分钟无进展，接着 HCCL Notify Wait timeout（EI0002、507001），worker SIGABRT、EngineDeadError，所有 Prefill API 进程退出，Decode 侧和 MemCache 服务却都还活着。更隐蔽的是单 rank put 只返回 -1 时请求照样 200，保存失败被完全吞掉。
+  trigger_surface: AscendStore + MemCache 非 layerwise save，单 TP rank put 慢或失败
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.objects
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

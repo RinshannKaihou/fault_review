@@ -1,0 +1,60 @@
+id: INF-1436
+legacy_ids: []
+slug: cann_round_family_negative_zero_sign_loss
+aliases: []
+title: CANN 取整/双曲族负零符号位丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: 闭源舍入内核 910 路径
+  behavior: round 结果幅值为 0 的负输入（-0.5/-0.4/-0.0）返回 +0.0 丢符号位；同机 910 路径 Trunc/Ceil/Floor/Round/Sinh 同款，arch35 实现显式保符号而 910 内核缺失该处理。
+effect:
+  objects:
+  - 数值结果
+  detail: NPU round(-0.5)=+0.0（CPU为-0.0），-0.0输入符号翻转；signbit逐位对照NPU与CPU多处不一致，幅值逐位正确；依赖signbit/copysign/1/x→±inf的下游与逐位golden比对被静默破坏。
+  visibility: 静默错误
+mitigation:
+  detect: signbit(x.round()) 与 CPU 对照（≤秒级单算子探针）；对 (-0.5,0) 区间输入做逐位比对
+  fix: '待定（op-plugin #591 作为追踪入口 open：两条通路均闭源 CANN 算子，op-plugin 侧无可修分支，修复点在 CANN aclnnRound/Round/aclnnRoundDecimals 内核补负零符号恢复；同机 ops-math#3446 Trunc/Ceil/Floor/Round/Sinh 五算子同款待修）'
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Atlas A3（Ascend910_9362 双芯行为一致）、CANN 9.1.0（round 路径）/9.0.0（3446 路径）、torch_npu 2.7.1.post4；输入为结果幅值为 0 的负数（round/trunc/ceil/floor 的 (-0.5,0] 区间、sinh(-0.0)）；fp32 真机确定性复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: 范围变更+新证据改判：ops-math#3446 于 2026-10-14 判留观（数值面窄、合并量控制）；10-18 op-plugin#591 提供同机 round 通路闭源定位（op_plugin_functions.yaml round.out→aclnnRound 主通路与 aclops 兜底均闭源、无可修分支）+ arch35 源码级对照（arch35 trunc_dag.h 显式 Duplicate(UINT32_SIGN)+And+Or 保符号，910 路径未做），两单合并收录为同根因家族。
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/591
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3446
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0167
+original:
+  mechanism: torch.round 在 NPU 上对结果幅值为 0 的负输入返回 +0.0 而非 -0.0（IEEE-754 round-half-to-even 应保留符号位）：round(-0.5)/round(-0.4) CPU 给 -0.0、NPU 给 +0.0；-0.0 输入符号位被翻转。幅值全部逐位一致仅符号位丢失，双芯复跑一致。根因链：op_plugin_functions.yaml round.out 条目主通路直接调用闭源 aclnnRound，旧机兜底 RoundKernelNpu.cpp 走闭源 CANN Round 算子，op-plugin 侧只有整型恒等守卫与格式搬运、无自实现舍入算术——修复点在 CANN 舍入内核（aclnnRound/Round/aclnnRoundDecimals 需对 round 后幅值为 0 的负输入恢复符号位）。同机 ops-math#3446（2026-10-10，A3/910 arch 2201 路径，CANN 9.0.0）：Trunc/Ceil/Floor/Round/Sinh 五算子结果为负零时同样返回 +0.0，真机逐位证据（期望 0x80000000 实得 0x0）；定位线索：仓内 arch35/ascend950 实现（trunc_dag.h）显式做符号位保留（Truncate 后 Duplicate(UINT32_SIGN)+And+Or 把输入符号位或回结果），910(2201) 所走内核路径未做该处理。两单同机同根因家族（910 路径负零符号恢复缺失），合并收录。复现：A3 真机 /mnt/workspace/a3hunt/round2/repro_round_negzero.py（#591）、逐位 int32 探针（#3446）。
+  source: 2026-10-18 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/591 （open，追踪入口）；同机同根因 ops-math#3446 https://gitcode.com/cann/ops-math/issues/3446 （open，2026-10-14 本库曾留观）
+  behavior: 在 NPU 上对 -0.5、-0.4 这类舍入后幅值为 0 的负数调用 torch.round，得到 +0.0 而 CPU 为 -0.0；输入 -0.0 时符号位也被翻转为 +0.0。signbit 逐位对照 NPU 与 CPU 多处不一致，幅值本身逐位正确。trunc/ceil/floor/sinh(-0.0) 在同机同样丢负号。依赖 signbit/copysign/1/x→±inf 语义的下游逻辑与逐位 golden 比对被静默破坏，无任何告警。
+  trigger_surface: CANN 闭源舍入/取整/双曲内核 910(2201) 路径；fp32；输入落在结果为负零的区间；Atlas A3 双芯、CANN 9.0.0/9.1.0、torch_npu 2.7.1.post4
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern

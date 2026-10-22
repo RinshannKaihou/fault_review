@@ -1,0 +1,57 @@
+id: INF-1404
+legacy_ids: []
+slug: trtllm_grouped_mla_gen_missing_cumseqlens
+aliases: []
+title: TRT-LLM grouped MLA 核缺 cumSeqLens 批>1 错读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tensorrt-llm
+    component: AttentionOp MLA 生成参数
+  behavior: AttentionOp 填 runner 参数从不设 cumSeqLensQ/Kv 指针；mSelectsGroupedMla=true 选中 grouped MLA 生成核时读取它们；默认核不读，main 无症状
+effect:
+  objects:
+  - 数值结果
+  detail: 微基准（Kimi K3 MLA decode+MTP）batch 1 正确、batch 4/16 输出错（sum -209.5/-218.6 vs 期望 -243.7）；serving batch-4 图捕获 illegal address，batch 5..16 偶然成功
+  visibility: 静默错误
+mitigation:
+  detect: 开启 grouped 选择后对 batch>1 做输出 sum 对照；graph 捕获失败即信号；未评估
+  fix: 待定（issue open；报告者验证过的 workaround：grouped 选择开启且 batch>1 时 AttentionOp 先launch 单 CTA 核写 cumSeqLensQ[i]=i*maxSeqLenQ 与 cache_seq_lens 前缀和到捕获前分配的 device buffer，batch 1 跳过，可成 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: TensorRT-LLM main（C++ AttentionOp + trtllm-gen FMHA）；SM107；BF16 MLA 生成（HQk 576/HV 512）+ paged KV 32 token/页 + mSelectsGroupedMla=true + batch>1；Kimi K3 MTP 实测
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/20375
+  kind: github_issue
+relations: []
+original:
+  mechanism: TensorRT-LLM cpp/tensorrt_llm/common/attentionOp.cpp 的 trtllm-gen MLA 生成分支填 TllmGenFmhaRunnerParams 时 seqLensKvPtr=params.cache_seq_lens 但从不设 cumSeqLensQPtr/cumSeqLensKvPtr。当前默认选择的 SwapsAbForGen 内核不读这两个指针所以 main 无症状（潜伏缺陷）；当 FmhaOptions::mSelectsGroupedMla=true（#15009 提议方向）选中 grouped tokens×heads MLA 生成核（VarSeqQ64Kv128{Static,Persistent}GroupedKeepsAbForGen）时它们被读取：standalone TllmGenFmhaRunner 微基准（Kimi K3 MLA decode 形状+MTP、KV len 64）batch 1 正确、batch 4/16 错（输出 sum -209.5/-218.6 vs 期望 -243.7）；传入正确 cumSeqLensQ=[0,T,2T,...] 与 cumSeqLensKv=cache_seq_lens 前缀和后全部 batch 与非 grouped 核一致。serving（Kimi K3+MTP+CUDA graphs）下 batch-4 图捕获在 grouped cubin 加载后即 CUDA_ERROR_ILLEGAL_ADDRESS，batch 5..16 偶然成功。#15009 只测了 batch 1 所以没暴露。相关：#20376（mask type 注册不匹配）、#20377（NVRTC fallback 失败）、#20382（FP8 KV grouped E4M3 cubin heads/rank 不整除 64 时挂起）。
+  source: https://github.com/NVIDIA/TensorRT-LLM/issues/20375
+  behavior: 开启 grouped MLA 生成核选择的 TensorRT-LLM 服务（SM107、BF16 MLA、MTP），batch>1 的生成输出静默错误（微基准输出 sum 偏差 ~15%），或 CUDA graph 捕获直接 illegal address 崩溃（batch 4）；某些 batch 尺寸（5..16）碰巧成功。默认路径（未开 grouped 选择）当前无症状。
+  trigger_surface: TensorRT-LLM main；SM107；MLA 生成（HQk 576/HV 512）+ paged KV 32/页 + mSelectsGroupedMla=true + batch>1；Kimi K3 with MTP serving 与微基准均复现
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 算子/内核
+    rewritten:
+    - behavior

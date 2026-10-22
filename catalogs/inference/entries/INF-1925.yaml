@@ -1,0 +1,59 @@
+id: INF-1925
+legacy_ids: []
+slug: mindformers_dsv4_hash_seqaux_natural_topk
+aliases: []
+title: hash 层 seq-aux 用自然 top-k 统计专家
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: mindformers
+    component: hash 层 seq-aux 的 f_i 统计
+  behavior: hash layer 的 seq-aux 用 router 自然 top-k 统计 f_i，而不是 checkpoint tid2eid 实际选中的 expert，aux loss 与 router 梯度随之算错
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 单卡 910B、FP32、关闭全部 fused 路径下，DeepSeek-V4 小算子训练的 LM/MTP/indexer/seq-aux loss 与 MindSpeed-LLM 不一致；另有 first_k_dense_replace=-1 未按全 MoE 处理、RMSNorm 等顺序不同
+  visibility: 静默错误
+mitigation:
+  detect: 同权重、同 token batch、non-fused AdamW，与参考实现对齐 2000 step，逐指标看 LM/MTP/indexer/seq-aux 绝对误差；hash 层单独 dump tid2eid 与 router top-k 的专家集合比对
+  fix: issue 自述已修复：2000 step 内 LM 2.5e-5、MTP 2.67e-5、indexer 6.66e-5、seq-aux 3.54e-6，并新增 transformer config、small-op expert、mHC、hash seq-aux 定向回归（本地 14 passed）；未附 PR 链接（closed，合并状态未核实）
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: DeepSeek-V4 小算子（non-fused）训练配置 + hash layer/seq-aux；单卡 910B、FP32 参数与计算即可复现，无需并行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2429
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend 910B 单卡，相同基础权重、token batch、数据集与 non-fused AdamW，运行含 DSA/indexer、HCA、MTP、MoE、mHC 与 seq-aux 的 DeepSeek-V4 小算子训练（关闭 DSV4 fused indexer 与 fused indexer loss、fused MLP、fused MoE permutation、fused RMSNorm、fused SwiGLU、Ascend/Triton mHC；FP32 参数与计算），MindFormers 与 MindSpeed-LLM 的 loss 轨迹不一致。差异来自四处执行语义/浮点顺序：(1) first_k_dense_replace=-1 未按“所有 decoder layer 均为 MoE”处理；(2) 主 decoder、MTP、mHC fold 与 final RMSNorm 的执行顺序不一致；(3) 小算子 attention/indexer、Sinkhorn、expert Linear/SwiGLU、router probability 的算子顺序不同；(4) hash layer 的 seq-aux 用 router 自然 top-k 统计 f_i，而不是 checkpoint tid2eid 实际选中的 expert，导致 aux loss 和 router gradient 错误。最小验证配置：单卡、2 个 decoder layer、1 个 MTP layer、hidden 32、FFN 32、8 head、8 expert、top-k 2、4 条 mHC residual stream、seq 512、bs 1。修复后 2000 step 内最大绝对误差 LM 2.5e-5、MTP raw 2.67e-5、indexer raw 6.66e-5、seq-aux raw 3.54e-6（2000/2000 step 在 1e-4 内），双方 canonical token-batch hash 完全一致。基线 mindformers master 75add4fa，CANN 9.1.0-beta.3，对标 MindSpeed-LLM 26.0.0-910b 镜像。
+  source: '2026-07-13 GitCode mindspore/mindformers issue #2429 https://gitcode.com/mindspore/mindformers/issues/2429（closed；附修复后 2000-step 对齐数据）'
+  behavior: 同权重同数据跟 MindSpeed-LLM 对练时，DeepSeek-V4 的 loss 曲线会缓慢分开：单看前几十步差异很小、没有 NaN 也不报错，但 2000 step 下来 LM/MTP/indexer/seq-aux 各条 loss 都稳定偏离参考，训练出来的模型和参考实现不是一个东西。最隐蔽的是 hash 层：aux loss 和 router 梯度用的是 router 自己算出来的 top-k，而不是 checkpoint 里 tid2eid 指向的专家，两套专家集合在 hash 层并不一致，从 loss 上只表现为小幅系统性偏移。
+  trigger_surface: DeepSeek-V4 小算子（non-fused）配置 + hash layer/MoE seq-aux 打开；单卡 FP32 即可复现
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: 模型定义

@@ -1,0 +1,64 @@
+id: INF-1723
+legacy_ids: []
+slug: ms_msa_gelu_impl_divergence
+aliases: []
+title: MSA 的 GELU 实现差异使 MLP 输出与 PTA 分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: GELU 激活实现（MSA）
+  behavior: MSA 的 GELU 实现与 PTA 不一致：fc1 输出逐元素相同，GELU 之后张量开始分叉；公式层面的具体差异 issue 未给出，显式替换 GELU 实现后 task3 对齐。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: MSA 双栈 bf16、同权重同输入下 task3 的 logits 与 PTA 不一致，差异不在 attention 也不在 loss；逐层 dump 显示 embedding、attention、fc1 输出逐元素一致，第一处分叉在 fc1→GELU→fc2 之间；不报错、无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 同权重同输入双栈逐层 dump：linear_fc1.output 一致而 linear_fc2.input 不一致，即定位到激活；把 GELU 换成 PTA 等价实现看是否对齐
+  fix: 待定（issue open，无修复 PR）；issue 报告的经验规避是显式替换 GELU 实现后 task3 对齐
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: MSA（MindSpore Adapter）+ decoder MLP 的 GELU 激活，bf16，双栈同权重同输入对比
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29230
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: LMSV 在 PTA 与 MSA 之间做一致性对比：输入 tensor 相同、shared weight 与 embedding/backbone/lm_head 权重已对齐、graph 结构与 state_dict keys 已对齐，task3 的 logits 仍不一致。逐层 dump 显示 embedding、block0.input_layernorm、self_attention 的 linear_qkv/linear_proj、pre_mlp_layernorm、linear_fc1.output（含 after_bias）全部逐元素一致，第一处分叉出现在 linear_fc1.output 之后、linear_fc2.input 之前，即 fc1→GELU→fc2 这段；显式替换 GELU 实现后 task3 对齐。issue 未给出 GELU 公式层面的具体差异。环境为 MSA 双栈 bf16 对比。
+  source: 2026-03-15 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29230 （open）
+  behavior: 把 PTA 上跑通的 decoder 迁到 MSA，权重、输入、图结构都对齐之后 logits 仍然对不上，而且差异不在 attention 也不在 loss，而是在 MLP 的激活之后：fc1 输出逐元素相同，GELU 出来就对不上。没有报错、没有 NaN，只能靠逐层 dump 定位；替换 GELU 实现后恢复一致。
+  trigger_surface: MSA + decoder MLP 的 GELU 激活，bf16 精度，双栈同权重同输入对比
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+    rewritten:
+    - behavior
+    - detail

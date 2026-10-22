@@ -1,0 +1,66 @@
+id: INF-2047
+legacy_ids: []
+slug: vllm_ascend_mooncake_fullattn_ranklocal_kvheads
+aliases: []
+title: Mooncake 用 rank 局部 KV 头数推远端拉取数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake 跨 TP 组映射
+  behavior: FullAttentionSpec.num_kv_heads 是每 rank 局部头数，连接器当全局头数算远端拉取数；P TP8/D TP2 两侧得 1 次与 2 次，decode 从错误 prefill rank 组读 DFlash KV
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: Kimi K2.7 W4A8+DFlash、32 卡、P DP2×TP8 / D DP8×TP2：长上下文请求周期性失败，decode 侧报 HcclBatchGet result=4、proxy 返回 5xx；同请求主模型 MLA KV 传输成功，仅 DFlash 那组 KV 拿不到。
+  visibility: 报错
+mitigation:
+  detect: 打印序列化的 FullAttentionSpec.num_kv_heads 与模型全局头数、本侧 TP，比较 P/D 两侧推导出的拉取次数；不一致即命中
+  fix: 待定（issue closed，未见修复 PR/MR）：用局部头数乘本侧 TP 还原全局头数后再算 num_d_block_heads/num_p_block_heads
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PD 分离 + MooncakeConnectorV1 + DFlash 分片 FullAttentionSpec + P/D 两侧 TP 不同（TP8 vs TP2）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 与 INF-0364/INF-0649 同属 Mooncake 异构 TP KV 映射族，但本条缺陷是局部/全局头数混用，非 replicated 切片遗漏或 stride 误用，暂不挂 var。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/11885
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend issue 11885（2026-07-12，closed）：四节点 32 卡，镜像 dev-26.1.0.cann9.1.0.day20260709，vLLM 0.23.0、vllm-ascend 0.19.1rc2.dev872+g092841466、torch-npu 2.10.0.post3、CANN 9.1.0 B223，Kimi K2.7 W4A8 + DFlash 投机解码，P DP2×TP8、D DP8×TP2。Mooncake 序列化每个 KV 传输组后由组的 num_kv_heads 推远端 prefill rank 数：num_d_block_heads=max(1,h//decode_tp)，num_p_block_heads=max(1,h//prefill_tp)。FullAttentionSpec 里 num_kv_heads 来自 get_num_kv_heads()，即每 GPU 头数；DFlash 也按 total_num_kv_heads//tp_size 算。全局 8 头时 P 侧序列化为 1、D 侧为 4，连接器当全局值用，得到 1 次与 2 次拉取（正确应两侧都 4 次），decode 因此从错误 prefill rank 组读 DFlash KV。main 2b41938 与 releases/v0.23.0 d17a99c 仍在。
+  source: 2026-07-12 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/11885 （closed）
+  behavior: PD 分离服务里短请求正常，长上下文请求周期性失败：decode 侧日志报 HcclBatchGet result=4，proxy 返回 5xx；同一请求的主模型 MLA KV 传输成功，只有 DFlash 那组 KV 拿不到。调 chunk 大小、重试、改 KV 生命周期都不改变失败模式。
+  trigger_surface: MooncakeConnectorV1 + DFlash 分片 FullAttentionSpec + prefill TP≠decode TP
+  discovery: 2026-10-21 tail_3 顺序深读（历史索引回填，issue created < 2026-10-07）
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（6156描述符与ADXL/HCCL为原文所无）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes

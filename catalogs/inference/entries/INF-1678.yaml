@@ -1,0 +1,51 @@
+id: INF-1678
+legacy_ids: []
+slug: ops_nn_group_reduce_empty_group_dirty_partial
+aliases: []
+title: group reduce 空分组读脏 workspace 致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: Group 模板 Phase1 分核
+  behavior: 9.2.0-beta.2 的 Group 模板 Phase1 用 CeilDiv 分块，rGroupCnt>rOuter 时有空分组、对应核早退不写 workspace 行；Phase2 仍按 rGroupCnt 全行 Reduce。
+effect:
+  objects:
+  - 数值结果
+  detail: 950、9.2.0-beta.2：group 场景（aLoopCntTotal≤coreNum/2 且 rLoopCntTotal>1）输出 NaN/超大值；euclidean_norm shape(11396,150) fp32 axes=[0] 可复现，4 个算子同源。
+  visibility: 数值异常
+mitigation:
+  detect: 构造 aLoopCntTotal≤coreNum/2 且 rLoopCntTotal>1 的 group 用例，与单核结果对比；输出 NaN 或超大值即为命中。
+  fix: 'issue 5590 closed；master 已由 cann/ops-nn!9221（issue #5162）修复，本条跟踪 9.2.0-beta.2 同步；改为大小核式均匀分配，tiling 保证 rGroupCnt≤rOuter。'
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: partial
+  trigger_note: 9.2.0-beta.2 分支 + Ascend 950 + reduction Group 模板场景（aLoopCntTotal≤coreNum/2 且 rLoopCntTotal>1）；master 已修复
+  confidence: documented
+remarks: 典型“发布分支漏带修复”：master 已由 !9221 修掉，9.2.0-beta.2 仍在；影响面是 4 个共享 Group 模板的归约/归一化算子，作者确认 sigmoid_focal_loss 在该分支无 group 代码、不涉及。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5590
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue 5590（2026-09-05，closed）：昇腾 950，分支 9.2.0-beta.2。bn_training_reduce、euclidean_norm、act_ulq_clamp_max_grad、act_ulq_clamp_min_grad 四个算子的 reduction Group 模板 Phase1 仍使用 CeilDiv 截断方式分配 R chunk（rPerCore = (rOuter + rGroupCnt - 1) / rGroupCnt），当 rGroupCnt > rOuter 时产生空分组：对应核早退、不写自己的 workspace 行，而 Phase2 仍以 rGroupCnt 全行做 Reduce，把未写入的脏 GM 数据当作 partial sum 读入，导致静默数值错误（输出 NaN 或超大值）。触发条件是 group 场景 aLoopCntTotal ≤ coreNum/2 且 rLoopCntTotal > 1；euclidean_norm 的复现用例 shape (11396,150) fp32、axes=[0]。master 已修复（cann/ops-nn!9221，对应 issue #5162），本 issue 用于跟踪 9.2.0-beta.2 分支同步。修复方式：改为大小核式均匀分配（rSmallGroupLoopCnt/rBigGroupCnt/rBigGroupLoopCnt），tiling 保证 rGroupCnt ≤ rOuter 恒成立，每组至少 1 个 chunk。'
+  source: 2026-09-05 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5590 （closed）
+  behavior: 在 9.2.0-beta.2 上跑 batchnorm 的 training reduce、euclidean_norm 这类 group 归约时，只要 group 划分比核数稀（每组只有一两个 chunk），输出里就冒 NaN 或极大的值，而同一份输入在 master 或单核下是对的；用例是普通 shape（11396×150，axes=[0]），看起来完全正常，属于算出来的结果悄悄坏掉。
+  trigger_surface: 9.2.0-beta.2 分支 + Ascend 950 + group 归约（aLoopCntTotal≤coreNum/2 且 rLoopCntTotal>1）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

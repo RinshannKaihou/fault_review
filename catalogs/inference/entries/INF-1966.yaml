@@ -1,0 +1,57 @@
+id: INF-1966
+legacy_ids: []
+slug: npu_sdpa_math_backend_selection_ignored
+aliases: []
+title: NPU 上 SDPBackend.MATH 指定不生效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: SDPA 后端选择
+  behavior: GPU 侧用 switch(backend) 选实现，NPU 侧只按参数类型与信息选，SDPBackend.MATH 指定不生效，MATH 后端里按允许低精度归约标志升精度的分支也就不会执行。
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: 高精度标志为 False（关闭高精度）时 NPU 的 bf16 结果仍与 float64 接近，与用例语义相反；NPU 不支持 double 自动降 float32，也拿不到高精度标杆。
+  visibility: 静默错误
+mitigation:
+  detect: 分别用 SDPBackend.MATH 与默认后端跑同一 bf16 q/k/v，翻转 allow_fp16_bf16_reduction_math_sdp 看结果是否变化；NPU 上不随标志变化即为命中
+  fix: 待定（issue 已 closed，正文给的是根因分析，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: FrameworkPTAdapter 7.2.RC1.B080 + CANN 8.3.RC1.B080；SDPBackend.MATH + allow_fp16_bf16_reduction_math_sdp 开关对照
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 同 issue 还记录了全遮蔽行输出非 0（innerPrecise 固定传 0）与 mask 广播缺失两处；本条目只收后端选择不生效这一机制。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2173
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #2173（2026-05-29 closed；FrameworkPTAdapter 7.2.RC1.B080、CANN 8.3.RC1.B080、ARM/X86）：社区用例 test_transformers.py 的 test_math_backend_high_precision_npu 指定 SDPBackend.MATH，用 torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp 控制高精度模式，期望开启时 bf16 结果接近 float64、关闭时明显有误差，实际 NPU 上两种状态都与 float64 接近。根因有三层：NPU 不支持 double，ToKernelNpu.cpp 把 double 静默 cast 成 float，用例拿不到高精度标杆；GPU 侧 scaled_dot_product_attention 通过 switch(backend) 选择实现，NPU 侧只按参数类型与信息选择，SDPBackend.MATH 指定未生效；MATH 后端里才会按 allow_fp16_bf16_reduction_math_sdp 决定是否升精度，既然没走进该后端，标志位就失效。同一 issue 另记录完全遮蔽行预期全 0 实际非 0（pta 固定给 innerPrecise 传 0，aclnnFlashAttentionScore 因此不启用无效行计算）与 CPU 自动扩展 mask 而 NPU 不扩展。'
+  source: 2026-05-29 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/2173 （closed）
+  behavior: 在 NPU 上把 SDPA 后端指定为 MATH、并显式关闭 allow_fp16_bf16_reduction_math_sdp（期望拿到低精度、误差明显的 bf16 结果）时，结果仍然贴近 float64，与开关语义相反；反过来打开开关也看不出差别。用户以为自己在用 MATH 高精度路径，实际走的是 NPU 自己选的 fused attention 路径，精度标志被静默忽略；上游用例因此判 fail，而失败原因与真实数值错误无关。
+  trigger_surface: torch.nn.functional.scaled_dot_product_attention 指定 SDPBackend.MATH + allow_fp16_bf16_reduction_math_sdp 开关（NPU）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

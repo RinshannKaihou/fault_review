@@ -1,0 +1,61 @@
+id: INF-1833
+legacy_ids: []
+slug: vllm_ascend_v2_rejection_sampler_u_zero
+aliases: []
+title: v2 拒绝采样硬编码 u=0 致随机采样恒接受草稿
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: v2 rejection_sampler
+  behavior: v2 投机解码的拒绝采样把概率检验的均匀随机数硬编码为 u=0.0，log(u)=-inf 使 target_log_prob > log(u)+draft_log_prob 恒成立，草稿永不被拒
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: temperature>0 的投机解码请求草稿 token 全被接受、拒绝采样不生效：长文本用词发散、指令遵从下降；服务不报错，仅接受率异常高
+  visibility: 质量退化
+mitigation:
+  detect: 统计非贪心投机请求的草稿接受率，接近 100% 即异常；或用同一 seed 比较投机与非投机输出的分布
+  fix: 待定；报告者建议改用同文件 line 71 已验证的 NPU 写法 gumbel_seed = tl.randint(seed, pos); r = tl.rand(gumbel_seed, block) 得到 u∈(0,1]（open，未核实 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: v2 speculator（MRV2）路径 worker/v2/spec_decode/ + temperature>0；vllm-ascend main 8be8909d4 / vllm main 0406ba22c。贪心请求不受影响
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: '与 #16396、#13673 同为采样正确性，但机制分别是索引映射缺失、跨流生命周期与本条的拒绝判据常量。'
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13730
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend main（8be8909d4，2026-08-07；vLLM main 0406ba22c）的 v2 speculator 路径 vllm_ascend/worker/v2/spec_decode/rejection_sampler_utils.py:287-288 中，概率拒绝检验所用的均匀随机数被硬编码为常量：注释写 NPU does not support tl_rand64; always accept the draft token，代码为 u = tl.full([], 0.0, dtype=tl.float32)。当 u=0.0 时 log(u)=-inf，判据 target_log_prob > log(u) + draft_log_prob 恒为 True，任何草稿 token 都不会被拒绝，拒绝采样退化为空操作。对照 GPU 基线 vllm/v1/worker/gpu/spec_decode/rejection_sampler_utils.py:534 使用 u = tl_rand32(seed, pos, includes_zero=False)。同文件 line 71 的 _npu_gumbel_block_argmax 已给出可在 NPU Triton 上工作的随机写法（tl.randint + tl.rand），可作为修复；合成拒绝采样路径（line 356）当前因缺有效 u 直接 NotImplementedError。
+  source: 2026-08-07 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13730 （open）
+  behavior: 非贪心（temperature>0）的投机解码请求在 NPU 上输出质量明显低于同参数的非投机推理：草稿 token 全被接受、拒绝采样不生效，长文本上表现为用词发散、指令遵从下降；服务不报错，指标上只看到接受率异常高。
+  trigger_surface: v2 speculator 投机解码 + temperature>0
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（『贴近贪心接受』原文未述）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes

@@ -1,0 +1,56 @@
+id: INF-1983
+legacy_ids: []
+slug: embedding_bag_indices_no_range_check
+aliases: []
+title: EmbeddingBag 不校验 indices 范围，越界取到垃圾行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: embedding_bag kernel
+  behavior: indicesDataLocal.GetValue(j) * numEmbeddings_ 直接当 GM 行偏移，无 [0,num_weights) 校验；负值按无符号展开成巨大偏移
+effect:
+  objects:
+  - 数值结果
+  detail: aclnnEmbeddingBag 在 weight [8,16]、indices [0,8] 或 [0,-1]、offsets [0,2]、mode=sum 时，越界与负索引均返回 SUCCESS，但 bag 输出错误，exit 42；PyTorch embedding_bag 对同样输入拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: 用 indices 含 num_weights 与 -1 的用例调 aclnnEmbeddingBag，断言参数错误；与 torch.nn.functional.embedding_bag 输出对拍
+  fix: 内核取 indices 前补 0 <= idx < num_weights，host 侧同步校验 offsets 与 mode；issue closed 未附 MR，未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnEmbeddingBag，indices 越界或为负；Ascend910B3 + CANN 9.1.0-beta.3 源码编译包
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4762
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4762（2026-08-13，closed，Track A / P-011）。index/embedding_bag/op_kernel/embedding_bag.h 里以 indicesDataLocal.GetValue(j) * numEmbeddings_ 计算权重行偏移，未做 [0, num_weights) 范围校验，越界索引读到相邻内存、负索引按无符号展开成巨大偏移。复现：ops-nn HEAD e16ef626bb3a，build.sh --pkg --soc=ascend910b --ops=embedding_bag 安装到 vendors/cann_scan_repro_nn 后调用 aclnnEmbeddingBag，weight [8,16] fp32（第 i 行全为 i）、indices [0,8] 与 [0,-1]、offsets [0,2]、mode=sum：越界与负索引均返回 SUCCESS 但 bag 输出错误，exit 42；PyTorch embedding_bag 对同样输入拒绝。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4762 （closed）
+  behavior: EmbeddingBag 的 indices 超出权重行数或为负时接口不报错，直接把越界地址当权重行读：输出还是正常的 [bag, dim] 形状和量级，但值是相邻张量/未初始化内存，推荐/召回链路上的特征整片错。PyTorch 同接口会抛越界异常，所以从 GPU 迁过来的代码不会预料到这一步。
+  trigger_surface: aclnnEmbeddingBag，indices 越界/负值
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

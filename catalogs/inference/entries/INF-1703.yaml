@@ -1,0 +1,58 @@
+id: INF-1703
+legacy_ids: []
+slug: norm_rope_concat_bf16_relative_error
+aliases: []
+title: NormRopeConcat bf16 相对误差超阈与 RMS 统计量异常
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: NormRopeConcat kernel
+  behavior: 疑似 kernel 在原生 bf16 下完成 norm 归约与 RoPE 乘加，与标杆 fp32 中间精度差 1~2 ULP；isTraining=true 且含 RMS 类 norm 时 mean/rstd 未按标杆清零。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: bf16 输入 110 例 queryOutput/keyOutput 最大相对误差 0.0040~0.0078（阈值 0.003967，最大恰为 bf16 1 ULP）；36 例 RMS 训练用例 mean/rstd 输出 1e-4~2.8e14 非零而标杆为 0。
+  visibility: 静默错误
+mitigation:
+  detect: 按 dtype/normType/ropeType 分族跑精度测试，并单独核对 isTraining=true 时 mean/rstd 是否为零
+  fix: 待定（issue 的根因标注为待源码侧确认，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: bf16 输入 + 大值域 [-100,100]，或 isTraining=true 且含 RMS 类 norm
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5052
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5052（2026-09-07 closed）用 ATK 调 aclnnNormRopeConcat（CANN 9.0.0，被测源码 ops-transformer v9.0.0，Ascend 910B3，torch 2.10.0），以 torch_norm_rope_concat 参考实现为基准，vector_fused 标准（相对误差阈值 0.00396728515625 或 fp32 的 0.00048828125、绝对误差 0.00048828125、误差均衡性 6.1e-05）。1000 条用例中 872 条形成判定，730 通过、142 失败，另 128 例执行失败（headDim=66 非对齐长序列触发 AIV 内核异常 EZ9999 error code 0x10 Illegal instruction 并级联同批 124 例）。142 例失败分三族：A 族 110 例（bf16 109 + fp32 1）queryOutput/keyOutput 大值域最大相对误差 0.0040~0.0078 超阈，valueOutput（纯 concat+transpose）零失败且逐位一致，bf16 最大相对误差恰为 1 ULP，关闭 norm 只留 RoPE 的用例同样失败；B 族 36 例 isTraining=true 且含 RMS_NORM/RMS_NORM_AFFINE 时 mean/rstd 输出 1e-4~2.8e14 非零而标杆为 0（部分与 1/sqrt(E[x^2]) 吻合、部分呈未初始化数据特征）；C 族 4 例输出尺寸与标杆互为镜像，疑似测试侧错位。根因假设：A 族为 kernel 在原生 bf16 下做归约与 RoPE 乘加、与标杆 fp32 中间精度差 1~2 ULP；B 族为 RMS 分支 mean/rstd 未清零。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5052 （closed）
+  behavior: 同一算子 fp16 全部通过、bf16 却有 110 例相对误差超阈（0.0040~0.0078 对阈值 0.003967，最大值正好是 bf16 的 1 ULP），valueOutput 完全逐位一致——错的只是带 norm/RoPE 算式的 query/key 输出；训练场景下 mean/rstd 更离谱，标杆是 0，NPU 却给 1e-4 到 2.8e14 的非零值。整个过程无报错，只有精度比对能看出来。
+  trigger_surface: aclnnNormRopeConcat 多模态 QKV 融合：bf16 输入 + 大值域 [-100,100]；或 isTraining=true 且 normType/normAddedType 含 RMS_NORM/RMS_NORM_AFFINE
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

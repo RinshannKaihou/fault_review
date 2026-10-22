@@ -1,0 +1,68 @@
+id: INF-1442
+legacy_ids: []
+slug: vllm_ngram_spec_gdn_state_missing_accepted_token_write
+aliases: []
+title: vLLM n-gram 投机部分接受时 GDN 态漏写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: 投机解码部分接受步 GDN 循环状态漏写
+  behavior: n-gram 投机解码在部分 draft 被接受步骤上，GDN 循环状态漏掉已接受 token 的更新，缺失一个此前已接受 token 的写；无任何失败可由拒绝 draft 的写被保留解释。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 隐状态
+  detail: vLLM 0.31.0 混合GDN模型开n-gram投机且部分draft被接受时，greedy输出192请求约4-10%从某步起错token，多数错一个token后恢复；同8请求同967错token在RTX 3090两主机重跑一致；关投机12配置全对，draft全被接受也全对。
+  visibility: 静默错误
+mitigation:
+  detect: probec 探针 twin（合成权重已知正确输出、对归约顺序不敏感，任何偏离即引擎错误）：probec run --matrix hybrid --only FLASH_ATTN/ngram_spec_decoys
+  fix: 上游修复未见（issue open，v0.31.0）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM 0.31.0 + ngram 投机（k≥1 即触发，k=4 默认）+ 混合 GDN 模型（Qwen3.5-0.8B probe twin：4 层中 3 层 Gated DeltaNet）；仅部分接受步出错（全接受 0 错、无投机 0 错）；RTX 3090 两主机实测
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: '与 #53912（MTP+prefix cache 混合模型损坏，随命中率变化）可能不同路径：本条关 prefix cache 仍失败；与 #61738（宽 verify ≥7）不同：本条 k=1 即失败。probec probe twin 方法论与 SGLang #44997 同源。'
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62304
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM #62304（c2026-10-18，v0.31.0，Qwen3.5-0.8B probec probe twin——真实 shape 合成权重、正确输出精确已知且对归约顺序不敏感，偏离即引擎错误）。n-gram 投机解码（k=4, prompt_lookup_max=4, min=2）在部分 draft 被接受的步骤上，GDN（Gated DeltaNet，3/4 层）循环状态漏掉已接受 token 的更新：对每个失败请求回放 oracle，状态缺失一个此前已接受 token 的写（8 例中 6 例为首个错输出前一步接受的 token）；无任何失败可由拒绝 draft 的写被保留解释。探针设计：GDN 层循环状态是每 class 一个槽的表，每个 decode token 写自己 class 的槽、后续步读槽——输出直接暴露状态包含哪些写。部分请求仅错一个 token 后恢复正确（单次漏写的探针形状）。对照矩阵：12 种无投机配置（三注意后端×prefix cache 开关×chunked prefill×eager×抢占×bf16 SSM cache×双 decode kernel×FP8 KV）全 0 错；SGLang 0.5.22 NGRAM 同探针精确。触发细节数据见 effect。确定性：同 8 请求同 967 个错 token，两主机+重跑一致；async_scheduling/enforce_eager/max_num_seqs=1 不变（不依赖调度）。'
+  source: 2026-10-18 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62304 （open）
+  behavior: 在 vLLM 0.31.0 上对混合 GDN 模型（Qwen3.5 类）开 n-gram 投机解码后，greedy（temperature=0）输出对部分请求出错：同一批 192 个请求约 4-10% 的请求从某步开始产出错误 token（多数错一个 token 后恢复）。错误确定性可复现；关掉投机解码后 12 种配置全部精确，draft 全被接受时也全对。投机解码不应改变 greedy 输出，属静默损坏。
+  trigger_surface: vLLM 0.31.0；ngram/ngram_gpu 投机 + 部分 draft 接受步；混合 GDN 模型（Qwen3.5）；RTX 3090 两主机
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 解码/采样
+      effect:
+        from: 输出内容
+        to: KV状态
+    rewritten:
+    - behavior
+    - component
+    - detail

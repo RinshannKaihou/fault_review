@@ -1,0 +1,58 @@
+id: INF-2095
+legacy_ids: []
+slug: vllm_ascend_pd_multi_pp_zmq_port_base_mismatch
+aliases: []
+title: PD 多机 PP 的 ZMQ 端口基址错算致 KV 传不到
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: mooncake_connector 端口映射
+  behavior: D 侧 _get_remote_ranks_for_req 用 P0 的 kv_port 当所有 PP rank 的 base port 再加 rank 偏移；PP2/PP3 在 P1 上、base 为 31113，端口因此偏 -1。
+effect:
+  objects:
+  - 可用性/进度
+  - KV状态
+  detail: PD分离多节点PP且kv_port随NODE_RANK递增时，P1只监听31129-31144；D侧连31128出现21次Receive timeout，31128无监听，请求被判KV load失败；P节点KV cache涨到100%，bench 100多条后卡死。
+  visibility: 挂起
+mitigation:
+  detect: 核对各 P 节点 ZMQ 实际监听端口范围与 D 侧日志中的 remote handshake port，或统计 Receive request timeout 的目标端口是否集中在同一端口
+  fix: issue 只做根因定位，未给 PR；规避是让各 P 节点使用同一 kv_port 基址（issue closed，修复未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PD 分离 + 多节点 PP（PP2 及以上落在第二个 prefill 节点）+ 各 P 节点 kv_port 基址不同（KV_PORT=31112+NODE_RANK）；单 P 或单机 PP 不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/11343
+  kind: github_issue
+relations: []
+original:
+  mechanism: P 侧 mooncake_connector.py:239 的握手端口为 handshake_port = side_channel_port + device_index，side_channel_port 就是 --kv-transfer-config 里的 kv_port。现场用 KV_PORT=$((31112 + NODE_RANK))，于是 P0（NODE_RANK=0）监听 31112-31127，P1（NODE_RANK=1）监听 31129-31144。D 侧 _get_remote_ranks_for_req（line 1744）用 [tp + pp * prefill_tp_size for pp in range(pp_size)] 得 [0,8,16,24]，再在 line 1387 统一加 meta.remote_port 并只取 P0 scheduler 的 self.side_channel_port=31112，得到 [31112,31120,31128,31136]。PP2/PP3 实际在 P1 上，正确值应是 31113+16=31129 与 31113+24=31137，因此 PP2+ 的端口整体偏 -1。remote_multi_nodes_meta_mapping（line 1489-1494）只修正了 host，端口计算仍差 1，所以失败的 21 次请求恰好都是访问 PP2 的 TP1 rank（端口 31128）。
+  source: 2026-07-02 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/11343 （closed）
+  behavior: PD 分离服务拉起后单条 curl 正常，一跑 bench 就出问题：D 节点 Avg generation throughput 只有 50 tokens/s 左右但仍在正常处理，P 节点 Avg prompt throughput 只有 1k+（正常 3k+ 的一半），GPU KV cache usage 一路涨到 100%，跑到 100 多条请求后整个 bench 彻底卡死。日志里 D 节点有 21 次 Receive request timeout，全部指向 33.182.142.85:31128（P1），而 P1 容器的 ZMQ 端口范围是 31129-31144，31128 没有 worker 监听；请求因此被判 KV load 失败。
+  trigger_surface: PD 分离 + 多节点 PP，各 P 节点 kv_port 基址不同（KV_PORT 随 NODE_RANK 递增）
+  discovery: 2026-10-21 第三轮顺序扫描（final_tail，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 集合通信
+        to: KV缓存
+    rewritten:
+    - detail

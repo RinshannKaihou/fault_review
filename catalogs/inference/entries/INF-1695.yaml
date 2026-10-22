@@ -1,0 +1,62 @@
+id: INF-1695
+legacy_ids: []
+slug: qfa_mxfp8_simd_scalar_param_lost
+aliases: []
+title: QFA MXFP8 FD 标量传参丢失致 LSE 为 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: QFA MXFP8 FD combine
+  behavior: 第 15 个运行时标量 minCheckValue 在每个 AIV 首次 VF 调用时丢失并被污染为 0.0，Compare EQ(0,0) 误命中，Select 输出 3e+99 使 LSE 为 inf。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: TEST1_WK（B=6 GQA、PA BnNBsD、mask_mode=3、p_scale=8、enable_lse=True）下仅 flat=16020/16083 两点 LSE 为 3e+99（溢出为 inf），期望约 8.58，其余 19842 点与 attention 输出全对。
+  visibility: 数值异常
+mitigation:
+  detect: 对 enable_lse 用例逐点比对 LSE，关注是否出现 3e+99/inf 的孤立坏点；可用 AscendC printf 插桩确认 Select 前判值
+  fix: MR 12816（master）/12828（9.2.0）：minCheckValue 改经 UB fdMinCheckBuf_ 由 VF 内 LoadAlign 读取（closed，未核实发布）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: arch35 QFA MXFP8 + enable_lse + p_scale=8 才走该 FD combine 模板
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5634
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5634（2026-09-23 closed）：QFA MXFP8 算子在 TEST1_WK 用例（B=6 GQA、PA BnNBsD、mask_mode=3、p_scale=8.0、enable_lse=True）下 LSE 输出 inf——仅 flat=16020/16083 两点输出 3e+99（float32 溢出为 inf），期望约 8.58，其余 19842 点全部正确、attention 输出全对，5 次重跑坏点完全固定，是确定性 bug 而非竞态。根因：FD combine 的 ComputeScaleValue_8_VF_FD 是 15 参数的 __simd_vf__ 函数，第 15 个运行时标量参数 minCheckValue 在每个 AIV 首次 VF 调用时丢失（实测被污染为 0.0，应为 -3.0077e37）；当某行 FA 写入 WS 的 max 恰为合法的 ln2 量化边界值 0.0 时，Compare EQ(0.0,0.0) 误命中，Select 输出 3e+99 使 LSE 变 inf。经 4 轮 AscendC printf 插桩确认 preSel=8.577455 与期望一致、tMax/tSum 正确，仅 vfMin（Duplicate 后的判值）被污染为 0.0。修复：minCheckValue 改由 UB 传递并在 VF 内 LoadAlign 读取（MR 12816 / 12828）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5634 （closed）
+  behavior: 开启 LSE 返回后，个别位置的 LSE 直接是 inf / 3e+99，量级与其它位置（约 8.58）完全不在一个数量级，但 attention 主输出全对、不报错、不崩，坏点在 5 次重跑中位置完全不变；使用方若用 LSE 做后续 combine 或 logprob 计算，会得到 inf 污染的结果。
+  trigger_surface: QFA（Quantized Flash Attention）MXFP8 decode，PA BnNBsD、mask_mode=3、p_scale=8、enable_lse=True
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出分布
+        to: 数值结果
+    issue_unfixed:
+    - behavior

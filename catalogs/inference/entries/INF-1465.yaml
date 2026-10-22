@@ -1,0 +1,56 @@
+id: INF-1465
+legacy_ids: []
+slug: ttmetal_sdpa_causal_sliding_window_partial_chunk_wrong_rows
+aliases: []
+title: tt-metal SDPA causal+滑窗部分块行错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SDPA causal+滑窗部分块掩码
+  behavior: is_causal=True + sliding_window_size 且 S 非 q_chunk_size 倍数时部分 query 块输出错误行；同 S 换 q_chunk 128 或去滑窗精确，部分部分块长度干净，非全部触发。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: S=8064/q_chunk 256/窗口 2048：整体 PCC 0.984，块 1、30 掉至 0.68/0.93；Muse-Glimmer-30B prefill 实际命中；错误静默
+  visibility: 静默错误
+mitigation:
+  detect: 对非整块序列长度做 PCC 分块扫描；q_chunk 128/去滑窗对照
+  fix: 待定（issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: is_causal=True + sliding_window_size + S 非 q_chunk_size 倍数（实测 S=8064/q_chunk 256/窗口 2048；S=3968/2432 干净）；Blackhole 单卡；HiFi4 + fp32_dest_acc_en 仍错
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61489
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal issue #61489（c2026-10-19，Blackhole 单卡）：ttnn.transformer.scaled_dot_product_attention 在 is_causal=True 且带 sliding_window_size、序列长非 q_chunk_size 整数倍时返回错误行。S=8064、q_chunk 256（31.5 块）、窗口 2048：整体 PCC 0.984，query 块 1、30 分别 0.68、0.93。同 S 换 q_chunk 128 精确、去滑窗精确；部分部分块长度（S=3968、2432）干净，说明非所有部分块都触发。compute kernel 为 HiFi4 + math_approx_mode=False + fp32_dest_acc_en=True。真实模型命中：Muse-Glimmer-30B prefill（窗口 2048、head_dim 128、GQA 8:1 per device）。'
+  source: 2026-10-19 GitHub tenstorrent/tt-metal issue https://github.com/tenstorrent/tt-metal/issues/61489 （open）
+  behavior: 在 Tenstorrent 上跑带 causal 掩码加滑动窗口的 SDPA，当序列长度不是分块大小的整数倍时，个别分块的注意力输出悄悄算错（相似度最高只有 0.68），整体输出偏差可被长上下文任务感知；换小分块或去掉滑窗就正常。
+  trigger_surface: ttnn SDPA is_causal=True + sliding_window_size + S % q_chunk_size != 0；Blackhole；Muse-Glimmer-30B prefill 命中
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

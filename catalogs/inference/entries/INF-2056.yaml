@@ -1,0 +1,59 @@
+id: INF-2056
+legacy_ids: []
+slug: vllm_ascend_stream_ignores_eos_mtp
+aliases: []
+title: 流式请求忽略 EOS 生成到 max_tokens 才停
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: 流式输出 EOS 停止判定
+  behavior: 流式请求不识别 EOS，持续生成到 max_tokens。
+effect:
+  objects:
+  - 输出内容
+  detail: vllm-ascend，DeepSeek-V4-Pro W4A8+deepseek_mtp：stream=false 约703、finish_reason=stop；stream=true 同 prompt 满4096、finish_reason=length，不报错；不同输入长度均可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 prompt 分别用 stream=false/true 各跑一次，比对 completion_tokens 与 finish_reason 是否一致
+  fix: 待定（open；报告建议在流式路径补 EOS 传播，未给 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend + DeepSeek-V4-Pro W4A8（671B MoE）+ deepseek_mtp num_speculative_tokens=1 + stream=true，DP2×TP16
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9260
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'DeepSeek-V4-Pro-W4A8-mtp 用 vllm serve 起服务（--data-parallel-size 2 --tensor-parallel-size 16 --enable-expert-parallel --speculative-config {''num_speculative_tokens'':1,''method'':''deepseek_mtp''}），请求 ''Repeat the following text exactly: hello world ...''，max_tokens=4096、temperature=0，只切换 stream。stream=false 时模型在约 703 token 处自然停止、finish_reason=stop；stream=true 时同一 prompt 不识别 EOS，一直生成到 4096 token、finish_reason=length。报告者怀疑流式 SSE 分块路径消费或屏蔽了 stop 信号，或 MTP 激活时 EOS 判定没有传播到流式输出；不同输入长度（含 1024 token 输入）均可复现，thinking 模式关闭。'
+  source: 2026-07-01 github.com issue https://github.com/vllm-project/vllm-ascend/issues/9260 （open）
+  behavior: 同一个问题、同样参数，非流式客户端拿到 703 token 的正常回答，流式客户端却一路吐到 4096 token 才凭 max_tokens 结束，末段全是重复续写；账单上的 completion token 数和首包后延迟都明显变大，而接口不返回任何错误。
+  trigger_surface: vllm-ascend 流式接口（stream=true）+ DeepSeek-V4-Pro W4A8 + deepseek_mtp 投机解码
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - subsystem

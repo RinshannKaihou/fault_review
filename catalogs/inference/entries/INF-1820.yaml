@@ -1,0 +1,62 @@
+id: INF-1820
+legacy_ids: []
+slug: vllm_ascend_triton_rope_breaks_qk_norm
+aliases: []
+title: Triton rope 路径破坏 Q/K 范数致 draft 接纳率掉半
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: Triton rope 分发路径
+  behavior: 分发路径在 bf16、NeoX、head_dim=rotary_dim=192 的 DSpark draft 形状下返回不保范数的 Q/K；改调 forward_native 即正确。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: GLM-5.2 DSpark 推测解码在 A3 上在线接纳长度从约 5.4–5.5 掉到 3.0–3.1，输出质量随之下降；无报错、无数值异常。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 rotary 对象分别跑分发路径与 forward_native，比较 Q/K 的逐元素范数；盯在线 accept_len 指标。
+  fix: 待定（issue 2026-07-23 closed，修复 PR 未在正文给出）：短期把该形状切到 forward_native。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend A3 16 die，driver 25.5.1，nightly-releases-v0.23.0-a3 镜像，vllm 0.23.0 + torch 2.10.0 + torch_npu 2.10.0.post2，triton 3.2.0，eager，DP2/TP8/EP
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/12723
+  kind: github_issue
+relations: []
+original:
+  mechanism: '在 A3（16 die、driver 25.5.1、quay.io/ascend/vllm-ascend:nightly-releases-v0.23.0-a3 源码树、vllm 0.23.0、torch 2.10.0+torch_npu 2.10.0.post2、triton 3.2.0、eager、DP2/TP8/EP）上拉起 GLM-5.2 DSpark 推测解码时，平台分发的 rotary embedding 执行路径对 DSpark draft attention 的形状（bf16、NeoX 风格、head_dim = rotary_dim = 192）返回不保范数的 Q/K。报告的关键对照是：在同一个 worker、同一个 rotary 对象、同一份输入上改调 forward_native() 就正确，draft 的在线接纳长度从约 3.06 恢复到约 5.4–5.55，因此排除 checkpoint、config 与接纳逻辑问题（并明确与 #12262 修的 Markov logits 输入、anchor 采样、QuaRot 权重旋转无关），判定是分发路径自身的数值错误。'
+  source: 2026-07-23 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/12723 （closed）
+  behavior: 推测解码的接纳长度（accept_len）从 5.4–5.5 掉到 3.0 上下，端到端吞吐下降、输出质量变差，但请求不报错、无 NaN、日志无异常；把同一模型的 rope 换回 forward_native 后指标立刻恢复，是使用者能直接看到的唯一线索。
+  trigger_surface: 平台分发的 rotary 路径（Ascend 选择的 Triton rope）+ bf16/NeoX/head_dim=192 的 draft 形状
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    uncertain:
+    - title

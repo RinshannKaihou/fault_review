@@ -1,0 +1,56 @@
+id: INF-1991
+legacy_ids: []
+slug: vllm_ascend_mla_asym_tp_hybrid_kv_group
+aliases: []
+title: MLA 非对称 TP 的 hybrid KV 组拉取数不符
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake hybrid 组拉取元数据
+  behavior: _get_hybrid_remote_rank_group_pulls 按注意力 KV 组算出 num_group_pulls=4，MLA 通用 rank 选择只返回 1 个 prefill rank，断言失败
+effect:
+  objects:
+  - 可用性/进度
+  - KV状态
+  detail: Kimi K2.6 W4A8 PD 分离、prefill TP=8 / decode TP=2，decode 找到远端 KV 后在真正传输前 EngineCore 退出；对称 TP 或回退 0.20.2rc1 正常
+  visibility: 报错
+mitigation:
+  detect: 对比 prefill 与 decode 的 TP 配置，出现 hybrid KV group + MLA 时校验 num_group_pulls 与 MLA rank 选择结果是否一致；在 start_load_kv 前加断言日志
+  fix: 待定；作者称已有验证过的 MLA group-pull 修复可在 0.22.1rc1 cherry-pick，并明确警告不要只删断言——选错远端 rank 会拿到不完整 KV 变成静默精度错误
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.22.1 + vllm-ascend 0.22.1rc1 + Mooncake，Kimi K2.6 W4A8，prefill TP=8/PP=1，decode TP=2/PP=1，开启 prefix caching
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/11877
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'issue #11877 记录 Kimi K2.6 W4A8 在 vLLM 0.22.1 + vllm-ascend 0.22.1rc1 + Mooncake 的 PD 分离部署下，prefill 用 TP=8、decode 用 TP=2 的非对称拓扑。decode 侧能成功找到远端 KV cache，但在构造 hybrid KV group 拉取元数据时崩溃：MooncakeConnectorWorker.start_load_kv → _get_kv_split_metadata → _get_hybrid_remote_rank_group_pulls() 把当前 Attention KV Group 的 num_group_pulls 算成 4，而 MLA 的通用 rank 选择逻辑只返回 1 个 prefill rank，数量不一致触发断言，整个 EngineCore 退出，KV 传输尚未开始。相同模型、拓扑、配置在 v0.20.2rc1 验证正常，作者据此判断是 0.22.1rc1 引入 Hybrid KV Group 处理后的回归。'
+  source: 2026-07-12 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/11877 （open）
+  behavior: PD 分离服务在 decode 侧刚收到请求就整体退出：日志显示已经找到远端 KV，随后是 hybrid KV group 元数据构造处的断言与 EngineCore 退出，请求全部失败；把 prefill/decode 的 TP 改成对称或回退旧版本就能正常服务。
+  trigger_surface: MLA 模型（Kimi K2.6 W4A8）+ Mooncake PD 分离 + prefill 与 decode 的 TP 不一致（8 vs 2）+ prefix caching
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: KV状态
+        to: 可用性/进度

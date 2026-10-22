@@ -1,0 +1,60 @@
+id: INF-1979
+legacy_ids: []
+slug: tiling_return_false_equals_graph_success
+aliases: []
+title: tiling 校验失败被当作 GRAPH_SUCCESS
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: scaled_masked_softmax
+  behavior: ge::graphStatus 函数里失败分支写 return false，bool→0 隐式转成 GRAPH_SUCCESS，校验被吞；入口不检查 Init 返回值直接继续 DoTiling
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: x batch=1、mask batch=2 的非法广播被判 tiling 成功并继续生成 tiling 数据；同型缺陷在 950 量化 matmul_all_reduce 上表现为吞掉 groupSize 空校验后解引用空指针
+  visibility: 静默错误
+mitigation:
+  detect: 对 host tiling 加非法 mask batch 用例，断言返回 GRAPH_FAILED；CI 加 clang-tidy 规则拦截 enum 返回类型下的 bool 返回
+  fix: 失败分支改为 return ge::GRAPH_FAILED 并在入口传播非成功状态；ops-nn 侧已给 MR 9096，ops-transformer 侧未给 MR，合入版本未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vfusion/scaled_masked_softmax_v2 host tiling 的非法 mask 广播；同类写法见于 950 量化 matmul_all_reduce 的 groupSize 校验
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5064
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/5483
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5064（2026-08-24，closed，9.2.0-beta.2）+ cann/ops-transformer issue 5483（2026-09-20，closed）。前者 vfusion/scaled_masked_softmax_v2/op_host/scaled_masked_softmax_v2_tiling.cpp L132-138 在 ge::graphStatus 函数里失败分支 return false，L173-174 的 TilingScaledMaskedSoftmaxV2 丢弃 Init() 返回值继续 DoTiling，L326-331 同理；host UT 加 x=[1,32,32,128]、mask=[2,32,32,128] 用例后 7/8 通过，非法用例实得 0（GRAPH_SUCCESS），改为 GRAPH_FAILED 后 8/8 通过。后者 mc2/matmul_all_reduce/op_host/op_tiling/arch35/quant_matmul_all_reduce_tiling_950.cpp L728-735 的 OP_TILING_CHECK 失败分支 return false，groupSizePtr 为空时校验被吞，L733 紧接解引用 *groupSizePtr。同文件其余 graphStatus 函数失败分支均为 return ge::GRAPH_FAILED，故为笔误。
+  source: 2026-08-24 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5064 （closed）；2026-09-20 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5483 （closed）
+  behavior: 算子拿到不合法的形状/属性时不报错：mask 的 batch 和 x 对不上也判 tiling 成功，后面接着按这份 tiling 数据执行，问题被推到更后面才以别的形式出现；另一处同类写法在缺 groupSize 的量化场景下先把空校验吞掉，再去解引用空指针，直接把 tiling 进程带崩。
+  trigger_surface: host tiling 的 ge::graphStatus 失败分支误写 return false
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect
+    - visibility

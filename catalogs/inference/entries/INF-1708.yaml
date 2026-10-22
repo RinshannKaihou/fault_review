@@ -1,0 +1,55 @@
+id: INF-1708
+legacy_ids: []
+slug: rope_golden_dtype_overflow_false_fail
+aliases: []
+title: RoPE golden 未对齐 kernel 溢出语义致误报
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: RoPE tests golden.py
+  behavior: golden.py 在 ttk Promote 模式按提升后 dtype 计算且不回落到输出 dtype 值域，Enable 模式又在输入 dtype 内乘加（假溢出为 inf），与 kernel 的 fp32 计算加饱和语义失配。
+effect:
+  objects:
+  - 测试判定
+  detail: input_data_ranges 含 (65504,65504)、(3.4028235e38,3.4028235e38) 等极值用例时 golden 给有限值而 NPU 给 ±inf/nan（或相反），isclose 判 FAIL，本应 PASS 的用例被判失败。
+  visibility: 报错
+mitigation:
+  detect: 对极值/大幅值用例同时用 kernel 与 golden 跑，判断失败是口径差异还是算子缺陷；比较输出 dtype 边界的溢出语义
+  fix: 修 tests/assets/golden.py：按 kernel 的 fp32 内部计算、在写回输出 dtype 处按 IEEE754 饱和（issue closed，合入状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 仅在输入含接近输出 dtype 上限的极值时暴露；Ascend950PR + ttk --compare close
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5027
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5027（2026-09-07 closed，Ascend 950PR DAV_3510 / Ascend950DT_9584，cann-9.2.0，ops-test-kit ttk，aclnn 与 kernel 双通路）：rotary_position_embedding 的测试资产 tests/assets/golden.py 与 NPU kernel 的实际计算行为不一致，导致大幅值/极值用例出现虚假精度失败，影响算子精度回归判定。具体表现：用 ttk 以 --compare close --golden-mode Promote 跑 aclnnRotaryPositionEmbedding / V2 的大幅值用例（input_data_ranges 含 (-1000,-10)、(65504,65504)、(3.4028235e+38,3.4028235e+38) 等），golden 产出有限值而 NPU 产出 ±inf 或 nan，isclose 判 FAIL。根因不是算子缺陷：NPU kernel 内部以 float32 做乘加，真实乘积有限时不会中间溢出，只有最终结果超出输出 dtype 表示域时才按 IEEE754 饱和为 ±inf/nan。golden 在 Promote 模式下把输入提升到更宽 dtype（fp16→fp32、fp32→fp64）后计算且不回落到输出 dtype 值域，与 NPU 的输出溢出语义失配；默认 Enable 模式下 golden 直接用输入 dtype 计算 x*cos+x_rot*sin，fp16 中间结果 65504*cos 会假溢出为 inf 而 NPU 因 fp32 内部计算得 61888 这样的有限值，两种模式都无法复现 NPU 的真实行为。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5027 （closed）
+  behavior: 跑精度回归时一批大幅值/极值用例稳定 FAIL，但把同样的输入交给 kernel 与 golden 分别检查会发现 NPU 的结果其实是对的（fp32 内部计算、输出 dtype 溢出才饱和），错的是参照实现；因此失败与 dtype、输入值域强相关，只要把值域压回常规范围就全过，容易误判成算子精度回退。
+  trigger_surface: ttk（ops-test-kit）--compare close --golden-mode Promote/Enable 跑 rotary_position_embedding，input_data_ranges 含接近输出 dtype 上限的极值
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错

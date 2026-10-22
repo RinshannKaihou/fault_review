@@ -1,0 +1,61 @@
+id: INF-1478
+legacy_ids: []
+slug: ops_nn_dynamic_quant_empty_x_leaves_scaleout_uninitialized
+aliases: []
+title: aclnnDynamicQuant 空 x 早退不写非空 scaleOut
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: 空 x 早退分支缺输出回填
+  behavior: x 空张量（末维 0）时早退返回 ACLNN_SUCCESS 且不写非空 scaleOut（[M]）；分支不构造任何任务、全文件无回填载体；GE tiling 路径同场景显式拒绝。
+effect:
+  objects:
+  - 数值结果
+  detail: 调用方拿到未初始化（NaN/异常值）scale，反量化被污染且随显存复用不可复现；910B2、CANN 9.2.0-beta.2
+  visibility: 静默错误
+mitigation:
+  detect: 空 x 调用后检查 scaleOut 是否全 NaN；对比 GE tiling 路径（会拒绝）
+  fix: 待定（issue open；缺陷定位 quant/dynamic_quant/op_host/op_api/aclnn_dynamic_quant.cpp:354-358）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnDynamicQuant(pertoken) + x 空张量（末维 0、M>0，scaleOut=[M] 非空）；aclnn 两段式路径；GE tiling 路径拒绝不受影响；Ascend 910B2、CANN 9.2.0-beta.2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6605
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0179
+original:
+  mechanism: 'ops-nn issue #6605（c2026-10-13，本轮增量窗口内更新复核，Ascend 910B2、CANN 9.2.0-beta.2、torch 2.7.1+cpu / torch_npu 2.7.1.post4）：aclnnDynamicQuant（pertoken）在输入 x 为空张量（末维为 0，如 x=[M,0]）时对非空的 scaleOut 提前返回且不写，接口返回 ACLNN_SUCCESS，scaleOut 保留调用方未初始化内存。缺陷位置 quant/dynamic_quant/op_host/op_api/aclnn_dynamic_quant.cpp:354-358（当前 master）：空 Tensor 处理分支 if(x->IsEmpty()||y->IsEmpty()||scale->IsEmpty()) 直接 return ACLNN_SUCCESS，不构造任何计算/搬运任务，全文件也没有对 scaleOut/offsetOut 的回填载体（无 Fill/ZerosLike）。为何是缺陷：资料 aclnnDynamicQuant.md 明确 x、yOut、scaleOut 均支持空 Tensor，scaleOut shape 为 x shape 剔除最后一维 ⇒ x=[M,0]（M>0）时 scaleOut=[M] 非空，属"输入空、输出非空"合法组合，CheckShape 全部放行。对照：非空输入时 scaleOut 正常写入；GE tiling 路径（dynamic_quant_tiling.cpp RunFusionKernelTiling）对 rowLen==0 显式 GRAPH_FAILED 拒绝——两路径行为不一致。影响：静默结果错误，经 torch_npu.npu_dynamic_quant 或 aclnn 直调拿到未初始化（NaN/异常值）scale，后续反量化结果被污染且随显存复用不可复现。复现：把分配器中与 scaleOut=[2]fp32 同尺寸的内存块预置 NaN 后释放（20000 块），再调 npu_dynamic_quant。'
+  source: 2026-10-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6605 （open）
+  behavior: NPU 上做动态量化（pertoken）时如果输入张量末维长度为 0（但 scale 输出非空），接口返回成功却完全不写 scale：拿到的是分配器复用的旧内存（可被预置成 NaN），后续反量化全错，而且因为显存复用每次结果还可能不一样。
+  trigger_surface: aclnnDynamicQuant(pertoken) + x 空张量（[M,0]，M>0）；aclnn 路径；Ascend 910B2、CANN 9.2.0-beta.2
+  discovery: 2026-10-19 每日扫描
+  notes:
+  - 2026-10-20 回访 2026-10-20：#6605 仍 open（u2026-10-19T13:14）
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  - date: '2026-10-20'
+    fields:
+    - original.notes

@@ -1,0 +1,61 @@
+id: INF-2024
+legacy_ids: []
+slug: vllm_free_kv_cache_block_queue_negative_blocks_race
+aliases: []
+title: FreeKVCacheBlockQueue 多连接器下负块数竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: FreeKVCacheBlockQueue
+  behavior: 多个 KV connector 同时挂载、前缀缓存频繁命中时，为 FreeKVCacheBlockQueue 算出的 num_new_blocks 变成负数，空块队列的链表操作随之越界或重复入队；vLLM < 0.29.0 存在该竞态
+effect:
+  objects:
+  - KV状态
+  detail: 长时间跑 PD 分离或多 connector 服务且前缀缓存频繁命中时，偶发返回错乱文本、答非所问，或请求前缀像别人的内容；重启能好一阵，KV 命中率越高越容易出现；日志无明确报错，只能从 block 复用异常反推；dsv4 负载下复现概率相对较高。
+  visibility: 静默错误
+mitigation:
+  detect: 同时挂多个 KV connector 并压前缀缓存命中率，检查 FreeKVCacheBlockQueue 的 num_new_blocks 是否为负、free block 数是否与在用请求对不上
+  fix: 上游 vLLM PR https://github.com/vllm-project/vllm/pull/52707 （merged，v0.29.0 起）；vllm-ascend 侧需确认所用 vLLM 版本已带该修复
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vLLM < 0.29.0 + 多个 KV connector（含 ascend store / lmcache 类）+ 高前缀缓存命中；dsv4 场景更易触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15990
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-project/vllm-ascend issue 15990（2026-09-08，open）：使用 vLLM 0.29.0 之前的版本时，FreeKVCacheBlockQueue 在多 connector 且前缀缓存频繁命中的场景下存在竞态——为队列计算的 num_new_blocks 会变成负数，队列的空闲块链表被错误改写（重复入队/越界）。报告者给出该 bug 的上游修复为 vLLM PR #52707，并说明 dsv4 负载下复现概率相对较高；issue 正文只保留了这个结论与指向 PR 的链接，未附完整错误日志。'
+  source: 2026-09-08 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15990 （open）
+  behavior: 长时间跑 PD 分离或多 connector 的服务，开始偶发返回错乱文本、答非所问，或者某个请求的前缀像是别人的内容；重启能好一阵，KV 命中率越高越容易出现，日志里看不到明确报错，只能从 block 复用异常反推。
+  trigger_surface: vLLM < 0.29.0 + 多 KV connector + 频繁前缀缓存命中
+  discovery: 2026-10-21 系统扫描 sweep_5（顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

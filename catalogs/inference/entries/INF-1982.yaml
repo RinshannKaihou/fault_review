@@ -1,0 +1,51 @@
+id: INF-1982
+legacy_ids: []
+slug: fia_tiling_mask_size_uint32_overflow
+aliases: []
+title: FIA 长序列 mask 校验用 uint32 乘方致溢出放过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FiaTilingCheck 掩码校验
+  behavior: sSize += qSize[i]*qSize[i] 中 qSize 为 vector<uint32_t>，两数相乘在 32 位内完成后才提升累加，qSize>65535 时乘积截断
+effect:
+  objects:
+  - 数值结果
+  detail: TND/NTD + SPARSE_MODE_TREE 下 qSize=65536 时乘方得 0，mask 形状校验用的 sSize 偏小，本应拒绝的超长序列 mask 被判一致
+  visibility: 静默错误
+mitigation:
+  detect: TND/NTD、SPARSE_MODE_TREE、actualSeqLengthsQ 含 >65535 的段长，构造与其不匹配的 attenMask，断言校验失败；用 uint64 版本对拍 sSize
+  fix: 把 qSize[i] 转 uint64 再相乘（或 sSize += static_cast<uint64_t>(qSize[i])*qSize[i]），并给 s1Size_ 补上限校验；issue closed 未附 MR，未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: fused_infer_attention_score arch22 + TND/NTD + SPARSE_MODE_TREE + 单段序列长度 >65535（长上下文）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4782
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer issue 4782（2026-08-31，closed，静态数据流核查）。attention/fused_infer_attention_score/op_host/arch22/fused_infer_attention_score_tiling_check_consistency.cpp L625 的 sSize += qSize[i]*qSize[i]：qSize 声明为 std::vector<uint32_t>（fia_tiling_check.h:273），乘法在 uint32 内完成，qSize[i]>65535 时溢出截断（65536*65536=0），截断值再累加进 uint64_t sSize。qSize 来自 actualSeqLengthsQ（int64 外部输入，fused_infer_attention_score_tiling_check_feature.cpp:1014），TND/NTD 下 tmpS1=actualSeq[i]-actualSeq[i-1]，L1046 只校验 tmpS1>=0 且 <=s1Size_，而 s1Size_ 为 uint32 无上限。调用链 CompressorGradTilingFunc→CheckMultiParaConsistency(774)→CheckMask(525)→CheckAttentionMask(583)，函数可达；L620-621 的 isMaxWorkspace 提前返回不是溢出防护。
+  source: 2026-08-31 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4782 （closed）
+  behavior: 长上下文（单段超过 65535 token）走 TND/NTD 的 tree mask 融合注意力时，mask 形状一致性校验内部把段长平方算成了 32 位截断值：本该被拒绝的不匹配 attenMask 被判成合法，随后按这份 tiling 继续执行。没有任何报错，问题要到 attention 输出对不上或越界读时才暴露。
+  trigger_surface: fused_infer_attention_score arch22，TND/NTD + SPARSE_MODE_TREE + 段长 >65535
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,61 @@
+id: INF-2053
+legacy_ids: []
+slug: ops_transformer_bandwidth_test_blocklen_uint16_trunc
+aliases: []
+title: 带宽测试 blockLen 截断 uint16 致静默零拷贝
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: bandwidth_test tiling
+  behavior: tiling 把单行 32B 对齐后的字节数强转 uint16 作 blockLen；fp16 dataSize=32768 即 65536B 截断为 0，DataCopy 拷 0 字节，且无上限拦截
+effect:
+  objects:
+  - 指标/日志
+  - 数值结果
+  detail: bandwidth_test 工具在单行对齐字节数超过 65535 时静默零拷贝：无报错或断言，工具正常退出、耗时短、带宽读数失真，性能数据被写入报告。
+  visibility: 静默错误
+mitigation:
+  detect: 测试单行 32B 对齐字节数 ≥65536 的 shape，核对实际搬运字节数与带宽读数是否为 0/异常高
+  fix: 已修 MR https://gitcode.com/cann/ops-transformer/merge_requests/12471 （closed）：tiling 拦截单行 32B 对齐字节数 ≤65535
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: tools/bandwidth_test + fp16 等 2 字节 dtype + 单行 dataSize≥32768（对齐后 65536B）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 同 issue 另含 BUG-040 空指针与 BUG-016 epRankSize 越界（防御性），本条只收可静默触发的截断。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5497
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/12471
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer issue 5497（2026-09-20，closed，A5/DV120 深度扫描后人工复核）：tools/bandwidth_test 的 BUG-039。tiling 计算单行 32B 对齐字节数后把它强转成 uint16 作为 blockLen 传给 DataCopy；fp16 下 dataSize=32768 元素即 65536B，强转后为 0，拷贝长度变成 0，表现为静默零拷贝。tiling 侧没有 dataSize 上限校验（窗口总量约束不拦单行），仓内也没有 UT/example 兜底，因此该路径长期未被发现。同 issue 的 BUG-040（OPTIONAL 属性 aiv_num 未判空）与 BUG-016（epRankSize_ 无上限写定长 1024）被复核为防御性修复，BUG-029/030 为扫描器误读 OP_TILING_CHECK 宏方向的误报。修复 MR 12471 在 tiling 拦截单行 32B 对齐字节数 ≤65535。
+  source: 2026-09-20 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5497 （closed）；修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/12471 （closed）
+  behavior: 用带宽测试工具测大单行搬运（如 fp16 32768 元素一行）时，工具正常退出、耗时看着很短、算出的带宽高得离谱，实际一个字节都没搬；因为没有任何报错或断言，性能数据被直接写进报告。
+  trigger_surface: bandwidth_test 工具 + 单行对齐字节数超过 65535
+  discovery: 2026-10-21 tail_3 顺序深读（历史索引回填，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

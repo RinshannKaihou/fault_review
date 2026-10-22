@@ -1,0 +1,57 @@
+id: INF-1523
+legacy_ids: []
+slug: torchnpu_inductor_layernorm_welford_cross_row_accum
+aliases: []
+title: LayerNorm welford 归约多行互相累加致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: welford_reduce codegen
+  behavior: Welford 累加器（_acc_sum/_acc_sum_sq/_acc_count）未按 tile 做 tl.zeros 初始化，向量化外层轴的多行数据在各自 tile 内相互累加。
+effect:
+  objects:
+  - 数值结果
+  detail: LayerNorm 的 Welford 归约把不同行混在一起，输出静默错值，Ascend 950 上尤其明显；归约长度 ≤8192 的持久化归约判定缺失扩大了受影响面。
+  visibility: 静默错误
+mitigation:
+  detect: 多行 LayerNorm（welford_reduce，含 W=512 大行）与 eager 逐元素比对；覆盖 910 与 950 两种卡
+  fix: torch_npu/_inductor/codegen/triton.py 补 Welford 累加器 tl.zeros 初始化并按「向量化外层轴/标量外层轴」分别生成归约循环；issue 记录已修复（commit 未在正文给出，合入与发布未核实）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: torch.compile（torch_npu Inductor 后端）+ LayerNorm 走 welford_reduce 且外层轴多行；Ascend 950 上最明显，归约长度 ≤8192 的持久化判定相关
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4414
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4414（2026-08-28，closed）：torch_npu Inductor 后端 LayerNorm 使用 welford_reduce 时 SIMD 归约代码生成错误，核心改动位于 torch_npu/_inductor/codegen/triton.py——新增 Welford 累加器（_acc_sum/_acc_sum_sq/_acc_count）的 tl.zeros 初始化逻辑，并按「向量化外层轴」与「标量外层轴」区分生成归约循环，避免多行数据在各自 tile 内相互累加；同时把持久化归约判定扩展到支持 A5 上归约长度 ≤8192 的 welford_reduce，并新增默认关闭的 enable_layernorm_v4 开关（TORCHINDUCTOR_ENABLE_LAYERNORM_V4），在 W=512 大行场景回退到融合 CANN 内核，另补了 codegen 用例。issue 以修复说明形式给出，未附错误量级与端到端影响证据。'
+  source: 2026-08-28 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4414 （closed）
+  behavior: 用 torch.compile 编译多行 LayerNorm（welford_reduce 路径），得到的归一化输出与 eager 对不上：不同行的 Welford 统计被算进了彼此的累加器，均值/方差因此偏移，输出既不报错也不出 NaN，只是数值静默变错，在 Ascend 950 上最容易看出来。W=512 这类大行会走到另一条融合 CANN 内核的回退开关上。
+  trigger_surface: torch.compile + torch_npu Inductor 后端 + LayerNorm 的 welford_reduce 代码生成（多行/向量化外层轴；950 与归约长度 ≤8192 的持久化路径）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - detail

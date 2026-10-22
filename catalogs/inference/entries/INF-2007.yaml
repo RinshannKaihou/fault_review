@@ -1,0 +1,60 @@
+id: INF-2007
+legacy_ids: []
+slug: ops_nn_add_layer_norm_quant_uninit_members
+aliases: []
+title: add_layer_norm_quant kernel 成员未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: add_layer_norm_quant
+  behavior: base.h 与子类的 numCore、eps、isXOut、gmOffset_、scales1Exist 等成员无默认值；InitBaseParams 提前返回或分支跳过时，分核数、尾块长度、scale 存在性按垃圾值参与运算
+effect:
+  objects:
+  - 数值结果
+  detail: 跑 add_layer_norm_quant，尤其带 smooth scale 或 per-channel 量化路径时，偶发整块输出不对、某些通道像没做量化；重跑或换 shape 有时正常；日志无 error 也无 NaN，只能靠与 PyTorch 对拍发现。
+  visibility: 静默错误
+mitigation:
+  detect: 在 InitBaseParams 的提前返回/分支路径上打印 numCore、numLastDim、eps、gmOffset_，或把成员默认值改成哨兵值后跑不同 shape 的 add_layer_norm_quant 用例
+  fix: 待定（issue 建议给所有成员补默认值：numCore=0、numLastDim=0、eps=0.0f、isXOut=false、gmOffset_=0、scales1Exist=false、alignedStride=0），未见 MR
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: add_layer_norm_quant（静态/动态量化、normal/single_row 各 kernel）+ 初始化路径未完整覆盖成员的 shape/分支组合；issue 自述为静态代码分析结论，未给复现用例
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4530
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4530（2026-08-03，closed）：op_kernel/add_layer_norm_quant_base.h:91-113 的 numCore、numLastDim、numFirstDim、firstDimPerCore、eps、isXOut、gmOffset_、mulLoopFp32、mulTailFp32、dstRepStrideFp32、repsFp32、offsetsFp32、remsFp32、numLastDimAligned、numLastDimRoundUp32 均无默认值（同文件只有 lastDimPad=false、isPerTensor=false 有），子类 add_layer_norm_static_quant_normal_kernel.h:653-657 的 scales1Exist/scales2Exist/isZeroPoint1Exist/isZeroPoint2Exist/layernormResExist/alignedStride、single_row_kernel.h:268-269 与 dynamic_quant_normal_kernel.h:597-598 的 smooth1Exist/smooth2Exist 同样缺失。__aicore__ 环境下未初始化成员是垃圾值，InitBaseParams 等函数若因提前返回或分支跳过未全部覆盖，就会用垃圾值决定分核数、尾块裁剪与该不该做 scale，直接算错。issue 定为 P1、全芯片适用，但只给静态分析结论，未附复现用例。
+  source: 2026-08-03 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4530 （closed）
+  behavior: 跑 add_layer_norm_quant（尤其带 smooth scale 或 per-channel 量化的路径）时偶发整块输出不对、某些通道像没做量化，重跑或换 shape 有时又正常；日志里没有 error 也没有 NaN，只能靠和 PyTorch 对拍才能发现，且很难归因到具体分支。
+  trigger_surface: add_layer_norm_quant 各 kernel + InitBaseParams 提前返回/分支未覆盖成员
+  discovery: 2026-10-21 系统扫描 sweep_5（顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+    rewritten:
+    - detail

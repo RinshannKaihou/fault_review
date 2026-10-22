@@ -1,0 +1,56 @@
+id: INF-2001
+legacy_ids: []
+slug: pd_proxy_decoder_score_double_release
+aliases: []
+title: PD 代理重算失败重复释放 decoder 分数致永久偏载
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: load-balance proxy 调度器
+  behavior: reassign_instances 已释放旧 decoder，重试 prefill 失败或取消后 finally 用旧 instance_info 再释放一次；active_tokens 无下界，变负后 min-heap 永选它
+effect:
+  objects:
+  - 性能/资源
+  detail: PD 分离代理示例中，重算重试失败或客户端提前断开时，同一 decode 节点负载被扣两次，active_tokens 变负后持续被选为最闲，请求集中该节点，其他 decode 空闲；日志看不到异常，仅延迟和排队变差，重启前不自愈。
+  visibility: 性能退化
+mitigation:
+  detect: 构造 stop_reason=recomputed 且重试 prefill 失败/客户端断连，打印 SharedProxyScheduler 的 active_tokens，看是否变负且 pick_decoder 恒选同一节点
+  fix: '释放前校验归属（保证只释放一次）并给 active_tokens 加 max(0,...) 下界；issue 未附修复 PR，同族 #14967 由 #11850 修，本条修复未核实'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 1P1D/2P2D PD 分离 + 代理示例脚本；decode 返回 recomputed 且重试 prefill 失败或客户端取消
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16517
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 代理示例脚本的 SharedProxyScheduler（2026-09-14 main0914）。generate_stream 收到 stop_reason=recomputed 的 chunk 后调 reassign_instances，后者已对旧 decoder 执行 release_decoder；随后 assign_instances(is_initial_request=False) 重新预填，若该 prefill 失败（5xx/连接）或被 asyncio.CancelledError 取消，只回滚新 prefiller 的 KV，异常向上抛，generate_stream 的 finally 仍以旧的 instance_info 调 _finish_instance → finish_request → _release_load(DECODE, active_tokens=True)。_release_load 对 active_kv_cache 有 max(0.0, ...) 夹紧，对 active_tokens 没有下界，于是旧 decoder 的分数被扣两次。issue 用 FakeServer + min-heap 复现 active_tokens=-1000 后 pick 恒返回 d0，并在真实类和 main0914 调用序列上确认。
+  source: 2026-09-14 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16517 （closed）
+  behavior: 只要一次重算重试失败或客户端提前断开，代理就把同一个 decode 节点的负载扣两次：该节点 active_tokens 变负，此后每个请求都被判成「最闲」而被选中，真实负载全压在一个节点上，其他 decode 长期空闲。代理日志里看不到异常，表面只是延迟和排队变差，重启代理前不会自愈。
+  trigger_surface: PD 分离 + load_balance_proxy_server_example.py 的重算重试失败/取消路径
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

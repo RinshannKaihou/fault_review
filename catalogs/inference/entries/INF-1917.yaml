@@ -1,0 +1,59 @@
+id: INF-1917
+legacy_ids: []
+slug: vllm_ascend_glm5next_kpool_tail_pad_slot_mapping_mtp
+aliases: []
+title: MTP drafter 的 KPool tail 槽位被整表填成 PAD
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: BlockTable 短路槽位填充
+  behavior: '#16925 的短路把整张 slot_mapping 填 PAD_SLOT_ID，其 is_circular 谓词同时命中 GLM-5-Next 的 KPool tail，而该 tail builder 要读槽位映射'
+effect:
+  objects:
+  - KV状态
+  - 输出分布
+  detail: GLM-5-Next MTP 的 tail 组走 per-group 路径只拿到 PAD_SLOT_ID，tail KV 写入落到填充槽；nightly test_glm5next_tail_slot_mapping_triton 4/4 失败，27 个槽位里 8 个变 PAD
+  visibility: 质量退化
+mitigation:
+  detect: 跑 tests/e2e/nightly/single_node/ops/singlecard_ops/triton/test_glm5next_tail_slot_mapping_triton.py；或对 GLM-5-Next MTP 的 tail 组比对 per-group 与融合路径算出的 slot_mapping
+  fix: issue open，无修复 PR；方向是让短路只对真正忽略 slot_mapping 的 circular spec（DSV4.1 CircularBufferSpec）生效，不要用 is_circular 这个宽谓词
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: '#16925 之后 vllm-ascend main bea70ab8f + GLM-5-Next MTP drafter（KPool tail 为 circular 组，但 builder 消费 slot mapping）'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17532
+  kind: github_issue
+relations: []
+original:
+  mechanism: '#16925（DSV4.1 框架支持）在 vllm_ascend/worker/block_table.py 的 compute_slot_mapping（L157）与 compute_slot_mapping_draft（L208）里加了短路：只要 self.is_circular_group 为真就 slot_mapping.gpu.fill_(PAD_SLOT_ID) 后直接 return。这个谓词与既有的 is_circular 等价，于是 #16537 在 _compute_slot_mapping_kernel 里加的 IS_CIRCULAR 环形位移计算、以及 numpy draft 路径的 if self.is_circular 分支全部变成不可达。问题在于 is_circular_kv_cache_spec 对两种 circular 组都为真，但两者语义不同：DSV4.1 的 CircularBufferSpec compressor state 本来就忽略 block-table 槽位映射、用自己的全 PAD 缓冲（attention/dsa_v41.py:756），填 PAD 正确；GLM-5-Next 的 KPool tail（is_circular=True）则把 slot_mapping 原样传给 glm5_next_kpool_tail_compress_and_write_cache_triton（attention/indexer_kpool.py:313）。主 forward 走 MultiGroupBlockTable 的融合多组 kernel（2+ 非 Mamba 组且无 DCP 时融合），环形槽位仍正确；但 Glm5NextMTPModel 的 AscendMultiKVCacheGroupMTPProposer 对每个非 primary draft 组调用 per-group 的 block_table.compute_slot_mapping（spec_decode/multi_kv_cache_group_proposer.py:211），tail 组因此整表拿到 PAD_SLOT_ID。'
+  source: 2026-09-25 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17532 （open）
+  behavior: 'GLM-5-Next 开 MTP 时，草稿层 KPool tail 的 KV 全部写进填充槽，tail cache 里没有真实 token 的压缩状态，后续 draft step 读到的是 PAD 区域的旧内容——draft 质量下降、接受率变差，但主模型输出仍然通顺，看不出哪里错。nightly 的 test_glm5next_tail_slot_mapping_triton 从 #16925 起在 main 上 4/4 失败：单组 circular 场景 lengths=[3,0,5] 的 27 个槽位里 8 个从环形槽位变成 PAD_SLOT_ID，而同一测试里融合多组的部分仍逐位对得上——正好印证"融合路径对、per-group 路径错"。'
+  trigger_surface: GLM-5-Next + MTP drafter + KPool tail（circular 组但消费 slot mapping）#16925 之后
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化

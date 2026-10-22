@@ -1,0 +1,54 @@
+id: INF-1876
+legacy_ids: []
+slug: runtime_memset_d32_size_overflow_bypasses_memsize_check
+aliases: []
+title: aclrtMemsetD32 的 N*4 溢出绕过 memSize 校验
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: aclrtMemsetD32 校验
+  behavior: 两个接口用 N*sizeof(uint32_t) 算所需字节数，乘前没有溢出检查；N=SIZE_MAX/4+1 时回绕成 0，绕过 memSize 校验继续调底层。
+effect:
+  objects:
+  - 数值结果
+  detail: N=4611686018427387904、memSize=4 时同步/异步两接口都返回 0 并到达 rtMemsetD32*（期望 ACL_ERROR_INVALID_PARAM）；底层若忽略 destMax 即按该数量越界写。
+  visibility: 静默错误
+mitigation:
+  detect: 用 N*4 恰好回绕的边界值配 4 字节 memSize 跑 UT，断言返回参数错误且不下发底层；20 项常规 MemsetD32 用例（含空指针/N=0/内存不足/对齐）全部通过，覆盖不到该点。
+  fix: 待定（issue closed，未给 MR）：乘法前检查 N > memSize/4（或 N > SIZE_MAX/4），超范围返回 ACL_ERROR_INVALID_PARAM。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: aclrtMemsetD32 / aclrtMemsetD32Async + N 使 N*4 在 64 位下回绕（N=2^62）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 设备端后果（底层按超大 N 填充导致越界写）为代码路径推断，复现只到 ACL UT/桩件层；作者已注明真实 Host 路径会忽略 destMax。
+evidence:
+- url: https://gitcode.com/cann/runtime/issues/845
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/runtime issue 845（closed，master f7cd121d74fc9eeaa37addb20f37cc5eb24a6f9b，CANN 9.1.0、aarch64）：src/acl/aclrt_impl/memory.cpp:791-803 与 :845-857 的 aclrtMemsetD32 / aclrtMemsetD32Async 用 N * sizeof(uint32_t) 计算所需字节数，乘法前无溢出检查；公开头文件与中文文档规定 memSize >= N*4。取 N = SIZE_MAX/4+1 = 4611686018427387904、memSize = 4 时乘积回绕为 0，4 字节的内存大小校验因此通过，接口继续调用 src/runtime/api/impl/api_error_standard_soc.cc:502-506/:522-526 校验后的 rtMemsetD32*，把超大元素数量传给 src/runtime/core/src/memory/common_memset_d32.cpp:22-28/:112-117，而该实现忽略 destMax。作者在固定 commit 上构建 ascendcl_cpp_utest，用 4 字节对齐哨兵指针、Host 内存属性与成功返回的 rtMemsetD32* 桩，实测两接口均返回 0（期望 ACL_ERROR_INVALID_PARAM 100000）并打印 rtMemsetD32 reached: memSize=4, N=4611686018427387904；20 项常规同步/异步用例（空指针、N=0、内存不足、边界大小、内存类型、地址对齐）全部通过。'
+  source: GitCode cann/runtime issue https://gitcode.com/cann/runtime/issues/845 （closed）
+  behavior: 调用 memset 时把元素数写到极大、只给几字节的 memSize，本该被参数校验挡回去，实际却返回成功并真的下发到底层：底层按这个极大的元素数填充时越过 destMax，把目标缓冲区之后的内存改掉，调用方看到的是成功返回 + 之后某处的数据被莫名覆盖。N 取正常值或 memSize 足够时行为完全正常，所以只能靠构造乘法回绕的边界值复现。
+  trigger_surface: aclrtMemsetD32/Async + N*4 溢出 + memSize 远小于所需字节数
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

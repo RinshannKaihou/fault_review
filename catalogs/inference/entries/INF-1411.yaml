@@ -1,0 +1,59 @@
+id: INF-1411
+legacy_ids: []
+slug: ttmetal_transpose_narrow_row_wrong_data
+aliases: []
+title: tt-metal 分片行主序 transpose 窄行形状静默错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: narrow-row pack_untilize
+  behavior: 输入高度非 tile 整数倍时用窄行 pack_untilize 打包 H%32 个 datum/行，但行字节宽非 16B 对齐、行宽 17-31、H 超 1 tile、W%32 残余四类形状下打包步进/读取错
+effect:
+  objects:
+  - 数值结果
+  detail: 四类形状输出静默错数据：WH 按字节宽打包、BH 16B 向下取整（4 bf16 datum 每行步进 0，32 行全叠同 16 字节；12 datum 步进 16 覆盖前行尾部）；H>32 时每 tile 列裁剪成 H%32；W%32 残余时页错
+  visibility: 静默错误
+mitigation:
+  detect: 对 H 非 32 倍数的分片行主序 transpose 逐元素对 golden
+  fix: 待定（issue 含四类形状分析与双架构实测）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: sharded row-major WH transpose + 输入高度非 tile 倍数 + 行宽非 16B 倍数/17-31 datum/H>32/W%32；BH/WH 双架构
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61153
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal 分片行主序 transpose 程序工厂在输入高度非 tile 倍数时走 narrow-row pack_untilize（BH tt_llk_blackhole/llk_pack_untilize.h，WH 用 streaming MOP），每输出行打包 H%32 个 datum。四类形状静默错：(1) 行字节宽非输出缓冲 16B 对齐倍数：高度分片行主序输出按对齐页距存行，WH 按字节宽打包、BH 按 16 字节向下取整（per-row L1 advance 以 16B 为单位且每行从目的地址重启：4 bf16 datum advance 0，32 行全落同 16 字节；12 datum advance 16，每行覆盖前行尾部）；(2) 行宽 17-31 datum（超一个 face）：per-row PACR 读一个 face 的 row_num_datums 连续 datum，24 datum 也错；(3) H 超 1 tile 且非倍数：每 tile 列按 H%32 打包，输出行变 ht*(H%32) datum；(4) W%32 残余：kernel 每 tile 列打包 32 行而工厂按 W%32 行分页。双架构（Blackhole/Wormhole）shipped 代码均含。
+  source: 2026-10-17 GitHub tenstorrent/tt-metal issue https://github.com/tenstorrent/tt-metal/issues/61153（四类形状逐一分析）
+  behavior: 做分片行主序（sharded row-major）转置且输入高度不是 32 的整数倍时，行字节数不是 16 对齐倍数、行宽 17-31 个元素、高度超 1 tile、或宽度有 32 残余的形状会返回静默错误的数据：输出部分行重叠（行覆盖前行尾）、行被截断或整页错位。无报错；只有与 golden 逐元素对照才能发现。
+  trigger_surface: sharded row-major transpose + H%32≠0 +（行宽非 16B 对齐 | 17-31 datum | H>32 | W%32≠0）；BH/WH
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

@@ -1,0 +1,63 @@
+id: INF-1445
+legacy_ids: []
+slug: vllm_tp_inductor_rmsnorm_autotune_expert_divergence
+aliases: []
+title: vLLM TP 各 rank Inductor 归约自调谐致专家分叉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: TP 复制归约各 rank 独立 autotune
+  behavior: TP 复制的 fused_add_rms_norm 是 Inductor 归约，各 worker 独立 autotune 可选不同 config（4096 vs 8192），求和顺序不同使输出分叉，近并列分数下各 rank 路由不同专家。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  - 数值结果
+  detail: 实测 ~1.5e-5/token-layer，约 1e-3 token 在 69 层中至少一次专家翻转（55/1,104 次调用 topk_ids 分叉）；翻转 token 输出是两专家各半之和，无报错静默返回
+  visibility: 静默错误
+mitigation:
+  detect: 各 rank 对每次 select_experts 哈希 router 输入/router_logits/topk_ids 并 diff（issue 的 wrapper 方法，无集合通信）；或对比各 rank Inductor 归约 config 获胜者
+  fix: 规避（issue 实测验证）：inductor_compile_config 设 test_configs.force_filter_reduction_configs=true 两侧钉死同一归约 config 后 1,104/1,104 调用 0 分叉；上游修复未见（issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: TP≥2 + TP-sharded experts（无 EP）+ 默认 torch.compile；router 分数近并列时触发；MiMo-V2.6-Pro（fp32 gate sigmoid+correction bias top-8）实测；单节点未测量（跨节点 TP2 实测）；boot 依赖（两 rank 恰好同 config 则无差异）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: 机理由编译器层非确定性（Inductor autotune）传入并行层（TP 复制计算分叉）再放大为语义错误（MoE 路由分叉），跨 编译器/并行切分 两个 subsystem 的链式缺陷，按出错放大点（无一致性保证的 TP 复制归约）归并行切分。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61053
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM #61053（c2026-10-11，TP2 跨节点 + TP-sharded experts 无 EP + 默认 torch.compile，MiMo-V2.6-Pro）：每个 TP rank 在自己的 router 输入副本上跑 select_experts、算自己选中专家的中间维分片，最后 all-reduce 求和——没有任何机制保证各 rank 选了相同专家。而它们不总选相同专家：复制执行的 fused residual-add+RMSNorm（router 输入生产者）是 Inductor Triton 归约（triton_red_fused_fused_add_rms_norm_*），Inductor 保留多个归约 config 并在 load 时于每个 worker 进程独立基准测试——rank 间可选中不同 config（实测同 kernel rank0 R0_BLOCK=4096、rank1 8192），改变平方和求和顺序→归一化输出→router 输入低位 bit 分叉；router 分数近并列时 rank0 服务专家 A 的半份、rank1 专家 B 的半份，all-reduce 返回二者之和（既非 A 也非 B 的函数），无错误无警告。三臂证据（每臂 1,104 次 select_experts 调用哈希 diff，裁决规则预先写定）：A stock（autotune 分叉）router 输入 1,086/1,104 不同、topk_ids 55 次不同；B 两侧钉死 config 全部 0/0/0；C 仅 rank0 钉死 1,103 不同、103 次 topk_ids 分叉。支持观察：差异从第一个 MoE 层即出现（非先前路由分叉的后果）；不跨层持续（残差流 all-reduce 后 bitwise 一致，排除非确定 all-reduce）；相同 router 输入恒得相同 logits，约半数分叉输入仍 bit 一致（ulp 级）；boot 依赖。发生率 ~1.5e-5/token-layer（1e-3 token 至少一次翻转/69 层）。首次发现途径：out-of-tree expert-offload sidecar 的 per-rank expert-row 计数末尾不匹配（19,419,110 vs 19,419,100）。单节点未测量。'
+  source: 2026-10-11 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/61053 （open）
+  behavior: 在 TP≥2 部署 MoE 模型（专家按 TP 切分、无 EP）并使用默认 torch.compile 时，各 rank 可能给同一个 token 路由到不同专家：输出是该 token 走了两个专家各算一半再相加的结果，语义上既不是专家 A 也不是专家 B。约千分之一的 token 受影响（55/1,104 次 router 调用分叉），无任何报错；两 rank 恰好自调谐选中同一 kernel config 时整机干净（重启依赖，时好时坏）。同一 token 在不同 rank 的专家行计数末尾出现 ~10 行量级不匹配。
+  trigger_surface: vLLM 默认 torch.compile + TP 复制的 fused_add_rms_norm 归约；TP-sharded experts（无 EP）；router 近并列分数；跨节点 TP2 实测（MiMo-V2.6-Pro）
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出内容
+        to: 隐状态
+    uncertain:
+    - subsystem

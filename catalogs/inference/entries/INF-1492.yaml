@@ -1,0 +1,58 @@
+id: INF-1492
+legacy_ids: []
+slug: op_plugin_kv_rmsnorm_rope_cache_v2_clone_graph_mode
+aliases: []
+title: KV cache 融合算子 clone 误用致图模式精度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: pytorch
+    component: kv_rmsnorm_rope_cache_v2
+  behavior: npu_kv_rmsnorm_rope_cache_v2 函数化实现用 k_cache.clone()/ckv_cache.clone() 当写回载体并作为输出返回，issue 判定 clone 用法有误；图模式下该算子因此有精度问题。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 图模式下调用该融合算子后 k_rope/c_kv 与 KV cache 内容偏离参考实现，无报错无 NaN；正文只报图模式路径，未给偏差量级。
+  visibility: 静默错误
+mitigation:
+  detect: 图模式（图捕获/compile）下跑 kv_rmsnorm_rope_cache 单算子用例，与参考实现逐元素比对 k_rope/c_kv 与 cache；只跑 eager 发现不了
+  fix: issue 为 closed，报告者只要求修改 k_cache/ckv_cache 的 clone 用法，正文未给 PR、合入与发布状态（未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_note: Ascend950 + CANN 9.2.0 + torch 2.10.0；npu_kv_rmsnorm_rope_cache_v2 走 V2 分支并在图模式下执行
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/350
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'op-plugin issue #350（2026-08-04，closed）：环境为 Ascend950、CANN 9.2.0、torch 2.10.0 / py312。正文贴出该算子的函数化实现：取 kv 的 shape 与 dtype，convert_to_acl_data_type 处理 k_cache/ckv_cache，k_cache_dtype/ckv_cache_dtype 可选覆盖，apply_tensor_without_format 建 k_rope 与 c_kv，然后 at::Tensor k_cache_inplace = k_cache.clone(); at::Tensor ckv_cache_inplace = ckv_cache.clone();，再按 exec_v2_flag 走 EXEC_NPU_NO_FORMAT_CHECK_CMD(aclnnKvRmsNormRopeCacheV2) 或 V1 兼容分支，最后 return std::tie(k_rope, c_kv, k_cache_inplace, ckv_cache_inplace)。报告者结论是 k_cache/ckv_cache 的 clone 操作使用有误、请修改，并明确这导致图模式下该算子存在精度问题；正文没有展开 clone 与真实 cache 的关系，也没给偏差数值与修复 PR。'
+  source: 2026-08-04 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/350 （closed）
+  behavior: 看图模式下的 KV cache：用 npu_kv_rmsnorm_rope_cache_v2 做 rmsnorm+rope+cache 更新时，图模式下算子的输出与 cache 内容和参考实现对不上，表现为精度问题——没有报错、没有 NaN，日志里也看不到异常，只能靠逐元素比对发现；同一算子在非图模式路径上没报同类问题。
+  trigger_surface: 图模式（图捕获 / torch.compile）+ npu_kv_rmsnorm_rope_cache_v2 的 V2 分支；Ascend950、CANN 9.2.0、torch 2.10.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

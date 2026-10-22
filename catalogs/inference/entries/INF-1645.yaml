@@ -1,0 +1,60 @@
+id: INF-1645
+legacy_ids: []
+slug: triton_ascend_insert_slice_corrupts_outside_region
+aliases: []
+title: insert_slice 破坏插入切片之外的元素
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: al.insert_slice lowering
+  behavior: SIMD 模式下把 extract_slice→permute 得到的列 insert_slice 到 32×32 张量 (0,0) 处，插入列正确但切片之外的元素被改写；910B3、fp16、3.6.0+gitfd24f3aa。
+effect:
+  objects:
+  - 数值结果
+  detail: 与 torch 逐元素比对 mismatch 474、max abs error 8.80；第 0 行第 2 列起变成 8.84 而参考是 0.0412，无报错，只有逐元素对比可见。
+  visibility: 静默错误
+mitigation:
+  detect: 用哨兵值填底张量后只插入一小块，逐元素检查插入区域之外的单元是否保持不变
+  fix: 待定（issue closed，正文未给修复 PR）；规避=改用指针偏移载入/整块 select 而非 insert_slice
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 910B3 + SIMD 编译模式（compile_mode=simd、use_bytecode=True）+ al.insert_slice 部分写入；triton-ascend 3.6.0+gitfd24f3aa/CANN 9.0.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/1635
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0177
+original:
+  mechanism: triton-ascend 3.6.0+gitfd24f3aa（commit fd24f3aad05c1c11f244be192c72c0b7ad7b96ae，CANN 9.0.0、torch 2.7.1、torch_npu 2.7.1.post4、PyTorch 2.7.1、Ubuntu 22.04 AArch64）在 Ascend 910B3 的 SIMD 编译模式（compile_mode=simd、enable_mixed_cv=True、multibuffer=False、num_stages=1、num_warps=4、use_bytecode=True）下：对 32×32 fp16 张量 y 取第一行（al.extract_slice 后 tl.permute 成列），再用 al.insert_slice(x, col, (0,0), (BLOCK,1), (1,1)) 插到另一个 32×32 张量的第 0 列，插入的那一列正确，但插入区域之外的元素被一起改写（第 0 行第 2 列起变成 8.84，参考应为 0.0412）。逐元素比对 mismatch=474、max abs error=8.8025。复现脚本自带 corrupted_outside_insert 判定并附完整输出，可判定是 insert_slice 局部写入的 lowering 越界覆盖，而不是用户索引错。
+  source: 2026-08-18 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/1635 （closed）
+  behavior: 用 insert_slice 往输出 tile 的某个局部位置写一小块（典型场景：把一列/一行的中间结果拼回大张量）时，返回张量里被插入的位置正确，但周围大片元素变成无关的数值：实测 1024 个元素里 474 个不对、最大偏差 8.8，量级与真实数据同阶，肉眼和 loss 都不易察觉。整个过程无报错无 NaN，只有逐元素对比参考实现才能发现。
+  trigger_surface: SIMD 模式下 al.insert_slice 部分写入（非整块），910B3 fp16
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

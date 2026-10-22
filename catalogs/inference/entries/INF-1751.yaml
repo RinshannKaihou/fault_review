@@ -1,0 +1,57 @@
+id: INF-1751
+legacy_ids: []
+slug: ops_nn_bucketize_aicpu_double_boundary_cast
+aliases: []
+title: Bucketize AICPU 把 DOUBLE 输入降 float 分错桶
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Bucketize AICPU 二分/线性搜索
+  behavior: AICPU kernel 搜索前把 DOUBLE 输入转成 float，与边界相邻但不相等的值被舍入到边界值，左右插入语义随之翻转。
+effect:
+  objects:
+  - 数值结果
+  detail: 边界 [1.0]、输入 nextafter(1.0,0)/1.0/nextafter(1.0,2)：right=false 期望 [0,0,1] 实得 [0,0,0]，right=true 期望 [0,1,1] 实得 [1,1,1]；129 个边界时 128.0 两侧同样错分。
+  visibility: 静默错误
+mitigation:
+  detect: 用 nextafter 生成紧邻边界的 DOUBLE 输入，左右两种 right 语义各测一遍；整值边界与 fp32 用例看不出来。
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/11322 （open）：两条搜索路径保留 DOUBLE 精度、float 边界提升为 double 后比较，UT 13/13 通过。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: AICPU 通路 + DOUBLE 输入 + 取值紧邻桶边界（nextafter 级差）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6274
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6274（2026-09-29，open）：AArch64、CANN 9.2.0-beta.2、AICPU Host kernel。Bucketize 声明支持 DOUBLE 输入而边界属性是 ListFloat；AICPU kernel 在搜索前把输入转换为 float，与边界相邻但不相等的 DOUBLE 值舍入到边界，因而进入错误区间。用边界 [1.0]、输入 [nextafter(1.0,0.0), 1.0, nextafter(1.0,2.0)]：right=false 期望 [0,0,1] 实得 [0,0,0]，right=true 期望 [0,1,1] 实得 [1,1,1]，精确等于边界的控制值符合预期。129 个升序边界进入二分搜索后，在 128.0 两侧也会发生相同错分。修复 MR 11322 在两种搜索路径保留 DOUBLE 精度并把 float 边界提升为 double，TEST_BUCKETIZE_UT 13/13 通过；仅 Host UT 验证，未做设备侧执行。
+  source: 2026-09-29 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6274 （open）
+  behavior: 对 DOUBLE 输入做分桶时，落在桶边界两侧只差一个可表示步长的值会分到错误的桶：例如 right=false 时本应归入前一桶的 nextafter(1.0,0) 被算成第 0 桶、right=true 时本应留在第 0 桶的值被推到第 1 桶；返回码正常，只有拿紧邻边界的输入逐值比对才看得出，整数边界和 fp32 输入都正常。
+  trigger_surface: Bucketize AICPU + DOUBLE 输入紧邻边界
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - component

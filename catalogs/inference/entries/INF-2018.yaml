@@ -1,0 +1,57 @@
+id: INF-2018
+legacy_ids: []
+slug: off_stride_max_num_seqs_silently_skips_graph_capture
+aliases: []
+title: max_num_seqs 非 8 对齐时最大批静默退回 eager
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: ACL graph 捕获尺寸默认值
+  behavior: _get_default_max_cudagraph_capture_size 返回 min(max_num_seqs*decode_query_len,512)；上游阶梯 [1,2,4]+range(8,…,8) 的最大档够不到非对齐值
+effect:
+  objects:
+  - 性能/资源
+  detail: max_num_seqs=12/20 时最高捕获档只到 8/16，9-12、17-20 的 decode 步全部回落 eager，实测约 7.5 倍变慢；没有告警，参数本身看起来完全合理
+  visibility: 性能退化
+mitigation:
+  detect: 取 max_num_seqs 为 1/2/4/8 的倍数之外的取值（如 12、20），检查启动日志中的 cudagraph_capture_sizes 是否覆盖到 max_num_seqs；对比该档批量的 decode TPOT
+  fix: issue 定位到 vllm_ascend/platform.py:207 并说明上游 *2 的作用（closed）；修复未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 需 cudagraph_mode=FULL_DECODE_ONLY 且 max_num_seqs 不在 {1,2,4} ∪ 8 的倍数上
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16049
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm_ascend/platform.py:207 的 _get_default_max_cudagraph_capture_size() 返回 min(max_num_seqs * decode_query_len, 512)，docstring 说明去掉上游的 *2 是有意为之（让捕获上界跟随 max_num_seqs*decode_query_len）。但上游 _set_cudagraph_sizes() 的阶梯仍是 [1,2,4] + range(8, min(max_cudagraph_capture_size+1,256), 8)，上界等于 max_num_seqs 后，非 8 对齐的取值其最大档反而够不到自己：max_num_seqs=12 → 捕获 [1,2,4,8]，20 → [1,2,4,8,16]。上游的 *2 正是为了让 max_num_seqs 落在已捕获尺寸内，并且会把 max_num_batched_tokens 追加进列表以保证最大批被捕获。issue 用不依赖 NPU 的纯配置脚本复现（8/12/16/20/24/32 逐个打印阶梯），并实测回落 eager 的 decode 步约慢 7.5 倍。
+  source: '2026-09-08 GitHub vllm-project/vllm-ascend issue #16049（closed）。https://github.com/vllm-project/vllm-ascend/issues/16049'
+  behavior: 把 max_num_seqs 设成 12 或 20 这类「看起来很正常」的值并开 FULL_DECODE_ONLY，服务能正常起、结果也对，但最大那几档批量的 decode 一步比一步慢，整体吞吐比 8 或 16 对齐时差约 7.5 倍；日志里没有任何 warning 提示图没捕获到该批量，只能靠 profiling 才看出走了 eager。
+  trigger_surface: cudagraph_mode=FULL_DECODE_ONLY + max_num_seqs 非 1/2/4 或 8 的倍数
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - title
+    - detail

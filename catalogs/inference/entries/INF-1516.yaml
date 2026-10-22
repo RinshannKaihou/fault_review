@@ -1,0 +1,57 @@
+id: INF-1516
+legacy_ids: []
+slug: torchnpu_copy_opapi_nz_format_d2d_corruption
+aliases: []
+title: copy_ op_api 路径 NZ 张量 D2D 静默损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: copy_ op_api 格式转换
+  behavior: MR !40289 给 copy_ 打开 internal_format_opapi 后绕过 codegen 格式守卫，而 op_api 的 copy_ 只在 D2H 补了格式保护，D2D/H2D 缺格式转换。
+effect:
+  objects:
+  - 数值结果
+  detail: 2×2 ND→NZ 只按 numel 覆盖 NZ 物理存储开头，(1,0)/(1,1) 保留 1.0；NZ→ND 报 EZ1001；NZ→NZ 同格式静默损坏；HCCL send/recv 带 format 时触发。
+  visibility: 静默错误
+mitigation:
+  detect: 打开 allow_internal_format 后构造 NZ 目标/源的三种 copy_ 组合，与 CPU 参考比对；NZ→NZ 同样要查
+  fix: 在 NPUNativeOpApiFunctions::copy_ 入口复刻 codegen 守卫：A2/A3 上任一输入为内部格式即回退 NPUNativeFunctions::copy_，均 base format 才走 aclnn；issue closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.npu.config.allow_internal_format=True + NZ(29) 张量参与 copy_ 的 D2D/H2D；CANN ≥9.1.0 时 aclnnInplaceCopy 在 A2/A3 可用、DO_COMPATIBILITY 不回退
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3952
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #3952（2026-08-12，closed，torch_npu 2.7.1 含 MR !40289，CANN 9.1.0，Ascend910B4）：MR !40289 为 copy_ 在 op_plugin yaml 中添加 internal_format_opapi: True，使内部格式（NZ）tensor 跳过 codegen 的格式守卫直接进入 NPUNativeOpApiFunctions::copy_。原生 NPUNativeFunctions::copy_（CopyKernel.cpp）对 D2D/H2D/D2H 三路都调用 ApplyBaseFormatTensorBy + npu_format_cast_，op_api 路径只在 D2H 补了保护。现象 A：copy_(dst=NZ, src=ND) 时 aclnnInplaceCopy 按 ND 字节数（2×2=4 元素）拷贝，NZ 物理存储 16×16=256 元素，其余保留初始化值，输出 [[-2.1188,0.0635],[1.0,1.0]]；现象 B：copy_(dst=ND, src=NZ) 由 CANN 报 EZ1001 format 不一致；现象 C：NZ→NZ 因同格式放行仍裸搬前缀，同样静默损坏。触发场景为 HCCL send/recv 带 format 时框架内部写回 recv buffer。'
+  source: 2026-08-12 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/3952 （closed）
+  behavior: 打开内部格式后把数据 copy_ 进 NZ 格式张量，函数不报错，但目标只有左上角一小块被更新，其余位置仍是初始化时的 1.0：2×2 输入只覆盖物理存储前 4 个元素，而 NZ 存储是 256 个元素。反过来 NZ→ND 才会抛 format 不符错误，NZ→NZ 同样静默坏；下游读到的是新旧数据拼在一起的张量。
+  trigger_surface: allow_internal_format=True + NZ 内部格式张量的 copy_ D2D/H2D（含 HCCL send/recv 带 format 的 recv 写回）；A5 上 IsAclnnOnly 使该路径不生效
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

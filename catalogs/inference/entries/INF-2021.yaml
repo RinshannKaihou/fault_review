@@ -1,0 +1,54 @@
+id: INF-2021
+legacy_ids: []
+slug: streaming_tool_parser_leaks_internal_tags
+aliases: []
+title: 流式工具调用把内部标记泄漏进输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: GLM 流式解析器
+  behavior: 本应留在模型管线内部的 reasoning/工具标记出现在对外增量里，并可混入工具名或参数。
+effect:
+  objects:
+  - 输出内容
+  detail: GLM-5.1 W4A8 流式且带 tools 时，HTTP 多为 200、响应表面正常；正文夹带 </think>、<tool_call> 等内部标记，有时整块替代正常 tool_calls；工具名可被污染，按 JSON 解析 tool_calls 会拿到非法函数名或空参数。
+  visibility: 静默错误
+mitigation:
+  detect: 对流式 + tools 请求逐 delta 检查是否出现 <think>/<tool_call>/<arg_key>/<arg_value>；用严格 JSON 解析器校验 tool_calls 的 name 与 arguments
+  fix: 待定（issue open，只给泄漏分类与样例，未附修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: GLM-5.1 W4A8 + vllm-ascend 0.18.0，流式 chat/completions 且启用 tools
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/12398
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend issue 12398（2026-07-20，open）。GLM-5.1 W4A8 + vllm-ascend 0.18.0，流式 chat/completions 且带 tools 回放时，本应留在模型管线内部的标记出现在对外增量里，分四类：reasoning 边界标记 <think>/</think>、<thinking>/<reasoning>，多在工具调用之前出现且无配对开标签；XML 形态的 <tool_call>/<arg_key>/<arg_value> 整块（有时整块替代正常 tool_calls）；标记注入工具名或参数，例如 [tool_call:Grep-n</arg_key><arg_value>true</arg_value>]{...}，产出非法工具名；另有 <button>/<summary>/<tool_result> 类尖括号 token 混入参数文本。报告者指出多数情况 HTTP 仍为 200、响应表面正常，症状在流式 + tools 下最明显，不同部署实例泄漏形态不同，未给出代码定位或修复 PR。
+  source: 2026-07-20 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/12398 （open）
+  behavior: 开着 tools 流式调用时，客户端收到的正文里会夹带 </think>、<tool_call>、<arg_key>、<arg_value> 这类内部标记，HTTP 还是 200、表面上像正常回复；严重时工具名本身被污染成 Grep-n</arg_key><arg_value>true</arg_value>，任何按 JSON 解析 tool_calls 的下游都会拿到非法函数名或空参数，只有人肉看文本才能发现。
+  trigger_surface: GLM-5.1 W4A8 流式接口 + tools/工具调用解析路径
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+    - detail

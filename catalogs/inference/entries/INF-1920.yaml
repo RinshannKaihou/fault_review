@@ -1,0 +1,55 @@
+id: INF-1920
+legacy_ids: []
+slug: vllm_ascend_mooncake_layerwise_reliability_gaps
+aliases: []
+title: Mooncake layerwise 传输失败不外传致 D 端读残缺 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake layerwise
+  behavior: P 侧传输失败不向 D 侧传播错误；done 信号只由发送最后一层 KV 的那个 TP rank 发出，别的 rank 未完成 D 就认为收完；ZMQ 故障也没有超时处理
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: D 端用不完整或缺失的 KV 继续解码，输出错误而链路看似正常；ZMQ 断链时请求在 D 侧永久挂住。两种情况都不会把异常抛给上层
+  visibility: 静默错误
+mitigation:
+  detect: 在 P 侧注入传输失败（断链/丢包），检查 D 侧是否报错；核对 done 信号是否覆盖全部 TP rank；对 ZMQ 收发加超时并断言 P/D 两侧的层完成计数一致
+  fix: issue closed，未见指向具体 PR 的修复说明；方向是给 P→D 加显式错误回传、done 信号改为全 TP rank 汇聚后再置位、ZMQ 收发加超时与重连
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: PD 分离 + MooncakeConnector layerwise 模式 + 多 TP rank / 网络分区等失败路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/8810
+  kind: github_issue
+relations: []
+original:
+  mechanism: Mooncake layerwise connector 在 PD 分离里按层把 KV 从 P 推到 D，但三处可靠性缺口让失败变成静默：其一，P 侧某一层传输失败时没有把错误回传给 D，D 仍按原计划等待并最终使用不完整/缺失的 KV cache 解码，没有任何异常上报；其二，完成（done）信号只由发送最后一层 KVCache 的那个 TP rank 发出，其它 TP rank 从不发完成通知，D 只要收到任一 rank 的数据就认为整层传完，可能早于其它 rank 的实际完成时刻开始处理，形成数据竞争；其三，ZMQ 通信在失败场景（网络分区等）没有做失败处理，D 侧请求直接挂住。三者共同点是失败边界不在 API 层暴露，而 layerwise 传输是逐层的，缺一层就足以让后续 attention 读到错位的 KV。report 在 PD 分离 + layerwise 组合下提出，未给修复 PR。
+  source: 2026-04-29 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/8810 （closed）
+  behavior: 网络抖一下或某个 TP rank 传输出错，D 节点的请求照样返回 HTTP 200，只是回答变得驴唇不对马嘴或者开始重复——因为它在用缺层的 KV 做 attention。另一种表现是请求直接卡死不再返回，日志里没有传输失败痕迹。运维看到的是"偶发质量下降 + 偶发挂起"，两条都无从定位到具体是哪一层、哪个 rank 没传完。
+  trigger_surface: PD 分离 + Mooncake layerwise connector + P 侧传输失败/网络分区/多 TP rank 完成时刻不一致
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

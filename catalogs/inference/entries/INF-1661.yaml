@@ -1,0 +1,62 @@
+id: INF-1661
+legacy_ids: []
+slug: ops_nn_gather_elements_v2_no_index_range_check
+aliases: []
+title: aclnnGather 负/越界索引静默回绕或越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: scalar 内核索引寻址
+  behavior: gather_elements_v2_scalar.h 把 xGatherPos 直接乘 xPostDim_ 算 GM 偏移，无 [0,gatherDim) 检查；负索引转无符号成巨偏移，越界读或回绕到最后一行。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3 + CANN 9.1.0-beta.3 源码编译包、self[4,2] fp32、dim=0：index[0][0]=-1 时两段接口全 0 且 out[0][0]=6.0（当最后一行）；-1000000 时 out[0][0]=0.0 垃圾值。
+  visibility: 静默错误
+mitigation:
+  detect: 用含 -1 与极大负值（-1000000）的 indices 调 aclnnGather，与 torch.gather 行为对照；API 返回 0 但结果不同即命中。
+  fix: 'issue 4456 closed；正文只给根因位置与期望（索引先校验 [0,size(dim))），未给修复 PR。同族 #4762/#4765/#4771/#4772 为 embedding_bag、gather_elements_v3、scatter_elements_v2、scatter_list 的同一缺校验。'
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: partial
+  trigger_note: Ascend910B3 + CANN 9.1.0-beta.3 + 源码编译安装的 ops-nn 自定义算子包（已验证非 built-in）+ indices 含负值或越界值
+  confidence: documented
+remarks: '同族 issue #4762/#4765/#4771/#4772 机制相同，按“同一现象不重复拆条”只写本条；作者用 .o md5 一致 + 移走 built-in 目录仍复现排除了误判。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4456
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0187
+original:
+  mechanism: cann/ops-nn issue 4456（2026-07-30，closed）：Ascend910B3、CANN 9.1.0-beta.3、ops-nn HEAD acfc1342574ce6631d66b5e2e6dfdd00d878ce21，用 build.sh --pkg --soc=ascend910b --ops=gather_elements_v2 编译并安装到 vendors/cann_scan_repro_nn 的自定义算子包（非 built-in）。index/gather_elements_v2/op_kernel/gather_elements_v2_scalar.h 中 T_IDX xGatherPos = idxLocal.GetValue(idxPos); uint64_t xDataOffset = xBaseOffset + xGatherPos * this->xPostDim_ + idxPostPos; T_X xValue = this->xGm_[xDataOffset].GetValue(0);——xGatherPos 使用前没有 [0, gatherDim) 检查，负值转无符号后变成巨大偏移，属 OOB GM 读或回绕。实测 self=[[0,1],[2,3],[4,5],[6,7]] fp32、dim=0：index[0][0]=-1 时 GetWorkspaceSize/Gather/Sync 全返回 0（SUCCESS）、out[0][0]=6.0（把 -1 当最后一行）；index[0][0]=-1000000 时同样全 SUCCESS、out[0][0]=0.0（未校验的越界读垃圾值）；本机 PyTorch 对 -1 与 -1000000 均拒绝（index is out of bounds for dimension 0 with size 4）。作者用三条证据确认跑的是源码内核：产物 .o 的 md5 与 vendor 安装目录同名 .o 一致、与 opp/built-in 同名文件不一致；source set_env.bash 后 ASCEND_CUSTOM_OPP_PATH 指向 vendor；临时移走 built-in 的 gather_elements_v2 内核目录后同一用例仍复现。
+  source: 2026-07-30 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4456 （closed）
+  behavior: 在 910B3 上用 aclnnGather 做 gather，indices 里混进一个 -1 时接口一路返回 0，看起来完全成功，但取出来的是最后一行的数据（相当于偷偷做了负索引回绕）；换成 -1000000 这类极端越界值，拿到的就是 0.0 之类的垃圾值，也没有任何报错。同样的输入在 CPU 上 torch.gather 会直接抛 index out of bounds，所以这类错误在模型里表现为个别 token 的取数悄悄错掉。
+  trigger_surface: aclnnGather 命中 gather_elements_v2 scalar 内核 + indices 含负值或越界值；Ascend910B3、CANN 9.1.0-beta.3
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern

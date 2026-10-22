@@ -1,0 +1,65 @@
+id: INF-1391
+legacy_ids: []
+slug: vllm_lightning_attn_prefix_state_decay_off_by_one
+aliases: []
+title: vLLM lightning_attention 前缀历史状态少乘一次衰减
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: lightning_attn 前缀核
+  behavior: kv 历史项按 c 而非 c+1 步衰减（差 exp(s) 因子），stored-state 贡献偏差
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: MiniMax-Text01/M1、BailingMoeV2.5 线性注意力层 prefill：无 kv_history 时位置 256 起全部 token 输出错；chunked prefill 续存量态时首块即错；HTTP 200 正常返回
+  visibility: 静默错误
+mitigation:
+  detect: 对照 fp64 闭式递归或 decode 核（用 c+1 约定）比对输出；现网未评估
+  fix: 待定（issue open，尚无修复 PR；规避：暂无）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: 线性注意力模型 prefill 超过 256 token 块或从非零存量态续算（MiniMax/Bailing 系，vLLM 0.31.0 lightning_attention Triton 核）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61730
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm/model_executor/layers/lightning_attn.py 的 `_fwd_none_diag_kernel` 计算 `o_t = q_t·kv_t` 的 256-token 块化线性注意力递归时，stored-state（块前最后 token 或首块的 kv_history）对块内 query offset c 的贡献乘 `q_decay = exp(-s*c)`，但该状态距 query 实为 c+1 步，历史项整体差 exp(s) 因子。同调用的对角块核（token 0..255）与标准递归一致到 fp32 量级，而 256 后的 stored-state 路径偏到 RMS 的 2.6 倍——核与自身不一致，非约定差异；decode 核 `linear_decode_forward_triton` 与 HF MiniMax 实现均用 c+1 约定。报告者指出现有单测因输入乘 0.01、容差 atol=rtol=0.15 而恰好漏检（kv_history 用例实际已触发第二条错误路径）。复现：MiniMax slopes、fp32、512 token，tokens 256..511 max|err|/rms 2.6e0 vs torch 递归 3.4e-6；TRITON_F32_DEFAULT=ieee 排除 TF32 因素。调用方为 0.31.0 BailingMoeV2_5ForCausalLM 与 MiniMax-Text01/M1 线性注意力层的 jit_linear_forward_prefix（fp32 q/k/v）。
+  source: https://github.com/vllm-project/vllm/issues/61730
+  behavior: 使用 MiniMax-Text01/M1、BailingMoeV2.5 等线性注意力模型的 vLLM 服务，任何超过 256 token 的 prompt prefill 从第 257 个 token 起输出值就是错的；chunked prefill 从非零存量状态续算时第一块第一个 token 即错。服务正常返回 HTTP 200，无 NaN、无告警、无日志，生成内容静默劣化。相对 RMS 误差最大可达 2.6（单位化后），逐头 0.5~2.6 不等。
+  trigger_surface: vLLM 0.31.0 lightning_attention prefill 路径；线性注意力模型（BailingMoeV2.5、MiniMax-Text01/M1）；触发条件为 prompt>256 token 或 chunked prefill 续非零 kv_history；fp32 q/k/v；GPU Triton 核
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+    rewritten:
+    - behavior
+    uncertain:
+    - subsystem

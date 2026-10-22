@@ -1,0 +1,57 @@
+id: INF-1885
+legacy_ids: []
+slug: mindie_multimodal_size_limit_config_not_propagated
+aliases: []
+title: 多模态大小限制不透传，Python 侧仍按 20MB 拦
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: 通用
+    component: 多模态输入大小校验
+  behavior: C++ 侧读到 maxImageFileSizeMB 并打印，但未透传到 Python tokenizer，后者仍按默认 20MB 拦截；maxRequestLength 超限时 413 文案固定写 512MB
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: 配置 maxImageFileSizeMB=40 后，40MB 以内图片仍被拒，报 The size of image_url cannot exceed 20.0 MB；请求体超过 maxRequestLength 时返回 413，文案固定写 512MB，与配置不符；图片近 20MB 阈值时必现。
+  visibility: 报错
+mitigation:
+  detect: 启动后比对 infer_tokenizer.cpp 打印的 image/audio/video 上限与 Python 侧实际拦截阈值；把 413 文案与实际 maxRequestLength 配置对照
+  fix: issue 称已提交对应修复 PR（正文未给链接，未核实是否合入）；规避：手工导出环境变量让 Python 侧取到同一阈值
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: MindIE 26.0.0 + 多模态模型服务化 + 自定义 maxRequestLength/MultimodalConfig；Atlas A2 + CANN 8.5.1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindIE-LLM/issues/328
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '服务化部署多模态模型时，输入大小限制在整条校验链路上不一致。配置 ServerConfig.maxRequestLength=50、MultimodalConfig.maxImageFileSizeMB=40 后：C++ 侧确实读到了配置，infer_tokenizer.cpp:43 打印 Init multimodal env from config: image=40MB, audio=20MB, video=512MB, total=1000MB, pixels=100000000；但请求进入 Python 侧后仍按默认值判断，tokenizer.py-648 抛 The size of image_url cannot exceed 20.0 MB（InferTokenizer::DownloadUrl），40MB 图片被 20MB 默认阈值拦掉，说明配置值没有透传给 Python tokenizer 进程。另一处是 HTTP 层：请求体超过 maxRequestLength 时返回 413，文案写死 Maximum allowed size is 512MB，与配置的 50（单位由服务解释）无关，用户据此无法判断实际生效的阈值。预期是 413 文案回显配置值、多模态各项上限与服务配置一致、且无需手工导出环境变量就能透传。'
+  source: '2026 GitCode Ascend/MindIE-LLM issue #328 https://gitcode.com/Ascend/MindIE-LLM/issues/328（closed，附修复 PR 说明；MindIE 26.0.0.B070 + CANN 8.5.1，Atlas A2）'
+  behavior: 给多模态服务配了 maxRequestLength 和 maxImageFileSizeMB（比如 40MB），但发 40MB 以内的图片仍被拒，报 The size of image_url cannot exceed 20.0 MB；请求体超限时返回的 413 又固定说上限是 512MB，和自己配的数完全对不上。看起来配置没生效，只能手工设环境变量绕过。
+  trigger_surface: MindIE 多模态服务化 + 自定义 MultimodalConfig/maxRequestLength；图片接近默认 20MB 阈值时必现
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

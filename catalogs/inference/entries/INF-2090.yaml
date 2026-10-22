@@ -1,0 +1,55 @@
+id: INF-2090
+legacy_ids: []
+slug: hccl_hcomm_dlinit_toctou_race_static_flags
+aliases: []
+title: HcommDlInit 无锁哨兵致并发 dlopen 与静态量竞争
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: hcomm_dlsym 初始化
+  behavior: 两个 DlInit 用非同步哨兵 if (gLibHandle) return，多线程可同时通过并各自 dlopen；INIT_SUPPORT_FLAG 写的 static bool 被非原子并发写。
+effect:
+  objects:
+  - 性能/资源
+  - 可用性/进度
+  detail: 第二个 dlopen 句柄覆盖第一个且不 dlclose、子初始化重复执行；static g_*Supported 并发写属 C++ UB，能力探测结果可能被后写者覆盖，通信库初始化出现不可复现差异。隔离模型 1000/1000 次触发。
+  visibility: 不可复现
+mitigation:
+  detect: 多线程用 barrier 同时首次调用 HcommDlInit/HcommDeviceDlInit，统计 dlopen 次数与句柄是否泄漏、g_*Supported 是否被重复写；目标机可用 TSan
+  fix: issue 给出双检锁方案（std::mutex + std::atomic，参照同文件 GetHcommVersion 的 HcommVersionCache，commit 3aa49851 已修同模式）；本 issue 的两个函数尚未修（closed）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: cann/hccl HcommDlInit/HcommDeviceDlInit 首次调用被多线程并发进入；纯静态审查 + 隔离模型验证，目标机未跑 TSan
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/292
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/hccl 的 src/common/hcomm_dlsym/hcomm_dlsym.cc 中 HcommDlInit()（第 62-84 行）与 hcomm_device_dlsym.cc 中 HcommDeviceDlInit()（第 26-41 行）都用 if (gLibHandle != nullptr) return; 作哨兵，检查与赋值之间没有任何同步（两文件已 include pthread.h，但无 mutex/pthread_once/atomic/call_once/内存屏障）。多线程并发首次调用时都能通过哨兵，各自执行 dlopen：第二个句柄覆盖第一个、第一个句柄永不 dlclose；同时 11 个（device 侧 4 个）子初始化函数被重复并发执行，INIT_SUPPORT_FLAG 宏写入的 static bool g_*Supported 被非原子并发写，构成 C++14 [intro.races] p21 的 UB。报告者在隔离模型里用 std::barrier 对齐两线程，1000 次迭代 1000 次触发；并指出同文件 GetHcommVersion() 的同一模式已由 commit 3aa49851 用 HcommVersionCache+std::atomic+std::mutex 双检锁修复（issue #291），本 issue 的两个函数属不同函数、不同变量，需各自修。'
+  source: 2026-07-15 GitCode cann/hccl issue https://gitcode.com/cann/hccl/issues/292 （closed）
+  behavior: 多线程/多进程拉起通信库时，偶发能力探测结果与单线程首次初始化不同：某些 hccl 接口被判为不支持而走回退路径，或 dlopen 句柄泄漏；现象不可复现、换启动顺序就消失，日志里通常只有后续通信行为异常，没有初始化报错。
+  trigger_surface: cann/hccl HcommDlInit/HcommDeviceDlInit 在多线程下并发首次调用（通信库懒加载初始化）
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

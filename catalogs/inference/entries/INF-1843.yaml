@@ -1,0 +1,51 @@
+id: INF-1843
+legacy_ids: []
+slug: ops_math_reduce_prod_v2_negative_value_ln_nan
+aliases: []
+title: reduce_prod_v2 负值列积经 Ln+Exp 变 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: reduce_prod_v2 Axes0 内核
+  behavior: ReduceProdV2Axes0 对每个 tile 先取 AscendC::Ln 再累加、末尾 Exp 还原，未处理负值与零；合法负元素进入 Ln 直接得 NaN，沿累加链传播到该行结果。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3 + CANN 9.1.0-beta.3，float32 [[-2,3],[4,5]]、axes=0 时输出 [nan,15]，期望 [-8,15]；接口返回 SUCCESS、不报错，全正输入正确。
+  visibility: 数值异常
+mitigation:
+  detect: 用含负值的输入对 axes=0/1/2 各跑一遍并与 torch.prod 比对；全正输入用例完全正常，只看正数为输入的 UT 发现不了。
+  fix: 待定（issue closed，未给修复 MR；作者建议按 torch 符号积语义重写该路径）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: experimental reduce_prod_v2 + 输入含负值或零 + 走 Ln/Exp 路径（axes=0/1/2 同构实现）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 与 INF-1558（reduce_v2 AxesAll 对齐 pad 污染）同文件同族但机制不同：本条是负数经 Ln 的数学错误，不是 pad 未裁剪。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2604
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math issue 2604（2026-08-13，closed）：experimental/math/reduce_prod_v2/op_kernel/reduce_prod_v2.h 的 ReduceProdV2Axes0 把乘积归约实现成「对 tile 取 AscendC::Ln → 累加 → 末尾 AscendC::Exp」，Axes1/Axes2 为同类实现，三处都没有处理负值与零。乘积要求符号与绝对值分离，负元素进入 Ln 得到 NaN，NaN 沿累加链污染整行。作者在 Ascend910B3、CANN 9.1.0-beta.3、ops-math HEAD 2d1098d3e902 上以 build.sh --pkg --soc=ascend910b --ops=reduce_prod_v2 --experimental 编包并安装到独立 vendor，用 aclnnReduceProdV2 跑 x=float32 shape{2,2}=[[-2,3],[4,5]]、axes=0、keepdims=1：期望 [-8,15]，实得 [nan,15]，进程退出码 42；同环境全正输入与 torch.prod 一致。
+  source: 2026-08-13 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/2604 （closed）
+  behavior: 对天然带符号的合法张量做乘积归约（梯度、带符号 mask/权重这类输入很常见）时，只有包含负元素的那一路结果变成 NaN，其余列仍然正确；接口返回成功、流同步正常、日志无告警，同一个 shape 换全正输入就完全正常，所以常规正数用例的精度回归全绿，NaN 要到下游才被发现。
+  trigger_surface: aclnnReduceProdV2 + 任意含负值（或零）的输入 + axes=0/1/2 任一路径
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

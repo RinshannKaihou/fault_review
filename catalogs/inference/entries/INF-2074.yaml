@@ -1,0 +1,58 @@
+id: INF-2074
+legacy_ids: []
+slug: mc2_dispatch_combine_aiv_npugraph_replay_deadlock
+aliases: []
+title: MC2 dispatch/combine 叠加 AIV 回放死锁
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: MC2 dispatch/combine
+  behavior: HCCL_OP_EXPANSION_MODE=AIV 下 npu_moe_distribute_dispatch/combine 图捕获正常，回放时 AIV 核等待不会完成的握手
+effect:
+  objects:
+  - 可用性/进度
+  detail: 首个推理请求卡在 Replaying aclgraph，AIVector 8–16%、AICore 0%，约 5 分钟后 EngineCore shm_broadcast 超时自崩；同配置标准 all_reduce/all_to_all 正常
+  visibility: 挂起
+mitigation:
+  detect: AIV 模式下抓 npu-smi info -t usages：回放时 AIVector 占用非零而 AICore 为 0 且无进展，即命中该组合；或用标准 all_reduce 做对照实验
+  fix: issue 未附修复 PR（open，状态未核实）；报告者要求 MC2 算子兼容 AIV+NPUGraph 回放，或在捕获期对不兼容算子显式报错而不是回放时死锁
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: HCCL_OP_EXPANSION_MODE=AIV + torch.npu.graph/NPUGraph 捕获 + EP 开启的 MoE（npu_moe_distribute_dispatch/combine）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3762
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 环境 PyTorch 2.10.0+cpu、torch_npu 2.10.0、CANN 9.0.0（V100R001C10SPC001B250）、npu-smi 25.5.1、Ascend 910C×4 双芯=8 芯片、GLM-4.6V（128 专家，TP8+EP8）、vllm-ascend 0.22.1rc1。开启 HCCL_OP_EXPANSION_MODE=AIV 后 vllm serve 启动并完成图捕获，首个 curl 请求进入 NPUGraph 回放即卡在 Replaying aclgraph；npu-smi 显示 AIVector 8–16%、AICore 0%，即 AIV 核在等一个不会完成的握手，约 5 分钟后 EngineCore shm_broadcast 超时自崩。对照组：同一环境下标准 dist.all_reduce/dist.all_to_all 在 AIV + NPUGraph 回放正常，说明死锁特化在 MC2 dispatch/combine 算子；注释掉 AIV 后同样启动，3 轮请求全部成功。
+  source: '2026-08-06 GitCode Ascend/pytorch issue #3762 https://gitcode.com/Ascend/pytorch/issues/3762 （open）'
+  behavior: 服务能正常起来、日志显示 Application startup complete，但第一条请求进去就再也不返回；客户端一直挂着直到超时，卡上看是 AIV 核在跑、算力核完全闲，五分钟后整个 EngineCore 自己崩掉。把 AIV 环境变量去掉就一切正常，很难从现象联想到是 MC2 算子与图回放不兼容。
+  trigger_surface: HCCL_OP_EXPANSION_MODE=AIV + NPUGraph/aclgraph 捕获回放 + EP MoE 的 npu_moe_distribute_dispatch / combine
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - subsystem

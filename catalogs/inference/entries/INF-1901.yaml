@@ -1,0 +1,65 @@
+id: INF-1901
+legacy_ids: []
+slug: mindformers_moe_aux_loss_tp_grad_scaling_overdivide
+aliases: []
+title: aux-loss 反传多除 tp·cp 致 router 梯度偏小
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: mindspore
+    component: MoE aux-loss 反传缩放
+  behavior: MoE aux-loss 反传缩放取 main_loss_sense=1/(dp·tp·cp·accum)，对 replicated 的 router 权重梯度又除一次 tp·cp，aux 贡献被抹掉约 96%（0.234→0.0095）
+effect:
+  objects:
+  - 梯度
+  - 训练信号
+  detail: PyNative+TP≥4+MoE aux-loss≠0，纯并行重排（同一份权重重分片）即触发：loss 相对单卡系统性偏高、随步数累积且与 TP 度无关（tp4≈tp8，tp2≈0），sign_z 单边偏置，强制 fp32 后偏置不变；router.weight 梯度 tp4/tp1≈0.49
+  visibility: 质量退化
+mitigation:
+  detect: 同权重 tp1 与 tp≥4 对比逐权重梯度 |·| 之和（或看 sign_z 单边性）；用 moe_aux_loss_coeff=0 二分 aux 对 router 梯度的贡献
+  fix: issue 提出三种改法（aux 反传缩放只按 dp 平均不除 tp·cp、seq_aux_loss 改全局 token 归一并对 tp_cp_group 做 AllReduce、改后重跑 tp1/4/8 验证 sign_z→0），均待评审；无关联 PR 链接（issue 已关闭，未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PyNative + TP≥4（tp2 不复现）+ MoE aux-loss 打开；DeepSeek-V3 pynative 训练，纯并行重排（同一份初始权重 + auto_trans_ckpt 重分片）即复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2362
+  kind: gitcode_issue
+- url: https://gitcode.com/mindspore/mindformers/issues/2358
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 现象：DeepSeek-V3 pynative 训练，纯并行重排（加载同一份初始权重、auto_trans_ckpt 重分片）下 TP≥4 的逐 step loss 相对单卡基线系统性偏高、随步数累积且与 TP 度无关（tp4≈tp8，tp2≈0），sign_z 显示单边偏置；把 Muon Newton-Schulz 强制 fp32 后偏置完全不变，排除 bf16 因素。逐权重梯度定位：第 1 步（momentum=0）比较 Muon NS 输入 = 梯度绝对值之和的 tp4/tp1 比值，除 decoder.layers.N.mlp.router.weight 外全部 66 个权重为 0.99~1.02（正常浮点规约序差），router.weight 约 0.49。用 moe_aux_loss_coeff=0 二分：tp1 的 aux 对 router 梯度贡献 0.234、tp4 只有 0.0095（≈0），而主路由梯度 tp1 0.20748 ≈ tp4 0.20689 正确，load_balancing_loss 数值 tp1=tp4=1.0952 也正确——只有 aux-loss 反传到 router 的梯度塌掉约 96%。代码定位：base_models/gpt/parallelize.py:1414-1420 把 _MoEAuxLossAutoScaler 的缩放设为 main_loss_sense，distributed/utils.py:130-133 中 sense = 1.0/(num_devices // pipeline_parallel) 再除以 gradient_accumulation_steps，即按 dp·tp·cp 平均；但 router 权重是 replicated，其梯度已由框架在 TP 上规约，再除 tp·cp 就多除了一次。复现：仓外回归套件 repro_tp_bias.sh，存单卡 init ckpt 后 tp1/tp4/tp8 加载同权重各跑 50 步比 sign_z；逐权重梯度用 MUON_DIAG 打印 router 权重的 NS 输入。
+  source: '2026-06-16 GitCode mindformers issue #2362 https://gitcode.com/mindspore/mindformers/issues/2362（closed，根因+修复方案）；关联现象跟踪 issue #2358 https://gitcode.com/mindspore/mindformers/issues/2358'
+  behavior: 开启 TP≥4 的 pynative 训练时，loss 曲线整体比单卡高一点点，看起来不严重，但随着步数越拉越开，最终模型精度明显不如单卡；tp2 完全正常。用同一份权重、同样的数据只改并行度就能复现，而且不是 bf16 或优化器精度造成的——排查时最迷惑的是绝大多数权重的梯度都对得上，只有 MoE router 的权重梯度小了一半。
+  trigger_surface: PyNative + tensor_parallel≥4 + MoE aux-loss（moe_aux_loss_coeff 非 0）；纯并行重排即可触发，不需要改数据
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

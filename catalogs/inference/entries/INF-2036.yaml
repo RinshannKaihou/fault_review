@@ -1,0 +1,54 @@
+id: INF-2036
+legacy_ids: []
+slug: opsnn_linear_index_reciprocal_floor_offbyone
+aliases: []
+title: linear_index 倒数乘 floor 致 scatter_add 错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: linear_index MODE==2
+  behavior: MODE==2 用 Muls(1/float(indicesStride)) 再 CAST_FLOOR 模拟整除；stride 非 2 的幂时倒数舍入使精确整数落到 q-1，线性地址整体错位
+effect:
+  objects:
+  - 数值结果
+  detail: self[2,41,2] int32、index 广播 strides=[41,1,0]、dim=1 时 164 个元素中 4 个与 CPU 不一致（out[0] NPU=42、参考=41），GetWorkspaceSize/Launch/Sync 全部返回 0
+  visibility: 静默错误
+mitigation:
+  detect: 用非 2 幂 stride（如 41）构造 aclnnScatterAdd 广播 expand index 用例，与 CPU 参考逐元素比对；只防 fp32 溢出（<16777216）不足以拦住倒数舍入
+  fix: 待定（issue 为本地 draft，未远程提交；建议改为整数除法或提升倒数精度）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnScatterAdd 广播 expand index 快路径 → l0op::LinearIndex MODE==2，indicesStride 非 2 的幂；910B3 + CANN 9.1.0-beta.3
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4768
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: ops-nn index/linear_index/op_kernel/linear_index.h MODE==2（HEAD e16ef626bb3a）用 Muls(..., 1/float(indicesStride)) 加 CAST_FLOOR 模拟整除。indicesStride=41、p=41 时乘积的精确整数落在 float 可表示的次正规边界之下，floor 得到 q-1，线性地址少一格，scatter-add 落到相邻元素。调用方只校验 fp32 溢出上界（<16777216），不防倒数舍入。复现：910B3、CANN 9.1.0-beta.3、自编译 linear_index vendor 包；aclnnScatterAdd(self[2,41,2] int32、index 视图 strides=[41,1,0]、dim=1)，GetWorkspaceSize ret=0 ws=16778752，aclnnScatterAdd ret=0，sync ret=0，self_n=164 mismatches=4（firstAt=0 npu=42 ref=41，另有 diff[82]/[83] npu=40 ref=41）。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4768 （closed）
+  behavior: ScatterAdd 走广播 index 快路径、index 维 stride 不是 2 的幂时，NPU 结果与 CPU 参考差一：本用例 164 个元素里 4 个错（期望 41 得 42，期望 41 得 40），接口全返回成功、无 NaN 无告警。结果整体仍在合理数值范围内，评测侧只会看到指标轻微劣化，很难定位到线性地址错位。
+  trigger_surface: aclnnScatterAdd 广播 expand index 快路径（LinearIndex MODE==2）+ 非 2 幂 stride
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

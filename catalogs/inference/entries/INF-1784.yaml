@@ -1,0 +1,73 @@
+id: INF-1784
+legacy_ids: []
+slug: tt_metal_data_movement_dtype_grid_family
+aliases: []
+title: ttnn 搬运/转换族：typecast/embedding/divide 等
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: experimental.typecast 等转换
+  behavior: 六条互补缺陷：(1) experimental.typecast 经 prim::copy FPU datacopy 做整型/float32 转换错值（int32↔fp32 4096/4096 错、f32→bf16 1998 错；ttnn.
+effect:
+  objects:
+  - 数值结果
+  detail: n150/p100a 实测各条 always 错：typecast 整型/FP32 转换全错；embedding L1 索引+DRAM 权重 2e38 垃圾；divide 40×72 末列 319/320 错；repeat_interleave 半数元素错；topk 32 专家返回非法 id；BFP 栈 >2^31 元素段错误
+  visibility: 静默错误
+mitigation:
+  detect: 各条均有确定性小复现（与 torch 对照）
+  fix: 待定（多条 issue open；BFP pack 修复方案 size_t 已给出未提 PR；topk 修复方向：tiles==1 时 DST tile1 填 -inf/tile3 填越界索引）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: experimental API/特殊 dtype（int/uint16/bf8/bf4）/特殊放置（L1+DRAM）/维度不对齐/超大 tensor(>2^31) 组合；freq=always
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: typecast u32 上半区塌缩独立成条（INF 编号见当日），本条收 experimental 入口与其余搬运/转换缺陷。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61704
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61666
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61701
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61700
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61631
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61495
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61497
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal（229f9d5336/9f98dee9c5，n150 与 p100a）。六条：(1) #61704 ttnn.experimental.typecast 走 prim::copy（FPU datacopy 默认 compute config）：int32→float32/float32→int32/uint32→float32 全 4096/4096 错、uint16→bf16 4072 错、fp32→bf16 1998 错；ttnn.typecast 全对。(2) #61666 ttnn.embedding：uint32 索引在 L1+bf16 行主序权重（宽 8/24）在 DRAM → 值达 2e38 垃圾；其余三种放置组合（DRAM/DRAM、L1/L1、DRAM/L1）全对。(3) #61701 ttnn.embedding 从不校验 output_tensor：bf16 权重+fp32 ROW_MAJOR 预分配输出按 float32 行宽拷 bf16 行→错值+TT_METAL_WATCHER NoC 写越界循环缓冲。(4) #61700 ttnn.divide dtype=bfloat8_b/bfloat4_b 且末维非 16 倍数：tile padding 的 0/0 或 2.0/0 非有限并与同行 16 宽块内真实值共享块指数，末 tile 列大片错（40×72 案例 319/320 错 max 1.0；33×65 32/33）；宽 16 倍数或 bf16 输出正确，add/multiply 同设置正确。(5) #61631 repeat_interleave dim=-1 对 bfloat8_b/bfloat4_b（行幅度不同）8192 中 4160 错——bf8/bf4 逐元素重排丢低位；dim=-2/dim=1/bf16 位相同。(6) #61495 deepseek_prefill.moe_grouped_topk n_groups=1+32 experts：blocks::topk 恒 transpose_tile/copy_tile 第二 tile 而 CB 只备 width_tiles=1 页（moe_grouped_topk_program_factory.cpp:138,155）→ 读 L1 后续内容，T=1/T=4 返回 0..31 外专家 id；256/384 正确（测试仅覆盖）；validation 接受任意 32 倍数。另 #61497 BFP host pack（blockfloat_common.cpp:408,420 int 乘 int）与 bfloat4/bfloat2 unpack（uint32 索引）在 >2^31/>2^32 元素截断错位：288 专家 gate/up 栈 2.4e9 元素 bfloat4_b 上传段错误；bfloat8.cpp 已 uint64 未同步兄弟文件。'
+  source: 2026-10-20 每日扫描；https://github.com/tenstorrent/tt-metal/issues/61704 ；https://github.com/tenstorrent/tt-metal/issues/61666 ；https://github.com/tenstorrent/tt-metal/issues/61701 ；https://github.com/tenstorrent/tt-metal/issues/61700 ；https://github.com/tenstorrent/tt-metal/issues/61631 ；https://github.com/tenstorrent/tt-metal/issues/61495 ；https://github.com/tenstorrent/tt-metal/issues/61497
+  behavior: ttnn 的数据搬运与 dtype 转换在非常规组合下成片静默错值：experimental.typecast 整型/float32 转换全错（正式 ttnn.typecast 正确）；embedding 的索引在 L1、权重在 DRAM 时返回 2e38 量级垃圾；给 embedding 传预分配 fp32 输出配 bf16 权重按错误行宽拷贝还触发 NoC 越界；divide 输出 bfloat8_b 且宽度非 16 倍数时末列大片错值；repeat_interleave 沿末维重排 bfloat8_b/bfloat4_b 张量丢低位（半数元素错）；moe_grouped_topk 在 32 专家单组时返回不存在的专家 id；超 2^31 元素的 BFP4/BFP2 张量主机侧打包/解包截断错位甚至段错误。各条均无报错。
+  trigger_surface: ttnn 数据搬运/转换 + experimental 入口或特殊 dtype（int/uint16/bf8/bf4）/混合放置/非对齐宽度/单 tile topk/>2^31 元素
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - effect.detail
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - detail

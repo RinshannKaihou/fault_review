@@ -1,0 +1,58 @@
+id: INF-1553
+legacy_ids: []
+slug: vllm_ascend_chunk_fwd_o_grouped_head_nonfinite
+aliases: []
+title: chunk_fwd_o 在 Hg≠H 大 token 数下输出非有限值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: chunk_fwd_o（GDN）
+  behavior: Qwen3.5 GDN 生产形状 Hg=16、H=48、K=V=128（Hg≠H）下，AscendC 与 triton 两条 chunk_fwd_o 在 packed token 约 8K 起输出 Inf/NaN，AscendC 还会越界。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: T=8192 时 AscendC 报 EZ9999 invalid GM address（507015）进程退出，triton 输出非有限；同尺寸在不同进程可能一次损坏一次崩溃，而同尺寸的 chunk_gated_delta_rule_fwd_h 全有限。
+  visibility: 数值异常
+mitigation:
+  detect: 按 (T,nseq) 扫 packed token 数，逐 case 在新子进程里检查输出是否含 Inf/NaN、是否崩在 507015；与 chunk_gated_delta_rule_fwd_h 的有限性做对照
+  fix: 待定（issue closed，正文未给修复 PR）；定位手段：同尺寸对照 fwd_h 全有限，可把缺陷隔离在 fwd_o 的 O 累加/布局
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend main 2bb3f4471，910B3，CANN/torch_npu 25.2.0；Qwen3.5 GDN 形状 Hg=16、H=48、K=V=128，单进程单 NPU，ASCEND_LAUNCH_BLOCKING=1 复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17547
+  kind: github_issue
+relations: []
+original:
+  mechanism: torch.ops._C_ascend.chunk_fwd_o 与 triton 回退实现 vllm_ascend/ops/triton/fla/chunk_o.py::chunk_fwd_o 在 Qwen3.5 GDN 的生产形状（Hg=16、H=48、K=V=128，即 Hg≠H）下，packed token 数到约 8K 就开始出错：AscendC 版本在部分尺寸直接致命（EZ9999 ... MTE accesses an invalid GM address，error 507015，AclrtSynchronizeDeviceWithTimeout 失败后进程退出），triton 版本则输出非有限的 Inf/NaN。同一尺寸下 chunk_gated_delta_rule_fwd_h 的输出全有限，因此缺陷被隔离在 fwd_o。报告用固定 seed、每个 case 新起子进程的方式扫 (T,nseq)=(4096,1)/(8192,1)/(16384,1)/(32768,1)/(32768,2)：T=4096 两个实现都有限正常，8192 起 AscendC 致命、triton 非有限；同一 (T,shape) 在不同进程里可能一次只损坏输出、一次直接 abort，说明具体表现取决于 allocator 布局。数值损坏是尺寸与数据相关的部分元素变 Inf/NaN，不是整段全错。
+  source: 2026-09-26 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17547 （closed）
+  behavior: 跑 Qwen3.5 这类 GDN/线性注意力模型、且分组头数不等于头数（Hg≠H）、packed token 数上万时，生成会突然崩在 device 上（EZ9999/507015），或者不崩但输出里混入 Inf/NaN——后者继续传下去就变成乱码或整段失效；同样的模型和尺寸在另一次进程里可能表现成另一种（崩或不崩），很难稳定复现定位。
+  trigger_surface: chunk_fwd_o（AscendC 与 triton 两条实现）+ Hg≠H（如 Hg=16、H=48、K=V=128）+ packed token 数约 8K 以上
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

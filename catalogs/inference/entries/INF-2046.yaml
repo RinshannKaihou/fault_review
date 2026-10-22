@@ -1,0 +1,65 @@
+id: INF-2046
+legacy_ids: []
+slug: vllm_ascend_tl_where_oob_cu_minus_one
+aliases: []
+title: tl.where 两支均求值致 cu[-1] 越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: reject_sample Triton 采样核
+  behavior: tl.where 是选择指令不是控制流，两支都会被求值：条件包住的 tl.load(cu_ptr+offset-1) 在 lane0 仍发出 base-4 的读事务，越界值随后才被丢弃
+effect:
+  objects:
+  - 可用性/进度
+  - 输出内容
+  detail: 8 机 PD 生产、温度 0 全 greedy 批次下每次 launch 都越界读；地址落在未映射页时报 507035 MTE illegal GM，fault 地址 0x40003ffffffc 恰为 cu 基址-4，其余时候静默读相邻内存
+  visibility: 报错
+mitigation:
+  detect: 单算子把 cu 张量放到分配起始（边界放置）复现；审计所有 tl.where(cond,0,tl.load(p+idx-1)) 写法，看偏移是否夹到 0 或用 masked load 的 other
+  fix: '已修：vllm-ascend PR #16222、#16215 修正 reject_sample.py 的 rejection_greedy_sample_triton、rejection_random_sample_kernel、expand_kernel、sample_recovered_tokens_kernel（未核实发布版本）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 投机解码 + 全 greedy 批次（is_greedy=None）使 lane0 mask 恒真；是否报错取决于 cu 张量在分配中的地址布局
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16275
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend issue 16275（2026-09-10，closed）：vllm_ascend/ops/triton/reject_sample.py 用 start_idx = tl.where(offset == 0, 0, tl.load(cu_num_draft_tokens_ptr + offset - 1, mask)) 读前缀和的前驱。Triton 的 tl.where 只选择结果，两个分支总被求值，offset==0 时地址为 base-4（int32 一个元素之前），load 是真实内存事务。生产 8 机 PD 部署、D 节点图模式 + 投机解码下 sporadically 报 EE1001 / MTE illegal GM address，fault 符号 load_gm_to_ubuf_1d_int32_t+0x6c，kernel hash 1624592067857280512，算子 rejection_greedy_sample_triton，故障地址 0x40003ffffffc = cu_num_draft_tokens 基址 0x400040000000 减 4。单算子复现：cu=[3]、1 请求 3 个 draft、BLOCK_SIZE=1，边界放置必现 507035，padding 放置则输出正确；同数据 TP1-7 正常、TP0 故障。审计另发现 rejection_random_sample_kernel、expand_kernel、sample_recovered_tokens_kernel 三处同型。
+  source: 2026-09-10 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16275 （closed）
+  behavior: 开了投机解码的在线服务平时输出正常，偶尔整个 engine 报 507035 设备错误退出；同一 batch 换 TP 布局或换一次进程重启就不再复现，单看输入数据与模型权重都无异常。离线单算子测试里只要把 cu 张量放在分配起始就 100% 出错，说明问题跟内存布局有关而不是数据有关。
+  trigger_surface: rejection_* Triton 采样核 + cu_num_draft_tokens 位于分配起始 + 全 greedy/单请求批次
+  discovery: 2026-10-21 tail_3 顺序深读（历史索引回填，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 解码/采样
+      effect:
+        from: 输出内容
+        to: 可用性/进度
+      visibility:
+        from: 不可复现
+        to: 报错

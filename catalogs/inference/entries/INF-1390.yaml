@@ -1,0 +1,68 @@
+id: INF-1390
+legacy_ids: []
+slug: vllm_ascend_fa3_interleaved_kv_page_addressing
+aliases: []
+title: vllm-ascend FA3 按紧密页寻址真实 K/V 交错布局致输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: fa3_v1 页寻址
+  behavior: FA3 路径按一页间距（131072 元素）寻址，而真实缓存物理布局为 [K0][V0][K1][V1] 交错（stride(0)=262144），K 页号 1 实际读到 V0 区域
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: Qwen3-0.6B eager+FA3 服务 HTTP 200 但生成 'ConvertedConverted...' 类乱码；普通 prefill/单 token decode 即触发，无需投机解码/混合批次
+  visibility: 静默错误
+mitigation:
+  detect: 对比第一层 attention 的 cache.stride(0) 与 page_elements（block_size*num_kv_heads*head_size）；不等即布局交错；未评估
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/18729 （open，未合并未发布）：零拷贝页视图+按物理 stride 重映射有效页 ID
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend A2/910B3 + FA3 扩展（flash-attention-npu flash_attn_npu_v3）+ 真实 K/V 交错缓存布局；CANN 9.1.0/torch_npu 2.10.0.post4/vllm-ascend 0.30.0 实测
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/18769
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/18729
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend 的 FA3 路径（vllm_ascend/attention/fa3_v1.py 未修复版本 632bec8）把 KV cache 页当作紧密排列计算地址（偏移 = b * page_elements，page_elements = block_size*num_kv_heads*head_size = 131072 元素），但 Ascend 真实 KV cache 物理存储是 K/V 交错的（第一层 attention 实测 cache.stride(0)=262144 元素，布局 [K0][V0][K1][V1]），K 视图相邻块物理间隔两页。正确偏移应为 b * cache.stride(0)。因此 K 页编号 1 会读到 V0 所在区域而非 K1。.view() 不搬运数据不能消除该物理间隔；问题不是 block_table 编号不连续而是张量块间 stride 与算子寻址方式不匹配。报告者用仅相差 #18729 页布局修复的两个 fa3_v1.py 文件做对照（其余环境完全一致）：未修复输出 ''ConvertedConvertedConverted...ияия...''，修复后输出正常自我介绍。rl_config enabled+enable_training_consistency 选择 FA3 后端，--enforce-eager 已关闭图模式仍触发。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/18769 修复 PR https://github.com/vllm-project/vllm-ascend/pull/18729
+  behavior: Ascend A2 上用 Qwen3-0.6B、FA3 attention 后端、eager 模式起 vLLM 服务，普通 chat 请求即返回 HTTP 200 但内容是乱码或异常重复文本（如 'ConvertedConvertedConverted...ияия...'），温度 0 固定 prompt 稳定复现；不要求投机解码、混合批次、Hybrid 模型或前缀缓存，普通 prefill 或单 token decode 即可触发。换回修复版文件后同样请求输出正常。
+  trigger_surface: vllm-ascend 0.30.0（FA3 路径未修复版）；Ascend A2/910B3；FA3 扩展 flash-attention-npu（flash_attn_npu_v3，trainInferConsist 分支）；真实 K/V 交错缓存布局的模型；rl_config enabled+enable_training_consistency 选 FA3
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - '2026-10-16 补充证据边界：#18769 复现依赖 FA3 扩展 flash-attention-npu（trainInferConsist 分支）+rl_config 选 FA3；修复 PR #18729 open 未合并'
+  - '2026-10-20 回访 2026-10-20：vllm-ascend #18769 相关索引无状态变化'
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  updates:
+  - date: '2026-10-16'
+    fields:
+    - original.notes
+  - date: '2026-10-20'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 算子/内核

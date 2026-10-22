@@ -1,0 +1,59 @@
+id: INF-1767
+legacy_ids: []
+slug: ops_transformer_flashattn_dn_tnd_tail_overwrite
+aliases: []
+title: FlashAttn arch92 DN TND 尾块多写跨 batch 污染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: DN unmerged 模板 actVecMSiz
+  behavior: CV=1:1 下把 32 行对齐的 actMSizeAlign32 当作单 AIV 有效输出行数（CV=2 的第二 AIV 修正分支不进入），actVecMSize 由 100 行变 128 行，copy_ub_to_gm 直接以 s1De
+effect:
+  objects:
+  - 数值结果
+  detail: TND 变长 BF16 causal（mask_mode=3 路由 DN 模板）时每个非整块 batch 尾块多写对齐行覆盖下一 batch 输出（B=[100,200,300,400] 分别多写 28/24/20/0 行，覆盖展平 [12800,16384) 等区间）；用户实测第 12800 点位
+  visibility: 静默错误
+mitigation:
+  detect: TND 变长多 batch 输出与参考逐点比对；多写范围与跨核执行先后有关
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14216 （open，未发布）：不合轴 DN 调度器 s1Cur 改为 mBaseSize 块序号并修复 s1 推进哨兵越界；关联 issue https://gitcode.com/cann/ops-transformer/issues/6385
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: arch92（CV=1:1）+ TND 变长 + BF16 + mask_mode=3（DN unmerged 模板）；多写区域当前用例仍落在整个 T=1000 输出分配内（未证实 GM 整体越界），污染范围随跨核执行先后变化
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: '同日姊妹 #6385（s1Cur 推进越界）与修复 MR !14216 指向同一不合轴 DN 模板族；SoC 型号与 CANN 版本未披露。'
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6344
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14216
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/ops-transformer/issues/6385
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: ops-transformer upstream/master 1c94fc43。FlashAttn 在 arch92（CV=1:1）执行 TND 变长 BF16 causal attention 出现精度异常（用户反馈第 12800 点起；mask_mode=3 异常、mask_mode=4 正常）。CPU 编译 GetConfigInfo 证实 mask=3→template=2（DN unmerged，M=128 S2=256）、mask=4→template=0（ND）。问题起点 flash_attn_kernel_dn_unmerged.h:519：actMSizeAlign32=(actMSize+31)>>5<<5；actVecMSize=actMSize<=16?actMSize:actMSizeAlign32/CV_RATIO；subBlockIdx==1 时第二 AIV 用剩余行修正——arch35 CV=2 由此保持实际行数，arch92 CV=1 只有一个 AIV 不进入修正分支，100 行变 128 行。输出数据流：arch92 flash_attn_block_vec_dn_unmerged_arch92.h:637 mDealSize=actVecMSize → Bmm2DataCopyOutTrans 把 dealRowCount 赋 s1DealSize → copy_ub_to_gm.h:193 直接以 s1DealSize 为 DMA blockCount，无再次裁剪。按 M=128 枚举 [100,200,300,400] 尾块：batch0 多写 28 行覆盖 [12800,16384)、batch1 24 行 [38400,41472)、batch2 20 行 [76800,79360)、batch3 0。ND 模板用 (actMSize+CV_RATIO-1)/CV_RATIO，CV=1 保留实际行数。多写区域当前用例落在整个 T=1000 输出分配内，不能表述为 GM 分配整体越界；实际污染范围与跨核任务先后有关。修复 MR !14216（s1Cur 语义改块序号+推进哨兵越界）open。
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-transformer/issues/6344 ；修复 https://gitcode.com/cann/ops-transformer/merge_requests/14216 ；关联 https://gitcode.com/cann/ops-transformer/issues/6385
+  behavior: arch92 上跑 TND 布局变长序列的 BF16 causal FlashAttention（mask_mode=3 路径）时，每个 batch 的尾块按 32 行对齐多写输出，覆盖紧随其后的 batch 的输出区：前一个 batch 的注意力结果污染下一个 batch，用户在第 12800 个输出点位（恰好第一个 batch 结束处）开始看到精度异常；同参数 mask_mode=4 输出正常。全程无报错，具体哪些 batch 被污染随任务调度先后变化。
+  trigger_surface: arch92 + TND 变长多 batch + BF16 + mask_mode=3（DN unmerged 模板）+ 尾块非 32 整行
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

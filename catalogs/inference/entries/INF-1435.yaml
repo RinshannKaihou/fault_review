@@ -1,0 +1,65 @@
+id: INF-1435
+legacy_ids: []
+slug: op_plugin_maxpool_indices_contract_break
+aliases: []
+title: op-plugin max_pool indices 形状 dtype 契约破坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: MaxPool WithIndices 输出转换层
+  behavior: WithMask 分支把内核 int8 打包缓冲（含行尾 16B 对齐填充）原样返回，未折叠成 int64 视图未裁剪填充；WithIndices/3d 分配 int32 后原样返回未提升 int64；内核数值本身正确。
+effect:
+  objects:
+  - 数值结果
+  detail: 2d indices dtype=int8 且末维 ×8（int64 字节未折叠+16B 行填充）、k3s2p1 H 维多一行、1d 凭空多一维、3d dtype 变 int32；indices 无法直接用于 MaxUnpool2d，依赖 indices dtype/shape 的下游全部踩坑
+  visibility: 静默错误
+mitigation:
+  detect: 对 return_indices=True 输出检查 dtype==int64 且 shape==values.shape（NPU 上四种异形即刻暴露）
+  fix: 修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6052 （open，转换层 view/narrow/view/view 链恢复 int64；静态核验+解码数学脚本证明，无本地 NPU 未真机验证；另注明 kH*kW<4 大输出配置由静默错值改为 fail-loud）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Atlas A3（Ascend910_9362）、torch 2.7.1 + torch_npu 2.7.1.post4；max_pool2d/1d/3d(return_indices=True)；双芯一致；adaptive_max_pool2d 路径正常可对照
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/590
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6052
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'op-plugin MaxPool2dWithIndicesKernelNpuOpApi.cpp 的输出转换层破坏 CPU 契约（indices 为 int64、形状与 values 完全一致 (N,C,Ho,Wo)）。Atlas A3 实测四种异形：2d k2s2 → (2,3,4,64) int8（stride 768,256,64,1）；2d k3s2p1 → (2,3,9,160) int8；1d → (2,3,2,96) int8 凭空多一维；3d → dtype 变 int32。根因（1）aclnnMaxPool2dWithMask 分支：内核写出的 int8 打包缓冲（(N,C,kH*kW,(CeilDiv(Ho*Wo,16)+1)*32)）被原样返回——int64 字节未折叠成 int64 视图、行尾部 16B 对齐 guard 填充未裁剪（对照 adaptive_max_pool2d 路径返回正常）；（2）aclnnMaxPool2dWithIndices/aclnnMaxPool3dWithArgmax 分支：分配为 at::kInt 后原样返回未提升 int64（3d 注释明示内核只接受 int32）。values 全部逐位相等、indices 按位重组后与 CPU golden 一致——内核输出本身正确，问题在输出转换层。影响：indices 无法直接用于 MaxUnpool2d（主干上采样路径），依赖 indices dtype/shape 的下游代码全部踩坑。修复 PR !6052（open）：WithMask 分支 EXEC 后 view({-1})→narrow(0,0,numel*8)→view(kLong)→view(output_size)；3d indices.to(kLong)；静态核验通过但需真机验证。issue 附带提及 torch.round 对 -0.5/-0.4 输出 +0.0（另立 #591）。复现脚本 A3 真机 /mnt/workspace/a3hunt/round2/repro_maxpool_retidx.py。'
+  source: 2026-10-18 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/590 （open）；修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6052 （open）
+  behavior: 在 NPU 上调用 max_pool2d/1d/3d 且 return_indices=True 时，返回的 indices 形状与 dtype 与 CPU 契约不符：2d 返回 int8 且末维放大 8 倍（如期望 (2,3,4,16) int64 实得 (2,3,4,64) int8），某些核参数下 H 维多一行；1d 凭空多出一个维度；3d dtype 变 int32。无报错，数值经重组后正确，但 MaxUnpool2d 等依赖 indices 契约的下游直接不可用或错位。adaptive_max_pool2d 正常。
+  trigger_surface: op-plugin MaxPool WithIndices 输出转换层；max_pool2d/1d/3d(return_indices=True)；Atlas A3（910_9362）、torch_npu 2.7.1.post4；out 变体（max_pool*d_with_indices_out）同源问题未修
+  discovery: 2026-10-18 每日扫描
+  notes:
+  - 2026-10-20 回访 2026-10-20：#590 仍 open（u2026-10-18T19:46），修复 PR !6052 状态未复核
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - original.notes

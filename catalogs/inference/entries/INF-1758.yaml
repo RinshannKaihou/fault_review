@@ -1,0 +1,62 @@
+id: INF-1758
+legacy_ids: []
+slug: npu_event_record_reads_beyond_thpstream
+aliases: []
+title: NPU Event 无类型检查越界读 npu_stream 字段
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: Stream/Event C 结构布局
+  behavior: THNPStream 比基类多一个 npu_stream 字段，THNPEvent 的 record/wait 却注册为 METH_O、不做类型检查，直接把入参当 THNPStream 读该字段，读到分配块之外。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: torch.npu.Event().record(torch.Stream()) 抛 Event device 不匹配；该报错只是 UB 的偶然结果——垃圾 device_index 恰好相等时会按垃圾流继续下发 record 任务。CUDA/XPU 同位置有类型检查且只读基类字段。
+  visibility: 不可复现
+mitigation:
+  detect: 把 torch.Stream/torch.npu.Stream 与 torch.Event/torch.npu.Event 的四种组合逐一喂给 record/wait/elapsed_time；越界读用 ASAN 确认
+  fix: 待定（issue closed，未给修复 PR）；按 CUDA/XPU 模式修：入口加 TORCH_CHECK(THPStream_Check(...))，转基类 THPStream*，用 stream_id/device_index/device_type 经 c10::Stream::unpack3 重建 Stream
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 同一进程内混用 accelerator 侧 torch.Stream()/torch.Event() 与 NPU 直调 torch.npu.Stream()/torch.npu.Event()，且把 torch.Stream 传给 NPU Event 的 record/wait/elapsed_time
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 原文为源码级分析（含结构体偏移与调用帧），未给出真机错误日志以外的复现结果。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4758
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4758（2026-09-12，closed，环境「不限制」）：torch_npu 注册为 PrivateUse1 后，torch.Stream()（accelerator 方式）与 torch.npu.Stream()（NPU 直调）都能创建 NPU 流，但底层 C++ 结构体不同。THPStream（torch/csrc/Stream.h L8-16）为 PyObject_HEAD + stream_id(偏移 0) + device_type(8) + device_index(16) + context(24) + weakreflist(32)，共 56 字节；THNPStream（torch_npu/csrc/npu/Stream.h L10-12）继承 THPStream 并在偏移 56 处多一个 c10_npu::NPUStream npu_stream。torch.Stream() 走 THPStream_pynew → tp_alloc(THPStreamType)（torch/csrc/Stream.cpp L69、L487），只分配 56 字节；torch.npu.Stream() 走 THNPStream_pynew（torch_npu/csrc/npu/Stream.cpp L46、L161）分配完整大小。THNPEvent_record（torch_npu/csrc/npu/Event.cpp L135-141）签名声明 THNPStream*，注册为 METH_O（L210）不做参数类型检查，直接 self->npu_event.record(stream->npu_stream) 读偏移 56 之后的未分配内存，属 UB；读到的垃圾被解释为 NPUStream，其 device_index() 随机。进入 NPUEvent::record（torch_npu/csrc/core/npu/NPUEvent.cpp L100-121）后，L101 checkNotExternalStream 与 L106-113 的 TORCH_CHECK 才因 device_index 不匹配抛 "Event device ... does not match recording stream''s device"——报错是 UB 的幸运结果，若垃圾 device_index 恰好匹配就会继续 LaunchRecordEventTask。Event/Stream 的 wait、elapsed_time 与 __eq__ 同样缺检查（THNPStream_eq 于 torch_npu/csrc/npu/Stream.cpp L154/L131）。CUDA 与 XPU 的对应实现有 THPStream_Check、转基类、只读基类字段，故安全。'
+  source: 'Ascend/pytorch #4758（2026-09-12，closed） https://gitcode.com/Ascend/pytorch/issues/4758'
+  behavior: 脚本里一边用 torch.Stream()/torch.Event()（新 accelerator API），一边用 torch.npu.Stream()/torch.npu.Event()（NPU 直调），把 torch.Stream 递给 NPU Event 的 record 会抛「Event device ... does not match recording stream's device」；换个调用顺序或换个对象就可能不报错，却把事件记到一个不存在的流上，后续 wait 的时序依赖落空，多流推理出现难以复现的脏读。同一段代码在 CUDA/XPU 上正常。
+  trigger_surface: torch.Stream()/torch.Event() 与 torch.npu.* 的 Stream/Event 跨类型混用（record/wait/elapsed_time/__eq__）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    uncertain:
+    - behavior

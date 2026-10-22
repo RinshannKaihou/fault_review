@@ -1,0 +1,52 @@
+id: INF-1632
+legacy_ids: []
+slug: mindie_sampler_apply_top_p_workspace_offset0
+aliases: []
+title: 采样 kernel 漏调 GetUserWorkspace，数据区压系统保留区
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: 通用
+    component: apply_top_k_top_p_custom
+  behavior: kernel 把 softMaxGm 绑到原始 workspace 偏移 0，没调 GetUserWorkspace 跳过 host 预留的 16MB 系统保留区；于是数据区与 SyncAll 读写的系统区地址重叠。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 只传 top_p（tiling key 2）的采样即命中；软同步 SoC 上数据覆盖 SyncAll 的 GM flag，表现为挂死或 Phase-2 提前读，产出错误的 top-p 掩码与采样分布，服务不报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对固定 seed/固定 prompt 比对 top_p 采样输出与参考实现；在 kernel 侧打印 softMaxGm 基址，正常应为 workspace+16MB（系统保留区之后）而不是 0
+  fix: issue open；正文建议 kernel 改 user=GetUserWorkspace(workspace) 后再绑 softMaxGm（对齐同仓 lightning_indexer 范式），host 侧把硬编码 SYS_WORKSPACESIZE=16MB 换成 GetLibApiWorkSpaceSize()；未核实是否已修
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: true
+  trigger_note: MindIE-LLM commit 0695772（master 2026-06-23；报告称 master 9446ed40 与 v3.1.0 981ea7cf 上涉案文件逐字节一致、未修复），仅传 top_p 不传 top_k 的 tiling key 2 路径；后果形态取决于 SoC 的 SyncAll 是否走 GM flag 软同步（A2/A3 存在该路径）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 同一 issue 还列出 6 项引擎输出管线/单例的无锁并发缺陷（shared_ptr 破碎双检锁、无锁 std::deque、Get→drain→Erase 丢尾响应等）与 PD 分离 unlink 三处跨临界区缺口；本条只收录其中确定性的 workspace 布局缺陷，其余未拆条以免一条 URL 拆成多条。
+evidence:
+- url: https://gitcode.com/Ascend/MindIE-LLM/issues/718
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindIE-LLM commit 0695772（master 2026-06-23；报告者核对 master 9446ed40 与 v3.1.0 981ea7cf 上涉案文件 md5 相同、未修复）的 AscendC 自定义采样算子 src/kernels/mie_ops/csrc/sampler/apply_top_k_top_p_custom：kernel op_kernel/apply_top_p_custom.h:217 用 softMaxGm.SetGlobalBuffer((__gm__ float *)workspace, batchSize_ * vocabSize_) 直接把 workspace 当数据区起点（偏移 0），没有调用 GetUserWorkspace(workspace) 跳过设备 workspace 前段的系统保留区；kernel 入口 apply_top_k_top_p_custom.cpp:38-42 在 key 2 分支原样透传 workSpace，host tiling op_host/apply_top_k_top_p_custom_tiling.cpp:41 定义 SYS_WORKSPACESIZE=16*1024*1024、:257-259 在 onlyTopP_ 时按 16MB+数据区申请，说明 host 明确预留了系统区。结果 softMaxGm 落在 16MB 系统/软同步保留区，与本应位于偏移 16MB 的用户数据区错位；apply_top_p_custom.h:283 的 SyncAll() 在软同步模式下正是靠该保留区的 GM flag 同步各核，于是 Phase-1 写入的 softmax 中间结果与同步 flag 地址重叠。这是确定性布局缺陷，每次 tiling key 2 调用都成立。同仓 lightning_indexer.cpp:47 用 GetUserWorkspace(workspace) 是正确范式。
+  source: 2026-09-10 GitCode Ascend/MindIE-LLM issue https://gitcode.com/Ascend/MindIE-LLM/issues/718 （open）
+  behavior: 凡是不传 top_k、只传 top_p 的采样请求（最常见的 top_p=0.95 用法）都会走到这个算子：在 SyncAll 走 GM flag 的 SoC（A2/A3）上，可能出现某个核永远等不到 flag 而挂死，或 Phase-2 在 Phase-1 没写完就读取，给出错误的 top-p 掩码——采样分布被静默改掉，输出内容看着还算正常但已经不对；即使硬同步路径不复用该 flag 区，向框架系统保留区写数据本身也是未定义行为。服务侧没有任何报错。
+  trigger_surface: apply_top_k_top_p_custom 的 tiling key 2（只传 top_p、不传 top_k），任意 batch 形状；后果按 SoC 的 SyncAll 实现区分：软同步 → 挂死或错采样，硬同步 → 向系统保留区写入
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

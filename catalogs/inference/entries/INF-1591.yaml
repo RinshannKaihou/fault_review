@@ -1,0 +1,64 @@
+id: INF-1591
+legacy_ids: []
+slug: cann_recurrent_gated_delta_rule_fp32_state_copyout_sizeof
+aliases: []
+title: recurrent_gated_delta_rule state 拷贝错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: rdv CopyOutState 拷贝长度
+  behavior: arch35 CopyOutState 用 sizeof(outType)（bf16=2B）算 blockLen 与 srcStride，state 为 fp32 时字节数、步长都错；golden 对 fp32 state 未 clone。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: state为fp32且输出为bf16时，rdv 74参数组合的fp32-state系列（param_combinations2/3）精度校验失败：PctThd 99.50%、PctRlt 1.920128%、Max-RelativeError 1.9999902；bf16 state正常。
+  visibility: 静默错误
+mitigation:
+  detect: state dtype=fp32 而输出为 bf16 的 rdv 用例（bash test_run.sh rdv），核对 state 逐行内容与 PctRlt 是否超 PctThd
+  fix: PR 9182 （blockLen/srcStride 改用 sizeof(stateType)；golden 的 initial_state 加 .clone() 避免原地污染）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: ascend950（arch35）+ recurrent_gated_delta_rule + state dtype=fp32 而输出 bf16；bf16 state 不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/3945
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #3945（2026-07-27 closed，ascend950 arch35）在 attention/recurrent_gated_delta_rule/tests/pytest 执行 bash test_run.sh rdv（74 个参数组合）时，fp32-state 系列用例（param_combinations2/3）报 output precision check failed：日志为 Rtol 0.0050 / Atol 0.000025 / PctThd 99.50% / PctRlt 1.920128% / Failed，Max-RelativeError 1.9999902（阈 10.0），bf16 state 正常。根因两处：(1) arch35 kernel CopyOutState 中 blockLen 与 srcStride 误用 sizeof(outType)（bf16 为 2 字节），当 state 为 fp32、out 为 bf16 时拷贝字节数与步长计算错误，修复为 sizeof(stateType)；(2) golden 中 initial_state = state.to(torch.float32)，当 state 已是 fp32 时返回原 tensor 不拷贝，golden 原地写 initial_state 会污染传入 NPU 的 state，修复为加 .clone()。修复后 74 个用例全部通过。关联 PR 9182。'
+  source: 2026-07-27 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/3945 （closed）
+  behavior: 线性注意力（gated delta rule）的 state 用 fp32 存时，跑 rdv 精度用例会看到 1.9% 的元素超出容差、最大相对误差接近 2.0（200%），也就是 state 有近 2% 的行内容明显不对；同一套用例把 state 换成 bf16 就全部通过。算子不报错，只有精度校验会 Failed。
+  trigger_surface: state dtype=fp32 而输出 dtype=bf16（sizeof(outType) 与实际 state 类型不一致）；bf16 state、同 dtype 时不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 算子/内核
+    rewritten:
+    - detail
+    uncertain:
+    - effect

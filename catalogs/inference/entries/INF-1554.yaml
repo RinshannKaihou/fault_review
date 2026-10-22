@@ -1,0 +1,51 @@
+id: INF-1554
+legacy_ids: []
+slug: vllm_ascend_310p_pooling_chunked_prefill_wrong_embedding
+aliases: []
+title: 310P pooling 分块 prefill 只池化部分隐状态致向量错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: pooler chunked prefill 路径
+  behavior: 310P 上 --runner pooling 开启 chunked prefill 时，pooler 只对当前分块的、部分 hidden states 做池化；输入长度跨过 chunk 边界即触发，而不是用整段序列的隐状态。
+effect:
+  objects:
+  - 输出内容
+  detail: Qwen3-Embedding-0.6B 输入约 4000–8000 token 起间歇产出完全错误的 embedding，与三个参考服务的余弦相似度从 >0.999 跌到 0.2–0.6；加 --no-enable-chunked-prefill 后消失。
+  visibility: 静默错误
+mitigation:
+  detect: 同一长输入分别在有/无 chunked prefill 下取 embedding，与参考服务（同模型 T4 vLLM 或官方 API）算余弦相似度；同时比对 pooler 输入覆盖的 token 范围
+  fix: 规避已验证：启动加 --no-enable-chunked-prefill（强制单次 prefill，pooler 能看到完整 hidden states）；issue open，未见修复 PR
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: quay.io/ascend/vllm-ascend:v0.23.0-310p，Ascend 310P，vLLM 0.23.0，Python 3.11，--runner pooling、--dtype float16，模型 Qwen/Qwen3-Embedding-0.6B
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17797
+  kind: github_issue
+relations: []
+original:
+  mechanism: 用 vLLM-Ascend 的 310P 构建（quay.io/ascend/vllm-ascend:v0.23.0-310p，vLLM 0.23.0）以 --runner pooling 部署 Qwen/Qwen3-Embedding-0.6B 时，超过约 4000–8000 token 的输入会间歇性地产生完全错误的 embedding 向量：与三个参考（NVIDIA T4 + vLLM、mis-tei、同模型的 Modelscope 官方在线 API）的余弦相似度从 >0.999 跌到约 0.2–0.6。报告者的定位是：开启 chunked prefill 后，310P 上的编码器路径只用分块的、部分 hidden states 计算 pooler，长度跨过一个 chunk 边界时触发，产出数值上明显错误的向量；T4 上的 vLLM 参考服务处理同一输入正常，说明是昇腾编码器路径特有。错误在同一 serve 会话内是确定性的、重启后会变化。加 --no-enable-chunked-prefill 强制单次 prefill 后现象完全消失，该规避已按 20 条长输入验证。
+  source: 2026-09-30 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17797 （open）
+  behavior: 用 embedding/pooling 服务（--runner pooling）在 310P 上做长文本向量化时，长度超过约 4k–8k token 的输入返回的向量和参考实现差得很远（余弦相似度掉到 0.2 量级），但接口 200、维度正确、不报错；短输入正常，同一输入在同一进程内重复请求结果稳定，重启后错法还会变。关掉 chunked prefill 就恢复。
+  trigger_surface: 310P + --runner pooling（embedding 模型）+ 默认开启的 chunked prefill；输入长度跨过 chunk 边界（约 4000–8000 token）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

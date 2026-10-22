@@ -1,0 +1,53 @@
+id: INF-1729
+legacy_ids: []
+slug: ms_pynative_int_output_grad_metadata
+aliases: []
+title: PyNative 未区分 dtype，int32 索引输出也挂反向节点
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: SetTensorGradMetaData 元数据
+  behavior: SetTensorGradMetaData 不检查输出 Tensor 的 dtype，把 int32 索引输出与浮点输出一起挂到同一个 BackwardNode 上。
+effect:
+  objects:
+  - 梯度
+  detail: ops.sort 的 indices 显示 requires_grad=True 且 _output_index=1，整数输出被当成可求导；不可求导输出补位不当还会让多输出元数据索引错位。
+  visibility: 静默错误
+mitigation:
+  detect: PyNative 下对 ops.sort 等混合 dtype 多输出算子取 grad，打印 indices.requires_grad/_output_index；为 True 即命中
+  fix: issue 给出修复：SetTensorGradMetaData 只给 float/complex 输出挂反向节点，int/bool 输出保留默认 TensorMeta 占位以免索引错位（状态 open）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: PyNative + ops.sort 等混合 dtype 多输出算子；CPU，MindSpore 2.9.0/2.10
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29597
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: PyNative 自动求导会为算子的每个 Tensor 输出设置梯度元数据，但 SetTensorGradMetaData 没有区分输出 dtype 是否可求导。对 ops.sort 这类同时返回浮点结果和整数索引的多输出算子，int32 索引输出也被连到反向节点。issue 在已安装的 MindSpore 2.9.0（tag v2.9.0，commit 4bcfac448b6fdf3c7cb87d11154699ad88b69a00）上跑最小复现，输出 Float32 True <Sort, seq=0> 0 / Int32 True <Sort, seq=0> 1，确认整数索引输出挂着 Sort 反向节点。修复需为空的不可求导输出保留默认 TensorMeta 占位，避免多输出索引错位。
+  source: 2026-08-10 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29597 （open）
+  behavior: PyNative 下用 ops.sort 这类“浮点值 + 整数索引”的多输出算子，拿到的 indices 带 requires_grad=True，还指向同一个反向节点。前向不受影响，但任何按 requires_grad 判断“这个输出能不能反传”的逻辑会走错分支；不可求导输出补位不当时，多输出的元数据索引还会整体错位。2.9.0 与 2.10 上都能看到。
+  trigger_surface: PyNative + ops.sort 等混合 dtype 多输出算子；CPU，MindSpore 2.9.0/2.10
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - title

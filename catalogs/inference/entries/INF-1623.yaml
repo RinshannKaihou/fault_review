@@ -1,0 +1,57 @@
+id: INF-1623
+legacy_ids: []
+slug: mindformers_pynative_resume_gbs_scaled_zero_steps
+aliases: []
+title: 续训 global_batch_size 变化致 0 步静默退出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspore
+    component: 续训 global_step 缩放
+  behavior: _load_checkpoint 按 ckpt_gbs/current_gbs 缩放 global_step，但 training.steps 不缩放，while step < max_steps 不再成立
+effect:
+  objects:
+  - 可用性/进度
+  detail: 64 卡 DeepSeek-V3，gbs 64→32、steps 仍 1000，从第 500 步续训后 global_step 被缩成 1000，训练 0 步以 0 退出码退出；日志只有 Start training loop... 与 INFO 级 Scaled global step
+  visibility: 静默错误
+mitigation:
+  detect: 续训启动后检查缩放后的 global_step 与 training.steps 关系；启动时断言 global_step < max_steps，否则告警
+  fix: 待定（issue closed；期望至少给出‘本次将执行 0 步及原因’的告警，未核实是否已加校验）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 续训时把 training.global_batch_size 改小，使缩放后 global_step 达到 training.steps 即触发，与模型/并行配置无关
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2590
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'PyNative 断点续训时若本次 training.global_batch_size 与 checkpoint 中记录的不一致，训练不报错、以 0 退出码结束且一步都没跑。根因在 mindformers/pynative/trainer/trainer.py：Trainer._load_checkpoint 在恢复优化器状态时按 ckpt_gbs / current_gbs 缩放 global_step（global_step = int(common_info.global_step * (common_info.global_batch_size / self.global_batch_size))，并打一条 INFO ''Scaled global step: ...''），以保持已消耗样本数语义；但 training.steps 不跟随缩放，_inner_train_loop 的循环条件是 while step < self.state.max_steps（max_steps = training.steps），缩放后 global_step >= training.steps 时循环体一次都不执行，直接走 on_train_end 正常退出。复现：gbs 64、steps 1000 训到第 500 步存盘（no_save_optim: false），改成 gbs 32、steps 1000、no_load_optim: false 续训，恢复的 global_step 被缩成 500*(64/32)=1000，达到 max_steps。环境 64 卡 Ascend 910、DeepSeek-V3 PyNative（context.mode: 1）、seq 4096、dp4/tp4/pp4/ep16、Muon，master commit 876658938。'
+  source: 2026-09-10 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2590 （closed）
+  behavior: '改小 global_batch_size 续训，进程正常拉起、打印 Start training loop... 之后再没有任何日志，几秒后以退出码 0 结束，一个 step 都没训；监控上就是一条平的 loss 曲线，作业状态还是成功。翻大日志只能找到一句 INFO 级 ''Scaled global step: 500 -> 1000 (batch size changed from 64 to 32)''，除此之外没有任何告警，很容易被当成训练早就跑完了。'
+  trigger_surface: 'PyNative 续训（checkpoint.no_load_optim: false）+ 修改 training.global_batch_size 使其变小，64 卡 910B，DeepSeek-V3'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem

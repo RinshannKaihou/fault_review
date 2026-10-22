@@ -1,0 +1,58 @@
+id: INF-1961
+legacy_ids: []
+slug: onnx_pfa_ifa_wrapper_padding_mask_dropped
+aliases: []
+title: ONNX 导出 wrapper 静默丢弃 padding_mask
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: onnx PFA/IFA 导出 wrapper
+  behavior: PFA/IFA 的 ONNX symbolic 把 padding_mask 实参写成 pse_shift（应追加），第一个位置参数还引用未定义的 self；导出图因此缺一路输入。
+effect:
+  objects:
+  - 数值结果
+  detail: 导出的 npu::NPUPromptFlashAttention 节点没有 padding_mask 输入（Netron 可见），与算子 schema 不一致，ATC 编译失败或产出行为错误的 OM，而导出本身不报错。
+  visibility: 静默错误
+mitigation:
+  detect: 导出 PFA/IFA 后检查 ONNX 节点输入清单是否含 padding_mask，并与 op_plugin_functions.yaml 的 schema 对照；CI 补一条 ONNX 导出端到端用例
+  fix: 待定（issue open；报告建议 master 修复后同步到 7 个在维护分支，缺 npu_ 前缀与 self 两处已给最小复现）
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: torch_npu 2.10.0（v26.0.0-pytorch2.10.0）+ CANN 9.0.0 + Ascend 310P3；走 torch_npu.onnx 的 PFA/IFA 导出路径，7 个在维护分支同样存在
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2176
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #2176（2026-05-29 open；openEuler 22.03 aarch64、Ascend 310P3、torch_npu 2.10.0 tag v26.0.0-pytorch2.10.0、CANN 9.0.0）：torch_npu/onnx/wrapper_onnx_ops.py 的 _NPUPromptFlashAttentionOP 与 _NPUIncreFlashAttentionOP（行 674-689、692-707）有三处缺陷且对称存在。其一 forward 调 torch.ops.npu.prompt_flash_attention / incre_flash_attention，缺 npu_ 前缀，而 op_plugin schema 只注册 npu_prompt_flash_attention / npu_incre_flash_attention，eager 路径直接报错。其二 symbolic 的第一个位置参数写成 self，函数签名里没有 self，ONNX 导出抛 NameError。其三 padding_mask 在签名里接了，但 g.op 里被 pse_shift 替换而不是追加，导出的 ONNX 节点因此没有 padding_mask 输入，与 ATC 依赖的算子 schema 不一致。三处分别由 commit a8c6d7d3f（2023-09）与 5bdc7f1f7、f3ef5eee8（2024-01）引入，现有测试都不触发 symbolic，CI 从未覆盖。'
+  source: 2026-05-29 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/2176 （open）
+  behavior: 用 torch_npu.onnx 导出带 padding_mask 的 PFA/IFA 时，要么在 eager 调用处直接报算子不存在，要么绕过之后导出成功但导出的 ONNX 节点输入里没有 padding_mask，用 Netron 打开就能看到 inputs 少一路。把该 ONNX 交给 ATC 编 OM 会在该节点失败，或者编出一个拿错输入、行为错误的 OM；导出过程本身不提示缺输入。
+  trigger_surface: torch_npu.onnx 的 PFA / IFA 导出路径（symbolic 被调用时）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail
+    uncertain:
+    - behavior

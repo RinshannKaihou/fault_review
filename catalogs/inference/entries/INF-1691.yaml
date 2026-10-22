@@ -1,0 +1,51 @@
+id: INF-1691
+legacy_ids: []
+slug: fia_gsmerge_flag_wrong_stride
+aliases: []
+title: FIA gsMergeFlag 误置致 BMM1 读 K stride 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: FIA arch35 tiling
+  behavior: gsMergeFlag 在 gSize=1、S1*gSize<64 时被误置，kernel 按 isGqa=1 把 BSH 的 mm1Ka stride 由 n2*g*d 改成 d，BMM1 错步长读 K 数据。
+effect:
+  objects:
+  - 数值结果
+  detail: BSND、D=512、S1=S2=36、bf16、sparse_mode=0 的用例 pass_rate 仅 0.35%、max_abs_err 1.07（修复后 100%、0.002），无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 按 gSize=1、S1<64、D=512、BSND 组合定向覆盖精度用例，比较 pass_rate 与 max_abs_err
+  fix: PR 11748 在 CheckPFAMergeSupport 增加 gSize<=1 排除条件（issue closed，合入与发布状态未核实）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: arch35 catch-all 模板 + gSize=1 才触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5195
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5195（2026-09-10 closed，ascend950 arch35）：FIA 的 arch35 catch-all 模板在 BSND layout + D=512 + S1<64 + gSize=1 场景下精度异常（pass_rate 约 0.35%）。根因是 tiling 侧 CheckPFAMergeSupport 在 gSize=1（并非真正的 GQA 分组）且 S1*gSize<64 时仍返回 true，使 gsMergeFlag 被误置为 true，kernel 中 isGqa=1、isPfaGS1Merge=true，错误修改 BSH 路径的 mm1Ka stride（从 n2*g*d 变为 d），BMM1 读 K 时按错步长取数。复现：B=1、N1=4、N2=4、S1=S2=36、D=512、bf16、sparse_mode=0，调 npu_fused_infer_attention_score_v2 后与 golden 比对。修复方案为在 CheckPFAMergeSupport 中增加 gSize<=1 的排除条件（gSize=1 时 GS1 合轴无意义），关联 PR 11748。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5195 （closed）
+  behavior: BSND 布局、D=512、S1=S2=36、bf16、sparse_mode=0 的 FIA 精度用例几乎全错：pass_rate 0.35%、max_abs_err 1.07，但调用全程无异常、无日志，输出形状与 dtype 均正常，只在逐元素与 golden 比对时暴露大面积偏差；修复后同一用例 pass_rate 100%、max_abs_err 0.002。
+  trigger_surface: BSND layout + D=512 + S1<64 + gSize=1 + sparse_mode=0，走 arch35 catch-all 模板
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

@@ -1,0 +1,57 @@
+id: INF-2076
+legacy_ids: []
+slug: vllm_ascend_stream_toolcall_dropped_async_scheduling
+aliases: []
+title: 流式+async-scheduling 丢失 tool_calls
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: async sched + tool parser
+  behavior: 开启 --async-scheduling 后流式响应的 tool_calls 不再下发，只把思维链增量推给客户端；报告未给出源码定位，非流式或关闭 async-scheduling 时 tool_calls 正常
+effect:
+  objects:
+  - 输出内容
+  detail: tool_choice=required + stream=true 只收到 CoT、无 tool_calls；同一请求 stream=false 或去掉 --async-scheduling 都能返回 CoT 与 Tool Call
+  visibility: 静默错误
+mitigation:
+  detect: 固定 prompt + tools，做 async-scheduling 开/关 × stream 开/关 四组对照，检查响应的 tool_calls 字段是否为空
+  fix: issue 未附修复 PR（closed，修复状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm serve --async-scheduling + --enable-auto-tool-choice + --reasoning-parser qwen3 + stream=true + tool_choice=required
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/5683
+  kind: github_issue
+relations: []
+original:
+  mechanism: 环境 hdk 25.0.rc1.1、vllm-ascend 0.13.0rc1、Qwen3-8B，启动命令为 vllm serve ... --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3 -tp 4 --async-scheduling。请求 tool_choice=required、stream=true、chat_template_kwargs.enable_thinking=true 时，流式响应只有思维链增量，最终没有 tool_calls；同一 payload 改成 stream=false，或在服务端去掉 --async-scheduling，都能同时返回 CoT 与 Tool Call。报告另一组交叉验证（Qwen3-32B + 关闭 thinking）在流式下还会直接抛 JSONDecodeError，因为解析出的工具调用片段本身不是合法 JSON，说明流式路径上解析出的片段既可能丢、也可能是坏 JSON。
+  source: '2026-01-07 GitHub vllm-project/vllm-ascend issue #5683 https://github.com/vllm-project/vllm-ascend/issues/5683 （closed）'
+  behavior: 接 agent 框架时把服务开成流式，模型明明在想调用工具（前端能看到它写了工具名和参数），但响应里 tool_calls 一直是空的，客户端只能拿到一段思维链；把 stream 关掉立刻恢复正常，很容易被误判成模型没学会调工具。
+  trigger_surface: async scheduler（--async-scheduling）+ 流式 chat completions + reasoning parser + tool-call parser
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior
+    - detail

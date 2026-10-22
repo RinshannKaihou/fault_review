@@ -1,0 +1,58 @@
+id: INF-1701
+legacy_ids: []
+slug: ascendc_cast_int32_float_nan_pipeline
+aliases: []
+title: AscendC Cast int32 转 float 在深流水后全 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: AscendC Cast（mix kernel）
+  behavior: 4-deep cross-core pipeline 达满深度后（kvSeqLoop>=3），AIV 侧 Cast<float,int32_t> 转换 Fixpipe（SPLIT_M）写入 UB 的 int32 数据，输出全为 NaN。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: Sk=128/256（1~2 个 kvSeqLoop）正确，Sk>=512（>=4 个）时 Cast 输出全 NaN，softmax 输入与 attention 输出随之全 NaN；非零 int32 写独立 buffer 仍复现，全零输入跳过 Cast 则全部 shape 通过。
+  visibility: 数值异常
+mitigation:
+  detect: 按 kvSeqLoop 逐档放开（Sk=128/256/512/1024）比对 Cast 输出；用全零输入跳过 Cast 做对照
+  fix: 待定（报告请求维护者确认是否 known limitation 及 PipeBarrier/Fixpipe 形式 workaround，未见修复）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend950PR + CANN 9.2.0-beta.1 的 CATLASS_GLOBAL mix kernel，需 pipeline 达满深度
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4463
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #4463（2026-08-20 closed，Ascend950PR_9579 dav-3510，CANN 9.2.0-beta.1 toolkit + 950-ops，驱动 25.7.rc1，编译器 bisheng，复现工程 CATLASS sage_attn_fp8 example 基于 example-49 FAInferKernel fork）：在 CATLASS_GLOBAL mix kernel（AIC+AIV 协同）的 4-deep cross-core pipeline 中，AIV 侧调用 AscendC::Cast<float,int32_t>(dst, src, RoundMode::CAST_NONE, count) 把 Fixpipe（SPLIT_M、NO_QUANT）写入 UB 的 int32 数据转 float 时，count<=256x128=32768（单 tile）正确，kvSeqLoop>=3（pipeline 达到 full depth 之后的第 3 次迭代起）输出全为 NaN。对照：Sk=128/256 通过，Sk>=512 失败；全零 int32 输入跳过 Cast、直接把未初始化 float buffer 交给 softmax 时全部 shape 通过；非零 int32 + Cast 写入不与任何其它 buffer 重叠的独立 buffer 仍 NaN；torch 层 tensor.int32().float() 对 32K+ 元素正常。CAST_ROUND 与 CAST_NONE 均 NaN。推测 Cast Vector 指令在 cross-core mix kernel 下与 Fixpipe 的 SPLIT_M 双目标写入（dualDstCtl=1）存在交互，UB 的 pipeline stage/cache 状态未对 Vector 单元完全可见，或 Cast 的 repeat 计数在 cross-core event 等待恢复后残留状态。'
+  source: https://gitcode.com/cann/ops-transformer/issues/4463 （closed）
+  behavior: attention 推理中途突然整片输出 NaN：前 2 次 kv 迭代结果正常，跑到第 3 次及以后 softmax 输入全是 NaN，最终 attention output 全 NaN。没有越界、没有报错，只有把 Sk 压到 128/256（流水不达满深度）时才恢复正常，且与 Cast 的 RoundMode 无关。
+  trigger_surface: CATLASS_GLOBAL mix kernel（AIC+AIV）+ 4-deep cross-core pipeline + Fixpipe SPLIT_M 写入 UB 的 int32 经 Cast 转 float，Sk>=512
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

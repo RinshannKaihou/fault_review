@@ -1,0 +1,57 @@
+id: INF-1570
+legacy_ids: []
+slug: cann_moe_init_routing_int32_expertidx_fp32_sort_collision
+aliases: []
+title: MoeInitRouting 排序键转 fp32 致静默错序
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: 通用
+    component: moe_init_routing 排序
+  behavior: 排序前把 int32 expertIdx Cast 到 float32 再 Muls(-1) 用硬件 Sort；float32 尾数仅 24 位，|V|≥2^24 的相邻整数舍入到同一键，偏序改变使排序结果与 int32 排序不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: 1000 例中 18 例失败，全部含 |V|≥2^24 的 expertIdx（<2^24 的 951 例零失败）；18 例 expandedExpertIdxOut 全错，5 例 expandedXOut/expandedRowIdxOut 连带错；用例均返回 SUCCESS、无错误码。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 expertIdx 在 ±2^24 邻域与 int32 极限的相邻整数碰撞对（如 [16777216,16777219]），对三个输出与 int32 排序标杆逐位比对
+  fix: 待定（issue closed；文档仅提示“可能存在精度问题”，未改为排序键不经 fp32 或在 GetWorkspaceSize 阶段做值域校验报错）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: aclnnMoeInitRouting（CANN 9.0.0，Ascend 910B3）+ expertIdx 含 |V|≥2^24 的 int32（越界输入，真实专家数远小于该值）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5041
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5041（2026-09-07 closed）用 ATK 以 pyaclnn 调用 aclnnMoeInitRouting（CANN 9.0.0 moe/moe_init_routing，Ascend 910B3，torch 2.10.0），CPU 标杆按文档公式对 int32 做 stable 排序，md5 逐 tensor 精确比对，1000 例中 982 通过、18 例失败。18 例故障共同特征：expertIdx 值域含 |V|≥2^24，运行结果均为 SUCCESS。按值域分桶：<2^24 的 951 例零失败，[2^24,2^25) 41 例中 10 例失败，[2^25,2^31) 6 例全失败，int32 极限 2 例全失败。根因（与文档约束一致）：kernel 排序前把 int32 经 Cast 转 float32 再 Muls(-1) 取负后用硬件 Sort，源码位置 moe/moe_init_routing 的 moe_sort_one_core.h:58-59、moe_sort_multi_core.h:91-92、moe_init_routing_fullload.h:99-100 均为该模式；float32 尾数 24 位无法区分 |V|≥2^24 的相邻整数，键碰撞后偏序变化。文档 aclnnMoeInitRouting.md 约束说明只写“expertIdx 需大于 -2**24、不超过 2**24，否则可能会存在精度问题”，未说明失败形态会连带 expandedXOut 与 expandedRowIdxOut 一并错误。对照组：编号 162 上界恰为 2^24 通过，编号 196 全值域舍入到单键通过，编号 322/323 int32 极限仅 output_2 失败。'
+  source: 2026-09-07 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5041 （closed）
+  behavior: 把超出 ±2^24 的整数当专家索引用时，MoeInitRouting 的输出排序结果是错的：排序后的专家索引与按 int32 排序的参照不一致，部分用例连 expandedX 的取数行和行映射也一起错，下游 MoE 计算整体错乱；而算子正常返回、没有错误码也没有告警，只能靠逐位比对才发现。专家索引在合法范围内时 951 例全部正确。
+  trigger_surface: expertIdx 取值含 |V|≥2^24 的 int32（含 int32 极限与负向越界），且出现不同整数舍入到同一 float32 键的组合
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - detail

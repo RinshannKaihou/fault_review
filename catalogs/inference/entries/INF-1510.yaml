@@ -1,0 +1,76 @@
+id: INF-1510
+legacy_ids: []
+slug: mssanitizer_racecheck_id_and_sync_false_positive
+aliases: []
+title: 竞争与同步检测在 ID 越界、有同步场景误报
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: racecheck/synccheck 冲突判定
+  behavior: 竞争/同步判定未识别同线程顺序、跨卡barrier、原子累加、DCCI+SyncAll等同步语义；set/wait_flag桩event id超界未处理；synccheck未按硬件截断超范围AIV flag id；同步桩少一条时未正确识别
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: 同核同线程、带 cross-npu barrier 的两卡同址写、FixPipe 同址 AtomicAdd、DCCI+SyncAll 之后、纯 SIMT 原子/归约算子都稳定报竞争；synccheck 对 AIV flag id>15 报死锁而硬件截断后实际不死锁。
+  visibility: 静默错误
+mitigation:
+  detect: 看到竞争告警先核对两侧是否有 SyncAll/跨卡 barrier/同一原子累加，并单开 --check-cross-npu-races 或 --check-dcci 复测；synccheck 报死锁时核对 AIV flag id 是否 >15。
+  fix: 待定（各 issue 均以“误报”闭环；#168 提出核间同步 mode4 的 flag_id 合法性告警，方向是让工具按硬件截断语义处理，未见公开 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend 910B/950PR POD + AscendC/CATLASS/shmem 算子；-t racecheck、--check-cross-npu-races=yes、--check-dcci=yes、synccheck mode4；--block-id 单核执行
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/mssanitizer/issues/113
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/118
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/121
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/125
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/166
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/183
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/195
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/215
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/216
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '同一族误报，分两类。A 类“有同步仍报冲突”：#113 在 /race_check/simt_simt_inner 用例上报同一核内同一线程之间发生竞争；#121 单独用 --check-cross-npu-races=yes 即对 device 0 与 device 1 上同一条 PIPE_MTE3 写（kernel1.cpp:38，同一 GM 地址 +0x12c0c0017000）报 WAW，而用例目录名为 no_race_when_sync_with_cross_npu_barrier，即两卡之间本有同步；#118 在 FixPipe 对同一块地址 AtomicAdd 时报 GM WAW；#195 在 --check-dcci=yes 下对带 DCCI+SyncAll 的多 kernel 用例报 UB 竞争；#215 在纯 SIMT 场景的 atomic_intrinsics、reduce_sum、bank_conflict、sincos_compute 上报竞争，其中 reduce_sum 经确认是“检测同步桩指令少了 1 个”；#216 asc-devkit 的 scalar_atomic_operations 示例在原子操作之间报竞争。B 类“桩取到的 id 越界”：#183 动态插桩的 set/wait_flag 桩函数拿到的 event id 超过合法范围时 racecheck 误报，例如 ops-transformer spare_flash_attention_grad 出现 MTE2 同 pipe WAW；#166 synccheck 在 mode4 核间同步场景下 AIV 上 flag id 超过 15（属非法范围）时报死锁，但硬件会截断 AIV 的 flag id，算子实际不会死锁。另有 #125 shmem dispatch_gmm_combine 报竞争同时未展示调用栈、异常 kernel 名字展示错误。'
+  source: 2026-05-25 GitCode Ascend/mssanitizer issue https://gitcode.com/Ascend/mssanitizer/issues/113（closed）；2026-05-28 issue https://gitcode.com/Ascend/mssanitizer/issues/118（closed）；2026-05-30 issue https://gitcode.com/Ascend/mssanitizer/issues/121（closed）；2026-06-09 issue https://gitcode.com/Ascend/mssanitizer/issues/125（closed）；2026-07-28 issue https://gitcode.com/Ascend/mssanitizer/issues/166（closed）；2026-08-11 issue https://gitcode.com/Ascend/mssanitizer/issues/183（closed）；2026-08-25 issue https://gitcode.com/Ascend/mssanitizer/issues/195（closed）；2026-09-17 issue https://gitcode.com/Ascend/mssanitizer/issues/215（closed）；2026-09-18 issue https://gitcode.com/Ascend/mssanitizer/issues/216（closed）
+  behavior: 带 cross-npu barrier 的两卡同步写、对同一地址的 AtomicAdd、SyncAll 之后的多核访问，都会被报成 WAW/WAR 竞争；同一线程内的顺序访问也会被当成线程间竞争；把 --check-dcci=yes 或 --check-cross-npu-races=yes 单独打开时误报明显变多。synccheck 会为一个硬件本来会截断 flag id 的算子判死锁。误报往往还伴随调用栈缺失或 kernel 名不对，进一步降低可读性。
+  trigger_surface: Ascend 910B/950PR POD + AscendC/CATLASS/shmem 算子；-t racecheck、--check-cross-npu-races=yes、--check-dcci=yes、synccheck mode4；--block-id 单核执行
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - visibility

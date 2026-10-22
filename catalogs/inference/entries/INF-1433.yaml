@@ -1,0 +1,63 @@
+id: INF-1433
+legacy_ids: []
+slug: vllm_dp_moe_lora_cross_replica_state
+aliases: []
+title: vLLM DP>1 MoE-LoRA 以本机 LoRA 态算全部 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: naive DP prepare 映射收集
+  behavior: DP>1 无 EP 时 token 与 LoRA-slot 映射一起 all-gather，但 MoE-LoRA kernel 决策与 slot 表保持 rank 本地，各副本把本机 LoRA delta 施加到所有 token
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 副本 LoRA 态不同时 LoRA 请求 logits 静默错：对端空转只得半份 delta；对端持不同 adapter 则混入对方 delta；零-B adapter 完全不可见
+  visibility: 静默错误
+mitigation:
+  detect: 对比 DP=1 与 DP>1 的 LoRA 请求 logits；零-B adapter 无法暴露
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: DP>1 且无 EP 的 MoE 模型 + expert LoRA；DP2×TP2 4×H100 源码分析（v0.28.0），机制为代码定位，未见端到端复现数据
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/61453
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM v0.28.0（2cf0a6915c，main de8291e24 不变）DP>1 无 EP 时 MoE 层按 dp·tp 展平张量并行：naive DP prepare 把所有副本的 hidden states、top-k ids/weights 与 punica token_lora_mapping 一起 all-gather（#40867 引入），但是否运行 MoE-LoRA kernel 及活跃 slot 列表保持 rank 本地（fused_moe/prepare_finalize/naive_dp_ep.py:136-177、all2all.py:53-136）。每个副本的专家分片把本副本 slot 的 LoRA delta（w13_lora_b 行 / w2_lora_a 列按展平 rank 切片，fused_moe.py:46-48,312-334）施加到全部 gathered token，combine reduce-scatter + TP all-reduce 求和后 token 输出=sum(各副本各自 LoRA 态的 delta)。三种实测形态（4×H100，2026-10-12）：对端副本空转（DP lockstep dummy）只得一半 delta；对端只跑 base 请求同样半份；对端 slot 持不同 adapter/版本时 token 混入两份 delta。无报错，零-B adapter 不可见。
+  source: 2026-10-17 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/61453（open；源码行号级分析+4×H100 DP2×TP2 实测）
+  behavior: DP>1 且不开 EP 的 MoE 模型挂 expert LoRA 服务时，只要各 DP 副本的 LoRA 状态不完全一致（对端在空转、只服务 base 请求、或 slot 里挂的是不同 adapter/版本），LoRA 请求的输出就静默错误： logits 混入了错误份额或错误来源的 LoRA delta。没有报错；adapter 的 B 矩阵为零时现象完全不可见，常规回归测不出来。
+  trigger_surface: DP>1 + 无 EP + MoE expert-LoRA（FusedMoEWithLoRA）+ 副本间 LoRA 态不同步；v0.28.0 起
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - title
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

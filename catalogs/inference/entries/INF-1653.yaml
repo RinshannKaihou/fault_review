@@ -1,0 +1,57 @@
+id: INF-1653
+legacy_ids: []
+slug: ms_graph_ignores_masked_fill_inplace_stmt
+aliases: []
+title: Graph 模式静默忽略语句形式 masked_fill_
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: Graph 模式原地语句处理
+  behavior: Graph 模式把语句形式的 y.masked_fill_(mask, v) 当无副作用语句丢弃，返回值形式却生效，两种等价写法结果不同。
+effect:
+  objects:
+  - 数值结果
+  detail: 同一 Cell 中 y.masked_fill_(mask,9) 后 return y，Graph 输出未填充的 [[1,2,3],[4,5,6]]；改成 return y.masked_fill(...) 得填充值，PyNative 则直接报未注册内核。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 Cell 分别用语句形式和返回值形式写 masked_fill_，Graph 下比较输出；语句形式未改动即命中，另需确认 PyNative 报未注册内核
+  fix: 待定（issue open，无修复 PR）；方向：Graph 要么与返回值形式一致地生效，要么像 PyNative 一样明确拒绝不支持的 CPU 原地操作
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: CPU + GRAPH_MODE，映射为语句形式的 masked_fill_ 原地写；返回值形式与 PyNative 行为都不同
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29624
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore 2.9.0 / 2.10.0（PyPI 官方 CPU 轮子，Python 3.11.15，Ubuntu 24.04 WSL2，device_target=CPU）：文档未宣称 CPU 支持原地操作。PyNative 在物化结果时明确报未注册内核；Graph 的返回值形式 y.masked_fill(...) 能得到填充值，而语句形式 y.masked_fill_(mask, Tensor(9.0)) 后 return y 静默返回未修改的原 Tensor。最小复现是 GRAPH_MODE 下 construct 里先 y = x + 0，再 y.masked_fill_(mask, 9.0)，返回 [[1,2,3],[4,5,6]]，进程退出码 0、无任何告警。两个版本均复现，issue 无修复 PR。
+  source: 2026-08-21 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29624 （open）
+  behavior: 把 masked_fill_ 当语句写（mint/torch 常见写法）在 Graph 模式下等于没调用：返回的张量原样未改，不报错也不告警；同一段代码改成返回值形式才生效，迁移到 PyNative 又直接抛未注册内核。attention mask、pad 位置填充这类逻辑会静默算成未填充。
+  trigger_surface: GRAPH_MODE + device_target=CPU，语句形式调用 Tensor.masked_fill_；MindSpore 2.9.0/2.10.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem

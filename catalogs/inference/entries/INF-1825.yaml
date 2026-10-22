@@ -1,0 +1,55 @@
+id: INF-1825
+legacy_ids: []
+slug: routed_experts_capture_silently_all_zero
+aliases: []
+title: routed-expert 捕获静默失效返回全零专家选择
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: fused_moe 专家捕获
+  behavior: fused_moe 的 get_current_vllm_config() 抛 config 未设置异常，except 把 _vllm_config 置 None 后静默跳过专家捕获；补齐上下文后 layer 又缺 layer_id。
+effect:
+  objects:
+  - 输出内容
+  detail: enable_return_routed_experts=True 时返回数组全 0（uint8 (546,40,8) min=0 max=0 nonzero=0），文本生成正常完成，调用方拿到全零专家选择。
+  visibility: 静默错误
+mitigation:
+  detect: 对返回的 routed_experts 数组做 nonzero/max 检查，全零即视为捕获失效
+  fix: 规避（报告者本地验证）：在 worker.py 用 set_current_vllm_config(self.vllm_config) 包住 execute_model，以及 _dummy_run/kernel_warmup/capture_model 的预热与图捕获块；上游修复 PR 待定（issue open）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: v0.26.0rc1 + enable_return_routed_experts=True，Qwen3.5-35B-A3B 与 DeepSeek-V4-Flash-0731；报告者在集成部署中观测，未在未改动的上游单机复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16314
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #16314，v0.26.0rc1，Qwen3.5-35B-A3B 与 DeepSeek-V4-Flash-0731，enable_return_routed_experts=True。报告者在 vllm_ascend/ops/fused_moe/fused_moe.py 原有的 get_current_vllm_config() 异常处理上加诊断日志，捕获到 AssertionError: Current vLLM config is not set.；现有代码吞掉该异常并把 _vllm_config 置为 None，于是 routed-expert 捕获被静默跳过，返回数组保持全零。恢复 config 上下文后又遇到第二个问题：传给捕获逻辑的 layer 对象缺 layer_id。修复方向是在 vllm_ascend/worker/worker.py 用 with set_current_vllm_config(self.vllm_config) 包住 execute_model，并对 _dummy_run()、kernel_warmup()、capture_model() 的预热/图捕获块同样加包；改后 Qwen3.5 的诊断日志出现 min=0 max=255 nunique=256 的真实专家 id。DeepSeek-V4-Flash 只是同症状，根因未在该模型上单独验证。'
+  source: 2026-09-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16314 （open）
+  behavior: 打开 enable_return_routed_experts=True 后，文本生成一切正常、能正常结束，但响应里返回的 routed-expert 数组整块是 0：诊断打印 dtype=uint8 shape=(546, 40, 8) min=0 max=0 nonzero=0，也就是每个 token、每层、每个专家槽位都是 0 号专家。调用方（做 expert 可视化、路由分析或奖励归因）拿到的是「所有 token 都路由到 0 号专家」的假数据，任何基于它的统计都失效，而服务本身不报错。
+  trigger_surface: enable_return_routed_experts=True（v0.26.0rc1，Qwen3.5-35B-A3B / DeepSeek-V4-Flash-0731）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

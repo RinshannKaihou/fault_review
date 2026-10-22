@@ -1,0 +1,60 @@
+id: INF-1850
+legacy_ids: []
+slug: vllm_ascend_index_cache_dspark_prefix_hit_accept_collapse
+aliases: []
+title: index_cache 与 dspark 前缀命中致接受率塌陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: dspark index cache
+  behavior: index cache 用 skip_topk 复用上层 topk_indices_buffer，而 spec decode 只在 model 层共享该 buffer，impl 层引用变陈旧；命中前缀缓存后 DSA top-k 索引未恢复。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: DeepSeek-V4 同开 dspark（7 个草稿）、前缀缓存、use_index_cache 与 DSA 后，命中前缀的请求每步接受 token 数锐减，TPOT 劣化约 2.7 倍而 ITL 基本不变。
+  visibility: 质量退化
+mitigation:
+  detect: 对比命中/未命中前缀缓存时的 accept_len 与 TPOT（ITL 不变即指向接受数下降）；检查 topk_indices_buffer 在 spec decode 与 index cache 之间复用后是否刷新。
+  fix: 待定（issue open，正文只给到源码注释级线索与复现配置）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: DeepSeek-V4 + dspark 投机解码 num_speculative_tokens=7 + prefix caching + use_index_cache=true + DSA；PD 分离，VLLM_ASCEND_APPLY_DSV4_PATCH=1、USE_MULTI_GROUPS_KV_CACHE=1、USE_MULTI_BLOCK_POOL=1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14984
+  kind: github_issue
+relations: []
+original:
+  mechanism: DeepSeek-V4 上同时启用 dspark 投机解码（num_speculative_tokens=7）、前缀缓存、use_index_cache=true 与 DSA 稀疏注意力后，命中共享前缀缓存的请求会出现 dspark 接受率塌陷：TPOT 劣化约 2.7 倍，而 ITL 基本不变——报告指出这说明不是每步执行变慢，而是每个投机步被接受的 token 数显著减少。源码线索在 vllm_ascend/models/deepseek_v4.py：index-cache 逻辑用 skip_topk 复用前一个层的 topk_indices_buffer，同一文件还写着 “spec_decode shares topk_indices_buffer at the model level only, leaving impl-level references stale”。报告据此判断 spec decode 与 index cache 之间存在缓存索引的生命周期/引用不一致：命中前缀缓存时 DSA 使用的 top-k 索引没有被正确恢复，dspark 目标层的 hidden states 因此被污染，最终表现为接受率塌陷。正文给出完整 P/D 环境变量与启动参数，但未给修复 PR。
+  source: 2026-08-26 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14984 （open）
+  behavior: 开投机解码和前缀缓存的 DeepSeek-V4 服务，一旦请求命中前缀缓存，吞吐骤降（TPOT 变差约 2.7 倍）但单步延迟没变，接受长度指标明显变小；请求不报错，输出质量也可能变差，属于典型的“看起来只是变慢”。
+  trigger_surface: index_cache / use_index_cache=true + dspark spec decode（多草稿）+ prefix caching 命中 + DSA 稀疏注意力
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

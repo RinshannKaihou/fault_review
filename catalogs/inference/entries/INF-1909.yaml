@@ -1,0 +1,62 @@
+id: INF-1909
+legacy_ids: []
+slug: mssanitizer_synccheck_miss_v_mte2_race_shared_buffer
+aliases: []
+title: synccheck 漏报 V 与 MTE2 共用 buffer 的缺同步
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: synccheck 跨函数依赖分析
+  behavior: 同一块 UB 在 Init 里由 Vector 的 Duplicate 初始化、随后在 Process 里被 DataCopyPad 写入，两处共用 buffer 且只插了 MTE2→V 方向，synccheck 未报缺 V→MTE2 同步
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: FlatQuantBnn 单测精度时好时坏，人工补 SetFlag/WaitFlag(HardEvent::V_MTE2) 后消失；mssanitizer --tool=synccheck 在 CANN 8.5.1 与 9.1.0 上各扫一次都无 Error，只有无关 WARNING
+  visibility: 不可复现
+mitigation:
+  detect: 单测精度间歇失败且怀疑流水竞争时，不要以 synccheck 无 Error 结案；按 buffer 复用关系人工核对跨函数（Init/Process）的 V∩MTE2 依赖
+  fix: 未修复（issue 请求优化工具，已关闭但未核实改动）；规避：人工补 SetFlag/WaitFlag(HardEvent::V_MTE2) 后复测
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: AscendC 算子 + 跨 kernel 函数复用同一 UB buffer（ReinterpretCast 别名）+ --cce-auto-sync=off；CANN 8.5.1（910B2）与 9.1.0（950PR）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/mssanitizer/issues/206
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: AscendC 算子 FlatQuantBnn 在 Init 函数里从同一 bufQueue 取一块 UB，用 ReinterpretCast 起了多个别名：xTensor 与 p1Tensor 指向同一段内存（x2Tensor/p2Tensor 按 Mceil×Nceil 偏移切分）。Init 里对这块内存做 Duplicate<T>(xTensor, 0, ...) 等 Vector 初始化；Process 里再对 p1Tensor 做 DataCopy(p1Tensor, p1GM[...]) 或走 DataCopyPad 分支搬运。代码在搬运之后只插了 set_flag(PIPE_MTE2, PIPE_V) / wait_flag(PIPE_MTE2, PIPE_V) 一个方向，缺 V→MTE2 的反向同步；按流水并发语义，Vector 的 Duplicate 可能还没结束，MTE2 的 DataCopyPad 就已经开始往同一块 buffer 写，拷进来的数据会被 Vector 操作覆盖，于是单测精度时好时坏。人工补 SetFlag<HardEvent::V_MTE2>/WaitFlag 后问题消失，确认为竞争。提交者用 mssanitizer --kernel-name=FlatQuantBnn --tool=synccheck 扫描，期望工具指出这条跨函数（Init 与 Process 之间、同一 buffer 别名）的缺失同步，实际在 CANN 8.5.1（910B2）与 CANN 9.1.0（A5 950PR）上都只输出无关 WARNING、没有 Error，即这类跨调用点的 V/MTE2 竞争被漏报。
+  source: '2026-09-01 GitCode Ascend/mssanitizer issue #206 https://gitcode.com/Ascend/mssanitizer/issues/206（closed；CANN 8.5.1/9.1.0，910B2 与 A5 950PR）'
+  behavior: 算子的单元测试精度时好时坏，怀疑是流水同步没写全，于是用 mssanitizer 的 synccheck 模式扫一遍，结果一条 Error 都没有，只有一堆不相关的 WARNING；最后人工按 buffer 复用关系补了一条 V→MTE2 的 SetFlag/WaitFlag，精度立刻稳定，说明真正缺失的同步工具没扫出来。
+  trigger_surface: AscendC 算子 + 跨函数（Init/Process）复用同一 UB buffer + --cce-auto-sync=off；单测精度间歇失败
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 算子/内核
+      effect:
+        from: 测试判定
+        to: 数值结果
+      visibility:
+        from: 静默错误
+        to: 不可复现

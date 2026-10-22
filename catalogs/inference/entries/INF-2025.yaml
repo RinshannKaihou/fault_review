@@ -1,0 +1,60 @@
+id: INF-2025
+legacy_ids: []
+slug: vllm_ascend_sp_long_prompt_garbled
+aliases: []
+title: 开 SP 后千 token 以上请求输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: SP 长请求切分
+  behavior: 开启 VLLM_ASCEND_ENABLE_FLASHCOMM=1（SP）后，925 token 输入正常、1040 token 起整段退化为同一 token 重复；长度跨过约 1000 token 边界即触发，原文未定位到代码
+effect:
+  objects:
+  - 输出内容
+  detail: Qwen3-MoE、vllm@1b67b0 + vllm-ascend@00ba07：启用 SP 后，925 token 返回通顺中文，1040 token 返回整段重复的韩文假名 token；HTTP 200、finish_reason=length，日志无异常
+  visibility: 静默错误
+mitigation:
+  detect: 同一 prompt 构造 925 与 1040 token 两个版本，SP 开启下比对输出；若仅在长版本出现单 token 重复即命中
+  fix: 待定（issue closed，未见 MR）：规避手段是关闭 VLLM_ASCEND_ENABLE_FLASHCOMM / 不用 SP，长度为 1000 token 附近的请求需重点回归
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: VLLM_ASCEND_ENABLE_FLASHCOMM=1（SP）+ prompt 超过约 1000 token；925 token 正常、1040 token 乱码
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/3374
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-project/vllm-ascend issue 3374（2025-10-11，closed）：vllm@1b67b0 + vllm-ascend@00ba07，Qwen3-MoE，启动时 export VLLM_ASCEND_ENABLE_FLASHCOMM=1 打开 SP，同时 TASK_QUEUE_ENABLE=0、VLLM_USE_V1=1、HCCL_OP_EXPANSION_MODE=AIV、HCCL_INTRA_PCIE_ENABLE=1 且清空 .torchair_cache。同一台服务上 prompt_tokens=925 的请求返回通顺中文，prompt_tokens=1040 的请求返回整段重复的韩文假名 token；两条请求只差长度，说明触发点在序列并行对长请求的切分/拼接路径上。issue 正文只给了两个 curl 的输入输出对照，没有给出根因定位或修复 PR。
+  source: 2025-10-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/3374 （closed）
+  behavior: 接入 SP 提升长序列吞吐后，短问题答得好好的，一旦 prompt 到一千 token 上下（长文档、多轮上下文）就整段变成同一个 token 的复读，客户端收到的是 HTTP 200 和 finish_reason=length，服务端日志干干净净，只有人工看输出才发现答非所问。
+  trigger_surface: VLLM_ASCEND_ENABLE_FLASHCOMM=1 + prompt ≳1000 token
+  discovery: 2026-10-21 系统扫描 sweep_5（顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    rewritten:
+    - detail

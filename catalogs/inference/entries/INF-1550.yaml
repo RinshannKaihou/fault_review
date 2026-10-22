@@ -1,0 +1,61 @@
+id: INF-1550
+legacy_ids: []
+slug: vllm_ascend_dispatch_ffn_combine_w8a8_k_stride
+aliases: []
+title: fused_mc2 W8A8 MoE 工作区按 K 定宽致 N>K 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: dispatch_ffn_combine W8A8
+  behavior: W8A8 变体的 GMM1 输出工作区按输入维 K 分配、kernel 也按 K 定 stride，而 GMM1 实际每行写 N=2×moe_intermediate 列；N>K 时行间互相覆盖、末行越界。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: enable_fused_mc2=1的W8A8 MoE在N>K时：加载正常但首token起乱码，图与eager均复现；N远大于K触发AI Core invalid GM address崩溃。bf16权重、关闭开关或N≤K正常。
+  visibility: 静默错误
+mitigation:
+  detect: 算子级用 M=128、K=2048、N=3072(k2=1536)、E=40、topk=7 的 W8A8 入参与反量化参考比相对误差；端到端只翻转 enable_fused_mc2 做 A/B
+  fix: 待定（issue open，正文称补丁已开发并验证：host tiling 的 C/A 区宽度与 kernel 的 LayoutC ldm、group 偏移、两条 epilogue 与区域递进都改用 N；文中 PR 链接未给出）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.26.0rc1 commit f2f74a16c，CANN 9.1.0，Atlas 910B（A2），TP=2+EP=2、--quantization ascend（msmodelslim ascendV1 W8A8）、enable_fused_mc2=1；DeepSeek-V2-32B（hidden 2048、moe_intermediate_size 1536、40 专家 top-k 7）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16561
+  kind: github_issue
+relations: []
+original:
+  mechanism: enable_fused_mc2=1 时 MoE 由融合 CANN 算子 dispatch_ffn_combine 计算。其 W8A8 变体（csrc/mc2/dispatch_ffn_combine/，int8 权重 + 每专家 int64 scale）让 GMM1 输出（M×N int16，SwiGLU 的输入）与 SwiGLU 中间结果共用一块 int16 工作区，而这块工作区的宽度（host tiling 的 op_host/dispatch_ffn_combine_tiling.cpp:297/303/304 用 info.K）和 kernel 里的行 stride（op_kernel/dispatch_ffn_combine_kernel.hpp:473 的 LayoutC(m,n,problemShape.k())、:522 的 group 偏移按 K 递进、:927/933 与 :946/952 两条 epilogue 的 tile stride、:1129/1133 的 region 递进）都取输入维 K。GMM1 实际每行写 N=2×moe_intermediate 个元素，于是第 i 行写在 [i·K, i·K+N) 而不是 [i·N, i·N+N)：N>K 时行间重叠覆盖，最后一行还会溢出 C 区进入后面的 A 区或越出整个工作区。bf16 变体（dispatch_ffn_combine_bf16）用独立的 N 宽缓冲与 N 定 stride 布局，行为正确，可作为参考。端到端只翻转 enable_fused_mc2 即 A/B：0 输出连贯、1 变 token soup；把 MoE 专家反量化回 bf16（走 bf16 变体）也恢复连贯。上游未发现该问题的原因：唯一的 W8A8 + enable_fused_mc2 端到端配置只在 A3，A2 的 W8A8 配置未开该开关；且算子测试用 n=k=1024，从不覆盖 N>K，scale 还全为 0。
+  source: 2026-09-15 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16561 （open）
+  behavior: 任何 moe_intermediate_size>hidden_size/2 的 W8A8 MoE 模型，只要开 enable_fused_mc2，从第一个 token 开始生成就是乱码（模型能正常加载、服务不报错，图上和 eager 下都错，所以不是图捕获问题）；若 N 远大于 K 则直接崩在 AI Core 上并报 invalid GM address。使用 bf16 专家权重或关掉 enable_fused_mc2 时同一 checkpoint 输出正常。
+  trigger_surface: dispatch_ffn_combine W8A8 变体 + enable_fused_mc2=1 + GMM1 宽度 N>K（moe_intermediate_size > hidden_size/2）；bf16 变体与 N≤K 不受影响
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+    - visibility

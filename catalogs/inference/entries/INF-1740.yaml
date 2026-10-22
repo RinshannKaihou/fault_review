@@ -1,0 +1,62 @@
+id: INF-1740
+legacy_ids: []
+slug: inductor_cat_first_shard_mask_dropped
+aliases: []
+title: 动态shape下cat融合尾块掩码被删致越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: inductor cat 融合掩码 load
+  behavior: 拼接维被 mark_dynamic 时，cat 与后续 pointwise 融合后由 ops.masked 生成的带掩码 load，其尾块/首分片掩码被当成常量掩码删除，load 越界。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: cat([32,200],[32,56],dim=1)+1.0 在 dynamic=True 下编译执行越界读取，表现为设备踩内存报错或结果错误；同图 eager 正确，dynamic=False 不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 对拼接维 mark_dynamic 的张量做 cat 再与 pointwise 融合编译，dump output_code.py 看 masked load 是否仍带掩码，并比对 eager
+  fix: 待定（issue closed，正文未给修复 PR）；方向：NPU 侧 autotune 可选非 2 的幂 block，不能沿用上游「block 为 2 的幂」假设去删尾块掩码
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Inductor（triton）后端 + torch._dynamo.mark_dynamic 标在 cat 拼接维上 + dynamic=True 且 cat 融合进后续 pointwise；Ascend/pytorch v2.10.0 / 2.10.0.post1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 同一 issue 另含 autotune 在 profiler 会话内嵌套开启 profiler 的问题，与数值无关，未收录。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3840
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #3840（2026-08-08，closed，代码仓 v2.10.0，基线 commit 10c7c0372，版本 2.10.0.post1，后端 inductor/triton）：对在拼接维度上被 torch._dynamo.mark_dynamic 的张量做 torch.cat，再与后续算子融合时，编译执行会越界读取。触发条件是 dynamic=True、cat 的拼接维是符号维、且 cat 被融合进后续 pointwise，走 ops.masked 生成带掩码的 load。上游 _has_constant_mask 基于「Triton block 为 2 的幂」的假设删掉尾块掩码，而 NPU autotune 可以选到非 2 的幂的 block，尾块掩码被删后越界。最小复现即 fn(head,tail)=torch.cat([head,tail],dim=1)+1.0，head (32,200)、tail (32,56)，对 head 的 dim1 mark_dynamic，torch.compile(dynamic=True) 后 assert_close 失败。'
+  source: 'Ascend/pytorch #3840（2026-08-08，closed） https://gitcode.com/Ascend/pytorch/issues/3840'
+  behavior: 同一段 cat + 逐元素加在 eager 下结果正确，torch.compile(dynamic=True) 后要么直接报设备踩内存的错，要么安静地给出错值；把 dynamic 关掉、或不让 cat 融合进后续 pointwise 就不复现。因为输入输出形状看起来都正常，只有与 eager 对比才能发现。
+  trigger_surface: mark_dynamic 标记 cat 拼接维 + dynamic=True + cat 融合进 pointwise（Inductor triton 后端）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - title
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - detail

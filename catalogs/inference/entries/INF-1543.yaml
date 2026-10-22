@@ -1,0 +1,56 @@
+id: INF-1543
+legacy_ids: []
+slug: vllm_ascend_fusedmc2_pad_token_moe_routing
+aliases: []
+title: FusedMC2 未屏蔽 pad token 致专家容量溢出丢 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: FusedMC2 pad 屏蔽
+  behavior: FusedMC2 在 pad 场景没有正确屏蔽 padding token，pad 参与 MoE routing 并集中打到少数专家，超出 fused dispatch/combine 的 max_output_size 容量。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: 混部 FULL_DECODE_ONLY + DP8TP2 + kvcache 打满时出现空回复与乱码；ep0 上 0~9 号专家峰值超 20 万 token（上限 65536），skip_all_reduce 跳过 pad 后 gpqa 86.87、无乱码。
+  visibility: 静默错误
+mitigation:
+  detect: 统计每张卡每个专家的实际 token 数并与 fusedmc2 的 max_output_size 比较；观察 kvcache 打满、出现重计算（单卡 decode 突然转长 prefill）时是否超限
+  fix: 待定（issue closed，正文未给 PR）；报告者的规避手段是 skip_all_reduce=True 在 FusedMoE 场景跳过 pad，或把 max_output_size 放大到覆盖峰值
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Qwen3.5-397B 混部 FULL_DECODE_ONLY + DP8 TP2，每卡 32 专家 TOPK=10，batched_token_num=4096（全局 32 万 token），kvcache 打满；vllm-ascend 版本未在正文给出
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/8320
+  kind: github_issue
+relations: []
+original:
+  mechanism: Qwen3.5-397B 在混部 FULL_DECODE_ONLY + DP8TP2、每卡 32 专家、TOPK=10、batched_token_num=4096 的配置下打满 kvcache 会出现空回复和乱码。报告者打印 MoE 部分的 expert_num 发现：kvcache 打满触发重计算后，所有卡都在 decode 时有一张卡突然转成长 prefill，其余卡从 decode 长度直接被 pad 满，ep0 上 0~9 号专家被选中的 token 峰值超过 20 万，远超 fusedmc2 的 max_output_size（65536），属于预期外场景并伴随大量 pad token。结论是 FusedMoE 实现会超过 buffer，而其根因是 FusedMC2 在 pad 场景没有正确屏蔽 padding token：pad 参与 MoE routing 并集中打到少数专家，进一步触发 fused dispatch/combine 的容量上限，最终造成 token 丢失和精度劣化。三组对照：batched_token_num=1K 且 max_output_size=13 万（峰值 8 万在范围内）目视精度正常；4K + 上限 65536 + skip_all_reduce=True 跳过 pad 时 enfore_eager 跑出 gpqa 86.87、无乱码和空回复。
+  source: 2026-04-16 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/8320 （closed）
+  behavior: kvcache 打满、且混部里出现重计算导致同一步内有的卡在 decode、有的卡在长 prefill 时，服务开始返回空回复或乱码文本，不报错、不掉请求；同时能看到 pad token 数量暴涨、少数专家的路由 token 数远超 fusedmc2 的 max_output_size。降低 batched_token_num、放大 max_output_size 或在 FusedMoE 里跳过 pad 后现象消失。
+  trigger_surface: FusedMC2（enable_fused_mc2）+ pad 场景 + 专家路由峰值超过 max_output_size；kvcache 打满触发重计算、混部 DP 内长度不齐时必现
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

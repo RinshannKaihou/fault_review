@@ -1,0 +1,57 @@
+id: INF-1755
+legacy_ids: []
+slug: ops_nn_modulate_grad_missing_one_plus_scale
+aliases: []
+title: modulate_grad 反向漏乘 (1+scale) 致梯度偏小
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: modulate_grad 反向梯度
+  behavior: ComputeGradients 里 grad_input 直接 Mul(grad_output, scale)，漏掉正向 y=x*(1+scale)+shift 的常数项，每个元素梯度恒缺 grad_output×1。
+effect:
+  objects:
+  - 梯度
+  detail: x=3、scale=0.5、shift=2、grad_out=1 时真 grad_x=1.5 而 kernel 输出 0.5，恰差 grad_output×1；grad_scale/grad_shift 路径正确。
+  visibility: 静默错误
+mitigation:
+  detect: 取 x=3/scale=0.5/shift=2 的最小算例与 torch autograd 比对 input 梯度；现有 kernel UT 输入全零且零断言，恒真通过。
+  fix: 待定（issue closed，未给修复 PR）：建议 grad_input 改为 grad_output×(1+scale) 并修正 aclnnModulateBackward.md 公式，补数值断言锚定。
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: aclnnModulateBackward 的 input 梯度路径（正向带 scaleOptional 时）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5601
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5601（2026-09-07，closed）：ops-nn/vfusion/modulate_grad/op_kernel/modulate_grad.cpp 第 388 行 ComputeGradients 中 has_scale_ 分支写的是 Mul(computegradInputLocal[address], computegradOutputLocal[address], computescaleLocal[0], d_size)，即 grad_input = grad_output × scale，缺 +1。本仓 modulate 的正向契约（README 与 docs/aclnnModulate.md、kernel 实现）是 y = x×(1+scale)+shift，数学推导与 torch autograd 实测给出 grad_input = grad_output×(1+scale)、grad_scale = Σ grad_output×input、grad_shift = Σ grad_output，后两项 kernel 正确。数值例 x=3、scale=0.5、shift=2、g=1 时真值 grad_x=1.5、kernel 给 0.5。现有 kernel UT 输入全零且零断言，op_host UT case_0 的调用与断言被注释，故测试发现不了。
+  source: 2026-09-07 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5601 （closed）
+  behavior: 把 modulate 与它的反向配成 autograd 使用时，输入侧的梯度恒定偏小一个 grad_output 项：scale=0.5 时拿到的是真值的三分之一量级（1.5→0.5），不报错、不产生 NaN，loss 曲线只是收敛得比参考实现差；scale/shift 的梯度正常，单看算子级零输入 UT 全绿。
+  trigger_surface: modulate 反向 + scaleOptional 存在
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

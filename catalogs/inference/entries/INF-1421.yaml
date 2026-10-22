@@ -1,0 +1,57 @@
+id: INF-1421
+legacy_ids: []
+slug: opsnn_gather_elements_v3_uint32_post_overflow
+aliases: []
+title: CANN GatherElementsV3 乘积 uint32 溢出回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: Host tiling 展平乘积 uint32
+  behavior: Host tiling 把展平维度乘积直接写入 uint32_t，Kernel 也用 32 位元素偏移访问 x：合法 shape 下 xPost=2^32 回绕为 0
+effect:
+  objects:
+  - 数值结果
+  detail: x=[1,2,65536,65536]、index=[1,2,1,1]、dim=1 时第二个结果从错误位置读取；整数探针复现回绕
+  visibility: 静默错误
+mitigation:
+  detect: post 乘积接近 2^32 的合法大 shape 对照 CPU gather
+  fix: 'PR https://gitcode.com/cann/ops-nn/merge_requests/12137 （open，关联 issue #6799）：Host tiling 窄化前检查维度乘积与 Kernel 可表示范围，超界返回明确错误；无分配整数探针复现+UT；完整构建与 NPU 实测未运行'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: GatherElementsV3 + 展平后 post 维度乘积 ≥2^32 的合法 shape（如 [1,2,65536,65536]）；Host 侧整数探针复现，NPU 实测未运行
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: 推理场景 embedding/index 路径大张量 gather 可达；训推共有算子，本轮按推理范围收录。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12137
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/ops-nn/issues/6799
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn GatherElementsV3 的 Host tiling 将展平维度乘积直接写入 uint32_t，Kernel 也用 32 位元素偏移访问 x。对合法 shape x=[1,2,65536,65536]、index=[1,2,1,1]、dim=1：xPost=65536×65536=2^32 回绕为 0，第二个结果读取错误位置。修复 PR（ops-nn !12137，open，关联 issue #6799）在 Host tiling 窄化前检查维度乘积及 Kernel 可表示的访问范围，超范围返回明确错误；新增 host tiling UT 覆盖大 x shape 拒绝路径与小 shape 正常路径。验证：无分配整数探针复现 xPost 回绕与守卫拒绝；pre-commit 通过；完整构建与 NPU 实测未运行。'
+  source: 2026-10-17 GitCode cann/ops-nn PR https://gitcode.com/cann/ops-nn/merge_requests/12137 （open；关联 issue https://gitcode.com/cann/ops-nn/issues/6799 ）
+  behavior: 在 NPU 上调用 GatherElementsV3 且展平后 post 维度乘积达到 2^32（如 x 形状 [1,2,65536,65536]）时——这是完全合法的 shape——乘积回绕为 0，部分输出元素从错误位置读取、数值静默错误，不报错不越界崩溃。
+  trigger_surface: GatherElementsV3 + 大 shape（post 乘积 ≥2^32）；Host 探针复现，设备端未实测
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

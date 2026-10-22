@@ -1,0 +1,58 @@
+id: INF-1690
+legacy_ids: []
+slug: fp64_silent_downcast_to_fp32
+aliases: []
+title: fp64 输入被静默降为 fp32 致校验与精度失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: ToKernelNpu dtype 降级
+  behavior: 算子不支持 double 时 ToKernelNpu 只打印一条 Warning 就把输入 cast 为 float 执行，cholesky 等矩阵运算在 fp32 下完成，结果不再满足 fp64 语义。
+effect:
+  objects:
+  - 数值结果
+  detail: Wishart(fp64 10×10 precision_matrix) 构造抛 ValueError PositiveDefinite；协方差最大偏差 1.83e-5（容差 1e-5）、方差偏差 0.82（容差 0.5）；A2 3 例、A5 1 例失败。
+  visibility: 静默错误
+mitigation:
+  detect: 对 fp64 输入检查 stderr 是否出现 ToKernelNpu.cpp:40 的 "Device do not support double dtype now, dtype cast replace with float"；对比 CPU fp64 结果与容差
+  fix: '待定（issue open）；方向 1：数值敏感路径的 fp64 输入显式报错；方向 2：补齐算子 fp64 支持（关联 issue #4377）'
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: fp64/double 输入 + NPU 不支持 double 的算子（cholesky、矩阵构造等）；A2 940B4 CANN 9.1.0-base.1 与 A5 950PR CANN 9.1.0 双环境复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4388
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4388（2026-08-26，open，A2：940B4 / CANN 9.1.0-base.1，A5：950PR / CANN 9.1.0，PyTorch 2.14.0.dev20260719+cpu / torch_npu 2.14.0.dev20260810）：test_distributions.py 在 NPU 上运行，Wishart 相关用例以 float64 构造 10×10 精度矩阵/协方差矩阵，NPU 侧把 double 静默降级为 float。链路：测试构造 fp64 矩阵 → ToKernelNpu.cpp:40 静默 cast 为 fp32（仅打印 Warning "Device do not support double dtype now, dtype cast replace with float"）→ cholesky/矩阵运算以 fp32 执行 → 正定性判定失败或数值偏差超出 fp64 容差。后果：precision_matrix 数值上不再满足 PositiveDefinite，构造 Wishart 抛 ValueError；协方差元素最大偏差 1.8275855836691335e-05（容差 1e-5）、方差最大偏差 0.8233642578125（容差 0.5）。A2 失败 3 项、A5 失败 1 项，根因相同。报告者认为该降级只有一条 Warning、对用户不可见不可控，在 cholesky 等数值敏感算子上会产生静默错误结果，风险高于直接报错；修复方向为显式报错替代静默降级，或补齐 fp64 支持（关联 issue #4377）。'
+  source: 2026-08-26 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4388 （open）
+  behavior: 在 NPU 上用 float64 构造 10×10 的精度矩阵再建 Wishart 分布，会抛 ValueError：PositiveDefinite 约束校验失败——因为这个矩阵已经被悄悄转成 fp32 算过了。终端里只有一条 "Device do not support double dtype now, dtype cast replace with float" 的 Warning，既不报错也不中断。协方差和方差的断言同样超差：协方差最大偏差 1.83e-5（容差 1e-5）、方差偏差 0.82（容差 0.5）。同一份用例在 CPU/GPU 上都能通过。
+  trigger_surface: double/fp64 输入进入 NPU 不支持的算子（cholesky、分布构造等数值敏感路径）；to-dtype cast 只在 ToKernelNpu 层发生，脚本层面看不到
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - behavior

@@ -1,0 +1,58 @@
+id: INF-1475
+legacy_ids: []
+slug: ops_transformer_prompt_flash_attention_fp16_pre_softmax_overflow_inf
+aliases: []
+title: PromptFlashAttention FP16 归一化前累加溢出输出 Inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: PFA P×V 累加 FP16 中间存储
+  behavior: 未归一化 P×V 累加值 n×V 逼近 FP16 上限（65504）的位置起输出 +Inf（V=35 时 position 1871 起）；推测某 FP16 路径在 softmax 归一化前对累加做范围受限存储/转换/合并。
+effect:
+  objects:
+  - 数值结果
+  detail: V=35：position 1871~2047 共 177 个位置 Inf（数学上应恒 35）；V=4 全程正常；黑盒推测待维护者确认 kernel/中间 dtype
+  visibility: 数值异常
+mitigation:
+  detect: 常数 V 构造输入扫描序列位置（position 1871 起对 V=35）；输出非有限计数
+  fix: 待定（issue open，等待维护者确认实际 kernel/tiling 与中间 dtype）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 310P3 + npu_prompt_flash_attention + FP16 + 未归一化累加可达 65504（如 V=35、有效 token ≥1872）；V=4 不触发；torch 2.10.0+cpu/torch_npu 2.10.0、CANN 9.1.0-beta.1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 与 op-plugin#605（bool mask 行忽略）同为注意力域但机制不同（溢出 vs 掩码转换），不合并
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6325
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #6325（c2026-10-19，Ascend 310P3，torch 2.10.0+cpu / torch_npu 2.10.0，CANN 9.1.0-beta.1，npu-smi 26.1.1）：npu_prompt_flash_attention 普通 MHA（不启用 GQA）、Q/K 全零、V 仅指定 Head/Channel 常数 35 其余为零、标准因果 mask 时，数学上所有有效 score 相等、输出应恒为 35、与序列长度无关。实测 position 1870 输出 35.0 正常、1871 起输出 +Inf、至 2047 共 177 个位置（Total nonfinite 177）。根因对应关系：FP16 最大有限值 65504；有效 token 数 n=1871 时 n×35=65485<65504 正常、n=1872 时 65520 进入向 Inf 舍入区。V 改 4 后（2048×4=8192）全部正常。结论（黑盒推测待验证）：PromptFlashAttention 某条 FP16 执行路径可能在 softmax 归一化之前对未归一化的 P×V 累加结果进行了 FP16 范围受限的存储、转换或分块合并，中间值溢出。尚未确认具体 kernel 指令、临时 buffer 或 Cast 位置，向维护者请求 kernel/tiling 选择与中间 dtype 信息。复现不依赖具体模型、权重及 ONNX/ATC 转换流程。'
+  source: 2026-10-19 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/6325 （open）
+  behavior: 在昇腾 310P3 上用 FP16 跑 PromptFlashAttention，当某个位置的注意力加权累加和（未除以归一化分母前）逼近 FP16 上限 65504 时（例如值 35 的 V 累计约 1872 个 token），该位置起输出突然变成 +Inf 并持续到序列尾；把 V 幅度调小（如 4）后完全正常。输出 Inf 而非正确常数，位置与 FP16 上限精确对应。
+  trigger_surface: Ascend 310P3 + torch_npu.npu_prompt_flash_attention + FP16 + 长有效 token 数 × V 幅度逼近 65504；标准因果 mask；不依赖模型权重
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - title
+    - component

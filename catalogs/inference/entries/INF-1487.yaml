@@ -1,0 +1,74 @@
+id: INF-1487
+legacy_ids: []
+slug: op_plugin_moe_token_unpermute_grad_dtype_nan
+aliases: []
+title: npu_moe_token_unpermute_grad dtype 推导异常
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: pytorch
+    component: unpermute_grad dtype 推导
+  behavior: grad_probs 的 dtype 推导依赖 grad_unpermuted_tokens 而非 probs；probs=fp32 与 grad_unpermuted_tokens=bf16 时 grad_probs 被推成 bf16。
+effect:
+  objects:
+  - 梯度
+  detail: 混合精度反向中 probs=fp32 且 grad_unpermuted_tokens=bf16 时，grad_probs 被推成 bf16，与 probs 不一致，降低梯度精度；后续与 fp32 参数/优化器状态结合可能产生 nan，严重时训练异常。dtype 一致不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 混合精度（probs=fp32、grad_unpermuted_tokens=bf16）下比对 grad_probs.dtype 与 probs.dtype，并检查是否出现 nan
+  fix: 待定（issue closed，修复 PR 未在正文给出，合入与发布状态未核实）；方向：grad_probs 的 dtype 按 probs 推导
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: npu_moe_token_unpermute 反向 + 混合精度：probs=float32 而 grad_unpermuted_tokens=bfloat16
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/193
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1503
+pattern: PAT-INF-0161
+original:
+  mechanism: 'op-plugin issue #193（c2026-06-25，closed）：npu_moe_token_unpermute 的反向算子 npu_moe_token_unpermute_grad 中，grad_probs 是 probs 的梯度，按语义应与 probs 保持相同 dtype；原实现的 dtype 推导却依赖 grad_unpermuted_tokens。于是混合精度场景下（probs=float32、grad_unpermuted_tokens=bfloat16）grad_probs 被推导成 bfloat16，与 probs 的 fp32 不一致。该错误 dtype 会在反向继续传播：一方面降低梯度精度，另一方面在后续与 fp32 参数/优化器状态结合时可能产生 nan，严重时表现为训练异常。issue 未给出复现脚本与实测误差量级，机制描述来自报告者对实现的定位。'
+  source: 2026-06-25 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/193 （closed）
+  behavior: 在混合精度训练里用 MoE 的 token unpermute 反向时，如果 probs 是 fp32、而上游传来的 grad_unpermuted_tokens 是 bf16，算出来的 grad_probs 会变成 bf16 而不是跟着 probs 走 fp32：反向梯度精度掉一档，训练继续跑下去可能出现 nan，表现为 loss 异常或训练中断。两边 dtype 一致时（同为 fp32 或同为 bf16）不会触发。
+  trigger_surface: npu_moe_token_unpermute 反向 + 混合精度（probs=float32 且 grad_unpermuted_tokens=bfloat16）；dtype 一致时不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 数值异常
+        to: 静默错误
+    rewritten:
+    - detail
+    - title
+    uncertain:
+    - subsystem

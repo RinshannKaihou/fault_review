@@ -1,0 +1,58 @@
+id: INF-1720
+legacy_ids: []
+slug: fia_mla_max_workspace_tiling_not_written
+aliases: []
+title: FIA MLA 下沉 tiling 未回写致 batch 边界错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FIA arch35 MLA tiling
+  behavior: DoOpTiling 的 max workspace 路径漏调 SetTilingData，tiling 缓冲全零；TND/NTD 下 ACCUM 模式的 ActualSeqLensParser 无兜底，越界读 GM 得垃圾数据。
+effect:
+  objects:
+  - 数值结果
+  detail: arch35 MLA 非量化、tiling 下沉（max workspace）时 NTD/TND 布局精度失败，BSH/BNSD/BSND 正常；越界读到的垃圾数据使 batch 边界错，全程无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 MLA 非量化用例分别在 tiling 下沉与常规路径下跑 NTD/TND 布局，比较与 golden 的偏差
+  fix: max workspace 路径补 SetFATilingData() 填基础 shape 参数并调用 SetTilingData(tilingData_)（issue 给出方案，未见 PR 号）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: arch35 + FIA MLA 非量化模板 FiaTilingNonQuantMlaArch35 + tiling 下沉(max workspace) + NTD/TND 布局
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4978
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #4978（2026-09-04，closed）：arch35 MLA 非量化模板 FiaTilingNonQuantMlaArch35 在 tiling 下沉（max workspace）场景下 NTD/TND 布局精度失败，BSH/BNSD/BSND 等布局正常。根因在 attention/fused_infer_attention_score/op_host/arch35/fia_tiling_nonquant_mla.cpp：DoOpTiling() 的 max workspace 路径缺少 SetTilingData(tilingData_) 调用，tiling 数据缓冲区保持全零。TND/NTD 布局下 kernel 用 ACCUM 模式的 ActualSeqLensParser 解析变长序列，当 actualSeqLengthsQSize=0 时没有兜底逻辑，按零值 tiling 直接越界读 GM，拿到垃圾数据后 batch 边界判断出错。修复为在该路径补 SetFATilingData() 填充基础 shape 参数并调用 SetTilingData(tilingData_) 写回 context 缓冲区。'
+  source: 2026-09-04 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4978 （closed）
+  behavior: MLA 非量化注意力在开 tiling 下沉（max workspace）后，用 TND 或 NTD 变长布局推理时结果与 golden 明显不符（batch 之间互相串味、部分 batch 整段偏差），而同样的模型换 BSH/BNSD/BSND 布局就正常；整个过程没有报错、没有异常日志，只有精度比对能发现。
+  trigger_surface: arch35 + MLA 非量化 + tiling 下沉(max workspace) + TND/NTD 变长布局；BSH/BNSD/BSND 不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+    - detail

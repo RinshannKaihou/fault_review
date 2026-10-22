@@ -1,0 +1,66 @@
+id: INF-1604
+legacy_ids: []
+slug: torchair_autotune_shallow_copy_writes_through_input
+aliases: []
+title: TopN autotune 计时写穿真实输入致精度异常
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: inductor ext autotune 计时
+  behavior: _autotune.py 用 list(args) 浅拷贝后把真实张量的 data_ptr 直接传给候选 kernel，候选为原地算子时在计时阶段改写调用方输入缓冲；编译期 real run 已有的 clone 保护未覆盖此处。
+effect:
+  objects:
+  - 数值结果
+  detail: TORCHINDUCTOR_NPU_EXT_AUTOTUNE_TOPN>1 且选中候选 kernel 含原地写输入（in-place）行为时，autotune 结束后真实输入已被污染，正式执行读到错误数据、精度异常；各候选还在被改写的输入上计时，选优不可信。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 TORCHINDUCTOR_NPU_EXT_AUTOTUNE_TOPN=1 与 >1 的输出；或 autotune 前后对输入做 clone 比对
+  fix: 已有关联 PR：master https://gitcode.com/Ascend/torchair/pull/3760 、26.2.0 https://gitcode.com/Ascend/torchair/pull/3761 （计时阶段为 Tensor 输入建 clone_preserve_strides 私有副本并按轮恢复）；issue closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: TORCHINDUCTOR_NPU_EXT_AUTOTUNE_TOPN>1（TopN autotune）+ 图中含原地修改输入的融合 kernel；torchair experimental/_inductor_npu_ext
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/833
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/torchair/pull/3760
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/torchair/pull/3761
+  kind: gitcode_pr
+relations: []
+pattern: PAT-INF-0184
+original:
+  mechanism: 'torchair 的 experimental/_inductor_npu_ext/python/inductor_npu_ext/compiler/_autotune.py 在 profiler 计时阶段，c_args = [_to_ctypes_arg(arg) for arg in args]，而 _to_ctypes_arg 返回 c_void_p(arg.data_ptr())，随后逐个候选执行 wrapper_func(*c_args, c_void_p(0), kernel_key)。list(args) 只是浅拷贝：列表是新的，张量仍指向同一块显存。当候选 kernel 为原地算子（in-place 修改输入）时，计时过程中会写穿调用方真实输入缓冲区：(1) autotune 结束后真实输入已被污染，后续正式执行读到错误数据，表现为精度异常；(2) 计时循环在已被修改的数据上重复执行，各候选的对比数据不一致，选优结论也不可信。同类保护在编译期 real run 已存在——cpp_wrapper.py 对 mutated_inputs 使用 clone_preserve_strides——但 autotune 计时路径遗漏了。修复方案为计时阶段给所有 Tensor 输入建私有副本（clone_preserve_strides，保留 stride/内存布局），每轮计时前从留底副本恢复，非 Tensor 参数仍按原 ABI 传递。关联 PR：master #3760、26.2.0 #3761。'
+  source: 2026-09-23 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/833 （closed，关联 PR https://gitcode.com/Ascend/torchair/pull/3760 、https://gitcode.com/Ascend/torchair/pull/3761 ）
+  behavior: 开了 TopN autotune 之后，同一个模型第一次跑（编译+选优那次）输出就和 eager 对不上，常见是某些位置的值偏大或出现异常数值，重跑或用 TOPN=1 又正常；因为污染发生在编译期计时阶段，业务代码里的输入变量被悄悄改掉，排查时很难想到是 autotune 干的。
+  trigger_surface: TORCHINDUCTOR_NPU_EXT_AUTOTUNE_TOPN>1 + 选中候选 kernel 含原地写输入（in-place）行为
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern

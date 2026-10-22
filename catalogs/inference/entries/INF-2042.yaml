@@ -1,0 +1,51 @@
+id: INF-2042
+legacy_ids: []
+slug: kimi_k3_xtml_response_prefix_strict
+aliases: []
+title: K3 解析器要求 response 前缀致合法 JSON 被判错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: kimi_k3_xtml.parse
+  behavior: think 结束后只接受以 <|open|>response<|sep|> 开头的 response_tail（或它尚未写完的前缀），模型直接输出裸 JSON 时走 else 分支抛 KimiK3XTMLParseError
+effect:
+  objects:
+  - 输出内容
+  detail: response_tail 已是完整合法 JSON，仍抛 K3 think block must be followed by a response block.，请求 500，内容未返回给客户端
+  visibility: 报错
+mitigation:
+  detect: 对 thinking 开启的 K3 请求检查 parse 分支是否命中 else；用裸 JSON 输出（不带 response 标记）的样本回归
+  fix: 待定（issue 只给打点与 traceback，无修复 MR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend:kimi-k3-a3 镜像、A3 单机、kimi_k3_xtml 解析器 + thinking 开启 + JSON 结构化输出
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13204
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm_ascend/patch/platform/kimi_k3_xtml.py 的 parse(text, final)：thinking_enabled 分支在找到 THINK_END 后取 response_tail，只有 startswith(RESPONSE_START) 才前进 cursor，只有 not final 且 RESPONSE_START.startswith(response_tail) 才当成未写完的流早返回，其余一律 raise KimiK3XTMLParseError(K3 think block must be followed by a response block.)。实际模型这一次把回复直接写成 {"reply": ...} 形式的裸 JSON（reasoning 里已说明「My response must be raw JSON matching the schema」），response_tail 是完整合法 JSON 而不是以 <|open|>response<|sep|> 开头，于是被判成格式错误。打点输出 reasoning=...、cursor=376、response_tail={"reply":"您好!您还没有提供需要提取的文本内容。..."} 后被 400/500 路径吞掉。镜像 vllm-ascend:kimi-k3-a3，A3 单机。'
+  source: 2026-07-30 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13204 （open）
+  behavior: '开 thinking 后要求 JSON 格式化输出时，接口直接 500 Internal Server Error（ASGI 里 KimiK3XTMLParseError: K3 think block must be followed by a response block.），客户端拿不到任何内容；但从打点看模型其实已经生成了合法的 {"reply": ...} JSON，只是没套 response 标记。关闭结构化输出或换模型能绕过，属于解析层把正确内容判成错误。'
+  trigger_surface: K3 解析器 + thinking 开启 + 结构化 JSON 输出（模型直接输出裸 JSON）
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

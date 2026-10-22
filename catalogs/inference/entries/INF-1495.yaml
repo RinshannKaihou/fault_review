@@ -1,0 +1,59 @@
+id: INF-1495
+legacy_ids: []
+slug: msprobe_aclgraph_statistics_int32_min_max_noninteger
+aliases: []
+title: ACLGraph 统计模式下 int32 的 Min/Max 出现小数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: ACLGraph statistics 采集
+  behavior: ACLGraph 图模式 L1 statistics 采集下，部分 torch.int32/torch.int64 张量的 Min/Max/Mean/Norm 出现非整数小数
+effect:
+  objects:
+  - 指标/日志
+  detail: W8A8 Qwen2 真实请求 step0~7 的 dump.json 中 torch.int32 shape[1152] 记录 Max 0.458、Min -0.858、Mean 0.895；同批每条 step 的 216 条 int8 记录统计为 null，推理与 replay 均正常
+  visibility: 静默错误
+mitigation:
+  detect: 采集后筛 dtype 为 torch.int32/int64 的记录，检查 Min/Max 是否为整数；与设备侧 [min,max,mean,norm] 对照区分设备算错还是 Host 读错
+  fix: 待定（issue 只列四条初判方向：内部格式未归一化、ACLGraph 复用中间 buffer、payload 生命周期错位、Cast/reduction 异常；无修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend 910B4(A2) + CANN 8.5.0 + torch_npu 2.10.0 + vLLM 0.20.2rc1 + Qwen2 W8A8(ModelSlim)；msprobe 064595af(PR !963)，ACLGraph/L1/statistics/FULL_DECODE_ONLY
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/539
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend 910B4(A2) 单卡，CANN 8.5.0、torch_npu 2.10.0、vLLM 0.20.2rc1.dev、Qwen2 W8A8（ModelSlim 量化），msprobe 提交 064595af（PR !963），采集模式 ACLGraph + L1 + statistics + FULL_DECODE_ONLY：服务启动、图捕获和真实请求都成功，但 dump.json 里部分 torch.int32/torch.int64 张量的 Min/Max 出现非整数小数（例：dtype torch.int32、shape [1152]、Max 0.45848026871681213、Min -0.8583855032920837、Mean 0.8954964876174927、Norm 0.9814370274543762）。普通 INT32 的统计链路是 x_stat = x_stat.to(at::kFloat) 再 at::amin/at::amax，FP32 表示可能让大整数舍入，但结果仍是整数、amin/amax 只挑选已有元素，所以非零小数不能由正常精度损失解释。同一次请求中 int8 适配正常：每个 step 216 条 torch.int8 记录保留 dtype/shape，四项统计均为 null。一次请求生成 step0~step7 共 8 个 dump.json，各 step 均有 INT32/INT64 记录，说明不是 dummy run 独有。初判方向：内部格式未归一化导致 Host 按 ND Float32 读错物理位置/padding；ACLGraph 内存规划复用 statistics 中间张量 buffer 被其他浮点张量覆盖；replay 下 dtype/shape payload 与 buffer 生命周期错位。
+  source: 2026-08-24 GitCode Ascend/msprobe issue https://gitcode.com/Ascend/msprobe/issues/539 （closed）
+  behavior: 按文档在 vLLM-Ascend W8A8 图模式下开 statistics 采集，推理一切正常、也没有报错，但打开 dump.json 会看到整型张量的 Max/Min/Mean/Norm 全是 0.4、-0.85 这种小数，数值上根本不可能来自 int32。用户若拿这些统计量判断溢出或量化范围，会得到完全错误的结论；而同批 int8 记录的统计是 null，看起来又「一切照设计」。
+  trigger_surface: msprobe ACLGraph 图模式 + L1 statistics 采集（FULL_DECODE_ONLY）；含 INT32/INT64 张量的量化推理模型（W8A8）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

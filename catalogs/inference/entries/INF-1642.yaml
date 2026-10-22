@@ -1,0 +1,62 @@
+id: INF-1642
+legacy_ids: []
+slug: mindformers_moe_aux_loss_double_count_recompute
+aliases: []
+title: 重计算使 MoE load_balancing_loss 重复累加翻倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: mindspore
+    component: aux loss tracker 累加
+  behavior: MoE aux loss 在前向经 router._attach_and_log_aux_loss → save_to_aux_losses_tracker 累加进 tracker；反向重算前向时同一路径再累加一次，被重计算层数值翻倍
+effect:
+  objects:
+  - 指标/日志
+  - 训练信号
+  detail: 4 卡 DSV3 小模型、seq 可被专家数整除时 load_balancing_loss 打印 ≈2.0（应≈1.0），关重计算约 1.1；force_expert_balance=True 时 dispatch 已 128/128/128 均衡，aux 仍打印不均衡值
+  visibility: 静默错误
+mitigation:
+  detect: 同配置开/关 recompute 比对逐层 tracker 值与聚合 load_balancing_loss；force_expert_balance 下核对 aux 与 num_tokens_per_expert 是否一致
+  fix: PR !8415：重计算上下文内跳过 tracker 累加，force_balance 时用均衡后 selected_experts_indices 重建 routing_map；修复后 ≈1.2、主 loss 逐位不变
+labels:
+  family: infra_off
+  trigger: not_target
+  trigger_review: false
+  trigger_note: 训练侧 MoE 辅助损失读数缺陷（recompute 或 force_expert_balance 下），不改变主 loss
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2367
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'PyNative 训练 MoE 模型时日志打印的 load_balancing_loss 明显偏大，含两个独立缺陷。缺陷一：配置 recompute.full_recompute_layer: [0-3] 开启主 decoder 全量重计算后，MoE aux loss 在前向经 router._attach_and_log_aux_loss -> save_to_aux_losses_tracker 累加进 tracker，反向重算前向时又累加一次，被重计算的 MoE 层（第 2、3 层）翻倍，而不在重计算范围的 MTP 层（第 4 层）只记一次：开全量重计算时逐层 tracker 值为 [0, 0, 2.66, 2.77, 1.15]、聚合约 2.0，关重计算（recompute.mode: ''None''）为 [0, 0, 1.33, 1.39, 1.15]、约 1.1；与 CP、track_moe_metrics、force_expert_balance 无关。缺陷二：moe_router_force_expert_balance=True 时实际 dispatch 已严格均衡（num_tokens_per_expert=128/128/128），但 _compute_aux_loss 仍从原始 logits 重算自然 routing_map（aux 侧 tokens 分布 0~1772 极不均衡），打印的 aux 不反映实际均衡 dispatch。复现：4 卡 Ascend + PyNative（--mode 1）+ DeepSeek-V3 小模型（4 层，first_k_dense_replace=2，num_nextn_predict_layers=1），seq_length 可被专家数整除。修复 PR !8415：重计算上下文内用 is_in_recompute() 跳过 tracker 累加，force_balance 时把均衡后的 selected_experts_indices 传入 _compute_aux_loss 重建 routing_map。'
+  source: 2026-06-17 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2367 （closed）
+  behavior: 开全量重计算后，日志里的 load_balancing_loss 一直是 ≈2.0，按配置应该是 1 左右，看上去像 MoE 负载严重不均、router 没学好；关掉重计算立刻变成 1.1。开 force_expert_balance 后 dispatch 明明已经 128/128/128 均衡，aux 打印还是那组不均衡的值。主 loss 完全不受影响，只有盯 MoE 辅助损失的指标时才会发现读数本身是错的。
+  trigger_surface: 'PyNative MoE（DeepSeek-V3 小模型，4 卡）+ recompute.full_recompute_layer 全量重计算，或 moe_router_force_expert_balance: true'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: MoE路由
+    uncertain:
+    - detail

@@ -1,0 +1,55 @@
+id: INF-1792
+legacy_ids: []
+slug: ops_nn_bn_kahan_inf_nan_accumulator
+aliases: []
+title: BN 梯度 Kahan ±Inf 部分和算 NaN 毒化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: bn_training_update_grad K
+  behavior: 补偿位 c=(t-sum)-y 在部分和为 ±Inf 时算得 Inf-Inf=NaN；后续 y=src-c 变 NaN 并跨调用毒化累加器——Kahan 补偿路径在非有限部分和下未做防护
+effect:
+  objects:
+  - 数值结果
+  detail: 三方校验实测：golden/GPU 输出 ±Inf 而 NPU 输出 NaN（bn_training_update_grad）；修复新增 c!=c 自比检出 NaN lane 并 Select 清零，非有限路径退化为 IEEE 普通加法（对齐 golden/torch.sum），有限路径精度不变
+  visibility: 数值异常
+mitigation:
+  detect: 输出 NaN 扫描（golden 应为 ±Inf 处）
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12373 （open：三方校验修复前 NPU NaN/golden ±Inf、修复后对齐；未发布）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: bn_training_update_grad NHWC reroute（KahanAddReg）与快路（KahanAdd）两路径；部分和达 ±Inf 的输入（大幅值累加）触发；训练反传域为主，但 Kahan 补偿模式在归约类算子通用
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 训练反传域条目；推理库收录依据：Kahan 补偿累加模式广泛存在于推理归约算子，机制（Inf-Inf=NaN 毒化）跨域可迁移，且三方校验证据完整。若审计判训练专属可降级。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12373
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: ops-nn MR !12373（2026-10-20，修复单含根因与三方验证）。KahanAddReg（NHWC reroute）与 KahanAdd（快路）的补偿位 c=(t-sum)-y 在部分和为 ±Inf 时算得 Inf-Inf=NaN；后续 y=src-c 变 NaN 并跨调用毒化累加器。三方校验（cross_check）实测：修复前 golden/GPU 输出 ±Inf 而 NPU 输出 NaN。修复：c!=c 自比判定检出 NaN lane 并 Select 清零，非有限路径退化为 IEEE 普通加法语义（对齐 golden/torch.sum）；有限路径 c!=c 恒 false 原值保留，Kahan O(eps) 精度收益不受影响。
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-nn/merge_requests/12373
+  behavior: bn_training_update_grad 算子在部分和达到 ±Inf 的输入下，Kahan 补偿位计算 Inf-Inf 得 NaN 并毒化整个累加器：GPU/golden 参考输出 ±Inf，NPU 输出 NaN，后续梯度全部变 NaN；修复后非有限路径退化为普通加法与参考对齐，有限输入精度不变。
+  trigger_surface: CANN bn_training_update_grad + 大幅值输入（部分和 ±Inf）+ Kahan 快路/NHWC reroute
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,55 @@
+id: INF-1666
+legacy_ids: []
+slug: ms_ascend_addmm_kbk_scalar_rounding
+aliases: []
+title: KBK Addmm 按输入 dtype 重建 alpha/beta 致偏差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: Ascend Addmm ACLNN 适配
+  behavior: KBK 路径按输入 Tensor 的 dtype 重建 alpha/beta，bf16 输入让非精确 Scalar 在进入 ACLNN 前先被舍入，PyBoost 保留原始 Scalar。
+effect:
+  objects:
+  - 数值结果
+  detail: bf16 输入 beta=-4.775 时 PyBoost 得 62.25、KBK 得 62.0；beta=0 时 81.5 对 81.0，同一算子在两条执行路径上结果不同。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 addmm 调用分别走 PyBoost 与 jit(backend=ms_backend, jit_level=O0)，用非精确 alpha/beta（如 -4.775000095367432）比较输出；两者不等即命中
+  fix: 待定（issue open，无修复 PR）；方向：KBK 与 PyBoost 统一 alpha/beta 的 dtype 处理，不要按输入 Tensor dtype 重建 Scalar
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend + bf16 输入 + 非精确 alpha/beta（如 -4.775）；PyBoost 与 KBK 路径结果不同
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29602
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend mint.addmm 的 ACLNN 适配在两条执行路径上不一致：KBK 路径按输入 Tensor 的 dtype 重建 alpha/beta，bf16 输入时非精确 Scalar 在进入 ACLNN 前先被舍入成 bf16，而 PyBoost 保留原始 Scalar，于是 mode 0（cube_math_type=0）下结果不同。复现：三个 bf16 [[value]] 标量张量取 4.0/-8.0/-5.0，beta=-4.775000095367432 时 PyBoost 输出 62.25、KBK 输出 62.0；beta=0.0 时 81.5 对 81.0。同 issue 还报了另一条独立问题：cube_math_type=4（USE_FP32_ADD）要求 self 与 matmul 输出 shape 完全一致，而公开接口允许 self 广播，合法广播输入在 PyBoost 与 KBK 下都报 EZ1001（beta=0 也一样）。
+  source: 2026-08-12 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29602 （open）
+  behavior: 同一个 addmm 调用，只要换 jit_level 或执行后端（PyBoost / KBK），输出就差了 0.25~0.5 个最小单位，数值看起来都合理、不报错；alpha/beta 取整数时两条路径一致，只有用 4.775 这类非精确系数才分叉。系数敏感的场景（LoRA 缩放、baddbmm 的 beta 项）会得到与参考实现不同的结果。
+  trigger_surface: Ascend + bf16 输入 + 非精确 alpha/beta 标量；对比 PyBoost 与 KBK（jit_level=O0）两条路径
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,55 @@
+id: INF-1726
+legacy_ids: []
+slug: megamoe_epr_align_ub_row_stride
+aliases: []
+title: MegaMoe epr%8!=0 时路由表 UB 行距不对齐
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: mc2 mega_moe UB 搬运
+  behavior: CacheRouteTablesToUb 用 2D DataCopyPad 搬路由表，UB 行距被上对齐到 AlignUp(epr,8)；epr%8!=0 时消费方仍按紧凑步长 epr 索引，dstEpIdx>=1 的数据错位。
+effect:
+  objects:
+  - 数值结果
+  detail: 32P（epr=28）用例 kimi_k3_32p_int8_64bs_16k_3584h 的 output_0 与 expert_token_nums 精度失败；16P（epr=56）因天然对齐不受影响，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 取 expertPerRank%8!=0 的卡数（如 32P，epr=28）跑 MoE 端到端精度，同时校验 expert_token_nums
+  fix: PR !12208（master）与 !12209（9.2.0 cherry-pick）：按对齐行距索引路由表，ExpertTokenNums 改用对齐的搬运算子
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Atlas A3/A2 + CANN 9.2.0 + mega_moe，expertPerRank%8!=0（32P epr=28；16P epr=56 不触发）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5385
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5385（Atlas A3 910_93 16/32 卡、A2，CANN 9.2.0，closed）：MegaMoe（mc2/mega_moe）在 expertPerRank%8!=0 时输出精度错误，两处独立缺陷。其一，CacheRouteTablesToUb 用 2D DataCopyPad 把 tokenPerExpert 路由表搬进 UB，UB 侧每个 block 实际占用向上 32B 对齐的空间（行距=AlignUp(expertPerRank,8)），epr%8!=0 时 UB 行距大于 GM 侧紧凑步长，而 dispatch/combine/epilogue 仍按紧凑步长 expertPerRank 索引，导致 dstEpIdx>=1 的路由数据错位；受影响内核为 A3 内核加 A2 的 bf16/int8/bf16_w4a8 三个内核。其二，output_1（expert_token_nums）的清零/累加/写回用普通 DataCopy（要求 GM 地址与长度均为 32B 倍数），epr%8!=0 时偏移与长度非 32B 对齐，结果错乱。典型触发：32P（epr=28）用例 kimi_k3_32p_int8_64bs_16k_3584h 精度失败，16P（epr=56）因天然对齐不受影响。修复 PR master !12208、9.2.0 !12209。'
+  source: 2026-09-17 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5385 （closed）
+  behavior: 在 32P（每 rank 28 个专家）上跑 MegaMoe 的 MoE 层，output_0 与 expert_token_nums 都与 golden 对不上，loss 与后续层随之偏移；换 16P（每 rank 56 个专家）同一模型就正常。表现只是精度不达标，没有报错也没有越界告警，所以容易当成量化误差忽略。
+  trigger_surface: Atlas A3(910_93)/A2 + CANN 9.2.0 + mega_moe + expertPerRank%8!=0（如 32P epr=28）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

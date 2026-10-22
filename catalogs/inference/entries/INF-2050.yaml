@@ -1,0 +1,62 @@
+id: INF-2050
+legacy_ids: []
+slug: vllm_ascend_glm53_mtp_kda_state_misplace
+aliases: []
+title: GLM-5.3 MTP 验证步 KDA 状态错位致乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: KDA conv/recurrent 状态
+  behavior: causal_conv1d_update varlen 分支错排多 token 序列 conv-state 列；KDA 循环核 IS_SPEC_DECODING 分支对非首序列寻址错误 state 槽位并写成 NaN
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 8×910B3 + CANN 9.1.0，GLM-5.3-Flash W8A8 开 mtp num_speculative_tokens=1：temperature=0 仍输出乱码且非确定，draft 接受率 0%，关掉投机解码即连贯；头数更大时 aivec 报 0x800000
+  visibility: 质量退化
+mitigation:
+  detect: 对比开/关 --speculative-config 的同一 greedy 请求输出与 draft 接受率；逐 token 单步调用替代 verify 后若恢复，即落在多 token 状态寻址
+  fix: 待定（issue open）：报告者用逐 token 调 conv1d、把 verify 拆成单 token plain-decode 规避；未合并修复
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: GLM-5.3-Flash（KDA+NoPE-MLA 混合）+ ModelSlim W8A8 + MTP 投机解码 + A2/A3；多 query token 的 verify 路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15329
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue 15329（2026-08-29，open）：8×Atlas 910B3、CANN 9.1.0，vLLM glm-release 分支（GLM-5.3-Flash 模型代码）+ vllm-ascend #15127 及 main 兼容补丁；模型为 ModelSlim W8A8（MoE 专家与 dense MLP int8，attention 投影 BF16）。开 --speculative-config ''{"method":"mtp","num_speculative_tokens":1}'' 时 temperature=0 仍输出乱码且非确定，spec-decode 指标全程 0% draft acceptance；同一 build 不开投机解码输出连贯。插桩定位到两处：causal_conv1d_update 的 varlen 分支对多 token 序列把 conv-state 的列错排（即使输出正确 state 已被打乱），用逐 token 单 token 调用规避；KDA 循环核的 IS_SPEC_DECODING 分支对首个之后的序列寻址到错误 state 槽位，state 被写成 NaN，头数较大时 AI core aivec fault 0x800000，用把 verify 拆成单 token 普通 decode 规避。剩余共享路径为 decode 模式多 query attention（NoPE sparse-MLA，FIA/TND，qk_rope_head_dim=0，kpool top-k），num_accepted≥2 时 query 几何变化后 topk/attention 结果退化到近噪声，作者请社区确认 FIA/indexer 配置。'
+  source: 2026-08-29 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15329 （open）
+  behavior: GLM-5.3-Flash 开 MTP 后服务能起来，但回答变成乱码，同一 prompt 跑两次结果还不一样（temperature=0 也一样）；监控里 draft 接受率一直是 0%，关掉投机解码就恢复正常。继续跑大 head 数配置时还会看到 aivec 设备异常。
+  trigger_surface: GLM-5.3-Flash W8A8 + MTP + 多 token verify（num_accepted≥2）
+  discovery: 2026-10-21 tail_3 顺序深读（历史索引回填，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

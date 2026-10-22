@@ -1,0 +1,58 @@
+id: INF-1580
+legacy_ids: []
+slug: cann_fused_floyd_attention_s2_block_rescale_exp_overflow
+aliases: []
+title: FusedFloydAttention K>1024 分块重缩放溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: S2 分块 softmax 重缩放
+  behavior: K>1024 分块重缩放中，D=64/N=16/M=128、scale=1.0、|输入|≥5 且 fp16/bf16 时，两块行内 max 差极易超 ln(FLT_MAX)≈88.7，重缩放因子溢出为 +Inf 污染 P。
+effect:
+  objects:
+  - 数值结果
+  detail: K=2048/D=64/N=16/M=128/scale=1.0、|输入|≥5 的 4 例 fp16/bf16 attentionOut NPU 对 golden 最大相对误差 132890~673722，双标杆误差比例超阈几十到几万倍；D=32/M=256/N=32 或 K≤1024 通过。
+  visibility: 静默错误
+mitigation:
+  detect: K∈(1024,2048]、D=64、N=16、M=128、scale=1.0、|输入|≥5 的网格用例；dump 块间 max 差与重缩放因子，确认 exp 参数是否超 88.7
+  fix: 待定（issue closed，正文未附修复 PR；建议对块间 exp(max_old-max_new) 做 clamp 或改 log-domain 合并）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: aclnnFusedFloydAttention（CANN 9.0.0，Ascend 910B3）+ K>1024 且 D=64、N=16、M=128（均为文档最小维度）、scale=1.0、输入绝对值≥5；触发边界仅由单批 4 例 + 对照圈定
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5040
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5040（2026-09-07 closed）用 ATK 对 aclnnFusedFloydAttention（CANN 9.0.0 attention/fused_floyd_attention，Ascend 910B3，torch 2.10.0）做 cv_fused_double_benchmark 双标杆精度测试（阈值 max_re_ratio 10 / avg_re_ratio 2 / rms 2）：74 例形成判定，70 通过、4 例失败（编号 42~45，配置同族：K=2048、D=64、N=16、M=128、B=H=1、bool 全 0 mask、scaleValue=1.0、Q/K 值域 [-10,10] 或 [-5,5]、fp16 与 bf16 各两例）。失败全部在主输出 attentionOut，softmaxMax/softmaxSum 通过（误差比例 3.3e-5~1.3e-3）。根因（两侧源码可证）：kernel 对 K>1024 的 S2 轴分块（SPLIT_S2_SIZE_LIMIT=1024），后续块以更新模式调 SoftmaxFlashV2 做块间合并，用 exp(max_old-max_new) 重缩放已累计概率与 sum（op_kernel/fused_floyd_attention_s1s2_bn2gs1.h 的 SoftMaxCompute：s2LoopCount==0 时模板参数 false、>0 时 true 的两条调用）；scale=1.0、|输入|≥5 时 QK score 单分支可达 D×max²≈1600~6400、双分支翻倍，两块行内 max 之差极易超过 ln(FLT_MAX)≈88.7，重缩放因子溢出为 +Inf，污染 P 并经 bmm2 与延迟除法 Bmm2ResultDiv 传到 attentionOut；golden 朴素 softmax 一次减全局 max，exp≤1 不溢出。对照组：编号 10~13（仅 D 改 32）通过、46（M→256）通过、50（N→32）通过、0~9（K=256 单块）通过。4 例实测 NPU 对 golden 最大相对误差 132890~673722，GPU 基准对 golden 仅 77~402。分母口径：926 例未形成判定（编号 74 aicore timeout 后 925 例流同步 507014 级联失败，属测试环境）。'
+  source: 2026-09-07 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5040 （closed）
+  behavior: 用 FusedFloydAttention 跑长 KV（K=2048）、head_dim=64、最小 N/M、scale=1.0 且 Q/K 幅度不小于 5 的输入时，attention 输出数值严重偏离：与朴素 softmax 标杆的相对误差在 1e5 量级，双标杆误差比例超阈值几十到几万倍，fp16 与 bf16 都一样错。softmax 的 max/sum 统计量却是对的，所以只看统计量发现不了；形状换一档（D=32、M=256、N=32）或 K≤1024 就完全正常。
+  trigger_surface: K>1024 触发 S2 分块 + D=64/N=16/M=128 + scale=1.0 + 输入绝对值≥5（fp16、bf16 均触发）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail

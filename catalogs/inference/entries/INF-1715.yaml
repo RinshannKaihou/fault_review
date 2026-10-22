@@ -1,0 +1,64 @@
+id: INF-1715
+legacy_ids: []
+slug: ms_op_plugin_float_input_double_truncation
+aliases: []
+title: op plugin 按 float 读入参致 float64 精度丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: op plugin 标量入参读取
+  behavior: GetFloatInput 系列接口以 float 为返回类型读取算子浮点入参，float64 输入在接口层就被截断成 float32；复数 Log 梯度分支也没有取共轭。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 在 CPU op plugin 路径上用 float64 跑数学算子，结果精度只有 float32 水平，与 PyTorch double 结果差得比预期多但不报错、无 NaN；complex64/complex128 走 Log/Log2/Log10 反向时梯度方向不对，训练中始终对不上参考实现。
+  visibility: 静默错误
+mitigation:
+  detect: 用 float64 输入跑 op plugin 路径的数学算子，比较 float32 与 float64 结果的相对误差；complex 场景直接用 Log 的解析梯度做对照
+  fix: issue 自身即修复说明：接口返回类型统一为 double/vector<double>，按实际存储类型读取后提升；grad_math_ops.cc 抽 IsComplexType，Log/Log2/Log10 复数梯度改用共轭；补 Log/Reciprocal/Exp2/Sinh 复数 ST（issue 已 closed）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: CPU op plugin 后端 + float64/double 入参，或 complex64/complex128 走 Log/Log2/Log10 反向；issue 环境写 Ascend、CPU、GPU
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/28870
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: op plugin 的输入接口 GetFloatInput、GetFloatVecInput、GetOptionalFloatInput、GetFloat2DVecInput 原来以 float 返回，float64 入参在接口层被截成 float32 再参与计算，double 输入因此拿不到应有的精度。修复把返回类型统一成 double，并按实际存储类型读取后提升。同一批改动还包括 grad_math_ops.cc 里 Log/Log2/Log10 的复数梯度：原实现没有用共轭参与链式求导，复数输入的反向结果与 PyTorch 不一致。涉及 custom_kernel_input_info.h/_impl.h、op_plugin/utils/op_utils.h/.cc。环境写 Ascend、CPU、GPU，版本 master 与 2.8.0 分支。
+  source: 2026-01-16 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/28870 （closed）
+  behavior: 在 CPU op plugin 路径上用 float64 跑数学算子，结果精度只有 float32 水平，和 PyTorch 的 double 结果差得比预期多，但没有报错也没有 NaN；复数 Log/Log2/Log10 做反向时梯度方向不对，训练里表现为这些算子的梯度始终对不上参考实现。
+  trigger_surface: CPU op plugin 后端，float64/double 入参，或 complex64/complex128 输入走 Log/Log2/Log10 反向
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - component

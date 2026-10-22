@@ -1,0 +1,59 @@
+id: INF-1846
+legacy_ids: []
+slug: vllm_ascend_split_qkv_rmsnorm_mrope_k_var_zero
+aliases: []
+title: 融合 QKV RMSNorm 把 K 方差算成 0 致千倍放大
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: split_qkv_rmsnorm_mrope
+  behavior: triton 融合 kernel 对 K 做 RMSNorm 时把方差算成 0（正确值 1.05–1.19），reciprocal_std 变成 1/sqrt(0+1e-6)=1000，K 被放大约一千倍。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Qwen3.5-4B（bf16、16/4 头、head_size 256、rope_dim 64、partial RoPE）在 950PR 上输出错误；Q 路径与 RoPE 公式本身正常，只有 K 被放大。
+  visibility: 静默错误
+mitigation:
+  detect: 把融合 kernel 算出的 K variance 与 torch 参考逐 head 比较（该形状应为 1.05–1.19，实测全 0）；或先用正文给出的最小 repro kernel 单独跑平方与归约。
+  fix: 待定（issue closed，正文给出源码定位与最小复现 kernel，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend 950PR，Qwen3.5-4B bf16，vLLM 0.21.0 + vllm-ascend 0.21.0rc1 + triton-ascend 3.2.1，num_q_heads=16/num_kv_heads=4/head_size=256/rope_dim=64，partial RoPE
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/12642
+  kind: github_issue
+relations: []
+original:
+  mechanism: 在 Ascend 950PR 上跑 Qwen3.5-4B（BF16，vLLM 0.21.0 + vllm-ascend 0.21.0rc1 + triton-ascend 3.2.1）时，vllm_ascend/ops/triton/linearnorm/split_qkv_rmsnorm_mrope.py 的 triton_split_qkv_rmsnorm_mrope 把 K 的 RMSNorm 方差算成 [0,0,0,0]，而同一输入的正确值是 [1.1817, 1.0508, 1.1187, 1.1918]。源码里 squares = in_k_tensor*in_k_tensor、variances = tl.sum(squares, axis=1)/head_size、reciprocal_std = 1/tl.sqrt(variances+eps)，方差为 0 时 reciprocal_std 变成 1/sqrt(1e-6)=1000，K 在 RMSNorm 这一步被放大约一千倍。报告者的定位实验很关键：把表达式拆成 squares→square_sums→variances 单独算时数值正确（形状 [4,256]→[4]），一旦后面接上 orig_qk = extract_slice(k_normalized, …) 与 roped_k = cat_y*sin + orig_qk*cos 这条 RoPE 计算，编译器就为前面的 K RMSNorm 另生成一套设备代码，而那套代码给出的 variance 是 0；RoPE 公式本身没有问题。正文给出 num_q_heads=16、num_kv_heads=4、head_size=256、rope_dim=64（partial RoPE）的自包含最小 repro kernel。issue 已 closed，未给修复 PR。
+  source: 2026-07-22 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/12642 （closed）
+  behavior: 用这套配置推理时回答明显变差或错乱，但服务不报错、没有 NaN、日志也没有异常：只有 K 被放大约一千倍，Q 与 V 正常，输出仍是合法 token，看起来只像“模型变笨了”。换成不触发该 partial RoPE 形状的配置或换实现才会恢复。
+  trigger_surface: triton_split_qkv_rmsnorm_mrope 融合算子 + partial RoPE（rope_dim<head_size）+ num_kv_heads<num_q_heads 的形状（16/4/256/64）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 编译器

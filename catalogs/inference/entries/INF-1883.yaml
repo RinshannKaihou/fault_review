@@ -1,0 +1,55 @@
+id: INF-1883
+legacy_ids: []
+slug: mindie_structured_output_no_stop_json_continues
+aliases: []
+title: 结构化输出不停机，JSON 后继续补人类轮次
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: 通用
+    component: json_schema 约束停机制
+  behavior: 'json_schema 约束只保证采样出的 token 合法，生成到 schema 闭合后没有触发停止，模型继续按 chat 模板续写下一轮，把 prompt 以 Human: 形式回显在 JSON 之后'
+effect:
+  objects:
+  - 输出内容
+  detail: 'Qwen3-30B-A3B（MindIE 3.0.0，ATB）带 response_format json_schema 的请求，content 是合法 JSON 后紧跟 Human: 提取以下文本…，finish_reason 仍是 stop、HTTP 200 无告警'
+  visibility: 静默错误
+mitigation:
+  detect: 对结构化输出请求直接 json.loads 校验；解析失败时看尾部是否粘了下一轮模板文本（Human:/Assistant:），而不是怀疑模型能力
+  fix: 未修复（issue 已关闭，未核实是否由后续版本修复）；规避：服务端按首个完整 JSON 截断，或检查结构化路径下 stop token/EOS 是否真正生效
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: MindIE 3.0.0 + Qwen3 模板 + response_format json_schema/json_object（enable_thinking=false），标准 inferMode；300I Duo py3.11 镜像
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindIE-LLM/issues/571
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindIE 3.0.0（mindie-service/mindie-llm 3.0.0，CANN 8.5.1，300I Duo aarch64 镜像）上起 Qwen3-30B-A3B 服务，worldSize=2、backendType=atb、maxSeqLen=2560、cacheBlockSize=128。按 OpenAI 协议发一个 response_format: {type: json_schema, json_schema: {name, schema}} 的请求（schema 为五字段 person_info，required 全字段，chat_template_kwargs 关掉 thinking），返回 HTTP 200：content 先给出完全符合 schema 的 JSON（name/age/occupation/city/phone 都正确），紧接着又继续生成 "Human: 提取以下文本中的人员信息：李四，35岁…"，即模型在 schema 闭合后没有停，而是把当前 prompt 当成新一轮对话重新复述；finish_reason 仍报 stop，usage 里 completion_tokens=86 也把这段回显算进去了。也就是说结构化输出只约束了已生成 token 的合法性（语法层），并没有把 schema 闭合当成终止条件，同时模板/eos 的停止语义在这条路径上没有生效，导致「JSON 后面跟一段非 JSON 自然语言」的混合响应。客户端按 content 直接 json.loads 会失败。'
+  source: '2026-05 GitCode Ascend/MindIE-LLM issue #571 https://gitcode.com/Ascend/MindIE-LLM/issues/571（closed；MindIE 3.0.0 + CANN 8.5.1，300I Duo）'
+  behavior: '打开结构化输出（response_format json_schema）后，返回的 content 虽然是合法 JSON，但后面还跟着一段 Human: 开头的原文复述；接口 200、finish_reason=stop，没有任何报错或提示。下游按 JSON 解析会直接失败，看起来像「结构化输出没生效」，实际是生成没有在 schema 结束时停下来。'
+  trigger_surface: MindIE 服务化 + response_format json_schema/json_object + Qwen 系 chat 模板；非流式请求即可复现
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误

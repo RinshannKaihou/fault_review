@@ -1,0 +1,51 @@
+id: INF-1711
+legacy_ids: []
+slug: ms_fusion_attention_all_zero_mask_row
+aliases: []
+title: 全零 mask 行使融合注意力输出退化为均匀加权
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: flash_attention_score 掩码
+  behavior: 把 bool/0 掩码转成对应 dtype 的最小值参与 softmax，却没有处理整行都被屏蔽的行；该行 logits 全部相等，softmax 退化成 1/n 均匀分布。
+effect:
+  objects:
+  - 数值结果
+  detail: attention_mask 某行全 0 时，speed_fusion_attention 与 flash_attention_score 的前向输出变成对被屏蔽 key 的均匀加权，反向结果同样错；与 PTA 同输入对不上，无任何报错。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 attention_mask 中至少一行全 False（与 tril 取与后仍全 0）的 q/k/v，对比 ops.speed_fusion_attention 与 PTA 同输入的输出与梯度
+  fix: 待定（issue open，无修复 PR）；方向：整行被屏蔽时显式输出 0，而不是交给 softmax 均分
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: ops.speed_fusion_attention / ops.flash_attention_score + bool 或 0/1 mask，mask 中存在整行全 0；Ascend 融合注意力路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/21087
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: attention_mask 在计算前被转成该 dtype 的最小值（如 fp32 的 -3.4e38）再加到 logits 上。若某一行 mask 全为 0，转换后整行取值相同，softmax 各项相同，输出变成 1/n 的均匀加权，而不是“该 query 没有可见 key”。issue 用 (2,8,256,32) 的随机 q/k/v 与 bool mask（再与 tril 取与）复现，说明 mindspore.ops.speed_fusion_attention 和 mindspore.ops.flash_attention_score 的前向与反向都与 PTA 不一致。
+  source: 2025-08-30 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/21087 （open）
+  behavior: 带 bool attention_mask 跑融合注意力时，只要 mask 里有整行全 0（例如某个 query 的可见位置全被屏蔽），该行输出不是 0 而是所有被屏蔽 key 的平均值，梯度也跟着错。数值上没有 NaN、没有报错，只有和 PTA 对比才看得出来，训练里表现为个别 token 的注意力异常。
+  trigger_surface: ops.speed_fusion_attention / ops.flash_attention_score + bool 或 0/1 mask，mask 中存在整行全 0；Ascend 融合注意力路径
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

@@ -1,0 +1,61 @@
+id: INF-2034
+legacy_ids: []
+slug: chamfer_distance_grad_index_bounds_missing
+aliases: []
+title: chamfer 反向 aclnn 缺索引边界校验致静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: chamfer_distance_grad
+  behavior: aclnnChamferDistanceBackward host 侧只校验空指针与 dtype，未校验 idx1/idx2 是否落在 [0, num)，device 内核直接以 idx1 作索引。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: idx1=2（==num）时 aclnnChamferDistanceBackward 返回 SUCCESS，梯度与合法用例不同；idx1=-1 时异步下发被接受，sync 报 507035，exit 42
+  visibility: 静默错误
+mitigation:
+  detect: 用 idx1==num 与 idx1=-1 调 aclnnChamferDistanceBackward，断言参数错误；与合法 idx1 的 grad 逐元素对拍
+  fix: 待定（issue 为本地 draft，未提交远程，修复未核实）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnChamferDistanceBackward；idx1 取 -1 或 ==num 等越界值，源码 --pkg 安装的 vendor 算子
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4760
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4760（2026-08-13，closed，模式 P-011 缺索引边界检查）。loss/chamfer_distance_grad 的 aclnnChamferDistanceBackward host 侧只校验空指针与 dtype，不校验 idx1/idx2 是否落在 [0, num) 内，device 内核直接拿 idx1 作索引。源码 HEAD e16ef626bb3a837de82fb01a9f8e17ba9d065680，Ascend910B3 + CANN 9.1.0-beta.3 以 build.sh --pkg 装独立 vendor（ASCEND_CUSTOM_OPP_PATH 指向该 vendor，built_from_source=true）后复现：idx1=2（==num）返回 SUCCESS 且梯度与合法路径不同；idx1=-1 异步下发被接受，随后同步报 507035，exit 42。移走 built-in 同名算子内核后仍可复现，确认走的是源码编译内核。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4760 （closed）
+  behavior: 把 idx1 填成等于点数或 -1 时，chamfer 反向接口不会拒绝：越界一格的输入照样返回 SUCCESS，只是梯度数值和合法输入算出来的不一样；填 -1 则在下发之后同步阶段报 507035 设备异常。调用方若只判返回码，拿到的是看似正常的错误梯度，日志里没有任何越界提示。
+  trigger_surface: aclnnChamferDistanceBackward（chamfer_distance_grad），idx1/idx2 越界
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度
+    rewritten:
+    - behavior

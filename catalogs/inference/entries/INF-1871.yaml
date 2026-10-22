@@ -1,0 +1,58 @@
+id: INF-1871
+legacy_ids: []
+slug: opapi_argsort_false_aicpu_engine_warning
+aliases: []
+title: ArgSort opapi 把 AI Core 执行误报为 AICPU
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: ArgSort op_api 引擎判定告警
+  behavior: op_api::argsort 只按输入 dtype（int32/int64）把执行引擎判为 AICPU 并告警，不看 SoC 型号，也没考虑 CANN 在 950PR/950DT 上的 RegBase Sort AI Core 实现。
+effect:
+  objects:
+  - 指标/日志
+  detail: Ascend 950PR 上 argsort 实际 kernel 为 aclnnSort_SortAiCoreForDavid_Sort、Accelerator Core=MIX_AIV，却仍告警「运行于 AICPU」；按告警做性能归因会把算力记到 AICPU 上。
+  visibility: 静默错误
+mitigation:
+  detect: profiler Level2 采集 Accelerator Core 与 kernel 名，与 opapi 告警对照；报告含 dtype=int32、(32,4096) 输入的复现脚本
+  fix: 待定（issue open，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch_npu 2.7.1 + CANN 9.1.0（Ascend950PR_9579）；torch.argsort 的 int32/int64 输入 + profiler Level2 归因
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3061
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #3061（Ascend950PR_9579 / CANN 9.1.0 / torch 2.7.1+cpu / torch_npu 2.7.1 / Python 3.11.13）：op-plugin 的 op_plugin/ops/opapi/ArgSortKernelNpuOpApi.cpp 里两个 op_api::argsort 实现仅根据输入 dtype（int32/int64）判定该算子运行在 AICPU 并据此告警，判定不区分 SoC 型号，也没有考虑 CANN 针对 Ascend 950PR/950DT 的 RegBase Sort AI Core 实现。报告者用 torch_npu.profiler Level2（aic_metrics=PipeUtilization、analyse_flag=True）采集，实际 kernel 名为 aclnnSort_SortAiCoreForDavid_Sort，Accelerator Core 为 MIX_AIV，即运行在 AI Core/AI Vector 而非 AICPU。复现脚本：dtype=int32、(32,4096) 输入做 argsort（x=(arange*1009+17)%4096），配 profiler Level2 采集即可看到告警与实际核不一致。'
+  source: 2026-07-20 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/3061 （open）
+  behavior: 在 950PR 上跑一眼就能看到 argsort 打出「运行于 AICPU」的告警，但同一段 profile 里它的 Accelerator Core 是 MIX_AIV、kernel 名是 aclnnSort_SortAiCoreForDavid_Sort，实际跑在 AI Core 上。按告警做性能归因的人会把这段算力错记到 AICPU 头上、把 AICPU 当瓶颈去优化；算子本身的数值结果是对的。
+  trigger_surface: torch_npu 2.7.1 + CANN 9.1.0（Ascend 950PR/950DT）；torch.argsort 的 int32/int64 输入
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 算子/内核

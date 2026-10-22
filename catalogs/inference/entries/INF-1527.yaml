@@ -1,0 +1,60 @@
+id: INF-1527
+legacy_ids: []
+slug: ops_nn_addrelu_bf16_tail_block_out_of_range
+aliases: []
+title: AddRelu 尾维非对齐输出越出值域上界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: AddRelu 尾块写回与寻址
+  behavior: CANN 9.1.0 镜像内 aclnnAddRelu 在尾维非对齐用例上输出越出输入值域上界，实测 5.11e13（数学上界 400），报告判断为尾块写回不全或地址偏移截断，未定位到代码行。
+effect:
+  objects:
+  - 数值结果
+  detail: 尾维非对齐且值域±100时，round-3 1000条执行成功但290条accuracy False：整型torch.equal失败87条、NPU输出含nan/inf 78条、无error_info的二进制不一致47条、浮点误差超阈78条；720条同输入两轮185条翻转、127条两轮都失败。
+  visibility: 静默错误
+mitigation:
+  detect: 同输入连续两轮逐 bit 比对并复跑：720 条里 185 条判定在两轮间翻转是主要特征；只看单轮通过率会低估。
+  fix: issue 6064 已 closed，正文未给修复 PR 与合入版本，修复状态未核实。
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 910B3 + CANN 9.1.0 + torch 2.10.0 + ATK 26.7.8；bf16/fp16/fp32 尾维取 13/17/31/65/69/127/129/257 等非对齐长度，值域 ±100
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 报告给的根因只是初步判断（输出未写回/地址偏移截断）；条目只记录实测越界数值与非确定性指纹，不写未证实的确定性来源。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6064
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6064（2026-09-20，closed）：环境 Ascend 910B3、CANN 9.1.0、torch 2.10.0、ATK 26.7.8、hw_8x910b3，用 pyaclnn 调用镜像内系统算子 aclnnAddRelu，对照 GPU 参考端（torch 计算后转回输入 dtype）跑满 1000 条。round-3 全部 1000 条执行成功、0 执行失败，其中 290 条 accuracy False：整型 torch.equal 失败 87 条、NPU 输出含 nan/inf 78 条、无 error_info 的二进制不一致 47 条、浮点误差超阈 78 条。最强证据 case 29：bf16[31,17] 的 self/other 值域 ±100、alpha=3，数学上界 relu(self+3·other) ⊆ [0,400]，实测 max_abs_diff 5.11e13（max_abs_idx=130）、error_balance 1.64e12，报告据此判断算子读到了输入缓冲区之外的内存。同一份 720 条相同输入两轮判定中 185 条（25.7%）翻转，127 条两轮都失败。报告初步根因为“输出未完全写回或地址偏移截断”，未定位到具体代码行；round-1 的 265 条执行失败已定性为用例 alpha dtype 设计问题，不计入统计。
+  source: 2026-09-20 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6064 （closed）
+  behavior: 在 910B3 上用 aclnnAddRelu 做逐元素 add+relu：对齐 shape 正常，但尾维取 17、13、31、65 这类非对齐长度、值域覆盖 ±100 时，输出出现远超输入范围的数值——bf16 用例实测 5.11e13，而正确结果不可能超过 400；部分用例直接出 NaN/Inf，整型输出逐位不等。全程算子不报错、接口返回成功，同一份输入连跑两轮约四分之一用例判定翻转。
+  trigger_surface: Ascend 910B3 + CANN 9.1.0 镜像内系统算子 aclnnAddRelu + 尾维非对齐（13/17/31/65/69/127/129/257）+ 值域 ±100
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - visibility
+    - behavior

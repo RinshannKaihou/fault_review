@@ -1,0 +1,58 @@
+id: INF-1863
+legacy_ids: []
+slug: ops_transformer_moe_token_unpermute_with_ep_empty_range_no_fallback
+aliases: []
+title: MoeTokenUnpermuteWithEp 空 range 不回退
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MoeTokenUnpermuteWithEp
+  behavior: Host InferShape 在 probs 缺省时一律按 sorted_indices.shape[0] / num_topk 推导，没有判 range 是否为空，文档要求的回退到 aclnnMoeTokenUnpermute 未实现。
+effect:
+  objects:
+  - 数值结果
+  detail: 空 range + num_topk=8、permuted_tokens[8,2] 时输出 shape 为 [1,2]（期望 [8,2]），8 个 token 只剩 1 个；返回 GRAPH_SUCCESS，5 轮稳定复现。
+  visibility: 静默错误
+mitigation:
+  detect: 用空 range、不传 probs、num_topk=8 的 InferShape 用例断言输出 [8,2]，并与 num_topk=1、显式 range=[0,8] 两组对照；现有 UT 没有空 range 用例。
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/10539 （closed，合入状态未核实）：空/缺省 range 且无 probs 时按 sorted_indices 全长推导，Host UT 10 项 ×5 轮通过。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: MoeTokenUnpermuteWithEp + rangeOptional 为空/缺省 + 不传 probs（合法回退调用）+ num_topk>1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 只验证 Host InferShape，未做匹配源码版本的 NPU 端到端；与 INF-1597（WithEpGrad 梯度槽丢失）、INF-1728（unpermute pad 对齐）不同机制。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4541
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/10539
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer issue 4541（closed）：接口文档 moe/moe_token_unpermute_with_ep/docs/aclnnMoeTokenUnpermuteWithEp.md 规定 rangeOptional 为空时忽略 numTopk、逻辑回退到 aclnnMoeTokenUnpermute（回退算子在 probs 不传时 topK_num=1），但 Host InferShape 实现 moe/moe_token_unpermute_with_ep/op_host/moe_token_unpermute_with_ep_infershape.cpp 在 probs 缺省时始终执行 sorted_indices.shape[0] / num_topk，完全没有判断 range 是否为空。作者在 commit a2ee2d92804d、CANN Toolkit/OPP 9.1.0、Ascend910B3 上构建 Host UT（cmake -DENABLE_TEST=ON -DOP_HOST_UT=ON -DASCEND_OP_NAME=moe_token_unpermute_with_ep）并用真实注册回调做探针，三组各重复 5 轮：空 range + num_topk=8 输出 [1,2]、空 range + num_topk=1 输出 [8,2]、显式 range=[0,8] + num_topk=8 输出 [1,2]，三者均返回 GRAPH_SUCCESS。修复分支 fix/moe-unpermute-with-ep-range-fallback 改为读取 range 属性、为空或缺省且无 probs 时用 sorted_indices 全长，transformer_op_host_ut 过滤用例 10 项 ×5 轮通过，并向 MR 10539 提交。
+  source: GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/4541 （closed）；修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/10539
+  behavior: 按文档用「不传 range、只给 num_topk」的方式调用 MoE token 反排列时，图构建阶段就给这张输出定成 [1,2] 这种只有一行的形状：调用方照这个描述申请和写出，8 个 token 实际只剩 1 个进结果，接口一路返回成功、没有报错；把 range 显式填成 [0,8] 或把 num_topk 改成 1 才恢复 [8,2]，所以不熟悉该可选属性的调用方会静默丢掉大部分 token。
+  trigger_surface: aclnnMoeTokenUnpermuteWithEp + 空/缺省 rangeOptional + 不传 probs + num_topk>1
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

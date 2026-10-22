@@ -1,0 +1,59 @@
+id: INF-1675
+legacy_ids: []
+slug: te_reduction_inplace_reuse_cross_core_race
+aliases: []
+title: 归约 kernel 复用死输入 buffer 跨核竞态致偶发 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: TE decide_inplace_update
+  behavior: decide_inplace_update 只校验索引等价、不看时序，允许复用已死输入为输出；统计与归一化循环在 48 核 group dispatch 下跨核交错，某核统计时另一核可能已改写数据。
+effect:
+  objects:
+  - 数值结果
+  detail: Llama-2-7b 整模型偶发 NaN、位置每次不同；受影响 kernel 隔离重放 10 次逐位不一致，输出 absmax 放大约 300 倍。
+  visibility: 不可复现
+mitigation:
+  detect: 对含 reduction 的融合 kernel 输出做同一输入重复重放（≥10 次）比逐位一致性，并检查 codegen 产物是否出现 mutated_arg_names=[in_out_ptr0] 且 num_reduction>0 的 buffer 复用
+  fix: 关联 PR（正文只写"修复见关联 PR"，未给链接，未核实合入）：reduction 节点跳过 decide_inplace_update 的 in-place 复用决策
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: triton_experimental codegen + 含 reduction 的融合 kernel（如 Llama 最终 RMSNorm）+ NPU 48 核 group dispatch；910B 系列，2026-09 Llama-2-7b 排查期
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5216
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5216（2026-09-28，open，triton_experimental 后端）：triton_experimental/codegen/triton.py 的 codegen_node_schedule_with_kernel 对每个节点调用 node.decide_inplace_update()，允许把已死输入 buffer 复用为 kernel 输出以省一次拷贝。对含 reduction 的融合 kernel（如 Llama 最终 RMSNorm）该决策不安全：kernel 的统计循环（pass 1 读 in_out 求分母）与归一化循环（pass 2 再读并写回 in_out）在 NPU 48 核 group dispatch 下跨核交错、无顺序保证，某核统计时另一核可能已改写数据。decide_inplace_update 的安全检查是索引等价性，看不到时序——索引等价不等于跨核时序安全。无修复产物中稳定出现危险模式：buf59 = buf0; del buf0 的 reuse，kernel triton_unk_fused__to_copy_add_matmul_mean_mul_pow_rsqrt_12 带 mutated_arg_names=[in_out_ptr0]、num_reduction=1，codegen 层可静态复现。2026-09 Llama-2-7b 排查期记录：整模型输出偶发 NaN 且位置每次不同，受影响 kernel 隔离重放 10 次 bitwise 不一致，输出 absmax 放大约 300 倍。正文解释 GPU 不受影响的原因：CUDA block 对自己分到的行内完成先读后写，程序顺序天然保证时序；NPU group dispatch 把两遍循环切散到 48 核后无此保证，上游已有按后端区分 in-place 策略的先例（SIMDKernel 分支）。期望 reduction 节点跳过 in-place 决策。'
+  source: 2026-09-28 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5216 （open）
+  behavior: 用 triton_experimental 编译 Llama-2-7b 推理，整模型输出偶尔出现 NaN，而且每次出问题的位置都不一样；同一个 kernel 拿同一份输入反复重放 10 次，结果逐位不一致，输出 absmax 被放大约 300 倍。没有任何报错，重跑一次可能又是正常的，所以只能靠重复跑才能看到。把出问题的 RMSNorm 类融合 kernel 单独拿出来，能看到它把已死输入 buffer 直接当成输出用。
+  trigger_surface: triton_experimental codegen + 含 reduction 的融合 kernel + NPU 多核 group dispatch；单次执行难复现，需重复重放或整模型长跑
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - visibility

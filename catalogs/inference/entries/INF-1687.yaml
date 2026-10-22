@@ -1,0 +1,64 @@
+id: INF-1687
+legacy_ids: []
+slug: te_mv_tail_program_segment_loss
+aliases: []
+title: TE 编译 aten.mv 尾部 program 段整段丢写致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: TE mv/matmul fold
+  behavior: TE对aten.mv前向lowering产生错值，符合NPU多program发射时高pid段写入/归约被跳过。
+effect:
+  objects:
+  - 数值结果
+  detail: triton_experimental后端torch.compile(torch.mv)或3D×1D matmul折叠到mv；M≥16、K小、行数非grid整倍数时前段正确、从某行起按block边界整段丢失/覆盖。最大差约9.1；跨种子稳定，4例matmul/rmatmul 15/25元素失配。
+  visibility: 静默错误
+mitigation:
+  detect: 逐 shape 扫描 torch.compile(torch.mv) 与 eager 的 max_abs，重点看 M≥16 且行数非 grid 整倍数的小 K 形状，错误集中在尾部行；3D×1D matmul 另跑 forward-only 图排除反向
+  fix: 待定（issue closed）；方向：排查 TE 对 aten.mv reduction 的 program 发射边界，或对 rhs 为 1D 的 matvec 关闭 fold、回退 bmm/mv 原生路径
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: TORCHINDUCTOR_NPU_BACKEND=triton_experimental + torch.compile(torch.mv) / 3D×1D matmul；M≥16 小 K（如 25×10、16×8、100×10）；910B2/CANN 9.2.0-beta.2/triton-ascend 3.5.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5071
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5071（2026-09-24，closed，Ascend 910B2 / PyTorch 2.15.0.dev20260920+cpu / torch_npu 2.15.0.dev20260920+gitae2ee12 / CANN 9.2.0-beta.2 / triton-ascend 3.5.0，TORCHINDUCTOR_NPU_BACKEND=triton_experimental）：在 #4930 复测中发现 matmul_backward 缺 lowering 被 TORCH_NPU_USE_COMPATIBLE_IMPL=1 解卡后仍有 4 例 matmul/rmatmul 稳定数值失配（15/25 元素），失败点在 forward 输出且 flag=0 时独立最小复现同样出错。触发层：torch_npu/_inductor/decomposition.py 的 _override_matmul_should_fold_for_npu() 把上游 should_fold 的门控从 t1.ndim>=3 and t2.ndim<=2 且 t1 行连续放宽为 t1.ndim>=3 and t2.ndim<=2 一律 fold，3D×1D 批 matvec 因此走 aten._unsafe_view(t1_folded.mv(t2), out)。但更底层的错值单元是 TE 对 aten.mv 的前向 lowering：脱离 matmul 直接 torch.compile(torch.mv) 在 25×10、16×8 等形状复现同样"尾部段系统性错、前段正确"签名，与 TORCH_NPU_USE_COMPATIBLE_IMPL 无关（flag=0/1 同值），跨种子稳定。逐 shape 隔离实测（fresh 缓存）：5×5、5×10、10×10、16×16、25×100、2×10、8×10 均 ≤9.5e-7；25×10 为 3.69（第 10 行起 15/25 错）、16×8 为 4.06（第 8 行起 8/16 错）、17×10/18×10/20×10 约 3.1、24×10 3.69、25×20 5.33、32×10 7.0、100×10 9.1（前 24 行对）。matmul 全形状矩阵中仅 3D×1D 出错，1D×1D、2D×2D、2D×1D、1D×2D、2D×3D、3D×2D、3D×3D 均约 0。错误呈输出行按 block 边界整段丢失/覆盖形态，符合 NPU 多 program 发射时高 pid 段写入/归约被跳过，而非舍入误差（量级 3~9）。正文自述与 #4952（TE 广播反向 odometer 内核首发射丢失高 pid program）失效形态相似但触发层与 op 族不同。'
+  source: 2026-09-24 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5071 （closed）
+  behavior: torch.compile 编译 torch.mv 后结果和 eager 对不上：5×5、16×16 这些小形状没事，一旦 M≥16 且 K 很小（25×10、16×8、100×10）就开始错，而且错得很规整——前面若干行完全正确，从某个行号开始整段都错（100×10 前 24 行对、后面全错），最大差到 9 左右，而 fp32 正常应该在 1e-6 量级。换随机种子结果一致，所以不是精度抖动。同样的路径通过 3D×1D matmul（会被 fold 成 mv）也会错，纯 mm/bmm 全对。
+  trigger_surface: triton_experimental 后端的 torch.compile(torch.mv) 或 3D×1D matmul（fold 到 mv）；M≥16、K 小（10 量级）、行数非 grid 整倍数
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - title

@@ -1,0 +1,53 @@
+id: INF-1807
+legacy_ids: []
+slug: tiling_buildrtensor_uninit_tensordata_size
+aliases: []
+title: Tiling 上下文未初始化 TensorData 大小
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: BuildRtTensor
+  behavior: BuildRtTensor 转换 GeTensorDesc 时只设 shape/format/dtype/addr/placement，漏掉 TensorData 的 size，tiling 侧 GetSize() 因此返回默认 0。
+effect:
+  objects:
+  - 数值结果
+  detail: 算子 tiling 按 0 字节判断输入输出，tilingdata 与实际张量大小脱节，编译与执行阶段均不报错；复用 BuildWithInputConstSuccess 的图构造可复现。触发面为所有经 TilingContextBuilder 构造 tiling 上下文的算子 tiling。
+  visibility: 静默错误
+mitigation:
+  detect: 在 tiling 回调里打印 tiling_context->GetInputTensor(i)->GetSize()，与 GeTensorDesc 的 tensor size 对比
+  fix: 待定（issue 给方案：按 shape_inference.cc:GetTensorHolder 的 placement new 构造方式一次性传入 storage_shape/format/dtype/addr，或 SetAddr 后补 SetSize；未见修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  trigger_note: 所有形态的图 tiling 路径；走 op_tiling_rt2 的 NormalAicoreNodeTiling 即进入该 builder
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/367
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 调用路径 base/common/op_tiling/op_tiling_rt2.cc:NormalAicoreNodeTiling → RtParseAndTiling → graph_metadef/exe_graph/lowering/tiling_context_builder.cc:TilingContextBuilder::Build → BuildRTInputTensors/BuildRTOutputShapes → BuildRtTensor（该文件第91行）→ op_tiling_rt2.cc:funcs->tiling(...)。BuildRtTensor 只设置 shape、format、dtype、addr 与 placement，没有把 TensorData 的 size 同步进 gert::Tensor，因此下游算子通过 Tensor::GetSize()/GetTensorData().GetSize() 取输入输出大小时拿到默认值 0，与 GeTensorDesc 里记录的真实 tensor 大小不一致。报告者建议与 shape_inference.cc:GetTensorHolder 的构造方式（placement new 一次性传入 storage_shape、format、dtype、address）对齐，而不是先分配再逐字段补写；备选是在 SetAddr 之后显式 SetSize。
+  source: 2026-05-07 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/367 （closed）
+  behavior: 复现方式是复用 BuildWithInputConstSuccess 的图构造，调 builder.Build 后从 TilingContext 取 GetInputTensor(1)：指针非空、GetAddr() 非空、GetDataType() 与 GetOriginShape() 都对，唯独 GetSize() 是 0。算子 tiling 因此按 0 字节判断输入输出，tilingdata 与实际张量大小脱节，且编译与执行阶段都不报错。
+  trigger_surface: 所有经 TilingContextBuilder 构造 tiling 上下文的算子 tiling
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

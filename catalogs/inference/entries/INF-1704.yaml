@@ -1,0 +1,59 @@
+id: INF-1704
+legacy_ids: []
+slug: all_gather_matmul_uint32_offset_overflow
+aliases: []
+title: AllGatherMatmul 偏移 uint32 相乘溢出截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: all_gather_matmul_v2 AIV
+  behavior: blockSt 与 blockSize 的乘子（cal_idx、m0、pValue、m、n）均为 uint32_t，乘法在 uint32 空间完成才赋给 uint64_t，MN 超 2^32 时截断，偏移与搬运量算错。
+effect:
+  objects:
+  - 数值结果
+  detail: 输入 shape 的 M*N 超过 uint32 最大值（4.29e9）的 all_gather_matmul_v2 AIV 中，shape 校验通过、执行不报错不崩，输出数值整体错位；缩小到 uint32 范围内恢复正常，常规尺寸回归长期不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 对超大 MN 的 shape 做定点对比测试；静态检查 kernel 中 32 位乘法的上界
+  fix: 待定（issue 只给修改方案：相关变量改 uint64_t 或先转 uint64_t 再乘，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 仅当 MN 超过 uint32 上限（超大 shape）时触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/3714
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #3714（2026-07-10 closed，x86 + 910B2）：mc2/all_gather_matmul_v2/op_kernel/all_gather_matmul_aiv_mode.h 中 uint64_t blockSt = cal_idx * m0 * pValue * n; 与 uint64_t blockSize = m * n; 两处，calIdx、m、n、m0、pValue 等乘子均定义为 uint32 数据类型，运算顺序上整条乘法先按 uint32_t 完成，结果超过 uint32 最大值时发生溢出截断，之后才赋给 uint64_t，因此超大 shape 下 block 偏移与搬运长度都算错，算子结果出现精度异常。修改方案为把相关变量直接定义为 uint64_t 或先转 uint64_t 再计算；报告者同时提醒排查其它大 shape 下相乘的地方是否有同样的溢出风险。环境为 x86 + Ascend 910B2，触发条件是输入 shape 的 MN 超过 uint32 最大值。'
+  source: https://gitcode.com/cann/ops-transformer/issues/3714 （closed）
+  behavior: 只有在 MN 特别大（超过 uint32 最大值）时结果才不对：shape 校验通过、执行不报错、也不崩，输出里的数值却整体错位；把 shape 缩小到 uint32 范围内立刻恢复正常，因此这类问题在常规尺寸的回归用例里长期不可见。
+  trigger_surface: 输入 shape 的 M*N 超过 uint32 最大值（4.29e9）的 all_gather_matmul_v2（AIV 模式）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

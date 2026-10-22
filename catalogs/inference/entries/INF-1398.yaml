@@ -1,0 +1,84 @@
+id: INF-1398
+legacy_ids: []
+slug: vllm_ascend_mxfp8_c8_pd_kv_scale_corruption
+aliases: []
+title: vllm-ascend C8 MXFP8 KV scale 损坏输出错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: C8 MXFP8 KV scale 传输
+  behavior: K-scale 先进索引赋值物化 strided 视图写回，覆盖并发 KV 传输未选中页；异步加载跳过整页清零，尾部残留页复用后的无效静态 V scale
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  detail: 'MXFP8 C8 页 PD serving 出现 NaN 与重复''!''输出（同族现象见 #17956 复现：Qwen3.6-27B W8A8+C8 首请求后全部后续请求输出 128 个''!''，GDN SSM 写覆盖 V-scale 字节后首层全注意力层 NaN）；MTP 接受率持续为 0'
+  visibility: 静默错误
+mitigation:
+  detect: 监控 MTP 接受率归零与重复字符输出；检查 V-scale 视图与 GDN 写重叠（#17956 的 address tracing）；未评估
+  fix: '修复 PR https://github.com/vllm-project/vllm-ascend/pull/19016 （open 未合并，另有 v0.30 backport #19017）：K-scale 改 stride-aware Triton byte scatter 只写被寻址元素；V-scale 经 MRv1 pre-forward helper 按组去重清零/恢复'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: C8 MXFP8 KV cache + PD 分离 + MooncakePullConnector（异步加载）+ hybrid 缓存页复用/并发 KV 传输；A5 实测（#17956 为 Qwen3.6-27B W8A8+C8）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/19016
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/pull/17956
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/pull/18618
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/pull/18801
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/issues/19065
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0156
+original:
+  mechanism: 'vllm-ascend MXFP8 C8 页在 PD serving 中因两个缺陷产生 NaN 与重复感叹号输出：(1) K-scale 的先进索引赋值会物化 packet-strided 视图并经 IndexPutV2/ViewCopy 写回，覆盖并发 KV 传输中未被选中的页；(2) 异步 KV 加载跳过整页清零，当 prefill 把 3 个内核块迁入含 5 块的 decode 页时，未写尾部可保留 hybrid 缓存页复用后的无效静态 V scale。相关先证 #17956（已合并 closed）：hybrid 全注意力与 GDN/Mamba 组复用同一物理页，GDN SSM 写覆盖 V-scale 字节（4 个 C8 packet 中 2 个），后续请求分配该页做全注意力时静态 V scale 未恢复，Qwen3.6-27B W8A8+C8 首请求正常、后续请求全部输出 128 个''!''，首受影响层 Q/V 有限输入产 NaN。#18618（closed）则修 MooncakeConnectorV2 把可由 checkpoint 重建的静态 V scale 传输给 decoder、用损坏的生产端缓存字节覆盖 decoder 有效 scale 的问题。#18801 观察 Qwen3.5 MXFP8 hybrid PD 页步进布局数值退化、改连续区段恢复 GPQA（责任操作未隔离）。本条目以 #19016 的两项机制为主证据聚合该缺陷族。'
+  source: 'https://github.com/vllm-project/vllm-ascend/pull/19016 （backport #19017；先证 #17956 https://github.com/vllm-project/vllm-ascend/pull/17956 、#18618 https://github.com/vllm-project/vllm-ascend/pull/18618 、#18801 https://github.com/vllm-project/vllm-ascend/pull/18801 ）'
+  behavior: 使用 MXFP8 C8 KV cache 的 PD 分离服务（含 MooncakePullConnector 异步加载、hybrid 缓存页复用），输出出现随机点位 NaN 与重复感叹号（'!!!!...'）式损坏，MTP 接受率持续为 0；服务不崩溃、请求正常完成。Qwen3.6-27B W8A8+C8 场景表现为启动后第一个请求正常、之后所有请求输出 128 个'!'；换请求顺序仍然只有第一个正常。
+  trigger_surface: vllm-ascend（0.30 线）；C8 MXFP8 KV cache；PD 分离 + MooncakePullConnector 异步接收；hybrid 全注意力/GDN 混合缓存组页复用；A5/950 系实测（#17956 场景为 Qwen3.6-27B W8A8+C8）
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - '2026-10-17 回访 2026-10-17：K-scale 修复 #19064 已 closed（10-17）、release 候选 #19017 已 closed、聚合 PR #19016 在 #19065 review 期间暂缓；#19065 揭示 397B 几何（页 1536/2560、块比 3/5）下另有 V-scale 恢复缺口，已另立 INF-1429（var）。'
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - behavior
+    - detail
+  updates:
+  - date: '2026-10-17'
+    fields:
+    - evidence
+  - date: '2026-10-17'
+    fields:
+    - original.notes
+  - date: '2026-10-18'
+    fields:
+    - pattern

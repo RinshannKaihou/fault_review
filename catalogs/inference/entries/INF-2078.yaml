@@ -1,0 +1,60 @@
+id: INF-2078
+legacy_ids: []
+slug: cann_quantize_add_layer_norm_950_fullload_deviation
+aliases: []
+title: QuantizeAddLayerNorm 950 输出偏差 128~255
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: quantize_add_layer_norm
+  behavior: 950/arch35 实现在 key=8012 的多行 Full-load 路径上，y（INT8 量化输出）与冻结 Golden 最大绝对差 128~255；部分差异可由参考多做一次 dtype 回转解释，根因未定。
+effect:
+  objects:
+  - 数值结果
+  detail: 1218条上板比较282条未过：13条多行Full-load大偏差（y差128~255），255条y差±1，20条x差异中FP32代表例设备x逐位等于(x2+bias)+x1，Golden为(x1+x2)+bias。
+  visibility: 静默错误
+mitigation:
+  detect: 按 TSE 黑盒 L1/L2、STDesign 用例与冻结 Golden 回归，按 key=8012 路径、dtype、scale 值域分组统计最大绝对差与不一致元素数
+  fix: 待定；issue 请维护者先确认量化前是否应回转 FP16/BF16、残差加法顺序契约，再划分实现修复与参考修正（closed，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend950/arch35 quantize_add_layer_norm，多行 Full-load 路径（key=8012），scale 值域 ±0.125~2、epsilon 1e-5 等组合
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6041
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn 的 quantize_add_layer_norm Ascend950/arch35 实现用已有 TSE 黑盒与 STDesign 用例加冻结 Golden 回归：1218 条实际设备比较中 936 通过、282 未通过。13 条走 key=8012 的多行 Full-load 路径，y 最大绝对差 128~255，其中 5 条为普通有限值域黑盒（float16/bf16/float32，shape [1300,800] 与 [3,224,224]，scales 值域 [0.125,2] 或 [-2,-0.125]，epsilon 1e-5），如 L2_903 有 96280 个元素不一致。另有 255 条 y 差 ±1；对 L2_520/524（FP16）与 L2_760/764（BF16）做固定输入 CPU 诊断后确认，只要参考侧省去 norm.to(input_dtype).float()，设备输出与诊断结果逐元素相等，与上游 Welford 直接在 FP32 仿射结果上 Div/加 offset/量化一致。20 条 x 差异中 FP32 代表例设备 x 逐位等于 (x2+bias)+x1，而 Golden 为 (x1+x2)+bias。
+  source: 2026-09-20 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6041 （closed）
+  behavior: 在 950 上用同一批量化模型跑 TSE/STDesign 回归，部分用例的 INT8 输出整段偏离 Golden（最大差 128~255，相当于量化值全错），另有大量用例只差 ±1；算子不报错、不产生 NaN，只是数值对不上，验收时会被当成参考精度问题来回扯。
+  trigger_surface: Ascend950/arch35 + quantize_add_layer_norm + 多行 Full-load tiling（key=8012）与特定 scale/epsilon 值域
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+    rewritten:
+    - detail

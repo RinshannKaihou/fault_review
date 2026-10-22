@@ -1,0 +1,52 @@
+id: INF-1459
+legacy_ids: []
+slug: vllm_kv_offload_direct_layout_tp_namespace_cross_corruption
+aliases: []
+title: vLLM KV offload 跨 TP 共享 tier 加载坏 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: direct 布局 namespace 丢 TP
+  behavior: direct 布局被标 is_parallelism_agnostic，namespace 丢 TP 维度；但该布局字节是各 worker 页并排，同一 block hash 跨 TP 含义不同，跨 TP 读者错装 KV。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 不同 TP 引擎共享 fs/obj/p2p tier 时读入对方 KV 静默输出乱码：TP1→TP2 gsm8k 0.332→0.0；FS tier 0/4 输出匹配；同 TP 与 canonical_layout=True 正确；V2 有指纹门控安全
+  visibility: 静默错误
+mitigation:
+  detect: 共享 tier 的跨 TP 引擎跑已知答案任务对照（gsm8k 等）；检查 namespace hash 是否含 TP
+  fix: 修复 PR vllm#55191（移除 offloading/config.py direct 布局豁免，issue open 状态未核实合入）；规避：canonical_layout=True（实测 TP1↔TP2 双向 0.340/0.343 正确）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 两个不同 TP 的引擎共享 fs/obj/p2p secondary tier + canonical_layout=False（默认）；V1 model runner（V2 有指纹门控安全）；4×H200 实测 nightly 0.32.0rc1.dev100
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 与 vllm#61658（tiering 异步 lookup stale absent）不同：那条是缓存判定语义，本条是序列化布局与 namespace 键不匹配
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62283
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM issue #62283（c2026-10-18，4×H200，nightly 0.32.0rc1.dev100，Llama-3.2-1B + OffloadingConnector/TieringOffloadingSpec，p2p 与 fs tier）：两个不同 TP 的引擎共享 secondary tier 且 canonical_layout 关闭（默认）时，读引擎可加载另一引擎写的 KV 并静默输出错误，无报错无警告不重算。机制：对 V1 model runner 的 head-sharded full-attention 组，build_offloading_config（vllm/distributed/kv_transfer/kv_connector/v1/offloading/config.py ~L179）把 direct 布局标 is_parallelism_agnostic；FS/OBJ/P2P manager 以 parallel_agnostic=True 建 namespace（vllm/v1/kv_offload/file_mapper.py）丢弃 TP；但 direct 布局 CPU chunk 是每个 worker 的页并排，不是 per-layer head 交织数据——同一 block hash 映射到不同 TP 下含义不同的字节，跨 TP 读者当作自己的加载。实测：P2P TP1 prefiller→TP2 decoder gsm8k 0.332→0.0 全乱码；FS tier TP1 写→TP2 读同 root_dir：3072 命中同 namespace hash、0/4 输出匹配；TP1→TP1 对照正确；V2 runner 安全仅因门控要求 not use_v2_model_runner（指纹不匹配 0 传输重算）；canonical_layout=True 时 TP1↔TP2 双向正确（0.340/0.343，5120/5120 tokens）且 MLA（DeepSeek-V2-Lite）同正确。缺陷在 direct 布局的可移植性声明本身，被所有 secondary tier 共享。修复：#55191 从共享门控移除 direct 豁免。'
+  source: 2026-10-18 GitHub vllm-project/vllm issue https://github.com/vllm-project/vllm/issues/62283 （open）
+  behavior: 多个不同 TP 并行度的推理引擎共用一个 KV 卸载存储（文件/对象/P2P 层）时，一个引擎会把另一个引擎写入的 KV 当作自己的缓存命中加载，输出立即变成乱码、任务准确率归零；同 TP 的引擎间共享正常，V2 引擎会安全跳过。整个过程没有任何报错。
+  trigger_surface: OffloadingConnector + TieringOffloadingSpec（p2p/fs/obj）+ 跨 TP 引擎共享 tier + canonical_layout=False（默认）；V1 model runner；nightly 0.32.0rc1.dev100
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

@@ -1,0 +1,70 @@
+id: INF-1547
+legacy_ids: []
+slug: vllm_ascend_async_sched_free_inflight_swa_block
+aliases: []
+title: async 调度提前释放仍在读的 SWA KV 块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: recompute_scheduler
+  behavior: _update_after_schedule() 在设备输出返回前就推高 num_computed_tokens，滑动窗口按乐观计数立刻把出窗整块还池；update_from_output 的提前退出路径也未结算在飞 token。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: P/D 分离 decode 侧偶发 reasoning 中途插入异常文本；17 条异常回复的首个异常 token 位置全部满足 E%32==31，与 sliding_window=128/block_size=32 的释放相位一致，GPQA 85/85/88.89（应 89+）。
+  visibility: 静默错误
+mitigation:
+  detect: 按 token 相位统计首个异常位置（E = prompt_tokens + 已正常输出长度），检查是否集中在 num_computed_tokens=32k+31 处；关掉 async scheduling 做对照，并加单测证明出窗块在读取步被处理前不还池
+  fix: 待定（issue open，正文提到一版补丁但明确说尚未证明能消除目标部署的 GPQA 回退）；方向：释放前结算在飞 token，提前退出路径补对称计数
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend releases/v0.23.0 390a07b9 + vLLM v0.23.0 0fc695fc，DeepSeek-V4-Pro W4A8，P/D 分离（decode 侧为 KV consumer），sliding_window=128、block_size=32、async_scheduling=True、temperature=1
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13501
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1545
+pattern: PAT-INF-0173
+original:
+  mechanism: PD 分离 + async scheduling 的 DeepSeek-V4-Pro W4A8 部署下，模型偶尔在 reasoning 中间插入异常文本（包括中文片段），最终答案往往仍然成型，但 GPQA 掉分：三次独立跑分约 85、85、88.89，而预期在 89 以上。关掉 MTP 或 DSA_CP 都不能消除；关掉 async scheduling 似乎能减少，但发生率太低，报告者自己说这不足以定论。静态源码分析给出机制：v0.23 的 recompute_scheduler 在 schedule 之后调用继承来的 _update_after_schedule()，后者在对应设备输出被处理之前就推进 request.num_computed_tokens；上游 KV 分配路径用这个乐观计数把出窗的整块立刻还给池子（sliding-window manager 按 num_skipped_blocks = floor((num_computed_tokens - sliding_window + 1) / block_size) 计算），于是已经派发、仍在读该块的设备步可能读到被复用/覆盖的数据。Ascend 侧覆写的 update_from_output() 在 KV 加载失败或请求结束时提前退出，这些路径没有在飞 token 结算；connector handoff 路径同样用裸计数裁剪。文本证据吻合：17 条异常回复的首个异常位置全部满足 E%32==31，15/17 的首个异常 token 正好落在 phase 31，这正是 num_computed_tokens 每到 32k+31 就多释放一块的相位。
+  source: 2026-08-04 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13501 （open）
+  behavior: 长输出（reasoning 很长）的 decode 在 P/D 分离 + async scheduling 下偶尔会插入一段莫名其妙的内容（中文碎片、无关短语），后面又能接回正常推理，最终答案看起来还成型；离线评测上表现为分数小幅下滑（GPQA 从 89+ 掉到 85 上下），难以归因，因为日志、异常计数都没有线索。贪心或关闭 async scheduling 时明显减少。
+  trigger_surface: P/D 分离 + async scheduling + sliding-window KV（sliding_window=128、block_size=32）+ 长输出；decode 侧作为 KV consumer
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect
+    - visibility
+    - detail

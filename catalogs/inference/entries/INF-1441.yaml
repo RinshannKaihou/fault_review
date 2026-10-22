@@ -1,0 +1,57 @@
+id: INF-1441
+legacy_ids: []
+slug: triton_ascend_split_reduction_index_missing_chunk_offset
+aliases: []
+title: triton-ascend split 归约 index 丢 chunk 偏移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: split r-loop 索引归约
+  behavior: 归约轴被 split（R0_BLOCK<rnumel）且携带 index（argmax/argmin 类）时，拼接各 chunk 未把 chunk_id*R0_BLOCK 加回 index，返回局部下标而非全局下标；value 正确。
+effect:
+  objects:
+  - 数值结果
+  detail: z.max(1) values 全对、indices mismatch=16/maxdiff=128（R0_BLOCK=128、rnumel=256）；单 chunk 0 mismatch（反证）；三种 kernel 写法复现一致，证明是 lowering 缺陷
+  visibility: 静默错误
+mitigation:
+  detect: combo kernel 归约用例对 indices 与 eager 对照（values 通过不能证明 indices 正确）；规避=控制 R0_BLOCK==rnumel 或走 eager
+  fix: 建议方向 issue 内给出：拼接 chunk 时补 index = local_index + chunk_id*R0_BLOCK（未实施，issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton_experimental 后端（TORCHINDUCTOR_NPU_BACKEND=triton_experimental）；归约轴 split 且携带 index 的 reduction 内核；Ascend 910B2、CANN 9.2.0-beta.2、triton-ascend 3.5.0、torch 2.15.0.dev
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: 与 INF-1375（静态 r-numel 特化误编译 fused softmax 行 max）同仓不同机制：1375 是编译期常量特化污染归约本体，本条是 split r-loop 索引拼接丢偏移；两者都只在 value/shape 特定条件下暴露、value 正确时极隐蔽。
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2530
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'triton-ascend（GitHub #2530，c2026-10-13 u2026-10-18）在 triton_experimental 后端运行含归约的组合核（combo kernel）时：当归约轴被 split 成多个 chunk（R0_BLOCK < rnumel），tl.max(..., return_indices=True) 背后的 maximum_with_index/max_with_index 归约 helper 返回的 index 丢掉 chunk 偏移，返回 index % R0_BLOCK 而不是全局归约轴下标。归约 value 完全正确，只在 argmax/argmin 类用法暴露。根因：split r-loop 的索引归约在拼接各 chunk 时未把 chunk_id*R0_BLOCK 加回 index。反证：R0_BLOCK==rnumel（单 chunk）时 0 mismatch ⇒ 与 split 强相关。三种独立 kernel 写法（tuple 返回/elementwise tl.where/tl.static_range）复现一致 ⇒ 与 kernel 写法无关，属归约 lowering 缺陷。命中用例 test_dynamic_shapes_persistent_reduction_mixed_x_dim（_npu）：仅 z.max(1).indices 失配（mismatch=16、maxdiff=128），values 全对；最小复现单核 k_maxidx rnumel=256：R0_BLOCK=256→0 mismatch、R0_BLOCK=128→16/128 mismatch。环境：Ascend 910B2 单卡、CANN 9.2.0-beta.2、triton-ascend 3.5.0、torch/torch_npu 2.15.0.dev20260917。影响面：所有归约轴 split + 携带 index 的 reduction 内核（argmax/argmin 类）；因 value 正确通常被误判为只有大 shape 才出问题。torch_npu 侧规避落点：triton_combo_kernel.py / npu_triton_heuristics.py。'
+  source: 2026-10-18 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/2530 （open）
+  behavior: 在 NPU 上用 triton_experimental 后端编译含 argmax/argmin 类归约的组合核，当归约轴较长被拆成多块时，返回的最大/最小值正确，但下标错误：拿到的是块内局部下标而不是全局位置（如全局位置 128 返回 0）。逐元素看就是 indices 全体偏移错位（实测 16/128 个失配、最大差 128），无报错。归约轴不拆块时完全正确。
+  trigger_surface: triton-ascend triton_experimental 后端 combo kernel；归约轴 split（R0_BLOCK<rnumel）+ return_indices=True；910B2 实测
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

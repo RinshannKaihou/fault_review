@@ -1,0 +1,65 @@
+id: INF-1484
+legacy_ids: []
+slug: op_plugin_a3_bf16_exponential_tail_missing_sampling_degenerate
+aliases: []
+title: A3 bf16 exponential_ 尾部缺失致采样退化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: exponential_ A3 bf16 路径
+  behavior: A3（非 950）路径先在 bf16 目标张量上 uniform_(0,1) 再算 -log(1-u)/lambd，随机源与变换都落在 bf16 粒度，尾部小值缺失。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: bf16 最小值约 3.9e-3、2 万样本仅约 128 个唯一值；exponential race 采样 top1 命中率接近 1.0，退化近似 greedy；fp32 与 CPU bf16 正常。
+  visibility: 静默错误
+mitigation:
+  detect: A3 上 torch.empty(..., dtype=bfloat16).exponential_() 后看最小值与唯一值个数，与 NPU fp32 / CPU bf16 对照
+  fix: issue 建议用 fp32 临时张量生成 uniform 并计算后再 cast 回 bf16，或下沉到分布正确的底层 exponential 随机算子；修复未核实（issue open）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend A3 + bfloat16 exponential_；Ascend950 起走 aclnnSimThreadExponential 不受影响；fp32 正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 报告者已交叉排除 npu_top_k_top_p_sample 本身：随机数来源正常时上层采样统计正常。
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/231
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'op-plugin issue #231（c2026-07-02，open，Ascend A3，torch_npu 2.9.0.post2，CANN 9.0.0.b131 与 9.1.t2 均复现）：torch.bfloat16 的 Tensor.exponential_() 在 A3 上生成的指数分布尾部小值明显缺失。定位到 op_plugin/ops/opapi/ExponentialKernelNpuOpApi.cpp 与 UniformKernelNpuOpApi.cpp：非 Ascend950 路径先在目标张量上执行 self.uniform_(0.0, 1.0, generator) 再算 -log(1-u)/lambd，目标张量本身是 bf16，于是 uniform 随机源与后续变换都被压到 bf16 粒度；Ascend950 及以上已切到 aclnnSimThreadExponential，A3 仍走 uniform→log 近似路径。实测 bf16 最小约 3.9e-3、20000 样本仅约 128 个唯一值，NPU fp32 与 CPU bf16 均正常。该分布缺陷会让基于 exponential race 的采样（如 torch.argmax(probs / q, dim=-1)）因为缺少足够小的随机数而几乎采不到低概率 token。报告者交叉实验确认 npu_top_k_top_p_sample 本身正常，只是暴露该随机数分布问题的上层场景。'
+  source: 2026-07-02 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/231 （open）
+  behavior: 在 A3 上用 bf16 跑需要指数分布随机数的采样，采样会退化成近似贪心：同样的 probs，被选中的几乎总是 top1 token，低概率 token 基本没有机会。直接看随机数就能发现异常——bf16 的 exponential_() 最小值约 3.9e-3（正常应能取到更小的值），两万个样本里只有一百多个不同取值。换成 fp32 或者在 CPU 上跑 bf16 就正常，所以问题只在 A3 + bf16 这条路径上。
+  trigger_surface: Ascend A3 + torch.bfloat16 + Tensor.exponential_()；上层 exponential race 采样（argmax(probs/q) / top_k_top_p）会退化；fp32、CPU bf16、Ascend950 不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 输出分布
+        to: 数值结果
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    uncertain:
+    - behavior

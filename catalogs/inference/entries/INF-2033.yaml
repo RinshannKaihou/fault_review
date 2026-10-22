@@ -1,0 +1,54 @@
+id: INF-2033
+legacy_ids: []
+slug: dsv4_multigroup_prefix_cache_no_fallback
+aliases: []
+title: DSV4 多组 KV 前缀缓存不退化复用 16k 块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: multi-groups 前缀缓存
+  behavior: 多组 hybrid KV 池的 lookup 对部分共享前缀返回 0 命中：LCP=32274 时不复用可成立的 16384 块，32k 对齐数据却能命中 48.2%；具体约束未确认
+effect:
+  objects:
+  - 性能/资源
+  detail: 64k 请求 LCP 32274、prefix_hits_delta=0，整段 64530 token 重算，TTFT 等同 full prefill；完全相同的 64k 可命中 49152，32k 对齐的 50% 前缀命中 48.2%
+  visibility: 性能退化
+mitigation:
+  detect: 用 LCP 跨过 16384 但未对齐的 branch prompt 压测，读 vllm:prefix_cache_hits_total；与 64k exact、32k aligned 两个对照比，看是否退化为 0
+  fix: 待定（issue open，报告者请求输出 miss reason 与 16k 边界回退；未附修复）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: DeepSeek-V4-Flash-w8a8，USE_MULTI_GROUPS_KV_CACHE=1、block-size 128、chunked prefill、MTP 关闭
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9326
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend issue 9326（2026-05-19，open）。DeepSeek-V4-Flash-w8a8-mtp，8×910B2，tp8，block-size 128，max-model-len 132096，--enable-chunked-prefill --enable-prefix-caching --async-scheduling，USE_MULTI_BLOCK_POOL=1、USE_MULTI_GROUPS_KV_CACHE=1，MTP/推测解码关闭。两条 64k 请求（约 64530 token）共享前缀的 LCP 为 32274；第二条 prefix_queries_delta=64530、prefix_hits_delta=0、prompt_compute_delta=64530。同轮对照：完全相同的两条 64k 请求命中 49152 token；共享前缀精确对齐 16k 的 32k 数据命中率 48.2%；128k/50% 同样全为 0。报告者据此指出问题不是开关或 metrics 读错，而是多组 hybrid KV 池对部分共享前缀的可复用边界（是否要求各组在同一 16k 边界同时可复用、chunked prefill/驻留状态是否阻止回退）未按预期退化，具体约束仍待维护者确认。
+  source: 2026-05-19 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/9326 （open）
+  behavior: 两条只在后半段分叉的 64k 长 prompt 打进来，第二条完全不沾前缀缓存：命中 0、整段 64530 token 重新 prefill，TTFT 和没开缓存一样。同样的前缀只要长度对齐到 16k 就能命中近一半，两条一模一样的 64k 请求也能命中 49152，所以是「部分共享前缀」这一段静默失效，日志里没有任何 miss 原因。
+  trigger_surface: DSV4 hybrid 多组 KV 池 + 部分共享前缀（LCP 跨 16k 但不对齐）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

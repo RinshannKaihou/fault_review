@@ -1,0 +1,53 @@
+id: INF-1861
+legacy_ids: []
+slug: ops_nn_matmul_weight_nz_nonstandard_stride_transpose_misjudge
+aliases: []
+title: MatmulWeightNz 非标 stride 转置误判错读布局
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnMatmulWeightNz
+  behavior: GetTransposeAttrValue 只认 strides[dim2]==1 && strides[dim1]==viewShape[dim2]，其余一律判非转置；NZ 形状对称使元素乘积校验恒通过。
+effect:
+  objects:
+  - 数值结果
+  detail: mat2 view [K,N2]、viewStride [1,K_full]（K_full≠K）时接口不报错，storage 按非转置 FRACTAL_NZ 直传 kernel，结果整片错但量级形状正常，仅比对参考实现可见；标准 stride/fp32 不触发；静态推演，未上板实测。
+  visibility: 静默错误
+mitigation:
+  detect: 用 FRACTAL_NZ storage + 非标准 viewStride（既非 [K,1] 也非 [1,K]）的 mat2 构造用例，看接口是否拒绝；现有 UT 只覆盖标准 stride，无相关用例。
+  fix: 待定（issue closed，未给 MR）：不可判定 stride 直接返回参数错误，或在 CheckWeightNzStorageShape 补 K/N 逐维映射校验。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnMatmulWeightNz + FRACTAL_NZ storage 的 mat2 + 非标准 viewStride（如 [1,K_full]，K_full≠K）+ fp16/bf16
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: issue 自述为静态源码推演，末段「静默错误结果」需 NPU 实测闭环；本条按机制记录，未把推演写成已实测。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6020
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6020（closed）：matmul/mat_mul_v3/op_host/op_api/aclnn_matmul.cpp（master @69cc541）。GetTransposeAttrValue(L408-421) 判转置的唯一条件是 strides[dim2]==1 && strides[dim1]==viewShape[dim2]（即 [1,K]），L415 注释自述「K or N = 1 -> transpose=undeterminated」，但代码对其余布局（含 [1,K_full]、K_full≠K）一律 return false 判非转置，没有拒绝路径；CheckWeightNzStorageShape(L391-406) 只校验期望 NZ 形状与实际 storage 的元素乘积相等，而 fp16/bf16 下 NZ_K0_VALUE_16=16、NZ_STORAGE_PENULTIMATE_DIM=16、k0=n0=16 完全对称，期望形状转置 [k1,n1,16,16] 与非转置 [n1,k1,16,16] 的元素乘积恒等（K=32、N2=64 时都是 2048），乘积校验对误判恒通过；BuildMatMulWeightNzGraph(L436-451) 随后由 SetTensorToNZFormat(L281-289) 按错误布局 CreateView 并置 FRACTAL_NZ，ExecMmOpWithBias（matmul_util.cpp L1337/L1373-1381）只核对 view 形状与 dtype，不再复验 storage 真实布局，直传 kernel。作者给出的构造：FRACTAL_NZ 4D storage + 2D view viewShape[K,N2]=[32,64]、viewStride[1,K_full]（K_full≠K）。issue 自述结论来自静态推演（master 69cc541），末尾静默错值需 NPU 实测闭环；仓库 UT test_aclnn_matmul_weight_nz.cpp 无 stride 相关用例。
+  source: GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6020 （closed）
+  behavior: 给 aclnnMatmulWeightNz 传一个 FRACTAL_NZ 权重、但 2D view 的 stride 不是标准 [K,1]/[1,K]（例如列主序切片留下的 [1,K_full]）时，接口不会报错，而是把 storage 当成非转置 NZ 布局直接喂给 matmul：算出来的矩阵乘结果整片不对，量级和形状都正常，只有和参考实现对一遍才看得出来。标准 stride 的权重、以及 fp32（k0/n0 不对称）路径都不会走到这里。
+  trigger_surface: aclnnMatmulWeightNz + 非标准 viewStride 的 NZ mat2
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

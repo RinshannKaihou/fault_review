@@ -1,0 +1,56 @@
+id: INF-1895
+legacy_ids: []
+slug: vllm_ascend_pa_nd_kv_block_order_dependence
+aliases: []
+title: PA_ND 稀疏注意力输出随物理 KV 块分配变化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: PA_ND sparse_attn_kv
+  behavior: CopyInKv 用两个物理 GM 偏移的绝对差推导 srcStride，并从较低物理地址开始一次 DMA，未保持 cmp_sparse_indices 的逻辑顺序，merged K/V 行序随分页分配翻转。
+effect:
+  objects:
+  - 输出分布
+  detail: 仅物理 paged-KV 块分配变化（逻辑 query/KV/稀疏索引/metadata 不变）即翻转 merged K/V 行序、改变归约顺序，使 DeepSeek V4 logits 与选中 token 随分配器状态变化。
+  visibility: 不可复现
+mitigation:
+  detect: 固定逻辑输入与稀疏索引，仅改物理 block table，逐位比较 sparse_attn_sharedkv 输出与 CPU 重建
+  fix: PA_ND 对两个块分别按逻辑顺序拷贝（issue 提议，open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: A3 TP8、vllm-ascend 50e0ce6、vLLM 752a3a5、CANN 9.0.1、DeepSeek V4、eager、EP/MTP/prefix caching/DSA overlap 全关
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14013
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM-Ascend commit 50e0ce60849a7b6fe6f94e1de085b6fc06e7006d（vLLM 752a3a5、CANN 9.0.1、A3 TP8）的 DeepSeek V4 路径，PA_ND compressed-KV 快速路径在 csrc/attention/sparse_attn_sharedkv/op_kernel/arch32/sparse_attn_sharedkv_scfa_block_vector.h 的 SASVectorBlock::CopyInKv 中，对一对压缩 KV 块用 blkTableSrcStride = Abs(keyOffset1 - keyOffset2) - sparseBlockSize * headDim 推导步长，并用 MinValid(keyOffset1, keyOffset2) 作为起始地址发起一次 strided DMA。因此拷贝按较低物理地址先行，而不是按 cmp_sparse_indices 给出的逻辑顺序；物理 block 分配是运行时状态，却改变了 merged K/V 行序。诊断内核对 rank-4 query row 629 仅改物理 block table 即翻转 61/79 个 pair slot（122 个行位置），K/V 行多重集不变，DMA 缓冲与 CPU 重建逐位一致。影响自 v0.20.2rc1 起（#9228 引入、#9339 在 910B 启用、#9270 接入 DeepSeek V4）。
+  source: 2026-08-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14013 （open）
+  behavior: 相同 prompt 与采样参数下，DeepSeek V4 长上下文输出随 KV 分页分配/复用状态变化：logits 与选中 token 不稳定，重跑或换并发后结果不同；无异常值、无报错，A2/A3 均可观察到。
+  trigger_surface: DeepSeek V4 + PA_ND 压缩 KV（A3 arch32 算子路径，block 分配/复用变化）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

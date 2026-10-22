@@ -1,0 +1,61 @@
+id: INF-1914
+legacy_ids: []
+slug: vllm_ascend_minimax_m3_hyphen_param_xml_parse_drop
+aliases: []
+title: MiniMax-M3 连字符参数名致工具调用被静默丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: minimax_m3_tool_parser
+  behavior: _parse_single_invoke 用 ET.fromstring 解析参数 XML，参数名以连字符开头（<-A>100</-A>）时抛 ParseError，捕获后只记日志并返回 None，工具调用被丢弃
+effect:
+  objects:
+  - 输出内容
+  detail: Grep 这类带 -A/-n 参数的调用返回 HTTP 200、finish_reason=stop、无 tool_calls，原始 XML 文本漏进 content；所有参数名含连字符的工具都触发
+  visibility: 静默错误
+mitigation:
+  detect: 用含连字符参数名的工具（Grep 的 -A/-n）构造请求，检查响应里 tool_calls 是否存在、content 是否残留 <tool_call>/<invoke> 原文
+  fix: issue 已 closed；修复方向是 ET.fromstring 前把非法 XML 标签名转义、解析完再还原原始参数名（正文给出了改法）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend v0.20.2rc1 + MiniMax-M3-w8a8 + --tool-call-parser minimax_m3 + 工具参数名含连字符
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/12815
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0995
+pattern: PAT-INF-0134
+original:
+  mechanism: 'vllm_ascend/tool_parsers/minimax_m3_tool_parser.py 的 _parse_single_invoke 先把模型输出按 <invoke name=...> 包成一段 XML 交给 xml.etree.ElementTree.fromstring。MiniMax-M3 会把工具参数渲染成同名标签，Grep 的 -A、-n 这类 CLI 风格参数就变成 <-A>100</-A>；XML 规范不允许标签名以 ''-'' 开头，fromstring 抛 ParseError: not well-formed (invalid token)，而 except 分支只 logger.exception 后 return None，调用方把 None 当作"没有工具调用"继续走，未消费的原始 XML 就作为普通文本进入 content，finish_reason 落成 stop 而不是 tool_calls。命名空间 token 由 _normalize() 先剥掉，不参与判断，所以触发条件纯粹是参数名首字符。'
+  source: 2026-07-24 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/12815 （closed）
+  behavior: agent 侧看到的是模型"答了一段 XML 文本"而不是调用工具：HTTP 200、finish_reason=stop、tool_calls 为空，content 里躺着 <tool_call><invoke name="Grep">... 的原文，其中还有已经把参数值填好的 <-A>100。调用方没有任何错误可捕，工具链路直接断掉；把参数名换成下划线风格就恢复。凡声明了含连字符参数名的工具（-A、-B、-C、-n 等常见 CLI 参数）都会踩到。
+  trigger_surface: MiniMax-M3 + --tool-call-parser minimax_m3 + 工具 schema 中参数名以连字符开头
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,58 @@
+id: INF-2031
+legacy_ids: []
+slug: vllm_ascend_async_sched_kvpool_preempt_retry_livelock
+aliases: []
+title: 异步调度叠 KV 池时抢占重试活锁致 0 tok/s
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: schedule() 抢占重试活锁
+  behavior: defer_block_free 打开后被抢占请求的块停在 deferred_frees 等 step fence，重试循环每轮都看不到空闲块，把整个 running 队列逐个抢占后仍分不到容量，形成活锁
+effect:
+  objects:
+  - 可用性/进度
+  detail: A5+MiniMax-M3-MXFP8 TP4/DP2，async scheduling+KV池连接器且KV cache打满跑120题时，服务不崩不报错但0 tok/s持续40+分钟，抢占14841次且每次free_blocks=0。
+  visibility: 挂起
+mitigation:
+  detect: 异步调度 + KV 池压到使用率 ~100%，观察 preemption 计数暴涨而 free_blocks 恒 0、Running>0 但吞吐为 0 且持续 30s 以上
+  fix: '上游 PR #49675（vllm）：抢占前先探 victim 的块能否在本 step 释放，不能则 break 而不是继续抢占；报告者实测 120/120 完成、preemption 14841→60、free_blocks 231~811'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.27.1 + --async-scheduling + KV 池连接器（Mooncake/AscendStore kv_both）+ KV 使用率触顶；A5 实测 gpu-memory-utilization 0.92
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 机制在 vllm 上游 scheduler.py，vllm-ascend 侧只是触发环境（A5 + Mooncake/AscendStore）；修复 PR 属上游。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16315
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/pull/49675
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-project/vllm-ascend issue 16315（2026-09-11，open）：A5、MiniMax-M3-MXFP8、TP4/DP2、--gpu-memory-utilization 0.92、--async-scheduling、kv-transfer-config 用 AscendStoreConnector（backend mooncake，kv_both），evalscope 跑 AIME2025×4 共 120 题。异步调度 + KV 连接器使 defer_block_free=True，_free_request_blocks() 把被抢占请求的块停进 deferred_frees，等 last_sched_seq > processed_step_seq 的 fence 才归还。schedule() 的分配重试循环每轮选一个 victim 抢占，但空闲块数不变，于是逐个抢占整条 running 队列仍无法给触发请求分配；下一步 update_from_output() 排空 deferred_frees、请求被重新加入，循环重复。实测抢占 14841 次、每次 free_blocks=0、0 tok/s 持续 40+ 分钟；打上游 PR #49675 后 120/120 完成、抢占 60 次。'
+  source: 2026-09-11 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16315 （open）；修复 https://github.com/vllm-project/vllm/pull/49675
+  behavior: 服务不崩也不报错，EngineCore 还活着并继续收新请求，但吞吐掉到 0：请求卡在 preempt→re-add→preempt 循环里，只有 SCHED-FREEZE 打点或抢占计数暴涨能看出来；不做压测很难发现。
+  trigger_surface: async scheduling（默认开）+ KV 池连接器 + KV cache 打满
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

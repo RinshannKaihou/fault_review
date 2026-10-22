@@ -1,0 +1,67 @@
+id: INF-1603
+legacy_ids: []
+slug: runtime_adump_shared_state_no_sync
+aliases: []
+title: adump 五处共享状态无同步致 dump 丢失或崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: 通用
+    component: adump 配置/回调/索引共享态
+  behavior: dumpConfigInfo_ 的读写落在两把不相交的锁、dumpInitNum_ 与 g_atomicIndex 裸自增、messageCallback_ 与 g_dynamicChunk 无锁读写，五处共享状态缺少互斥或原子保护。
+effect:
+  objects:
+  - 指标/日志
+  - 可用性/进度
+  detail: 多线程或多流并发推理并开dump，或并发启停、运行期注册/注销回调、异常dump与进程收尾同时发生时，dump少条、元数据关联到错误算子，或收尾偶发崩在回调；单线程单流复跑通常正常且无错误日志。
+  visibility: 静默错误
+mitigation:
+  detect: 并发抓取 dump 与 acldumpRegCallback/UnregCallback，核对 dump 条数与元数据索引是否唯一；TSAN/静态扫描查共享变量
+  fix: issue 建议给 dumpConfigInfo_ 统一锁、dumpInitNum_ 改原子、messageCallback_ 加锁读写、g_dynamicChunk 析构前先置标志、g_atomicIndex 改 fetch_add；issue 已 closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 多线程/多流并发触发 dump、异常回调或 dump 启停；commit e781819e6 复核；属 DFX 观测链路，不影响正常推理数值
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 观测链路自身缺陷：后果是 dump 缺失/错配，不能推论模型计算已被破坏。
+evidence:
+- url: https://gitcode.com/cann/runtime/issues/1003
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/runtime 的 src/dfx/adump/adump/ 子系统在 commit e781819e6 复核出 5 处并发缺陷。(1) dumpConfigInfo_ 跨锁读写：SetDumpConfig(:343) 持 resourceMtx2_ 做 assign、UnSetDumpConfig(:379) 持 resourceMtx2_ 做 clear，而 StartDumpArgs(:762)/StopDumpArgs(:782) 在 resourceMtx_ 内层作用域释放之后完全无锁地取 .data()/.size() 传给模块回调，assign 触发重分配后回调拿到悬垂指针。(2) dumpInitNum_ 多路径无公共锁 RMW：adx_dump_record.cpp:164-171 裸 int32_t ++/--，enable(dump_manager.cpp:279 持 resourceMtx_)、disable(:387 持 resourceMtx2_)、快照 LOCK_PRE 回调(:86-90 完全无锁，RTS 快照线程)、算子捕获路径(:579 无锁，另有 isCaptureDumpServerInit_ 裸 bool check-then-act) 四条路径锁互不相交，计数漂移导致 DataDumpServer 过早关闭或无法关闭。(3) messageCallback_ 无锁 std::function：adx_dump_process.cpp 的 Register(:20)/UnRegister(:38) 无锁写，GetCallbackFun(:24) 返回 const 引用，record 长驻线程(adx_dump_record.cpp:571/:728)无锁拷贝后调用，acldumpRegCallback/UnregCallback 是公开 AscendCL API 可运行期调用，UnRegister 置 nullptr 销毁 function 目标与拷贝并发会撕裂。(4) g_dynamicChunk 析构窗口 UAF：exception_dumper.cpp:70-72 无锁 delete[] 之后(:80)才置 destructionFlag_，而该标志只在 DumpException 入口(:174)检查，导出 API AdxGetDFXInfoAddrForDynamic(adump_api.cpp:27) 与 DfxArgsParser::GetShapeData(dfx_args_parser.cpp:191) 都不检查。(5) g_atomicIndex 非原子 RMW：adump_api_platform.cpp:25/:138 裸 uint32_t ++，紧邻的 g_writeIdx(:139) 已用 atomic fetch_add，并发调用会撞号。
+  source: 2026-09-20 GitCode cann/runtime issue https://gitcode.com/cann/runtime/issues/1003 （closed）
+  behavior: 多线程或多流并发跑推理并同时开 dump 时，dump 文件会少条、同一条元数据被关联到别的算子，或者进程在收尾阶段偶发崩在回调里；单线程、单流复跑通常正常，现场只能看到“这次 dump 不全/索引对不上”而没有任何错误日志。
+  trigger_surface: 并发 dump 启停、acldumpRegCallback/UnregCallback 运行期调用、异常 dump 与进程收尾同时发生
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 运行时/执行
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

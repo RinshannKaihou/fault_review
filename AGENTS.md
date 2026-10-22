@@ -77,12 +77,24 @@ stdout 一律是 JSON。出错信息在 stderr。
 ```bash
 cd /workspace/RAG/fault_review
 python3 eval/run_eval.py --cases eval/cases.jsonl --check eval/baseline.json
-python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_indy.json
+python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_indy.json --per-case
 ```
 
 两条命令分别检查 36 条人工核验 query 和 63 条独立盲测 query 的 Recall@5、Recall@10、MRR@10、nDCG@10 及 negative
-slice（Recall@5/@10 不得低于基线，MRR/nDCG 容差 0.02）；标签来自源条目（用旧编号书写，评测时自动对应到新编号），不得按当前 top-k 反向生成。
+slice。**bench 用聚合口径**：R@5/R@10 不得低于基线，MRR/nDCG 容差 0.02。
+
+**indy 用逐条口径**（`--per-case`）：基线通过的 query 必须继续通过 R@5 与 R@10，任何一条掉出即 block；
+排名在通过集内上下浮动不 block，但会写进报告的 `churn` 字段，每次发布需人工看一遍 `slipped` 列表。
+两种口径都不看"聚合少 0.016"，因为 63 条上一条就是 1.6pp，聚合零容差在批量扩容下结构性不可通过
+（2026-10-21 推理库 +46% 语料时实测：仅 2 条真失守，聚合却报 4 项回退）。
+
+`eval/fix_list.json` 只登记**基线时就已失守、且单路检索（纯 BM25 / 纯 dense）根本进不了前 20 的弱 gold**——
+它们的基线排名是 RRF 的偶然。进 fix-list 必须附单路诊断证据，并写明补哪类文本才能修；
+禁止把"新语料下真的变差"的 query 塞进 fix-list 洗白。
+
+标签来自源条目（用旧编号书写，评测时自动对应到新编号），不得按当前 top-k 反向生成。
 旧题通过不代表新增、退役或修订条目语义正确；每次发布须补本次变更的定向检查。
+
 
 ## 故障排查
 

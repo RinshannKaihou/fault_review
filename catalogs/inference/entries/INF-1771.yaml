@@ -1,0 +1,60 @@
+id: INF-1771
+legacy_ids: []
+slug: ops_transformer_qli_v2_seqused_block_table_unvalidated
+aliases: []
+title: QuantLightningIndexerV2 不校验 seqused/bloc
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: host tiling 校验缺失
+  behavior: host 校验只查 seqused_k 非空+dtype（无取值上界，blockCount_ 取 key dim0 不与之比较）、block_table 只查存在性/dtype/维度/dim0==B（从不读数值做上界校验），非法值直通 ke
+effect:
+  objects:
+  - 数值结果
+  detail: A2 实测：seqused_k=512/999（宽 block_table）GetWorkspaceSize 返回 0 后静默返回 ≥容量 token 索引（max 508/997，越界元素 2048/3029 个）；seqused_k=257（窄表）直接 aicore exception 5070
+  visibility: 静默错误
+mitigation:
+  detect: 对返回索引做 < seqused_k×block_size 容量断言可检出；窄表场景表现为设备异常
+  fix: 待定（期望 GetWorkspaceSize 返回 161002 或截断；issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Atlas A2（910B2）+ CANN 9.2.0 + torch 2.12.0/torch_npu 2.12.0.post3，ctypes 直调两段式；metadata 由 aclnnQuantLightningIndexerV2Metadata 生成；下游 sparse attention 拿到不存在 token 的索引（静默错误结果）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6359
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6360
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnQuantLightningIndexerV2，Atlas A2（Ascend910B2）、CANN 9.2.0、torch 2.12.0+cpu、torch_npu 2.12.0.post3，ctypes 直调两段式。B=1,S1=64,N1=64,N2=1,D=128，q[1,64,64,128] int8、k[2,128,1,128] int8（容量 2×128=256，block 0/1），block_size=128、topk=64、quantMode=2、layoutQ=BSND、layoutK=PA_BBND、maskMode=0，metadata 由 aclnnQuantLightningIndexerV2Metadata 生成。缺陷一 seqused_k 无上界校验：tiling.cpp 仅查非空+dtype（约 L573/588/607/621），blockCount_ 取 key dim0（约 L987）不与 seqused_k 比较。实测：seqused_k=257（窄表 [0,1]）→ 执行期 aicore exception 507015；=512（宽表 [0,1,0,1,0,1,0,1]）→ 静默返回越界索引 max 508、≥256 元素 2048 个；=999 → max 997、3029 个。缺陷二 block_table 无数值上界校验：tiling.cpp 只查存在性/dtype/维度（约 L569/581/761-765）与 dim0==B（约 L1057），从不读取数值。[0,5]（block_num=2）→ ret 0/0，输出与合法组 [0,1] 有 4075/4096 元素不同（确实按不存在的 block 5 寻址参与计算）。影响：下游 sparse attention 拿到不存在于 KV 的 token 索引（静默错误结果）；窄表场景直接打挂 kernel 属设备级故障。
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-transformer/issues/6359 ；https://gitcode.com/cann/ops-transformer/issues/6360
+  behavior: 调用 QuantLightningIndexerV2 时把 seqused_k 写得超过 KV 实际容量、或 block_table 里填了超出 block 数的块号，第一段 GetWorkspaceSize 仍返回成功：宽 block_table 时算子静默返回指向不存在 token 的索引（最大可达 997 而容量只有 256），下游 sparse attention 按这些索引算出错误结果；窄 block_table 时同一越界直接引发 aicore 异常打挂设备。block_table 填 [0,5] 而实际只有 2 个 block 时输出与合法输入差 4075/4096 个元素，全程无告警。
+  trigger_surface: Atlas A2 + aclnnQuantLightningIndexerV2 + seqused_k 超 KV 容量或 block_table 值 ≥ block_num
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - title

@@ -1,0 +1,60 @@
+id: INF-1958
+legacy_ids: []
+slug: stop_token_ids_out_of_range_unvalidated
+aliases: []
+title: 越界 stop_token_ids 直下设备，9.0 静默脏 logits
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: stop_token_ids 范围校验
+  behavior: _verify_common 只校验 stop_token_ids 是否 int，不校验词表范围；越界 id 仅在 proxy 注入 min_tokens=1 或用户自带 min_tokens>0 而走设备侧时被当 logits 索引。
+effect:
+  objects:
+  - 输出分布
+  - 可用性/进度
+  detail: DeepSeek-V4-Flash（词表 129280）收到 stop_token_ids=151645：CANN 9.0.x 静默写脏 logits；9.1.0 IndexCheck 断言挂死 P 实例，8 个 TP rank 同崩。
+  visibility: 静默错误
+mitigation:
+  detect: 在入口校验 stop_token_ids < tokenizer 词表大小；CANN 9.1 上看 IndexCheck_int32_high_performance_1 断言与 fault kernel 名
+  fix: '上游 vllm PR #54196 增加 _validate_stop_token_ids（越界直接 400）；本仓 releases/v0.23.0 backport #15228'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 请求带越界 stop_token_ids（如从 DeepSeek-V3 沿用的 151645）+ 128k 词表模型；PD 代理注入 min_tokens=1 时必然走设备侧索引
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15200
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #15200（2026-08-28，open）：0.23.0 四机 A3、3D1D 部署 DeepSeek-V4-Flash-w8a8-mtp，请求参数里带 stop_token_ids 时 P 实例中断，报错算子 IndexCheck。评论 QwertyJack 给出完整根因：vllm/sampling_params.py 的 _verify_common 只校验 stop_token_ids 是否 int，不校验范围，而同文件的 logit_bias、allowed_token_ids 都有词表校验；151645 是旧版 DeepSeek V3 tokenizer 的 <|im_end|>，而 DeepSeek-V4-Flash 词表只有 129280。stop_token_ids 有两条消费路径：CPU 比较（无害）与设备侧 logits 索引；只有经 proxy 注入 min_tokens=1 或用户自带 min_tokens>0 时才会走设备侧。CANN 9.1.0 的 IndexCheck_int32_high_performance_1 断言 idx<bound 失败导致 vector core exception、device context abort，P 的 8 个 TP rank 同时崩；CANN 9.0.1 上同一越界不报错但把 logits 写脏。修复为上游 vllm #54196 增加 _validate_stop_token_ids，本仓 backport 为 #15228。'
+  source: 2026-08-28 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15200 （open）
+  behavior: 沿用 DeepSeek-V3 客户端配置（stop_token_ids 带 151645）打 DeepSeek-V4-Flash 服务时，请求可能直接把 P 实例打挂：HTTP 500，设备日志里是「index value 151645 exceeds bounds 129280」与 IndexCheck 断言失败，8 个 rank 同步崩，Python 栈最后浮在 MTP draft 的同步点上，第一眼很难定位到真实故障。在 CANN 9.0.x 上更隐蔽——不崩、不报错，但越界写把 logits 弄脏，采样结果被静默影响，因此无论哪个 CANN 版本都该在入口拦住。
+  trigger_surface: 请求 stop_token_ids 越界 + 设备侧 logits 索引路径（proxy 注入 min_tokens 或请求自带 min_tokens>0）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - effect
+    - visibility

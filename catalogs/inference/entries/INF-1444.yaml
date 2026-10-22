@@ -1,0 +1,57 @@
+id: INF-1444
+legacy_ids: []
+slug: sglang_ngram_zero_pad_token0_oversample
+aliases: []
+title: SGLang NGRAM 零填充 draft 过采样 token 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: 零填充兄弟概率累加
+  behavior: corpus 用 token 0 填充 draft tree（parent 挂 root）；温度>0 verify 逐兄弟累加 target_probs，每个 pad 再加一次 p(0)，拒绝残差只扣一次——token 0 被过量接受。
+effect:
+  objects:
+  - 输出分布
+  detail: p(id 0)=0.0485 的模型上第 2 个生成 token 是 id 0 的概率实测 0.538 而非 0.0485（11 倍过采样）；Llama/Qwen tokenizer id 0='!'；corpus 候选不足 11 个时触发；greedy 不受影响
+  visibility: 静默错误
+mitigation:
+  detect: 对生成 token 做 id-0 频率统计与模型先验对照（10 倍级偏差直接可见）
+  fix: 上游修复未见（issue open；修复方向：pad 兄弟不参与概率累加或 draft_probs 按 pad 数量多次扣除）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang NGRAM 投机默认 12 draft tokens；温度>0；corpus 对当前上下文候选不足 11 个（n-gram 覆盖低的输入）；CUDA tree_speculative_sampling_target_only 路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/43725
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang #43725（c2026-10-11，未认证窗口内创建、本轮首次覆盖）：NGRAM 投机解码默认 12 draft tokens、温度>0 时 token id 0 被过度采样。机制链（行号级）：(1) n-gram corpus 把 draft tree 填充到 draft_token_num 用 token 0，每个 pad 的 parent 是 root（python/sglang/kernels/jit/csrc/ngram_corpus/result.cpp:34-38）→ root 多出 m 个全 token-0 孩子；(2) CUDA 温度>0 的 verify 用 tree_speculative_sampling_target_only（eagle_utils.py:717），每树层一枚硬币、逐兄弟累加 target_probs（sampling.cuh:77-78）→ 每个重复 pad 再累加一次 p(0)；(3) 拒绝时 draft_probs[token]=p(token)（sampling.cuh:92-93）→ 残差只扣除一次 p(0)。净效果：有真实兄弟 R 和 m 个 pad 时 token 0 以 min(m·p(0), 1−Σ_R p) 概率被接受。实测：p(id 0)=0.0485（每位置）的小模型上第 2 个生成 token 是 id 0 的概率 0.538（应 0.0485）。Llama-3/Qwen tokenizer id 0 是 ''!''。触发条件：corpus 对当前上下文少于 11 个候选（pad 存在）+ 温度>0。'
+  source: 2026-10-11 GitHub sgl-project/sglang issue https://github.com/sgl-project/sglang/issues/43725 （open）
+  behavior: 在 SGLang 上开 NGRAM 投机解码（默认 12 draft tokens）且温度>0 采样时，token id 0 出现频率远高于模型本身概率：模型给 id 0 的概率为 4.85% 时，第 2 个生成 token 是 id 0 的实测概率达 53.8%（约 11 倍）。输出文本里 '!'（Llama/Qwen 的 id 0）异常密集。n-gram 语料覆盖充足（无需填充）时不触发；greedy 不受影响。
+  trigger_surface: SGLang NGRAM 投机默认参数；温度>0；corpus 候选不足需零填充的上下文；CUDA verify 路径
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect

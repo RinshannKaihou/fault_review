@@ -1,0 +1,59 @@
+id: INF-1759
+legacy_ids: []
+slug: ops_nn_ctc_loss_v2_grad_missing_beta_term
+aliases: []
+title: CTCLossV2Grad 边界类别首步漏 beta 贡献项
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CTCLossV2Grad arch35
+  behavior: t=0 且 targets 首个 label 落在边界类别时，kernel 对该位置只写 exp(log_probs)*grad_out 的前向项，漏掉 -exp(res+nll-log_probs)*grad_out 的后向项。
+effect:
+  objects:
+  - 梯度
+  detail: 950PR + CANN 9.2.0-beta.1、C=8、batch2 的 t=0/c=7（=C-1）：kernel -0.1708、golden 0.4359，用例 mare 1.39（容差 1.2e-4），差异只集中在该元素。
+  visibility: 静默错误
+mitigation:
+  detect: 用 targets 首个 label 等于边界类别（C-1）且 t=0 的用例上板比对 torch 的 _ctc_loss_backward；常规 CTC 用例通过。
+  fix: 待定（issue closed，未给 MR）：grad 应为 (exp(log_probs)-exp(res+nll-log_probs))*grad_out，并补该边界用例。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend950PR + CTCLossV2Grad + t=0 且 targets 首 label 为边界类别（C-1）+ zero_infinity
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6245
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6245（2026-09-28，closed）：Ascend950PR、CANN 9.2.0-beta.1、torch 2.7.1 / torch_npu 2.7.1.post6、TTK 3.0.0 commit 40f91a73e5ae485d0b371b29ebcb14a0269e14be 的 ASCEND_ONBOARD 上板模式。CTCLossV2Grad 的 arch35 kernel 在 t=0 首时间步且 targets 首个 label 落在边界类别（如 C-1）时只输出 exp(log_probs)*grad_out 的前向项，缺失 -exp(res+nll-log_probs)*grad_out 的 beta 贡献项；正确反向定义是 grad[t,b,c]=(exp(log_probs)-exp(res+nll-log_probs))*grad_out[b]。复现配置 input_lengths=(10,2,4,10)、target_lengths=(5,3,3,6)、blank=0、reduction=none、zero_infinity=True、C=8、fp32/int64，batch2 的 targets 首 label=7=C-1：kernel 输出 -0.1708、golden 0.4359，失败用例 mare 1.39，差异唯一集中在 batch2/t=0/c=7。
+  source: 2026-09-28 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6245 （closed）
+  behavior: CTC loss 反向在一条特定输入上给出严重偏离的梯度：某个 batch 在 t=0、目标首标签等于最后那个类别时，该元素梯度只有前向项、少了后向项，符号都反了（参考 0.4359、实际 -0.1708），整用例 mare 1.39 远超 1.2e-4 容差；除这一个元素外其余位置都正常，所以既不会报错也不会整体发散，只有逐元素比对才定位得到。
+  trigger_surface: CTCLossV2Grad + t=0 + targets 首 label 为边界类别
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: 算子/内核

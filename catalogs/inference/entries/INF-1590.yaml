@@ -1,0 +1,69 @@
+id: INF-1590
+legacy_ids: []
+slug: ms_aclnn_cache_optional_vector_hash_missing
+aliases: []
+title: ACLNN 缓存哈希漏 optional vector
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: op_api_cache 复合类型哈希
+  behavior: GatherInfo 对 pair<optional<vector<int64_t>>,bool> 没有语义哈希重载，退回对象内存拷贝，vector 的指针/size/capacity 相同即命中，元素值不参与 key。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  - 训练信号
+  detail: HyperParallel DSA Indexer 变长 TND 训练：step142 indexer_loss 从 0.0206 涨到 111.3，step150 grad_norm 0.25→2232283，主 loss 一致。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 aclnn 调用构造两份元素值不同但对象表示相同的 pair<optional<vector<int64_t>>,bool>，比较 AclnnHash；或对 actual-seq 做 A->B->A 回归看输出是否回到基线
+  fix: 'HyperParallel 侧临时规避 PR #1173（改回重新生成 executor 的路径，未核验细节）；MindSpore 侧待定，issue open 无修复 PR'
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend + MindSpore ACLNN stateless dispatch（HyperParallel DSA Indexer，TP1+CP4+DP2，seq_length=2560）；入参含 pair<optional<vector<int64_t>>,bool> 变长 actual-seq
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29610
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0174
+original:
+  mechanism: 'MindSpore ACLNN stateless dispatch 已支持把 std::pair<std::optional<std::vector<int64_t>>, bool> 转成可选 aclIntArray*（op_api_convert.h:374-395、596-607），但 op_api_cache.h:102-132/176-202 只实现了 generic optional、generic vector 与 pair<vector<T>,bool> 的 GatherInfo；静态类型为 pair<optional<vector<int64_t>>,bool> 时 pair 重载不匹配，整个 pair 落入 GatherInfo(const T&) 的 MemcpyToBuf(&value, sizeof(T))，哈希的是 optional/vector/pair 对象本身的内存（data 指针、size、capacity、optional 状态、padding），不含元素值。HyperParallel PR #1107 把三个 DSA custom op 迁到 MS_DISPATCH_ACLNN 后触发：8 卡 TP1+CP4+DP2、seq_length=2560、从 MLA step100 训练到 step150，迁移前 indexer_loss=0.020570/grad_norm=0.251021，迁移后 step142 indexer_loss=111.299591、step150 grad_norm=2232283.0，主 loss 不变；加 vector 格式规避后回到 0.02057/0.25。issue 还指出 MindSpore 自身 FusedInferAttentionScoreAscend 用同一类型保存 query/KV/shared-prefix 实际长度，存在同结构风险但未观测到发散。'
+  source: 2026-08-15 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29610 （open）
+  behavior: 训练脚本什么都没改，只是把自定义 DSA 算子从自建 runner 换成 stateless dispatch，前几十 step 还正常，随后 indexer 辅助 loss 和 grad_norm 突然放大好几个数量级（loss 111、grad_norm 2e6），主 loss 却纹丝不动；关掉 graph/JIT cache 或把 PyBoost 本地 LRU 设 0 都不能证明 CANN PTA executor 缓存已关，因为 GEN_EXECUTOR 仍走 HitCache。
+  trigger_surface: Ascend + ACLNN stateless dispatch；算子入参含 pair<optional<vector<int64_t>>,bool> 变长 host 数组（actual-seq/TND 累计长度）且内容逐 step 变化
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 梯度
+        to: 数值结果
+    uncertain:
+    - visibility
+    - behavior

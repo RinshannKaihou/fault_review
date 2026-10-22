@@ -1,0 +1,61 @@
+id: INF-2077
+legacy_ids: []
+slug: vllm_ascend_camem_allocator_gil_and_ref_leaks
+aliases: []
+title: camem_allocator 错误路径漏 GIL 释放与引用致挂死泄漏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: camem_allocator C 接口
+  behavior: my_free 两处 early return 都没 PyGILState_Release，也不 Py_DECREF py_ptr/py_result；my_malloc 不查 malloc 返回即把空指针交 create_and_map。
+effect:
+  objects:
+  - 可用性/进度
+  - 性能/资源
+  detail: 错误路径走到后线程 GIL 计数失衡、后续 Python 调用卡在 Py_END_ALLOW_THREADS；每次 free 漏两个 PyObject 使解释器堆单调增长；NPU 压力下 malloc 返 NULL 时直接 SIGSEGV 无 traceback。
+  visibility: 挂起
+mitigation:
+  detect: 长跑压测观察 RSS 与解释器堆是否单调增长；对 my_free 注入返回形状错误的回调，看线程是否卡在 GIL；用 malloc 失败注入验证 my_malloc 路径
+  fix: issue 附带的 companion PR 修 N-1/N-2/N-3（补 PyGILState_Release、Py_DECREF、malloc 判空）；N-4 的 p_memHandle 归属需维护者先定契约（open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vllm-ascend camem_allocator（NPU 内存池 C 接口）每次 free/alloc；错误路径需 Python 回调返回非 4 元组或 malloc 失败
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9306
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend csrc/camem_allocator.cpp 把 my_malloc/my_free 作为 NPU 内存池的 C 层原语，两者都在热分配/释放路径上调用 CPython C-API。my_free 在 PyGILState_Ensure 之后，若 g_python_free_callback 返回的不是 4 元组（PyTuple_Size != 4）或 PyArg_ParseTuple 失败就直接 return，两处 early return 都没有 PyGILState_Release；整个函数也没有对 PyLong_FromUnsignedLongLong 与 PyObject_CallFunctionObjArgs 的返回值做 Py_DECREF（同文件 my_malloc 在 L182 有正确 DECREF）。my_malloc 在 L165 对 malloc(sizeof(aclrtDrvMemHandle)) 不判空，随后把 p_memHandle 交给 create_and_map 解引用，NPU 压力下 malloc 返回 NULL 时表现为无 traceback 的 SIGSEGV。N-4（py_result 为空时 p_memHandle 是否应 free）issue 留给维护者定契约，companion PR 未动。
+  source: 2026-05-19 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/9306 （open）
+  behavior: 长时间推理/训练跑着跑着 RSS 持续上涨，最终 OOM；一旦 Python 侧 free 回调返回的形状不对（上游回调改动后很容易发生），线程会卡在后续 Python 调用里，栈停在 Py_END_ALLOW_THREADS 附近，看起来像随机死锁；NPU 显存紧张时还会直接 segfault，没有 Python 栈可看。
+  trigger_surface: vllm-ascend 使用 camem_allocator 的 NPU 内存池；每次 my_free/my_malloc 调用，错误路径需回调返回非 4 元组或 malloc 失败
+  discovery: 2026-10-21 第三轮顺序扫描（tail_2，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - behavior

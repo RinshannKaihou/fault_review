@@ -1,0 +1,55 @@
+id: INF-1577
+legacy_ids: []
+slug: ms_dvm_frontend_boundary_missing_flush
+aliases: []
+title: DVM 融合在 frontend-only 边界漏 flush 致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: PyNative DVM 无图融合 flush
+  behavior: old op_graph view、StopGradient 等 frontend-only 边界算子生成新 Tensor 但不触发 backend push/wait，pending 融合图未 flush，后续捕获当成新外部输入。
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend 开 MS_DEV_PYNATIVE_FUSION_FLAGS=--opt_level=1 后，neg→mul→strided_slice→abs 链路结果与关融合不一致；表现为精度错误、偶发不稳定。
+  visibility: 静默错误
+mitigation:
+  detect: 同一段代码开关 DVM 融合对比输出；在 view/StopGradient/Detach 边界后强制 flush 或同步，看差异是否消失
+  fix: 待定（issue open，master 未修）；方向：frontend-only 边界生成新 Tensor 前 flush pending 融合图
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend + MindSpore master，PyNative 开 DVM 无图融合（MS_DEV_PYNATIVE_FUSION_FLAGS=--opt_level=1）；链路中夹 frontend-only 边界算子
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29227
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend PyNative 异步执行 + DVM 无图融合（export MS_DEV_PYNATIVE_FUSION_FLAGS="--opt_level=1"），master 分支：DVM lazy fusion 按 Tensor* 建图追踪数据流，而不是按 alias/storage 关系建依赖。当两个 DVM 支持算子之间插入 frontend-only 边界算子（old op_graph view 如 strided_slice、RunOpInVM 的 StopGradient/InsertGradientOf/HookBackward/CellBackwardHook、detach），边界算子不下发 backend task、只在前端创建 alias tensor，前面 pending 的融合 kernel 没被 flush，后续 DVM 捕获把新 Tensor 当外部 Load，丢掉对前序结果的隐式依赖。复现链路 y0=neg(x0); y1=mul(y0,x1); y2=strided_slice(y1,begin=(5,),end=(4091,),strides=(1,)); y3=abs(y2)，关 DVM 正常、开 DVM 结果错误。
+  source: 2026-03-13 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29227 （open）
+  behavior: 同一模型在 Ascend 上关掉无图融合结果正常，打开 --opt_level=1 后输出对不上，而且不是每次都错——只在 strided_slice/detach/StopGradient 这类不下发设备的边界算子前后出现，没有报错也没有 NaN，属于纯静默精度错误。
+  trigger_surface: Ascend PyNative 异步执行 + DVM 无图融合 --opt_level=1；算子链中夹 old op_graph view（strided_slice）、StopGradient/HookBackward 或 detach
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 编译器

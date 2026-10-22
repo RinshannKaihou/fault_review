@@ -1,0 +1,51 @@
+id: INF-1866
+legacy_ids: []
+slug: npu_fft_c2r_missing_truncate_conjugate
+aliases: []
+title: NPU _fft_c2r 未截断/共轭致结果与 CPU 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: _fft_c2r opapi 实现
+  behavior: c2r 执行前没有把输入最后一维截断/补零到 out_sizes/2+1，hfft 方向也没有对输入取共轭，NPU 直接拿原长度复数输入做变换。
+effect:
+  objects:
+  - 数值结果
+  detail: 4 点复数输入、last_dim_size=4 时 CPU 得 [-1.1455,-0.0125,-0.5291,1.3803]，NPU 得 [-0.6020,1.1085,-1.0726,0.2593]，四个元素全不同；同例在 CUDA 与 CPU 一致。
+  visibility: 静默错误
+mitigation:
+  detect: 同一复数张量在 CPU/NPU 各调一次 aten._fft_c2r 逐元素比对（报告含 4 元素最小样例）
+  fix: 待定（issue closed，未见合并 PR）；报告者的补丁在 c2r 前置截断/补零至 N/2+1 并对 hfft 取共轭后不一致消失
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch 2.8.0 + torch_npu 2.8.0 + CANN 8.3 RC1（910B4）；aten._fft_c2r / hfft，normalization=0 且 last_dim_size 与输入长度不匹配
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/1595
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #1595（torch 2.8.0 / torch_npu 2.8.0 / CANN 8.3 RC1，ModelArts 910B4）：对 pytorch_npu 做模糊测试时发现 aten._fft_c2r 在 CPU 与 NPU 上结果不一致，CUDA 与 CPU 一致。报告者定位到 op-plugin 的 op_plugin/ops/opapi/FFTc2cKernelNpuOpApi.cpp：_exec_fft 在 c2r 模式下执行前没有按 out_sizes 把输入最后维截断或补零到 expected_size=out_sizes[last]/2+1（CPU 侧 _fft_c2r 是这么处理的），forward=false（hfft）方向也没有对输入取共轭，于是 NPU 拿原长度的复数输入直接做变换。报告者据此给出补丁（先 resize 到 expected_size，再对 hfft 取共轭），应用后最小样例的不一致消失；issue 以用户求证「是未定义行为还是 bug」的形式提出，未给出官方修复结论。'
+  source: 2026-03-23 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/1595 （closed）
+  behavior: 做一次很短的 _fft_c2r 就能看出差别：4 点复数输入、last_dim_size=4，CPU 得到 [-1.1455,-0.0125,-0.5291,1.3803]，NPU 得到 [-0.6020,1.1085,-1.0726,0.2593]，四个元素全不一样，也没有任何报错或 NaN。同一个例子在 CUDA 上和 CPU 一致，说明是 NPU 这条路径自己的问题，做频谱/卷积类模型时会在这一层悄悄错。
+  trigger_surface: torch_npu 2.8.0 + CANN 8.3 RC1（910B4）；aten._fft_c2r 与 hfft（normalization=0，last_dim_size≠2*(n-1)）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

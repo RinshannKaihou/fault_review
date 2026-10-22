@@ -1,0 +1,65 @@
+id: INF-1437
+legacy_ids: []
+slug: ops_math_stateless_randperm_fp_dtype_duplicates
+aliases: []
+title: StatelessRandperm 浮点输出重复值破坏排列
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: 输出转换与 Host 校验
+  behavior: kernel CopyData 逐项 static_cast<Y> 写输出，Host 只按浮点 dtype 最大有限值校验 n，未校验 0..n-1 连续整数能否被精确表示；舍入使非单射转换产生重复值。
+effect:
+  objects:
+  - 数值结果
+  detail: FLOAT16 n=2051 输出仅 2050 个不同值（2049 舍入为 2048）；BF16 n=259 仅 258 个不同值（257 舍入为 256）；FLOAT n>2^24+1 同理；确定性、与随机种子无关；破坏无重复索引/洗牌/抽样调用方前提
+  visibility: 静默错误
+mitigation:
+  detect: 对输出做 unique 计数与 n 对照（2051/259 边界即刻暴露）
+  fix: 修复 PR https://gitcode.com/cann/ops-math/merge_requests/6411 （open）：Host 校验改为按可精确表示的最大连续整数（FP16 2^11/BF16 2^8/FLOAT 2^24 配合 n-1 判据），对齐 PyTorch check_supported_max_int_with_precision；950PR 真机 op_host UT 6 边界用例全过；另修 INT8/UINT8/INT16 边界差一误拒（#3575）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 950（arch35）；输出 dtype=FLOAT16 且 n≥2050 / BF16 且 n≥258 / FLOAT 且 n>2^24+1；randperm/shuffle 类调用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3576
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3575
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6411
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'StatelessRandperm（arch35/Ascend 950）合同是输出 0..n-1 的随机排列，但浮点输出 dtype 下产生确定性重复值。根因：kernel（stateless_randperm.h:74-85 CopyData）先得到整数索引排列再逐项 static_cast<Y> 写入输出；Host（stateless_randperm_tiling_arch35.cpp:47-55,139-151,268-277）只按 dtype 最大有限值校验（FLOAT16 65504/BF16 INT64_MAX 边界/FLOAT FLT_MAX），没校验 0..n-1 全部整数能否被 dtype 精确表示。IEEE 舍入使转换非单射：FLOAT16 n=2051 时 2049→2048（输出 2050 个不同值）、BF16 n=259 时 257→256（258 个）、FLOAT n>2^24+1 同理。与随机种子、排序结果无关，确定性触发。验证边界：A3 主机验证了源码判定表达式与标准 FLOAT16/BF16 转换（Python 标准库模拟 CopyData 复现重复值）；A3 非 arch35，尚未在 950/A5 跑原始 kernel，但重复值由整数全集到目标 dtype 非单射直接推出。修复 PR !6411（open）对齐 PyTorch 参考实现 check_supported_max_int_with_precision：maxValueMap 浮点值改为可精确表示的最大连续整数（FP16 2^11、BF16 2^8、FLOAT 2^24，配合 n-1 判据即 FP16 n≤2049/BF16 n≤257/FLOAT n≤2^24+1，与 PyTorch 对 Half/Float 限制一致，BF16 为 PyTorch 自身疏漏一并补齐），950PR 真机 op_host UT 6 个边界用例全过。同 PR 另修 #3575 整数边界差一误拒（n>dtype最大值 改为 n-1>max，INT8 n=128/UINT8 n=256/INT16 n=32768 可表示长度曾被误拒）。'
+  source: '2026-10-18 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3576 （open，2026-10-14）；姊妹 #3575 https://gitcode.com/cann/ops-math/issues/3575 ；修复 PR https://gitcode.com/cann/ops-math/merge_requests/6411 （open）'
+  behavior: 在 Ascend 950 上用浮点 dtype 调 StatelessRandperm/torch.randperm：dtype=float16 且 n=2051 时输出只有 2050 个不同值（2049 与 2048 重复）、dtype=bfloat16 且 n=259 时只有 258 个不同值，float32 在 n 超过 2^24+1 后同理。每次都发生、与种子无关，无报错。依赖无重复索引的洗牌/抽样调用方拿到重复索引后行为被静默破坏。
+  trigger_surface: cann/ops-math StatelessRandperm arch35（950）；浮点输出 dtype + n 超出该 dtype 连续整数精确表示范围（FP16≥2050/BF16≥258/FLOAT>2^24+1）；torch.randperm NPU 路由
+  discovery: 2026-10-18 每日扫描
+  notes:
+  - '2026-10-19 回访 2026-10-19：issue #3576 已 closed（关闭时间在本轮窗口，关闭原因/是否修复未在批次快照中注明，修复 PR !6411 状态未复核）；#3575 同 PR 线'
+  - 2026-10-20 回访 2026-10-20：#3576 维持 closed（10-19 记录），修复 PR !6411 状态仍未复核
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - original.notes
+  - date: '2026-10-20'
+    fields:
+    - original.notes

@@ -1,0 +1,56 @@
+id: INF-1586
+legacy_ids: []
+slug: hccl_v_collective_span_calc_element_vs_bytes
+aliases: []
+title: HCCL V 类算子跨度计算漏换算致注册偏小
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: 通用
+    component: AllToAllV/AllGatherV 跨度计算
+  behavior: AllToAllV 图模式 CalcInputOutputSize 把 displs+counts 当字节跨度、未乘 datatype size；AllGatherV 普通路径只累加 recvCounts、忽略 displs 空洞。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: AllToAllV/AllGatherV图模式内存注册下，非1字节dtype或recvDispls非连续时，注册/DFX尺寸偏小；通信照常执行、接口不报错，可能写到注册范围之外或被踩踏，出现偶发错值/精度异常，无尺寸告警。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 displs 非连续或 dtype>1 字节的 V 类算子调用，打印 param.inputSize/outputSize 与 (displs+counts)*typeSize 对比；图模式注册长度与实际寻址长度对不上即为中招
+  fix: issue 建议 CalcInputOutputSize 增加 datatype/element size 参数按字节计算，AllGatherVOutPlace 改用 max((recvDispls[i]+recvCounts[i])*perDataSize) 并补加法/乘法溢出检查；两条 issue 均 closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: HcclAlltoAllV/HcclAllGatherV 且 dtype 非 1 字节或 displs 非连续；图模式路径注册内存；静态审查基线 aa1d9935（AllToAllV）、2ddb2ce0（AllGatherV），未跑多 rank 通信验证
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 同一缺陷族（V 类算子跨度/尺寸计算漏项）在两处报告：cann/hccl#680（元素未换字节）为主来源，#265（忽略 displs 空洞）作为第二证据合并为一条。
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/680
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/hccl/issues/265
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hccl#680：src/ops/all_to_all_v/all_to_all_v_op.cc 的 CalcInputOutputSize 用 tmpInputSize = sdisplsData[i] + sendCountsData[i]、tmpOutputSize = rdisplsData[i] + recvCountsData[i] 取最大值写 param.inputSize/outputSize，而 HcclAlltoAllV 的公开语义里 counts 是元素数、displs 是以 datatype 为单位的元素偏移，因此得到的是元素跨度而非字节跨度；该值经 RegGraphModeBuffers→HcclRegstryBuff→HcclCommMemReg 作为图模式内存注册的 buffer size 使用，而实际地址计算会乘 datatype size，单位不一致（FP32、sdispls=0、sendCounts=1 时注册 1 字节、实需 4 字节），基线 aa1d9935。cann/hccl#265 是同一缺陷族另一处：src/ops/all_gather_v/all_gather_v_op.cc:181-185 普通路径 AllGatherVOutPlace 只累加 recvCounts 计算 outputSize，忽略 recvDispls 中间空洞，而同文件 :291-292 的 GraphMode 路径已按 max((recvDispls+recvCounts)*perDataSize) 计算，AllToAllV 亦有注释“计算整片数据包含中间间隔的大小”；例 recvCounts={1,1}、recvDispls={0,4}、INT32 时真实跨度 20 字节而普通路径得 8 字节，该值在 op_common.cc:1691-1693 用于 output buffer 注册与 DFX 尺寸记录。
+  source: 2026-09-01 GitCode cann/hccl issue https://gitcode.com/cann/hccl/issues/680 （closed）；同族 2026-07-09 https://gitcode.com/cann/hccl/issues/265 （closed）
+  behavior: 用 AllToAllV/AllGatherV 跑非 1 字节 dtype（fp32/fp16 之外的 fp32、bf16 等）或多卡不均衡切分时，图模式会按偏小的长度注册输入/输出内存，通信照常执行、接口不报错，但可能写到注册范围之外或被踩踏，表现为偶发错值/精度异常，且日志里看不到任何尺寸相关的告警。
+  trigger_surface: HcclAlltoAllV/HcclAllGatherV + dtype 非 1 字节 或 recvDispls 非连续 + 图模式内存注册
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

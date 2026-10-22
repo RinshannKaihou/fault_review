@@ -1,0 +1,61 @@
+id: INF-1707
+legacy_ids: []
+slug: gmm_finalize_routing_negative_rowindex_atomicadd
+aliases: []
+title: GMMFinalizeRouting 未校验 rowIndex
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: gmm_finalize_routing
+  behavior: A8W4 MSD 路径把 rowIndex 强转 uint64 outRow 后直接对 yGm 做 AtomicAdd，未校验 outRow 属于 [0,tokens)；负值回绕为巨大偏移。
+effect:
+  objects:
+  - 数值结果
+  detail: rowIndex=-1 时 GetWS/Launch 均返回 SUCCESS，直到 Sync 才报 507057；rowIndex=1000000 时报 507015；合法 rowIndex=0 正常。越界 AtomicAdd 发生在报错之前，可写坏其它 token 的行。
+  visibility: 报错
+mitigation:
+  detect: 对 rowIndex 注入 -1 与 >=tokens 的值，确认 GetWorkspace/Launch 是否拒绝；用 memcheck 观察越界写
+  fix: 待定（issue 为 P-011 防御性契约缺陷报告，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: rowIndex/tokenRanks 越界或为负时触发，A8W4 MSD 路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4294
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #4294（2026-08-13 closed，Ascend910B3 + CANN 9.1.0-beta.3，ops-transformer HEAD 4b3d39658e1d，源码 --pkg 装成 vendor 内核 cann-ops-transformer-cann_scan_repro_linux-*.run 后复现，exit 42）：grouped_matmul_finalize_routing 的 A8W4 MSD 路径在 VectorAtomicProcess 中把 tokenRanks/rowIndex 强转为 uint64 outRow，随后直接对 yGm[outRow*n+...] 做 AtomicAdd，没有校验 outRow 是否在 [0, tokens) 内。代码位置为 gmm/grouped_matmul_finalize_routing/op_kernel/grouped_matmul_finalize_routing_antiquant_a8w4_msd.h L416-419。负 rowIndex 被强转成 uint64 后回绕为巨大偏移，越界索引在 GetWorkspace/Launch 阶段被静默接受：rowIndex=-1 时 GetWS/Launch SUCCESS、Sync 报 507057；rowIndex=1000000 时 Sync 报 507015；合法 rowIndex=0 正常。期望行为是 -1 与 1000000 在入口即被拒绝。Track A / Pattern P-011，Finding XFMR-GMMFR-001。'
+  source: https://gitcode.com/cann/ops-transformer/issues/4294 （closed）
+  behavior: rowIndex 越界（-1 或远超 token 数）时接口不拦，GetWorkspaceSize 和 Launch 都返回成功，看起来一切正常，直到 stream 同步才炸出设备异常（507057 / 507015）；而那次越界的 AtomicAdd 已经按回绕后的巨大偏移写进了显存，可能已经改坏别的 token 的 y 行。
+  trigger_surface: grouped_matmul_finalize_routing A8W4 MSD（antiquant）路径，tokenRanks/rowIndex 含负值或 >= tokens
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错
+    uncertain:
+    - title

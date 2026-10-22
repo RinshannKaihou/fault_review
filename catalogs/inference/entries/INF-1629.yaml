@@ -1,0 +1,52 @@
+id: INF-1629
+legacy_ids: []
+slug: msmodelslim_tune_eval_satisfied_hardcoded_true
+aliases: []
+title: 调优评估 is_satisfied 硬编码 True，不达标也判通过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: evaluate 评估服务
+  behavior: evaluate() 不校验 accuracies 是否为空或数据集是否匹配，返回时又把 is_satisfied 硬编码为 True，忽略 is_demand_satisfied() 的判定。
+effect:
+  objects:
+  - 测试判定
+  - 模型权重
+  detail: 自动调优的精度评估在部分数据集不达标、甚至 bencher 返回空结果或数据集错配时仍报「满足需求」，用户据此选用未达标权重；评估日志本身不报错。
+  visibility: 静默错误
+mitigation:
+  detect: 审阅 EvaluateResult.is_satisfied 的来源而非只看日志；对 bencher 返回空结果、数据集错配两种异常各跑一次评估，检查是否仍返回 satisfied
+  fix: issue closed；正文给出三处修复（补空结果/数据集校验、按当前 expectation 比较精度、返回时调用 is_demand_satisfied），涉及 msmodelslim/infra/service_oriented_evaluate_service.py，未核实合入版本
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim commit f5f585126fedfb0b77d90c10a3f4957f5a54e43c（修复前），使用 ServiceOrientedEvaluateService 走 auto_tuning 评估流程
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/298
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 修复前 commit f5f585126fedfb0b77d90c10a3f4957f5a54e43c，msmodelslim/infra/service_oriented_evaluate_service.py 的 ServiceOrientedEvaluateService.evaluate()：第 100 行 accuracies.extend(bencher.run()) 之后直接调用 is_demand_satisfied()，既不检查 accuracies 是否为空、也不检查最新一条 EvaluateAccuracy 的 dataset 是否与当前 expectation.dataset 一致，因此 bencher 返回空结果或返回错数据集时评估继续往下走；更关键的是第 108-112 行在所有循环正常结束后把 EvaluateResult 的 is_satisfied 硬编码为 True，完全忽略 is_demand_satisfied() 的结果，只要没在循环里提前 return，最终都被判为满足需求。报告者给出三处修复：补空/错配校验并提前返回 is_satisfied=False、按 expectation.target - latest.accuracy > tolerance 比较、返回时调用 is_demand_satisfied()。
+  source: 2026-06-11 GitCode Ascend/msmodelslim issue https://gitcode.com/Ascend/msmodelslim/issues/298 （closed）
+  behavior: 用自动调优做量化时，评估服务会在精度不达标（或 bencher 根本没返回结果、返回的数据集对不上）的情况下照样给出「满足需求」的结论，用户看到评估通过就去用这份权重，实际精度不合格；整个过程评估日志正常，没有任何异常提示，属于评测结论层面的静默误判。
+  trigger_surface: 走 ServiceOrientedEvaluateService 的 auto_tuning 评估流程，且存在精度不达标数据集 / bencher 空结果 / 数据集错配
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

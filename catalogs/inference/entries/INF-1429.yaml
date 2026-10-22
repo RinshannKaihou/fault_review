@@ -1,0 +1,65 @@
+id: INF-1429
+legacy_ids: []
+slug: vllm_ascend_qwen397b_vscale_partial_import
+aliases: []
+title: vllm-ascend Qwen3.5-397B V-scale 部分导入后损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: C8 静态 V-scale 生命周期
+  behavior: 397B 配置（prefill 1536-token 页 / decode 2560-token 页、kernel 块 512、每页 3/5 块）在部分异步 PD 导入后静态 V-scale 恢复不完整；K-scale 修复已装仍复现
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 短回复看似正常，长 GPQA 生成在总上下文 ~1536 token 附近开始连续输出 '!'；MTP 接受率归零（drafted>0 仍在生成）；HTTP 请求仍成功但文本已损坏
+  visibility: 静默错误
+mitigation:
+  detect: 长生成中 MTP accepted=0 与重复字符监测；对照冷启动 decode
+  fix: 候选修复已消除受测配置的损坏（main 快照 ced1522、release 候选 f928eec）：#19016 暂缓合并（issue 明确 review 期间不并）；#19017 为 release 分支候选；端到端性能影响未验证
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Qwen3.5-397B-A17B W8A8C8/MXFP8 KV + 950DT 双节点 + MooncakeConnectorV2 异步调度 + 混合 Full+Mamba cache 组 + 3/5 页块比几何；35B（2560/2560）几何不可替代
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: 与 INF-1398（C8 MXFP8 KV scale 损坏族）同族变体：不同几何（3:5 页块比 vs 35B 2560/2560）、V-scale 而非 K-scale。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/19065
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1398
+pattern: PAT-INF-0156
+original:
+  mechanism: vllm-ascend Qwen3.5-397B-A17B（W8A8C8 / MXFP8 KV，混合 Full Attention + Mamba cache 组）在部分异步 PD 导入后静态 V-scale 损坏：短回复正常，长 GPQA 生成在总上下文 ~1536 token 附近开始连续输出 '!'，MTP 接受率归零（drafted>0 仍生成），HTTP 仍成功。环境：两节点各 8×Ascend 950DT、CANN 9.2.0、torch_npu 2.10.0.post7、vLLM 0.30.0、prefill TP8 eager / decode TP4 DP2 MRv1 FULL_DECODE_ONLY、MTP3、异步调度、前缀缓存、MooncakeConnectorV2。缓存几何：prefill 管理页 1536 token、decode 2560 token，kernel 块 512，每管理页 3/5 个 kernel 块——与 35B 调查（两侧均 2560）不同，几何不可互相替代。K-scale scatter 修复（#19017 已装/#19064 单独跟踪）不解决本 397B 案例；#19016 在本 issue review 期间暂缓合并。候选恢复修复在受测配置消除了损坏（main ced152224a、release f928eec5），最终集成与端到端性能影响未验证。
+  source: 2026-10-17 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/19065 （open；受控诊断环境完整记录+缓存几何表）
+  behavior: Qwen3.5-397B（C8 量化 KV）PD 分离部署跑长生成任务时，一旦发生部分异步 KV 导入，长输出在约 1536 token 上下文处开始变成连续的 '!'，MTP 投接受率归零但请求表面成功返回；短回复看起来正常。上游 K-scale 修复已打上仍复现，说明是 V-scale 侧独立缺口。
+  trigger_surface: Qwen3.5-397B W8A8C8 + MXFP8 KV + 950DT PD 分离（MooncakeConnectorV2）+ 异步调度 + 部分导入；页块比 3:5 几何
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - component

@@ -1,0 +1,65 @@
+id: INF-1448
+legacy_ids: []
+slug: sglang_ngram_overlap_stop_token_radix_kv_corruption
+aliases: []
+title: SGLang NGRAM 尾步 verify 污染 radix KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: 末 token 在途尾步 verify 写 KV
+  behavior: NGRAM + overlap scheduler（默认开）下，stop token 结束请求的最后 token 在途时仍执行的尾步 verify 写 KV 落入或覆盖 radix 前缀块；greedy 少数并发请求错，共享前缀同批失败。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 0.5.22 默认配置，共享前缀且 stop token 结尾并发下，少数 greedy 请求从某步起产出错误 token，192 个请求约 3 个错，同批共享前缀请求常同一步失败；错误可经前缀缓存扩散；关 overlap scheduler 0/5 精确。
+  visibility: 静默错误
+mitigation:
+  detect: probec 探针 twin（精确已知输出、对归约顺序不敏感）批量并发 + 共享前缀 + stop-token 结尾；对照组关 overlap scheduler
+  fix: 部分规避：--disable-overlap-schedule（实测 5/5 精确，代价性能）；上游完整修复未见（issue open；机制方向=在途尾步 verify 的 KV 写入不应落入 radix 共享块）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SGLang 0.5.21/0.5.22；NGRAM 投机 + overlap scheduler（默认开）+ radix cache（默认开）+ 请求以 stop token（很可能含 EOS，同一 finish 检查路径）结束；共享前缀工作负载；probec Qwen3-0.6B twin 实测
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: 'greedy 投机解码应无损（lossless），此为 KV 持久污染型静默损坏——错误跨请求经 radix 前缀共享扩散。与 vLLM #62304（GDN 态漏写）同为 probec 探针 twin 方法论发现，分属两库。'
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/44997
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang #44997（c2026-10-18，0.5.22，probec 探针 twin Qwen3-0.6B：合成权重、正确输出精确已知、对浮点归约顺序不敏感，任何偏离即引擎错误）。NGRAM 投机 + 默认全开（radix cache、overlap scheduler、CUDA graphs）下少数并发请求 greedy 输出错。触发=共享前缀 + 请求以 stop token 结束。机制（probable，issue 论证）：请求最后一个 token 已在途时仍执行的尾步 NGRAM verify 写入的 KV 落入/覆盖 radix 缓存前缀。证据链：(1) 0.5.21 上 ignore_eos/max_new_tokens 结尾也失败，bisect 定位其消失于 #42720（skip the decode for a request whose last token is already in flight）——但 #42720 只对 length 结尾跳过废弃尾 decode；(2) 0.5.22 stop-token 结尾仍 3/192 错（与 0.5.21 相同请求）；(3) 只关 #42720 的跳过一行，0.5.22 回到 0.5.21 的 8/192 精确失败——同一缺陷；(4) EOS 结尾走同一 _check_token_based_finish，普通 EOS 流量大概率同样受影响（未直接测量）。对照：关 overlap scheduler 0/5 精确。'
+  source: 2026-10-18 GitHub sgl-project/sglang issue https://github.com/sgl-project/sglang/issues/44997 （open）
+  behavior: 在 SGLang 0.5.22 默认配置（NGRAM 投机 + overlap 调度 + radix 缓存）下跑共享长前缀、以 stop token 结束的并发负载时，少数请求的 greedy 输出悄悄出错：192 个请求约 3 个从某步起产出错误 token，同批共享前缀的请求常在同一步同时失败。错误可跨请求经前缀缓存扩散（radix 块被污染）。关掉 overlap scheduler 后同样负载 5 次全精确。
+  trigger_surface: SGLang 0.5.21/0.5.22；NGRAM + overlap scheduler（默认）+ stop/EOS 结尾 + 共享前缀；radix cache 参与扩散
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

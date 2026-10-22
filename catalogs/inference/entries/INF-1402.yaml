@@ -1,0 +1,65 @@
+id: INF-1402
+legacy_ids: []
+slug: ttml_acosh_bw_wrong_domain_guard
+aliases: []
+title: ttnn.acosh_bw 域保护检查平方值负射线返回有限错误梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: acosh_bw 域保护
+  behavior: acosh_bw反向域保护误用ttnn::lt(in_sq,1.0f)代替ttnn::lt(input,1.0f)，x<-1因x²>1通过保护，x=-1落入[-1,1]内层分支。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 含acosh反向且输入含x<1元素：input=-2/grad=1返回+0.57735026（PyTorch为NaN）；x=-1且grad>=0（含0.0）返回+inf（PyTorch为NaN）；(-1,0)返回inf类结果而非NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 对含 x<1 输入的 acosh 反向与 PyTorch aten.acosh_backward 对照；未评估
+  fix: 待定（issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: ttnn acosh_bw（unary_backward.cpp:620-661）；输入含 x<1（尤其 x<-1 负射线与 x=-1 边界）时触发；WH/BH 全架构
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/60821
+  kind: github_issue
+relations: []
+original:
+  mechanism: ttnn::acosh_bw（ttnn/cpp/ttnn/operations/eltwise/unary_backward/unary_backward.cpp:620-661）实现 acosh 反向时域保护检查写错：用 ttnn::lt(in_sq, 1.0f)（输入平方<1）代替 ttnn::lt(input, 1.0f)（输入<1）。acosh 实数域为 [1,+∞)，x<1 时导数未定义、PyTorch aten.acosh_backward 返回 NaN。实际行为分三段：(1) x<-1：in_sq>1 域保护通过、[-1,1] 分支也不命中，评估 grad*rsqrt(x²-1) 返回有限非零梯度（input=-2/grad=1 → +0.57735026）；(2) x=-1：in_sq=1 保护不中、eq(input,1) 不中，落入 le(input,1)&&ge(input,-1) 内层分支，grad>=0（含 grad=0.0）返回 +inf；(3) (−1,0)：返回 inf 类结果而非 NaN。三段都与 PyTorch 语义不符。
+  source: https://github.com/tenstorrent/tt-metal/issues/60821
+  behavior: 在 Tenstorrent 硬件上跑含 acosh 反向的训练或梯度校验：对输入 x<-1（如 -2）返回看起来完全正常的有限梯度值（0.577），而 PyTorch 返回 NaN 提示域错误；x=-1 且上游梯度为 0 时返回 +inf。整个负射线上的梯度静默错误，训练可能据此继续更新而非报域错误。
+  trigger_surface: ttnn.acosh_bw / aten.acosh_backward 等价路径；输入张量含 x<1 元素（负射线、-1 边界）；Wormhole B0/Blackhole；训练反向为主（推理服务直接暴露面小）
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - title

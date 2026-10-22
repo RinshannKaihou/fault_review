@@ -1,0 +1,57 @@
+id: INF-1692
+legacy_ids: []
+slug: te_argmax_looped_reduction_tile_local_index
+aliases: []
+title: 动态 shape argmax 返回 tile 内局部下标
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: triton_helpers 双源归约
+  behavior: looped reduction 的 index 累加器是循环携带的，喂给双源 tl.reduce 后本后端返回当前 lane 坐标而非累加器里的全局下标，每轮把下标重置为 tile 内偏移。
+effect:
+  objects:
+  - 数值结果
+  detail: 动态 shape 且归约轴长度超过单个 tile 时，需要 indices 的 argmax/argmin/max(dim=) 返回的下标被限制在 tile 长度内，与 eager 大面积不一致；归约轴不超过一个 tile 的静态 shape 不暴露。
+  visibility: 静默错误
+mitigation:
+  detect: 动态 shape 下对归约轴做 argmax/argmin 并与 eager 比 indices 范围；看返回值是否全部落在 tile 长度内（静态小 shape 用例查不出来）
+  fix: dynamic_shape_opt 分支提交 afa0b99b4 改为两次单源归约（先求极值再求最小下标），并配 50a658b57 用内建 tl.max/tl.min 避开 tl.reduce 编译慢路径；两提交须一并合入，未核实是否已进主线
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch_npu Inductor dynamic_shape_opt 分支 + 归约轴长度超过单个 tile（looped reduction）+ argmax/argmin 或 max(dim=)/min(dim=) 取 indices；静态小 shape 不暴露
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4108
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4108（2026-08-17，closed，dynamic_shape_opt 分支，涉 torch_npu/_inductor/runtime/triton_helpers.py）：上游 max_with_index 用一次 tl.reduce 同时归约 value 与 index 两个源，靠 combine 函数在比较 value 的同时搬运对应 index。looped reduction（归约长度超过单个 tile、需多轮循环）的累加器是循环携带的，index 累加器里存的是上一轮胜出元素的全局下标；把这种循环携带累加器喂给双源 tl.reduce 时，本后端返回的是当前 lane 的坐标而不是累加器里携带的下标，于是每轮循环都把下标重置成 tile 内偏移，最终结果丢失轮次信息。动态 shape 更容易触发：tile 大小按符号上界推断，通常小于运行时实际归约长度，因此几乎总是走 looped reduction；静态 shape 只要归约长度落在一个 tile 内就走 persistent reduction、一轮出结果，不经过循环携带，因此不暴露。修复（afa0b99b4）放弃双源归约，改为两次单源归约：先求极值 peak，再在取到极值的元素中求最小下标（与 eager argmax 并列取首个位置语义一致），filler 取该切片最大下标避免依赖 dtype 的哨兵常量，NaN 单独用 (value != value) & (peak != peak) 匹配。该修复最初用 tl.reduce(value, dim, maximum) 求极值，导致 combine region 走慢编译路径，_inductor/test_argmax_unalign（静态 (512,64)、dim=-1、fp32）CI 超时 3600s，故配 50a658b57 改用内建 tl.max/tl.min 并显式 propagate_nan=True。正文称单独合入前者会使该 UT 超时。'
+  source: 2026-08-17 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4108 （closed）
+  behavior: 动态 shape 下对归约轴求 argmax/argmin，返回的下标不是全局位置，而是单个 tile 内的偏移——所有返回值都被压在 tile 长度以内，和 eager 大面积对不上。静态小 shape 的用例不会报错，因为归约长度恰好落在一个 tile 里；一旦形状是动态的、或者归约轴比 tile 长，就几乎必然走多轮循环，下标每轮被重置，最后丢掉轮次信息。整个过程不报错，只是 indices 全错，下游拿去 gather/index_select 就会取到错误位置。
+  trigger_surface: torch_npu Inductor + 动态 shape + 归约轴长度超过单个 tile（looped reduction）+ 需要 indices 的 argmax/argmin/max(dim=)
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

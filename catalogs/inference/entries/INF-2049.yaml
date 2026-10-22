@@ -1,0 +1,55 @@
+id: INF-2049
+legacy_ids: []
+slug: cann_topk_selected_set_missing_true_max
+aliases: []
+title: TopK 选中集合缺失真实最大值且跨次不同
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn TopK（950PR）
+  behavior: 同一输入多次 topk，返回的 k 个下标集合不稳定，且未选中元素中存在比选中集合最小值更大的值，选中集合不是真正的 top-k
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: Ascend950PR + CANN 9.1.0（torch_npu 2.7.1）：x.topk(k,dim=-1) 200 次循环内即命中 unselected_max > selected_min；相同输入不同批次结果有的相同有的不同，无报错
+  visibility: 不可复现
+mitigation:
+  detect: 对 topk 的下标做 mask，比较未选中最大值与选中最小值（unselected_max > selected_min 即违例），循环多次；或与 CPU topk 逐元素比对
+  fix: 待定（issue closed，未见修复 commit/MR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend950PR + CANN 9.1.0 + torch_npu 的 torch.topk；具体 k、shape 与 dtype 组合未在正文给出
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2641
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math issue 2641（2026-08-15，closed）：Ascend950PR、CANN 9.1.0（version.info timestamp 20260730_231653901）、x86_64，torch + torch_npu 2.7.1。调用 flat_idx = sub_score_reshape.topk(total, dim=-1).indices，相同输入多次运行返回的下标集合不一致，截图对比两次结果有的相同有的不同。报告者补的最小复现 has_rank_violation 在 device 上跑 x.topk(k,dim=-1)，用 scatter 标记选中集合后比较 unselected_max 与 selected_min，一旦 (unselected_max > selected_min).any() 即说明选中集合漏掉了更大的值，200 次循环内即可命中。正文未给出 k、shape、dtype 与具体错误条数，也未定位到 sort/merge 哪一级。
+  source: 2026-08-15 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/2641 （closed）
+  behavior: 做 beam search、MoE 路由或召回截断时，同一批分数多次调用 topk 得到不同的候选集合，偶尔选出的 k 个里没有真正的最大值；下游按这些下标取数会漏掉高分候选，且因为大多数次结果看起来合理，只有与 CPU 逐次比对或复跑才发现。
+  trigger_surface: torch.topk（aclnn TopK）+ Ascend950PR + 多次重复调用
+  discovery: 2026-10-21 tail_3 顺序深读（历史索引回填，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

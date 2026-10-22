@@ -1,0 +1,51 @@
+id: INF-1560
+legacy_ids: []
+slug: ops_math_stft_mte3_workspace_race_zero_frames
+aliases: []
+title: STFT 写 workspace 缺 MTE3 同步致输出帧偶现为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: stft kernel 三处 Process
+  behavior: StftPlanMul 与 SplitWindows 经 MTE3 把 plan×window、splitWindow 写入 workspace 后未等写完成，Cube matmul 立即读取；首次调用 workspace 为新分配零内存
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950PR 上 atk 批跑 5 用例通过率约 60%，失败用例轮换；case 281（nfft=7/hop=1/win=4）部分行尾部帧输出 0 而其余数值正确，单跑与批跑表现不同、失败用例不固定
+  visibility: 不可复现
+mitigation:
+  detect: 多轮批跑并每轮换输入，观察失败用例是否轮换、输出中是否出现整帧为 0；首次调用/新进程更易命中，逐次调用并与 CPU 参考比 max_diff
+  fix: issue 给方案（closed）：三处 workspace 写后、matmul 读前插 HardEvent::MTE3_S 的 SetFlag/WaitFlag；Ascend950PR 实测修复后 10 轮×5 用例 50/50 PASS、25 次逐次调用与 CPU 一致（max_diff<1e-4），合入状态未核实
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend950PR，math/stft kernel（stft_plan_mul.h / stft_generalized.h / stft_generalized_complex.h）；批跑多用例、workspace 首次分配时最易命中，单跑常通过
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2868
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math math/stft AICore kernel 内存在 MTE3（UB→GM 异步拷贝，Vector 流水线）与 Cube matmul（读 GM）之间的流水线竞态，三处同款：StftPlanMul::Process() 把 plan×window 结果经 MTE3 写入 plan workspace 后没有等待写完成，主算子 Cube matmul 立即读取；STFTGeneralized::Process() 的 SplitWindows 经 MTE3 写完 splitWindow workspace 后同样无同步，StftMatmul 立即读；STFTGeneralizedComplex::Process() 的 complex 路径相同。首次调用时 workspace 是新分配内存（内容为 0），matmul 抢先读到未写入数据 → 输出帧为 0；后续调用 workspace 残留上次正确数据，竞态被掩盖，因此表现为偶现、单跑与批跑不同。复现命令为 atk node --backend npu --devices 1 对 CPU 参考跑 accuracy（-mt 5），失败示例 case 281（nfft=7/hop=1/win=4/onesided=false，输出 [7,7]）在 (1,4)(1,5)(1,6)(3,4)(3,5)(3,6)(4,6)(6,5)(6,6) 等位置为 0 而 CPU 有正常值（如 -760.1+839.2j）。
+  source: 2026-08-25 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/2868 （closed）
+  behavior: STFT 在 Ascend950 上批跑精度测试时偶现失败，同一批里失败的用例还每次不一样：单跑能过、批跑挂；把 NPU 输出和 CPU 一比，某些行的尾部帧整段是 0，其它位置数值完全正常。修复前 5 用例通过率约 60%，插上 MTE3_S 同步后 10 轮×5 用例全过。
+  trigger_surface: ops-math STFT（Ascend950PR）批跑多用例；workspace 首次分配/新进程首次调用时命中率最高
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

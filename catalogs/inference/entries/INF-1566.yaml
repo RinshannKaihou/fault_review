@@ -1,0 +1,57 @@
+id: INF-1566
+legacy_ids: []
+slug: ops_math_xlog1py_log1p_rounding_zero
+aliases: []
+title: Xlog1py 用 ln(1+y) 计算致小 y 精度归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: xlog1py arch35 kernel
+  behavior: kernel 按 x*ln(1+y) 计算而非 log1p，y=1e-8 时 1+y 在 FP32 下舍入为 1，结果直接变 0；1+y 舍入阈值附近的其它小值也出现很大相对误差
+effect:
+  objects:
+  - 数值结果
+  detail: FP32 x=1e8、y=1e-8 输出 0 而期望 1；16 个边界值中 6 个错误，修复后 16/16 通过、最大相对误差 9.536742e-08（Ascend950PR 模拟器验证，未上真机）
+  visibility: 静默错误
+mitigation:
+  detect: 取 x 大而 y 落在 1+y 舍入阈值附近（如 x=1e8、y=1e-8）的用例，与 torch.xlog1py 比相对误差；固定 dtype 下扫 nextafter 级小值
+  fix: PR https://gitcode.com/cann/ops-math/merge_requests/5999 （open）：对 1+y 的舍入做补偿，和恰好等于 1 时直接用 y，并显式处理正无穷；仅改 math/xlog1py/op_kernel/arch35/xlog1py_kernel.h
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: math/xlog1py/op_kernel/arch35/xlog1py_kernel.h，FP32；需 x 大且 y 小到 1+y 在 FP32 下舍入为 1（阈值附近），常规量级输入不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3317
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/5999
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-math math/xlog1py 的 arch35 kernel（op_kernel/arch35/xlog1py_kernel.h）用 x * ln(1+y) 计算而没走 log1p：对 FP32 x=1e8、y=1e-8，1+y 在 FP32 下舍入恰好为 1，ln 结果为 0，输出 0，而 x*log1p(y) 的期望值是 1；1+y 舍入阈值附近的其它小有限值同样出现大相对误差。基线源码为 0463a640794a29d0c9455cd465c166f841c82986，在 Ascend950PR 模拟器 + CANN 9.2.0-beta.2 上跑 16 个边界 FP32 值，6 个错误；修复（对 1+y 的舍入做补偿、当和恰为 1 时直接用 y、显式处理正无穷）后 16/16 通过，最大相对误差 9.536742e-08，既有 5 个算子样例也通过。验证使用模拟器，未做物理 NPU 执行。
+  source: 2026-09-26 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3317 （open，关联 PR https://gitcode.com/cann/ops-math/merge_requests/5999）
+  behavior: 在 NPU 上算 xlog1py：x 很大而 y 很小时（典型如 1e8 配 1e-8），结果直接返回 0，正确的量级应该是 1，相对误差 100%；y 稍大一点又恢复正常。没有报错也没有 NaN，只有拿 torch.xlog1py 或 log1p 口径对照才会发现整段结果被舍成 0。
+  trigger_surface: ops-math math/xlog1py 的 arch35 kernel；FP32 且 y 小到 1+y 舍入为 1（与 x 的量级无关，x 越大绝对误差越大）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

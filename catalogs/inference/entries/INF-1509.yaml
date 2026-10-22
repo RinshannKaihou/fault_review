@@ -1,0 +1,61 @@
+id: INF-1509
+legacy_ids: []
+slug: mssanitizer_address_space_model_miss
+aliases: []
+title: SIMT UB 范围与 L2 分配器未建模致越界漏报
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: UB 与 L2 分配器建模
+  behavior: SIMT 场景把 UB 可访问范围按全量 UB 建模（实际由用户控制），越界落在未建模区间就不报；address_sanitizer 未 hook aclrtMallocCached，L2 分配对工具不可见。
+effect:
+  objects:
+  - 测试判定
+  detail: 算子已真实 UB 越界而 memcheck 无告警；aclrtMallocCached 分配的 L2 DMA buffer 越界一个都不报，反之还可能把合法 L2 访问误报非法——漏报侧不产生任何可疑信号。
+  visibility: 静默错误
+mitigation:
+  detect: 在 SIMT kernel 里主动把用户划定的 UB 区间写到越界、或用 aclrtMallocCached 分配 buffer 后越界读写，看 memcheck 是否出告警；同时对照 memcheck 只报 GM 越界而 L2 段全静默的日志特征。
+  fix: 待定（#149/#151 给出的方向是在 csrc/address_sanitizer/ 增加 HOOK_FUNCTION(aclrtMallocCached, ...)，未核实是否已合入；SIMT UB 范围需按用户设定区间建模，未见 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: SIMT 编程（UB 可访问范围由用户设定）+ Ascend 950/910；aclrtMallocCached 分配的 L2 DMA buffer（Ascend FA 等算子）；mssanitizer memcheck
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/mssanitizer/issues/4
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/149
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/151
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '两条漏报机制都属“工具先验模型与实际地址空间不符”。①#4（x86 环境）：正文明确指出 SIMT 的 UB 可访问范围并非全量 UB 空间，而是由用户自己控制，工具当前按全量 UB 空间建模，因此算子已经 UB 越界、工具也未识别出来。②#149/#151（同一报告提交两次）：csrc/address_sanitizer/ 只 hook 了 aclrtMalloc 与 aclrtFree，没有 hook aclrtMallocCached；昇腾 FA 等算子大量用 aclrtMallocCached 分配 L2 cache DMA buffer，它与 aclrtMalloc 走不同分配器。未 hook 的后果是 L2 分配对 sanitizer 不可见、L2 越界完全漏检，还可能把合法 L2 访问误报非法。报告者在 #149 中对比 #15 的 nd/nz 误报，称自己跑地址检测时画面只报 GM 越界、L2 上的 buffer 越界一个都没报。'
+  source: 2026-01-22 GitCode Ascend/mssanitizer issue https://gitcode.com/Ascend/mssanitizer/issues/4（closed）；2026-07-09 issue https://gitcode.com/Ascend/mssanitizer/issues/149（closed）；2026-07-11 issue https://gitcode.com/Ascend/mssanitizer/issues/151（closed）
+  behavior: 在 SIMT 算子里把 UB 用到超过用户自己划定的可访问区间，或者用 aclrtMallocCached 在 L2 上分配 buffer 并越界读写，mssanitizer 都一声不响：前者按全量 UB 空间认为访问合法，后者连这块分配都不知道，输出里既没有告警也没有可疑摘要。于是“跑过 sanitizer 没报错”被当成正确性证据，实际问题要到端到端结果出错才暴露。
+  trigger_surface: SIMT 编程（UB 可访问范围由用户设定）；aclrtMallocCached 分配的 L2 DMA buffer（Ascend FA 等算子）；mssanitizer memcheck
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

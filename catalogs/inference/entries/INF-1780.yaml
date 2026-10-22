@@ -1,0 +1,58 @@
+id: INF-1780
+legacy_ids: []
+slug: vllm_dsv41_decoder_replay_prompt_logprobs_trim
+aliases: []
+title: vLLM DSV4.1 replay 修剪 prompt_logprobs 行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: decoder replay 行保留条件
+  behavior: decoder replay 下保留所有 prefill 行的条件未包含 prompt_logprob_token_ids is not None：candidate-scoring 请求被当生成请求修剪 eager prefill chu
+effect:
+  objects:
+  - 输出分布
+  detail: H100+MRV2 eager 300-token 输入：保留行 172-299，请求行 172 行在窗外，start=0 max abs logprob err 1.87、实际 next token 峰值 1.85；被裁位置输出统一 -log(4096) 均匀 logprobs；start=172
+  visibility: 静默错误
+mitigation:
+  detect: 与 prompt_logprobs=0 全保留参考跑同请求比对
+  fix: 一行修复（现有 per-request 行保留条件加 prompt_logprob_token_ids is not None）已在 issue 验证全 0；PR 状态未核实（待定）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: DeepSeek-V4.1 + MRV2 + FLASHMLA_SPARSE_DSV41 + fp8_ds_mla KV + decoder replay（eager 或 PIECEWISE 达 trim 阈值 768）；随机权重 6 层配置+128 窗口实测，官方权重未测
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62651
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.32.1rc1.dev66+g2aa5080fa，H100，MRV2/TP1/eager/无前缀缓存，FLASHMLA_SPARSE_DSV41+fp8_ds_mla KV，六层随机权重 DSV4.1 配置（128-token 窗口）。DeepSeek-V4.1 decoder replay 对带 prompt_logprobs 的请求保留所有 prefill 行，但未检查 prompt_logprob_token_ids：candidate-scoring 请求可像生成一样被修剪——eager 下长于 128-token 窗口的 chunk 被裁（PIECEWISE 达 decoder_replay_trim_threshold=768 也裁）。300-token 输入实测未修复路径保留行 172-299：scoring start=0（172 行在窗外）max abs err 1.873845、实际 next token 单独峰值 1.851233；start=100 差 1.42；start=172/200（不触裁剪位）仍差 0.238/0.146；被裁位置输出统一 -log(4096)。参考=同请求 prompt_logprobs=0（全保留）。修复（行保留条件加 prompt_logprob_token_ids is not None）后全部 0；两 chunk prefill、raw logits、重复候选、padding、混合请求均过；官方权重未测。
+  source: 2026-10-20 每日扫描；https://github.com/vllm-project/vllm/issues/62651
+  behavior: 在 DeepSeek-V4.1 上开 decoder replay 并用 prompt_logprobs/prompt_logprob_token_ids 做候选打分（如 RL rollout 评分、评测）时，返回的 logprob 分数形状正确但数值错误：窗口外位置给出统一的 -log(4096) 假值，窗口内位置的分数也可偏差 0.1–1.9 nat，足以改变候选排序；同请求用全保留参考即可比对出差值。生成类请求不受影响。
+  trigger_surface: DeepSeek-V4.1 + MRV2 + decoder replay（eager 长窗口或 PIECEWISE 达 trim 阈值）+ prompt_logprobs/prompt_logprob_token_ids 请求
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - behavior

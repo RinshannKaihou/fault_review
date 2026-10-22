@@ -1,0 +1,54 @@
+id: INF-1544
+legacy_ids: []
+slug: vllm_ascend_pd_dummy_batch_block_table_zeroed
+aliases: []
+title: PD dummy batch 清零 block_table 污染 KV 传输
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: execute_dummy_batch 元数据
+  behavior: _dummy_run 的 dummy 分支直接把共享 block_table/slot_mapping 清零，覆盖 connector 要用的真实映射；dummy 的 DP all-reduce 又与 save_kv_layer 抢张量。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: PD分离D节点启用execute_dummy_batch且用MooncakeLayerwiseConnector时，某些真实请求会拿到他人或无效的KV，输出错乱或直接卡在aicore超时，报507014；可崩在causal_conv1d_update_npu。
+  visibility: 静默错误
+mitigation:
+  detect: 抓 execute_dummy_batch 前后 block_table/slot_mapping 的内容，确认 dummy 之后是否被 fill_(0)；对照关掉 dummy batch 或让 dummy 不写元数据时的 KV 传输结果
+  fix: 待定（issue open，无修复 PR）；方向：dummy batch 必须屏蔽 KV 写入、用独立元数据缓冲，并把 save_kv_layer 与 DP all-reduce 串行化
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PD 分离 D 节点，MooncakeLayerwiseConnector，execute_dummy_batch 在真实前向之间运行以保持 cudagraph 热；版本未在正文给出
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10245
+  kind: github_issue
+relations: []
+original:
+  mechanism: PD 分离部署的 D 节点上，execute_dummy_batch() 在真实前向之间运行以保持 cudagraph 热，但这个 dummy 前向会走完整模型执行路径，包括与 KV connector（MooncakeLayerwiseConnector）交互的 attention 层。报告列出三处缺陷：(1) execute_dummy_batch 没有屏蔽 KV 写入，_dummy_run(for_dummy_batch=True) → _build_attention_metadata() → _get_block_table_and_slot_mapping() 在 for_dummy_batch 分支里直接对 blk_table_tensor 和 slot_mapping 做 fill_(0)，把 connector 需要的真实值覆盖成 dummy 数据；(2) save_kv_layer 与 DP all-reduce 存在竞态，dummy batch 的 DP all-reduce 与 connector 的 save_kv_layer() 在共享张量上重叠；(3) DP all-reduce 干扰导致 KV 数据损坏，被清零/污染的 block_table 让 connector 去读错误的 KV cache 位置。与其它 PD 问题叠加时，真实推理会崩在 causal_conv1d_update_npu（gdn.py:228），报 aclrtSynchronizeEvent error code 507014 aicore execution times out，调用栈为 execute_model → _model_forward → model forward → linear_attn → gdn_attention_core。
+  source: 2026-06-09 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10245 （open）
+  behavior: PD 分离（D 侧用 layerwise connector）跑一段时间后，某些请求会拿到别人的/无效的 KV：输出错乱或者直接卡在 aicore 超时上，报 507014；日志里看不出与 dummy batch 有关，因为 dummy 执行本身不报错，只有它清零过的元数据在后续请求里才暴露。
+  trigger_surface: PD 分离 + execute_dummy_batch（保 cudagraph 热）+ MooncakeLayerwiseConnector；dummy 与真实请求共用 block_table/slot_mapping，且 DP all-reduce 与 save_kv_layer 重叠
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

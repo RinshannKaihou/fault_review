@@ -1,0 +1,54 @@
+id: INF-1965
+legacy_ids: []
+slug: npu_profiler_kernel_details_missing_step_id
+aliases: []
+title: profiler kernel_details.csv 静默缺 Step Id
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: torch_npu
+    component: profiler step_range 生成
+  behavior: get_step_range() 依赖 ProfilerStep 节点与 corr_id；节点缺失或不完整时返回空/截断 range，KernelViewParser 仅在 range 非空时写 Step Id 列。
+effect:
+  objects:
+  - 指标/日志
+  detail: 部分 run 的 kernel_details.csv 完全没有 Step Id 表头，或有表头但大量 kernel 行 Step Id 为空，下游无法按 step 统计 kernel 时间。
+  visibility: 静默错误
+mitigation:
+  detect: 同配置多次采集，检查 kernel_details.csv 是否有 Step Id 表头以及空值比例；对照 ProfilerStep event 与 corr_id 是否齐全
+  fix: 待定（issue open，未给修复 PR；报告要求 profiler 在 ProfilerStep/relation 损坏时明确报错而不是静默导出缺列 CSV）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch_npu profiler（activities=[CPU,NPU]、schedule wait=0/warmup=3/active=5、Level1、ExportType.Text）采集 composed workload；偶发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2381
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #2381（2026-06-13 open）：torch_npu.profiler.profile 采集 composed workload（activities=[CPU,NPU]、schedule(wait=0,warmup=3,active=5,repeat=1)、tensorboard_trace_handler、ProfilerLevel.Level1、ExportType.Text，每个 active iteration 开头一个 torch.max boundary + sliding tile attention 并调 prof.step()）时，ASCEND_PROFILER_OUTPUT/kernel_details.csv 偶发两类异常：完全没有 Step Id 表头，或有表头但大量 kernel 行 Step Id 为空。链路是 prof_parse/_fwk_cann_relation_parser.py 的 FwkCANNRelationParser.get_step_range() 从 root_node.child_node_list 读 ProfilerStep 节点并靠 corr_id_total 生成 step_range，节点列表为空或不完整时返回空/截断 range；prof_view/_kernel_view_parser.py 的 KernelViewParser.generate_view() 只在 step_range 非空时写 Step Id 列，_trace_step_time_parser.py 同样依赖该 range。报告判断缺陷在上游 ProfilerStep event / framework-CANN relation 丢失，而非 CSV 显示层。'
+  source: 2026-06-13 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/2381 （open）
+  behavior: 采完 profiler 打开 kernel_details.csv，有时整份文件没有 Step Id 这一列，有时列在但很多 kernel 行的 Step Id 是空的，只有一部分行能对上 step。按 step 统计 kernel 时间、做逐 step 归因的下游脚本会把这些行算错或直接丢掉，而 profiler 本身不报错、导出照常成功，看起来只是一次普通的采集。
+  trigger_surface: torch_npu.profiler 采集 + kernel_details.csv 文本导出（ProfilerStep 范围缺失或不完整时）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

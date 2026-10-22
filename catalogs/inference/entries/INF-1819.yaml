@@ -1,0 +1,58 @@
+id: INF-1819
+legacy_ids: []
+slug: ascendstore_partial_store_parent_hash_wrong
+aliases: []
+title: 部分块已存时 parent_block_hash 错误致命中恒为一块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: AscendStore 块哈希链
+  behavior: KV 池中已存在部分块、只上传缺失块时，AscendStore 为这些缺失块算出错误的 parent_block_hash，新块接不到已有前缀链上，Conductor 匹配到第一个已有块后即断开。
+effect:
+  objects:
+  - KV状态
+  - 性能/资源
+  detail: Mooncake Conductor 的 longest_matched 恒等于 block_size=128，即使池中已有远长于此的前缀；KV-cache-aware 路由按这个错误命中长度选节点，长前缀复用基本失效。
+  visibility: 静默错误
+mitigation:
+  detect: 比对 KV 池中实际连续块链长度与 Conductor 返回的 longest_matched；同一长前缀间隔重发，看命中长度是否一直停在 block_size
+  fix: 待定（issue open，正文未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vllm-ascend 0.23 + PD 分离 + AscendStoreConnector（backend=mooncake）+ KV cache events/Conductor 开启，block_size=128；各实例统一 PYTHONHASHSEED=0 后稳定复现——该变量只让块哈希跨进程可复现，报告者明确说不是根因
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/12002
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #12002，版本 0.23。环境：PD 分离 + AscendStore KV Pool，kv_connector=AscendStoreConnector、kv_role=kv_producer、kv_connector_extra_config.backend=mooncake，KV block size=128，开启 KV cache events 与 Mooncake Conductor，Ascend 910B/910C/A3。所有实例统一 export PYTHONHASHSEED=0 后现象稳定复现；报告者说明该变量只是让 vLLM 块哈希跨进程跨节点可复现、本身不是根因。缺陷位于 AscendStore 的上传路径：当 KV 池中已存在部分块、本次只存缺失块时，缺失块的 parent_block_hash 生成错误，Conductor 无法把新存的块接到已存在的前缀链上。Conductor 查询命中第一个已存在块后、下一个块即断裂，因此 longest_matched 恒等于 block_size（128），与池中实际可复用的前缀长度无关。'
+  source: 2026-07-14 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/12002 （open）
+  behavior: 在 PD 分离 + AscendStore KV Pool + Mooncake Conductor 的部署中，带 KV 感知的路由拿到的 longest_matched 永远只有一个 block（128），哪怕 KV 池里已经缓存了几万 token 的前缀；表现就像「前缀只命中一块」。全程没有报错也没有告警，日志里的命中长度稳定停在 block_size，长前缀复用常年失效，TTFT 与重复 prefill 的开销都按未命中计算。
+  trigger_surface: PD 分离 + AscendStoreConnector(Mooncake) + Conductor + 仅上传缺失块（部分块已在池中）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility

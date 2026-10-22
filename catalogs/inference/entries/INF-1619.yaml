@@ -1,0 +1,74 @@
+id: INF-1619
+legacy_ids: []
+slug: mindformers_load_balanced_resume_drops_optim_state
+aliases: []
+title: load_balanced 续训整份优化器状态未加载，loss 发散
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspore
+    component: load_balanced 分片加载映射
+  behavior: 开启 checkpoint.load_balanced 时加载侧按均衡映射取分片，main_param/adam_m/adam_v 共 450 个参数未匹配装载，只在 load_param_into_net 的 WARNING 里被列出
+effect:
+  objects:
+  - 优化器状态
+  - 训练信号
+  detail: 第5步存盘续训后，第6步loss与未中断相同（11.772970），第7步起较未中断偏高：11.786654、11.795470、11.748751、11.689173，差值从0.02涨到0.07；remove_redundancy取值不影响复现，load_balanced=False时差值全0。
+  visibility: 静默错误
+mitigation:
+  detect: 续训与连续训练逐步比对 loss；检查 not loaded 的参数是否全部是 main_param.*/adam_m.*/adam_v.*
+  fix: 待定（issue open；已定位到 mindformers/checkpoint/checkpoint.py，分片文件与 metadata 条目完整，属加载侧丢失）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: '仅与加载侧 checkpoint.load_balanced: True 相关，与保存侧 remove_redundancy 无关'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2522
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1615
+pattern: PAT-INF-0170
+original:
+  mechanism: 'PyNative 多卡训练开启 checkpoint.load_balanced: True 做断点续训时，加载阶段有 450 个参数未被装载，全部是 main_param.* / adam_m.* / adam_v.*，即整个优化器状态，数量与 checkpoint 里优化器 safetensors 的 key 数吻合。加载日志（MindSpore serialization.py）明确列出 ''For load_param_into_net, 450 parameters in the net are not loaded, because they are not in the parameter_dict''，但只是 WARNING。检查 checkpoint 目录：*-opt-*.safetensors 内容完整，metadata.json 中 adam_m/adam_v/main_param 条目均在，数据已正确落盘，是加载侧按均衡映射取分片时丢失。触发只与加载侧开关有关：remove_redundancy=false/load_balanced=false 正常，false/true 与 true/true 都复现且数值逐位相同。复现用 tests/st/test_multi_cards_cases/test_pynative/test_models/test_deepseek3/pynative_ds3.yaml，2 卡 msrun，DeepSeek-V3 小模型（12 层、hidden 1792、seq 4096、8 专家），AdamW，deterministic=true、seed=42，连续训 10 步并在第 5 步存盘后从第 5 步续训；环境 MindSpore 2.10.0 + CANN 9.1.0-beta.1 + 910B2。'
+  source: 2026-08-18 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2522 （open）
+  behavior: '训练 10 步、第 5 步存盘，再从第 5 步续训，第 6 步 loss 与没中断时一模一样（11.772970），从第 7 步开始一路偏高：11.786654、11.795470、11.748751、11.689173，差值从 0.02 涨到 0.07；换成 load_balanced: False 差值全部为 0。日志里只有一条常见的 ''450 parameters in the net are not loaded'' 警告，不看 checkpoint 目录不会怀疑优化器状态根本没进来。'
+  trigger_surface: 'PyNative FSDP（data_parallel_shard: -1）+ checkpoint.load_balanced: True + no_load_optim: False，2 卡 910B2，DeepSeek-V3 小模型'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - title

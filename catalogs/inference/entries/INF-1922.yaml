@@ -1,0 +1,58 @@
+id: INF-1922
+legacy_ids: []
+slug: vllm_ascend_v023_async_free_inflight_kv_block_race
+aliases: []
+title: v0.23 异步调度下完成/抢占请求提前归还 KV 块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: _free_blocks 立即释放
+  behavior: v0.23 调度器在处理 step N 时就把请求全部 KV 块 free 回池，没有按已调度步序号的延迟释放栅栏，已在飞的 step N+1 仍会往这些块写
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 'PD 消费端请求 B 复用这些块并经 Mooncake 收到 KV 后，A 的 step N+1 把陈旧数据写进同一批块，B 的 KV 被污染；上游 vLLM #45357 单独修了这条路径'
+  visibility: 不可复现
+mitigation:
+  detect: v0.23 + async scheduling + PD KV consumer 下对 finish/abort/preempt 做块归属追踪，检查被释放块是否在下一步仍被写；复现需第二个 step 已在飞
+  fix: 上游已修：backport https://github.com/vllm-project/vllm/pull/45357 的延迟释放语义（给已调度步编号、在 update_from_output 记录最新已处理序号、块挂到该栅栏之后再还池）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM v0.23 core + async scheduling + PD 分离 Mooncake KV consumer + MTP；需 finish/abort/preempt 与新一步重叠
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14055
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'v0.23 的调度器在 _preempt_request 与 _free_blocks 里直接 self.kv_cache_manager.free(request)，把整个请求的 KV 块立刻还给 block pool，随后 del self.requests[...]；这个 core 版本没有 scheduler step fence，也没有 deferred-free 队列。#13518 只补了 SWA/chunked-local 路径上 remove_skipped_blocks() 的过早裁剪（用 num_computed_tokens - num_in_flight_tokens 判断），整请求的 free 路径没被 defer。于是出现"写后释放"窗口：调度器发出 step N → async scheduling 在 step N 的输出被处理前又发出 step N+1 → 处理 step N 时请求 A 被判 finished/aborted/preempted → A 的块立即回池 → 新的 PD 消费端请求 B 复用这些块并通过 Mooncake 收 KV → A 那个已在飞的 step N+1 把陈旧数据写进 B 的块。上游 vLLM 用 #45357 的延迟释放修了这条整请求路径，#47728 的注释也明确 request 级 finish/preempt free 仍在 #45357 的栅栏之后。'
+  source: 2026-08-12 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14055 （open）
+  behavior: '典型表现是长文请求偶发乱码或 NaN，且只在 async scheduling + PD 分离 + 有请求在完成/抢占的同时还有一步在飞时出现；同一请求重跑往往正常，调小并发也可能不复现。日志里没有任何异常，只有下游请求的 KV 被别人的陈旧数据覆盖后的表现：语义跳变、重复、数值异常。报告同时把 #12725、#13964 列为"机制相容但未取到块归属证据"的相邻案例，并明确不能用它解释 #13648（v0.25.1 已含 #45357）。'
+  trigger_surface: v0.23 + --async-scheduling + PD 分离 KV consumer（Mooncake）+ MTP，且 finish/abort/preempt 与下一步重叠
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect
+    - visibility

@@ -1,0 +1,60 @@
+id: INF-1702
+legacy_ids: []
+slug: rope_grad_fp16_half_d66_nan
+aliases: []
+title: RoPE Grad fp16 half D=66 反向出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: RoPE Grad kernel
+  behavior: fp16、mode=0 half、D=66 且 cos/sin 为 11SD 广播的特定 (B,N) 组合下，dcosOut/dsinOut 出现 NaN/Inf，dxOut 正常。
+effect:
+  objects:
+  - 数值结果
+  detail: (B,N)=(8,2)/(4,16)/(8,16)/(16,8)/(128,1)（S=4）5 例：dcosOut/dsinOut 的 NaN/Inf 位置与 CPU 标杆、GPU 基准三方不一致，输入为常规值域；bf16/fp32、interleave、D=64/256 及非 11SD 广播零失败。
+  visibility: 数值异常
+mitigation:
+  detect: 对 fp16 + half + D=66 + 11SD 组合按 (B,N) 扫描，比较三方 NaN/Inf 出现位置
+  fix: 待定（issue 为缺陷报告，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: fp16 + mode=0 half + D=66 非对齐 + cos/sin 11SD 广播 + 特定 (B,N) 才触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5042
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5042（2026-09-07 closed）用 ATK 以 pyaclnn 调 aclnnRotaryPositionEmbeddingGrad（CANN 9.0.0 的 posembedding/rotary_position_embedding_grad，Ascend 910B3，torch 2.10.0），CPU 标杆与远程 GPU 基准双参照，cv_fused_double_benchmark 标准（阈值 max_re_ratio 5 / avg_re_ratio 1.5 / rmse_ratio 1.5，比值计算前先做三方 NaN/Inf 位置一致性检查）。1000 条用例中 995 通过、5 失败，失败文本均为 NaN/Inf 位置不一致，失败输出恒为 dcosOut/dsinOut，dxOut 全部通过且最大相对误差比例仅 1.35e-3。失败仅出现于 fp16（483 例中 5 例）、mode=0 half（507 例中 5 例）、D=66（fp16+half+11SD 下 45 例中 5 例）与 cos/sin 11SD 广播组合，且限特定 (B,N)=(8,2)/(4,16)/(8,16)/(16,8)/(128,1)（S=4）；同乘积的其它 (B,N)（BxN=256/512、<=8）均通过，推测与 tiling 切分及 UB 复用模式在该 (B,N) 下的取值有关。输入 dy/xOptional 为正态分布（均值 -100~100、标准差 1~25），cos/sin 均匀采样 [-1,1]，无 NaN/Inf/极端输入，NaN/Inf 产生于计算过程。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5042 （closed）
+  behavior: 同一个反向算子，dx 完全正确，dcos/dsin 里却出现 NaN/Inf，且位置与 CPU/GPU 参考实现都对不上；只有 fp16 + half 模式 + D=66 + 11SD 广播的少数 (B,N) 组合会中，bf16/fp32、D=64/256、interleave 都正常，容易在换 batch 形状后自行消失。
+  trigger_surface: aclnnRotaryPositionEmbeddingGrad：fp16、mode=0（half）、dy 为 BNSD、cos/sin 为 [1,1,S,D] 11SD 广播、D=66
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - subsystem
+    - effect

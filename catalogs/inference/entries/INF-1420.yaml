@@ -1,0 +1,59 @@
+id: INF-1420
+legacy_ids: []
+slug: cann_adamax_fp32_intermediate_overflow_nan
+aliases: []
+title: CANN InplaceApplyAdaMax FP32 中间量溢出产 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: AdaMaxVF 先除后乘次序
+  behavior: 固定先除后乘：m 达 ±FLT_MAX、v+ε 低至 ε 时商在 FP32 溢出为 ±inf；lr=0 时 inf·0 得 NaN，|lr_adj|<1 时得 ±inf 假溢出，与同号 ±inf var 相减得 NaN。
+effect:
+  objects:
+  - 数值结果
+  detail: 真实 update 有限可表示时仍错：lr=0 冻结更新返回 NaN 而非 var 原值（golden -3.89e-4 vs NaN）；|lr_adj|<1 收缩商得 -inf 假溢出（真实 -2.36e37）；var=±inf 同号 update 得 NaN
+  visibility: 数值异常
+mitigation:
+  detect: kernel_l1 mixed 极端值用例（L1_528/252/1137/295/675 形态）FP64 golden 对账
+  fix: issue 附修复：标量 |lr_adj|<=1 先乘后除；>1 保持先除后乘；NaN 修复 varNew=NaN 且 m_out 有限时 varNew=var。5/5 修复 PASS + 23/23 防复发用例，状态未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend950PR arch35 InplaceApplyAdaMax FP32 高性能二进制 + 极端值输入（m 近 ±FLT_MAX / v+ε 近 ε / var ±inf / lr=0）；kernel_l1 混合比对 5 例 FAIL 实测
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: 推理侧触发面：推理框架中含 AdaMax 状态的优化器路径（如在线学习/RL 微调服务）可达；属训推共有算子数值缺陷，本轮按推理范围收录。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6796
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn InplaceApplyAdaMax（op_kernel/arch35/inplace_apply_ada_max_vf.h，Ascend950PR arch35）AdaMaxVF 固定先除后乘 u=(m/(v+ε))·lr_adj：m 输入可达 ±FLT_MAX、v+ε 可低至 ε（1e-6 量级），商在 FP32 域溢出为 ±inf 后再运算产生三种失败（kernel_l1 mixed 比对 5 例 precision FAIL，fp32/high_performance 二进制，perf 正常仅精度失败，golden 为 FP64 Promote）：(1) lr=0 冻结更新：inf·0=NaN，golden 按实数语义 update=0、var 保持原值（L1_528 golden=-3.89e-4 vs kernel=NaN）；(2) |lr_adj|<1 收缩商：商溢出 ±inf 但 lr_adj·商有限可表示（L1_675 真实 update=-2.36e37 有限，kernel 得 -inf 假溢出）；(3) var=±inf 且 update 同号真实溢出：±inf-±inf=NaN（L1_295 var=-inf、真实 update=-2.24e43，golden=-inf，kernel=NaN）。修复：|lr_adj|<=1 先乘后除（|m·lr_adj|<=FLT_MAX 恒不溢出）；|lr_adj|>1 保持（商溢出必然真实溢出）；varNew=NaN 且 m_out 有限时 varNew=var。修复后 5/5 PASS（逐元素 FP64 对账 100%）+ 23/23 防复发用例 + kernel_l1/geir_l1 885 例零退化。
+  source: 2026-10-17 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6796 （open；5 例失败形态+修复+验证全记录）
+  behavior: 用 InplaceApplyAdaMax 算子（FP32、Ascend950PR）处理极端值参数时输出错误数值：lr=0 本应冻结参数不变，结果参数变 NaN；学习率小于 1 时真实更新量有限却算出 ±inf 假溢出；参数本身 ±inf 时相减得 NaN。同类输入在 PyTorch/TF 语义下结果可表示且有限。
+  trigger_surface: InplaceApplyAdaMax FP32 + 极端值输入域（m/v/var/lr_adj 组合）；950PR arch35 高性能二进制
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

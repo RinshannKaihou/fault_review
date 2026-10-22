@@ -1,0 +1,56 @@
+id: INF-1696
+legacy_ids: []
+slug: npu_queue_can_exit_silent_noop_false_pass
+aliases: []
+title: NPU 队列 CAN_EXIT 后算子静默 no-op 致测试假通过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: NPUQueue 状态机
+  behavior: 致命错误后 NPUQueue 进入 CAN_EXIT，Enqueue() 直接返回不执行，MakeSureQueueEmpty 在该状态下不抛异常，worker 继续跑后续用例并产出未初始化设备内存。
+effect:
+  objects:
+  - 测试判定
+  - 数值结果
+  detail: 同 worker 中毒用例之后的所有用例静默失败——不报错但结果是垃圾，被误判通过或得到无意义失败，测试报告被污染；修复后按退出码 70 重启 worker 续跑。
+  visibility: 静默错误
+mitigation:
+  detect: 用例间隙做探针计算 torch.ones(4,device='npu').sum().item() != 4.0，或匹配 ERROR_EXIT/deviceErrorMap/CANN 错误码签名；命中即判定设备上下文已毒化
+  fix: 修复分支 kerer-sk/pytorch:fix/npu_poison_detect_restart（未核实合入）：worker 双层毒化检测 + 用例间隙 os._exit(70) 干净退出，父进程重启新 worker 处理未上报用例
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: NPU 测试分片执行（run_npu_test_shard.py）；触发前提是同 worker 内先出现 aclnn 算子致命错误 / CANN OOM / AiCore 异常；A3 双 die 环境验证
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2651
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2651（2026-07-08，closed，.github/scripts/run_npu_test_shard.py）：NPU 测试分片执行中，某个用例触发 aclnn 算子致命错误（如 aclnnRepeat 0 维、CANN OOM、AiCore 异常）后，NPU 设备上下文被毒化：NPU 任务队列（NPUQueue.cpp）进入 CAN_EXIT 状态，此后所有算子调用变成静默 no-op，输出张量是未初始化的设备内存。NPUQueue 的 Enqueue()（NPUQueue.cpp:573-596）在致命错误后直接返回不执行，MakeSureQueueEmpty 同步（NPUQueue.cpp:313-315）在 CAN_EXIT 状态下不抛异常（runtime_error 为空），worker 进程不会退出，继续「执行」后续用例但全部产出垃圾数据；现有 runner 不检测该毒化状态，worker 一路跑到分片结束，产生大量假结果。修复：worker 增加两层毒化检测——Layer 1 签名匹配（检查 failed/error 用例 message/stdout/stderr 是否含 ERROR_EXIT 的 "The process exits for this inner error"、deviceErrorMap 硬件错误标签如 UCE ERROR / HBM MULTI BIT ECC ERROR / HCCS LINK ERROR / HCCL OP RETRY FAILED / SUSPECT REMOTE ERROR、CANN 错误码 EZ9999/EE9999/EZ1009，零开销）；Layer 2 探针计算（约 1ms，对 failed/error 用例运行 torch.ones(4,device=''npu'').sum().item()，结果不等于 4.0 或抛异常即判定毒化）。命中后在用例间隙 os._exit(70) 干净退出，父进程识别退出码 70 后重启新 worker 处理所有未上报用例。已在 A3 双 die 环境验证。本条目只记观测/评测面的判定污染，不推断模型计算本身出错。'
+  source: 2026-07-08 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/2651 （closed）
+  behavior: 跑 NPU 测试分片时，只要有一个用例触发了 aclnn 算子致命错误 / CANN OOM / AiCore 异常，同一个 worker 进程里排在它后面的所有用例都不再真正执行：不报错，但拿到的输出是未初始化的垃圾内存，于是被误判成通过，或得到一个毫无意义的失败信息。测试报告看起来跑完了整片，实际后半段全是假结果。加上毒化检测后，worker 会在用例间隙以退出码 70 退出，由父进程重启新 worker 续跑剩下的用例。
+  trigger_surface: NPU 测试分片以 worker 复跑多用例；同 worker 内先发生算子致命错误/CANN OOM/AiCore 异常
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

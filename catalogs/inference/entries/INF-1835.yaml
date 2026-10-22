@@ -1,0 +1,59 @@
+id: INF-1835
+legacy_ids: []
+slug: vllm_ascend_dflash_verify_fia_causal_grouping
+aliases: []
+title: DFlash 验证折叠 query 共享 causal 长度致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: FIA 验证步元数据分组
+  behavior: 验证步把每条序列 16 个 query 折叠进一次 npu_fused_infer_attention_score 调用时，按 batch 行分组而不维护逐 query 的 causal KV 长度，不同 KV 范围 query 被并组
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: 贪心采样 + 前缀缓存 + DFlash（block 16）下，投机输出与 target-only 基线在特定位置分叉（某请求第 401 位置出现 8-token 与 868-token 观察事件差）；改 query 分组边界即产生 bf16 漂移，服务无报错、无 NaN
+  visibility: 静默错误
+mitigation:
+  detect: 同输入贪心分别跑 target-only 与 DFlash 投机，逐 token 比对；出现分叉即验证步 attention 元数据有问题
+  fix: '待定；报告者在 #17519 提出修复方向，等维护者确认 FIA 元数据契约（open）'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: DFlash 投机解码验证步 + 混合批（不同序列 KV 长度不同）+ 前缀缓存；Ascend 910B、CANN 8.5.1、vllm-ascend da421af、block size 16
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 两个独立机制（causal 边界分组、256/512 特殊归约）在同一 issue 内报告，本条按主机制收；第二条为数值路径敏感的 bf16 漂移。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17520
+  kind: github_issue
+relations: []
+original:
+  mechanism: Ascend 910B、CANN 8.5.1（私有构建，已读 fused_infer_attention_score/flash_attention_regular.h 与 block_epilogue_online_softmax.hpp）、vllm-ascend da421af 上跑 DFlash 投机解码（num_speculative_tokens=15 + 1 bonus，block 16）：验证步把每条序列 16 个 query token 折叠进一次 npu_fused_infer_attention_score 调用。vllm_ascend/attention/attention_v1.py 在折叠时按 batch 行分组 query，没有维护逐 query 的 causal KV 长度，混合批（不同序列 KV 长度不同）中应看到不同 KV 范围的 query 被并入同一组，产生错误 attention 输出。报告者给出确定性证据：某请求第 401 位置出现 8-token 与 868-token 的观察事件差，同一底层 KV、仅改 query 分组即得不同输出。第二层是 CANN FAI kernel 按 MAX_KV_STACK_LEN=512 分块处理 KV，尾块恰为 256 或 512 列时走 CalcLocalRowSum 特殊归约树、否则走顺序 RowsumTAILTILE，改变 query 组边界即改变走哪条归约路径，相同输入也产生 bf16 漂移。复现负载 155 请求、并发 16、DP2、全 EOS。
+  source: 2026-09-24 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17520 （open）
+  behavior: 贪心采样下开启 DFlash 投机解码，输出本应与不带投机的推理逐 token 相同，实际在特定位置开始分叉：同模型同输入的回答出现用词差异甚至语义偏离，服务无报错、无 NaN，只有与 target-only 基线逐 token 对比才看得出。
+  trigger_surface: DFlash 验证步 + 混合批不同 KV 长度 + 前缀缓存 + 910B/CANN 8.5.1
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+    rewritten:
+    - detail

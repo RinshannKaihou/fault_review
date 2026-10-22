@@ -1,0 +1,63 @@
+id: INF-1476
+legacy_ids: []
+slug: ops_nn_weight_quant_bmm_v2_preload_a_l1_oob_nondeterministic
+aliases: []
+title: WeightQuantBmmV2 预取 A 越界写 L1 竞态错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: PreloadA 未按 L1 容量钳制
+  behavior: PreloadA 按 host 下发的 aPreloadSize 预载 A 不校验 L1 A 区实际容量；限核 16/22 时尾块重切分致越界踩 WeightL1_P1，与反量化写并发互覆。
+effect:
+  objects:
+  - 数值结果
+  detail: int4+bf16 M=256/K=6144/N=6912 限核 16/22 rel_l2 0.2~0.6 且同进程重跑互不相同；每核首 N 块列区间全 M 行错；其余核数正常；修复后逐 bit 一致
+  visibility: 不可复现
+mitigation:
+  detect: 限核 16/22 图模式与 eager 对照 rel_l2；同进程重复执行结果不一致是竞态特征
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/12304 （open）：kernel 侧 PreloadA 将预取长度钳制到 L1 A 区实际容量 + host 侧 SetPreLoad 按同公式封顶 + ST 回归用例；cmct 公共头被多 matmul 算子共用，修复对其它 A-prefetch 模板算子同样生效（未核实合入/发布）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend950（arch35/DAV3510）+ WeightQuantBatchMatmulV2 N_FIRST_TAIL_RESPLIT 模板 + 限核 16/22（其余核数正常）；perchannel int4 转置 weight + bf16 x 实测；CANN 9.3.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12304
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: ops-nn PR !12304（c2026-10-19，修复单含完整根因+验证）：DAV3510（Ascend950）上 WeightQuantBatchMatmulV2 走 N_FIRST_TAIL_RESPLIT 模板时，部分限核场景输出非确定性错误。实测：perchannel int4 weight（转置）+ bf16 x（非转置），M=256/K=6144/N=6912，图模式限核 16 核（或 22 核）与 eager rel_l2 偏差 0.2~0.6，同进程重复执行结果互不相同（竞态特征）；8/9/10/12/14/20/24/28/32 核及不限核正常。根因：BlockMmad::PreloadA（matmul/common/cmct/block/block_mmad_a_prefetch_b_prologue.h）按 host 下发 aPreloadSize（约 M*K/核数，host 仅以 aSize<核数×256KB 为准入）把 A 预载进 L1 的 A 区但不校验 L1 A 区实际容量。L1 布局 Weight_P0|A双缓冲|Weight_P1，A 区可用 = 512KB−2×(weightL1+biasL1)。核数变化触发尾块重切分 baseN 扩展（16 核 352/22 核 384）后 weight 双缓冲占用增大（176/192KB）、A 区被压缩（160/128KB），preload（192/140KB）越界（32/12KB）踩进 WeightL1_P1；kernel 启动时 AIC preload（MTE2）与 AIV 反量化写第一块 WeightL1_P1 并发执行互相覆盖，每核第一个 main N 块对应输出列区间（[0, cubeN*256)）全 M 行错且随时序波动。修复：PreloadA 钳制到 L1 A 区实际容量 + host SetPreLoad 同公式封顶 + ST 回归。验证：16/22 核各 3 连跑与 eager 逐 bit 一致、同进程 4 连跑逐 bit 一致、8~32 核回归全部逐 bit 一致。cmct 公共头被多个 matmul 类算子共用，修复对其它走 A-prefetch 模板的算子同样生效。
+  source: 2026-10-19 GitCode cann/ops-nn merge request https://gitcode.com/cann/ops-nn/merge_requests/12304 （open）
+  behavior: 昇腾 950 上跑量化矩阵乘（WeightQuantBatchMatmulV2）、图模式且限制在 16 或 22 个核时，输出的前若干列整列错误（相对偏差 0.2~0.6），且同一进程重跑结果每次都不一样；其他核数完全正常。根因是 A 矩阵预取越界写进 L1 里权重缓冲区并与反量化写竞争。
+  trigger_surface: Ascend950 + WeightQuantBatchMatmulV2（N_FIRST_TAIL_RESPLIT 模板）+ 图模式限核 16/22 核；perchannel int4 转置 weight + bf16 x；CANN 9.3.0
+  discovery: 2026-10-19 每日扫描
+  notes:
+  - 2026-10-20 回访 2026-10-20：ops-nn PR !12304 索引状态 merged（共享批次），发布未核实
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - original.notes

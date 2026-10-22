@@ -1,0 +1,55 @@
+id: INF-1848
+legacy_ids: []
+slug: vllm_ascend_prefix_cache_cross_request_context_leak
+aliases: []
+title: 前缀缓存命中后把别的请求上下文答出来
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 前缀缓存块复用
+  behavior: 共享前缀命中时复用的 KV 块仍带着别的请求的后缀内容：probe 请求把 prime 阶段写进缓存的姓名答了出来，唯一首字符对照组不串扰。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: DeepSeek-V4-Flash 开 prefix caching、100 并发共享 3008 token 前缀：两次运行 84/100 与 85/100 的 probe 回复含 prime 标记文本，对照组 0 泄漏。
+  visibility: 静默错误
+mitigation:
+  detect: 两阶段探针：先并发灌入带标记的 prime prompt 填满 KV，再用同一共享前缀、只问问题的 probe 请求，统计回复是否含标记；同时用唯一首字符对照组排除正常续写。
+  fix: 待定（issue closed，正文只给复现脚本与判定规则，未给修复 PR，也未定位到 hash 冲突还是块复用）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: DeepSeek-V4-Flash，--enable-prefix-caching，100 并发、共享 3008 token 前缀（issue 2026-08，vllm-ascend 版本未在正文给出）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/14118
+  kind: github_issue
+relations: []
+original:
+  mechanism: DeepSeek-V4-Flash 开 prefix caching 的 serve 上，报告者做了一个两阶段探针：prime 阶段并发 100 个请求，每个请求是 3008 token 的重复字符前缀 + 带标记的 PRIME_PROMPT（“Xiao Wang's full name is Wang Xiaoxiao, and Xiao Zhang's full name is Zhang Jiansen.”），把标记文本写进 KV cache；probe 阶段再并发 100 个请求，前缀相同但后面只跟 PROBE_PROMPT（“What is Xiao Zhang's full name?”），不携带答案。判定规则：回复里出现 Wang Xiaoxiao / Zhang Jiansen 即跨上下文泄漏，回复“不知道”为正常。结果：两次运行分别有 84/100 与 85/100 的 probe 回复把 prime 阶段写进缓存的姓名答了出来，而唯一首字符的对照组 0 泄漏——说明串扰来自共享前缀命中的 KV 复用，而不是模型在长前缀上正常续写。报告只给出复现脚本与判定规则，没有定位到具体的 hash/块复用代码，也没有给修复 PR。
+  source: 2026-08-12 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/14118 （closed）
+  behavior: 开前缀缓存、多个请求共享同一段长前缀时，个别请求会答出别的请求上下文里的内容（本例是别人的姓名），HTTP 200、无报错、文本通顺，只有对照实验才看得出是串到了别的请求；唯一首字符不同的对照组不复现。
+  trigger_surface: prefix caching + 高并发 + 请求间共享长前缀（3008 token）；DeepSeek-V4-Flash
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

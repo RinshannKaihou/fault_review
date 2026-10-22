@@ -1,0 +1,54 @@
+id: INF-1997
+legacy_ids: []
+slug: msda_grad_aclnn_silent_oob_atomic_write
+aliases: []
+title: MSDA 反向 aclnn 静默越界 atomic 写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MSDA 反向 kernel
+  behavior: host 只校验维数与部分上界，不校验 sum(H*W) 与 numKeys 一致；kernel 只夹紧 in-level hLow/wLow，越界 atomic-add 到 gradValue 外
+effect:
+  objects:
+  - 数值结果
+  detail: numKeys=1、spatial_shapes=4×4 调 aclnn 仍返回 SUCCESS，gradValue 合法范围外被 atomic-add 16 处、canary 被打坏；合法用例 gradValue[0]=0.25 正常
+  visibility: 静默错误
+mitigation:
+  detect: 用 sum(H*W) 与 numKeys 不一致的 spatial_shapes/level_start_index 调 aclnnMultiScaleDeformableAttentionGrad，断言参数错误；用 canary 包住 gradValue 查越界写
+  fix: 待定（issue 为本地 draft，未附 MR，修复未核实）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnMultiScaleDeformableAttentionGrad；spatial_shapes/level_start_index 与 value 的 numKeys 不一致
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/4769
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 4769（2026-08-13，closed，P-011 OOB 写）。vfusion/multi_scale_deformable_attention_grad/op_kernel/multi_scale_deformable_attention_grad.h 由 device 侧 spatial_shapes/level_start_index 算 offsetValue，只做 in-level 的 hLow/wLow 夹紧，没有 levelStart + h*w <= numKeys 校验，随后 DataCopyPad 对 gradValueGm 做 atomic 写；host 侧只校验 tensor 维数与部分上界。Ascend910B3 + CANN 9.1.0-beta.3 上以 build.sh --pkg 装独立 vendor 后复现：numKeys=1、spatial=4×4、loc=0.5 时 API 仍 SUCCESS，canary smash 16 处（exit 42）；合法用例 numKeys=4、spatial=2×2 的 gradValue[0]=0.25、canary 完好。
+  source: 2026-08-13 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/4769 （closed）
+  behavior: 调用者把 spatial_shapes/level_start_index 与 value 的 numKeys 填成不一致时，接口不报错而是返回 SUCCESS：反向梯度除了写 gradValue，还会往它合法范围之外 atomic-add，把紧邻的 buffer（canary）打坏。同一批参数自洽的用例结果完全正确，所以问题只在参数不自洽时静默出现，接口与日志都没有任何提示。
+  trigger_surface: aclnnMultiScaleDeformableAttentionGrad（MSDA 反向），spatial_shapes/level_start_index 与 value.numKeys 不一致
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

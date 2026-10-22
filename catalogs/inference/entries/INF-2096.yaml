@@ -1,0 +1,60 @@
+id: INF-2096
+legacy_ids: []
+slug: vllm_openai_chat_empty_tool_calls_array
+aliases: []
+title: 聊天响应带空 tool_calls 数组致 SDK 误判工具轮
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: chat completion 序列化
+  behavior: '响应序列化把没有工具调用的消息写成 tool_calls: []（而非 null），流式 delta 也带空数组；客户端按 message.tool_calls is not None 判定这是工具调用轮。'
+effect:
+  objects:
+  - 输出内容
+  detail: 'DeepSeek V4 工具调用第二轮（工具结果回传后）正文正常、finish_reason=stop，但 tool_calls 为空数组；OpenAI SDK 客户端据此继续工具循环并 IndexError。上游 vLLM 已由 #44105 修复。'
+  visibility: 静默错误
+mitigation:
+  detect: 检查 chat completion 的 message.tool_calls 是 null 还是 []，流式响应检查 delta.tool_calls 是否被省略
+  fix: vllm-ascend 侧建议 monkey patch 去掉空 tool_calls 数组；上游修复 https://github.com/vllm-project/vllm/pull/44105（issue closed，未核实 vllm-ascend 是否已消费该修复）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM/vllm-ascend 的 OpenAI 兼容 chat completion 接口 + 工具调用（DeepSeek V4 deepseek_v4 tool parser）第二轮请求；非流式与流式都出现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9790
+  kind: github_issue
+relations: []
+original:
+  mechanism: '这是上游 vLLM 的 OpenAI API 兼容性缺陷，位于 chat completion 响应序列化：没有工具调用的 assistant 消息被写成 tool_calls: [] 而不是省略该字段或写 null，流式响应里普通文本 delta 同样带 delta.tool_calls: []。报告者明确说明这不是 DeepSeek V4 的 parser 失败，也不是模型推理精度问题——模型已经正常生成了最终自然语言答案，只是序列化出来的 payload 多暴露了一个空 tool-call 字段。上游对应 issue 是 https://github.com/vllm-project/vllm/issues/44104、修复 PR 是 #44105；vllm-ascend 在消费上游修复前的建议是在序列化后删掉空的 tool_calls（保留非空工具调用），目标分支 main 与 releases/v0.20.2rc。'
+  source: 2026-05-31 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/9790 （closed）
+  behavior: '用 DeepSeek V4 做工具调用时第一轮正常：finish_reason=tool_calls，带一个合法 tool call；把工具结果回传后第二轮正文是正常的自然语言回答、finish_reason=stop，但响应里 message.tool_calls 是空数组而不是 null。基于 OpenAI SDK 的客户端因为 message.tool_calls is not None 而认为还有工具轮次，继续进循环，随后对空列表取下标报 IndexError。流式响应同样受影响，普通文本 delta 里带着 delta.tool_calls: []。'
+  trigger_surface: OpenAI 兼容 chat completion + 工具调用第二轮（工具结果回传后），流式与非流式均可复现
+  discovery: 2026-10-21 第三轮顺序扫描（final_tail，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 输出解析
+        to: 调度/服务
+    uncertain:
+    - behavior

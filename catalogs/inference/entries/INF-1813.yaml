@@ -1,0 +1,57 @@
+id: INF-1813
+legacy_ids: []
+slug: cube_vector_core_type_bare_mix_breaks_profiling
+aliases: []
+title: core_type 被覆盖为裸 MIX 致 profiling 缺算子行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: exe_graph_serializer
+  behavior: FE 把 _cube_vector_core_type 无条件覆盖为裸 MIX，序列化 DfxExtendInfo 的 task_type 映射只有 MIX_AIC/MIX_AIV，查不到即置 UINT32_MAX。
+effect:
+  objects:
+  - 指标/日志
+  detail: task_time.csv 有 te_matmulv3 的 kernel 记录，op_summary.csv 却没有任何 MatMulV3 行，只留 Unsupported task type MIX 的 warning；按算子维度统计耗时会漏掉该算子。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 task_time.csv 与 op_summary.csv 的算子集合，并搜 SerializeDfxExtendInfo:Unsupported task type 的 warning
+  fix: 待定（issue closed；期望 FE 把 _cube_vector_core_type 细化为 MIX_AIC/MIX_AIV 并让序列化表兼容裸 MIX）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  trigger_note: dynamo_export→air→atc 后用 CustomPass 把 MatMulV2 换成 MatMulV3（x2 FRACTAL_NZ）并开 profiling；910_9382 + CANN 9.0.0 + torch_npu 2.9.0.post2
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/500
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: dynamo_export → air → atc 出 om，CustomPass 在 kAfterOriginGraphOptimize 把 MatMulV2 换成 MatMulV3（x1 ND、x2 FRACTAL_NZ）。开启 profiling 后 task_time.csv 有 te_matmulv3 的 kernel 执行记录，op_summary.csv 里没有任何 MatMulV3。根因：FE 子图优化阶段把 _cube_vector_core_type 无条件覆盖为裸 "MIX"（tbe_json_parse.cc ProcMixCoreType 第340-380行，两个早返回路径 352-356、359-364 只设 _fftsplus_task/_mix_is_aiv 未细化；op_impl_type_judge.cc 第185-188行再从 OpKernelInfo 读 core_type="MIX" 覆盖回去），而 runtime/v2 的 exe_graph_serializer.cc:176 序列化 DfxExtendInfo 时 task_type_str_to_int 只含 MIX_AIC/MIX_AIV，查找失败置 UINT32_MAX 并打 warning Unsupported task type MIX。运行时 cann_profiler_v2.cc:313 已正确识别 task type:4（MIX_AIC），问题只在序列化阶段。环境 Ascend910_9382、cann-9.0.0、torch_npu 2.9.0.post2。
+  source: 2026-07-30 GitCode cann/ge issues https://gitcode.com/cann/ge/issues/500 （closed）
+  behavior: 用户开了 profiling 想看新加的 MatMulV3 算子耗时，task_time.csv 里能看到 te_matmulv3 的 kernel 执行记录，但 op_summary.csv 里一行 MatMulV3 都没有，只能靠 kernel 名反推；日志里只有一条 [exe_graph_serializer.cc:176] SerializeDfxExtendInfo:Unsupported task type MIX 的 warning，很容易被忽略，按算子维度统计的耗时表因此整体偏低。
+  trigger_surface: 自定义 pass 生成 MatMulV3（x2 为 FRACTAL_NZ）+ 开启 profiling 序列化 DFX 信息
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem

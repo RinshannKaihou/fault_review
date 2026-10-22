@@ -1,0 +1,68 @@
+id: INF-1564
+legacy_ids: []
+slug: ops_math_as_strided_slice_stride_int32_truncation
+aliases: []
+title: as_strided 等三算子大 stride 索引截断读错地址
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: arch35 SIMT/MoveAlign 索引
+  behavior: arch35(A5) SIMT 与 MoveAlign 路径的 stride 数组、inputIdx 与索引乘积累加用 int32/uint32；stride>2^31（MoveAlign）或 >2^32（SIMT）时截断，按错误地址读取
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950 arch35 上大 stride 输入读出与期望不符的数据（读错地址而非报错）；修复把 stride 数组、inputSize、strideArr 加宽到 int64/uint64，slice 行 stride>2^32 时改逐行 DMA
+  visibility: 静默错误
+mitigation:
+  detect: 构造 stride 超过 2^31/2^32 的 as_strided/slice/strided_slice 用例，与 CPU 参考逐元素比对，并检查 GM 访问地址是否仍落在输入范围内
+  fix: 'PR #3844（issue closed）：outStrideArr/gmInStride/gmOutStride 由 int32 加宽 int64，AsStridedTilingParam::inputSize 改 int64，SIMT 的 strideArr 改 uint64 且 inputIdx 用 uint64 计算、乘法显式 static_cast<uint64_t>；合入与发布状态未核实'
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 仅 Ascend950 arch35(A5) 的 SIMT / MoveAlign / DualCut 路径；stride>2^31（MoveAlign）或 >2^32（SIMT），slice 行 stride>2^32 的 two_dim_small_shape 路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2378
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1539
+pattern: PAT-INF-0169
+original:
+  mechanism: as_strided / slice / strided_slice 三个 conversion 算子在 arch35(A5) 的 SIMT 与 MoveAlign/DualCut 路径存在整型索引溢出：stride 数组（outStrideArr/gmInStride/gmOutStride）及索引计算使用 int32/uint32，当用户输入 stride > 2^31（MoveAlign 路径）或 > 2^32（SIMT 路径）时发生截断，据此算出的 GM 地址错误，读出的是错误位置的数据。设计方案给出的修法：host 侧 stride 数组从 int32 加宽到 int64、AsStridedTilingParam::inputSize 从 uint32 改 int64、AsStridedSimtTilingData::strideArr 从 uint32 改 uint64、CheckInputInfo 的 requiredStorageSize/originalTensorStorageSize 加宽 int64；kernel 侧 SIMT 的 strideArr 形参改 uint64、inputIdx 用 uint64 计算并对乘法 static_cast<uint64_t> 防中间截断，MoveAlign/DualCut 的 stride 数组改 int64，slice two_dim_small_shape 路径在行 stride>2^32 时改逐行 DMA、GM 基址用 uint64。支持硬件为 Ascend950 arch35(A5)。
+  source: '2026-07-27 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/2378 （closed，关联 PR #3844）'
+  behavior: 在 Ascend950 上用超大 stride 调 as_strided/slice/strided_slice，算子不报错，但读出来的张量内容和 CPU 参考不一致——索引被截断后读的是别处的内存，看起来像“数据本身不对”，实际是寻址算了错地址。
+  trigger_surface: ops-math as_strided / slice / strided_slice 的 arch35(A5) SIMT 与 MoveAlign/DualCut 路径；stride 超过 2^31 或 2^32
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+    - detail

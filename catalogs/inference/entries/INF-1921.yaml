@@ -1,0 +1,51 @@
+id: INF-1921
+legacy_ids: []
+slug: mindformers_parallel_dims_efsdp_silent_zero
+aliases: []
+title: ep 越界时 ParallelDims 让 efsdp 静默塌 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindformers
+    component: ParallelDims.build_mesh
+  behavior: build_mesh 用 efsdp=fsdp*tp//ep 的整除结果建 EP sparse mesh，_validate 既不校验 ep 能否整除 dp_shard*cp*tp，也不校验 ep 上界，越界时 efsdp 直接为 0
+effect:
+  objects:
+  - 可用性/进度
+  detail: 16 卡 dp_replicate=4/dp_shard=2/cp=1/tp=2/ep=8（EP 区域仅 4）时 sparse mesh 乘积为 0，非法配置不在校验期被拒，直到 _unflatten/_validate_meshes 才报与根因无关的 mesh-size 不匹配
+  visibility: 报错
+mitigation:
+  detect: 构造 ParallelDims 后打印 build_mesh() 的 sparse mesh 轴与乘积，检查 efsdp*ep 是否等于 dp_shard*cp*tp
+  fix: issue 只给期望（_validate 阶段拒绝并提示增大 dp_shard 而非依赖 dp_replicate），未附 PR（closed，修复状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PyNative + hyper_parallel，HSDP（dp_replicate>1）且 ep 不能整除或超过 dp_shard*cp*tp；dp_replicate=1 的等价配置正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2370
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 现象：mindformers/pynative/distributed/parallel_dims.py 的 ParallelDims 在构造 EP 的 sparse mesh（轴布局 [pp, dp_replicate, efsdp, ep]）时，ep 嵌套在 dp_replicate 内部，本应满足 efsdp*ep == dp_shard*cp*tp，但 build_mesh() 直接用 `efsdp = fsdp * self.tp // self.ep`（fsdp = dp_shard*cp）的整除结果建 mesh，_validate() 对 ep 与该区域的整除/上界关系完全没有校验。最小复现：16 卡 dp_replicate=4、dp_shard=2、cp=1、tp=2、pp=1、ep=8（由 dp_replicate*dp_shard*cp*tp*pp==world_size 推出），EP 区域 dp_shard*cp*tp=4 < ep=8，efsdp=4//8=0，sparse mesh (pp=1, dp_replicate=4, efsdp=0, ep=8) 乘积为 0，问题直到后续 _unflatten/_validate_meshes 才以与根因无关的 mesh size mismatch 暴露。对照：dp_replicate=1、dp_shard=2、cp=2、tp=2、ep=8 合法（EP 区域=8，可整除）不受影响。环境：Ascend 910B，MindFormers master pynative + hyper_parallel DTensor/DeviceMesh；该逻辑是纯 Python 维度推导，与卡型无关。
+  source: '2026-06-18 GitCode mindspore/mindformers issue #2370 https://gitcode.com/mindspore/mindformers/issues/2370（closed）'
+  behavior: 按合法 world_size 约束配出 ep 大于单个 dp_replicate 组内 dp_shard*cp*tp 的并行配置（例如 HSDP 下把 ep 开到 8）时，启动校验一声不响通过，训练走到 mesh 构建/展开阶段才崩，报的是一个和 ep、efsdp 毫无关系的 mesh size 不匹配，从日志完全看不出是并行维度配错；排查只能手工反推 sparse mesh 各轴乘积。同样的模型把 dp_replicate 设成 1 就一切正常，很容易误判成环境或版本问题。
+  trigger_surface: PyNative + hyper_parallel DeviceMesh + HSDP（dp_replicate>1），且 ep > dp_shard*cp*tp 或 ep 不整除该区域
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

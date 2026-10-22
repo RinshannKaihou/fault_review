@@ -1,0 +1,60 @@
+id: INF-2044
+legacy_ids: []
+slug: hcomm_check_channel_param_missing_index
+aliases: []
+title: CheckChannelParam 漏下标只校验第 0 个通道
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: MyRank::CheckChannelParam
+  behavior: 循环体内 7 行 8 处把 channelDesc[index] 写成 channelDesc->（恒等 [0]），index≥1 的通道绕过 memHandleNum 上限、空指针与 notifyNum 三道校验
+effect:
+  objects:
+  - 可用性/进度
+  detail: channelNum>1 时非 0 号通道的超限 memHandleNum/notifyNum、空 memHandles 不会返回 HCCL_E_PARA，会继续进入资源申请与数组访问，可能造成越界读或空指针解引用。
+  visibility: 报错
+mitigation:
+  detect: 在 CheckChannelParam 范围内 grep 'channelDesc->' 应为 0 命中；构造 channelNum>1 且第 1 个元素 memHandleNum 超限/指针为空的用例，断言返回 HCCL_E_PARA
+  fix: 建议循环体内统一补 [index]（共 7 行 8 处）；issue 未附 MR，未核实是否已修
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: cann/hcomm master 1f7e0221a，my_rank.cc:673-707；任何 channelNum>1 的建链调用
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/916
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hcomm src/coll_communicator_mgr/resource_mgr/local/my_rank/my_rank.cc:673-707 的 MyRank::CheckChannelParam(CommEngine, const HcclChannelDesc*, uint32_t channelNum) 用 for (u32 index...) 逐元素校验，但循环体内多处漏写下标：678/681 的 channelDesc->memHandleNum、684 的 channelDesc->memHandleNum 与 memHandles、687/690 的 memHandleNum、702/705 的 channelDesc->notifyNum，共 7 行 8 处都恒等于 channelDesc[0]。同循环 :695/:698 用的是 channelDesc[index]，同函数外 HasDuplicateChannelDesc :663/:665 也正确，且报错日志格式串打印 index 而取值用 [0] 自相矛盾，可判定为漏写而非有意设计。后果是 index≥1 的元素同时绕过 memHandleNum>MEM_HANDLE_NUM_MAX、memHandleNum!=0 且 memHandles==nullptr、notifyNum>NOTIFY_NUM_MAX 三道入口校验，超限数量与空指针可直达后续资源申请和数组访问（越界读、空指针解引用）。
+  source: 2026-09-17 GitCode cann/hcomm issue https://gitcode.com/cann/hcomm/issues/916 （closed）
+  behavior: 多通道建链（channelNum>1）时参数校验实际上只看第 0 个通道：第 1 个及以后的 channelDesc 即使 memHandleNum 超过上限、声明了句柄但指针为空、notifyNum 超限，也不会返回 HCCL_E_PARA，而是继续走到资源申请与数组访问。调用方以为参数已校验通过，出问题时现场看不到任何参数错误，只能从越界/空指针现场反推。
+  trigger_surface: HcclChannelDesc 数组长度 >1 的通道建立路径
+  discovery: 2026-10-21 系统扫描（sweep_2，issue created < 2026-10-07 历史索引
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错
+    rewritten:
+    - detail

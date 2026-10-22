@@ -1,0 +1,57 @@
+id: INF-1665
+legacy_ids: []
+slug: ops_nn_loss_cross_core_merge_inf_to_nan
+aliases: []
+title: 三 loss 跨核合并把 inf 变 NaN 且 partials 越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: 通用
+    component: arch35 跨核合并与 partials
+  behavior: arch35 跨核合并用标量 Kahan：p=±inf 时 comp=inf-inf=NaN，污染后续分片使 total 变 NaN；MultilabelMarginLoss 的 partials 按核数分配，合并却读满 64 车道而越界。
+effect:
+  objects:
+  - 数值结果
+  detail: 950PR（arch35）+ CANN 9.2.0：reduction=sum/mean 且输入含 ±inf 时输出 NaN（应 inf），单核不复现、核数 1→2 即暴露；MultilabelMarginLoss 小核数下约 1/12 结果错。
+  visibility: 数值异常
+mitigation:
+  detect: sum/mean 归约输入里放 ±inf，与 usedCoreNum=1 的结果对比；单核通过不能当验收（缺陷在核数≥2 才出现）。
+  fix: issue 5484 closed；修复 PR https://gitcode.com/cann/ops-nn/pulls/9662 （合入状态未核实）。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: hw_specific
+  trigger_note: Ascend 950PR（arch35/DAV_3510）+ CANN 9.2.0 + MSELossV2/PoissonNllLoss/MultilabelMarginLoss 的 reduction=sum|mean + usedCoreNum≥2 + 输入含 ±inf
+  confidence: documented
+remarks: 两个缺陷都只在多核 tiling 下出现：Kahan 补偿项被 inf 污染（数值语义），partials 缓冲按核数而非矢量长度分配（越界读）。作者给了逐行代码级因果链，未给误差量级。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5484
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5484（2026-09-02，closed）：硬件 Ascend 950PR（arch35 / DAV_3510），CANN 9.2.0，ops-nn master，涉及 MSELossV2 / PoissonNllLoss / MultilabelMarginLoss 的 arch35 kernel。缺陷一：reduction=sum/mean 的跨核合并用标量 Kahan 补偿求和 y = p - comp; t = total + y; comp = (t - total) - y; total = t;——当 p=±inf 时 comp = inf - inf = NaN，total 本身还是 inf 但补偿项已被污染，下一分片 y = p - NaN = NaN 使 total 变 NaN；单核时循环只跑一次、被污染的 comp 之后不再使用，所以单核不复现，核数 1→2 就是暴露阈值。缺陷二：MultilabelMarginLoss 的 partials 缓冲区仅按 usedCoreNum*wsCoreStride 分配（4 核时 32 float），而合并逻辑一次读满 VL=64 车道，DataCopyPad 只搬入 usedCoreNum 个槽，多出的车道取到 UB 残留值，残留含 ±inf/NaN 时 inf+(-inf)=NaN 现形，表现为单核/小核数下约 1/12 概率结果错误。期望：单侧 inf 或一侧 +inf 一侧 -inf 应得 inf；同位双 inf（inf-inf）或输入含 nan 应得 nan；任何核数下结果一致且不越界读。
+  source: 2026-09-02 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5484 （closed）
+  behavior: 在 950 上用这三个 loss 的 sum/mean 归约时，只要输入里有 ±inf，输出就变成 NaN 而不是 inf——明明是“和无穷大”却报成“不是数”，下游 loss 直接坏掉；小张量（单核）跑得好好的，一上多核就出现，看起来像随机。MultilabelMarginLoss 在核数少时还会偶发错值（约 1/12），同一条命令多跑几次结果不一样。
+  trigger_surface: Ascend 950PR arch35 kernel + reduction=sum|mean + usedCoreNum≥2 + 输入含 ±inf 或 nan
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem

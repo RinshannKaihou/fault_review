@@ -1,0 +1,57 @@
+id: INF-1574
+legacy_ids: []
+slug: ops_math_accumulatenv2_fp16_accum_empty_tail
+aliases: []
+title: AccumulateNV2 FP16 低精度累加与空张量 0%0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: AccumulateNV2 kernel
+  behavior: FP16 多输入累加直接用低精度累加而不升 FP32，FP32 在边界场景也有舍入误差；空 Tensor / 空广播走非法路径，零维计算触发 0%0 后继续访问数据；非 32B 对齐尾块访问越界
+effect:
+  objects:
+  - 数值结果
+  detail: Arch35（Ascend950）+ CANN 9.2.0 上，多输入广播/不同 Rank 广播、空 Tensor、元素数非 32B 对齐的尾块、ACLNN 不下发 N 属性的用例出现精度不稳或非法访问，ACLNN 与 GEIR 两通路均涉及
+  visibility: 静默错误
+mitigation:
+  detect: 多输入广播且元素数非 32B 对齐的 FP16 累加用例与 fp32 参考比相对误差；空 Tensor / 空广播用例检查是否走到零维 0%0 路径
+  fix: MR https://gitcode.com/cann/ops-math/merge_requests/5310 （fix(AccumulateNV2) 修复 Arch35 广播、精度及空张量异常，issue closed）：FP16 累加升精度、空 Tensor 短路、尾块改对齐搬运（合入与发布未核实）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 仅 Arch35（Ascend950）+ CANN 9.2.0 通路的 AccumulateNV2；多输入广播/不同 Rank、空 Tensor、非 32B 对齐尾块、ACLNN 不下发 N 属性
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3014
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/5310
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-math AccumulateNV2 在 Arch35（Ascend950）+ CANN 9.2.0 通路的动态输入与边界场景有五类问题：TilingKey 编码了 DEF 输入类型约束已覆盖的冗余 dtype 信息；广播场景的输出 Shape 与输入广播 Stride 推导不完整，动态输入或不同 Rank 时可能生成错误的访问参数；空 Tensor / 空广播场景存在非法路径，零维计算可能触发 0 % 0 并继续访问无效数据；非 32 字节对齐的尾块访问存在越界风险；FP16 多输入累加直接使用低精度累加，FP32 多输入累加在边界场景存在舍入误差，造成精度不稳。调用通路为 ACLNN 与 GEIR（ACLNN 场景不下发 N 属性）。复现方式是跑覆盖多输入广播、不同 Rank、空 Tensor、非 32B 对齐尾块、FP16/FP32 多输入累加的动态输入用例；issue 自述对应 Arch35 通路整改，涉及 TilingKey、InferShape、Tiling、Kernel 及 UT，正文未给逐项实测误差量级。
+  source: 2026-09-03 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/3014 （closed，关联 MR https://gitcode.com/cann/ops-math/merge_requests/5310）
+  behavior: 在 Ascend950 上把多个张量做 AccumulateNV2：FP16 输入直接按低精度累加，元素一多结果就慢慢偏；广播形状不一致或 Rank 不同时，输出的访问参数算错；空 Tensor / 空广播用例会走进零维计算（0%0）并继续取数据；元素数不是 32 字节对齐时尾块还越界访问。这些都不报错，表现是精度不稳或偶发异常。
+  trigger_surface: ops-math AccumulateNV2 的 Arch35（Ascend950）+ CANN 9.2.0 通路，ACLNN 与 GEIR 调用；多输入/不同 Rank 广播、空 Tensor、非 32B 对齐尾块、FP16 多输入累加
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,59 @@
+id: INF-1973
+legacy_ids: []
+slug: torchair_import_time_global_inductor_config
+aliases: []
+title: torchair import 期改写全局 inductor 配置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: import 期全局配置改写
+  behavior: import 期直接改 dynamo_config.recompile_limit、DeviceProperties.multi_processor_count 与 size_asserts，无 restore。
+effect:
+  objects:
+  - 性能/资源
+  - 测试判定
+  detail: 所有后续 torch.compile（含非 NPU 代码）都继承这些值：size_asserts 关闭后形状断言静默放行，multi_processor_count=0 影响设备属性查询与 buffer 分配。
+  visibility: 静默错误
+mitigation:
+  detect: import inductor_npu_ext 前后分别读 torch._dynamo.config.recompile_limit、torch._inductor.config.size_asserts 与 DeviceProperties.multi_processor_count，确认被改写且无恢复路径
+  fix: 待定（issue 已 closed；报告建议把这些值放进 NPU 专用的 Inductor config 覆盖，不要改全局对象）
+labels:
+  family: infra_off
+  trigger: 'yes'
+  trigger_review: false
+  trigger_note: torchair 的 experimental/_inductor_npu_ext；只要 import 该包就生效，影响同进程所有 torch.compile
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/667
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/torchair issue #667（2026-08-11 closed）：experimental/_inductor_npu_ext/python/inductor_npu_ext/__init__.py 的 _finetune_inductor_config 在 import 时直接修改 PyTorch 的 dynamo_config 与 inductor_config 全局对象：dynamo_config.recompile_limit 改成 16，DeviceProperties.multi_processor_count 设成 0（改的是类属性而不是实例），inductor_config.size_asserts 设为 False。三类改动都在 import 发生后永久生效，没有 restore 机制，因此同进程里所有后续 torch.compile 调用（包括与 NPU 无关的 CPU/CUDA 代码）都会继承；报告指出的后果是 recompile_limit 改变所有 dynamo 编译阈值、multi_processor_count=0 让后续设备属性查询丢失有用信息并可能误导 buffer 分配与 occupancy 计算、size_asserts 关闭后依赖它捕获 shape 错误的场景被静默放行。'
+  source: 2026-08-11 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/667 （closed）
+  behavior: 只要在进程里 import 了 inductor_npu_ext，随后所有 torch.compile 的行为都变了：dynamo 的重编译上限变成 16、inductor 的 size 断言被关掉、设备属性里的 multiprocessor 数变成 0。用户在自己的 CPU/CUDA 代码里看不到任何提示，原来能靠 size assertion 抓到的形状错误现在静默通过，性能相关的 buffer 分配策略也可能按错的设备属性来算。
+  trigger_surface: import torchair 的 inductor_npu_ext 包（import 期副作用，无开关）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 配置/参数
+        to: 编译器

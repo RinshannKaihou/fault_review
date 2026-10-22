@@ -1,0 +1,54 @@
+id: INF-2000
+legacy_ids: []
+slug: ops_math_im2col_golden_pad_order
+aliases: []
+title: im2col golden 补齐返回序与 proto 约定错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: im2col golden 补齐序
+  behavior: golden 的 _calc_need_padding 返回 h_before,w_before,h_after,w_after，消费端却按 proto 文档序读取，w_before≠h_after 时补齐落错维度
+effect:
+  objects:
+  - 测试判定
+  detail: N=1,C=2,H=5,W=4、ksize 2x2、stride 2、SAME：golden 返回 [0,0,1,0] 被读成 H:(0,0)、W:(1,0)，reshape([1,8,3,2]) 抛 ValueError；现存用例都满足 w_before==h_after，属巧合通过
+  visibility: 静默错误
+mitigation:
+  detect: 对非方形输入（H≠W）且 SAME 补齐总量为奇数的配置跑 im2col ST/UT，看是否 reshape 报错或 golden 与 numpy 滑窗实现不符
+  fix: issue 称随附修复 PR 把返回语句改成 proto 文档顺序（未给 PR 编号）；作者用 numpy 显式滑窗 + TF-SAME 公式对拍 5 组配置，修复后 8/8 全绿
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: conversion/im2col golden + padding_mode=SAME + H、W 补齐需求不对称（非方形图或 stride 不整除）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/2870
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math issue 2870（2026-08-25，closed）：conversion/im2col/tests/assets/golden.py 的 _calc_need_padding()（L115-133）按 [h_before,w_before,h_after,w_after] 返回，消费端（L89-92）却按 im2col_proto.h L52 文档约定的 [pad_h_top,pad_h_bottom,pad_w_before,pad_w_after] 成对读取，生产者和消费者对元素顺序的理解互相矛盾。最小反例 N=1,C=2,H=5,W=4、ksizes=[2,2]、strides=[2,2]、dilations=[1,1]、SAME：正确补齐应为 [0,1,0,0] 得 3×2 输出，golden 实际返回 [0,0,1,0] 被读成 H:(0,0)、W:(1,0)，unfold 出 2×2 块后 reshape([1,8,3,2]) 抛 ValueError: cannot reshape array of size 32 into shape (1,8,3,2)。现有用例全部满足 w_before==h_after（如 [1,1,1,1]），错位交换无副作用，属巧合通过。'
+  source: 2026-08-25 GitCode cann/ops-math issue https://gitcode.com/cann/ops-math/issues/2870 （closed）
+  behavior: 改 im2col 的 SAME 分支或跑非方形输入回归时，golden 直接抛 reshape 的 ValueError，看起来像 kernel 出错；而通过的那些用例其实没有覆盖非对称补齐，kernel 真把补齐加到 H 上也不会被发现，回归一直绿着。
+  trigger_surface: im2col golden + padding_mode=SAME + 非对称补齐（w_before≠h_after）
+  discovery: 2026-10-21 系统扫描 sweep_5（顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

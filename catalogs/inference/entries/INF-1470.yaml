@@ -1,0 +1,59 @@
+id: INF-1470
+legacy_ids: []
+slug: op_plugin_masked_scatter_small_src_oob_garbage_silent
+aliases: []
+title: op-plugin masked_scatter src 不足静默填越界垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: masked_scatter 容量校验缺失
+  behavior: mask 命中数多于 src 元素时无入口校验：CPU 抛 RuntimeError，NPU 静默接受，超出槽位填越界读到的设备内存垃圾（确定性、非 NaN）。
+effect:
+  objects:
+  - 数值结果
+  detail: 填充看似成功、垃圾值随前向扩散、无告警；A3 双芯一致；修复 PR !6055（容量入口校验）open
+  visibility: 静默错误
+mitigation:
+  detect: 调用前自查 mask.sum() <= src.numel()；CPU 对照触发 RuntimeError
+  fix: 修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6055 （open，未合入未发布）——入口校验 src.numel() >= mask.sum()，不足抛 RuntimeError 对齐 CPU
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: masked_scatter_/masked_scatter + mask 命中数 > src 元素数；Atlas A3 双芯、CANN 9.1.0、torch_npu 2.7.1.post4；CPU 抛错不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 'issue 自述与 #598（cross_entropy 越界 target 静默吞）同属"入口无校验→fail-silent"家族；两机制不同算子分立条目'
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/602
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6055
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0327
+original:
+  mechanism: 'op-plugin issue #602（c2026-10-19，Atlas A3 Ascend910_9362 ×2，CANN 9.1.0，torch 2.7.1 + torch_npu 2.7.1.post4，双芯一致、确定性、上下文存活无告警）：x.masked_scatter_(mask, src) 在 mask 命中位数（如 5）多于 src 元素数（如 2）时，CPU 抛 RuntimeError（src 元素不足）；NPU 静默接受，超出 len(src) 的槽位填入越界读到的设备内存垃圾（确定性值，非 NaN）。影响：静默数据污染，填充结果看似成功，垃圾值随前向传播扩散。修复 PR !6055（[fix] masked_scatter src 容量入口校验，防越界读静默污染）已提交、open：入口校验 src.numel() >= mask.sum()，不足抛 RuntimeError 对齐 CPU 语义。复现脚本：A3 真机 /mnt/workspace/a3hunt/round6/repro_r6_mscat_smallsrc.py。issue 自述与 #598（cross_entropy 越界 target 静默吞）同属"入口无校验→fail-silent"家族第二例。'
+  source: 2026-10-19 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/602 （open）+ 修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6055 （open）
+  behavior: NPU 上调 masked_scatter_、当 mask 里 True 的个数比 src 里的元素多时，不报 CPU 那样的 RuntimeError，而是默默把缺的位置填上越界读到的设备内存垃圾值（数值稳定但完全是废数据），后续计算全部被污染且无任何告警。
+  trigger_surface: torch_npu masked_scatter/ masked_scatter_ + mask.sum() > src.numel()；Atlas A3、CANN 9.1.0
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

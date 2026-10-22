@@ -1,0 +1,66 @@
+id: INF-1514
+legacy_ids: []
+slug: mssanitizer_instrumentation_changes_kernel_semantics
+aliases: []
+title: 插桩与桩函数改变算子执行语义致退出并漏检
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: 动态插桩/踩踏检测桩函数
+  behavior: 插桩会改动被测算子：线程间踩踏检测桩函数插入 __syncthreads()，该指令受硬件约束不能在 divergence 代码中使用，且无法保证所有分支走到；动态插桩后的指令序列与原始算子不等价。
+effect:
+  objects:
+  - 测试判定
+  - 可用性/进度
+  detail: 被检测算子插桩后异常退出且真实 GM 越界检不出；特定芯片动态插桩后功能正常却报 aic error（LOAD2D address overflow 等 8 类 errcode）——插桩后的执行不再等价于原算子。
+  visibility: 报错
+mitigation:
+  detect: 同一算子分别在有/无插桩（关闭线程间踩踏检测、静态插桩对照）下执行，比对是否异常退出与 runtime 报错码；插桩后失败而裸跑正常即归为插桩副作用。
+  fix: 待定（#17 方向是桩函数里不能用受 divergence 约束的同步指令；#35 未见公开修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend 950/910 + CANN 8.5.0 等；动态插桩与线程间踩踏检测桩；insert_or_assign_kernel 等算子
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/mssanitizer/issues/17
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/mssanitizer/issues/35
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 插桩不是只读观察，会改动被测算子。#17：cann-8.5.0、x86、insert_or_assign_kernel 算子——线程间踩踏在线检测算法把 __syncthreads() 放进了桩函数，该指令受硬件约束不能在 divergence 代码中使用；桩函数被插入算子指令后无法保证所有分支都走到桩函数及其内部同步指令，于是用 mssanitizer 拉起算子时算子异常退出，而且真实存在的 GM 越界检不到；关闭线程间踩踏检测后同一算子能检出 GM 越界，说明退出与漏检都来自该桩。#35：特定芯片上，动态插桩后的算子本身功能正常，但 runtime 报 aic error，ProcessStarsCoreErrorInfo 给出 errcode 128/129/130/131/142/143/148/149，对应 L0A/L0B 读写冲突、LOAD2D 指令地址溢出（READ_OVERFLOW/WRITE_OVERFLOW）、CHN_SIZE 非法、K_M_EXT_STEP 非法等。两条 issue 的共同点是：插桩后的指令序列与原始算子不等价，失败由插桩引入而非算子缺陷。
+  source: 2026-02-02 GitCode Ascend/mssanitizer issue https://gitcode.com/Ascend/mssanitizer/issues/17（closed）；2026-02-28 issue https://gitcode.com/Ascend/mssanitizer/issues/35（closed）
+  behavior: 把算子放进 mssanitizer 里跑，算子可能在插桩后直接异常退出，日志里看不到任何越界，把线程间踩踏检测关掉才发现算子真有 GM 越界；另一些芯片上算子功能本身正常，动态插桩后 runtime 却报 aic error（LOAD2D address overflow、L0A/L0B 读写冲突等）。使用者容易把插桩引入的失败当成算子缺陷，或反过来把插桩掩盖掉的越界当成没问题。
+  trigger_surface: Ascend 950/910 + CANN 8.5.0 等；动态插桩与线程间踩踏检测桩；insert_or_assign_kernel 等算子
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 测试判定
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

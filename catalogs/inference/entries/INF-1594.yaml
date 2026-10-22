@@ -1,0 +1,57 @@
+id: INF-1594
+legacy_ids: []
+slug: hcomm_waitresponse_skip_datasize_header
+aliases: []
+title: 共享内存响应解析未跳过长度头致 payload 错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: 通用
+    component: HcommWaitResponse 响应解析
+  behavior: HcommWaitResponse 把读指针停在 8 字节 data size 头起点就直接 copy sizeByte 字节到 dst，未跳过 CTRL_HDR_DATA_SIZE_LEN，payload 整体后移 8 字节。
+effect:
+  objects:
+  - 数值结果
+  detail: 按接口注释与 HcommSendRequest 写的响应，调用方拿到的前 8 字节是长度字段而非业务数据，字符串/结构体字段解析失败或静默取错值；现有 UT 的模拟 DPU 正好不写该字段，测试全绿。
+  visibility: 静默错误
+mitigation:
+  detect: 让模拟 DPU 按注释协议（含 data size 头）写响应再跑 ut_sync_data_device_test，或比对 dst 前 8 字节是否等于 sizeByte
+  fix: issue 建议读 payload 前先加 CTRL_HDR_DATA_SIZE_LEN 偏移，并让 UT 按真实消息格式构造响应；issue 已 closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: AICPU_TS 共享内存同步路径（DPU/对端按 flag/msgTag/msgId/data size/data 格式写响应）；现有 UT 因模拟 DPU 不写 data size 头而未暴露
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/382
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hcomm 的 src/base_comm/primitives/api_c_adpt/aicpu_ts_sync_data_c_adpt.cc:24 注释定义共享内存消息格式为 | flag[1] | msgTag[256] | msgId[4] | data size[8] | data[sizeByte] |，同文件 :53 的 HcommSendRequest 也按此写入：先在 dstDataPtr 写 sizeByte，再从 dstDataPtr + CTRL_HDR_DATA_SIZE_LEN 写真实 payload。但 :97 的 HcommWaitResponse 把 srcMsgIdPtr 定位到 msgTag 之后、srcDataPtr = srcMsgIdPtr + sizeByteMsgId，即停在 data size 字段起点，:121 直接 memcpy_s(dst, sizeByte, srcDataPtr, sizeByte)，少加了一个 CTRL_HDR_DATA_SIZE_LEN。只要响应端按声明协议（含 data size 头）写，dst 前 8 字节就是长度字段，业务 payload 整体后移。UT 之所以没暴露：test/ut/framework/dpu_npu_sync/ut_sync_data_device_test.cc:127 的模拟 DPU 用 strcpy_s 把 payload 直接写在 MsgHeader 之后，不写 data size 字段，恰好匹配了错误的读取偏移。
+  source: 2026-07-07 GitCode cann/hcomm issue https://gitcode.com/cann/hcomm/issues/382 （closed）
+  behavior: DPU/NPU 同步取响应时，调用方拿到的那块数据开头总是多出 8 个字节，后面对结构体或字符串字段的解析整体错位：可能解析出空/异常字段，也可能长度字段被当成有效内容继续用下去，表现为控制面消息错乱或静默错值；因为接口本身返回成功，现场很难判断是响应构造错还是读取错。
+  trigger_surface: AICPU_TS 共享内存同步接口（HcommSendRequest/HcommWaitResponse）在响应端按带 data size 头的协议写消息时
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect

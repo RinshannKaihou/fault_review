@@ -1,0 +1,61 @@
+id: INF-1482
+legacy_ids: []
+slug: op_plugin_clamp_empty_tensor_shortcircuit_broadcast
+aliases: []
+title: clamp 空张量短路跳过 broadcast 校验
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: clamp_npu_output_size 短路
+  behavior: clamp_npu_output_size 在 self.numel()==0 时直接返回 self.sizes()，跳过 left-pad 与逐维 broadcast 比较，也不走 at::infer_size 校验。
+effect:
+  objects:
+  - 数值结果
+  detail: 空张量 clamp 的输出形状不符合 broadcast 语义（(1,0) 应为 (3,0)）；不可 broadcast 的非法输入被静默接受而非抛错；非空张量路径正常。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 self.numel()==0 且 min/max 维数需 broadcast 扩展的输入，与 CPU 对照输出形状；非空张量不触发
+  fix: 修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/5687 （issue 已 closed；合入与发布状态未核实）：删除空张量短路分支，统一走 broadcast_ops_npu_output_size
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.clamp(Tensor 版) + self.numel()==0 + min/max 维数高于 self 需 broadcast；min/max 为标量时不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/367
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1426
+pattern: PAT-INF-0158
+original:
+  mechanism: 'op-plugin issue #367（c2026-08-07，closed，关联 PR !5687）：op_plugin/utils/KernelNpuOutputSize.cpp 的 clamp_npu_output_size 在 self.numel()==0 时直接 return self.sizes()，短路分支只复制 self.dim() 个维度，不做 left-pad，也不逐维比较 min/max 的 broadcast 形状；该函数经 op_plugin_functions.yaml 的 size: clamp_npu_output_size(self, min, max) 被 gen_opapi 生成的 clamp.Tensor / clamp.Tensor_out 调用，bug 真实可达。正确路径 broadcast_ops_npu_output_size 内部用 at::infer_size，本来已能处理 0 维、left-pad 与非法组合校验，短路分支属多余。实测矩阵：self=(0,)+min=(3,1) 得 (0,) 而非 (3,0)；self=(1,0)+min=(3,1) 得 (1,0) 而非 (3,0)；self=(0,)+min=(3,) 被静默接受而非抛 broadcast 错误；self=(0,)+标量 min 两端一致。后果是空张量场景输出形状错误，并把本应报错的非法广播输入放行到下游。'
+  source: 2026-08-07 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/367 （closed）
+  behavior: 在 NPU 上调 torch.clamp(input, min=..., max=...) 的 Tensor 版本，只要 input 是空张量、而 min/max 的维数比 input 高需要 broadcast 扩展，输出的形状就不对：期望按广播扩展成更高维（如 (1,0) 与 (3,1) 应得 (3,0)），实际原样返回 input 的形状 (1,0)。更隐蔽的是，本来应当报「无法广播」的非法组合（如 (0,) 与 (3,)）在 NPU 上不报错，直接给出一个空张量继续往下跑，下游拿到形状不符的中间结果。
+  trigger_surface: torch.clamp / clamp.Tensor(_out) + self.numel()==0 + min/max 维数需 broadcast 扩展；min/max 为标量时不触发；非空张量走正常 broadcast 路径
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

@@ -1,0 +1,57 @@
+id: INF-1721
+legacy_ids: []
+slug: ms_tensor_has_fallback_cache_stale
+aliases: []
+title: has_fallback_ 缓存不随 __fallback__ 更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: Tensor has_fallback_ 缓存
+  behavior: C++ Tensor 的 has_fallback_ 只在 TensorPy_init/make_subclass 时赋值一次，Python 侧随后增删 __fallback__ 不会同步，fallback 判断读到陈旧状态。
+effect:
+  objects:
+  - 数值结果
+  detail: 构造后再挂 __fallback__ 的 Tensor 仍走 C++ 执行，本应由 Python 处理的逻辑被跳过，可能算错或抛异常；反向删掉 __fallback__ 则多余走 fallback，只剩性能损失。
+  visibility: 静默错误
+mitigation:
+  detect: ms.Tensor 子类构造后动态设置 __fallback__，观察是否走 Python 实现（或 C++ 侧 fallback 判定）；构造后删除同理
+  fix: issue 给出修复：删除 Tensor::has_fallback_ 及其 getter/setter，判定点统一改为 PyObjectHasFallbackAttr() 直接查 Python 属性；涉及 tensor.h、tensor_py_reg.cc、converter.h/.cc、pynative_execute.cc、cell_backward_hook_op.cc（状态 closed）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: ms.Tensor 子类 + 构造后动态增删 __fallback__；Ascend/GPU/CPU 全平台、所有执行模式
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29222
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: mindspore/core/include/ir/tensor.h 里的 has_fallback_ 用来标记该 Tensor 是否要走 Python fallback。它只在 Python Tensor 构造（TensorPy_init）和子类化（TensorPy_make_subclass）时被赋值，之后不再更新。若 Python 侧在构造完成后动态添加 __fallback__，C++ 侧仍为 false，算子直接进 C++ 执行，跳过本应由 Python 处理的逻辑；若构造后移除 __fallback__，C++ 侧仍为 true，无谓走 fallback。修复是移除该缓存字段，所有判定点改用 PyObjectHasFallbackAttr() 实时查询。环境为 master，全平台。
+  source: 2026-03-10 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29222 （closed）
+  behavior: 给 ms.Tensor 子类在构造之后动态挂 __fallback__（比如包装自定义 dispatch），算子行为与预期不符：Python 实现没有被调用，结果由 C++ 路径给出，可能算错也可能抛异常；反过来构造后删掉 __fallback__ 时，本该走快路径的算子仍然绕一圈 Python。整个过程没有任何告警。
+  trigger_surface: ms.Tensor 子类 + 构造后动态增删 __fallback__；Ascend/GPU/CPU 全平台、所有执行模式
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

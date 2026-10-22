@@ -1,0 +1,62 @@
+id: INF-1515
+legacy_ids: []
+slug: torchnpu_legacy_load_npu_tensor_all_zero
+aliases: []
+title: legacy 格式载入 NPU 张量全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: pytorch
+    component: legacy storage 重建
+  behavior: _rebuild_npu_tensor 在 rebuild 阶段就执行 .npu()，把尚未填充（全零）的 CPU staging storage 拷到新 NPU 存储，随后 _set_from_file 只填 staging。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: 2.7.1/2.8.0 保存的 legacy NPU 张量 load 后全零，CPU 张量与 zipfile 路径正常；插桩见 staging 与 NPU 存储 data_ptr 脱节。
+  visibility: 静默错误
+mitigation:
+  detect: legacy 保存→torch.load 后与保存前逐元素比对，并检查 device 与内部格式；对照 zipfile 路径
+  fix: 修复 commit 2a6526530a（deferred fill：登记待填 tensor，load 完成后按 map_location 原地 copy_）与 MR https://gitcode.com/Ascend/pytorch/merge_requests/44575；issue closed，合入与发布状态未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch_npu v2.7.1/v2.8.0（自定义 _reduce_ex→_rebuild_npu_tensor）+ legacy 序列化格式；v2.9.0+ 无此 patch，legacy 保存直接抛错
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4526
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4526（2026-09-02，closed）：v2.7.1/v2.8.0 的 patch（torch_npu/utils/tensor_methods.py:88 安装 torch.Tensor.__reduce_ex__=_reduce_ex，torch_npu/utils/storage.py:53 实现 _rebuild_npu_tensor）把 NPU tensor 的 reduce 目标改为 _rebuild_npu_tensor，该函数在 rebuild 阶段 set_ 后执行 .npu()（copy）。upstream legacy _legacy_load 是三阶段：persistent_load 建未初始化 storage → unpickler 调 rebuild → 之后才 _set_from_file 填充；因此 .npu() 拷贝的是尚未填充的全零 staging，新分配 NPU storage（ptr 187…→207…）与 staging 脱节，_set_from_file 只填 staging。zipfile 路径在 rebuild 前已 get_storage_from_record 填充，故正常；v2.9.0+ 删除该 patch，改走 upstream _rebuild_tensor_v2 的 set_（共享 storage），不再复现。修复 commit 2a6526530a 用 LEGACY_DEFER_FILL + PENDING_LEGACY_FILL 延迟到填充后 in-place copy_。'
+  source: 2026-09-02 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4526 （closed）
+  behavior: 用 legacy 格式（_use_new_zipfile_serialization=False）保存 NPU 张量再 torch.load，得到的张量形状、dtype、device 都对，但数据全是 0：保存前是 [-2.1188, 0.0635, -1.4555, …]，读回是 [0., 0., 0., 0., 0.]。没有任何报错，只有和上游 CPU 参考或原始数据对比才会发现，CPU 张量与 zipfile 格式都不受影响。
+  trigger_surface: torch_npu 2.7.1/v2.8.0 + torch.serialization.save(_use_new_zipfile_serialization=False) 保存 NPU 张量 + torch.load；map_location 各档均触发，zipfile 路径不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 数值结果
+        to: 模型权重
+    uncertain:
+    - detail

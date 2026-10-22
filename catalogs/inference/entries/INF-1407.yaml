@@ -1,0 +1,72 @@
+id: INF-1407
+legacy_ids: []
+slug: flashinfer_plan_pinned_workspace_h2d_race
+aliases: []
+title: flashinfer plan() pinned 缓冲 H2D 竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: plan() pinned workspace
+  behavior: plan() 填复用的 pinned int workspace 后 cudaMemcpyAsync 拷出、事后无同步；下一次 plan() 在拷贝执行前覆写 buffer，前次 plan 的 kernel 读撕裂 plan info
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: FA2 paged prefill fp16：plan(A)/run(A)/立即 plan(B) 时 run(A) 读到 B 的 plan info，5/5 MISMATCH（max_abs_err 0.10~2.05），偶发 kernel 跑数分钟；--guard（等前次拷贝）5/5 OK
+  visibility: 静默错误
+mitigation:
+  detect: plan 后立即再 plan 的场景做输出对照；guard 前后差分；未评估
+  fix: 待定（issue open，报告者给出 --guard 复现对照，尚无修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: flashinfer 0.7.0.post1（main 3637083a3 仍在）；BatchPrefillWithPagedKVCacheWrapper 等复用 pinned int workspace 的 plan()/run() 交替场景；host 领先 device（如前序 kernel 慢）时触发；SM86 实测
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6533
+  kind: github_issue
+relations: []
+original:
+  mechanism: flashinfer plan()（scheduler.cuh）把 plan 信息填进复用的 _pin_memory_int_workspace_buffer（pinned host 内存）并用 cudaMemcpyAsync 发起 H2D，事后无任何同步。若 host 领先 device（前序 kernel 未完成），下一次 plan() 会在上一次拷贝执行前覆写同一 pinned buffer，前一次 plan 排队的 kernel 读到撕裂/错误的 plan info。复现（FA2 auto、SM86、paged prefill fp16、Hq/Hkv/D=16/8/128、page 16、causal）：plan(A)→run(A)→立即 plan(B)，用 torch.cuda._sleep 让 device 落后；无 guard 5/5 MISMATCH（max_abs_err 0.1022~2.046），偶发一次迭代耗时数分钟（kernel 行为异常）；--guard（每次 plan 前同步前次拷贝事件）5/5 OK。main 3637083a3 仍存在。
+  source: https://github.com/flashinfer-ai/flashinfer/issues/6533
+  behavior: 在同一 wrapper 上快速连续 plan 不同 batch（如 vLLM 每步调度重新 plan 的服务形态）且 device 忙时，前一次 run 的 attention 输出错（与参考 max_abs_err 0.1~2），有时对应 kernel 卡跑数分钟；输出仍正常返回、无报错。等待前次 plan 的 H2D 完成后（guard）全部正确。
+  trigger_surface: flashinfer 0.7.0.post1（至 main 3637083a3）；BatchPrefillWithPagedKVCacheWrapper.plan() 复用 pinned int workspace；同一 wrapper 连续 plan 且 host 领先 device；SM86 实测（机制与架构无关）
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - '2026-10-20 回访 2026-10-20：flashinfer #6533 仍 open（本轮窗口无新活动）'
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 算子/内核
+      effect:
+        from: 输出内容
+        to: 数值结果
+    uncertain:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - original.notes

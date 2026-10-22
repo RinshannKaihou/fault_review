@@ -1,0 +1,62 @@
+id: INF-1950
+legacy_ids: []
+slug: minimax_m27_w8a8_ep_allgather_garbage
+aliases: []
+title: MiniMax-M2.7 w8a8 在 ALLGATHER 路径输出无意义内容
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: MoE 输出归约判定
+  behavior: ALLGATHER 且未开 flash_comm_v1 时归约判定返回「未归约」，外层对 routed 输出再补一次 TP all-reduce，权重贡献被重复计入。
+effect:
+  objects:
+  - 输出内容
+  detail: MiniMax-M2.7-w8a8 在 910B TP8 + --enforce-eager 下对「中国的首都是」返回无意义串；加 --enable-expert-parallel 与 FLASHCOMM1=1 后恢复。
+  visibility: 静默错误
+mitigation:
+  detect: 同一请求分别在 ALLGATHER（默认）与 EP+FLASHCOMM1 下各跑一次，比对输出；或直接检查 _EXTRA_CTX.moe_comm_type 与 flash_comm_v1_enabled
+  fix: 启动时同时加 --enable-expert-parallel 与 export VLLM_ASCEND_ENABLE_FLASHCOMM1=1（issue 评论给出的规避）；issue 仍 open，未见修复 PR
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend v0.20.2rc1 + MiniMax-M2.7-w8a8-QuaRot、910B TP8、enforce-eager；未开 EP/FLASHCOMM1 的 ALLGATHER 路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10466
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #10466（2026-06-15，open）：v0.20.2rc1 部署 MiniMax-M2.7-w8a8-QuaRot（8×910B，TP8，--enforce-eager）后，curl「中国的首都是」返回毫无意义的串。评论把范围收敛到 MoE 归约判定：vllm-ascend 的 AscendMoERunner 覆写 _fused_output_is_reduced，只有 moe_comm_type ∈ {ALLTOALL, MC2, FUSED_MC2} 或（ALLGATHER 且 flash_comm_v1_enabled）时才返回 True，使上游 MoERunner.forward() 的 _maybe_reduce_final_output 不再补一次 TP all-reduce；否则外层会再归约一次。现场规避是同时开 --enable-expert-parallel 与 VLLM_ASCEND_ENABLE_FLASHCOMM1=1，把通信方式与判定一起换掉后输出恢复正常，与小节里的代码路径一致。issue 未给出源码 commit，也未合并修复 PR。'
+  source: 2026-06-15 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10466 （open）
+  behavior: 用官方 v0.20.2rc1 镜像在 8 卡 910B 上拉起 MiniMax-M2.7 w8a8 量化权重，服务能正常启动、请求返回 200，但答复是「毫无意义的错误结果」，与模型能力明显不符。同一条命令加上 --enable-expert-parallel 并导出 VLLM_ASCEND_ENABLE_FLASHCOMM1=1 之后，同样的 curl 就能得到正常中文回答，说明问题出在 MoE 通信/归约组合而不是权重本身。
+  trigger_surface: MiniMax-M2.7 w8a8 + TP8 + 默认 ALLGATHER MoE 通信（未开 EP 与 FLASHCOMM1）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    uncertain:
+    - subsystem
+    - effect
+    - behavior

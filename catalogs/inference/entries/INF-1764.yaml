@@ -1,0 +1,60 @@
+id: INF-1764
+legacy_ids: []
+slug: vllm_rocm_attn_triton_fallback_layouts_wrong
+aliases: []
+title: vLLM ROCm_ATTN Triton fallback 布局错值/崩卡
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: vLLM ROCM_ATTN 注意力后端
+  behavior: RDNA 上仅 head 128/block 16/GQA 3–16 走 HIP kernel，其余布局走 Triton fallback，部分布局解码读 cache 错误且偶发 GPU fault
+effect:
+  objects:
+  - 数值结果
+  detail: RDNA+默认 ROCM_ATTN，head≥96/block≠16（含 hybrid block 528）或 MHA head192/256：12,389 批解码中 635 批静默错值（误差0.02–0.57）、119 次 GPU fault；TRITON_ATTN 同输入 14,608 批全对
+  visibility: 静默错误
+mitigation:
+  detect: 对 default 后端与 TRITON_ATTN 做 A/B logits/attention 比对
+  fix: 规避：--attention-backend triton（同输入全对）；修复 PR 未见（待定）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: RDNA（gfx1201 R9700，ROCm 10.2，vLLM main 2026-10-19）；block 528 为 Qwen3.5/Qwen3-Next hybrid 模型真实配置；fp16/bf16 均中，fp8 KV 不中（1 例除外）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62697
+  kind: github_issue
+relations: []
+original:
+  mechanism: AMD Radeon AI PRO R9700（gfx1201 RDNA4），ROCm 10.2，vLLM main dde9aca41c（2026-10-19，426f3bd36 同）。ROCM_ATTN 是 RDNA 默认后端：仅 head 128、block 16、GQA 3–16 解码走 HIP paged-attention kernel，其余用 Triton fallback（decode=kernel_paged_attention_2d，prefill=context_attention_fwd）。A/B harness 按 vLLM 真实方式（KV 分配器、do_kv_cache_update、metadata builder、forward）对比 fp32 PyTorch 参考：正确布局误差 ~0.001–0.01，失败布局 0.02–0.57；TRITON_ATTN 同输入同 cache 形状 14,608 批全对。12,389 批（ROCM_ATTN 为默认后端的布局）中 635 错输出+119 GPU fault：head 96 block 528（175 错/57 崩）、head 128 block 32（24 崩）、block 64（24 错）、block 528（42 错/12 崩）、head 192/256 各档均错。两个模式：A=block≥32 且 padded head≥128 的解码读错（kernel_paged_attention_2d）；B=（正文截断，MHA head 192/256 block 16 GQA1 也错）。bf16/fp16 均失败；fp8 KV 同形状未失败。block 528 是 hybrid 模型（Qwen3.5/Qwen3-Next）真实配置。
+  source: 2026-10-20 每日扫描；https://github.com/vllm-project/vllm/issues/62697
+  behavior: RDNA 消费卡上默认 ROCM_ATTN 后端在 head size ≥96 且 KV block 非 16（含 hybrid 模型的 528 大块）以及 MHA head 192/256 时：解码批量输出静默错值（误差最高 0.57），部分批直接 GPU memory-access fault 崩进程；换 TRITON_ATTN 后同输入全部正确。表现为服务输出质量下降且偶发崩溃，无配置告警。
+  trigger_surface: RDNA GPU + 默认 ROCM_ATTN + head≥96/block≠16 布局或 MHA head192/256；hybrid 大块模型真实命中
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - component
+    - detail
+    issue_unfixed:
+    - behavior

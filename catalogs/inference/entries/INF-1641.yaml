@@ -1,0 +1,60 @@
+id: INF-1641
+legacy_ids: []
+slug: mindformers_old_gate_aclnn_cache_queue_indexer_drift
+aliases: []
+title: ACLNN cache queue 致 DSA1 indexer loss 漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: ACLNN cache queue 配置
+  behavior: 旧 gate 62791fd0 在默认 aclnn_cache_queue_length 下 DSA1 的 indexer_loss/grad_norm 快速放大，置 queue length 0 后消失
+effect:
+  objects:
+  - 训练信号
+  detail: 固定 step21 checkpoint 续训到 step70，indexer_loss 与 grad_norm 快速放大，主语言模型 loss 不受影响；换新 gate 9c330863 后默认配置即与关队列逐 step 一致
+  visibility: 静默错误
+mitigation:
+  detect: 固定 checkpoint 跑 DSA1 长轨迹，比对 indexer_loss/grad_norm 轨迹；切换 ACLNN cache queue 长度做 A/B
+  fix: 升级到修复该 runtime cache 问题的 MindSpore gate 版本（正文 9c330863），或 export MS_DEV_RUNTIME_CONF=aclnn_cache_queue_length:0 规避
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 旧 MindSpore gate 62791fd0 + 默认 ACLNN cache queue + PyNative DSA1 Indexer warm-up 续训；只影响 indexer 分支
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2527
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'PyNative DSA1（Indexer warm-up）在固定模型参数和 optimizer state 续训时，使用 MindSpore gate 版本 62791fd0 且保持默认 ACLNN cache queue 配置，indexer_loss 与 grad_norm 会快速放大，而主语言模型 loss 不受影响；设置 export MS_DEV_RUNTIME_CONF=''aclnn_cache_queue_length:0'' 关闭 cache queue 后异常消失，切换到新 gate 版本 9c330863 后即使保持默认 ACLNN cache queue，step22~70 的完整轨迹也与旧版本关闭 queue length 时逐 step 一致，说明新版本已修复该 runtime cache 相关问题。issue 用于固化复现配置、A/B 结果与建议依赖版本。影响场景：PyNative DSA1（dsa_indexer_use_sparse_loss: false）、DSA Indexer warm-up 续训、CP4 + FSDP2 八卡、fused MHC/MTP/full recompute 开启、从包含模型与 optimizer state 的固定 DSA1 checkpoint（step21）恢复到 step70；MindFormers master@53429d9f、Hyper-Parallel r1.0.0@2fc3bfdc、CANN 9.1.0-beta.1、参数/计算 BF16 而 Norm/Softmax/RoPE FP32。issue 未给出 MindSpore 侧具体代码定位，只给出两个 wheel 的 SHA256 与 A/B 轨迹。'
+  source: 2026-08-19 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2527 （closed）
+  behavior: 从同一个 step21 checkpoint 续训 DSA1，indexer_loss 和 grad_norm 在几十步内快速放大，主模型 loss 看着正常，容易被当成 indexer 学习率或 warm-up 配置问题；同一份 checkpoint、同一脚本换一个 MindSpore gate 版本，或加一个 MS_DEV_RUNTIME_CONF 环境变量，轨迹立刻恢复正常并逐 step 对齐。
+  trigger_surface: PyNative DSA1 Indexer warm-up + CP4/FSDP2 八卡 + full recompute + 旧 MindSpore gate 62791fd0 默认 ACLNN cache queue
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - component
+    uncertain:
+    - visibility
+    - behavior

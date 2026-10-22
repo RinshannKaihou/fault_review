@@ -1,0 +1,82 @@
+id: INF-1778
+legacy_ids: []
+slug: tt_metal_concat_mixed_placement_wrong
+aliases: []
+title: ttnn.concat 混合放置/空输入错值或 SIGFPE
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: concat 搬运与空输入分支
+  behavior: 三缺陷面：①bf16 宽 8/24 且 a=L1、b=DRAM、输出 L1 时 dim=-2 拼接错值；②拼接维空输入在前形状对数据错，末维非 32 倍数时 SIGFPE；③sub_core_grids 混合布局大片错值，换序反被校验拒绝
+effect:
+  objects:
+  - 数值结果
+  detail: n150：行主序 bf16 宽 8/24，L1+DRAM→L1 错；373 个含空输入调用 36 错值+20 SIGFPE、36 个无空对照全对；61535（sub_core_grids 混合布局 436 调用 32 错）与 61625 分立报告
+  visibility: 静默错误
+mitigation:
+  detect: 与 torch.cat 逐元素比对；空输入+窄行主序场景留意进程 SIGFPE
+  fix: 待定（三 issue 均 open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 行主序窄张量（宽 8/24）+ L1/DRAM 混合放置输出 L1；或拼接维空输入（+末维非 32 倍数时 SIGFPE）；freq=always
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61625
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61543
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61535
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal（61625: 229f9d5336 n150；61543: 12b1eb51481 p100a；61535: p100a）。ttnn.concat 三个互补缺陷面：(1) #61625 行主序 bf16 宽 8/24：a=L1、b=DRAM、输出=L1 时 dim=-2 拼接错值；DRAM+L1→L1、L1+DRAM→DRAM、L1+L1→L1 全对。(2) #61543 拼接维空输入：空输入在前时返回形状对数据错（[e,a] dim=-1 4096 元素半数错，含 1.7e-38 垃圾）；行主序末维非 32 倍数（宽 50 TILE 空输入在前）SIGFPE 无 Python 异常杀进程；373 含空调用 36 错+20 崩，36 无空对照全对。(3) #61535 sub_core_grids+混合布局（TILE+ROW_MAJOR、非末位未对齐）：436 调用 32 错（最高 51200/102400 元素错）；无 sub_core_grids 的同列表被拒（expected all tile layout），ROW_MAJOR 在前被拒（requires aligned last dim）——即校验不一致放行。机制均未定位，freq=always。'
+  source: 2026-10-20 每日扫描；https://github.com/tenstorrent/tt-metal/issues/61625 ；https://github.com/tenstorrent/tt-metal/issues/61543 ；https://github.com/tenstorrent/tt-metal/issues/61535
+  behavior: 用 ttnn.concat 拼接行主序窄张量时，若两个输入分别放在 L1 和 DRAM 而输出要求 L1，结果数值错误（其他放置组合都对）；若拼接列表里有沿拼接维为空的输入，结果形状正确但数据错，某些宽度下还直接 SIGFPE 杀掉进程没有 Python 异常；带 sub_core_grids 且混合 TILE/行主序布局时也有大片错值，而同样输入换顺序反而会被校验拒绝。错误静默传播到下游。
+  trigger_surface: ttnn.concat 行主序窄张量（宽 8/24）+ 混合 L1/DRAM 放置输出 L1；或拼接维空输入；或 sub_core_grids+混合布局
+  discovery: 2026-10-20 每日扫描
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（原文为三个缺陷面，current称两个且漏第三个）
+  - 2026-10-21 opus-5.5 复核重写（原文无 WH 及形状(1,1,288,8)）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - behavior
+    - detail
+    uncertain:
+    - component
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - cause.behavior
+    - original.notes
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes
+  - date: '2026-10-21'
+    fields:
+    - cause.behavior
+  - date: '2026-10-21'
+    fields:
+    - cause.behavior

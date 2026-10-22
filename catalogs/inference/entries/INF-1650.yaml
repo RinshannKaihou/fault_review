@@ -1,0 +1,61 @@
+id: INF-1650
+legacy_ids: []
+slug: ms_softmax_const_fold_exp_overflow_nan
+aliases: []
+title: 常量折叠的 softmax 用朴素 exp 溢出成 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: Graph Const 常量折叠 softmax
+  behavior: 前端常量折叠对 ops.softmax 用朴素 np.exp 实现且不先减行最大值，大幅值常量输入在编译期 exp 溢出，输出 nan 而运行时路径正确。
+effect:
+  objects:
+  - 数值结果
+  detail: 常量 [[1000,1000],[1200,1200]] 上 Graph(Const) 的 softmax 输出全 nan 并报 overflow encountered in exp，PyNative 与 Graph(Arg) 都得 [[0.5,0.5],[0.5,0.5]]。
+  visibility: 数值异常
+mitigation:
+  detect: 同一 softmax 表达式分别用入参和无参 @jit（捕获闭包常量）执行并比较；Graph(Const) 出现 nan 或 exp 溢出告警即命中
+  fix: 待定（issue open，无修复 PR）；方向：常量折叠改用减行最大值的稳定 softmax 实现，而非朴素 np.exp
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: CPU + GRAPH_MODE，softmax 输入为闭包常量（走 Graph Const 常量折叠）；PyNative 与 Graph 传参路径不受影响
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29396
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '常量折叠路径把 ops.softmax 的常量输入交给 numpy 朴素实现：mindspore/ops/operations/manually_defined/ops_def.py:1368-1369 里先 e_input = np.exp(input.asnumpy())，再除以求和，既未减行最大值也未做裁剪。x=[[1000.0,1000.0],[1200.0,1200.0]] float32 时 exp 直接溢出，无参 @ms.jit（输入是闭包常量、走 Graph Const 常量折叠）输出 [[nan,nan],[nan,nan]]，同时抛 RuntimeWarning: overflow encountered in exp 与 invalid value encountered in divide；同一张量在 PYNATIVE_MODE 和 Graph 传参路径都得到正确的 [[0.5,0.5],[0.5,0.5]]。issue 环境为 CPU、Python 3.12 的 2.9/2.10 轮子，未给出 token 级影响。'
+  source: 2026-05-18 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29396 （open）
+  behavior: 同一个 softmax 表达式，输入写成闭包常量而不是函数入参，编译后输出整片变 nan，日志里只有 numpy 的 overflow/invalid 告警，进程不中断；改回传参立刻恢复正常。定长常量（固定 mask、位置相关权重）参与 softmax 的图会静默算出 nan，再往下传就污染整条链路。
+  trigger_surface: GRAPH_MODE 下 softmax 的输入是闭包常量（触发 Graph Const 常量折叠）；数值幅值足以让 exp 溢出
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核
+    uncertain:
+    - behavior

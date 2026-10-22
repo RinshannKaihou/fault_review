@@ -1,0 +1,62 @@
+id: INF-1412
+legacy_ids: []
+slug: ttmetal_fast_untilize_bfp_dense_route
+aliases: []
+title: tt-metal fast_untilize BFP 输入错走稠密路径
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: fast_untilize unpack 路径判定
+  behavior: 稠密/逐 tile BFP MOP 分流谓词只识别 Bfp8_b 与 Bfp4_b，Bfp2_b 及 A-exponent Bfp8/4/2 全部被路由到不能跳过 64B 指数段的稠密 MOP
+effect:
+  objects:
+  - 数值结果
+  detail: 第二 tile 起指数从上一 tile 尾数区读取，行主序输出静默错（36/36 变体失败，tile0 正确）；LLK 头文件自己写明 BFP 输入必须走逐 tile 路径
+  visibility: 静默错误
+mitigation:
+  detect: 多 tile Bfp2_b fast_untilize 与 golden 对照
+  fix: issue 给出修复：用仓库 IS_BFP_FORMAT（全部 6 个 BFP 码点）做谓词；未核实合入
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Blackhole fast_untilize + Bfp2_b 或 A-exponent Bfp8/4/2 输入、≥2 tile；在树内无调用者（ttnn 只暴露 BFLOAT8_B/BFLOAT4_B），手写 metal 程序可达；36/36 失败实测
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61110
+  kind: github_issue
+relations: []
+original:
+  mechanism: Blackhole fast_untilize unpack 路径（tt_metal/hw/ckernels/blackhole/metal/llk_api/experimental/llk_unpack_fast_untilize_api.h）在稠密多 tile MOP 与逐 tile BFP MOP 之间用只认 Bfp8_b/Bfp4_b 的谓词分流；unpacker 接受的其他块浮点输入（Bfp2_b 及 A-exponent 的 Bfp8/Bfp4/Bfp2，均为合法 CB 格式）被送进从单一基址步进 face、无法跳过每 tile 64 字节指数段的稠密 MOP，从第 2 个 tile 起指数读自上一 tile 尾数区，行主序输出静默错。LLK 自己的头注释写明 BFP 输入必须走逐 tile 路径正是为此。实测：tt-llk test_fast_untilize.py::test_fast_untilize_bfp2_b（Bfp2_b 输入、Float16_b/Float32 输出、4-tile 单元、36 变体）36/36 失败，tile0 正确、tile1 起每列垃圾（row0 [1,16,2.3e-13,…,-inf] vs golden [1,16,64,64,128,…]）。可达性：在树内无调用者传这些格式（ttnn 只暴露 BFLOAT8_B/BFLOAT4_B），手写 metal 程序或 tt-llk harness 可达。修复：谓词改用 IS_BFP_FORMAT 覆盖全部六个 BFP 码点。
+  source: 2026-10-17 GitHub tenstorrent/tt-metal issue https://github.com/tenstorrent/tt-metal/issues/61110（36/36 实测，含修复方向）
+  behavior: 在 Blackhole 上对 Bfp2_b（或 A-exponent Bfp8/4/2）输入调用 fast_untilize、数据跨多个 tile 时，第一个 tile 输出正确，第二个 tile 起整列静默错误（读到的是上一 tile 尾数区当指数算出来的垃圾值，含 ±inf）。不报错不挂起；树内 ttnn 路径暂不触达，手写 metal kernel 会命中。
+  trigger_surface: Blackhole fast_untilize + Bfp2_b/A-exponent BFP 格式 + ≥2 tile；shipped 代码
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility
+    - title
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

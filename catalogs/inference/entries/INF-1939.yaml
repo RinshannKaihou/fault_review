@@ -1,0 +1,63 @@
+id: INF-1939
+legacy_ids: []
+slug: vllm_ascend_eagle3_sp_drafter_acceptance
+aliases: []
+title: eagle3 开 SP 后草稿 token1 接受率掉到 0.08
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: eagle3 草稿前向（SP）
+  behavior: 启用 SP/FLASHCOMM1 后，eagle3 草稿模型在 SP 路径上的分布/精度异常，第二个及以后草稿 token 几乎不被接受；同权重同脚本关闭 SP 即恢复
+effect:
+  objects:
+  - 输出分布
+  - 性能/资源
+  detail: SP 开:mean acceptance length 1.67、token0 0.59、token1 0.08、token2 起 0.00;SP 关:2.29、0.62、0.40、0.27;输出仍可读,表现为投机解码几乎不加速
+  visibility: 质量退化
+mitigation:
+  detect: 对比开/关 VLLM_ASCEND_ENABLE_FLASHCOMM1 两次的 SpecDecoding metrics,重点看 per-position acceptance（token0/1）与 mean acceptance length;也可修 ascend_forward_context.py 里 sp_enabled 的判定条件做定点复现
+  fix: 待定（issue closed 未给修复 PR）；规避：关闭 FLASHCOMM1/SP,或让 sp_enabled 判定与 drafter 实际切分保持一致
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM 0.13.0 + vllm-ascend 0.13.0rc2.dev154+gff4c1a47b,torch_npu 2.8.0,eagle3 drafter;为便于复现作者改了 vllm_ascend/ascend_forward_context.py 中 sp_enabled 的判定（删掉 and num_tokens > 1000）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/5825
+  kind: github_issue
+relations: []
+original:
+  mechanism: issue 定位在 eagle3 投机解码叠加序列并行（SP）的场景:作者为了稳定复现,直接改 vllm_ascend/ascend_forward_context.py,删掉判定 sp_enabled 时附带的 and num_tokens > 1000 条件,使 SP 恒开,然后跑同一段脚本统计接受率。SP 开时 num_drafts 597、num_draft_tokens 1791、num_accepted_tokens 402、mean acceptance length 1.67,token0 接受率 0.59、token1 只有 0.08、token2 及以后 0.00;把 VLLM_ASCEND_ENABLE_FLASHCOMM1 注释掉（SP 关闭）后,num_drafts 437、num_draft_tokens 1311、num_accepted_tokens 564、mean acceptance length 2.29,token0 0.62、token1 0.40、token2 0.27。目标模型权重与脚本完全不变,只有 SP 开关不同,因此作者判断是 drafter 模型在 SP 路径上的精度问题（草稿分布被切分/还原不正确）,而不是采样或权重问题。
+  source: 2026-01-12 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/5825 （closed）
+  behavior: 开了 SP/FLASHCOMM1 之后,eagle3 投机解码看着还在工作,但几乎接受不了第二个及以后的草稿 token,推理吞吐比不开 SP 时还差;输出内容本身读起来正常,只有 SpecDecoding metrics 里的 per-position acceptance 暴露了异常,很容易被当成“草稿模型本来就这样”。
+  trigger_surface: eagle3 投机解码 + 序列并行（VLLM_ASCEND_ENABLE_FLASHCOMM1=1,sp_enabled 为真）+ 长序列(num_tokens 超过判定阈值)
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 并行切分
+    rewritten:
+    - behavior
+    uncertain:
+    - visibility

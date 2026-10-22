@@ -1,0 +1,57 @@
+id: INF-1884
+legacy_ids: []
+slug: mindie_pd_pullkv_partial_tp_failure_treated_success
+aliases: []
+title: D 节点 pullkv 只按 tp0 判成功致请求误入解码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: 通用
+    component: PD pull-kv 结果聚合
+  behavior: D 节点单 dp 内 tp=2 时 pull-kv 只按 tp0 结果判成功，tp1 的拉取失败被忽略，请求照常进入 running 队列解码
+effect:
+  objects:
+  - 可用性/进度
+  - KV状态
+  detail: 日志先出现 pull kv failed，请求未被拒绝或重试即进入解码，随后报 MIE05E010010 无该序列缓存，收尾为 The sequence 101 is not prefilled before decoding；仅 tp 内单 rank 失败时偶发，重试往往正常。
+  visibility: 报错
+mitigation:
+  detect: PD 分离大 EP 下抓 pull_kv_results 与各 tp rank 的返回码，确认是否每个 rank 都成功；解码报 no cached data for sequence 时回查 pull 侧单 rank 失败日志
+  fix: issue 指出应在 tp 内逐 rank 汇总 pull-kv 结果、任一 rank 失败即不放入 running 队列；未见关联 PR（issue 已关闭，未核实）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: MindIE PD 分离 + 大 EP（D 节点单 dp 内 tp=2）+ 远端 pull-kv 出现单 rank 失败（MIE05E01001A）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindIE-LLM/issues/411
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'PD 分离部署时，D 节点一个 dp 内 tp=2，pull-kv 由各 tp rank 分别向 P 节点拉取。问题现场：tp0 pull 成功、tp1 pull 失败（separate_deployment_engine.py-390 报 Pull kv from remote_cluster_id: 0 failed, CANN status_code is LLMStatusCode.LLM_NOT_YET_LINK；-519 报 pull kv from unknown failed, error code is MIE05E01001A；response_builder 的 pull_kv_response 里 request_id 带 pd_error_code: PD_PULL_KV_ERROR）。但这一失败结果没有被计入调度判断——代码只按 tp0 的成功返回认为 pullkv 完成，把该请求投入 running 队列，随后 batch_context.py-542 报 MIE05E010010 There is no cached data for sequence 101（未经过 prefill 或已被判定停止仍进入解码），router_impl.py-608 收尾为 The sequence 101 is not prefilled before decoding。正确的语义是：tp 内任一 rank 的 pull-kv 失败都必须视为整请求失败（重试或回退 prefill），而不是只取 tp0 的结果。'
+  source: '2026-04-08 GitCode Ascend/MindIE-LLM issue #411 https://gitcode.com/Ascend/MindIE-LLM/issues/411（closed；大 EP PD 分离，D 节点单 dp tp=2）'
+  behavior: PD 分离大 EP 部署下偶发请求失败：日志里先出现某个 tp rank 的 pull kv failed（MIE05E01001A / PD_PULL_KV_ERROR），但请求并没有被拒绝或重试，而是进入解码，紧接着报 The sequence 101 is not prefilled before decoding，用户侧看到请求直接失败。只有 tp 内部单个 rank 失败时才会出现，重试同样请求往往又正常。
+  trigger_surface: MindIE PD 分离 + 大 EP + D 节点单 dp 内 tp>1 + 远端 KV 拉取单 rank 失败
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

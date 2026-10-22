@@ -1,0 +1,52 @@
+id: INF-1826
+legacy_ids: []
+slug: vllm_ascend_mooncake_timeout_dirty_kv
+aliases: []
+title: PD 分离 KV 超时强释放后 D 端拉到脏 KV 乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MooncakeConnector 超时强释放
+  behavior: P 端延迟释放 block 后超时把该物理块强制还池，未等 D 端拉取完成；块随即被别的请求复用写入，D 端仍按原请求描述拉取，读到他人的 KV
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 高并发下 D 端在超时窗口内没来得及拉取时出现：请求仍正常返回，但生成内容乱码；D 端日志显示 KV transfer 成功、耗时 35~53ms，P 端则告警 finish req not in reqs to process
+  visibility: 静默错误
+mitigation:
+  detect: 对照 P 端 Force freed expired request 日志与 D 端 KV cache transfer 完成时间；同一 request_id 两事件间隔超过超时阈值即为疑似
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: PD 分离 + 仅用 MooncakeConnectorV1（无 MultiConnector）+ VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT 调小 + 高并发长队列，使 D 端拉取晚于 P 端超时释放
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 同一族的脏 KV 读取，机制是发送端超时释放后被覆写，不是传输通道丢包。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15420
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'A2 上按官方指导做 1P1D PD 分离（仅用 MooncakeConnectorV1，不用 MultiConnector），把 VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT 调到 10 秒以缩短复现窗口。P 端先记录 mooncake_connector.py:1910 Delaying free of 6 blocks for request chatcmpl-35663437...；对该请求施加足够压力使 D 端在有效期内未拉取，P 端随即在 mooncake_connector.py:233 打印 Force freed expired request（Reason: Request exceeded timeout threshold (10 seconds)，Action: Resources have been forcibly released to prevent memory leak），把这些物理块还回池子。49 秒后 D 端才完成拉取（mooncake_connector.py:973 KV cache transfer 耗时 35.34~53.54 ms），P 端收到拉取完成通知时该请求已不在 reqs 中，只打印 WARNING finish req not in reqs to process。复现条件是给两端足够压力、让 P 端在 D 端拉取前把已标记释放的物理内存覆盖掉。'
+  source: 2026-08-31 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15420 （open）
+  behavior: GLM-5.2 PD 分离部署、压力较大时，部分请求返回的回答是乱码。D 端日志里 KV cache transfer 全部成功、耗时几十毫秒，看起来传输正常；P 端则出现 Force freed expired request 与 finish req not in reqs to process 告警，两端日志时间差达数十秒。
+  trigger_surface: 1P1D PD 分离 + MooncakeConnectorV1 + KV 超时阈值小 + 高并发长排队
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

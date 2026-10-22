@@ -1,0 +1,63 @@
+id: INF-1502
+legacy_ids: []
+slug: msprobe_alg_all_silently_drops_custom_algorithm
+aliases: []
+title: -alg all 静默丢弃自定义比对算法
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: algorithm_manager.py
+  behavior: algorithm_manager.py 第235行去重检查变量名写错，使用 self.custom_support_algorithm，条件恒为 False，自定义算法从未被添加
+effect:
+  objects:
+  - 指标/日志
+  - 测试判定
+  detail: msaccucmp.py compare -alg all -c custom_algo 的输出表头只有 10 个内置算法、不含自定义算法，且无任何警告；指定具体算法名的场景不受影响
+  visibility: 静默错误
+mitigation:
+  detect: 用 -alg all -c <自定义算法> 跑一次，检查表头是否含该算法列；对照 ALL_COMPARE_INDEX 与实际算法集合
+  fix: 两行修改（issue 给出方案，未见 PR）：第 233 行改为 list(ConstManager.BUILT_IN_ALGORITHM) 避免 append 污染全局常量；第 235 行把 self.custom_support_algorithm 改为 self.built_in_support_algorithm
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msprobe msaccucmp.py compare -alg all 且通过 -c 指定自定义算法；仅影响 all 聚合路径，指定具体算法名不受影响
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/456
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0164
+original:
+  mechanism: msprobe 的 msaccucmp.py compare 在 -alg all 时调用 algorithm_manager.py 的 _make_all_algorithm_list("all") 组装算法列表，自定义算法在此被静默排除，列表里只剩 10 个内置算法。根因是两处代码缺陷：第 235 行的去重检查变量名写错，用了 self.custom_support_algorithm，而此处 item 本身就来自 custom 迭代，条件永远为 False，自定义算法从未被添加；第 233 行 ConstManager.BUILT_IN_ALGORITHM 是 list，直接赋值引用会让修复 Bug1 后的 append 污染全局常量（应写成 list(ConstManager.BUILT_IN_ALGORITHM)）。复现：msaccucmp.py compare -m .npy -g .npy -alg all -c custom_algo，输出表头只有 10 个内置算法。影响面仅 algorithm_manager.py 一个文件，指定具体算法名的场景不受影响。issue 未附修复 PR。
+  source: '2026-07-17 GitCode Ascend/msprobe issue https://gitcode.com/Ascend/msprobe/issues/456 （closed，与 #455 同文重复提交）'
+  behavior: 加了自定义比对算法后用 -alg all 跑比对，结果 CSV 里根本没有自定义算法那一列，也没有任何提示说它被跳过了；用户会以为自定义算法算出来就是空值或者自己配置没生效，实际是工具在组装 10 个内置算法时就把它丢了。只指定该算法名单独跑则正常。
+  trigger_surface: msaccucmp.py compare -alg all + -c <自定义算法>（-alg all 聚合路径）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 测试判定
+        to: 指标/日志
+    rewritten:
+    - behavior

@@ -1,0 +1,62 @@
+id: INF-1625
+legacy_ids: []
+slug: mindformers_gbs_truncation_and_streaming_preconsume
+aliases: []
+title: GBS 不能整除 DP×local_batch 时梯度累积步数被静默截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindspore
+    component: GBS 与数据均衡校验
+  behavior: 只在静态 batch 分支校验 base_units > global_batch_size，不校验整除；GBS=10、DP=4、local_bs=2 时 base_units=8，10 // 8 把累积步数截成 1
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  detail: 每步实际处理样本数与配置 GBS 不一致且无告警；HF 流式数据与 balance_enabled 同开时均衡器按 dataset[index] 随机读会提前推进迭代器，造成跳样本、顺序错乱与续训位置异常
+  visibility: 静默错误
+mitigation:
+  detect: 启动前断言 global_batch_size % (DP × local_batch_size) == 0；流式数据集上检查是否同时开了 balance_enabled
+  fix: 待定（issue closed，正文只指出三处缺校验，未给修复方式）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 'GBS 不能整除 DP×local_batch_size，或 streaming: true 与 balance_enabled: true 同时开启时出现'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2599
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '三处缺校验，均由负载均衡/流水相关代码路径引入：1) GBS 未校验能否被 DP * local_batch_size 整除，原代码只在静态 batch 分支检查 if base_units > global_batch_size: raise ValueError，该检查发现不了 GBS 大于 DP*local_batch_size 但不能整除的情况（GBS=10、DP=4、local_batch_size=2 时 base_units=8），后续 10 // 8 把梯度累积步数静默截断为 1，实际每步样本数与配置 GBS 不一致；只在静态 batch 分支校验还让动态 batch scheduler 或数据均衡先拿错误配置跑，抛出的错误无法暴露根因。2) HF 流式数据与数据负载均衡同时开启时未提前报错：均衡器要通过 dataset[index] 随机读取一个 GBS 窗口内所有样本的 actual_seq_len 再重排索引，而 HFIterableDataset.__getitem__ 每调用一次就推进内部迭代器，streaming: true 与 balance_enabled: true 同开会提前消费数据，可能跳样本、数据顺序错误、续训位置异常。3) PP 场景按 rank 本地 model_parts 判断 MoE（has_moe = all(any(hasattr(layer.mlp,''experts'') ...) for part in model_parts)），混合 Dense/MoE 模型切分后不同 rank 可能分别只持有 Dense 层或 MoE 层，has_moe 不一致，开 pipeline_parallel_overlap_b_f 时部分 rank 关闭 overlap，schedule 执行序列不一致。基线 master / NPU。'
+  source: 2026-09-22 GitCode mindspore/mindformers issue https://gitcode.com/mindspore/mindformers/issues/2599 （closed）
+  behavior: 配 GBS=10、4 张卡、local_batch_size=2，训练照常跑起来，不报错也没有警告，但每个 step 实际只吃了 8 个样本，累积步数从应有的 2 被截成 1；对不上 loss 曲线时先会怀疑数据或学习率。开 HF 流式数据又顺手打开数据负载均衡，训练中途会莫名其妙跳样本、顺序错乱，续训位置也对不上。混合 Dense/MoE 模型开 PP 与 forward/backward overlap 时，部分 rank 按自己手上的层判断没有 MoE 而关掉 overlap，schedule 就不再一致。
+  trigger_surface: 'global_batch_size 不能整除 DP×local_batch_size；streaming: true + balance_enabled: true；混合 Dense/MoE 模型 + PP + pipeline_parallel_overlap_b_f'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - detail

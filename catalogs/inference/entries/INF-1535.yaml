@@ -1,0 +1,66 @@
+id: INF-1535
+legacy_ids: []
+slug: ops_nn_cross_entropy_extreme_logits_cancellation
+aliases: []
+title: CrossEntropyLoss 极端 FP32 logits 出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: CrossEntropyLoss 日志概率计算
+  behavior: 先算 input−rowMax 再 Exp，-FLT_MAX 这类极端负值进入指数路径触发 NaN；再用 logBatchSum=rowMax+log(expSum) 回代，整行极端值时消减致错误 log-softmax。
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: CrossEntropyLoss 使用含 -FLT_MAX 的 FP32 logits 时，部分 masked（如 [0,-FLT_MAX,1]）或整行 -FLT_MAX 会使损失/逐 token log-prob 出现 NaN 或明显错误值；正常量级 logits 下正常。
+  visibility: 数值异常
+mitigation:
+  detect: 构造含 torch.finfo(float32).min 的行与整行 -FLT_MAX 的输入，检查输出是否 NaN 或与 log_softmax 参考不符；常规值域用例发现不了。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/9233 （open，未发布）：Exp 前把稳定化输入下限钳到 -87.0f、log-prob 改为 (input−rowMax)−logExpSum、新增两类极端 logits 回归用例
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: logits 含 -FLT_MAX / torch.finfo(float32).min 的极端 FP32 输入（部分 masked 或整行极端负值）；常规值域不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: PR 关联的 issue 未在本批数据里，条目以 PR 正文为唯一来源；状态 open，未合入。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/9233
+  kind: gitcode_pr
+relations: []
+pattern: PAT-INF-0172
+original:
+  mechanism: cann/ops-nn merge request 9233（2026-08-25，open）：CrossEntropyLoss 在极端 FP32 logits（-FLT_MAX / torch.finfo(torch.float32).min）下数值不稳定。原实现先计算 input−rowMax 后直接进入 Exp，极端哨兵值在指数路径上触发 NaN；log-prob 又按 logBatchSum=rowMax+log(expSum) 再算 input−logBatchSum，整行均为 -FLT_MAX 时 rowMax 与小量 logExpSum 相加发生严重消减，得到错误的 log-softmax。修改三处：Exp 前把稳定化后的输入下限限制为 -87.0f；log-prob 改为 (input−rowMax)−logExpSum，避免先把 rowMax 与小量相加；补极端 logits 回归用例，覆盖部分 masked 与整行 -FLT_MAX 两种场景（[0,-FLT_MAX,1] 与三个 -FLT_MAX）。PR 只跑 pre-commit、clang-format、codespell、OAT 检查，未附数值比对结果；状态 open。
+  source: 2026-08-25 GitCode cann/ops-nn merge request https://gitcode.com/cann/ops-nn/merge_requests/9233 （open）
+  behavior: 做带 masked logits 的交叉熵时，只要某些位置填成 -FLT_MAX（float32 的最小值，常见于 padding/mask 的硬置负无穷），损失和逐 token 的 log-prob 就会冒出 NaN，或者整行都是 -FLT_MAX 时给出明显错误的数值；换成正常量级的 logits 就完全正常。这类输入在训练/推理里常被当成“该位置永不选”的标准写法，所以出错时很难想到是算子本身。
+  trigger_surface: CrossEntropyLoss + FP32 logits 含 -FLT_MAX（部分 masked 或整行极端负值）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+    - effect

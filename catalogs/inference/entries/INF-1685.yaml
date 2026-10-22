@@ -1,0 +1,62 @@
+id: INF-1685
+legacy_ids: []
+slug: inductor_scalar_grid1d_48_program_race
+aliases: []
+title: 标量 Grid1D kernel 按 48 核发射致 loss 数据竞争
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: Inductor launcher grid 计算
+  behavior: 零 free-x-node 的 xnumel=1 标量 kernel 未被按 xnumel 限制 grid_0，按 48 核发射；program_id 不参与寻址，48 个 program 同写 in_out_ptr0[0]。
+effect:
+  objects:
+  - 训练信号
+  - 数值结果
+  detail: DeBERTaV2/ALBERT/MobileBERT/RoBERTa QA 的 start/end logits、梯度与参数更新均通过精度检查，仅最终 loss 标量偏 3~6；关 ACLGraph 仍复现，呈非确定性竞争。
+  visibility: 不可复现
+mitigation:
+  detect: 对 grid_type=Grid1D、npu_num_x_nodes=0、xnumel=1 的标量 kernel 检查实际 grid_0；或把 loss 标量与逐项指标分开比对，loss 单点偏差而其余全对即指向该路径
+  fix: 待定（issue closed，正文只给期望行为）：非 reduction 的零/单 free-x-node Grid1D 应按 xnumel 计算 launch grid，xnumel=1 只启动一个 program
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: triton_experimental 后端 + FP32 训练 accuracy + 最终标量 loss kernel（grid_type=Grid1D、npu_num_x_nodes=0、xnumel=1）；910B2/CANN 9.1.0；关 ACLGraph 仍复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3812
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #3812（2026-08-07，closed，Ascend 910B2 / CANN 9.1.0 / PyTorch 2.13 分支自编包 / torch_npu 2.13 分支自编包 / transformers 4.36.0，triton_experimental 后端，FP32 training accuracy 50 iterations）：DeBERTa V2、ALBERT、MobileBERT、RoBERTa QA 的 start/end logits、全部梯度及参数更新都通过精度检查，唯独最终返回的 loss 标量偏差 3～6，关闭 ACLGraph 后仍可复现。该 loss kernel 的 metadata 为 grid_type=''Grid1D''、npu_num_x_nodes=0、xnumel=1、mutated_arg_names=[''in_out_ptr0'']；旧 launcher 仅在 npu_num_x_nodes == 1 时按 xnumel 限制 Grid1D 的 grid_0，零 free-x-node 的标量 kernel 因此进入通用分支，在 910B2 上使用 grid_0 = NPU_CU_COUNT = 48。生成 kernel 的 program_id(0) 不参与地址计算，48 个 program 同时读写原地复用的 in_out_ptr0[0]，产生非确定性数据竞争。同一 issue 另记录 DeBERTa/DeBERTaV2 训练态 Bernoulli 无法被 NPUGraph 捕获（NPUGeneratorImpl::philox_engine_inputs 在 capture 期间报错，CANN 尚无接收 PhiloxNpuState tensor seed/offset 的 Bernoulli ABI），属独立的 fail-loud 问题，本条目只收标量 grid 过量发射这一静默错值机制。'
+  source: 2026-08-07 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/3812 （closed）
+  behavior: 用 triton_experimental 跑 HuggingFace QA 模型的 FP32 训练精度检查，start/end logits、梯度和参数更新全都对，只有最后返回的那个 loss 标量差 3 到 6，而且每次跑数值不同。关掉 ACLGraph 一样出现，所以不是图的问题。查下来这个 loss kernel 的 grid 是 Grid1D、xnumel=1，却被按 48 个核发射，48 个 program 同时往同一个原地地址写，属于非确定性竞争，因此逐项检查查不出来、只在这一个标量上出现。
+  trigger_surface: Inductor launcher + xnumel=1 的标量（非 reduction）kernel，npu_num_x_nodes=0；triton_experimental/default 训练末端的 loss 归约
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 编译器
+      effect:
+        from: 数值结果
+        to: 训练信号
+      visibility:
+        from: 静默错误
+        to: 不可复现

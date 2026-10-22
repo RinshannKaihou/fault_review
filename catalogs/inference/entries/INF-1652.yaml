@@ -1,0 +1,64 @@
+id: INF-1652
+legacy_ids: []
+slug: ms_const_fold_int8_reduce_int64
+aliases: []
+title: 常量折叠把 int8 reduce 输出成 Int64
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: 常量折叠 reduce dtype 推导
+  behavior: Graph Const 常量折叠对 int8 输入的 ReduceSum/ReduceProd 把输出提成 Int64，PyNative 与 Graph(Arg) 都保持 Int8，同一表达式两种 dtype。
+effect:
+  objects:
+  - 数值结果
+  detail: int8 [[2,3,4],[-2,-3,4]] 做 ReduceProd 后 Graph(Const) 得 Int64、另两条路径得 Int8；dtype 悄悄变宽，下游按 Int64 计算与存储。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 reduce 表达式分别在 PyNative、jit(带参数)、jit(闭包常量) 下打印输出 dtype；int8 输入在闭包常量路径变成 Int64 即命中
+  fix: 待定（issue open，无修复 PR）；方向：常量折叠复用运行时的 reduce dtype 规则（int8 入 int8 出）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: CPU + GRAPH_MODE，int8 张量为闭包常量、算子为 ReduceSum/ReduceProd（Graph Const 常量折叠）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29394
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1612
+pattern: PAT-INF-0180
+original:
+  mechanism: MindSpore 前端常量折叠（Graph Const）对整数归约的类型推导与运行时不一致：ops.ReduceProd 和 ops.ReduceSum 在 int8 输入下，PYNATIVE_MODE 与 GRAPH_MODE 传参（Graph Arg）都返回 Int8；把张量写成无参 @ms.jit 的闭包常量后，常量折叠把输出 dtype 提成 Int64。issue 的最小复现是 [[2,3,4],[-2,-3,4]] int8 做 keep_dims=False 的 ReduceProd(axis=1)，以及 [[1,2,3],[4,5,6]] int8 的 ReduceSum。环境为 CPU、Python 3.12 的 2.8.0。与同批 issue 29397（int32 true_divide 被折成 Float64）同属常量折叠 dtype 推导偏离运行时一族。
+  source: 2026-05-18 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29394 （open）
+  behavior: int8 的 sum/prod 写在闭包常量上编译后，输出 dtype 从 Int8 变成 Int64，值和 shape 都正常，只有 dtype 变了；下游若按 Int8 做量化反量化或直接写回 int8 权重，就会拿到静默变宽的中间结果，显存与带宽也跟着变。传参写法输出仍是 Int8。
+  trigger_surface: GRAPH_MODE 下 int8 张量作为闭包常量参与 ReduceSum/ReduceProd（触发 Graph Const 常量折叠）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

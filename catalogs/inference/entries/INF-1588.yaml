@@ -1,0 +1,57 @@
+id: INF-1588
+legacy_ids: []
+slug: cann_moe_init_routing_v3_mxfp4_scale_row_stride_truncation
+aliases: []
+title: MoeInitRoutingV3 MXFP4 scale 行 stride 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: moe_init_routing_v3 量化路径
+  behavior: MXFP4 的 scale 每行字节数用 cols/32 整数除法算，cols 非 32 倍数时余数被丢、逐行搬运起点漂移；静态量化全载模板按全部源行分配 buffer 却逐行 Compute(1)，小 cols 时写越 buffer。
+effect:
+  objects:
+  - 数值结果
+  detail: cols 非 32 倍数时 scale 错位，量化输出精度固定在约 33%；小 cols 多核时 64B Store 对齐溢出 buffer、踩踏相邻 UB 触发 AIV error；另有 golden 量化判据问题。
+  visibility: 静默错误
+mitigation:
+  detect: quantMode=0/9/13 下取 cols 非 32 倍数（如 33/48/65）核对 scale 逐行落点与量化输出；小 cols、多核场景加 mssanitizer memcheck 查 UB 越界
+  fix: 待定（issue closed，正文未附修复 PR；期望方向为 scale 行字节数改对齐上取整、量化输出改用 ULP 判据）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend950PR/DT + ops-test-kit + moe_init_routing_v3 量化路径 + cols 非 32 倍数（MXFP4）或小 cols 多核；分支 fix_golden_tj
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5394
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5394（2026-09-17 closed，Ascend950PR/Ascend950DT、ops-test-kit、分支 fix_golden_tj）在新框架适配与批量测试中发现 MoeInitRoutingV3 三个问题：(1) 静态量化全载模板 ScatterOutXStaticQuant 逐行调用 Compute(1)，但 Init 中 buffer 按核覆盖的全部源行数分配，cols 较小、核数较多时 cols*rowLength 小于 StoreAlign 的 64 字节对齐粒度，写入溢出 buffer、踩踏相邻 UB 内存，引发 AIV error；(2) MXFP4 的 scale 每行字节数用 cols / SCALE_FACTOR_WITH_X 整数除法计算，cols 不是 32 的倍数时丢失余数，逐行搬运时 scale 数据错位，量化输出精度固定在约 33%；(3) golden 侧判据问题——int8/int4 量化输出用精确匹配，float16 导致的 off-by-1 被误报 FAIL；E2E spec 的 pre_compare 缺 return 语句使结果被框架丢弃；_numpy_to_torch 对 float32 转 float8 直接 view(uint8) 导致 reshape 失败；quant_mode=13 输出 padding 逻辑不正确。复现：跑 moe_init_routing_v3 的 quantMode=0/9/13 用例，观察小 cols 的 AIV error 与量化输出精度 FAIL。'
+  source: 2026-09-17 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5394 （closed）
+  behavior: MoE init routing 走 MXFP4 量化路径且最后一维不是 32 的倍数时，量化 scale 会逐行错位，量化输出精度稳定卡在 33% 左右——不是随机抖动，而是每行都偏；另外在最后一维很小、核数很多的配置下，静态量化模板会写到 UB buffer 之外，把相邻内存踩掉并报 AIV error。量化结果错的时候算子本身不报错。
+  trigger_surface: moe_init_routing_v3 量化路径 + MXFP4 scale 且 cols 非 32 倍数；或静态量化全载模板 + 小 cols/多核
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 量化
+    issue_unfixed:
+    - behavior

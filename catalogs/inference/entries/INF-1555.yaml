@@ -1,0 +1,59 @@
+id: INF-1555
+legacy_ids: []
+slug: vllm_ascend_gdn_ragged_state_row_indexing
+aliases: []
+title: GDN 循环状态按 packed 偏移寻址致跨请求串扰
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: RGDR 状态行寻址
+  behavior: metadata 保留 [B,K+1] 定宽状态表，调用方 flatten 后传入，kernel 却按 packed token 偏移寻址，正确行基址应是 request_index×(K+1)。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: Qwen3.5 开 MTP3 并发结构化输出时，若语法校验使 batch 内 verify 长度不同，产出畸形 JSON、错误字段、重复片段或跑满 max_tokens，服务不报错；等长 [4,4] 对照通过。
+  visibility: 静默错误
+mitigation:
+  detect: 构造各请求 verify 长度不齐的 batch（如 accepted [4,1]、query 长度 [2,4]），用无权重算子复现器检查状态行是否按 request_index×(K+1) 寻址；等长 batch 做对照
+  fix: '待定（issue open）；修复方向：保留每请求二维状态表并显式传 row stride，读写都用该 stride，并按状态行宽度校验 accepted_prev；release 侧 #17839 已修 910 族，#17856 报 310P 的 v310 算子未被覆盖'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vLLM v0.26.0 568afb3a + vllm-ascend v0.26.0rc1 f2f74a16c，A3（ascend910_93），torch_npu 2.10.0.post4，CANN 9.1.0 B243，XGrammar 0.2.8；Qwen3.5-397B-A17B-W8A8-MTP，MTP3、TP16+EP、FULL_DECODE_ONLY、同步调度、prefix caching、mamba-cache-mode align
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17837
+  kind: github_issue
+relations: []
+original:
+  mechanism: 并发 Qwen3.5 结构化输出请求在开 MTP3 时会产出畸形 JSON、错误字段、重复片段或直接跑满 max_tokens。触发是一个 batch 内各请求实际 verify 长度不同——语法校验对不同请求裁掉的 draft 数不同就会这样。根因在 GDN 循环状态的行寻址：Ascend 的 GDN metadata builder 仍保留固定的 [B,K+1] 状态表（gdn_attn_builder.py 由 block table 前 K+1 列构造定宽行），但调用方 vllm_ascend/ops/gdn.py 把 spec_state_indices_tensor.flatten() 后传下去；csrc/attention/recurrent_gated_delta_rule/op_kernel/recurrent_gated_delta_rule.h 里 kernel 按 packed token 偏移在 seq0+accepted_prev-1 处读初始状态、用 seq_i 写回，而正确行基址应该是 request_index×(K+1)。以 K=3、状态行 [1,2,3,4]/[5,6,7,8]、query 长度 [2,4] 为例，第二个请求的状态行应从扁平偏移 4 开始，旧实现从偏移 2 开始，于是读写到别的请求的状态。该缺陷在无模型、无 tokenizer、无语法引擎的单 NPU 复现器上即可复现（BF16 Q/K/V + FP32 状态，不含量化权重），等长 [4,4] 对照通过；release v0.26.0rc 与 main（GDN 已迁到外部 FLA 包）在 caller/operator 契约层面都存在。
+  source: 2026-09-30 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17837 （open）
+  behavior: 开 MTP3 + 语法约束（structured output）并发跑 Qwen3.5 时，JSON 字段内容会串到别的请求的答案上：水果列表内容错、标点非法、出现无关文本、重复片段，或者一直生成到 max_tokens 才停；单请求、等长 batch 或不带 draft 的场景正常，所以压测里表现为偶发、难复现的质量问题，服务不报错。
+  trigger_surface: GDN/Mamba 类模型（Qwen3.5）+ MTP 推测解码 + 语法约束解码，使 batch 内 verify 长度不齐（accepted_prev 与当前 query 长度不一致）；等长 batch 不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: KV状态
+    rewritten:
+    - detail

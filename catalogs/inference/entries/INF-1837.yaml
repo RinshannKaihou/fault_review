@@ -1,0 +1,62 @@
+id: INF-1837
+legacy_ids: []
+slug: vllm_ascend_dsa_hadamard_zero_after_sleep_wake
+aliases: []
+title: sleep/wake_up 后 DSA Hadamard 变全零致错算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: DSAMetadataBuilder 张量恢复
+  behavior: DSAMetadataBuilder 把 DSA 稀疏 attention 的 Hadamard 矩阵以设备张量常驻，sleep(level=1)/wake_up() 后它未被恢复而是全零，仍喂给 attention kernel
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 休眠唤醒后 DSA 稀疏 attention 用全零 Hadamard 变换计算，attention 输出错误，模型回答质量下降；进程不重启、不报错，唤醒后的服务继续正常返回
+  visibility: 静默错误
+mitigation:
+  detect: sleep/wake_up 前后 dump AscendDSAMetadataBuilder.hadamard 并检查是否全零；或对比唤醒前后同一请求输出
+  fix: 待定（issue closed，未见修复 PR 链接）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: DeepSeek V4 系列 DSA 稀疏 attention + sleep(level=1)/wake_up() 显存休眠唤醒（RL/多实例复用同一进程）；不睡眠时无影响
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 休眠唤醒的材料在 wake_up 时按注册清单恢复，未登记的张量会残留为零页；本条是该机制的实例。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10684
+  kind: github_issue
+relations: []
+original:
+  mechanism: AscendDSAMetadataBuilder 类把 Hadamard 矩阵以设备张量形式保存在 self.hadamard 上，并把它提供给 attention metadata、最终被 DeepSeek V4 稀疏 attention kernel 使用。执行 sleep(level=1) / wake_up() 一次循环后，该张量变为全零，导致稀疏 attention 用零矩阵做 Hadamard 变换、attention 计算错误。报告者用截图给出张量内容对比，并 @Ronald1995 请求跟进；issue 已 closed，正文未给出修复 PR 或具体恢复清单代码位置。缺陷性质是休眠时释放的设备内存/张量在唤醒路径上未被重新初始化。
+  source: 2026-06-18 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10684 （closed）
+  behavior: 用 sleep/wake_up 做显存休眠唤醒（如 RL rollout 与推理复用同一进程）后，DeepSeek V4 系列的回答质量下降、结果与唤醒前不一致；服务不崩溃也不报错，日志里没有异常，只有把 self.hadamard dump 出来才看到它已经是全零。
+  trigger_surface: DSA 稀疏 attention + sleep(level=1)/wake_up 周期
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 重计算/卸载
+        to: 运行时/执行
+    uncertain:
+    - visibility

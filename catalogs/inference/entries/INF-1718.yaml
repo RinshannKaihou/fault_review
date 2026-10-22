@@ -1,0 +1,51 @@
+id: INF-1718
+legacy_ids: []
+slug: fa_band_mergemask_loopcount_overflow
+aliases: []
+title: flash_attn BAND mask loopCount 多 1 越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: flash_attn BAND MergeMask
+  behavior: MergeMask 误把 halfS1RealSize+1 当 halfS1RealSizeLoop，s2BaseSize>=regBytes 时 loopCount 多 1，多写一整行到 attenMaskUb 之外。
+effect:
+  objects:
+  - 数值结果
+  detail: mask_mode=4、S1=31、S2=112384、D=128、PA_BNBD、block_size=512 用例 MaxAbsErr=182.42、FailRatio=1.67% 判 FAIL（修复后 0.00225/0.38%），无报错。
+  visibility: 静默错误
+mitigation:
+  detect: BAND(mask_mode=4) 下覆盖 win_left 很大、S1 非对齐、PA_BNBD 的组合，比对 MaxAbsErr 与 FailRatio
+  fix: 'PR #9114（master）/#9117（9.1.0）：loopCount 改为按 rowNumEachLoop 的 ceil 除法计算'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: ascend950 + mask_mode=4(BAND) + s2BaseSize>=regBytes 使 rowNumEachLoop=1 + layout_kv=PA_BNBD
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/3923
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #3923（ascend950，closed）：FlashAttention BAND 模式（mask_mode=4）下 MergeMask 函数里 halfS1RealSizeLoop = halfS1RealSize + 1，这个多算的 1 在 s2BaseSize>=regBytes（此时 rowNumEachLoop=1）时使 loopCount 比实际需要多 1，MergeBand 于是多写 1 整行（s2BaseSize 字节）到 attenMaskUb 缓冲区之外，越界覆盖相邻 UB buffer 的数据。attenMask 被破坏后，本应被 mask 的 key 参与 softmax，产生异常大的 logits 与输出。复现：B=1 N1=20 N2=4 S1=31 S2=112384 D=128 mask_mode=4 win_left=26755 win_right=0 layout_kv=PA_BNBD block_size=512，MaxAbsErr=182.42、FailRatio=1.67%。修复把 halfS1RealSizeLoop 改为按 (halfS1RealSize+rowNumEachLoop-1)/rowNumEachLoop*rowNumTimesEachLoop 的 ceil 除法，关联 PR master #9114、9.1.0 #9117；修复后 MaxAbsErr=0.00225、FailRatio=0.38%。'
+  source: 2026-07-24 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/3923 （closed）
+  behavior: BAND 滑窗注意力（mask_mode=4）配 PA_BNBD 分页 KV、S1 只有 31、S2 很长时，输出里出现 MaxAbsErr 182 量级的偏差、1.67% 元素超阈，但调用不报错、无 NaN；同一套用例在其它 mask 模式下正常，说明是窗口 mask 拼接把相邻 UB 数据写坏后漏 mask 的 key 参与了 softmax。
+  trigger_surface: ascend950 + mask_mode=4(BAND) + win_left/win_right 大窗口 + S1 非对齐 + layout_kv=PA_BNBD + block_size=512
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

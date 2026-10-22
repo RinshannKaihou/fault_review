@@ -1,0 +1,61 @@
+id: INF-1753
+legacy_ids: []
+slug: ops_nn_matmul_compress_dequant_deqscale_align_silent_zero
+aliases: []
+title: MatmulCompressDequant deqScale 未对齐静默出全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: MatmulCompressDequant 校验
+  behavior: deqScale Numel 非 16 对齐时 else 分支只打日志就 return ProcessEmptyTensor（填零），不返回参数非法码；上层判空通过后 ViewCopy 写入全零并返回 ACLNN_SUCCESS。
+effect:
+  objects:
+  - 数值结果
+  detail: 触发条件：aclnnMatmulCompressDequant 传入长度非 16 整数倍的 deqScale。表现：拿到全零输出张量、返回码 ACLNN_SUCCESS、流同步正常，只有与参考比对才发现整片是零，返回值看不出参数不合法（期望返回 161002）；实机数值与返回值作者列为待确认。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 deqScale 长度非 16 整数倍的调用，检查返回码是否 0、输出是否全零；接口层文档期望的是 161002 参数非法。
+  fix: 待定（issue closed，未给 MR）：else 分支应直接返回 ACLNN_ERR_PARAM_INVALID，或在 CheckShapeValid 前置校验 deqScale 对齐。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: aclnnMatmulCompressDequant + deqScale 长度非 16 元素整数倍
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 实机数值与返回码作者原文列为“需进一步确认”，本条按代码路径与接口契约记录，未按已实测记。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5925
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5925（2026-09-17，closed）：matmul/matmul_v2_compress_dequant/op_host/op_api/aclnn_matmul_compress_dequant.cpp 第 231-236 行只在对齐时做 TensorReformat 到 NC1HWC0，Numel 非 16 整数倍时走 else：OP_LOGE 打印 Dequant Scale is invalid Data 后 return ProcessEmptyTensor(x1, out, executor)，返回的是填零 tensor 而非错误码；调用方 aclnnMatmulCompressDequantGetWorkspaceSize 第 274-280 行把非空返回当作正常输出，IsEmpty() 为 false 后走到 ViewCopy 与 return ACLNN_SUCCESS。作者逐行核验的是当前 master，并说明实机侧输出数值与返回值仍需进一步确认。期望行为是不建图、直接返回 ACLNN_ERR_PARAM_INVALID（161002）。
+  source: 2026-09-17 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5925 （closed）
+  behavior: 调用方传了长度不是 16 整数倍的 deqScale，本该被第一段接口以参数非法挡回去，实际却拿到一张全零的输出张量、返回码是 ACLNN_SUCCESS、流同步也正常；只有在拿结果与参考比对时才发现整片是零，从接口返回值上完全看不出参数不合法。
+  trigger_surface: aclnnMatmulCompressDequant + deqScale 长度未按 16 对齐
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+    rewritten:
+    - detail

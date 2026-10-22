@@ -1,0 +1,56 @@
+id: INF-2062
+legacy_ids: []
+slug: msprobe_fp8_dump_uint8_acc_check_broken
+aliases: []
+title: msprobe uint8 存 fp8 dump 致 acc_check 失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: msprobe dump dtype 保存
+  behavior: msprobe 采集 fp8/fp4 tensor 时 clone 报错，改为 view(uint8) 存盘；dump 的 dtype 与真实输入不一致，acc_check 复算时 weight/scale 维度对不上。
+effect:
+  objects:
+  - 测试判定
+  detail: acc_check 报 'The n dim of weight[8192] and n dim of scale[4096] should be equal'，该算子的精度比对无法完成；凡 input/output 为 fp8/fp4 的算子，在 acc_check 里等于没有覆盖。
+  visibility: 报错
+mitigation:
+  detect: 对含 fp8/fp4 算子的模型开 L1 tensor dump 后跑 acc_check，先看 dump.json 的 dtype 字段是否与算子实际输入一致
+  fix: 待定（报告只给出 uint8 临时存盘方案；修复应以原生 dtype 保存或让 acc_check 按记录的类型还原后再复算）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msprobe L1 tensor dump + fp8_e4m3fn/fp8_e8m0fnu/float4_e2m1fn_x2 输入（NPU 量化模型）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/272
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: msprobe 的 pytorch_processor 在采集 fp8/fp4 tensor 时 tensor.clone() 报错，工具与 adapter 层给出的临时方案是按 UINT8 保存：float4_e2m1fn_x2、float8_e8m0fnu、float8_e4m3fn 都先 .view(torch.uint8).clone() 再落盘。数据确实写进了 dump.json（例如 NPU.npu_grouped_matmul.42 的 x 记为 torch.float4_e2m1fn_x2、shape [29,1024]），但复算阶段按记录的类型重放算子时，weight[8192] 与 scale[4096] 的 n 维对不上，报 AclNN_Parameter_Error(EZ1001) 'The n dim of weight[8192] and n dim of scale[4096] should be equal'，CheckMxTypeMCaseInputShape/CheckGroupedMatmulMxShape 失败。即 dump 阶段的类型替换让 acc_check 无法还原原始输入布局。
+  source: 2026-08-17 gitcode.com issue https://gitcode.com/Ascend/msprobe/issues/272 （closed）
+  behavior: 用 msprobe 采完 fp8/fp4 模型的数据，dump.json 看起来有完整张量；跑到 acc_check 时 grouped_matmul 这类算子直接报维度不相等，比对结果里这些算子只有错误没有结论，等于量化模型最关键的 mx 类型算子全都没被验证。
+  trigger_surface: msprobe L1 tensor dump + acc_check，模型含 fp8/fp4（mx 类型）算子
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

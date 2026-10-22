@@ -1,0 +1,60 @@
+id: INF-1676
+legacy_ids: []
+slug: ops_nn_rrelu_with_noise_dim_limit_25
+aliases: []
+title: RReluWithNoise 26~32 维输入静默输出全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: CheckFormatValid 维度上限
+  behavior: max_support_dim=32 放行到 32 维，但 gert::Shape 只有 25 维定长数组，26~32 维 shape 被截断、numel 算成 0，命中空 Tensor 快路径返回成功而不写输出。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B+CANN9.2.0、torch_npu2.12.0.rc1：32维输入30次全输出0且无报错（期望[-0.25,-0.125,0,0.5,1,-0.5,2,-0.75]）；≤25维30次全对；33维正常报AclNN_Parameter_Error(EZ1001)。
+  visibility: 静默错误
+mitigation:
+  detect: 用 26~32 维输入调用并与 ≤25 维同数据对照；输出全 0 且无报错即为命中，注意入参校验不会拦。
+  fix: issue 5956 closed；正文建议 max_support_dim 由 32 收紧为 25 并在第一段接口报 161002，同步修正资料维度约束；未给 PR。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: partial
+  trigger_note: Ascend910B + CANN 9.2.0 + aclnnRReluWithNoise/aclnnInplaceRReluWithNoise + 输入维度 26~32（框架 kMaxDimNum=25）；≤25 与 >32 均不触发
+  confidence: documented
+remarks: 机制是“文档/校验声明的上限与框架定长 shape 数组不一致”，26~32 维落在两者之间：既不报错也不计算；与 6304 的“空 Tensor 快路径”是同一快路径的另一种触发方式，但根因（维度截断致 numel=0）不同，未挂 var。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5956
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5956（2026-09-18，closed）：Ascend 910B、CANN 9.2.0，验证用 torch 2.12.0 + torch_npu 2.12.0.rc1 经 libopapi_nn.so 中的 aclnnRReluWithNoise 接口。接口资料声明 self/noise 支持不超过 32 维，入参校验 activation/leaky_relu/op_api/aclnn_rrelu_with_noise.cpp 的 CheckFormatValid 里 max_support_dim = 32 也放行到 32 维；但框架 gert::Shape 是 25 维定长数组（exe_graph/runtime/shape.h 中 gert::Shape::kMaxDimNum = 25），超过 25 维的 aclTensor 其 shape 数组被截断、numel 计算错误。26~32 维输入通过 max_support_dim=32 的检查后 numel 为 0 或错误值，命中空 Tensor 快路径直接返回成功，输出缓冲从未被任何 kernel 写入。实测 shape=[1]*31+[8]（32 维）、数据 [-1,-0.5,0,0.5,1,-2,2,-3]：30 次重复全部输出 [0.0 ×8] 且无任何报错，期望参考值 [-0.25,-0.125,0,0.5,1,-0.5,2,-0.75]；同一数据降到 25 维及以下 30 次全部正确；维度 33 时正常报 AclNN_Parameter_Error(EZ1001) The self tensor cannot be larger than 32 dimensions。修复方向：max_support_dim 由 32 收紧为 25，并同步 docs 中的维度约束。
+  source: 2026-09-18 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5956 （closed）
+  behavior: 把 RReLU（带 noise）用在 26~32 维的张量上（例如 [1]*31+[8]），接口返回成功、没有任何告警，输出却整块是 0 或者上一次残留的值，看起来像“这个激活把它们都压成 0 了”；同一份数据改成 25 维及以下就完全正确，改成 33 维反而会正常报错。也就是说 26~32 维这个区间既不报错也不算，静默给出错数据。
+  trigger_surface: aclnnRReluWithNoise / aclnnInplaceRReluWithNoise + 输入维度 26~32；Ascend910B、CANN 9.2.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - title
+    - behavior

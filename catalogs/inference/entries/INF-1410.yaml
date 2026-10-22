@@ -1,0 +1,61 @@
+id: INF-1410
+legacy_ids: []
+slug: ttmetal_bf16_tanh_nan_laundering
+aliases: []
+title: tt-metal bf16 tanh 把 NaN 输入洗成 ±1.0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: 多项式 bf16 tanh clamp 路径
+  behavior: 多项式 tanh 的 clamp 把非有限输入（NaN/±Inf）映射到 ±1.0：正 NaN→1.0、负 NaN→-1.0、±Inf→±1，NaN 被洗白而非传播
+effect:
+  objects:
+  - 数值结果
+  detail: 254 种 bf16 NaN 位型全测：每条 NaN lane 返回 ±1.0（32-bit Dest 探针证实恰为 1.0）；上游 NaN 不再向上游传播，下游看到的是貌似正常的有限值；softcap/situ_glu/logit_softcap 同路径
+  visibility: 静默错误
+mitigation:
+  detect: 注入 NaN 输入检查 tanh 输出是否为 NaN
+  fix: issue 附修复方向：clamp 后对非有限 lane 走 accurate kernel 构造（整数递减、乘零加一），Inf→±1、NaN 保持 NaN；未核实合入状态
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: bf16 Dest 的多项式 tanh 及 softcap/situ_glu/logit_softcap 组合；Blackhole bh-35 p100a 与 Wormhole aus-wh-08 shipped 代码；254 NaN 位型全测
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61158
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal 默认 bf16 tanh（Dest 非 fp32 时用的多项式 kernel，tt_metal/hw/ckernels/blackhole/metal/llk_api/llk_sfpu/ckernel_sfpu_tanh.h:113，Wormhole 副本同）在 clamp 段把非有限输入 laundering 为 ±1.0：对 254 种 bf16 NaN 位型全测，每条 NaN lane 返回 1.0（正 NaN）或 -1.0（负 NaN），32-bit-Dest 探针确认值恰为 1.0；±Inf 同样到 ±1。同路径的 softcap、situ_glu、logit_softcap 一并受影响。结果：上游 NaN 被洗成貌似合法的有限输出，掩盖上游故障且无法靠 NaN 传播定位。issue 给出修复方向：clamp 后对非有限 lane 改走 accurate kernel 的构造（整数递减、乘零加一），±Inf→±1（tanh 数学极限）、NaN 保持 NaN；16-bit Dest 上 bf16 舍入会把传播的 NaN 变同号 inf（与 LUT tanh 等其他 bf16 op 一致）。实测于 Blackhole bh-35 p100a（shipped）与 Wormhole aus-wh-08（remote leg，shipped）。
+  source: 2026-10-17 GitHub tenstorrent/tt-metal issue https://github.com/tenstorrent/tt-metal/issues/61158（254 NaN 位型全测+修复方案；audit-key 标注 tanh.h:113）
+  behavior: 对 bf16 张量调用 tanh（或经 softcap / situ_glu / logit_softcap 走到同一 kernel）时，任何 NaN 输入都不会以 NaN 形式出现在输出里：正 NaN 变 +1.0、负 NaN 变 -1.0、±Inf 变 ±1.0。下游拿到的全是有限值，上游的本该暴露的数据问题（未初始化、上溢、攻击位翻转）被无声洗白，排查时 NaN 传播链在这层断掉。
+  trigger_surface: bf16 Dest 的多项式 tanh/softcap 族；任何产生 NaN/Inf 的上游 + tanh 类算子的模型；BH/WH shipped
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

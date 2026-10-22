@@ -1,0 +1,63 @@
+id: INF-2054
+legacy_ids: []
+slug: pta_mlir_gelu_backward_nan_loss
+aliases: []
+title: mlir 后端 gelu 反向融合 kernel 错值致 loss 变 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: mlir/akg 后端融合 kernel
+  behavior: torch.compile 走 mlir/akg 后端反传时，mlir_fused_gelu_gelu_backward_view_17 输出与 eager 不符，绝对误差随步数逐步放大。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: beit_base_patch16_224：eager 每步 loss 约 -0.56 正常；compile 第 3 步起全 nan。CHECK ACCURACY FAILED 均指向 mlir_fused_gelu_gelu_backward_view_17，最大绝对误差 3.4e10。
+  visibility: 数值异常
+mitigation:
+  detect: 固定 seed 分别跑 eager 与 compile，打开 inductor 精度校验（CHECK ACCURACY FAILED 日志）比对同一 kernel
+  fix: 待定（报告未给修复 PR；可先不用 mlir/akg 后端，回退默认 inductor 路径）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend910B2 + torch_npu 2.12 + torch.compile 选 mlir、akg 后端；eager 同模型正常
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3677
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch 2.12 验证中，beit_base_patch16_224 在 torchbench 用 torch.compile 编到 mlir、akg 后端：eager 路径每步 loss 在 -0.56 附近、step time 约 48ms；compile 路径第 1 步 loss 0.0216、第 2 步 -0.0295，第 3 步起 loss 恒为 nan。每次反传都出现 ''CHECK ACCURACY FAILED! Kernel: mlir_fused_gelu_gelu_backward_view_17, Output idx: 0''，Mismatched 1~13/4841472，Greatest Abs Diff 从 3.66e-4 逐步放大到 1.96608e5、2.62144e5、3.4359738368e10，随后 dynamo 报 ''Accuracy failed: allclose not within tol=0.02''。同批 mlir_fused__softmax_backward_data_matmul_backward_17 也被列出。即编译后融合的 gelu 反向 kernel 输出了与 eager 不符的数值，误差随步数发散到 NaN。'
+  source: 2026-08-03 gitcode.com issue https://gitcode.com/Ascend/pytorch/issues/3677 （closed）
+  behavior: 同一模型、同一 batch，eager 训练 loss 平稳在 -0.5 附近，一开 torch.compile（mlir/akg 后端）第 3 步 loss 就变成 nan 并一直保持；日志里同时刷出 gelu 反向融合 kernel 的精度校验失败与逐次放大的绝对误差，训练无法继续。
+  trigger_surface: Ascend910B2 + torch.compile 走 mlir/akg 后端 + 含 gelu 反传的视觉模型
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 梯度
+        to: 数值结果
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

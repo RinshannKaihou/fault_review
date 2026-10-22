@@ -1,0 +1,57 @@
+id: INF-1520
+legacy_ids: []
+slug: torchnpu_te_int64_constant_downcast_identity
+aliases: []
+title: TE 后端 int64 降型致 masked 归约错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: TE 后端 int64 降型
+  behavior: codegen 的 constant 与 triton_compute_type 把 int64 无条件降为 int32，INT64 边界常量按低 32 位截断成 0/-1，指针签名同时降为 *i32。
+effect:
+  objects:
+  - 数值结果
+  detail: 全掩码行 amax 返回 0、amin 返回 -1（应为 ±INT64 边界），argmax/argmin off-by-one；|x|≥2^31 的 int64 载荷回绕（2^40+1 得 2）；default/eager 正确。
+  visibility: 静默错误
+mitigation:
+  detect: TE 后端编译 masked amax/amin/argmax/argmin 的 int64 用例，比对全掩码行 identity 与大值载荷；default 后端作对照
+  fix: int64 降型加值域守卫（仅 [-2^31, 2^31-1] 内降型），越界常量保持 tl.int64，并让该 kernel 的 *i64 指针跳过降型；issue closed，实现 PR 未在正文给出
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: TORCHINDUCTOR_NPU_BACKEND=triton_experimental + int64 张量（masked 家族必然踩中 identity 常量；宽值载荷 |x|≥2^31）；910B4/torch 2.14/CANN 9.1.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4947
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/issues/5004
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4947（2026-09-19，closed，910B4 / torch 2.14.0a0 / torch_npu 2.14.0 / CANN 9.1.0 / triton-ascend 3.6.0）：仅 triton_experimental 后端、仅 int64 失败，default 与 eager 正确。torch.masked.* 的 composite 分解为 where(mask, x, identity) + reduction，identity 取 torch.iinfo(int64) 边界；TE codegen 在 torch_npu/_inductor/triton_experimental/codegen/triton.py 三处把 int64 降为 int32：NPUTritonKernelOverrides.constant 的 `elif dtype == torch.int64: dtype = torch.int32`、apply_npu_codegen_patches 内 _npu_triton_compute_type 的 tl.int64→tl.int32（实际渲染 tl.full dtype 的是这条）、codegen_kernel 的指针签名 *i64→*i32（downcast_args + _wrap_launcher_with_downcast）。于是 INT64_MIN(0x8000…)→0、INT64_MAX(0x7FFF…)→-1，生成的 kernel 里出现 tl.full([1], -9223372036854775808, tl.int32)。实测：全掩码行 amax 得 [[9],[0]]、amin 得 [[1],[-1]]，argmax/argmin off-by-one；同机制第二腿是宽值载荷回绕（amax([[2^40+1,2^40+2]]) 返回 2）。同仓 #5004（2026-09-21，open）是同一降型逻辑未豁免 randint64 的另一个出口：边界超 int32 时编译期 static_assert 失败，或运行期输出负值（min=-913248471）。'
+  source: 2026-09-19 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4947 （closed）；同机制 https://gitcode.com/Ascend/pytorch/issues/5004 （open）
+  behavior: 用 triton_experimental 后端编译带 mask 的归约，全掩码那一行本该返回 int64 的最小/最大值或正确索引，实际返回 0 和 -1：amax 全掩码行给 0、amin 给 -1、argmax/argmin 索引差一。带负值和部分掩码时非全掩码行也会错。另外任何 int64 数值超过 2^31 的载荷同样被静默截断回绕（2^40+1 变成 2）。都不报错，default 后端与 eager 结果正确，所以只有切后端做对比才看得出来。
+  trigger_surface: triton_experimental 后端 + int64（masked amax/amin/argmax/argmin 的 identity 常量；或任何 |x|≥2^31 的 int64 载荷）；int32/float 与 default 后端不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

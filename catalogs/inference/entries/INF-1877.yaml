@@ -1,0 +1,54 @@
+id: INF-1877
+legacy_ids: []
+slug: torchair_empty_tensor_recv_drops_hcom_receive
+aliases: []
+title: 空张量 recv 图化后 GE 图丢失 HcomReceive
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: fx2ge_converter 折叠
+  behavior: fx2ge_converter 的 _parse_node 对输出全为 0 元素张量且无动态符号的节点直接折成 Const，recv 的 HcomReceive 被消掉，send/recv 两侧图不再对称。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 双卡 rank0 send / rank1 recv 一个 (2,0) int64 张量时，rank1 首图只剩 Data/Const/Const_1/NetOutput，rank0 仍有 HcomSend；eager 两侧都下发 count=0 调用。
+  visibility: 挂起
+mitigation:
+  detect: TORCH_COMPILE_DEBUG=1 保留 torch_compile_debug/run_*/torchair/.../006_aot_forward_original_ge_graph.pbtxt，比对两侧图算子集合
+  fix: 待定（issue closed，未给修复 PR）；规避=空张量不参与图化 send/recv
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch_npu 2.12.0.post1 + CANN 9.2.0（910B3×2）；torchair 图模式 send/recv 传 0 元素张量
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/821
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/torchair #821（CANN 9.2.0、torch 2.12.0+cpu / torch_npu 2.12.0.post1、Ubuntu 20.04 aarch64、Atlas 910B3×2）：torchair GE 图模式下 send/recv 的通信张量为 0 元素张量时，recv 侧编译出的图里 HcomReceive 丢失、被折叠成 Const（dump 里 rank1 首图只剩 Data/Const/Const_1/NetOutput，rank0 首图仍有 HcomSend），两侧点对点配对端点缺失；eager 下空张量 send/recv 正常（两侧都下发 count=0 调用）。根因在 fx2ge_converter 的 _parse_node：对「输出全为 0 元素张量且无动态符号」的节点直接用 Const 表示，通信算子也走了这条折叠。复现为双卡两进程各传 (2,0) int64，TORCH_COMPILE_DEBUG=1 保留 006_aot_forward_original_ge_graph.pbtxt 对照。'
+  source: 2026-09-22 GitCode Ascend/torchair issue https://gitcode.com/Ascend/torchair/issues/821 （closed）
+  behavior: 两卡跑 send/recv、张量恰好是空的（shape 里有一维为 0）时，编译不报错，但收端图里根本没有 HcomReceive：dump 出来的 pbtxt 只有 Data/Const/NetOutput，发端却还有 HcomSend。实际跑起来就是收发不配对——训练里表现为卡住或数据没到，而 eager 下同样的代码两侧都正常下发。
+  trigger_surface: torch_npu 2.12.0.post1 + CANN ≥8.6.0（910B3×2）；torchair 图模式 send/recv 传 0 元素张量
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

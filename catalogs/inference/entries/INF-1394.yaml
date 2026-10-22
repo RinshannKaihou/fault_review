@@ -1,0 +1,73 @@
+id: INF-1394
+legacy_ids: []
+slug: vllm_ascend_mrv2_mamba_kvpool_restore_ordering
+aliases: []
+title: vllm-ascend Mamba KVPool 恢复前缀后输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mamba 状态恢复时序
+  behavior: 非layerwise同步路径中preprocess_state()先复制源状态到运行状态，start_load_kv()后才恢复远端状态到源块，FULL graph回放可能消费旧源块内容。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 同一 20K token 长请求第二次发送（L2 命中 20,736 token）返回 200 但正文为空、reasoning 重复标点与异常片段，finish_reason=length；冷请求正常
+  visibility: 静默错误
+mitigation:
+  detect: 对比冷/热请求输出与 P 侧 'need to load' 日志；关闭 HBM prefix cache 观察是否绕过；未评估
+  fix: 待定（issue open，根因时序已定位到调用顺序，尚无修复 PR 链接）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: VLLM_USE_V2_MODEL_RUNNER=1 + --mamba-cache-mode align + Mamba/KDA 混合注意力模型 + KVPool(MultiConnector 含 AscendStoreConnector, use_layerwise=False, load_async=False) + 长前缀重复请求；P eager/D FULL graph
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/18898
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/19060
+  kind: github_pr
+relations: []
+pattern: PAT-INF-0155
+original:
+  mechanism: 'vllm-ascend V2 model runner + Mamba/KDA 混合模型 + --mamba-cache-mode align + KVPool 时，非 layerwise 同步路径调用顺序错误：model_state.preprocess_state() 先执行——决定 Mamba 状态索引并把源状态复制到运行状态（run_fused_precopy），此后 kv_connector.pre_forward() 的 start_load_kv() 才把远端状态恢复到源块。因此 FULL graph 回放消费的运行状态可能是拷贝发生时的旧源块内容（远端数据尚未落位）。实测：约 20k token 合成长 prompt 连续发两条相同请求，第二条 L2 命中 20,736 token（P 日志 kvpool hit tokens: 20736, need to load: 20736），输出正文为空、reasoning 大量重复标点与无意义片段、finish_reason=length（256 上限）；冷请求同 prompt 输出正常''已收到。''。开启 HBM prefix cache 会因本地命中掩盖问题，需确认 L1=0、L2 非零。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/18898
+  behavior: Mamba/KDA 混合注意力模型 + KVPool 的 vllm-ascend 服务，对同一约 2 万 token 的长请求：第一次（冷）正常，第二次（从 KVPool 恢复 20,736 token 前缀）返回 HTTP 200 但正文为空、reasoning 里全是重复标点和异常片段，256 token 截断。缓存命中指标正常、无任何错误日志。相同 prompt 重复即可复现。
+  trigger_surface: vllm-ascend（VLLM_USE_V2_MODEL_RUNNER=1, --mamba-cache-mode align）；Mamba/KDA 混合模型；Ascend A3 PD 分离；MultiConnector 含 AscendStoreConnector（use_layerwise=False, load_async=False）；约 20K token 重复长请求；D 侧 FULL decode graph
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - '2026-10-17 回访 2026-10-17：#18901（main，open）与 backport #19060（v0.30.0，closed）为同步 Mamba state-copy 顺序修复；另见同日 #19069/#19070（非 layerwise 块跨步传输丢物理槽，INF-1419，Related to #18898）。'
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 输出内容
+        to: KV状态
+    rewritten:
+    - behavior
+  updates:
+  - date: '2026-10-17'
+    fields:
+    - evidence
+  - date: '2026-10-17'
+    fields:
+    - original.notes
+  - date: '2026-10-18'
+    fields:
+    - pattern

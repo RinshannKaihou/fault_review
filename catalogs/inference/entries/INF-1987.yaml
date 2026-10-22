@@ -1,0 +1,57 @@
+id: INF-1987
+legacy_ids: []
+slug: vllm_ascend_dcp_prefix_false_hit
+aliases: []
+title: DCP 前缀查询只查 DCP0 致假命中
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KVPool DCP 键展开
+  behavior: _expand_lookup_keys_by_rank 只重写 head_or_tp_rank 与 pp_rank；MLA 的 group_tp_size=1 使 DCP0 键不展开到 DCP1-7，单分片存在被当成全 rank 命中
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: TP=8/DCP=8/PCP=1 的 MLA 模型上，调度器先宣告外部前缀缓存命中，随后非 DCP0 分片的 get 返回 -704；该块实际未加载，请求按命中前缀继续解码
+  visibility: 静默错误
+mitigation:
+  detect: 在 prefix-cache 告警处同时记录 scheduler 的 exists 键集合与逐 rank get 结果，出现 hit 宣告后 -704 即命中该机制；对比键里 @dcpN 是否只出现 dcp0
+  fix: 待定（issue closed，未附修复 PR）；作者给出的方向是在 _expand_lookup_keys_by_rank 里按 DCP 维度补全键，#15060 为相关报告
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend v0.26.0rc，Ascend NPU，TP=8/DCP=8/PCP=1，MLA 模型 + 外部 KV 池
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/15505
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'issue #15505（vllm-ascend v0.26.0rc，Ascend NPU）指出 KVPoolWorker.lookup_scheduler() 在宣告外部前缀缓存命中前做全 rank 存在性检查。TP=8、DCP=8、PCP=1 的 MLA 模型下每个块有 8 个 DCP 专属键（...@pcp0@dcp0..7@head_or_tp_rank:0@pp_rank:0@...@<hash>），但 _expand_lookup_keys_by_rank() 只重写 head_or_tp_rank 与 pp_rank；MLA 的 get_group_tp_size(group_id)==1，本地 DCP0 worker 构造的键不会被扩展到 DCP1-7，于是调度器把 DCP0 的存在当成全 rank 命中，而后续逐 rank 装载需要每个 DCP 键都存在，非 DCP0 键可能返回 -704。作者给出的验证方式是给 m_store.exists(keys) 与后续逐 rank m_store.get(keys) 加打印，可见 scheduler 侧只有 @dcp0、装载侧是 @dcp0..7。'
+  source: 2026-09-01 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/15505 （closed）
+  behavior: 开启外部前缀缓存后，部分请求被判为命中却拿不到完整的 KV：调度器已经按“命中”跳过 prefill，装载分片时却报 -704 取不到键，表现为命中率虚高、请求结果与未命中时不一致，日志里只有加载侧的 -704，没有索引侧的报错。
+  trigger_surface: MLA 模型 + 外部 KV 池（AscendStore/Mooncake 一类）+ TP=8/DCP=8/PCP=1 的多分片键布局
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

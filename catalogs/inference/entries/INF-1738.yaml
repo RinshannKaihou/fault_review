@@ -1,0 +1,60 @@
+id: INF-1738
+legacy_ids: []
+slug: npu_frexp_ilogb_ldexp_wrong_mantissa
+aliases: []
+title: frexp 走 ilogb/ldexp 致尾数全错、2^k 边界差一档
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: triton_helpers frexp 实现
+  behavior: torch_npu 的 Triton frexp helper 用 libdevice ilogb/ldexp：ilogb 返回 fp32 而 ldexp 的指数参数只接受 int32，且 ilogb 在 2^k 边界误舍入，尾数被算错。
+effect:
+  objects:
+  - 数值结果
+  detail: frexp 经 Inductor 真正 lowering（不回退 eager）时，fp32/fp16/bf16 的尾数与指数均与 eager 不一致，2^k 边界失配 42/176/213 例；形状、dtype 正常且无报错，仅在比对 eager 结果或下游做 norm/量化换算时暴露数值整体偏移。
+  visibility: 静默错误
+mitigation:
+  detect: fp32/fp16/bf16 的 aten.frexp 输出与 eager 逐位比对，重点覆盖 2^k 边界、inf/nan/±0 与融合 frexp+add 路径
+  fix: 已修复：torch_npu/_inductor/runtime/triton_helpers.py 改为按 IEEE-754 binary32 位域直接取指数与尾数，并把 frexp 从 inductor fallback 列表移除（issue closed，改动随该 PR 提交）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: triton_experimental / Inductor 把 aten.frexp 真正 lowering 而非 fallback 到 eager；triton_ascend 3.2.2 + torch_npu 2.7.1 + CANN 9.1.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/2863
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #2863（2026-07-14，open，triton_ascend-3.2.2 / torch_npu-2.7.1 / CANN-9.1.0）：aten.frexp 在 NPU 上由 torch_npu/_inductor/runtime/triton_helpers.py 里的 helper 实现，原实现调用 libdevice 的 ilogb 与 ldexp 组合。两个缺陷叠加：ilogb 返回 fp32 而 ldexp 的指数参数只接受 int32，类型不匹配；ilogb 在恰好 2^k 的位置误舍入，指数差一格。结果是只要 frexp 被真正 lowering（不在 fallback 列表里回退 eager），尾数就灾难性错误，即便绕过类型问题，2^k 边界值仍整体偏一个倍频程。报告给出的修法是直接读 IEEE-754 binary32 的指数位与尾数位（浮点表示本身就是 frexp 分解，按位取必然精确），inf/nan/±0 原样透传以对齐 torch.frexp，并把 frexp 从 inductor fallback 列表移除。验证：shape (128,1024,4096) 下 fp32/fp16/bf16 全 PASS，2^k 边界失配由 42/176/213 例降为 0，新增 26 条测试全通过。'
+  source: 'Ascend/pytorch #2863（2026-07-14，open） https://gitcode.com/Ascend/pytorch/issues/2863'
+  behavior: 模型里用到 torch.frexp（或经 inductor 融合进来的 frexp）时，编译后得到的尾数与指数与 eager 不一致：普通值上尾数就差得离谱，恰好 2 的整数次幂的输入指数再多/少一档。张量形状、dtype、无报错都正常，只有在比对 eager 结果或下游用它做 norm/量化换算时才发现数值整体偏移。
+  trigger_surface: aten.frexp / prims.frexp 经 Inductor 真正 lowering（fp32/fp16/bf16，含 2^k 边界输入）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+    - behavior

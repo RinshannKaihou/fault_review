@@ -1,0 +1,59 @@
+id: INF-1536
+legacy_ids: []
+slug: ops_nn_conv3d_bp_filter_winograd_resident_uninit
+aliases: []
+title: Winograd 驻留切分错位读到未初始化 workspace
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: winograd 驻留变换任务切分
+  behavior: 运行时 M 轴调节档把 cout 分块从模板 64 改成 48/32/16，驻留变换任务切分仍按常量 64 划分；两套块边界错位后部分驻留半区无人写入，MMAD 读到未初始化 workspace。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32 cout=192/cin=448/pad(1,0) 用例中 64 个完整 co 通道（[48-63]/[96-127]/[160-175]）读到未初始化数据，占 33.3% 元素，本机 NaN、fuzz 环境为 0；错误通道与缺口区间逐一吻合。
+  visibility: 数值异常
+mitigation:
+  detect: fp32 winograd 路径上核对输出通道分组是否整段为 0 或 NaN；用 TTK 复现用例比对，tiling_key 不变说明修的是块边界而非路径选择。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/11267 （closed）：运行时分块大小自 IterateAll 透传至驻留任务切分，块宽不足驻留长度时整块驻留只产生 1 个任务
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 950（arch35）+ fp32 Conv3DBackpropFilterV2 winograd 路径 + 36 核时 21 个 64 块落入 (18,36] 触发 48 档运行时调节
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 错误值随环境表现为 0 或 NaN：本机复现为 NaN，fuzz 环境为 0，说明读到的是 workspace 残留而非固定值。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/11267
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn merge request 11267（2026-09-28，closed）：aclnnConvolutionBackward 的 fuzz 用例 Conv2DBackpropFilter_NCHW_fp32_B010_winograd_0730_dw_fuzz_ID_0163（cout=192、cin=448、pad(1,0)、fp32）在 Conv3DBackpropFilterV2 的 winograd 路径上出现精度问题：输出 64 个完整 co 通道（[48-63]/[96-127]/[160-175]）读到未初始化 workspace 数据，本机复现为 NaN、fuzz 环境为 0，占总元素 33.3%。根因是提交 25250c710 引入的 CalRtSingleShapeBlock 运行时 M 轴调节档：当 64 通道基本块数落在 (核数/2, 核数] 区间时，块迭代器把 cout 分块从模板值 64 运行时调节为 48/32/16，而驻留变换任务切分（ComputeT1TaskInfo/ProcessResidentTransform）仍按模板常量 64 划分驻留写入范围，两套块边界错位后部分基本块的驻留半区（前 SingleShapeResidentC=32 通道）落在无人写入的缺口，MMAD 读到残留值。本例 36 核、21 个 64 块 ∈ (18,36]、命中 48 档：48 块驻留半区为 [0,32)/[48,80)/[96,128)/[144,176)，64 分块只覆盖 [0,32)/[64,95)/[128,159)，缺口 [48,64)/[96,128)/[160,176) 与实测错误通道逐一吻合。修复把运行时分块大小自 IterateAll 透传至驻留任务切分，任务编码/解码统一用运行时粒度，块宽不足驻留长度（16 档）时整块驻留只产生 1 个任务。验证：TTK 复现用例修复前 64 通道精度 FAIL、修复后 PASS，tiling_key 不变；fuzz 原始比对日志（错误索引 193536 起、失败占比 33.33%）与本地复现一致。
+  source: 2026-09-28 GitCode cann/ops-nn merge request https://gitcode.com/cann/ops-nn/merge_requests/11267 （closed）
+  behavior: 在昇腾 950 上用 fp32 跑卷积反向（Conv3DBackpropFilter）且 shape 是 cout=192、cin=448、pad(1,0) 时，输出里有 64 个完整通道——[48-63]、[96-127]、[160-175] 三大段，正好三分之一元素——全是 NaN，换个环境则全是 0；其余通道完全正常。接口不报错、不中断，看上去像数值溢出，实际是那些通道读了没有写过的 workspace 残留数据。同一 shape 在别的核数下正常。
+  trigger_surface: Ascend 950 + fp32 Conv3DBackpropFilterV2 winograd 驻留路径 + 36 核且 64 块数落在 (核数/2,核数] 触发 48/32/16 运行时调节档
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常

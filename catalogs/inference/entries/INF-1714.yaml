@@ -1,0 +1,58 @@
+id: INF-1714
+legacy_ids: []
+slug: fa_mla_skip_batch_softmax_slot_collision
+aliases: []
+title: FA MLA 被 skip 空 batch 占用 softmax 槽位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FA MLA arch35 槽位管理
+  behavior: multiCoreInnerIdx在skip前自增，空batch也占3槽环形缓冲；PRELOAD_N=1时前一非空batch末s2的bmm2延到后一非空batch，中间skip次数%3==0则vec1覆写vec2未读的softmax状态
+effect:
+  objects:
+  - 数值结果
+  detail: arch35 MLA noquant多batch推理中夹一个空batch（KV长度为0或mask窗口无有效KV，s2LoopEndIdx<=0被skip）且位于核分配序列中间、累计skip次数%3==0时，attention_out逐元素偏差而同调用LSE正常；PRELOAD_N改0结果对得上。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 KV 长度为 0 的空 batch 并置于核分配序列中间，比较 PRELOAD_N=1 与 PRELOAD_N=0 的 attention_out
+  fix: 'PR #8319（master）/#8320（9.1.0）：把 multiCoreInnerIdx++ 从 ComputeAxisIdxByBnAndGs1 移到 skip 检查之后'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: ascend950 arch35 + MLA noquant + PRELOAD_N=1 + 存在被 skip 的空 batch 且 skip 次数为 3 的倍数
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/3611
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #3611（ascend950 arch35，closed）：FlashAttention MLA noquant 场景下，当某个 batch 的 KV 序列长度为 0 或 preTokens/nextTokens 配置使 s2LoopEndIdx<=0 时该 batch 被 skip。根因在 attention/fa_infer 的 ComputeAxisIdxByBnAndGs1：multiCoreInnerIdx 在那里自增（位于 skip 检查之前），而它用于索引 softmaxSumBuf/softmaxMaxBuf 的 3 槽位环形缓冲，应只在真正执行 task 时递增；空 batch 也占用槽位编号后，槽位索引与实际写入次数错位。PRELOAD_N=1 时前一个非空 batch 最后一个 s2 的 bmm2 被推迟到后一个非空 batch 执行，若中间 skip 次数%3==0 就发生槽位碰撞，vec1 覆写 vec2 还没读的 softmax 状态。修复把 multiCoreInnerIdx++ 移到 skip 检查之后，关联 PR master #8319、9.1.0 #8320。'
+  source: 2026-07-06 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/3611 （closed）
+  behavior: 多 batch 推理里夹一个空 batch（KV 长度为 0 或 mask 窗口使该 batch 无有效 KV）时，attention_out 出现逐元素偏差，而同一调用的 LSE 输出正常，所以只看 LSE 会以为结果没错；把 PRELOAD_N 改成 0 结果又对得上，说明是共享 softmax 缓冲被跨 batch 覆写。
+  trigger_surface: ascend950 arch35 + MLA noquant + PRELOAD_N=1 + 空 batch 出现在核分配序列中间 + 累计 skip 次数为 3 的倍数
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail

@@ -1,0 +1,61 @@
+id: INF-1537
+legacy_ids: []
+slug: ops_nn_logsoftmaxv2_double_underflow_neg_inf
+aliases: []
+title: LogSoftmaxV2 DOUBLE 输入下溢成负无穷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: LogSoftmaxV2 AICPU 实现
+  behavior: AICPU 实现先算概率再取对数：DOUBLE 输入的 exp 下溢成 0，log(0) 让有限 logits 输出成负无穷；顺序与并行两条路径都受影响。
+effect:
+  objects:
+  - 数值结果
+  detail: 基线回归用例里 -1000.0 的 log-softmax 输出变成 -inf；修复后顺序/并行两条路径定向回归 2/2、Host UT 15/15 通过（仅 Host 验证，未覆盖设备 kernel 与端到端图）。
+  visibility: 数值异常
+mitigation:
+  detect: 用 DOUBLE 输入取 -1000 量级的 logits，检查输出是否 -inf 而不是对应有限值；fp32/fp16 用例暴露不出来。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/11326 （open）：改为直接计算稳定的 log-softmax，覆盖顺序与并行路径；验证仅到 AICPU Host UT
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: DOUBLE 输入 + 极端负 logits（-1000 量级，exp 下溢为 0）；fp32/fp16 输入不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 关联 issue 不在本批数据内；该 PR 未走设备 kernel 验证，设备侧是否同样受影响未核实。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/11326
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: INF-1535
+pattern: PAT-INF-0172
+original:
+  mechanism: cann/ops-nn merge request 11326（2026-09-29，open）：LogSoftmaxV2 的 AICPU 实现对 DOUBLE 输入先计算概率再取对数，当指数在 DOUBLE 下溢为 0 时 log(0) 把有限的输入值错误输出为负无穷。基线新增的顺序与并行两条回归用例都复现了 -1000.0 变成 -inf；修复改为直接计算稳定的 log-softmax 结果并覆盖两条路径，定向回归 2/2、LogSoftmaxV2 AICPU Host UT 全集 15/15 通过。验证范围仅 AICPU Host UT，未覆盖 NPU Device kernel 或端到端图调用；状态 open。
+  source: 2026-09-29 GitCode cann/ops-nn merge request https://gitcode.com/cann/ops-nn/merge_requests/11326 （open）
+  behavior: 用 DOUBLE 精度调 log_softmax，输入里有 -1000 这类很负但完全有限的 logits 时，输出直接给 -inf，而不是对应的有限 log 概率；换成 fp32 或 fp16 就正常。下游拿到 -inf 后做乘加/指数立刻污染成 NaN，而接口本身不报错。
+  trigger_surface: LogSoftmaxV2 AICPU 路径 + DOUBLE 输入 + 极端负 logits（-1000 量级）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

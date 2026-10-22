@@ -1,0 +1,69 @@
+id: INF-1601
+legacy_ids: []
+slug: ms_custom_v2_cache_reuse_accumulate_drift
+aliases: []
+title: v2 executor 缓存复用不清零致累加算子漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: CustomV2AclnnKernelMod 缓存
+  behavior: v2 executor 缓存的 key 只含 shape 与标量值，命中后 Launch 只刷新 tensor 地址、不清输出缓冲，累加型 kernel 在复用缓冲上继续累加。
+effect:
+  objects:
+  - 数值结果
+  detail: MindSpore 2.10.0+Ascend 910B3+CANN 8.5.1 PYNATIVE，入度统计类累加 kernel 同一 op 实例连续调用 5 次，maxdiff 0/14/28 递增；缓冲回收后回 0，新建实例首次正确，2.9.0 无此问题。
+  visibility: 静默错误
+mitigation:
+  detect: 同一自定义算子实例连续多次调用并逐次与参考实现比对 maxdiff；漂移随调用次数线性增长即为输出缓冲未清零
+  fix: 待定（issue open）；方向：v2 路径 Launch 前清零输出，或显式声明 accumulate/inplace 语义
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 910B3 + CANN 8.5.1 + MindSpore 2.10.0；aot 自定义算子带标量 attr 走 v2 executor 缓存，kernel 累加写输出
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29644
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1590
+pattern: PAT-INF-0174
+original:
+  mechanism: 'MindSpore 2.10.0（cp311 aarch64 wheel，commit 2d550373）+ Ascend 910B3 + CANN 8.5.1，PYNATIVE_MODE：CustomV2AclnnKernelMod（Gitee PR #84266 引入）的 CustomAclnnHash 只用 shape/标量值做 key、不含 tensor 地址，Launch 时 UpdateTensorForLaunch 只刷新 tensor 地址，输出设备缓冲没有清零。用入度统计类 kernel（tensor_scatter_add 语义、原子加写输出、只写有边节点）复现：n=1000、e=5000，同一 op 实例连续调用 5 次，iter0 maxdiff=0.000、iter1=14.000、iter2=28.000 递增，缓冲回收后回到 0；新建实例首次调用正确，2.9.0 无此问题。PR #89735 只修 aclnn cache 多输入/hash id=0 场景，不涉及输出清零。同 issue 的现象 1（aclnnCustom 符号 not in libopapi.so）是直接抛 RuntimeError，本条目只取现象 2。'
+  source: 2026-08-28 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29644 （open）
+  behavior: 自定义的高阶/图算法算子在 Cell 里反复调用时，输出一次比一次大（每次多累加一遍），整型计数类结果越跑越离谱；因为不报错、形状也对，只有和 tensor_scatter_add 参考值比对 maxdiff 才能发现，重启进程或换新实例又恢复正常。
+  trigger_surface: Ascend 910B3 + CANN 8.5.1 + MindSpore 2.10.0 PYNATIVE；ops.Custom(func_type="aot") 带标量 attr 走 CustomV2AclnnKernelMod；kernel 语义为累加进输出（原子加/只写有边节点）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

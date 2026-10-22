@@ -1,0 +1,57 @@
+id: INF-1443
+legacy_ids: []
+slug: ttmetal_where_bf16_cond_fp32_operands_garbage
+aliases: []
+title: tt-metal where BF16 条件 × FP32 值静默垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: binary where 混 dtype 谓词路径
+  behavior: 张量重载 ttnn.where 接受 BF16 条件 + FP32 值张量不报错但输出全错：全 false 谓词每 lane 返回 2 的幂垃圾（~1e34），半掩码存活 lane 返回 denormal；标量重载会拒绝，张量重载漏检。
+effect:
+  objects:
+  - 数值结果
+  detail: cond 全 false 应逐 lane 返回 x，实测 2^113/2^97 量级垃圾或 -8.9e-41 denormal；typecast(cond,fp32) 后 bit-exact 正确；生产命中 FP32 MoE router masked-fill 后 topk 选任意专家
+  visibility: 静默错误
+mitigation:
+  detect: 混 dtype where 输出与 typecast(cond,fp32) 版本对照；全 false 谓词 + 已知输入的最小探针即刻暴露
+  fix: '用户侧 workaround：先把谓词 typecast 到 FP32（实测 bit-exact）；上游修复未见（issue open，c05df925 + #59201）'
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: 'Blackhole p150（QuietBox 2 单芯）实测；tt-metal c05df925 + #59201（71f1944f）；BF16 条件 + FP32 值张量的 ttnn.where 张量重载；标量重载同组合会正确拒绝'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61268
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal #61268（c2026-10-18，Blackhole p150，c05df9252cb0 + #59201）：ttnn.where(BF16 condition, FP32 true tensor, FP32 false tensor) 静默返回垃圾。复现：cond=ttnn.eq(BF16 全 1 张量, 0)（全 false）+ FP32 fill 与 FP32 x——期望每 lane 返回 x，实测每 lane 是 ~1e34 的精确 2 的幂（2^113、2^97…）；半 ones mask 下存活 lane 返回 -8.9e-41 附近 denormal。无错误抛出。对照：full_like on FP32 正确；typecast(cond, ttnn.float32) 后 bit-exact 正确；FP32 张量 eq 产生的条件正常；topk on FP32 正确（16/16）。根因定位：标量重载 ttnn.where(cond_bf16, scalar, x_fp32) 对同 dtype 组合会 TT_FATAL（binary_ng_device_operation.cpp:349 is_dtype_combination_supported），张量重载漏过该支持性检查。影响：任何 FP32 masked-fill 操作喂 BF16 谓词的输出被静默污染；生产命中于 FP32 MoE router——masked-fill 错值后随后的 topk 选出任意专家。'
+  source: 2026-10-18 GitHub tenstorrent/tt-metal issue https://github.com/tenstorrent/tt-metal/issues/61268 （open）
+  behavior: 在 Blackhole 上用 ttnn.where 做 masked-fill，条件张量是 BF16、值张量是 FP32 时不报错，但结果完全是垃圾：条件全 false 时本应原样返回输入，实际返回 1e34 量级的 2 的幂；半掩码时存活位置返回极小 denormal。下游 topk 会在垃圾值上选出任意结果（生产 MoE router 命中：选错专家）。把条件先转成 FP32 再 where 即恢复 bit-exact 正确。
+  trigger_surface: ttnn.where 张量重载；BF16 条件 × FP32 true/false 张量；Blackhole p150 实测（tt-metal c05df925）
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

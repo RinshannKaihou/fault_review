@@ -1,0 +1,57 @@
+id: INF-1418
+legacy_ids: []
+slug: cann_ring_attention_update_dim_check_no_return
+aliases: []
+title: CANN RingAttentionUpdate 维数校验漏 return 放行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: AnalysisAxis 维数校验
+  behavior: prevAttnOut/curAttnOut 维数校验分支打日志后漏写 return ACLNN_ERR_PARAM_INVALID（V1/V2 共用），全文件仅此处校验 attnOut 维数、无上游兜底
+effect:
+  objects:
+  - 数值结果
+  detail: 非 3-D 输入：部分 shape 第一段返回 0 放行、错误拖到第二段 561103；全 4-D (8,2,64,1) 两段全 0 且产出未定义语义结果（尾维 1 隐式展平）；仅 prev 4-D 时 161001 无日志
+  visibility: 静默错误
+mitigation:
+  detect: 非 3-D attnOut 输入矩阵化探测（issue 附 A~F 用例矩阵与 C 复现脚本）
+  fix: 待定：if 分支补一行 return ACLNN_ERR_PARAM_INVALID；注意 9.2.0 发布版无此检查（libopapi 无该日志串），缺陷为 master 新增检查的一部分
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnRingAttentionUpdate 两段式接口 + 非 3-D attnOut（同 numel 变形）；910_93/CANN 9.2.0 实测矩阵 A~F；master（2026-09-29 基线）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5742
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: ops-transformer attention/ring_attention_update/op_host/op_api/aclnn_ring_attention_update.cpp 的 AnalysisAxis 中 prevAttnOut/curAttnOut 维数校验（V1/V2 共用）漏写 return：if (paShape.GetDimNum()!=3 || caShape.GetDimNum()!=3) { OP_LOGE(...); } 打日志后继续执行。同函数其余检查（layout/softmax 尾维/dtype/headNum/headDim）均正确返回 161002，全文件仅此处校验 attnOut 维数且无上游兜底。实机矩阵（910_93、CANN 9.2.0、ASCEND_LAUNCH_BLOCKING=1）：baseline 全 3-D 正确；仅 prev 4-D→第一段 161001 且无日志；全 4-D (8,2,4,16)/(8,2,32,2)/(8,2,16,4)→第一段 0 放行、第二段 561103；全 4-D (8,2,64,1)→两段全 0 且产出结果（kernel 将尾维 1 隐式展平，未定义语义的静默成功）。注：9.2.0 发布版无此维数检查（libopapi 无该日志字符串），检查为 master 新增、因漏 return 而失效。
+  source: 2026-10-17 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5742 （open；实机 A~F 矩阵+C 复现脚本）
+  behavior: 以非 3-D 的 prevAttnOut/curAttnOut（如 4-D 同 numel 变形）调用 aclnnRingAttentionUpdate 两段式接口时：第一段多数 shape 返回 0（放行），错误被拖到第二段才以 561103 失败；shape 为 (8,2,64,1) 时两段都返回 0 并直接产出结果——kernel 隐式展平尾维，语义未定义的静默成功；仅 prev 为 4-D 时第一段返回 161001 且连日志都没有。调用方若只查第一段返回值会以为参数合法。
+  trigger_surface: aclnnRingAttentionUpdate（C 直调两段式）+ 非 3-D attnOut 张量；master 新增校验缺陷，9.2.0 发布版无该检查
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

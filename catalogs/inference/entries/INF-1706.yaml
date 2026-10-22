@@ -1,0 +1,57 @@
+id: INF-1706
+legacy_ids: []
+slug: moe_token_unpermute_negative_sorted_indices
+aliases: []
+title: MoeTokenUnpermute 静默接受负 sortedIndices
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: moe_token_unpermute
+  behavior: needCopyIn 只判断 idx < num_out_tokens、缺 idx >= 0；负索引在 GetWorkspace/Launch/Sync 全链路被静默接受，文档要求 [0, tokens*topK-1]。
+effect:
+  objects:
+  - 数值结果
+  detail: sortedIndices[0]=-1 时 aclnnMoeTokenUnpermute 全链路返回 SUCCESS、out[0]=0 而非报错；sortedIndices[0]=100000（>=N）只被 <N 跳过，同样静默产出全 0 行。
+  visibility: 静默错误
+mitigation:
+  detect: 对 sortedIndices 注入 -1 与 >=N 的越界值，检查 API 是否拒绝；与 routing_map 路径的 >=0 && < 守卫对齐比对
+  fix: 待定（issue 为 P-011 防御性契约缺陷报告，未见修复 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: sortedIndices 含负值或超过 num_out_tokens 时触发，topK=1 即可复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/4091
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #4091（2026-08-03 closed）：moe_token_unpermute（aclnnMoeTokenUnpermute）按 sortedIndices 从 permutedTokens 取数时，内核只判断 idx < num_out_tokens，未校验 idx >= 0；文档要求取值 [0, tokens*topK-1]，负索引在 GetWorkspace/Launch/Sync 全链路被静默接受。已在 Ascend910B3 + CANN 9.1.0-beta.3 上通过源码 --pkg 安装的 vendor 内核（ops-transformer HEAD 4b3d39658e1d，ASCEND_CUSTOM_OPP_PATH 指向该 vendor，repro_manifest.json 记录 built_from_source=true）复现，exit 42：permutedTokens [2,8] float、sortedIndices [2] int32、probsOptional nullptr（topK=1）、out [2,8] float，合法 sortedIndices[0]=0 时 out[0]=1 正确；sortedIndices[0]=-1 与 100000 均 API SUCCESS、Sync SUCCESS，out[0] 为 0。根因在 moe/moe_token_unpermute/op_kernel/moe_token_unpermute.h 约 L245 的 needCopyIn 守卫，与同仓 routing_map 路径的 >=0 && < 判断不一致，属防御性契约缺陷（Track A / Pattern P-011，Finding XFMR-MTU-001）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/4091 （closed）
+  behavior: 传入负的 sortedIndices 时调用完全成功、不报错，取出来的那几行却是 0（或取到错行）；只有把索引改成合法值结果才对，因此上游一旦算错索引，这里不会拦住，而是把错误静默地写进输出。
+  trigger_surface: aclnnMoeTokenUnpermute，sortedIndices 含负值或超过 num_out_tokens 的元素（topK=1 即可）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem

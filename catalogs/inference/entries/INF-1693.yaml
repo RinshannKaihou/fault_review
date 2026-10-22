@@ -1,0 +1,57 @@
+id: INF-1693
+legacy_ids: []
+slug: slikg_bf16_dq_unaligned_clear_skip
+aliases: []
+title: SLIKG BF16 dQ 未对齐清零分支漏写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: ClearInvalidS1Output
+  behavior: ClearInvalidS1Output 改为按 32B 对齐判断后，未对齐分支只剩 FP32 的清零路径；BF16 的 dQ 既不满足对齐也不满足类型分支，整段漏写，无可见压缩 KV 的 query 行保留显存旧值。
+effect:
+  objects:
+  - 梯度
+  detail: A3、TND、BF16 dQ、topk=512、mask_mode=3、cmp_ratio=4 且 clear 分段不满足 32B 对齐时，无可见压缩 KV 的 query 行 dQ 保留显存旧值，训练首步 grad_norm 变 NaN；无报错无栈，重复结果一致，换 topk/mask 后消失。
+  visibility: 数值异常
+mitigation:
+  detect: 对无有效压缩 KV 的 query 行单独检查 dQ 是否清零；观察首步 grad_norm 是否 NaN
+  fix: '待定（issue 只定位到引入该判断的 PR #11435 / commit d77a4ca，未见修复 PR）'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: A3 + TND + BF16 dQ + CalcCoreClearRange 分段不对齐时触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5420
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5420（2026-09-17 closed，Ascend A3 单卡，CANN 9.2.0 w0916，torch 2.14.0+cpu / torch_npu 2.14.0.dev20260916，cann-ops-transformer 1.0.0）：sparse_lightning_indexer_kl_loss_grad 的 BF16 dQ 在无可见压缩 KV 的 query 行保留显存旧值，训练首步 grad_norm 变为 NaN；所有浮点输入有限，其余三个算子输出有限，无需 compile 即可复现。根因在 attention/sparse_lightning_indexer_kl_loss_grad/op_kernel/arch22/sparse_lightning_indexer_kl_loss_grad_base.h 的 ClearInvalidS1Output（master 613-622 行）：该处由无条件清零改为按 32/sizeof(CLEAR_T) 判断对齐，对齐时才 InitOutput，未对齐分支仅剩 IsSameType<CLEAR_T,T> 的 FP32 路径，BF16 dQ 直接漏写；CalcCoreClearRange 按元素均分无法保证每段 16 个 BF16 元素对齐，后续计算又跳过无可见 KV 的 query，不会补写。该判断由 PR #11435（commit d77a4cac）引入，检查时 master 1e878a0c 仍存在。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5420 （closed）
+  behavior: 训练首步 grad_norm 直接变成 NaN，但没有任何算子报错、没有栈：反向四个算子中只有 dQ 受影响，且只有无可见压缩 KV 的那些 query 行出错，其余行 dQ 正常。相同输入重复跑结果一致，换掉 topk / mask 配置后 NaN 消失，属于只在特定 query 行漏清零时出现的脏值。
+  trigger_surface: A3 + TND + BF16 dQ + topk=512 + mask_mode=3 + cmp_ratio=4，clear 分段不满足 32B 对齐
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

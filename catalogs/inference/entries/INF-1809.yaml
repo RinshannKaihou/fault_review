@@ -1,0 +1,58 @@
+id: INF-1809
+legacy_ids: []
+slug: acldatabuffer_length_ignored_read_past_declared
+aliases: []
+title: aclDataBuffer 声明长度小于 OM 需求时读到界外残留
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: aclDataBuffer 长度校验
+  behavior: 执行时按 OM Data 节点的 dtype/shape 决定读取长度，不比对调用方 aclDataBuffer.length，声明 4 字节仍按 DT_INT64[1] 读 8 字节。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: OM 要 8B、只声明 4B 时高 4B 取到同 device 地址释放后重分配的残留，SequenceAt 收到 index=20615843020800 后报 input index out of range；残留刷 0 则 index=0、执行成功。
+  visibility: 静默错误
+mitigation:
+  detect: 传 aclDataBuffer.length 小于 OM dtype 宽度的输入，观察下游算子读到的值；或用释放后同址重分配写入特征值确认读到界外字节
+  fix: 待定（issue closed；建议在模型执行入口、host 化拷贝前或算子读取前按 aclDataBuffer.length 校验有效长度）；规避：调用方按 OM dtype 宽度传满字节
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  trigger_note: 调用方 aclDataBuffer.length 小于 OM 声明的 dtype*shape（如 INT64[1] 只给 4B），且 device 地址被复用未清零
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/510
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 复现走真实 ATC → OM → aclmdlLoadFromFile → aclmdlExecute：index 在 OM 中声明为 DT_INT64[1]（8B），调用方 aclCreateDataBuffer(index_device, 4) 只声明 4B 并只写低 4B（index=0），device 内存先被写入 0x000012c000000000 后释放再重分配到同一地址。GE 后续仍按 DT_INT64[1] 读 8B，高 4B 的残留 0x000012c0 被拼进输入：SequenceAt 日志 [sequence_at_op.cc:34] index = 20615843020800，随后 [sequence_at_op.cc:92] ValidateSeqIdx 报 input index 20615843020800 is not valid，aclmdlExecute 返回 500002。报告者给出的线索：api/acl/acl_model/model/model_om2.cpp 的 PrepareOm2Tensor 已把 dataBuffer->length 写进 gert::TensorData::SetSize，但 runtime/v2/kernel/common_kernel_impl/memory_copy.cc 的 host 化拷贝按 OM dtype/shape 推 tensor_size 后直接 rtMemcpyEx，未比较 tensor_size 与 GetSize()；sequence_at_op.cc 也按 DT_INT64 直接解引用。对照实验把同一 device 内存刷 0 后，GE 读到 index=0、aclmdlExecute 返回 0。
+  source: 2026-08-11 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/510 （closed）
+  behavior: 用户按 OM 声明的 INT64[1] 准备输入、但只申请并声明了 4 字节时，模型不会报输入长度不符，而是把这块 device 内存后面 4 字节的旧数据一起当成 index 读进去：日志里 index 变成一个天文数字（20615843020800），SequenceAt 才报 input index is out of range，aclmdlExecute 返回 500002。换一块没被污染的内存或把残留清零，同样的 4 字节输入就正常执行。
+  trigger_surface: aclmdlExecute 传入 aclDataBuffer.length 小于 OM 声明宽度，且 device 内存存在释放后残留
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility

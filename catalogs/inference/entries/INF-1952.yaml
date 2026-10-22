@@ -1,0 +1,66 @@
+id: INF-1952
+legacy_ids: []
+slug: fuse_qknorm_rope_const_token_loop
+aliases: []
+title: fuse_qknorm_rope 融合致图模式恒定输出同一 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: fuse_qknorm_rope 融合
+  behavior: v0.18.0 图编译下开启 fuse_qknorm_rope 融合后注意力输入被改错，解码退化为每次都选同一个 token；关掉该开关即恢复。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: v0.18.0图模式、fuse_qknorm_rope默认开启、贪心解码时，Qwen2.5-1.5B-Instruct非eager对「San Francisco is a」返回「\nB\nB\nB\n」等同一token重复；加--enforce-eager或关融合后正常。
+  visibility: 静默错误
+mitigation:
+  detect: 固定 prompt + temperature=0 各跑一次，比对 eager 与图模式输出是否一致；出现整段重复单字符即为该症状
+  fix: 'serve 时加 --additional-config ''{"ascend_compilation_config": {"fuse_qknorm_rope": false}}''（issue 评论给出的规避）；issue 仍 open，未见修复 PR，现场疑与 CANN 驱动版本有关'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend v0.18.0 + CANN 9.0.0 社区版镜像、Qwen2.5-1.5B-Instruct、默认 cudagraph（不加 --enforce-eager）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13444
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #13444（2026-08-04，open）：v0.18.0 镜像（CANN 9.0.0，Qwen2.5-1.5B-Instruct，未加 --enforce-eager）对 prompt「San Francisco is a」返回「\nB\nB\nB\n」，加 --enforce-eager 后返回正常续写。报告者 LinJianping 在评论里把范围收敛到融合开关：用 --additional-config ''{"ascend_compilation_config": {"fuse_qknorm_rope": false}}'' 关掉 QK-Norm+RoPE 融合后现象消失，说明走图/融合路径时该融合产出的 Q/K 被写坏，注意力无法区分位置、每个 decode step 都选同一个最高分 token。报告者另外用 quay.io/ascend/vllm-ascend:v0.18.0 自行从源码编译 vLLM 与 vllm-ascend 复现了同样现象，并怀疑与自己 CANN 驱动 25.0.rc1.1 偏旧有关，维护者尚未给出最终结论，issue 保持 open。'
+  source: 2026-08-04 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/13444 （open）
+  behavior: 同一台机器上不写 --enforce-eager 直接 vllm serve Qwen2.5-1.5B-Instruct，temperature=0 请求只回「B\nB\nB」这种同一 token 的重复；把启动参数改成 --enforce-eager 之后同样的 curl 就得到「city in California, U…」的正常续写。因为服务不报错、HTTP 200、首 token 延迟也正常，很容易被当成模型本身的问题；只有把融合开关关掉或退回 eager 才能确认是编译/融合路径。
+  trigger_surface: vllm-ascend v0.18.0 图模式 + fuse_qknorm_rope 融合（默认开启）+ 贪心解码
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 数值结果
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

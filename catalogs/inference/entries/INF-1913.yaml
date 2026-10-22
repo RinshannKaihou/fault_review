@@ -1,0 +1,58 @@
+id: INF-1913
+legacy_ids: []
+slug: vllm_ascend_dsv4_swiglu_clamp_fused_moe_quant_abnormal_tokens
+aliases: []
+title: DSV4 w4a8 融合 MoE clamp 语义错出异常 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: GMM swiglu_quant_v2
+  behavior: 融合 SwiGLU+量化算子按 GPT-OSS 语义（gluAlpha、gluBias）实现，未按 DeepSeek V4 的 silu(gate)*up 加 swiglu_limit 截断；量化共享专家还漏传该参数
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: DeepSeek-V4-Pro-w4a8（swiglu_limit=10.0）在 TP16/EP 单节点、temp=0、131 token prompt 下稳定吐出 Foracci、†source 之类非词 token；可确定性复现，无报错无 NaN
+  visibility: 静默错误
+mitigation:
+  detect: 对 swiglu_limit>0 的 w4a8 模型做 temp=0 短 prompt 冒烟，比对融合路径与 GMM1+显式 clamp 路径的输出 token；算子级用 PyTorch 参考对齐 clamp 顺序与 gate/up 布局
+  fix: issue open，无合并 PR；短期绕过是在 0 < swiglu_limit < 1e6 时跳过融合 grouped_matmul_swiglu_quant_v2，显式 clamp + silu(gate)*up + 动态量化，并把 swiglu_limit 传给共享专家回退路径
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vllm-ascend main b26970e5 + DeepSeek-V4-Pro-w4a8（swiglu_limit=10.0）+ TP16/EP，融合 MoE SwiGLU 量化路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/9589
+  kind: github_issue
+relations: []
+original:
+  mechanism: DeepSeek V4 的 SwiGLU 带有限幅：先对 gate/up 做 clamp(±swiglu_limit)，再 silu(gate)*up 并动态量化。vllm-ascend 在 w4a8 融合 MoE 路径把它合并进 grouped_matmul_swiglu_quant_v2，而 csrc/moe/dequant_swiglu_quant/op_kernel/dequant_swiglu_quant.h 在 swigluMode == 1 时实现的是 GPT-OSS 变体（gluAlpha=1.702、gluBias=1.0 的 SwiGluGate），语义与 DeepSeek V4 的 silu(gate)*up 不一致；csrc/gmm/grouped_matmul_swiglu_quant_v2 下 a8w4、a4w4、split-fusion 几套 clamp 实现的截断顺序与 gate/up 布局也没有针对 DeepSeek V4 做过算子级对齐。另外量化共享专家分支没有把 swiglu_limit 传下去，未量化的共享专家走不到上游 SiluAndMulWithClamp。触发条件明确：模型 config 里 swiglu_limit=10.0 且走融合量化路径。报告在 b26970e597222029d624261a8738a40f2d33ad17 的 clean main 上复现，最短用例是 131 token、temperature=0、top_p=1 的确定性请求。
+  source: 2026-05-26 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/9589 （open）
+  behavior: DeepSeek-V4-Pro-w4a8 在单节点 TP16、开 EP 的服务上，一条完全确定性的短请求（temperature=0）就吐出 Foracci、†source、dátummal、böjnings 这类跨语种碎片，句子结构塌掉；不报错、不 NaN，看起来像模型本身权重坏了。同一权重只要绕开融合 SwiGLU 量化算子（显式 clamp 路径）输出就正常，说明问题在算子语义而不在权重。
+  trigger_surface: w4a8 量化 + swiglu_limit 有限幅的 DeepSeek V4 模型 + 融合 grouped_matmul_swiglu_quant_v2 路径（含量化共享专家）
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - effect

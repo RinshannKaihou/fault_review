@@ -1,0 +1,60 @@
+id: INF-1905
+legacy_ids: []
+slug: mindformers_pynative_epoch_count_ignores_accum
+aliases: []
+title: 静态 batch 的 epoch 数漏乘累积致迭代器提前耗尽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindspore
+    component: Trainer 迭代器 epoch 数推导
+  behavior: 静态 batch 分支用 training.steps // train_epoch_step 相除，前者是 optimizer step、后者是 micro-batch，漏乘 num_accumulation_steps
+effect:
+  objects:
+  - 训练样本流
+  - 可用性/进度
+  detail: accum>1 时续训被 add_skip_pass 拒绝（reset step 307584 > 298080）；不续训也会在 dataset_size×num_epochs/accum 步提前耗尽迭代器并重建
+  visibility: 静默错误
+mitigation:
+  detect: accum>1 时核对 create_dict_iterator 的 num_epochs 是否 ≥ steps×accum/epoch_step；续训失败时比对 add_skip_pass 报的 step 与 dataset_size*num_epochs
+  fix: issue 给出的修法是容量按 micro-batch 计算并保留一个 epoch 余量（与动态 batch 分支一致，静态分支用 num_accumulation_steps 作倍数）；未见关联 PR（issue 已关闭，未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PyNative + 静态 batch（未启 dynamic batch）+ num_accumulation_steps>1（accum=1 时旧公式恰好正确）；断点续训或长跑才暴露
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2581
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'mindformers/pynative/trainer/trainer.py 的静态 batch 分支用 self.train_num_epochs = max(self.config.training.steps // self.train_epoch_step, 1) 推导 MindData 迭代器的 epoch 数。train_epoch_step 来自 _get_dataset_size()，单位是 micro-batch；config.training.steps 的单位是 optimizer step，一个 optimizer step 消耗 num_accumulation_steps 个 micro-batch（num_accumulation_steps = global_batch_size // base_units，base_units = data_parallel * local_batch_size）。两者直接相除等价于假设 1 step == 1 micro-batch，容量比实际需要小 accum 倍。同函数的动态 batch 分支是正确的（乘了 max_accum 并额外留一个 epoch 余量），静态分支没同步。复现一：global_batch_size=16384、local_batch_size=2、data_parallel=4096（accum=2）、steps=300000、dataset_size=59616，从 global_step=153792 恢复时 _load_checkpoint 算出 skip_micros=307584，而 train_num_epochs=300000//59616=5、容量 59616×5=298080，add_skip_pass 校验 reset_step < dataset_size*num_epochs 失败并抛 RuntimeError: Cannot reset the pipeline, reset step must be less than dataset_size * num_epochs。复现二：global_batch_size=512、data_parallel=64（accum=4）、train_epoch_step=3815404、需快进 19685376，旧公式得 num_epochs=1，容量 3815404，同样被拒。第二个影响：即使不续训，迭代器容量只有实际所需的 1/accum，跑到约 dataset_size×num_epochs/accum 步就提前耗尽并触发重建，数据流重启使 fresh 与 resumed 训练的数据位置不一致（数据位置由 trainer 的 consumed_samples 驱动，不是迭代器内部偏移）。'
+  source: '2026-09-04 GitCode mindformers issue #2581 https://gitcode.com/mindspore/mindformers/issues/2581（closed；MindFormers master d4691ef06986 + MindSpore 2.9.0+，Ascend 910B）'
+  behavior: 梯度累积步数大于 1 时从 checkpoint 续训直接起不来，日志报 Cannot reset the pipeline, reset step must be less than dataset_size * num_epochs，step 明显大于 dataset_size×num_epochs；不续训的长跑训练则会在中途悄悄重建数据迭代器，数据和恢复训练时的位置对不上，两边 loss 曲线会分叉。
+  trigger_surface: PyNative + 静态 batch + num_accumulation_steps>1；断点续训（skip micro step 较大）时必现，长跑时表现为迭代器提前耗尽
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

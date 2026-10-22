@@ -1,0 +1,58 @@
+id: INF-1805
+legacy_ids: []
+slug: om_extend_partition_tlv_len_unchecked
+aliases: []
+title: OM 扩展分区按文件声称 len 解析致越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: ParseModelDescExtend
+  behavior: ParseModelDescExtend 只校验 PRE_MODEL_DESC_EXTEND 分区 size 与 magic，把文件中声称的 extendDesc->len 直接当 TLV 列表长度，未校验是否超出分区实际剩余。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 构造 extendDesc->len 大于分区剩余大小的 om，ParseTlvList 的边界检查全以该声称长度为基准，TlvHead 与 tlv->data 读取越出模型缓冲区；aclmdlQueryExeOMDesc 即可触达。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 extendDesc->len 超出分区剩余大小的 om，调 aclmdlQueryExeOMDesc 并配 mssanitizer memcheck
+  fix: 待定（issue closed，正文只给修复建议：第560行调用 ParseTlvList 前比较 extendDesc->len 与 size - sizeof(ModelExtendHead)；未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  trigger_note: aclmdlQueryExeOMDesc / 模型加载解析路径读构造的 om；分区界内但 len 字段由文件内容控制
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/551
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ge runtime/c/executor/model_parse.c 的 ParseModelDescExtend 解析 om 的 PRE_MODEL_DESC_EXTEND 分区：第550行只校验分区 size >= sizeof(ModelExtendHead) 与第556行 magic，第560行把文件中的 extendDesc->len（uint64）直接作为 tlvListLen 传给 ParseTlvList，没有与 size - sizeof(ModelExtendHead) 比较。ParseTlvList（527-547）的 CheckLenValid（model_desc.h:18-20，只比较 total/offset/nextLen）全部以该声称长度为基准，第530行 TlvHead 读取与第537行 ProcFifoInfo 处理 tlv->data 时可越出分区缓冲。可达链已逐行核实：aclmdlQueryExeOMDesc（api/acl_c/acl_model/model/model.c:203-208）→ GetPartitionSize（ge_executor.c:97-107）→ GetModelPartitionSize（model_desc.c:172-178）→ GetModelAllPartitionSize（122/158）→ GetModelFifoSize（94-104）→ ParseModelDescExtend；另有 ParseModelDescExtendInfo（568）加载路径。
+  source: 2026-09-06 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/551 （closed）
+  behavior: 用户对一个构造过的 om 调用 aclmdlQueryExeOMDesc 或加载模型时，只要扩展分区头里声称的长度大于分区实际剩余，TLV 遍历就会读到模型缓冲区之外，可能读到垃圾 FIFO 信息或崩溃；分区表本身校验通过，调用方看不到任何参数错误。
+  trigger_surface: 公开 ACL 接口解析用户提供的 om（扩展分区 len 字段与分区实际大小不一致）
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect

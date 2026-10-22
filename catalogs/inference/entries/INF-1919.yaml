@@ -1,0 +1,57 @@
+id: INF-1919
+legacy_ids: []
+slug: vllm_ascend_block_verify_acceptance_formula_wrong
+aliases: []
+title: block_verify 沿用逐 token 判据致接受分布错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: rejection_sampler
+  behavior: block-verify 路径直接复用逐 token 的接受判据，没有按论文公式对整块联合分布做修正，接受概率与目标分布不一致
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 推测 token 数 ≥3 才走该路径，一走上生成质量就明显下降（报告称 significant degradation）；<3 个草稿 token 时不触发，全程无报错
+  visibility: 质量退化
+mitigation:
+  detect: num_speculative_tokens≥3 时对比 block-verify 开/关的输出分布与接受率；用论文公式独立算一遍块内接受概率
+  fix: issue 已 closed；report 给出的临时规避是直接关掉 block_verify（即使草稿 token 数 ≥3），作者随后提交了完整修复 PR
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: vllm-ascend 0.17.0rc2 + 投机解码 num_speculative_tokens≥3（block-verify 路径）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/7807
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm_ascend 的 rejection_sampler.py 里 block-verify 这条路径把整块草稿 token 一起验证，但接受判据直接照搬了逐 token 版本的公式，没有按投机解码论文里 block-wise 的形式对块内联合分布做修正（逐 token 是 min(1, p(x)/q(x)) 的单点比值，块验证需要按块内前缀的联合概率调整，否则接受概率与目标分布不一致）。触发门槛写在代码里：只有最大草稿 token 数 ≥3 才启用 block-verify，<3 走逐 token 路径不受影响。所以现象是"草稿 token 数调大反而更差"，而小 token 数下一切正常，容易被误判成模型或权重问题。report 在 0.17.0rc2.dev168+g11e058347 上给出，作者自述正在写完整修复 PR，并建议在修好前直接关掉 block_verify。
+  source: 2026-03-29 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/7807 （closed）
+  behavior: 用户把 --speculative-config 的 num_speculative_tokens 调到 3 以上想提升吞吐，结果生成质量反而明显下降：句子更碎、答非所问的比例上升，接受率数字也不对劲。降到 2 个草稿 token 就恢复正常，所以现场很容易归因成"草稿模型不行"。没有报错、没有 NaN，只有评测分数和人工读输出能发现。
+  trigger_surface: 推测解码 + num_speculative_tokens ≥ 3（进入 block-verify 路径）
+  discovery: 2026-10-21 历史索引回填（NPU pool2_v2c，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

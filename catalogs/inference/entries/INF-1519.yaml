@@ -1,0 +1,61 @@
+id: INF-1519
+legacy_ids: []
+slug: torchnpu_gated_delta_rule_multitoken_device_degrade
+aliases: []
+title: 多 token 调用致设备对该算子路径持久降级
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: npu_recurrent_gated
+  behavior: 传入单序列多 token（actual_seq_lengths 元素>1）且 state 缓存 slot 数不足时，该算子多 token 路径失败。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 首次报 507057，重启容器后报 507035；npu-smi 仍 Health=OK、常规健康检查通过，跨进程/容器不恢复，非 root 无法 reset；其它算子负载正常。
+  visibility: 报错
+mitigation:
+  detect: 同一卡上依次用 actual_seq_lengths=[1] 与 >1 调用，再重测此前通过的 [2,2]；查 npu-smi health 与 plog
+  fix: 待定（issue open；报告者建议补 slot 数/形状参数校验与约束文档，恢复需 root 复位）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: npu_recurrent_gated_delta_rule + actual_seq_lengths 元素 >1（尤其 state 仅 1 个 slot）+ TND 布局；910B3/CANN 9.0.0/torch_npu 2.7.1.post4，非 root 环境
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5259
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5259（2026-09-30，open，910B3 64GB / CANN 9.0.0 / torch_npu 2.7.1.post4，developer 非 root）：npu_recurrent_gated_delta_rule 传入单序列多 token（actual_seq_lengths 元素 >1）会失败，之后同一设备上所有 actual_seq_lengths>1 调用全部失败，元素 ==1 一直正常。时间线证据：T2 lens=[1]*8 与 T4 lens=[2,2]、T5 lens=[3] 均成功；T6 lens=[4] 且 state 只有 1 个 slot 时失败 507057；T7 起任何 >1 的调用全部失败，容器 stop/start 后仍失败且错误码变为 507035（wait for compute device to finish failed）。同一降级设备上 matmul/softmax/rms_norm/rotary/fused_infer_attention_score_v2/该算子 T=1 全部正常，说明是单算子单路径的持久降级而非整卡损坏。npu-smi 仍报 Health=OK，torch.ones+synchronize 健康检查测不出。报告者推测多 token 路径按 actual_seq_lengths 写循环状态而 slot 不足导致越界写（自述为推测，非结论）。'
+  source: 2026-09-30 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5259 （open）
+  behavior: 把多 token 序列一次喂给这个递推式线性注意力算子，第一次调用就报 507057；更麻烦的是之后这张卡上所有同类多 token 调用全部失败（报 507035），重启容器也不恢复，只有 actual_seq_lengths 全为 1 的调用还能跑。npu-smi 一直显示 Health=OK，常规 torch.ones+sync 健康检查也过，所以在服务进程里看不出卡已经处于降级状态，非 root 用户也没法复位。
+  trigger_surface: npu_recurrent_gated_delta_rule + actual_seq_lengths 元素 >1 + state 缓存 slot 数不足（1 slot 实测）；T=1 解码路径不触发
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    issue_unfixed:
+    - component
+    uncertain:
+    - subsystem

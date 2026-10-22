@@ -1,0 +1,60 @@
+id: INF-1744
+legacy_ids: []
+slug: te_reduction_int32_index_overflow_2_31
+aliases: []
+title: 归约元素数超 2^31 时 int32 索引回绕致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: select_index_dtype 索引提升
+  behavior: 索引 dtype 的提升只能按整棵 codegen 全升或全不升：不升时线性地址在 2^31 处回绕；全升 int64 又让大 arange tile 的 UB 占用翻倍，编译挂死。溢出实际只发生在个别乘加项上。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: numel=2^31+257 的 (8388609,256) 张量在 triton_experimental 下做 sum(dim=1)，编译能过、能跑，但归约结果与 eager 不同，或直接触发设备故障（MTE/EE1003 核心报错）；若把索引全量提升 int64 规避，则编译挂死不返回。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 numel 略超 2^31 的张量做归约，与 eager 比对；同时看编译耗时/UB 占用是否异常
+  fix: 已修复：PR https://gitcode.com/Ascend/pytorch/pull/43736 改为贪心提升 + 局部 guard——只提升越界 addend（生成 268435456*x1.to(tl.int64)），大 tile 保持 int32，动态轴长用 trace 期快照加符号 guard
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: npu_backend=triton_experimental + 归约张量 numel 超 int32 上限 2^31；torch 2.13 / torch_npu，Atlas A2 910B2
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/pull/43736
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/pytorch/issues/4373
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4373（2026-08-26，closed，torch 2.13 + torch_npu，Atlas A2/910B2）：参与 torch.compile(options={"npu_backend":"triton_experimental"}) 归约的 tensor 元素总数超过 int32 上限 2147483648 时，索引全部保持 int32，线性地址回绕，输出结果错误或触发设备故障（MTE/EE1003 核心报错）。上游 select_index_dtype() 在 numel*reduction_numel > int32_max 时把 index_dtype 置为 tl.int64，但旧实现把该信号传导到整棵索引 codegen，导致大向量 arange tile 全量 upcast；而实际溢出只发生在个别乘加项（如 268435456*x1，系数乘轴长-1 超 2^31）。全量 upcast 属过度修复，UB（Unified Buffer）占用翻倍致编译挂死。修复 PR 43736 改为「贪心提升 + 局部 guard」：静态/字面系数跨界仅提升溢出 addend，大 tile 保持 int32；动态轴长以 trace-time hint 快照判定，保留的 int32 项安装符号 guard，运行期轴长超快照则 guard 失败重编译。复现：x=torch.randn(8388609,256,device="npu")（numel=2^31+257），sum(dim=1)。'
+  source: 'Ascend/pytorch #4373（2026-08-26，closed；修复 PR https://gitcode.com/Ascend/pytorch/pull/43736） https://gitcode.com/Ascend/pytorch/issues/4373'
+  behavior: 当被归约的张量元素数刚好越过 2^31（LLM 里的 logits 展平、大词表 softmax、长序列 sum 都可能到），编译能过、能跑，但归约结果与 eager 不同；有时直接掉进设备故障报 MTE/EE1003。想靠把索引全升 int64 规避时，编译又挂死不返回。
+  trigger_surface: triton_experimental 归约 + numel > 2^31（示例 2^31+257）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

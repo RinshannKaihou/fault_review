@@ -1,0 +1,60 @@
+id: INF-2048
+legacy_ids: []
+slug: hccl_ccu_alltoall_mask_shift_overflow
+aliases: []
+title: CCU alltoall 同步掩码位移溢出截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: CCU alltoall mesh1d 核
+  behavior: (1 << rankSize) 的字面量 1 是 32 位 int、rankSize 是 uint64_t：rankSize≥32 时左移是未定义行为，≥16 时结果截断进 uint16_t allBit，同步掩码缺少高位 rank
+effect:
+  objects:
+  - 可用性/进度
+  detail: 单层 mesh1d 子通信域 alltoall/alltoallv rankSize>16 时，同步掩码只覆盖低位 rank，部分 rank 到达事件不被等待，集合通信可能提前返回或后续步骤挂住；≤16 rank 读不到异常。报告自述 rankSize≥32 仓内未确证实际发生，属防御性缺失。
+  visibility: 挂起
+mitigation:
+  detect: 静态检查 (1<<rankSize) 类掩码构造：确认移位字面量位宽与目标容器宽度，核对 rankSize 上界校验是否存在
+  fix: 待定（issue closed，未见 MR）：掩码改用 uint64_t/1ULL 构造并按 rankSize 校验，或在 ParseKernelArg 补上界检查
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 单层 mesh1d 拓扑 + 子通信域 rankSize≥16（≥32 触发 UB）；报告为静态核查，未在真实集群复现
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 同类问题见 cann/hccl issue 635（all_to_all_v 的 DoAll2AllVMultiLoop 第 213 行同型），如需可合并为一条族条目。
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/634
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/hccl issue 634（2026-08-21，closed，AI 缺陷扫描报告，置信度 89%）：src/ops/all_to_all_v/template/ccu/kernel/ccu_kernel_all_to_all_mesh1d.cc 第 139 行 uint16_t allBit = ((1 << arg->rankSize) - 1) & (~(1 << arg->rankId))。1 为 int（32 位有符号），arg->rankSize 为 uint64_t，rankSize≥32 时移位超出位宽属 C++ 未定义行为，rankSize>16 时结果被截断赋给 uint16_t，得到错误的同步掩码；第 144/146/151 行 1<<r 同型。调用链 CcuAlltoAllMesh1DKernel（169 行）→ ParseKernelArg（184 行，24-27 行为空实现直接返回 CCU_SUCCESS，不校验 rankSize）→ DoAlltoAll（190 行）→ sink 139 行。rankSize 来自 subCommRanks_[0].size()（ccu_temp_all_to_all_mesh_1D.cc:54），选择器 SelectCcuScheduleAlgo 对单层 mesh1d 的 else 分支不检查 userRankSize 上限，CCU_MAX_RANK_SIZE=128 允许 channels 数组到 128 个。报告自述 rankSize≥32 在仓内未确证实际发生，属防御性缺失。
+  source: 2026-08-21 GitCode cann/hccl issue https://gitcode.com/cann/hccl/issues/634 （closed）
+  behavior: 在大规模单层 mesh1d 通信域做 alltoall/alltoallv 时，若参与 rank 数达到 16 以上，同步掩码只覆盖低位 rank，部分 rank 的到达事件不被等待，集合通信可能提前返回或在后续步骤挂住；小规模集群（≤16 rank）读不到异常。
+  trigger_surface: CCU alltoall mesh1d + 子通信域 rankSize≥16
+  discovery: 2026-10-21 tail_3 顺序深读（历史索引回填，issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 挂起
+    rewritten:
+    - detail

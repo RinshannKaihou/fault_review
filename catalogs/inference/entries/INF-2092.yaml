@@ -1,0 +1,61 @@
+id: INF-2092
+legacy_ids: []
+slug: kv_offload_partial_load_reported_success
+aliases: []
+title: KV offload 部分加载仍报 SUCCESS 致跨 rank 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV offload 加载结果聚合
+  behavior: 异步 KV 加载在 TP rank 间返回的块数不同（rank1 173/173、rank0 6/173），但两者 status 都是 SUCCESS，调度器随后才按 KV load 失败处理，失败路径又触发 metrics 异常
+effect:
+  objects:
+  - KV状态
+  - 可用性/进度
+  detail: 开启 KV offloading 且 kv_load_failure_policy=fail 的多机 PD 分离 TP16 场景下，个别请求首 token 超时并返回 HTTP 500，失败路径记录 metrics 时抛 ValueError。
+  visibility: 静默错误
+mitigation:
+  detect: 按请求聚合各 rank 的 success_blocks/total_blocks_num 与 status，status 全 SUCCESS 但块数不一致即命中；再核对失败路径是否二次抛 metrics 异常
+  fix: issue 未附修复 PR（closed，修复状态未核实）；期望 fail 策略下请求干净失败、失败路径不再抛二级异常
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: KV offloading + 外部 KV 后端 + PD 分离 + kv_load_failure_policy=fail，多机 TP16
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/7871
+  kind: github_issue
+relations: []
+original:
+  mechanism: '环境 vLLM 0.17.0、vllm-ascend 0.17.0rc2.dev0、torch_npu 2.9.0、CANN 8.5.1（V100R001C25SPC002B220）、16×Ascend910、EulerOS aarch64。开 KV offloading + 外部 KV 后端、kv_load_failure_policy=fail，多机 PD 分离 TP16。同一请求的异步加载结果在 rank 间不一致：adapter.py:228 的 GetResult 里 rank1 报 success_blocks=173、total_blocks_num=173、status=SUCCESS、cost_ms≈4275，而 rank0 只有 success_blocks=6、total_blocks_num=173，status 同样是 SUCCESS——部分加载没有被标记为失败。调度器随后按 KV load 失败处理该请求，失败路径再触发 metrics 记录抛 ValueError: Counters can only be incremented by non-negative amounts，请求最终以 HTTP 500 返回给前端并伴随首 token 超时。'
+  source: '2026-03-31 GitHub vllm-project/vllm-ascend issue #7871 https://github.com/vllm-project/vllm-ascend/issues/7871 （closed）'
+  behavior: 开了 KV offload 之后，个别请求的前端等不到第一个 token 就超时，服务端返回 500。看日志会以为只是策略性失败（fail 策略下本就该失败），但真正奇怪的是个别 rank 只加载了 6/173 个块却照样报 SUCCESS，以及失败路径自己又抛了一个 counters 不能增负数的异常。
+  trigger_surface: KV offloading + 跨 TP rank 异步加载 + kv_load_failure_policy=fail（PD 分离）
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - effect
+    - visibility
+    - behavior

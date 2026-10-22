@@ -1,0 +1,63 @@
+id: INF-1769
+legacy_ids: []
+slug: triton_ascend_num_stages_state_store_misched
+aliases: []
+title: triton-ascend num_stages>1 流水错调度携带态存储
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 软件流水循环携带 store 调度
+  behavior: 循环体内存储循环携带值的 kernel 在 num_stages>1 时被错误调度，in-loop store 读到过期流水级，kernel 静默产出错误结果（非崩溃非编译错）
+effect:
+  objects:
+  - 数值结果
+  detail: Mamba-2 SSD _state_passing_fwd/_bwd_kernel（num_stages=3 autotune 配置）约 25–46% 新进程产出位相同的错误输出（rel diff ~1e-3 vs 参考 ~4e-7）；前向反向同中；钉 num_stages=1 后 16/16 进
+  visibility: 静默错误
+mitigation:
+  detect: 同脚本多进程重跑并与纯 torch 参考对比；坏进程输出位级稳定（编译期调度决定）是特征签名
+  fix: 规避：检测 torch_npu 时为 state-passing autotune 配置钉 num_stages=1（state-spaces/mamba#1063 已带；GPU/ROCm 调度不受影响）；上游修复未见（open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 'Ascend 910B3 + CANN 9.1.0 + triton-ascend 3.6.0+dev20260921（3.2.2 也复现）；签名：进程级间歇（坏进程位相同、重跑翻面 25–46%）、autotune 相关（num_stages>1）、前后向同中；与 #2550（编译期崩溃族）不同类'
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 'issue 自述与 Blackwell num_stages>1 前向损坏（mamba #997）同类：流水循环内携带态存储跨后端脆弱。本地最小化 repro 可附。'
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2662
+  kind: github_issue
+- url: https://github.com/state-spaces/mamba/pull/1063
+  kind: github_pr
+relations: []
+original:
+  mechanism: triton-ascend 3.6.0+dev20260921（3.2.2 同样复现），Ascend 910B3、CANN 9.1.0、torch_npu 2.8.0.post1。循环内存储循环携带值的 kernel 在 num_stages>1 编译时可能被错误调度：in-loop store 读了过期的流水级，kernel 跑完并返回看似合理的错误数字。具体触发：state-spaces/mamba 的 Mamba-2 SSD _state_passing_fwd_kernel/_state_passing_bwd_kernel 在 chunk 循环间携带 acc 并在循环内 tl.store per-chunk out。autotune 到 num_stages=3 的配置时，约 25–46% 新进程产出位相同的错误输出；为这些配置钉 num_stages=1 后 16/16 多进程 PASS、输出位稳定、反向梯度位相同。签名：(1) 进程级间歇——同一进程内重复一致地对/错，换新进程以 25–46% 概率翻转；(2) 位相同错误——与编译期调度决策一致而非运行期竞态；(3) autotune 相关——失败配置恰为 num_stages>1；(4) 前后向变体同中。与 triton-ascend#2550（_state_passing_bwd 编译报错族，3.6.0 已修）不同：本条是运行期静默 miscompilation，3.6.0 仍在。规避已随 state-spaces/mamba#1063 下发。
+  source: 2026-10-20 每日扫描；https://github.com/triton-lang/triton-ascend/issues/2662 ；规避 PR https://github.com/state-spaces/mamba/pull/1063
+  behavior: 在昇腾上运行带软件流水（num_stages>1）且循环内保存循环状态的 Triton kernel（如 Mamba-2 SSD state-passing 前向/反向）时，约四分之一到近半的新进程会产出错误的数值结果：与参考差约 1e-3（正常误差 4e-7 量级），且同一进程内每次运行错得完全一样、换个进程才可能恢复正常；把 num_stages 钉为 1 即消失。kernel 不崩溃、不报错，表现为训练/推理精度随进程随机劣化。
+  trigger_surface: Ascend 910B + triton-ascend 3.2.2/3.6.0 + num_stages>1 + 循环内 store 循环携带值（Mamba-2 SSD state-passing 实测）
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    uncertain:
+    - behavior

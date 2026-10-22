@@ -1,0 +1,58 @@
+id: INF-1709
+legacy_ids: []
+slug: blockattnres_golden_ftz_mismatch
+aliases: []
+title: BlockAttnRes golden 未模拟 FP32 FTZ 致误判
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: BlockAttnRes golden
+  behavior: CPU golden 未模拟 Ascend 950 默认的 FP32 FTZ，Update 的 Phase2OneVL 归一化顺序也与 TwoVL/Generic 不同，极端输入下正负零/Inf/NaN/有穷值的分类与 NPU 不同。
+effect:
+  objects:
+  - 测试判定
+  detail: 输入含全零、约 1e-38 的 FP32 subnormal 与约 ±3.4028235e38 极值时，TTK 精度比较报 NPU 与 golden 的正负零/Inf/NaN/有穷值分类不一致，无独立报错日志，算子本身行为正确。
+  visibility: 静默错误
+mitigation:
+  detect: 对含 subnormal 与近上限极值的输入分别跑 NPU 与 golden，逐元素比较分类（零/次正规/Inf/NaN）而不只比值
+  fix: MR 11661：统一 Phase2OneVL 的归一化顺序，并在 Update/Prepare golden 的 Sqrt、Div、Sub+Exp 边界模拟 FTZ（closed，未核实发布）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 950 默认开 FP32 FTZ，x86 CPU golden 默认不 flush subnormal
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5171
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5171（2026-09-10 closed，Ascend 950，CANN 9.2.0，涉及 BlockAttnResUpdate / BlockAttnResPrepare）：两个算子的 CPU Golden 未模拟 Ascend 950 默认的 FP32 FTZ 行为，BlockAttnResUpdate 的 Phase2OneVL 计算顺序也与 TwoVL/Generic 路径不同。输入包含零值、FP32 subnormal（约 1e-38）或极值（约 ±3.4028235e38）时，NPU 与 CPU Golden 可能分别产生不同的有穷值、正负零、Inf 或 NaN，导致 TTK 精度比较失败；无独立报错日志，问题只表现为 NPU 与 CPU Golden 的正负零、Inf、NaN、有穷值分类不一致。期望结果要求 golden 按 kernel 的运算顺序计算，并在 Sqrt、Div、Sub+Exp 等 FP32 指令边界模拟默认 FTZ。修复（关联 MR 11661）包括统一 Phase2OneVL 的权重归一化顺序，并在 Update/Prepare 的 golden 里对上述边界操作模拟 FTZ。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5171 （closed）
+  behavior: 精度用例在含 0、subnormal（约 1e-38）与接近 fp32 上限的极值输入时失败，报的是 NPU 与 golden 在正负零、Inf、NaN 或有穷值上分类不一致，而不是数值差多少；同一算子在常规值域完全正常，容易误判为算子在极值下不稳。
+  trigger_surface: TTK 精度比较 + 输入含全零、FP32 subnormal、±3.4028235e38 极值；Ascend 950 默认 FP32 FTZ
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility
+    - behavior

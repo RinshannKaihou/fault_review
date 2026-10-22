@@ -1,0 +1,57 @@
+id: INF-1668
+legacy_ids: []
+slug: te_softmax_store_mask_pad_lane_row_bleed
+aliases: []
+title: TE softmax store 丢归约掩码致 pad lane 写穿行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: TE store 掩码重建
+  behavior: store 掩码重建把 lane 形融合归约节点误判为外层标量而不加 r0_mask；R0_BLOCK=16 大于段长 14 时 pad lane 地址越过行边界。
+effect:
+  objects:
+  - 数值结果
+  detail: SAM 输出 990 个 NaN：5 行整行 196 全坏，5 行仅 col0/1 坏；内核级对拍 155,998 个错配、修复后 0；普通行最后两个位置被邻居覆盖（0.00236 而非 0.00028），全掩码行 pad NaN 经 maximum 扩散整行。
+  visibility: 数值异常
+mitigation:
+  detect: 末维 196、含全掩码行的 softmax 输入（R0_BLOCK=16>14）编译后与 eager 对拍，检查相邻行 col 0/1 是否被改写或出 NaN；也可内核级按地址公式构造参考值
+  fix: MR https://gitcode.com/Ascend/pytorch/merge_requests/47195 （open，未核实是否合入）：在白名单构造处 triton.py:3662 把分解式含内层 lane 符号的融合节点纳入白名单（+11/-1）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: torch.compile + inductor Triton 后端 + triton_experimental codegen；归约循环被 linearize 合并、R0_BLOCK=16 大于段长 14 且存在全掩码行；torch_npu master b4c72126（2.14.0）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5146
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5146（2026-09-28，open，torch_npu master 部署基线 b4c72126 / 2.14.0，Python 3.12，torch.compile + inductor Triton 后端）：torch_npu/_inductor/triton_experimental/codegen/triton.py 的 store 掩码重建对融合归约节点误判。linearize 把两段归约循环合并成一根 lane 向量地址后，融合节点登记在 tree.tree_node_mapping（如 r0_2 = r0_4*14 + r0_3）；掩码重建白名单 inner_r_symbol_names（triton.py:3642-3663）构造时排除一切融合节点，判定规则（triton.py:3685-3691）是两态的——在白名单才加 {pfx}mask，否则视为外层标量不加掩码；lane 形融合节点因此被判为标量，store 地址丢失 r0_mask。R0_BLOCK=16 大于段长 14，最后一段（r0_4=13）的地址 k=196/197 越过 196 长度行边界，写到下一行 col 0/1；全掩码行 rowmax=-inf 的 pad 值为 NaN，经下一遍 pass-1 的 tl.maximum(PropagateNan.ALL) 扩散成整行 NaN。load 路径在 filter_masks 之后重新附加掩码（triton.py:3693-3694），store 无对应兜底。证据：SAM 全模型修复前 990 个 NaN、修复后 0；内核级对拍（强制 R0_BLOCK=16、输出行距 38432）修复前 155,998 个错配、修复后 0，生成内核仅差一行 store 掩码。'
+  source: 2026-09-28 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5146 （open）
+  behavior: torch.compile 编译带 masked softmax 的 SAM 模型后推理，输出里出现 990 个 NaN：其中 5 行整行 196 个全坏，另有 5 行只有 col 0/1 坏——像是上一行的 pad 数据被写进了下一行头两个位置。同形状 eager 执行不出现。普通行不报错也不 NaN，只是最后两个位置的数值被邻居覆盖（如 0.00236 而非 0.00028），因此单看数值不会怀疑到掩码；只有全掩码行（-inf 整行）才会把 NaN 传出去。
+  trigger_surface: torch.compile/inductor + triton_experimental 后端；softmax 末维非 R0_BLOCK 整数倍（196 = 14×14，R0_BLOCK=16），归约循环被合并，且存在整行被 mask 成 -inf 的行
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail

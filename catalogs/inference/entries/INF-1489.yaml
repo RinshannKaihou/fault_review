@@ -1,0 +1,61 @@
+id: INF-1489
+legacy_ids: []
+slug: vllm_ascend_pd_pp4_first_request_badcase_garbage
+aliases: []
+title: PD 分离 PP=4 首请求特定 prompt 输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: PP或ascend_direct首请求链路
+  behavior: 在PD分离、Prefill PP=4、use_ascend_direct=true下，服务拉起后首个特定261-token prompt请求输出乱码；根因未定位
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: 首请求返回与 prompt 无关的随机英文（'The is a simple command-line tool...'），finish=length；后续普通请求正常，继续发同一 badcase 仍乱码，先发普通请求即不再乱码
+  visibility: 静默错误
+mitigation:
+  detect: 服务拉起后先发该 261-token prompt，核对 prompt_tokens=261/3 个 KV block 与返回文本；再对照「先发普通请求再发 badcase」是否复现
+  fix: 待定（issue 未给修复 PR；已排除 MTP、prefix cache、reasoning parser、KV 清零、slot mapping、eager 六项）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: true
+  trigger_note: vllm 0.20.2 + vllm-ascend 0.20.2，GLM-5.1-w8a8，4 台 A3 16 卡 pod；Prefill PP=4 TP=8 DP=1（层切分 20,20,20,18）、Decode DP=8 TP=4、use_ascend_direct=true（ADXL RDMA）、PD 分离 producer/consumer；机制未定
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/487
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: vllm 0.20.2 + vllm-ascend 0.20.2，GLM-5.1-w8a8，4 台 A3 16 卡 pod 组成的超节点：Prefill 侧 PP=4、TP=8、DP=1、PREFILL_PP_LAYER_PARTITION=20,20,20,18，Decode 侧 DP=8、TP=4，use_ascend_direct=true（ascend_direct RDMA / ADXL），kv_role 为 prefill=kv_producer、decode=kv_consumer；未开 kvpool 也可复现。现象与「服务拉起后的第一个请求恰好是这个 badcase（prompt_tokens=261、3 个 KV block）」强绑定；把 P 节点改成 DP=4（去掉 PP）即不复现，短 prompt（如 1+1）也不复现。消融已排除 MTP、prefix cache（P/D 分别关闭）、reasoning parser、kvcache 清零（dummy run 后强行覆盖赋值）、slot mapping=-1 回退、enforce_eager 关闭图模式六项。根因（PP 切分下的首请求上下文交接，或 ascend_direct 首请求 KV 传输）尚未定位，issue 无修复 PR。
+  source: 2026-07-28 GitCode Ascend/msprobe issue https://gitcode.com/Ascend/msprobe/issues/487 （closed）
+  behavior: 4 台同超节点 pod 拉起 PD 分离服务后，第一个请求发这个较长的中文 prompt，返回的是与 prompt 完全无关的随机英文（如 'The is a simple command-line tool that prints its input...'），finish=length，content=null；紧接着发普通请求正常，继续发同一 badcase 仍然乱码。反过来，只要服务起来后先发一个普通请求，再发 badcase 就不再乱码。P 节点改成 DP=4（无 PP）或改用短 prompt 均正常。
+  trigger_surface: vllm-ascend 0.20.2 PD 分离 + Prefill PP=4（20,20,20,18）+ use_ascend_direct=true；触发条件为服务拉起后的首个请求且为特定 261-token prompt
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - component
+    uncertain:
+    - subsystem

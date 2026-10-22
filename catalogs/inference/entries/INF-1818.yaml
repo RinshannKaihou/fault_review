@@ -1,0 +1,58 @@
+id: INF-1818
+legacy_ids: []
+slug: vllm_ascend_mrope_half_rotation_hardcoded
+aliases: []
+title: mrope 路径硬编码 half 旋转致 GPT-J 模型位置错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: AscendMRotaryEmbedding
+  behavior: forward_oot 在 mrope_section=[16,24,24] 时无条件调用 npu_mrope(rotary_mode="half")，忽略 is_neox_style，GPT-J 模型也按 Neox 半分割配对。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: GLM-4V、GLM-OCR 等 is_neox_style=False 的模型每个旋转维与错误分量配对（期望 x[0]/x[1]，实际 x[0]/x[64]），Q/K 旋转结果错误，多图与长上下文请求质量下降且不报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对比同权重 forward_native 与 NPU OOT 路径的 Q/K 输出；检查模型 config 的 is_neox_style 与 mrope_section。
+  fix: 待定（issue 2026-07-24 open，未给修复 PR）：应把 rotary_mode 由 is_neox_style 决定，而非硬编码 half。
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 任意走 AscendMRotaryEmbedding 且 mrope_section=[16,24,24]、is_neox_style=False 的 VLM（GLM-4V/GLM-OCR）；PyTorch 2.10.0 + torch_npu，Ubuntu 22.04 aarch64
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/12765
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm_ascend/ops/rotary_embedding.py 的 AscendMRotaryEmbedding.forward_oot（NPU OOT 入口）在 mrope_section == [16,24,24] 时直接调用 torch_npu.npu_mrope(..., rotary_mode="half")。half 即 Neox 半分割配对 (x[i], x[i+rotary_dim/2])，而基类暴露的 is_neox_style 标志完全没有参与判断；GLM-4V、GLM-OCR 这类设 is_neox_style=False 的模型需要 GPT-J 交错配对 (x[2j], x[2j+1])。报告给出源码片段与预期/实际配对对照（期望 rotate(x[0],x[1])，实际 rotate(x[0],x[64])），环境为 Ubuntu 22.04 aarch64、PyTorch 2.10.0、torch_npu、vllm-ascend 该版本；issue 2026-07-24 提交，仍 open。同一文件里 mrope_interleaved 时走 forward_triton 的分支说明代码本来区分不同配对约定，只有 npo_mrope 快路径漏掉了标志。
+  source: 2026-07-24 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/12765 （open）
+  behavior: 使用 GLM-4V / GLM-OCR 一类 GPT-J 风格旋转的视觉语言模型在 Ascend 上跑多图或长上下文请求时，输出内容错乱、识别结果偏差，评测分数明显低于同权重在支持该标志的后端上的结果；服务不报错、无 NaN，日志里也没有告警，只有 Q/K 旋转维配错。短请求、纯文本与 Neox 模型不受影响，因此容易被当成模型能力问题。
+  trigger_surface: AscendMRotaryEmbedding.forward_oot + torch_npu.npu_mrope 路径；模型 is_neox_style=False 且 mrope_section=[16,24,24]
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect

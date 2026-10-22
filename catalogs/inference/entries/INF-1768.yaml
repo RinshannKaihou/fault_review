@@ -1,0 +1,54 @@
+id: INF-1768
+legacy_ids: []
+slug: ops_transformer_fia_v4_tnd_numkv_zero_garbage
+aliases: []
+title: FIA V4 TND 缺省 numKVHeads=0 静默全零/垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FIA V4 TND 通路
+  behavior: TND 布局下 numKeyValueHeads 缺省/0（文档定义 0=key/value 头数等于 query）时静默返回错误结果；该参数在 TND 通路无校验，不整除与大于 numQueryHeads 均放行；BNSD 布局逐位正确
+effect:
+  objects:
+  - 数值结果
+  detail: 910B2+CANN 9.2.0，TND+numKVHeads 缺省/0 时无报错静默出错：MHA 8192/8192、GQA 524288/524288、变长 96.9% 全零，GQA N8 KV1 未初始化显存 maxabs 4.30；同输入重复调用两形态交替；显式传实际头数或 BNSD 则正确
+  visibility: 静默错误
+mitigation:
+  detect: 与 fp32 参考实现做 sha1 指纹/max diff 比对；输出全 0 或 ±512 量级垃圾为特征
+  fix: 待定（建议 host 校验 0 归一或 161002 拦截；issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend910B2 + CANN 9.2.0 + torch_npu 2.12.0.post3；TND 布局 + num_key_value_heads 缺省（schema 默认即 0，文档写明 0=与 query 头数相等）；BNSD 不受影响；V3 入口 npu_fused_infer_attention_score 同样复现
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: 接口文档明确「不特意指定时可传入默认值 0 表示头数相等」，属实现与契约不一致而非误用。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6353
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnFusedInferAttentionScoreV4（torch 入口 torch_npu.npu_fused_infer_attention_score_v2），Ascend910B2、CANN 9.2.0、torch_npu 2.12.0.post3。TND 布局下 numKeyValueHeads 取默认 0 时静默返回错误结果：多数场景输出全 0（MHA S64N2D64 8192/8192 零；S64N8D128 65536/65536 零；变长 [64,128] 96.9% 零；GQA 官方支持组合 64:8 全 0 524288/524288），部分场景输出未初始化显存（GQA N8 KV1 maxabs 4.30、0.39% 零）；同一输入连续调用结果在「全 0/垃圾值」两种形态间交替（重复 8 次仅 2 种 sha1 指纹）。BNSD 布局同参数逐位正确（max diff 3.2e-4）。schema 默认值即 num_key_value_heads=0 且接口文档写明 0 表示 key/value 与 query 头数相等——属布局间实现不一致而非入参误用。附带：TND 通路该参数完全无校验（kv=1/kv=3/kv=4 同输入实测均不报错、错误值且被截断，不整除与大于 numQueryHeads 均放行）。V3 入口 npu_fused_infer_attention_score 同样复现。
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-transformer/issues/6353
+  behavior: 用 npu_fused_infer_attention_score_v2 且输入布局为 TND、不显式传 num_key_value_heads（或传 0，文档定义 0=与 query 头数相等）时，attention 输出静默错误：常见整块全 0，有时是未初始化显存垃圾（fp16 ±512 量级），同一输入多次调用结果在两种错误形态间跳变；显式把 num_key_value_heads 传成实际头数后逐位正确。MHA、变长 batch、GQA 官方组合都中，无任何报错。
+  trigger_surface: Ascend910B2 + CANN 9.2.0 + TND 布局 + numKeyValueHeads 缺省/0；V3 入口同样受影响
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior
+    - detail

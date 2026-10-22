@@ -1,0 +1,63 @@
+id: INF-1827
+legacy_ids: []
+slug: prefetch_offloader_slot_ownership_ring
+aliases: []
+title: prefetch offloader 非整除环复用槽位致 logprob 偏移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: vllm
+    component: prefetch offloader 槽位
+  behavior: 槽位按 slot=module_index%prefetch_step 分配，refill 目标按 (index+prefetch_step)%M 选；M%prefetch_step!=0 时不同槽，refill 覆盖未执行模块的缓冲。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: 910B2C Qwen3-0.6B eager、group=8/num_in_group=1/step=2（M=3）：32/256 负载 token id 不一致、chosen-token logprob 最大差 1.70258；1024/256 负载差 0.00917。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一请求跑 baseline 与开启 prefetch offload 两路，逐 token 比对 id 与 chosen-token logprob；或直接断言 refill 目标槽位等于刚释放的槽位
+  fix: 候选修复（issue 内已实现并验证）：next_index 与当前 index 不同槽时改选 index%prefetch_step；vllm-ascend 8f8c56f/vllm 967c5c3 上 token 与 logprob 与 baseline 完全一致，issue open 未合入
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: Ascend 910B2C + Qwen3-0.6B eager + prefetch offload（offload_group_size=8、offload_num_in_group=1、offload_prefetch_step=2 → effective M=3）；prefetch_step=1、prefetch_step>=M 或 M 可整除时不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/10932
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #10932，NPU prefetch offloader。静态缓冲槽位按 slot = module_index % prefetch_step 分配，下一次 refill 的目标却按 next_index = (index + prefetch_step) % M 选取，隐含假设 next_index 与当前模块同槽；当有效 offload 模块数 M 满足 1 < prefetch_step < M 且 M % prefetch_step != 0 时该假设不成立。最小例：M=3、prefetch_step=2，槽位分配为 module0→0、module1→1、module2→0，目标序列 target(i)=(i+2)%3=[2,0,1]；module1 执行完后旧公式把 module0 灌进 slot 0，而 module2 还没执行、仍需要 slot 0，于是静态缓冲在 module2 消费前被覆盖。offload_group_size 与 offload_num_in_group 决定被选中的模块集合，因此部分合法 group 配置就会产生非整除环。实测：Ascend 910B2C + Qwen3-0.6B eager，offload_group_size=8、offload_num_in_group=1、prefetch_step=2（effective M=3），baseline/未修复/已修复分进程运行；未修复路径 32/256 负载出现 token id 不一致、chosen-token logprob 最大差 1.70258，1024/256 负载 token id 一致但 logprob 最大差 0.00917；应用槽位归属修复后两者 logprob 差均为 0.0，ACL graph 编译/捕获/回放路径亦为 0.0。通用 vLLM 的 prefetch offloader 同样存在这一源码级槽位冲突，但 token/logprob 不一致是在 Ascend NPU 路径复现的。'
+  source: 2026-06-25 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/10932 （open）
+  behavior: 开启 prefetch offload 且 offload 模块数与 offload_prefetch_step 不整除时，服务不报错、能正常出词，但输出与不开 offload 的 baseline 不一致：短负载（32/256）上 token id 直接不同，chosen-token logprob 最大差到 1.70；长负载（1024/256）token id 碰巧一致，logprob 仍有约 0.009 的偏差。这类差异看起来像采样噪声，实际是某个未执行模块的静态缓冲被 refill 提前覆盖，只有在同进程外分别跑 baseline 与 offload 两路、逐 token 比对 id 与 logprob 时才能稳定发现。
+  trigger_surface: Ascend 910B2C + prefetch offload，offload 模块数 M 不能被 prefetch_step 整除（M=3、step=2）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

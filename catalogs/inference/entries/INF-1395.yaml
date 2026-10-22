@@ -1,0 +1,59 @@
+id: INF-1395
+legacy_ids: []
+slug: ops_math_cumsum_multicore_gm_oob_fp16_wrong
+aliases: []
+title: Cumsum 多核分支系统性 GM 越界写 fp16 同时算错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: cumsum 多核 GM 写路径
+  behavior: blockDim=56（tiling_key 1101/1102）多核分支发生系统性 GM 越界写；归因方向为各 block 写出范围边界计算，疑似越界破坏跨核中间数据，fp16 同时结果错误
+effect:
+  objects:
+  - 数值结果
+  detail: fp16 N≥4095 全部精度 FAIL；fp32 N≥4097 越界但结果侥幸正确；N≤2048（blockDim=1）正常；单 case 定位实验累计 3324 条越界告警
+  visibility: 静默错误
+mitigation:
+  detect: mssanitizer --tool=memcheck 包裹执行（TTK kernel 模式，op_debug_config=sanitizer 插桩）即可稳定检出；未评估线上监测
+  fix: 待定（issue open，归因指向 arch35 cumsum_core_ss_oneway_ss.h / cumsum_core_ss_twoway_ss.h 多核分支边界计算，建议排查各 block 写出范围）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: ops-math cumsum ascend950 分支多核路径（blockDim=56，tiling_key 1101 CORE_SS_ONEWAY/1102 CORE_SS_TWOWAY）；fp16 N≥4095、fp32 N≥4097 触发（16 档 N 单 case 隔离实测）；Ascend950PR_957b/CANN 9.3.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3616
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math（b9ebadf，2026-10-15）math/cumsum ascend950 分支进入多核分支（blockDim=56，tiling_key 1101=CORE_SS_ONEWAY / 1102=CORE_SS_TWOWAY）时发生系统性 GM 越界写：mssanitizer memcheck 单 case 定位实验累计 3324 条 'out of bounds ... when writing data'，block 覆盖 aiv(1)~aiv(55)，1101/1102 两分支 × fp16/fp32 全部命中；fp16 多核分支精度全部 FAIL（远低于容差），fp32 越界但结果侥幸正确——越界写与错误结果触发域完全重合，疑似越界破坏跨核中间数据（Sklansky 扫描）。16 档 N 值单 case 隔离实测阈值：fp16 N≥4095 越界+结果错、N≤2048（blockDim=1）正常；fp32 N≥4097 越界、N≤4095 正常。归因方向为 arch35 cumsum_core_ss_oneway_ss.h / cumsum_core_ss_twoway_ss.h 多核分支各 block 写出范围边界计算。最小复现 CSV（fp16@4095/fp32@8192+单核对照）与完整 16 档报告随 issue 附上；TTK 3.0.0 kernel 模式 + mssanitizer memcheck 插桩（op_debug_config=sanitizer）。
+  source: https://gitcode.com/cann/ops-math/issues/3616
+  behavior: 在 Ascend950 上对长度 ≥4095 的 fp16 一维张量做 cumsum，结果从进入多核分支（56 核）起就是错的——前缀和数值不满足容差、与 numpy fp32 累加口径比对失败；fp32 输入时结果碰巧正确但同时发生越界写（可破坏同址其它数据）。短输入（≤2048，单核分支）正常。无任何报错，需 mssanitizer memcheck 才能看到越界证据。
+  trigger_surface: ops-math cumsum（ascend950 分支）；fp16 最后一维 N≥4095 或 fp32 N≥4097（进入 blockDim=56 多核分支）；axis=0 一维实测；TTK 3.0.0 + mssanitizer 26.2.0 检出
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - 2026-10-17 回访 2026-10-17：ops-math#3616 open（10-16 更新），修复 PR 未见；mssanitizer 3324 条越界证据维持。
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior
+  updates:
+  - date: '2026-10-17'
+    fields:
+    - original.notes

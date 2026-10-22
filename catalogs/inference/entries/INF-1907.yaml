@@ -1,0 +1,57 @@
+id: INF-1907
+legacy_ids: []
+slug: msprobe_compare_dtype_mismatch_marks_gpu_na
+aliases: []
+title: 两侧 dtype 不同时 compare 把关键 api 判 N/A
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: compare 逐 api 匹配与跳过
+  behavior: 两侧同名张量 dtype 不同时 compare 不做数值比较也不告警，直接把该 api 的 GPU 侧标成 N/A，把正是问题来源的 dtype 差异跳过
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: Tensor.__sub__.15.forward 在 NPU dump 为 float32、GPU dump 为 float64（数值同为 1765242496.0），比对结果里关键 api 的 GPU 侧显示 N/A，需人工回读 dump 才发现 NPU 做了 to_float32
+  visibility: 静默错误
+mitigation:
+  detect: 比对前先核对两侧 dump 的 dtype；结果里出现 N/A 行时回查该 api 两侧 dtype 是否一致，不要当成「无差异」
+  fix: 未修复（issue 已关闭，未核实）；规避：采集前统一两侧 dtype，或对 N/A 行单独做 dtype 溯源
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: msprobe 26.0.0 + NPU/GPU 跨平台比对 + 两侧同名张量 dtype 不一致（float32 vs float64）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/588
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: NPU 与 GPU 精度对齐时用 msprobe compare 比对两侧 dump。实际根因是 NPU 侧对数据做了 to_float32：dump 里 Tensor.__sub__.15.forward 的两个 input_args 和 output 全是 torch.float32（值 1765242496.0，相减得 0.0），而 GPU 侧同一 api 的 input_args 是 torch.float64（数值同为 1765242496.0）。两侧 dtype 不同时，compare 没有按统一精度做数值比较，也没有提示 dtype 不一致，而是把这个关键 api 的 GPU 一侧直接标成 N/A，于是最能说明问题的那一行在结果里消失。用户看到的结果是「GPU 侧没有这个 api / 无法比对」，只有靠 agent/人工回读 dump 才定位到 to_float32 这层差异。也就是说工具在 dtype 不一致这一最常见的跨平台差异上选择了静默跳过，而不是标记为 dtype mismatch 或按提升后的精度比较。
+  source: '2026 GitCode Ascend/msprobe issue #588 https://gitcode.com/Ascend/msprobe/issues/588（closed；mindstudio-probe 26.0.0，NPU vs GPU 比对）'
+  behavior: 做 NPU/GPU 精度对齐时，compare 结果里最可疑的那几个 api 在 GPU 一栏显示 N/A，看起来像 GPU 没采到数据；人工翻 dump 才发现两边 dtype 不同（NPU float32、GPU float64），差异本身就是 NPU 做了 to_float32，而工具把这行跳过了。
+  trigger_surface: msprobe compare 跨平台（NPU vs GPU）比对 + 两侧同名张量 dtype 不一致
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

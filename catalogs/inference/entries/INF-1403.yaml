@@ -1,0 +1,65 @@
+id: INF-1403
+legacy_ids: []
+slug: ops_nn_padv3_fractional_constant_fused_to_zero
+aliases: []
+title: PadV3 非零小数填充值被融合为隐式零填充
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: 通用
+    component: PadConv2dFusionPass 融合准入
+  behavior: CheckPadV3ConstantValue() 对 FP32 常量用 static_cast<int32_t> 判零，|v|<1 的小数（0.5f）截断为 0 通过检查，PadV3 被移除融合进 Conv2D，padding 语义变零值
+effect:
+  objects:
+  - 数值结果
+  detail: constant mode、constant_values=[0.5]、四边 pad 1、3x3 全 1 核、输入全零 [1,1,1,1]：未融合输出 4，融合后输出 0；NHWC 维 padding 触发
+  visibility: 静默错误
+mitigation:
+  detect: 对使用小数 constant_values 的 PadV3+Conv2D 图做融合前后数值对照；未评估
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/12124 （open）：浮点零值比较替代整数转换，no-fusion 单测补 constant_values=0.5f 回归点
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PadV3 mode=constant + FP32 constant_values 绝对值小于 1 的非零值（0<v<1）+ H/W 维正 padding + 下接 Conv2D；GE 图编译融合 pass 触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6783
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12124
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn conv/conv2d_v2/op_graph/fusion_pass/pad_conv2d_fusion_pass.cpp 的 CheckPadV3ConstantValue() 先要求常量 dtype 为 DT_FLOAT，随后以 static_cast<int32_t>(floatData[0]) != 0 拒绝非零值——该转换把绝对值小于 1 的有限小数截断为 0，检查通过后 CheckPadV3AndExtractPaddings()/ValidateAndComputePads() 继续融合：移除 Pad 节点并把 padding 合入 Conv2D，融合后 Conv2D 使用隐式零填充，与原 0.5 填充值语义不同。最小例：NHWC [1,1,1,1] 全零、四边各 pad 1、3x3 全 1 卷积核——未融合 3x3 窗口内 8 个 0.5 填充值输出 4，融合后输出 0。同目录 docs/PadConv2dFusionPass.md 明确限定 PadV3 仅 constant_values=0（fp32）可融合；现有单测 padv3_constant_value_not_zero 只覆盖 1.0 未覆盖 (0,1) 区间。修复：浮点零值比较替代整数转换（MR #12124，open）。'
+  source: https://gitcode.com/cann/ops-nn/issues/6783 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/12124
+  behavior: GE 图中使用 PadV3(mode='constant', constant_values=0.5) 后接 Conv2D 的模型，编译融合后卷积结果与未融合时不同：填充值被静默换成 0。最小例中输出从 4 变成 0。无报错无警告，仅最终数值错。
+  trigger_surface: cann/ops-nn PadConv2dFusionPass；PadV3 constant 模式 FP32 填充值 0<v<1；H/W 维正 padding 且连接 Conv2D；GE 编译期触发（运行期无感知）
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - '2026-10-17 回访 2026-10-17：ops-nn#6783 open、修复 PR #12124 open（10-17 更新）；未合入。'
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-10-17'
+    fields:
+    - original.notes

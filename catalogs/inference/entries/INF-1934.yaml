@@ -1,0 +1,56 @@
+id: INF-1934
+legacy_ids: []
+slug: mindspore_grad_in_jit_returns_empty_tuple
+aliases: []
+title: jit 内调用 ms.grad 静默返回空 tuple
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: jit 内嵌套 grad 的反向图
+  behavior: GRAPH 模式下把 ms.grad 嵌套进 @ms.jit 时返回空 tuple 而非梯度张量；同一嵌套求导在 PyNative 下正常。
+effect:
+  objects:
+  - 梯度
+  detail: MindSpore 2.8.0 CPU，scalar_fn=reduce_sum(t*t)、输入 [1,2,3]：PyNative 得 [2. 4. 6]，@ms.jit 得 ()（tuple）；要到 asnumpy/取值处才暴露，无 Python 层报错
+  visibility: 静默错误
+mitigation:
+  detect: 对 jit 返回的梯度做 isinstance(Tensor) 与 shape 断言，而不是只比对数值；对比 PyNative/GRAPH 两条路径的返回类型
+  fix: 待定（issue open；报告者要求 GRAPH 与 PyNative 一致，或在不支持时抛明确的 Python 层错误）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 仅 GRAPH_MODE 下把 ms.grad 嵌在 @ms.jit 内；PyNative 正常返回张量。MindSpore 2.8.0 CPU py3.12
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29440
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpore 2.8.0（CPU 后端、Python 3.12）：ms.grad 在 PyNative 下对简单标量函数正常返回梯度，把同一段嵌套求导包进 mindspore.jit 后 GRAPH 模式返回空 tuple 而不是梯度张量。复现：scalar_fn(t)=ops.reduce_sum(t*t)，x=Tensor([1.,2.,3.])，期望梯度 [2.,4.,6.]；run_pynative() 打印 [2. 4. 6]（mindspore.common.tensor.Tensor），run_graph() 里 `@ms.jit def compiled(): return nested_grad()` 打印 ()（类型 tuple），随后 assert hasattr(graph,''asnumpy'') 失败并抛 AssertionError: GRAPH returned a non-Tensor result。issue 判断为 grad 嵌套在 jit 内时 autograd 图构建或返回结构处理的问题，期望 GRAPH 返回与 PyNative 相同的张量，或在该用法不支持时抛出清晰的 Python 层错误，而不是静默返回空元组。'
+  source: '2026-06-04 GitCode mindspore/mindspore issue #29440 https://gitcode.com/mindspore/mindspore/issues/29440（open）'
+  behavior: 把求导逻辑放进 jit 做加速之后，grad 调用返回的是空元组而不是张量：只要后续代码不做类型断言（例如直接塞给优化器或累加进 buffer），就会静默拿到空梯度，loss 不动、也不报错；同样的代码在 PyNative 下完全正常，所以第一反应往往是模型或数据出了问题。
+  trigger_surface: GRAPH_MODE + ms.grad 嵌套在 @ms.jit 内（PyNative 正常）
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

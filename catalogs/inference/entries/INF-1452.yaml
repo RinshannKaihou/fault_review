@@ -1,0 +1,60 @@
+id: INF-1452
+legacy_ids: []
+slug: sglang_kimi_k3_nvidia_kda_prefill_nan
+aliases: []
+title: SGLang nvidia_kda prefill NaN 污染 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: nvidia_kda 线性注意力 prefill
+  behavior: nvidia_kda 后端下 Kimi-K3 prefill ~1,800 token 起单 KDA 头自 token 78 漂移、每 35-55 token 十倍增长至溢出；NaN 写 KV 与循环状态被后续请求继承；Triton 正确。
+effect:
+  objects:
+  - 数值结果
+  - KV状态
+  detail: 随机 token 批 2×8192 → 18/20 坏、8×2048 → 78/80；Triton 同批 0 坏；答案 '!!!!' + NaN logprobs；FP8 KV/bf16 SSM 排除；单序列走 Triton 不触发、并发触发
+  visibility: 数值异常
+mitigation:
+  detect: 答案文本 '!!!!' 模式 + logprob NaN；kernel 级探针（minimal.pt 单头 2048 token，~10s 无需模型）token 1792 起复现
+  fix: '规避：改用 Triton prefill 后端（--linear-attn-prefill-backend triton）或依赖 #43246 后 main 的 Blackwell 默认 FlashInfer（显式选 nvidia_kda 才中招）；上游修复未见（issue open）'
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Kimi-K3 + --linear-attn-prefill-backend nvidia_kda；prefill 批 ≥2 序列且序列超 ~1,800 token；B300 ×8 实测；FP8 KV 与 bf16 SSM 均排除
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/44758
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang #44758（c2026-10-16）：--linear-attn-prefill-backend nvidia_kda 下 Kimi-K3 prefill 序列过约 1,800 token 返回 NaN。失败调用中单个 KDA 头（beta 0.93-1.0）自约 token 78 漂移、每 35-55 token 增长约十倍至溢出；NaN 写入 KV cache 与循环状态，后续请求复用前缀继承。serving 中 NvidiaKDAKernel 仅在 prefill 批含 ≥2 序列时运行（单序列走 Triton），故并发下暴露；Triton 同输入与 fp32 参考一致。批矩阵（随机 token id，Kimi-K3，8×B300）：2×8192 → 18/20 坏、4×4096 → 35/40、8×2048 → 78/80、8×1024 → 1/80。排除：FP8 KV cache、bf16 SSM 状态（--mamba-ssm-dtype float32 同败）、本地补丁（stock image 复现）。观测（非诊断）：失败头某 channel 64-token 块内累计 log-decay token 35 跌破 -88.7（fp32 exp 下溢点）。kernel 级复现：单 KDA 头（模型 layer 5 TP rank 7）2048 token minimal.pt，vendored pipeline token 1792 起 NaN、Triton 正常。#43246 后 main 的 Blackwell K3 prefill 默认 FlashInfer，显式选 nvidia_kda 才受影响。'
+  source: 2026-10-16 GitHub sgl-project/sglang issue https://github.com/sgl-project/sglang/issues/44758 （open）
+  behavior: 在 SGLang 上对 Kimi-K3 显式选用 nvidia_kda 线性注意力 prefill 后端时，并发 prefill（批内 ≥2 条序列）中长序列（约 1,800 token 起）产出 NaN：答案文本变成 '!!!!'、logprobs 为 NaN；由于 NaN 已写入 KV cache 和循环状态，后续复用同一前缀的其他请求也返回垃圾。同负载用 Triton 后端完全正确。
+  trigger_surface: SGLang Kimi-K3；--linear-attn-prefill-backend nvidia_kda；并发 prefill + 长序列（≥~1800 token）；B300 实测
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - effect
+    - behavior

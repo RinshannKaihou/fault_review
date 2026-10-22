@@ -1,0 +1,61 @@
+id: INF-2081
+legacy_ids: []
+slug: aclgraph_replay_sync_timeout_misreported_as_oom
+aliases: []
+title: aclgraph 回放 sync 超时被包成 OOM 误导排障
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: ACLGraphWrapper.__call__
+  behavior: 回放前调 current_stream().synchronize() 阻塞，驱动超时后抛含 synchronize 与 107020 的 torch.OutOfMemoryError，被上游按消息包装为 OOM。
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: 请求阻塞 1866 s 后才返回 HTTP 500 并触发 EngineDead；日志给出 --gpu-memory-utilization/--max-model-len 等显存建议，真实根因（207001 分配失败）在半小时前的 worker 日志里
+  visibility: 挂起
+mitigation:
+  detect: 看首个错误码而不是最后一个：worker 日志里先出现 207001 Memory_Allocation_Failure；若只看到 107020 且带 synchronize 字样，不要按 OOM 调参
+  fix: issue 描述中已有草稿 PR（fix/replay-synchronize-stream-resource-error，未合入，未核实）；修复点在 ACLGraphWrapper.__call__ 捕获 RuntimeError 并按 107020/107027 + synchron 字样重抛为非 OOM 信息
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: cudagraph_mode=FULL_AND_PIECEWISE + 较大 cudagraph_capture_sizes + 高并发/大 max-model-len，且此前已有一次设备侧分配失败留下 pending kernel
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/13218
+  kind: github_issue
+relations: []
+original:
+  mechanism: '环境 vLLM 0.11.x（V1 引擎）、vllm-ascend 0.23.0rc1、Qwen3-VL-8B、cudagraph_mode=FULL_AND_PIECEWISE 且 capture sizes 扩到 256、custom_ops=[''all'']，服务开 --enable-prefix-caching --enable-chunked-prefill --max-model-len 65535。时间线：先是 worker 日志出现 Memory_Allocation_Failure(EL0004) / alloc device memory failed, runtime result = 207001；请求分配的 kernel 留在流上 pending，设备报 event wait timeout（timeout=1866s）；随后 vllm_ascend/compilation/acl_graph.py:256 在回放前调 torch.npu.current_stream().synchronize() 阻塞约 31 分钟，驱动超时后抛 torch.OutOfMemoryError: synchronize ... 107020。该 OutOfMemoryError 只是上游按消息里含 synchronize + 错误码做的包装，vLLM 的 OOM 分支于是打印 HBM 占用/--gpu-memory-utilization/--max-model-len 等建议，把排障引向显存而不是半小时前的分配失败。'
+  source: '2026-07-30 GitHub vllm-project/vllm-ascend issue #13218 https://github.com/vllm-project/vllm-ascend/issues/13218 （closed）'
+  behavior: 服务在高并发压测中先卡住半小时，最后客户端拿到 HTTP 500、引擎直接死掉。日志末尾写着 torch.OutOfMemoryError，于是所有人按显存不足去调 --gpu-memory-utilization 和 --max-model-len，怎么调都没用——真正的错误码 207001 在半小时前的另一段日志里。
+  trigger_surface: aclgraph/compilation 回放路径（ACLGraphWrapper.__call__）+ 大 capture list + 此前已发生设备侧分配失败
+  discovery: 2026-10-21 历史索引回填（tail 池顺序深读）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 指标/日志
+        to: 可用性/进度
+      visibility:
+        from: 报错
+        to: 挂起
+    rewritten:
+    - behavior

@@ -1,0 +1,59 @@
+id: INF-1529
+legacy_ids: []
+slug: ops_nn_groupnorm_variance_cancellation_rstd
+aliases: []
+title: GroupNorm 大偏移小展布致 rstd 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: GroupNorm 二阶矩归约
+  behavior: aclnnGroupNorm 报告判定为二阶矩归约缺陷：大偏移小展布时平方和/方差相减只剩舍入噪声；|x|≥sqrt(dtype_max) 时 x² 离值域、平方和无法正确形成。
+effect:
+  objects:
+  - 数值结果
+  detail: 1000条均执行成功、119条精度不通过（88.1%）；rstd失败74次而mean仅13次；offset=0的74条零失败；失败率随spread/offset单调上升：<1e-5为53.8%、1e-5~1e-3为72.2%、1e-3~0.1为77.8%；最坏1638倍阈值。
+  visibility: 静默错误
+mitigation:
+  detect: 用 offset≠0 且展布极小的输入单独比对 rstd；再看 |x| 是否越过 sqrt(dtype_max)（fp16 为 255.937）——该边界以下全过、以上开始失败是平方和溢出的指纹。
+  fix: issue 6067 仍 open，正文只给触发面与源码假设（rstd 数值路径），未给修复 PR（合入与发布状态未核实）。
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 910B3 + CANN 9.1.0 + aclnnGroupNorm；fp32/bf16 大偏移小展布（spread/offset<1e-3）与 |x|≥sqrt(dtype_max) 两类输入
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 族 A（104 条，相消）与族 B（15 条，平方和溢出）是两个数值机制，同一条目内分开记；rstd 失败远多于 mean 是二阶矩归约缺陷的指纹。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6067
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0166
+original:
+  mechanism: cann/ops-nn issue 6067（2026-09-20，open）：Ascend 910B3、CANN 9.1.0 镜像内系统算子 aclnnGroupNorm，ATK 跑满 1000 条（fp32 471 / fp16 293 / bf16 236，group 21 种，eps 8 档），1000 条全部执行成功、0 执行失败，其中 119 条精度不通过（通过率 88.1%，summary 页 881 与逐 case 统计互相对账）。按输出看 rstd 失败 74 次、y 84 次、mean 仅 13 次，报告据此判定为二阶矩归约缺陷。两个族：族 A 104 条为大偏移 + 微小展布，平方和落在 O(offset²)、方差落在 O(spread²)，相减后只剩舍入噪声；族 B 15 条为 |x|≥sqrt(dtype_max)，x² 离开 dtype 值域、平方和无法正确形成，fp16 在 sqrt(65504)=255.937 以下 233 条零失败、以上 60 条中失败 5 条，边界干净。失败率随条件数 spread/offset 单调上升：<1e-5 为 53.8%、1e-5~1e-3 为 72.2%、1e-3~0.1 为 77.8%，而 offset=0 的 74 条零失败（不存在相消）。62 条超阈 2 倍以上、27 条超 1000 倍，最坏 id384 达阈值 1638 倍。源码假设指向 rstd=rsqrt(variance+eps) 这条数值路径，未定位到具体代码行。
+  source: 2026-09-20 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6067 （open）
+  behavior: 用 aclnnGroupNorm 做分组归一化：输入均值明显偏离 0、而组内展布极小（比如围绕 ±1 波动不到千分之一）时，输出的 rstd 和归一化结果与 GPU/float64 参考对不上，最坏超阈 1000 倍以上；mean 输出基本正常。把输入整体平移改成 offset=0 后同一批用例全过。fp16 输入在 |x| 超过 255.9 后开始出错。整个过程不报错、不中断，只有逐元素比对才看得出来。
+  trigger_surface: Ascend 910B3 + CANN 9.1.0 + aclnnGroupNorm + 大偏移小展布（spread/offset<1e-3）或 |x|≥sqrt(dtype_max)（fp16 255.937）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior
+    - detail

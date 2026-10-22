@@ -1,0 +1,68 @@
+id: INF-1746
+legacy_ids: []
+slug: aclgraph_side_stream_address_not_in_pool
+aliases: []
+title: 侧流 kernel 地址未登记 graph pool 致唤醒后越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: pytorch
+    component: ACL graph 捕获内存池
+  behavior: 入图捕获时只把主流 kernel 触及的地址登记进 graph pool，侧流 kernel 用到的变量地址没有登记，sleep/wakeup 后这些内存被当作空闲复用。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 推理前向开多流 + 入图，sleep+wakeup 后请求在侧流算子上越界报错；不入图、不开多流、或不做 sleep+wakeup 三种情况均不复现（v2.9.0-7.3.0 商发版）。
+  visibility: 报错
+mitigation:
+  detect: 多流 + 入图 + sleep/wakeup 组合下跑请求，看侧流算子是否越界；对照关闭多流/关闭入图
+  fix: 已修复但未随商发：4 月修复 PR https://gitcode.com/Ascend/pytorch/pull/32810；报告诉求是在 v2.9.0-7.3.0 商发版合入该 PR
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 推理前向同时开启多流与 ACL graph 入图，并在两次请求之间做 sleep/wakeup；v2.9.0-7.3.0 商发版本
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: '现象是越界报错，但根因是 graph pool 地址簿记缺失导致内存被复用；同一 PR #32810 亦被 INF-1677 的触发面提及。'
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/pull/32810
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/pytorch/issues/4379
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1677
+pattern: PAT-INF-0181
+original:
+  mechanism: 'Ascend/pytorch #4379（2026-08-26，closed，v2.9.0-7.3.0 商发版本）：推理前向同时开启多流与入图时，sleep+wakeup 之后跑请求会在侧流上的算子处越界报错。报告者的定位是：老版本 torch_npu 在入图捕获（capture）时没有把侧流上 kernel 用到的变量内存地址加入 graph pool，这些地址在捕获视图里不存在，因而在后续请求中被 allocator 当作空闲内存复用，侧流 kernel 读写到已被别人占用的地址。触发面被报告者明确二分：不入图、不开启多流、不做 sleep/wakeup，三者任一不成立都不复现。该问题被维护者确认为已知问题，4 月已有修复 PR https://gitcode.com/Ascend/pytorch/pull/32810，但 v2.9.0-7.3.0 商发版本未合入，报告诉求即合入该修复。'
+  source: 'Ascend/pytorch #4379（2026-08-26，closed；修复 PR https://gitcode.com/Ascend/pytorch/pull/32810） https://gitcode.com/Ascend/pytorch/issues/4379'
+  behavior: 推理服务开了多流 + 入图，期间做一次 sleep/wakeup（模型换载、空闲下沉都会触发），之后第一个请求就在侧流的某个算子上抛越界错误；把多流关掉、或关掉入图、或不做 sleep/wakeup 都恢复正常。由于是地址复用类问题，同一份配置有时报错、有时读到别人的数据。
+  trigger_surface: 多流 + ACL graph 入图 + 两次请求间 sleep/wakeup
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect
+    - behavior

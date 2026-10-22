@@ -1,0 +1,52 @@
+id: INF-1879
+legacy_ids: []
+slug: triton_ascend_launcher_host_args_ge_stream
+aliases: []
+title: Triton launcher 在 GE stream 上错传 Host 参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: triton
+    component: 非 SIMT launcher
+  behavior: launcher 把 Host 侧 KernelArgs 地址直接交给 rtKernelLaunch；GE stream 上 Runtime 走 no-copy，AICore 把 Host 地址当 Device GM 访问。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 在 GE model-owned stream 上启动即报 AICore invalid GM(507011)，plog 中 para base 是 0xaa… 的 Host 地址；改独立 stream 不报错但跨 stream 可见性无保证、结果错误。
+  visibility: 报错
+mitigation:
+  detect: 同一 kernel 分别在普通 TorchNPU stream 与 GE model-owned stream 上启动对照；看 plog 里 AICore 的 para base 是否为 Host 地址
+  fix: 待定（issue closed，未给修复 PR）；可用 aclrtLaunchKernelWithHostArgs 或显式 H2D 到 workspace 规避
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: triton-ascend 3.6.x（main 0a5378d2）+ TorchAir；Triton kernel 经 ExternalStream 在 GE model-owned stream 上启动
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/1294
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'triton-lang/triton-ascend #1294（main commit 0a5378d28abf6bbcd8d8916e03d397e9ed886a55）：非 SIMT launcher 在 Host 侧连续组织 kernel 参数，再把 Host 参数地址直接传给 rtKernelLaunch（third_party/ascend/backend/driver.py:810 与 822 两处写法）。普通 TorchNPU stream 上 Runtime 会把参数 H2D 拷贝、AICore 从 Device 地址读取，kernel 正常；但 launcher 跑在外部框架（TorchAir 集成场景从 GE 执行上下文取出的 model-owned stream，经 ExternalStream 包装）上时，Runtime 进入 no-copy 路径，Host 地址直接成为 AICore 的 para base，被当作 Device GM 访问，触发 AICore scalar invalid GM（错误码 507011），plog 里 para base 为 0xaa… 形式的 Host 虚拟地址。报告的对照实验：普通 stream 成功；GE stream 报 invalid GM；改用独立 TorchNPU stream 不报错但跨 stream 输入可见性无保证、计算结果错误；把 Host KernelArgs 显式 H2D 到 workspace 后成功；改用 aclrtLaunchKernelWithHostArgs 由 Runtime 处理 Host 参数也成功。'
+  source: 2026-07-30 GitHub triton-lang/triton-ascend issue https://github.com/triton-lang/triton-ascend/issues/1294 （closed）
+  behavior: 在 TorchAir 里把一个 Triton kernel 放到 GE 给的 model-owned stream 上跑，任何 kernel（连 elementwise add 这种）都直接报 aicore execution abnormal、error code 507011，plog 里看到 para base 是 Host 地址。想绕开改用独立 stream，虽然不报错，但跨 stream 的输入可见性没人保证，算出来的结果就是错的——这条路上要么报错要么静默算错。
+  trigger_surface: triton-ascend 3.6.x + TorchAir；Triton kernel 以 GE model-owned stream 下发
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

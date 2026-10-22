@@ -1,0 +1,58 @@
+id: INF-1542
+legacy_ids: []
+slug: vllm_ascend_qwen3vl_long_image_nan_kv_pollution
+aliases: []
+title: Qwen3-VL 长文加图触发 NaN 并永久污染 KV cache
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: torch.compile 多模态图
+  behavior: vllm-ascend 的 torch.compile 后端为“长文本 + 图像”这一输入形状生成的图数值不稳定，fp16 与 bf16 都产出 NaN；具体算子未定位。
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: 约 8600 token 文本 + 一张图的请求输出全是 '!!!!'（NaN），此后连 hello world 也全是 '!!!!'，KV cache 被永久污染只能重启；加长超时与换 dtype 都无效。
+  visibility: 数值异常
+mitigation:
+  detect: 同一服务先发简单请求确认正常，再发长文本+图请求，然后重发简单请求；若第三条也开始输出 '!!!!' 即命中 KV 污染，查 attention 输出是否 NaN
+  fix: 待定（issue closed，未给修复 PR）；规避：重启服务清空 KV，或对该多模态长序列形状关掉编译（enforce_eager）待验证
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 910B2，vLLM v0.11.0 + quay.io/ascend/vllm-ascend:latest，TP=4、--dtype float16 或 bfloat16、max-model-len 32768、--no-enable-prefix-caching、chunked_prefill_enabled=True、compilation level=3 + cudagraph；模型 Qwen/Qwen3-VL-32B-Thinking
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/3934
+  kind: github_issue
+relations: []
+original:
+  mechanism: Qwen3-VL-32B-Thinking 在 vllm-ascend（vLLM v0.11.0，910B2，TP=4）上跑一个约 8600 token 的长文本 + 一张图的请求会稳定触发 NaN：输出是一串 '!!!!'。更严重的是 KV Cache Pollution——服务刚起来时简单请求（hello）是正常的，发过那条“坏”请求之后，连 hello 都开始输出 '!!!!'，且不会自愈，只有重启服务才能恢复。报告者排除了精度/超时解释：bf16 与 float16 都会复现；把 VLLM_SHM_BROADCAST_TIMEOUT_MS 提到 20 分钟让服务熬过长编译后，仍然输出同样的 NaN，说明不是 timeout 而是数值问题。报告的判断是 vllm-ascend 的 torch.compile 后端为这个“长文本 + 图像”输入形状生成了数值不稳定/损坏的计算图，具体是哪个算子未定位。服务端日志没有报错、没有崩溃，只有 APIServer 后续的 500。
+  source: 2025-10-31 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/3934 （closed）
+  behavior: 多模态模型（Qwen3-VL 这类）收到一条长文本 + 图片的请求后，回答变成一串感叹号；更麻烦的是这条请求会把这个 serve 的 KV cache 弄脏，之后所有请求（包括 hello world 这种最简单输入）都输出感叹号，只能重启进程。换 fp16/bf16、调大超时都无效，日志里也看不到报错。
+  trigger_surface: Qwen3-VL 类多模态模型 + torch.compile（compilation level 3 + cudagraph）+ 长文本（约 8.6k token）与图像同请求；短请求与关闭编译未验证
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect

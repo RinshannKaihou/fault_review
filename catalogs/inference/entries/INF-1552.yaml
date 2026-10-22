@@ -1,0 +1,57 @@
+id: INF-1552
+legacy_ids: []
+slug: vllm_ascend_mega_moe_max_tokens_silent_clip
+aliases: []
+title: MegaMoE 容量设 8192 静默裁剪真实专家路由
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: MegaMoE receiver 容量
+  behavior: mega_moe_max_tokens 被显式设为 8192（该构建默认 65536），实际专家路由量超过 8192 时 fused-MoE receiver 静默裁剪真实请求的专家计算，不报错。
+effect:
+  objects:
+  - 输出内容
+  detail: GLM-5.3 W8A8C8 六节点 P/D 下 6816 token 两轮 prompt 输出重复/乱码；prefill batch 由 8192 改 4096 即恢复正常，上限改回 65536 后该 prompt 也通过。
+  visibility: 静默错误
+mitigation:
+  detect: 按请求统计实际专家路由量并与 mega_moe_max_tokens 比较；对照同一 prompt 在不同 max-num-batched-tokens 下的输出
+  fix: 待定（issue open）；规避：mega_moe_max_tokens 用构建默认 65536、prefill batch 与上限匹配；报告者建议 fused-MoE 路径在容量溢出时报错而不是静默裁剪
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: GLM-5.3 W8A8C8，Atlas 800 A3 六节点 P/D 分离，Prefill --max-num-batched-tokens=8192，mega_moe_max_tokens 显式设为 8192（该构建默认 65536）；enable_sparse_sfa_c8 真假都复现
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/17541
+  kind: github_issue
+relations: []
+original:
+  mechanism: GLM-5.3 W8A8C8 在 Atlas 800 A3 六节点 P/D 部署上出现两类精度失败。第一类：6816 token 的两轮合成 prompt 在 Prefill --max-num-batched-tokens=8192 时输出重复或乱码，只把该上限改成 4096 同一 prompt 就给出完全正确的答案，enable_sparse_sfa_c8 真假都一样。2026-09-26 的 RCA 更新定位到原因：部署把 mega_moe_max_tokens 显式设成 8192，而运行构建的默认值是 65536；实测专家路由量超过 8192，fused-MoE 的 receiver 容量不足时静默裁剪了真实请求的专家工作（不报错），所以输出损坏。把 Prefill batch 设为 16384 且 mega_moe_max_tokens 用 65536 后，原 prompt 与约 54K 的对照 prompt 都通过。第二类（独立现象，仍 open）：Prefill 4096 下 919,528 token 的长 prompt 找不到位于上下文中部的事件，直连 Prefill 和走 P/D proxy 都能正常结束但编造出不同的事件字段和错误代码，同长度的近尾部事件却正确，开 SFA C8 不影响。
+  source: 2026-09-26 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/17541 （open）
+  behavior: 配置了偏小的 mega_moe_max_tokens（低于实际专家路由量）时，长 prompt（数千 token）的 P/D serving 输出重复或乱码，请求正常返回 finish_reason，日志里没有任何容量告警；调大上限或缩小 prefill batch 后同一 prompt 恢复正常。另有超长上下文（约 92 万 token）中段检索失败，输出看似完整但内容编造。
+  trigger_surface: MegaMoE（enable_fused_mc2/mega_moe 路径）+ mega_moe_max_tokens 小于真实专家路由量；prefill batch 越大越容易超
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

@@ -1,0 +1,51 @@
+id: INF-1541
+legacy_ids: []
+slug: ops_nn_advance_step_st_golden_hardcoded_constants
+aliases: []
+title: AdvanceStep ST 参考返回硬编码常量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: 通用
+    component: advance_step ST executor
+  behavior: ST executor 的 __call__ 读出 9 个入参后逐个覆盖成 4 个手写常量张量返回；同文件真正的 CPU golden Advance_step 全仓无人调用，参考值与输入无关。
+effect:
+  objects:
+  - 测试判定
+  detail: 该 ST 用例拿固定常量 {2,2,2,2,0,1,1,1} 等与设备输出比对，n_pad 补零、按 blockSize 映射等逻辑从未被验证；同算法在 UT 造数脚本里另有一份被正常调用。
+  visibility: 静默错误
+mitigation:
+  detect: grep 参考实现的调用点：golden 函数定义了却无人调用、__call__ 直接返回字面量张量，就说明用例发现不了该输出错误；改输入看参考值是否随之变化。
+  fix: issue 6349 open；修复方向是让 __call__ 调用本文件的 Advance_step 并删掉硬编码覆盖，未给 PR
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: optim/advance_step 的 aclnn ST 用例（executor_aclnnAdvanceStep.py 的 function_advance_step 注册）；只影响测试判定
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: 测试侧盲区：算子本身是否算错没有证据，问题在于这条 ST 用例无论算子对错都会拿固定常量去比。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6349
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 6349（2026-10-03，open）：optim/advance_step/tests/st/aclnnAdvanceStep/executor_aclnnAdvanceStep.py 里注册名 function_advance_step 对应的 FunctionAdanceStep.__call__（L78-92）先把 9 个入参 numSeqs/numQueries/blockSize/inputTokensRef/sampledTokenIds/inputPositionsRef/seqLensRef/slotMappingRef/blockTables 从 input_data.kwargs 读出来，随后在第 88-91 行把 input_tokens/input_positions/seq_lens/slot_mapping 逐个覆盖成手写常量（torch.tensor((2,2,2,2,0,1,1,1))、(1,1,1,1,0,1,1,1)、(2,2,2,2,1,1,1,1)、(5,9,13,17,-1,1,1,1)），第 92 行直接返回这四个常量。同文件 L34-76 是真正的 CPU 参考实现 Advance_step，参数表与那 9 个局部变量一一对应，但全仓没有任何调用点（grep Advance_step( 只命中本文件定义与 tests/ut/op_kernel/advance_step_data/gen_data.py 里另一份拷贝，后者被正常调用且用 numSeqs=16/numQueries=8/blockSize=8）。两份实现逐行对比算法一致，说明 ST 这份是被遗弃的拷贝。于是这条 ST 用例实际是拿一组固定常量去比对设备输出，Advance_step 里的 n_pad 补零、按 blockSize 映射等逻辑从未被验证。
+  source: 2026-10-03 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6349 （open）
+  behavior: 看 aclnnAdvanceStep 的 ST 回归报表时一切正常，但这条用例的“期望值”其实是一组硬编码常量，跟传入的 numSeqs/blockSize/slotMapping 毫无关系。也就是说即使算子在补零、block 映射上算错，只要输出碰巧等于那四个常量就判过，改了输入也不会让参考值跟着变。真正的 CPU 参考实现写在同一文件里，却一次都没被调用。
+  trigger_surface: optim/advance_step 的 ST 用例（executor_aclnnAdvanceStep.py）；任何输入组合都用固定常量参考
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

@@ -1,0 +1,62 @@
+id: INF-1517
+legacy_ids: []
+slug: torchnpu_embeddingbag_empty_input_uninitialized_output
+aliases: []
+title: EmbeddingBag 空输入返回未初始化输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: aclnnEmbeddingBag 空输入
+  behavior: 空 input + 全 0 offsets + per_sample_weights 时，aclnnEmbeddingBag 的输出 buffer 未清零也未写零，直接残留 weight 数据后返回。
+effect:
+  objects:
+  - 数值结果
+  detail: 期望 5×2 全零，实测 8/10 元素错、最大差 10.0（=weight 最大值）；同镜像两条流水线一过一败，CI 3 用例回归。
+  visibility: 静默错误
+mitigation:
+  detect: 空 input + offsets 全 0 的 EmbeddingBag 与参考实现逐元素比对；注意同镜像不同流水线结果不同
+  fix: 待定（issue closed，正文未给修复 PR；期望输出 buffer 显式清零）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: nn.EmbeddingBag(5,2,mode='sum') + 空 input/全 0 offsets + per_sample_weights，三种 dtype（bf16/fp16/fp32）均中；910×8 + CANN a3 镜像
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/3424
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0171
+original:
+  mechanism: 'Ascend/pytorch #3424（2026-07-28，closed）：PR CI run 30270203846（commit eda3295）中 test/nn/test_embedding.py 的 3 个 test_EmbeddingBag_empty_per_sample_weights_and_offsets 用例由 PASSED 转 FAILED，1.5 小时前 nightly run 30263356078（commit df073e7）同镜像同 CANN 全通过。用例逻辑：weight=[[1,2]..[9,10]]，input=torch.tensor([])，offsets=[0,0,0,0,0]，per_sample_weights=randn_like(input)，期望输出 5×2 全零；实测 8/10 元素错，最大绝对差 10.0、相对差 inf，输出里出现了 weight 的值而不是零，说明空输入路径下 aclnnEmbeddingBag 未初始化/未清零输出 buffer。两条流水线仅 commit 与分片不同，失败分片 reg-2（NPU Device 5）与通过分片 reg-1（Device 7）环境一致，表现为偶发而非确定性。'
+  source: 2026-07-28 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/3424 （closed）
+  behavior: 喂空输入给 EmbeddingBag（offsets 全 0、带 per_sample_weights）时，本该得到全零输出，实际拿到的是 weight 里的数值：5×2 输出里 8 个元素不对，最大偏差正好等于 weight 的最大值 10.0。不报错、不 NaN，同一提交在不同流水线上一会儿过一会儿败，容易被当成 CI 抖动。
+  trigger_surface: 空 input + 全 0 offsets + per_sample_weights 的 EmbeddingBag 前向；bf16/fp16/fp32 三种 dtype 均复现
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility

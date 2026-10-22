@@ -1,0 +1,53 @@
+id: INF-1964
+legacy_ids: []
+slug: hf_acc_check_cache_container_abort
+aliases: []
+title: 精度检查遇 transformers 5.x Cache 中止
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: torch_npu
+    component: huggingface runner 精度检查
+  behavior: same() 不认容器对象：past_key_values 为 transformers 5.x 的 Cache 时抛 RuntimeError，被 check_accuracy 吞成 eager 不一致。
+effect:
+  objects:
+  - 测试判定
+  detail: T5 在两次 eager 逐位自检处必然失败、编译段之前中止，永远产不出 E2E 指标；同环境 BertForMaskedLM 通过、BartForCausalLM 不打补丁时出现同样症状。
+  visibility: 静默错误
+mitigation:
+  detect: 对含 past_key_values 的 decoder 模型跑 --accuracy，看是否恒记 eager_two_runs_differ 且无 E2E 指标；先用 same() 直接喂 Cache 对象复现 RuntimeError
+  fix: 待定（issue open；报告给的分支 fix/t5-hf-accuracy-check 把 T5 加入 skip 名单并把 past_key_values 转成 4.x 风格嵌套 tuple，PR 待创建）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch_npu 2.14.0（master b4c72126）+ transformers 5.18.0.dev0 + inductor/triton_experimental 后端；decoder 类模型带 past_key_values
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 层级证据：同一 runner 下 BertForMaskedLM 通过、BartForCausalLM 复现，边界为 decoder 类模型 × transformers 5.x。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5245
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #5245（2026-09-29 open；Ascend 910B2 ×8、CANN 9.1.0、torch 2.14.0+cpu、torch_npu 2.14.0、Python 3.12、transformers 5.18.0.dev0、inductor + triton_experimental）：T5ForConditionalGeneration 的精度检查在两次 eager 逐位自检处必然失败并被记为 eager_two_runs_differ，在进入编译段之前中止，产不出 E2E 指标。一手原因是 torch/_dynamo/utils.py 的 same() 只支持 tensor/list/tuple/dict，transformers 5.x 把 past_key_values 从嵌套 tuple 改成 Cache 容器（EncoderDecoderCache/DynamicCache），same() 直接抛 RuntimeError: unsupported type: EncoderDecoderCache，异常被 check_accuracy 的 except Exception 吞掉后统一记为 eager 两次不一致。二手原因是 F.cross_entropy 的 NPU 实现在 tol=0 的逐位门下 ±1 ulp 非确定（同输入 5 次执行 4 个不同值），两次重播种 eager 的 logits/grad/param 逐位一致、只有 loss 有差，因此 tol=1e-3/1e-2 的正常判定从未暴露它。master 已有 skip_accuracy_check_as_eager_non_deterministic 机制，但名单缺 T5ForConditionalGeneration，且最终 compiled-vs-eager 对比仍会遍历到 Cache 对象。'
+  source: 2026-09-29 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/5245 （open）
+  behavior: 跑 huggingface runner 的 --accuracy 时 T5ForConditionalGeneration 恒被判为 eager_two_runs_differ，整个精度检查在编译之前就中止，拿不到任何 E2E 精度或性能数字；换成 BertForMaskedLM（输出无 cache）就能过，BartForCausalLM 不打补丁时出现同样症状。因为异常在框架内部被吞掉，用户只看到一条两次 eager 不一致的结论，看不出是检查工具读不了 Cache 对象。
+  trigger_surface: torch_npu huggingface runner 的 --accuracy 精度检查（两次 eager 逐位自检 + compiled-vs-eager 对比）跑 decoder 类模型
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

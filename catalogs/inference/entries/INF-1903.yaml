@@ -1,0 +1,61 @@
+id: INF-1903
+legacy_ids: []
+slug: mindformers_packing_handler_labels_second_shift
+aliases: []
+title: PackingHandler 对 labels 二次左移致标签错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindspore
+    component: PackingHandler labels 拼接
+  behavior: 指令处理器 tokenize 时已把 labels 左移一位，PackingHandler 的 pack 模式又左移一次而 input_ids 不动，模型实际在学用位置 t 预测 t+2
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  detail: Alpaca/CodeAlpaca + pack 策略的官方 SFT 配置训练 loss 明显偏高；推理出现系统性丢字（像每隔一个 token 掉一个）而非乱码；去掉二次左移后同数据同超参 loss 下降、生成恢复通顺
+  visibility: 质量退化
+mitigation:
+  detect: 对比 pack 模式与 truncate 模式/非打包路径的 labels 拼接方式；或直接比对 batch 内 labels 与 input_ids 的错位位数
+  fix: issue 给出的修复是删掉 _process_sample 里 labels 的特判、与 input_ids 一样原样拼接（与 truncate 模式一致），正文称见关联 PR 但未给链接（未核实是否合入）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 'AlpacaInstructDataHandler / CodeAlpacaInstructDataHandler + PackingHandler（pack_strategy: pack），如 configs/qwen3/finetune_qwen3.yaml、finetune_deepseek3_*.yaml；issue #2399 为同一问题'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindformers/issues/2400
+  kind: gitcode_issue
+- url: https://gitcode.com/mindspore/mindformers/issues/2399
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '下一个 token 的左移在整条链路里只应发生一次，实际发生了两次。第一步：指令处理器 tokenize 时已经左移，mindformers/dataset/handler/alpaca_handler.py 里 labels = labels[1:] + [self.ignore_token_id]。第二步：模型与 loss 不再位移——parallel_core/training_graph/base_models/gpt/gpt_model.py 的 PreprocessLabelsAndMasks.construct 在 labels 非 None 时只做 reshape，loss_func.py 的 CrossEntropyLoss.construct 直接用 logits[i] 对 label[i]。第三步：PackingHandler 的 _process_sample 在 pack 模式下又对 labels 左移一次：elif k == ''labels'': data[k] += sample[k][1:] + [config.pad_token]，其他键（含 input_ids）原样拼接。同文件的 truncate 模式（truncate_examples）与不打包路径都只原样拼接 labels，pack 模式与它们不一致，佐证是笔误。影响范围是所有使用 Alpaca/CodeAlpaca + PackingHandler 的官方 SFT 配置（configs/qwen3/finetune_qwen3.yaml、configs/deepseek3/finetune_deepseek3_671b.yaml 与 12b_16p_pp16.yaml、configs/general/llm_finetune_*_template.yaml）。复现：用 finetune_qwen3.yaml（Alpaca+Packing）微调后推理出现系统性丢字；把二次左移去掉后 loss 明显下降、生成恢复通顺。'
+  source: '2026 GitCode mindformers issue #2400 https://gitcode.com/mindspore/mindformers/issues/2400（closed）；同一问题的 issue #2399 https://gitcode.com/mindspore/mindformers/issues/2399'
+  behavior: 用官方 Alpaca 指令数据 + PackingHandler 做 SFT 时，训练 loss 一直降不下去、比预期高；训完推理会成段地丢字，读起来像每隔一个词掉一个，但又不是完全乱码，很容易被当成模型小或数据质量问题。换回非打包（或不左移 labels 的打包实现）后同数据 loss 明显更低、输出正常。
+  trigger_surface: 'SFT + Alpaca/CodeAlpaca 指令处理器 + pack_strategy: pack（PackingHandler）'
+  discovery: 2026-10-21 GitCode 历史 issue 扫描（mindspore/ms* 簇）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化

@@ -1,0 +1,68 @@
+id: INF-1662
+legacy_ids: []
+slug: ms_aclnn_cache_vector_content_hash_miss
+aliases: []
+title: aclnn 缓存哈希漏 vector 元素值致 loss 暴涨
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: op_api_cache 复合类型哈希
+  behavior: op_api_cache 对 pair<vector<int64_t>,bool> 没有专门哈希重载，落入 MemcpyToBuf 只哈希 vector 的指针/size/capacity，actual_seq 的数值不进 key。
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  - 梯度
+  detail: TND 训练 step380 后 indexer_loss/梯度偶发暴涨并随训练增长；关 aclnn 缓存（aclnn_cache_queue_length=0）异常完全消失，离线单算子复算正确。
+  visibility: 静默错误
+mitigation:
+  detect: 构造两份元素值不同但对象表示相同的 pair<vector<int64_t>,bool> 比较 AclnnHash；或按 actual_seq 做 A→B→A 回归，看输出是否回到基线
+  fix: 待定（issue open，无修复 PR）；规避：aclnn_cache_queue_length=0 关闭 aclnn 缓存后异常消失
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend + MindSpore ACLNN executor 缓存，入参含逐 step 变化的 vector<int64_t> actual_seq；关缓存即消失
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29506
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1590
+pattern: PAT-INF-0174
+original:
+  mechanism: MindSpore master/2.10 的 ACLNN executor 缓存：actual_seq_qlen/klen 在自定义算子封装里以 std::pair<std::vector<int64_t>, bool> 传给 LAUNCH_ACLNN 并参与 AclnnHash。op_api_cache.cc 只有 GatherInfo/GatherHash(const std::pair<KernelTensor*, bool>&) 等重载，没有 pair<vector<int64_t>,bool> 版本（ConvertType/GetAddr 都为它写了专门重载，唯独哈希漏了），于是落到通用模板 GatherInfo(const T&) → MemcpyToBuf(&pair, sizeof(pair))，只哈希 vector 的 {data_ptr, size, capacity} 加 bool，不哈希 vector 指向的数值内容。DeepSeek 类模型 TND 训练中 npu_dense_lightning_indexer_grad_kl_loss 在 step380 之后偶发巨大 indexer_loss/梯度并随训练增长；pynative_synchronize 全程开启，离线单算子复算正确，aclnn_cache_queue_length:0 后异常完全消失，关输出清零/recompute/VMM/memory_recycle 均无效。
+  source: 2026-07-03 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29506 （open）
+  behavior: 训练到几百 step 后辅助 loss 和梯度偶发暴涨、且随训练越跑越大，主 loss 却看不出来；同样的单算子离线复算完全正确，只有把 aclnn 缓存关掉异常才消失。数据长度（actual_seq）逐 step 变化时，缓存按地址命中旧 executor，同一批数据反复算出不同的结果。
+  trigger_surface: Ascend + ACLNN stateless dispatch，算子入参含 pair<vector<int64_t>,bool> 变长 host 数组（actual_seq/TND 累计长度）且内容逐 step 变化
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 训练信号
+        to: 数值结果

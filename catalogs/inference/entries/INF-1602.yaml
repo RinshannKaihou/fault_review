@@ -1,0 +1,61 @@
+id: INF-1602
+legacy_ids: []
+slug: runtime_aicerr_meta_copied_zero_bytes
+aliases: []
+title: AIC Error 采集把 kernel 元数据拷成 0 字节
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: 通用
+    component: kernel 元数据搜索与拷贝
+  behavior: GetSearchPath 把 ASCEND_CACHE_PATH 放首位且递归搜索不排除转储输出目录；File::Copy 在源与目标为同一 inode 时先 O_TRUNC 清零再读，读到 0 字节仍返回 ADUMP_SUCCESS。
+effect:
+  objects:
+  - 指标/日志
+  detail: 开启 AIC Error 采集且 dumpPath 与 ASCEND_CACHE_PATH 同目录，并在第二次及以后触发、转储目录已有副本时，转储出的 kernel *.json/*.o 全是 0 字节，msaicerr 解析失败、拿不到出错 kernel 信息；拷贝返回成功，日志无任何告警。
+  visibility: 静默错误
+mitigation:
+  detect: 检查 {dump_path}/extra-info/data-dump/<devId>/ 下 *.json/*.o 大小是否为 0；或对比 kernel_meta 原件与转储副本
+  fix: issue 指出两处需改：搜索路径排除转储输出目录、File::Copy 增加源/目标同 inode 判断并返回错误；issue 已 closed，合入与发布未核实
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 开启 AIC Error 异常采集，且 dumpPath 与 ASCEND_CACHE_PATH 指向同一目录（默认缓存目录下转储时命中）；首次异常时目录为空不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/runtime/issues/916
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/runtime 的 src/dfx/adump/adump/exception/kernel_info_collector.cpp：GetSearchPath()（:319-370）把 ASCEND_CACHE_PATH 放在搜索列表首位，SearchJsonFiles()（:176-227）对搜索根做无裁剪递归遍历，其 kernel_meta 过滤只在 currentDir == "./" 时生效，对 ASCEND_CACHE_PATH 传入的整棵子树没有任何排除。异常转储目录是 {dumpPath}/extra-info/data-dump/{devId}/，当 dumpPath 与 ASCEND_CACHE_PATH 同一目录时，上一次异常拷进去的副本成为合法候选（副本是逐字节拷贝，ContainsString 对 "kernelName": "<目标算子>" 同样匹配）。第二个缺陷在 common/file.cpp 的 File::Copy（:172-207）：先 File srcFile(srcPath, M_RDONLY)，再 File dstFile(dstPath, M_CREAT|M_WRONLY|M_TRUNC)，源与目标解析到同一 inode 时 M_TRUNC 把文件清零，随后 Read 读到 0 字节、循环立即退出并 return ADUMP_SUCCESS；File::Open（:52-87）对父目录调 Path::RealPath，因此相对/绝对路径归一到同一物理文件。.o 走同一逻辑（:396-407），与 json 同目录，两者一起变空。'
+  source: 2026-09-03 GitCode cann/runtime issue https://gitcode.com/cann/runtime/issues/916 （closed）
+  behavior: 打开 AIC Error 异常采集后，转储目录里那份 kernel 描述文件（json 和配套 .o）都是 0 字节，用 msaicerr 解析时报解析失败或拿不到 kernel name/参数信息，等于没有 AIC Error 现场；采集流程自己认为成功，日志里没有错误码也没有告警，只有在 dumpPath 和算子缓存目录是同一个目录时出现。
+  trigger_surface: AIC Error 异常采集 + dumpPath 与 ASCEND_CACHE_PATH 同目录（第二次及以后触发时转储目录已有副本）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 运行时/执行
+    rewritten:
+    - detail

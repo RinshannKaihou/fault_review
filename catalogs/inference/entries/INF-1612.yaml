@@ -1,0 +1,62 @@
+id: INF-1612
+legacy_ids: []
+slug: ms_true_divide_const_fold_float64
+aliases: []
+title: 常量折叠把 int32 true_divide 输出成 Float64
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: mindspore
+    component: Graph Const 常量折叠 dtype
+  behavior: 编译期常量折叠路径对 int32 输入的 true_divide 把结果提升为 Float64，而 PyNative 与 Graph(Arg) 运行时路径都输出 Float32，同一表达式两种 dtype。
+effect:
+  objects:
+  - 数值结果
+  detail: x/y 为 int32 时 Graph(Const) 得 Float64、PyNative 与 Graph(Arg) 得 Float32；隐式 Float64 进静态图，下游严格要求 Float32 的算子报类型错，放行则整图按 Float64 算。
+  visibility: 静默错误
+mitigation:
+  detect: 同一表达式分别在 PyNative、jit(带参数)、jit(闭包常量) 下打印输出 dtype；三者不一致即为常量折叠 dtype 推导缺陷
+  fix: 待定（issue open，2.8.0）；方向：常量折叠复用运行时的 promote 规则
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: MindSpore 2.8.0 CPU；GRAPH_MODE 下闭包常量走 Graph Const 常量折叠，int32 true_divide 被推成 Float64
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29397
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0180
+original:
+  mechanism: 'MindSpore 2.8.0（CPU，Python 3.12）：x=int32 [-2147483648,-9,0,9,2147483647]，y=int32 [3,-2,1,4,-7]。PYNATIVE_MODE 下 ops.true_divide(x,y) 得 Float32；GRAPH_MODE 下 @ms.jit def func_arg(a,b): return ops.true_divide(a,b) 传参调用也得 Float32；同一表达式改成无参 @ms.jit def const_func(): return ops.true_divide(x,y)（走 Graph Const 常量折叠）得 Float64，数值也从 -7.158279e+08 变成 -7.15827883e+08。issue 指出该 dtype 不一致会把隐式 Float64 张量带进静态图，导致下游严格要求 Float32 的算子类型推导报错。无修复 PR。'
+  source: 2026-05-18 GitCode mindspore/mindspore issue https://gitcode.com/mindspore/mindspore/issues/29397 （open）
+  behavior: 把除法表达式写成用闭包常量而不是函数入参，编译后输出 dtype 从 Float32 变成 Float64，下游 matmul/cast 因类型不匹配报错；如果下游能接受 Float64，整条链路就静默按双精度算，显存和速度都变，数值与参数版对不上。
+  trigger_surface: GRAPH_MODE 下 jit 函数捕获闭包常量做 true_divide（触发 Graph Const 常量折叠）；输入为 int32；MindSpore 2.8.0 CPU
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

@@ -1,0 +1,65 @@
+id: INF-1549
+legacy_ids: []
+slug: vllm_ascend_compiled_moe_final_reduce_frozen
+aliases: []
+title: 编译图冻结 MoE 最终归约判断致重复或漏归约
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: vllm
+    component: MoERunner 归约决策
+  behavior: _maybe_reduce_final_output 在 fused MoE 边界外求值；ALLGATHER 且无序列并行需外层 TP all-reduce，MC2/ALLTOALL 已归约，换方式不重 trace。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: GLM-5.2 DSpark 推测解码+PD serving 的 FULL_DECODE_ONLY 编译执行中，trace 与运行期 MoE 通信方式不一致（ALLGATHER vs MC2/ALLTOALL）时，可能重复归约或漏掉必需归约，造成严重精度损失。
+  visibility: 质量退化
+mitigation:
+  detect: 用 make_fx 抓 MoE 图后在切换通信方式（ALLGATHER↔MC2/ALLTOALL）下重放，比对输出是否被重复归约或未归约；另按 attention state 构造 DecodeOnly/ChunkedPrefill/PrefillCacheHit 覆盖 SFA 分支
+  fix: '待定（issue closed）；参考草稿 PR #16482（作者声明仅供参照、非最终方案），MoE 部分与 #16455/#16459/#16476 重叠，SFA 与 DSpark 改动可独立评审'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: vllm-ascend main（2026-09-14 时点），Ascend 950DT（A5），GLM-5.2 W4A4C8，PD + SFA/DSpark，TP4/DP2 与 TP8/DP1，FULL_DECODE_ONLY 编译执行；已缩减为 CPU mock 回归测试
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16484
+  kind: github_issue
+relations: []
+original:
+  mechanism: 在 Ascend A5（950DT）上验证 GLM-5.2 DSpark 推测解码 + PD serving + 编译版 FULL_DECODE_ONLY 时，发现若干“随运行期 batch 变化的决策却取自初始化/profile 状态、或在 opaque 编译边界之外被 trace”的运行期正确性问题，导致输出错误或走进非法执行路径。与本条对应的是第 2 个：MoERunner.forward() 把 _maybe_reduce_final_output 的求值放在既有 fused MoE 自定义算子边界之外，而该判断取决于当前 MoE 通信方式——ALLGATHER 且无序列并行时需要外层 TP all-reduce，MC2 与 ALLTOALL 已经归约过 routed output；用某种通信方式 trace/profile 出来的图，可能在运行期换成另一种方式时被重放，Python 侧的守卫不会重新 trace，于是图里可能重复归约或漏掉必需的归约，造成严重精度损失。报告另外两个独立缺陷是：SFA PROLOG_V3 在 DecodeOnly/SpecDecoding 之外的 attention state（多 token verify/chunked prefill、prefix cache 命中）下把 fused_type 改回 NATIVE，而 NATIVE 分支要用的 fused_qkv_a_proj 权重在初始化时已随 PROLOG_V3 选择被释放；DSpark 的 draft query 数 max_batch_size×(num_speculative_tokens+(not sample_from_anchor)) 可能超过 max_num_batched_tokens，而 AscendDSparkProposer.input_ids 只按后者开缓冲，profile 的 dummy_run 静默切出更少的 ID。三者分别由 SFA 状态、通信方式切换、profile 切片三组 mock 测试覆盖。
+  source: 2026-09-14 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16484 （closed）
+  behavior: 在这类 A5 编译执行 + 推测解码的部署里，精度会无缘无故掉下去：模型不报错、不崩，只是答案变差，而且开/关某些并行或通信设置时好坏会变——因为图是按照另一套通信方式 trace 的，归约要么做了两遍要么一遍都没做。换 attention state（chunked prefill、prefix cache 命中）时还可能走进一条权重已被释放的旧分支。排查时很难从日志看出来，只能靠 make_fx 图与运行期通信方式的对照。
+  trigger_surface: 编译执行（FULL_DECODE_ONLY 图）+ MoE 通信方式在 trace 与运行期不一致（ALLGATHER vs MC2/ALLTOALL）；SFA PROLOG_V3 + chunked prefill/prefix cache 命中等非 DecodeOnly 状态；DSpark profile dummy_run
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - subsystem

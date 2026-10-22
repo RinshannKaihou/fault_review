@@ -1,0 +1,52 @@
+id: INF-1599
+legacy_ids: []
+slug: cann_causal_conv1d_non_contiguous_offset_and_inplace_loss
+aliases: []
+title: causal_conv1d 非连续张量写错位与原地丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: causal_conv1d 非连续路径
+  behavior: kernel 按连续布局硬编码输出偏移，非连续 y 的写入落到错误位置；非连续 convStatesRef 的原地更新没有写回用户原始 tensor（prefill 的 aclnn_causal_conv1d_fn 同款）。
+effect:
+  objects:
+  - 数值结果
+  - KV状态
+  detail: 传入非连续 y 时卷积结果写错位、数值不对；传入非连续 convStatesRef 时 convStates 的 in-place 更新静默丢失（用户拿到的是旧 state），算子不报错。修复后新增 3 个非连续用例，UT 59/59 通过。
+  visibility: 静默错误
+mitigation:
+  detect: 用 transpose/切片构造非连续 y 与 convStatesRef 调用算子，比对输出与 convStates 的逐元素值及 stride 布局
+  fix: 已修（kernel 侧对 y 补 l0op::Contiguous 后改传 yFinal；算子调用后按指针比较用 l0op::ViewCopy 把更新写回用户原始 tensor；op_api/aclnn_causal_conv1d_fn.cpp 的 prefill 路径同步修复）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: ascend950 + causal_conv1d（update 与 fn/prefill 两条接口）+ 非连续 y 或非连续 convStatesRef；连续张量不触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: issue 正文是修复说明体（复现步骤/环境段为空），机制与修复面清楚但没有误差量级与复现命令
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5496
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5496（2026-09-20 closed，ascend950）记录 causal_conv1d 非连续张量的两处精度缺陷及修复：(1) kernel 按连续布局硬编码输出偏移，非连续 y 的写入落到错误位置，修复为对 y 补 l0op::Contiguous(y) 得到 yFinal 并改传 yFinal；(2) 非连续 convStatesRef 的原地更新没有写回用户张量，导致 in-place 更新静默丢失，修复为算子调用后按指针比较（if (convStatesFinal != convStatesRef) / if (yFinal != y)）用 l0op::ViewCopy 把更新写回用户原始 tensor；op_api/aclnn_causal_conv1d_fn.cpp 的 prefill 路径存在同款缺陷并同步修复。UT 新增 3 个非连续用例：update_convStates_y_non_contiguous、update_2d_varlen_non_contiguous、fn_convStates_y_non_contiguous，验证结果 59/59 全过。'
+  source: 2026-09-20 GitCode cann/ops-transformer issue https://gitcode.com/cann/ops-transformer/issues/5496 （closed）
+  behavior: 把非连续（转置或切片出来的）张量喂给 causal_conv1d：输出会写到错误的位置、数值对不上；走带 state 的接口时，convStates 的原地更新直接丢掉，调用方手里还是更新前的旧 state，下一步 decode 就从错误的卷积历史继续算。两种情况算子都不报错。
+  trigger_surface: 传入非连续 y 或非连续 convStatesRef（update 与 fn/prefill 两条路径）
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

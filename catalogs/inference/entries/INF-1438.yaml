@@ -1,0 +1,70 @@
+id: INF-1438
+legacy_ids: []
+slug: vllm_ascend_mlapo_hardcoded_rmsnorm_epsilon
+aliases: []
+title: vllm-ascend MLAPO 硬编码 RMSNorm epsilon
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: mla_preprocess epsilon 常量
+  behavior: MLAPO 融合算子对 Q 与 KV RMSNorm 均用固定 1e-6，不读模型各层 rms_norm_eps；配置≠1e-6（如 GLM-5.2 的 1e-5）时融合路径与 native 路径归一化公式不同。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 配置 epsilon≠1e-6 的模型在 MLAPO 融合路径下 Q/KV 归一化结果系统性偏离 native 路径（源码级确认的模型参数失配；端到端精度影响未测量，issue 明示不声称已观测 e2e 回退）
+  visibility: 静默错误
+mitigation:
+  detect: SFA-to-MLAPO 数值回归（baseline 16 failed/24，修复后 24/24 通过即证明失配真实）
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/19107 （open，c2026-10-18）：q_epsilon/kv_epsilon 经 PyTorch 算子、ACLNN 属性与 tiling data 传入全部四个 MLAPO kernel 变体，缺省 1e-6 兼容旧调用；910B3 实测 baseline 16 failed→24 passed+新算子测试 68 passed；发布未核实
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 'SFA/MLAPO 融合前处理路径 + 模型 rms_norm_eps≠1e-6（如 GLM-5.2 W8A8 =1e-5）；vllm-ascend 0.26.0rc2.dev6 0.30.0 等多版本；issue #18859（c2026-10-15）报告、PR #19107（c2026-10-18）修复'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/18859
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/19107
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend MLAPO（mla_preprocess 融合算子）对 Q 和 KV RMSNorm 硬编码 epsilon=1e-6，不使用模型配置的 rms_norm_eps。部署的 GLM-5.2 W8A8 checkpoint 指定 rms_norm_eps=1e-5：native/模型路径用 config.rms_norm_eps 构造 Q/KV 归一化层，融合 MLAPO kernel 用不同常量——配置 epsilon 非 1e-6 时两条路径归一化公式不同。报告者（issue #18859，源码级报告，固定 commit bc975f29 与 upstream main 8a8e1e05 均含该硬编码）明确区分：已确认=实现中的模型参数失配；未测量=对整模型生成精度/基准分的影响，不声称观测到端到端精度回退。修复 PR #19107（open，c2026-10-18）：把每层 SFA 的 Q/KV epsilon 经 PyTorch 算子关键字参数（q_epsilon/kv_epsilon，缺省 1e-6）、ACLNN 属性、tiling data 传入全部四个 MLAPO kernel 变体，device/Meta 适配器校验正值有限。910B3 + CANN 9.2 + torch 2.10 实测：SFA-to-MLAPO 数值回归 baseline 16 failed/8 passed → 24 passed（baseline 失败是数值失配非缺参数）；新增算子测试文件 68 passed；SFA CPU 测试 72 passed。'
+  source: 2026-10-15 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/18859 （open）；修复 PR https://github.com/vllm-project/vllm-ascend/pull/19107 （open，c2026-10-18）
+  behavior: 在 vllm-ascend 上跑 rms_norm_eps 不等于 1e-6 的模型（如 GLM-5.2 W8A8，配置为 1e-5）且走 SFA MLAPO 融合前处理时，Q/KV 归一化用的 epsilon 与模型定义不一致，融合路径输出系统性偏离 native 路径。服务正常、无告警；对生成质量的影响幅度未测量。修复后数值回归全部通过证明失配真实存在。
+  trigger_surface: vllm-ascend SFA MLAPO 融合路径；模型 config rms_norm_eps≠1e-6；GLM-5.2 W8A8 实例；vllm-ascend 0.26~0.30 期间代码
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 算子/内核
+      effect:
+        from: 隐状态
+        to: 数值结果
+      visibility:
+        from: 质量退化
+        to: 静默错误
+    rewritten:
+    - detail

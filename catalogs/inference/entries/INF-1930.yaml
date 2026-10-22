@@ -1,0 +1,61 @@
+id: INF-1930
+legacy_ids: []
+slug: mindspore_jit_optimizer_lr_frozen
+aliases: []
+title: 优化器 construct 加 jit 后学习率被固化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: mindspore
+    component: mint.optim AdamW + @jit
+  behavior: '@ms.jit 修饰优化器 construct 后 param_groups 里的 lr 在编译期被当常量捕获，reconfig_param_groups 每步写回的 lr 不进入计算图，5 步内 lr 恒为初始值'
+effect:
+  objects:
+  - 训练轨迹
+  - 优化器状态
+  detail: 同脚本带 jit 时 5 步打印 lr 恒为 0.001（Tensor），去掉 jit 后按 0.001→1e-4→1e-5→1e-6→1e-7 衰减；loss 收敛异常但无任何报错或告警
+  visibility: 静默错误
+mitigation:
+  detect: 每步打印 param_groups[0]['lr'] 与真正传给 adamw_opt 的 lr，看是否随 scheduler 变化；对比 construct 有无 @ms.jit 的两条 lr/loss 曲线
+  fix: 待定（issue open，未给 PR）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: ms.experimental.optim/mint.optim 的 AdamW 子类 + construct 上 @ms.jit；MindSpore master + CANN 8.0.0
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/20937
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: ms.experimental.optim 下的 AdamW 子类（继承 mint.optim.AdamW）在 construct 上加 @ms.jit 做加速后训练精度不对。逐项分析发现优化器算子实际使用的学习率没有跟随 lr_schedule 更新：construct 内 `lr = float(group.get("lr"))` 在 GRAPH 模式下被编译期固化，之后每步 reconfig_param_groups() 对 param_group['lr'] 的改写不会反映到计算图。实测 5 步打印：带 @ms.jit 时 lr 恒为 0.001（Tensor(shape=[], dtype=Float32, value=0.001)），去掉 jit 后同脚本按 0.001 → 1.000000005e-4 → 1.0000001e-5 → 1.0000001e-6 → 1.00000015e-7 正常衰减。复现脚本：AdamW(params, lr=0.01) 后 add_param_group，ms.value_and_grad 取梯度，每步先 opt.reconfig_param_groups()（把 lr 乘 0.1）再 opt(gradients)；网络为 1 个 512→1024 linear + 两组 SequentialCell linear + 输出 linear，MSELoss。环境：MindSpore master、CANN 8.0.0。
+  source: '2025-09-24 GitCode mindspore/mindspore issue #20937 https://gitcode.com/mindspore/mindspore/issues/20937（open）'
+  behavior: 为了提速在优化器 construct 上加了 @ms.jit，训练照常跑、不报错不告警，但 loss 就是收敛不到预期：逐步排查学习率才发现它一直停在初始 0.001，warmup/decay 完全没生效，而且打印出来是个 Tensor 而不是 float，很容易被当成日志格式问题忽略。去掉 jit 后同一脚本的 lr 立刻正常衰减，说明问题只在图模式下出现。
+  trigger_surface: GRAPH_MODE（@ms.jit 修饰优化器 construct）+ 从 param_groups 读 lr 的写法
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 优化器状态
+        to: 训练轨迹
+    uncertain:
+    - visibility

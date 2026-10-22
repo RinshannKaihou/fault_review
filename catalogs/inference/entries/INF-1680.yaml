@@ -1,0 +1,59 @@
+id: INF-1680
+legacy_ids: []
+slug: ops_nn_dequant_swiglu_quant_reducemax_mask
+aliases: []
+title: dequant_swiglu_quant 归约 mask 写死 64 跨行越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: 通用
+    component: DynamicQuant 行 max 归约
+  behavior: WholeReduceMax 的 mask 写死 64，UbFactorDimy<64（H=64→32）时每个 repeat 跨两行读并越界，行 max 取到 INT_MAX 级残留，scale 放大成 3e10 级。
+effect:
+  objects:
+  - 数值结果
+  detail: Atlas A2 + CANN 9.1.0、x=int32[15,64]、9 组、swiglu_mode=3、dynamic：scaleOut 为垃圾值、y 147/480 元素不一致；x[1,320] 另一例 y 55/160 不一致（Brcb 覆写 scaleOut）。
+  visibility: 静默错误
+mitigation:
+  detect: groupIndex 非空 + quantMode=dynamic + H=64（UbFactorDimy=32）或小 token 数时比对 scaleOut；看 y 是否有成片不一致。
+  fix: issue 5083 closed；修复 PR https://gitcode.com/cann/ops-nn/pulls/9119 （rebase 到 master，commit d07be10ae，合入状态未核实）：mask 取 min(UbFactorDimy,64)、广播改单条 BroadCast 不借道 outLocal。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: config
+  trigger_note: Atlas A2（910B）+ CANN 9.1.0 + quant/dequant_swiglu_quant 的 DSK 路径（groupIndexOptional 非空）+ quantMode=dynamic + int32 多分组 + H=64 或小 token 数
+  confidence: documented
+remarks: '本 issue 是 #5063（srcRepStride 整除截断，已由 9176e2d85 合入）的后续，另含两个独立 bug；本条按 Bug 1（mask 写死 64）写，Bug 2（Brcb 覆写 scaleOut）记在 effect 里作同一用例的第二现象。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5083
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue 5083（2026-08-24，closed）：Atlas A2（ascend910b）、CANN 9.1.0，算子路径 quant/dequant_swiglu_quant 的 DSK Tiling 路径（groupIndexOptional 非空，quantMode=dynamic）。Bug 1：quant/dequant_swiglu_quant/op_kernel/dequant_swiglu_quant.h 的 DynamicQuant 阶段 WholeReduceMax 的 mask 写死 64，当 UbFactorDimy < 64（如 H=64 → 32）时第二阶段归约每个 repeat 跨 2 行读取并越界：kernel printf 实测（x[15,64]、9 组、尾块 proDimsx=1）行 max 读出 INT_MAX 级垃圾值，最终 scale 为 3e10 级错误值；proDimsx=2 时相邻两行 max 被合并（NPU[2i]=NPU[2i+1]=max(g[2i],g[2i+1])）。Bug 2：行 scale 广播链路 Brcb(outLocal, scaleOut, blockCount) + Copy 借道 outLocal 中转，而 scaleOut = outLocal[UbSingleOutSize_/4]，当该偏移小于 blockCount*64（如 UbFactorDimx=1、outDimy=160 → 偏移 40 < 64）时 Brcb 写 outLocal[0,64) 直接覆盖 scaleOut 本身：实测 x[1,320] 归约正确（行 max=254.069）、scaleOut 计算正确（2.0005）、广播后 Div 除数正确，但 CopyOut 写出的 scale 仍为垃圾（-3.7462），y 55/160 元素不一致。修复 PR #9119（已 rebase 到最新 master 解决与 9176e2d85 的冲突，commit d07be10ae）：mask 取 min(UbFactorDimy,64)、广播改单条 BroadCast<float,2,1>(tmpUbF32Gate, scaleOut, dstShape, srcShape)。修复后 x[15,64] 与 x[1,320] 两用例 ATK 均 Pass 100%，H=192 回归通过。'
+  source: 2026-08-24 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5083 （closed）
+  behavior: 在 910B 上做 dequant + swiglu + 动态量化（带 group_index、int32 输入、多分组）且隐藏维 H=64 或 token 数很少时，输出的 scale 是一串垃圾（能到 3e10 或负值），y 里成片元素和 golden 不一致（147/480、55/160 这种比例）；接口不报错，量化前的 dequant 结果看着还行，坏在量化 scale 上，属于典型静默错误。
+  trigger_surface: dequant_swiglu_quant 的 DSK 路径 + groupIndexOptional 非空 + quantMode=dynamic + int32 多分组 + UbFactorDimy<64（H=64）；Atlas A2、CANN 9.1.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    issue_unfixed:
+    - detail
+    uncertain:
+    - behavior

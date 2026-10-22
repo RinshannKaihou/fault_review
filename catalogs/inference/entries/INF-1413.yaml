@@ -1,0 +1,60 @@
+id: INF-1413
+legacy_ids: []
+slug: sglang_update_weights_vision_unknown_names_skip
+aliases: []
+title: SGLang 权重更新跳过未知视觉权重名仍报成功
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: sglang
+    component: load_weights 未知名回退分支
+  behavior: 未知权重名以 `.bias` 结尾时无日志直接跳过，其余未知名仅打一行 Parameter not found 后跳过；load_weights 不上报跳过清单，weight_updater 无条件返回 success
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: RL 训练器权重名转换错误（如 vision tower）时引擎保留旧视觉权重继续服务，/update_weights_from_disk 返回 success:true；.bias 情形连日志都没有
+  visibility: 静默错误
+mitigation:
+  detect: 更新后对比 vision tower 权重哈希/输出；审计 trainer→HF 名转换
+  fix: 待定
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: /update_weights_from_disk + Qwen3.5 视觉权重名不在 params_dict（HF 名转换错误）；main a50c17e979 / pin f7ea06e1 复现脚本实测
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+  stage: N/A
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/44504
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang /update_weights_from_disk 在 checkpoint 含模型不认识的视觉权重名时返回 success:true。Qwen3_5ForConditionalGeneration.load_weights（python/sglang/srt/models/qwen3_5.py:2391，main a50c17e979）回退分支（:2463-2474）：未知名以 .bias 结尾→无日志跳过（注释称给额外 GPTQ bias）；其余未知名→打一行 'Parameter <name> not found in params_dict' 后跳过。load_weights 不汇报跳过名或未加载参数，weight_updater 随后返回 True,'Succeeded to update model weights.'（model_runner_components/weight_updater.py:256）。RL 训练循环中 trainer 把权重转 HF 名后经此调用加载：vision tower 名转换错误时引擎一直用旧视觉权重，更新报成功；.bias 情形完全无痕。复现：sglang f7ea06e1（sglang-miles-v0.5.15-final）单 GPU，两份 Qwen3.5-0.8B 副本（zeroed/ 改 model.visual.merger.linear_fc2.{weight,bias} 值）实测更新后值未变且报成功；main 未复测但代码相同（:1763-1774 / model_runner.py:1979）。
+  source: 2026-10-17 GitHub sgl-project/sglang issue https://github.com/sgl-project/sglang/issues/44504（open，1 评论；源码行号+复现脚本）
+  behavior: 对 Qwen3.5（视觉模型）调用 /update_weights_from_disk 更新权重时，如果 checkpoint 里有权重名模型不认识（典型：RL trainer 做 HF 名转换时 vision tower 名字转错），引擎会直接跳过这些权重继续用旧值，但接口照样返回 success:true 'Succeeded to update model weights.'。以 .bias 结尾的未知名连一行日志都不打，其他未知名只有一行容易被刷过去的 warning。服务表面上一切正常，实际视觉塔还是旧权重。
+  trigger_surface: /update_weights_from_disk + 多模态模型权重名不在 params_dict（名转换错误/格式变化）；qwen3_5.py 路径实测
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - evidence

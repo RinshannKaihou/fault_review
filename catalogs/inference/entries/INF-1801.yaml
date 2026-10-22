@@ -1,0 +1,61 @@
+id: INF-1801
+legacy_ids: []
+slug: cann_ge_hcom_allreduce_count_aligned_up
+aliases: []
+title: 静态图 AllReduce 的 count 被按对齐抬到 131200
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: HcomAllReduce count 推导
+  behavior: 静态图 HcomAllReduce 的 count 不是用户张量的元素数，而是按对齐后的字节数反推：输入 131071 个 float32 时日志打印 count[131200]，集合通信按多出的 129 个元素收发
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950 上 allreduce 输入 131071 个 float32：日志 get count[131200]，scratch 2099200B、workspace 2134016B 都按抬后 count 算，前 131071 个元素结果正确，多出的 129 个参与 reduce
+  visibility: 静默错误
+mitigation:
+  detect: 打开 HCCL/GE 日志核对 get count 与 SetHcomOpParam 的 count 是否等于张量元素数，并检查 workspace 尺寸
+  fix: 待定（issue closed，正文未给出修复 PR；报告者的预期是日志打印 count[131071]）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 静态图 HcomAllReduce 且元素数非 32 字节对齐（131071×float32）时暴露；Ascend950 + 0131 主线包
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/154
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend950（0131 主线包）上跑 hccl allreduce 静态图，输入张量 131071 个 float32，而 GE 侧 HcomOpsKernelBuilder 打出的日志是 op[HcomAllReduce] get count[131200] success，随后 SetHcomOpParam 也以 count:[131200] 下发；131200×4=524800 字节恰好是 131071×4=524284 按 32 字节对齐后的尺寸，说明 count 由对齐后的字节数反推而不是用户元素数。workspace 计算同样按 count[131200] 得到 size[2099200]、mem size[2134016]。报告者预期日志应是 count[131071]。issue 已 closed，正文未给修复。
+  source: 2026-02-10 GitCode cann/ge issue https://gitcode.com/cann/ge/issues/154 （closed）
+  behavior: 静态图里 allreduce 的输入元素数不是 32 字节对齐的整数倍时，算子实际按对齐后的元素数收发数据：日志里 get count 打印的是 131200 而不是用户传入的 131071，多出的 129 个 float 也参与 reduce。前 131071 个元素的结果仍然正确，所以从输出上看不出问题，只有对比通信日志或检查缓冲区边界时才会发现。
+  trigger_surface: 静态图 HcomAllReduce + 元素数非 32B 对齐（131071×float32）；Ascend950
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 集合通信
+    uncertain:
+    - detail

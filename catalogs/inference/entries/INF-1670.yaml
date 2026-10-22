@@ -1,0 +1,51 @@
+id: INF-1670
+legacy_ids: []
+slug: ops_nn_batch_matmul_v3_merge_batch_fp16_overflow
+aliases: []
+title: BatchMatMulV3 fp16 batch 合并累加溢出为 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: 通用
+    component: batch_mat_mul tiling 合并
+  behavior: MergeBatchAndMAxis 只以 batchA×M 超 INT32_MAX 作合并准入，未估 fp16 值域：并入 M 轴后 K=128、|v|≤100 累加超 65504，溢出成 Inf/NaN。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3 + CANN 9.0.0：self=[50000,32,128]、mat2=[1,128,128] fp16、值域±100（cid=898）输出 NaN/Inf；同 shape fp32 与小值域 fp16 均通过。
+  visibility: 数值异常
+mitigation:
+  detect: fp16 + batchB=1 广播 + 大值域（±100）组合跑双标杆；用 batchB>1 的同 shape 对照（不触发合并）确认是否合并路径引入。
+  fix: issue 5519 closed；正文只给根因假设（合并准入应加入 fp16 累加溢出预估），未给修复 PR。
+labels:
+  stage: N/A
+  coverage: NEW
+  discovered: '2026-10-20'
+  trigger_review: false
+  family: infra_off
+  trigger: hw_specific
+  trigger_note: Ascend910B3 + CANN 9.0.0 + aclnnBatchMatMul（V3）+ fp16 + batchB=1 广播（batchA=50000）+ 值域±100；另一失败路径为 fp32 K=65533 近 ND2NZ 上限
+  confidence: documented
+remarks: 同一 issue 还报了一条 fp32 K=65533 的尾块精度失败（比例 3.099），本条按主要机制写成 fp16 合并溢出；两条都以 tiling 行号为据，但作者只给到 high 置信度假设，未做定点修改验证。#5622/#5905 是同一算子的相邻批次报告。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5519
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5519（2026-09-03，closed）：Ascend 910B3、CANN 9.0.0、torch 2.10.0、ATK 26.4.30，被测 aclnnBatchMatMul（matmul/batch_mat_mul_v3/），双标杆 double_benchmark 共 1000 例，920 例形成有效比较、918 通过、2 例精度失败。失败 2（cid=898）：fp16、self=[50000,32,128]、mat2=[1,128,128]（batchB=1 广播）、值域 [-100,100]、transposeA/B=0、cubeMathType=0，输出出现 NaN/Inf 与 golden 不一致；同 shape 同值域 fp32（cid=888，比例 0.594）与小值域 fp16（cid=889）均 PASS。根因假设（置信度 high）：MergeBatchAndMAxis（batch_mat_mul_v3_base_tiling.cpp:174-185）在 batchB==1 且非 A 转置时把 batchA 合并进 M 轴（merged M'=50000×32=1600000），准入条件只看 batchA×M 是否超 INT32_MAX，未考虑 fp16 值域——K=128 个 |v|≤100 的乘积累加上限 128×100×100=1.28e6 远超 fp16 最大值 65504，中间结果溢出为 Inf/NaN 而 CPU double golden 不溢出。失败 1（cid=660）是另一路径：fp32、self=[1,16,65533]、mat2=[1,65533,16]，K 紧贴 ND2NZ_ON_THE_FLY_LIMIT=65535，CeilAlign(65533,16)=65536 产生 3 元素非对齐尾块，相对误差最大值比例 3.099>2.0，同 shape 的 fp16（0.952）与 bf16（0.0253）通过，K=65535 对齐边界的 fp32（cid=672）也通过，指向大 K 尾块 tiling/ND2NZ 对齐转换（batch_mat_mul_v3_base_tiling.cpp:324、750-764）。
+  source: 2026-09-03 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5519 （closed）
+  behavior: 用 fp16 跑 batched matmul 时，如果第二个矩阵只有 1 个 batch（广播）、第一个很大（50000×32×128）、数值范围到 ±100，部分输出会直接变成 NaN/Inf——tiling 把 batch 并进 M 轴后 K 维累加在 fp16 里溢出，而 CPU 标杆用 double 累加永不溢出；同样 shape 换 fp32 或把值域收小就正常，所以只在大 batch + 大值域的 fp16 推理里偶发。
+  trigger_surface: aclnnBatchMatMul（BatchMatMul V3）+ fp16 + batchB=1 广播合并进 M 轴 + 大值域（±100）；Ascend910B3、CANN 9.0.0
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

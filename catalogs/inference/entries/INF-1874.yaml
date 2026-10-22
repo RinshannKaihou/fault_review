@@ -1,0 +1,56 @@
+id: INF-1874
+legacy_ids: []
+slug: runtime_kernel_launch_args_size_uint32_narrowing
+aliases: []
+title: Kernel Launch argsSize 超 uint32 静默窄化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: aclrtLaunchKernel 四入口
+  behavior: 四个 ACL wrapper 把 size_t argsSize 无条件 static_cast<uint32_t> 传给下层，没有可表示性检查，超范围输入按低 32 位传递并返回 ACL_SUCCESS。
+effect:
+  objects:
+  - 数值结果
+  detail: Host mock 下传 UINT32_MAX+66=4294967361 时下层 argsSize 变为 65 且返回 ACL_SUCCESS（期望 ACL_ERROR_INVALID_PARAM）；真实设备端未验证。
+  visibility: 静默错误
+mitigation:
+  detect: 对四个 launch 入口传 >UINT32_MAX 的 argsSize，用 Host mock 捕获下层参数值并检查返回码；常规大小参数区不受影响。
+  fix: 修复 PR https://gitcode.com/cann/runtime/merge_requests/5108 （closed，合入状态未核实）：四个 wrapper 增加 argsSize>UINT32_MAX 检查并返回 ACL_ERROR_INVALID_PARAM；修复版 8 个定向用例与 1165 项 ACL UT 全过。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclrtLaunchKernel/V2/WithHostArgs/SIMTKernelWithHostArgs + 参数区字节数 >UINT32_MAX（64 位进程）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: 证据为固定 commit 的 Host mock（ACL UT），作者自述未验证匹配版本设备端到端；本条不外推实际数据损坏范围。
+evidence:
+- url: https://gitcode.com/cann/runtime/issues/1006
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/runtime/merge_requests/5108
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/runtime issue 1006（closed，commit 75db3735a49d40c0d97b186d9f55b26e989f99fb）：公开接口 include/external/acl/acl_rt.h 中 aclrtLaunchKernel、aclrtLaunchKernelV2、aclrtLaunchKernelWithHostArgs、aclrtLaunchSIMTKernelWithHostArgs 的 argsSize 均为 size_t，而下层 pkg_inc/runtime/runtime/rts/rts_kernel.h、src/inc/runtime/rt_inner_task.h 与 rtArgsEx_t::argsSize 为 uint32_t；src/acl/aclrt_impl/kernel.cpp 的四个 wrapper 直接 static_cast<uint32_t>(argsSize) 后下发，没有范围检查。作者用 Host mock/gtest 捕获下层参数：输入 UINT32_MAX+66=4294967361 时四个入口都把下层 argsSize 变成 65 并返回 ACL_SUCCESS（测试只用非空哨兵指针，不分配超大参数区）。修复补丁在四个 wrapper 的所有下层调用前加 argsSize > UINT32_MAX 检查、超范围返回 ACL_ERROR_INVALID_PARAM，修复版 4 个超范围用例（GMock 期望下层 .Times(0)）与 4 个合法对照、以及 1165 项 ACL UT 全部通过；issue 自评证据等级 E3，明确剩余缺口是匹配版本的真实 NPU 端到端行为。
+  source: GitCode cann/runtime issue https://gitcode.com/cann/runtime/issues/1006 （closed）；修复 MR https://gitcode.com/cann/runtime/merge_requests/5108
+  behavior: 参数区特别大的 kernel 启动请求（64 位长度超过 4GB 边界）不会被拒绝，而是被悄悄截成低 32 位：调用方收到 ACL_SUCCESS，以为按原始长度下发，下层却按另一个长度校验、拷贝或启动 kernel，参数区与 kernel 实际读到的内容对不上。常规大小的参数区完全正常，所以只有构造超大 argsSize 才看得到，返回值上看不出任何异常。
+  trigger_surface: aclrtLaunchKernel 族接口 + argsSize > UINT32_MAX
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

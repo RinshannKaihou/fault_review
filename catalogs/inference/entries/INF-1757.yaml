@@ -1,0 +1,57 @@
+id: INF-1757
+legacy_ids: []
+slug: ops_nn_foreach_inplace_noncontiguous_result_dropped
+aliases: []
+title: 8 个 foreach*Inplace 非连续就地结果被丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: foreach Inplace 算子原型
+  behavior: OpDef 只声明 Input 未声明 Output，opbuild 建不起 ref 配对，生成的 aclnn 代码里 Ref 回写四件套全无调用，输入连续化却照常生成。
+effect:
+  objects:
+  - 数值结果
+  detail: 直接调用 aclnn 的 foreach*Inplace 接口并传入非连续视图时，调用返回成功、流同步正常、无报错或崩溃，但用户传入的那段 storage 未发生变化，读回仍是计算前的值，结果被静默丢弃；传连续张量时一切正常。
+  visibility: 静默错误
+mitigation:
+  detect: 用交错哨兵布局构造非连续视图调 aclnn inplace 接口，读回原 storage 看是否未变；装机包头文件里 x 是否带 Ref 后缀即可静态判定。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/9498 （合入状态未核实）：补 Output 声明恢复 ref 回写；ForeachZeroInplace 等两个跨代原型未纳入。
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Ascend950PR + CANN 9.1.0 + 直接调 aclnn 接口 + 就地参数传非连续 Tensor
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/5335
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn issue 5335（2026-08-29，closed）：Ascend950PR（A310-50-C00MM304A1）、CANN 9.1.0。ForeachACosInplace、ForeachAddListInplace、ForeachDivListInplace、ForeachLogInplace、ForeachMulListInplace、ForeachMulScalarInplace、ForeachSubListInplace、ForeachSubScalarInplace 八个算子的 OpDef 只声明 Input 未声明 Output（原注释写明 x serves as both input and output），opbuild 拿不到输出 IR 索引，建不起 input↔output 的 ref 配对，生成的 aclnn 代码里 NnopbaseSetRef、NnopbaseGetRefUnContiguousTensors、NnopbaseSetViewCopyExecutor、aclnnViewCopy 只有 extern 声明、零调用，而 NnopbaseGetUnContiguousTensors + aclnnContiguous 照常生成。非连续就地参数被抠进临时连续缓冲，内核往临时缓冲就地写，算完没有代码搬回用户 storage。静态判据是装机包头文件里 x 为 const 且无 Ref 后缀。
+  source: 2026-08-29 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/5335 （closed）
+  behavior: 直接调 aclnn 的 foreach inplace 接口并传一个非连续视图时，调用返回成功、流同步正常、也没有报错或崩溃，但用户传进去的那段 storage 一点没变，读回来还是计算前的值：结果被静默丢弃。传连续张量时一切正常，所以这个问题从算子首版潜伏下来一直没暴露。
+  trigger_surface: foreach*Inplace 的 aclnn 接口 + 非连续就地参数
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

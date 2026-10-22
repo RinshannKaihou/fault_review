@@ -1,0 +1,59 @@
+id: INF-1775
+legacy_ids: []
+slug: tt_metal_mean_sum_whole_tensor_cancel_zero
+aliases: []
+title: ttnn mean/sum 全轴归约大值相消返回 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: mean/sum 整张量归约路径
+  behavior: 整张量全轴归约（dim=None 或显式全维度列表）在大数值跨 N/C 相消时返回 0；分轴归约（先 H/W 后 N/C，或 dim=[1,3]）正确（机制定位未给出）
+effect:
+  objects:
+  - 数值结果
+  detail: WH n150/BH p100a：mean 案例 +1024/-1024 相消输入 torch=0.03125 而 ttnn=0；sum 案例 torch=1024 而 ttnn=0；sum(sum(x,dim=[2,3]),dim=[0,1]) 分轴=1024 正确；models/common/m
+  visibility: 静默错误
+mitigation:
+  detect: 对已知相消输入抽查全轴归约值
+  fix: 待定（issue open，tt-metal 229f9d53365）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: '全轴归约 + bf16 + 大数值跨 N/C 相消；freq=always；输入来自 #60300 案例；非回归（一直如此）'
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: '与 #61402（sum/mean 沿 W 超 128 tile 钉死 8192，10-19 INF-1467）不同机制：那条是 tile 计数上限，这条是全轴归约相消；两条互补组成 ttnn 归约缺陷对。'
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61584
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/61703
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal 229f9d53365（Wormhole n150 KMD2.9.0/FW19.11.0；sum 案例 BH p100a 亦证）。ttnn.mean 对 4D bf16 张量做整张量归约（dim=None 或 dim=[0,1,2,3]）在大值相消时返回 0：(1,2,32,64) 全 1024.0、一半 -1024.0 且 [0,1,:,0]=-1020.0：ttnn.mean=0，torch bf16/fp32 均 0.03125；dim=[1,3] 正确。ttnn.sum 同类：(1,2,32,64) 布局 +1024/-1024/[0,1]=1.0：整张量 sum=0，torch=1024；sum(sum(x,dim=[2,3]),dim=[0,1])=1024 正确。两 issue 均 freq=always、非回归；机制（全轴 kernel 的中间精度/累加顺序）未定位。影响：models/common/metrics.py 调用整张量 bf16 mean，生产路径在用。
+  source: 2026-10-20 每日扫描；https://github.com/tenstorrent/tt-metal/issues/61584 ；https://github.com/tenstorrent/tt-metal/issues/61703
+  behavior: 对包含较大正负值相互抵消的 bf16 张量做整张量均值或求和（不指定维度或列出全部维度）时，ttnn 直接返回 0，而 torch 返回正确的非零小值（如 0.03125 或 1024）；把同一归约拆成两步（先 H/W 后 N/C）结果就正确。无报错，评测/指标代码里这类均值会静默变 0。
+  trigger_surface: ttnn.mean/ttnn.sum 整张量全轴归约 + bf16 + 大值跨 batch/通道相消（WH/BH）
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

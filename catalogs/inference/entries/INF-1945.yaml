@@ -1,0 +1,57 @@
+id: INF-1945
+legacy_ids: []
+slug: msprobe_backward_empty_for_autograd_function
+aliases: []
+title: autograd.Function 子类反向 L1 采集无数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: msprobe L1 采集
+  behavior: L1 采集对 autograd.Function 子类只采到 forward 内的 torch api，backward 里的 grad_output.t().mm(input) 等调用一条都采不到，也不提示该层反向未被覆盖
+effect:
+  objects:
+  - 指标/日志
+  detail: msprobe L1 采集自定义 autograd.Function 子类时，dump 中 forward 段有数据、反向段为空且不提示漏采；按层逐条检查才发现缺了一段。GPU+torch_npu 示例中出现。
+  visibility: 静默错误
+mitigation:
+  detect: 采集后按层核对 forward/backward 两段是否都有算子记录，对缺失反向的层改用 module 级或 tensor 级补采
+  fix: 待定（issue closed，正文未给修复 PR）
+labels:
+  family: infra_off
+  trigger: other_stack
+  trigger_review: false
+  trigger_note: 报告在 GPU 场景复现（torch.autograd.Function 子类 + L1 采集，脚本仍 import torch_npu）；NPU 侧是否同样漏采未核实
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/267
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 用 torch.autograd.Function 定义 CustomLinearFunction（forward 里 input.mm(weight.t())、bias 相加；backward 里 grad_output.mm(weight)、grad_output.t().mm(input)、grad_output.sum(dim=0)*3），外层 nn.Module 调 CustomLinearFunction.apply，用 msprobe 的 PrecisionDebugger(config_path='./config.json') 做 L1 级别采集，跑 forward+backward。结果：forward 中调用的 torch api（input.mm 等）能采到数据，backward 里的 mm、t()、sum 等一条都采不到，该层反向数据为空。issue 未给根因定位，只描述“GPU autograd.function 子类反向采集无数据”。环境：GPU + torch_npu，脚本 `x = torch.randn(N, In, requires_grad=True).npu()`，N/In/Out = 5/10/3。
+  source: '2026-04-27 GitCode Ascend/msprobe issue #267 https://gitcode.com/Ascend/msprobe/issues/267（closed）'
+  behavior: 用自定义 autograd.Function 写了一层 linear，挂上 msprobe 做 L1 采集后 dump 看起来是完整的：forward 的 matmul 都在，但这一层的反向部分一条记录都没有，工具也不提示漏采。精度排查时就会得出“反向无差异”的结论，实际上这部分数据从来没被采到；只有把 dump 按层逐条数一遍才会发现缺了一整段。
+  trigger_surface: msprobe L1 采集 + torch.autograd.Function 子类（自定义反向）
+  discovery: 2026-10-21 GitCode 历史 issue 回填（mindspore/ms* 簇第二池）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - component
+    - detail

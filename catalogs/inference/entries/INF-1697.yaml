@@ -1,0 +1,63 @@
+id: INF-1697
+legacy_ids: []
+slug: smla_reduction_block_boundary_batch_mismatch
+aliases: []
+title: SMLA/MQSMLA 规约块边界错位致 batch 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: SMLA SetRunInfo 与主循环
+  behavior: 规约块大小先做 totalS2/32 整除丢余数、ORI 尾块与 CMP 首块沿用同一 s2LoopCount、MQSMLA 重划 ORI 后未同步 cmpS2Start，使 reduceBlockId 与 metadata 分块不一致。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: SMLA/MQSMLA 开启 batch_consistency 后，同一输入与权重下仅改变 batch 切分和执行顺序，输出不一致，batch consistency 用例直接失败；某些 S2 尾块落在分块边界上的用例整核卡死、计算超时，日志无精度报错，仅任务不返回。
+  visibility: 不可复现
+mitigation:
+  detect: 开启 batch_consistency 后按不同 batch 切分与 order 复跑同一输入，比较逐点输出；同时观察 AIV 零行是否导致超时
+  fix: issue 即修复说明：块大小改 (totalS2+31)/32 再上对齐、新增 reductionLoopCount 补齐逻辑计数、重划后置 cmpS2Start=oriS2End、零行 AIV 不发该事件（closed，未核实合入版本）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 开启 batch_consistency + ORI/CMP 长度落在规约块边界（如 S2=8193/2049）时触发
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/5640
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer issue #5640（2026-09-23 closed，atlas350 加速卡）：mqsmla/smla 在开启 batch 一致性后，特定场景出现 batch 不一致甚至卡死。四处机制：(1) 规约块大小先算 totalS2/32 再向上对齐 128，整数除法丢余数，在长度边界低估块大小（单段 ORI=8194 时旧算法得 256、需 33 个规约块，新算法 384、22 块）；(2) metadata 按 ORI/CMP 两段各自划分规约块，kernel 却直接用连续的 s2LoopCount 算规约块编号，ORI 尾块不足一个完整规约块时进入 CMP 仍被视作前一块，新增 reductionLoopCount 在进入 CMP 时补齐到块边界；(3) MQSMLA metadata 按 128-token 重划 ORI 后 oriS2End 已更新而 cmpS2Start 仍用旧基本块编号，ORI/CMP 区间不连续（有效长度 2049、块大小 256 时应由 17 改为 9），影响行尾判断与 FD 规约任务记录；(4) 零行 AIV 的 Vec2 提前返回不等待 MTE3_MTE2，Vec1 仍发送该事件留下未消费同步信号。修改覆盖 SMLA 公共 SetRunInfo、CSA/SWA 主循环与 MQSMLA CSA 逻辑。'
+  source: https://gitcode.com/cann/ops-transformer/issues/5640 （closed）
+  behavior: 同一组输入、同一份权重，只改 batch 的切分方式与执行顺序，输出就不再一致（batch consistency 用例直接失败）；某些 S2 尾块落在分块边界上的用例还会整核卡死、计算超时，日志里没有精度报错，只有任务不返回。
+  trigger_surface: SMLA / MQSMLA（含 CSA、SWA 路径），metadata ORI+CMP 双段分块，开启 batch_consistency
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

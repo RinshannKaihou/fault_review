@@ -1,0 +1,58 @@
+id: INF-1831
+legacy_ids: []
+slug: vllm_ascend_reduce_sample_mixed_batch_greedy_index
+aliases: []
+title: 混批贪心请求在 reduce_sample 下返回候选位置而非词表 ID
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: rejection_sampler 候选重排
+  behavior: 开启 enable_reduce_sample 后，混合批（贪心+随机）经 apply_sampling_constraints 返回重排后的 scores 与候选词表索引，但贪心分支仍用原词表分片解释列位置，没做候选到词表的映射
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 贪心请求返回重排候选张量里的位置而不是真实词表 token：两请求批次里最大 logit 对应 token 5 时实测输出 0；同一贪心请求只因与随机请求同批就错收草稿 token 0、错拒 5，草稿接受/拒绝判定同错
+  visibility: 静默错误
+mitigation:
+  detect: 构造 [0, 0.7] 混合温度批次，与纯贪心批次对比同一请求的 output token 与草稿接受结果；纯贪心对照全过、混批 case 全错即为本缺陷
+  fix: 待定；报告者称本地已有修复与回归测试，将单独提 PR（issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: enable_reduce_sample + 投机解码 + 同一批内同时存在 temperature=0 与 temperature>0 请求；纯贪心批与纯随机批都不触发（TP1 8 例纯贪心全过、8 例混批全错，TP2 同类）
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: '与 #9248（Reduce sampling 设计讨论）相关；现象是索引映射缺失，不是拒绝采样概率算错。'
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/16396
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 源码构建 fb00c6b + vLLM b2f6858（Ubuntu 22.04 aarch64 / torch 2.10.0 / torch_npu 2.10.0.post4 / CANN 9.1.0）下开启 enable_reduce_sample 投机解码：整批都是贪心时不走候选重排，混合批则经过 apply_sampling_constraints，函数返回重排后的 scores 与候选词表索引；随后的贪心分支调用 greedy_sample(target_logits) 并按原词表分片解释列位置，没有把候选索引映射回词表 ID。组件级复现用两行相同 target logits [-8,-3,-2,-1,0,9,1,2]（最大值对应 token 5），bonus token 固定 7 以便观察是否追加，-1 表示被拒后的占位：批次 [0,0] 输出 [5,-1] 正确，[0,0.7] 输出 [0,7]（草稿 0 被错收），草稿为 5 时 [0,0.7] 输出 [0,-1]（正确草稿被错拒）。16 个 TP1 case 中 8 个纯贪心对照全过、8 个混批全错；TP2 同类错误。复现脚本 native_sampling_probe.py 固定 bonus token 与随机输入，无需模型权重。
+  source: 2026-09-12 GitHub vllm-project/vllm-ascend issue https://github.com/vllm-project/vllm-ascend/issues/16396 （open）
+  behavior: 开启 enable_reduce_sample 的投机解码服务里，只要同一批中混有随机采样请求，贪心请求就会返回错误的 token（例如本该输出 5 却输出 0），并错误接受/拒绝草稿 token。纯贪心批次的输出正常，所以只按贪心做验收测试发现不了。
+  trigger_surface: enable_reduce_sample + 投机解码 + 批内混合 temperature=0 与 >0
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - component

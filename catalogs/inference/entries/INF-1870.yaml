@@ -1,0 +1,60 @@
+id: INF-1870
+legacy_ids: []
+slug: npu_profiler_loses_device_tasks_at_record_start
+aliases: []
+title: profiler RECORD 窗口头部设备侧任务丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: torch_npu
+    component: profiler schedule 边界
+  behavior: wait→RECORD 跃迁时设备侧窗口的起始边界没对齐：宿主侧按 active 次数下发，设备侧最早的若干条 task 记录不落盘，尾部完整。
+effect:
+  objects:
+  - 指标/日志
+  detail: active=10 时 op_summary 只有 8 条 matmul（偶发 9 条），缺失集中在窗口头部，尾部完整；同 trace 内 host,node,launch 的 Count 恰为 10；重跑同一脚本丢失条数变化，换成单次更长的 fp32（约 90µs/次）也非确定。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 trace 内比 host,node,launch 的 Count 与 op_summary 设备侧记录数；重跑多次看是否稳定等于 active
+  fix: 待定（issue open，未给修复 PR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: torch_npu 2.12.0 + CANN 9.2.0_beta.1（A5 / 950PR）；profiler schedule(wait>0, warmup>0, active>0) + tensorboard_trace_handler
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4743
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4743（torch_npu 2.12.0 / CANN 9.2.0_beta.1 / A5 950PR，openEuler-24.03-LTS）：torch_npu.profiler 用 schedule(wait/warmup/active/repeat/skip_first) 时，宿主侧按 active 次数正好进入 RECORD 窗口，但落到 op_summary_*.csv 的设备侧 task 记录数少于 active，缺失全部集中在窗口头部（最早的若干次调用），窗口尾部完整。报告者的关键证据：同一份 trace 里 host,node,launch 的 Count 恰好等于 active（10），证明宿主确实在窗口内发起 10 次下发；设备侧 task 只有 8 条（偶发 9 条）；两份 trace 的 tail 都结束在同一 task_id，末尾紧跟一条时长 0.007µs 的 PLACE_HOLDER_SQE，说明停止边界干净、开始边界没对齐。换成单次更长的 fp32（约 90µs/次）时丢失条数变化（一次 0、一次 2），因此非确定性。'
+  source: 2026-09-11 GitCode Ascend/pytorch issue https://gitcode.com/Ascend/pytorch/issues/4743 （open）
+  behavior: 按 active=10 采一段 profile，op_summary 里只有 8 条 matmul（偶尔 9 条），最早的两三条记录凭空消失；重跑同一脚本丢的条数还会变。host 侧 launch 次数看着是对的，所以按汇总表算这段窗口的算力或耗时会算少，且没有任何告警。
+  trigger_surface: torch_npu 2.12.0 + CANN 9.2.0_beta.1（A5/950PR）；torch_npu.profiler.profile + schedule(wait>0, warmup>0, active>0)
+  discovery: 2026-10-21 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    rewritten:
+    - detail

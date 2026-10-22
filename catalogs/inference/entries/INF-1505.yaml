@@ -1,0 +1,69 @@
+id: INF-1505
+legacy_ids: []
+slug: msprobe_int8_quant_output_skipped_or_binary_compared
+aliases: []
+title: int8 量化算子输出被比对跳过或误判 fail
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: pytorch
+    component: INT_TYPE 与二进制比较
+  behavior: core/common/const.py 的 INT_TYPE 不含 int8，比对按 not inexact 判 SKIP；放开类型后又沿用要求完全一致的 compare_bool_tensor，量化算子必判 fail
+effect:
+  objects:
+  - 测试判定
+  detail: api_accuracy_checker 比对含 int8 输出的 NPU 量化算子时，结果为 SKIP，备注为 'data type numpy.int8 not inexact'；改严格二进制比较后 error_rate 非 0、全部 fail
+  visibility: 静默错误
+mitigation:
+  detect: 比对结果里筛 Status=SKIP 且 Message 含 'not inexact' 的行，统计被跳过的 int8 输出算子数；不要以 SKIP 当通过
+  fix: 待定（#190 只给出修复总结，未给 PR 编号；#260 提出 requantize_compare 容忍量化误差，属方案讨论）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: mindstudio-probe 26.0.0a2；含 int8 输出的量化算子（npu_dynamic_quant / npu_rms_norm_dynamic_quant / npu_quant_matmul）；api_accuracy_checker 比对路径
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/190
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/msprobe/issues/260
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1502
+pattern: PAT-INF-0164
+original:
+  mechanism: mindstudio-probe 26.0.0a2 的 api_accuracy_checker 比对路径存在 int8 覆盖缺口，分两层：其一，python/msprobe/core/common/const.py 的 INT_TYPE 列表只覆盖部分整型，不含 torch.int8 与 numpy.int8，于是 int8 输出被归为非精确类型（not inexact），比对直接判 SKIP，npu_dynamic_quant、npu_rms_norm_dynamic_quant、npu_quant_matmul、npu_weight_quant_batchmatmul 这些输出 torch.int8 的 NPU 量化算子的输出全部得不到验证。其二，#260 说明即便放开类型，整型走的是 compare_bool_tensor（error_nums = (bench != device).sum()，error_rate 必须为 0 才 PASS），而量化本身是 clamp(round(x/scale), -128, 127)，scale 抖动或舍入差异必然让部分元素差 1，二进制完全一致的要求对量化算子不成立；#260 提出 requantize_compare 容忍量化误差的方案。两 issue 均未给出已合入的修复 PR 编号。
+  source: 2026-03-28 GitCode Ascend/msprobe issue https://gitcode.com/Ascend/msprobe/issues/190 （closed）与 2026-04-23 https://gitcode.com/Ascend/msprobe/issues/260 （closed）
+  behavior: 跑量化模型的算子精度比对，int8 输出的那些量化算子在结果里是 SKIP，备注写 'data type numpy.int8 not inexact'，看起来像「工具主动跳过不适用项」，于是整网最该验证的量化算子其实一个都没比。改用严格二进制比较后，这些算子又全部 fail、误差率不为 0，用户在「全跳过」和「全失败」之间没有可用的判定口径。
+  trigger_surface: msprobe api_accuracy_checker 比对；模型含 int8 输出的 NPU 量化算子（npu_dynamic_quant 等）；int8 二进制一致性比较路径
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

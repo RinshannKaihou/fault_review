@@ -1,0 +1,69 @@
+id: INF-1618
+legacy_ids: []
+slug: msmodelslim_kv_cache_field_silently_dropped_c8
+aliases: []
+title: KV Smooth 配置的 kv_cache 字段被静默丢弃，C8 未生效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: pytorch
+    component: linear_quant 处理器配置
+  behavior: 指南把 kv_cache 写在 linear_quant 下；该处理器配置类无此字段，也不禁止多余字段，pydantic 默认丢弃，C8 量化不执行。
+effect:
+  objects:
+  - 模型权重
+  - 性能/资源
+  detail: 按官方推荐配置做 KV Smooth + KV Cache C8，产物只有 KV Smooth + W8A8，没有 C8 量化参数；无报错无日志，用户以为 KV 已 C8，实际显存与带宽收益都没拿到。
+  visibility: 静默错误
+mitigation:
+  detect: '量化产物里核对是否出现 C8/KV Cache 量化参数，或直接把配置里的 processor 换成 type: dynamic_cache 做 A/B；pydantic 对未声明字段默认丢弃，配错不会有任何提示'
+  fix: issue open；正文建议给配置模型加 extra='forbid' 并修正指南示例（docs/zh/knowledge_base/quantization_algorithms/kv_smooth/usage_kv_smooth.md:124），未核实修复状态
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: msmodelslim commit beb917d011bc1d11a8bf5e46f62928f6d84b06a7，按 KV Smooth 使用指南步骤 4 的推荐起点配置（kv_cache 挂在 linear_quant 下）+ pydantic 2 默认 extra='ignore'
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: '同仓 issue #264（[Feature] 补全量化配置前置校验）描述的是同一机制的一般化：多个 pydantic 模型缺 extra=''forbid''，字段拼写/缩进错误被静默丢弃；本条只收录有具体产物后果的实例，未拆条。'
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/584
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1614
+pattern: PAT-INF-0175
+original:
+  mechanism: 'msmodelslim commit beb917d011 上，KV Smooth 使用指南的「完整示例：KV Smooth + KV Cache C8 量化（推荐起点）」在 docs/zh/knowledge_base/quantization_algorithms/kv_smooth/usage_kv_smooth.md:124-151 把 kv_cache: {k_dtype: int8, v_dtype: int8} 写在 type: linear_quant 处理器下；而 msmodelslim/processor/quant/linear.py:39-53 的 LinearProcessorConfig 只声明 type/qconfig/include/exclude，AutoProcessorConfig 也没有禁止多余字段，pydantic 2 默认 extra=''ignore'' 会把 kv_cache 块整块丢掉且不报错（报告者用最小 pydantic 模型本地复现：传入 kv_cache 后 model_validate 只留下 type/include）。仓内 KV Cache 量化由独立处理器 type: dynamic_cache 实现，docs/zh/knowledge_base/quantization_algorithms/kvcache_quant/usage_kvcache_quant.md:127-135 的示例才是正确写法。'
+  source: 2026-09-22 GitCode Ascend/msmodelslim issue https://gitcode.com/Ascend/msmodelslim/issues/584 （open）
+  behavior: 用户照 KV Smooth 指南做「KV Smooth + KV Cache C8」，量化命令正常跑完、日志没有任何提示，产出的权重里却只有 KV Smooth 与 W8A8，没有任何 KV Cache C8 量化参数：以为开了 C8（省显存、提带宽），实际 KV 仍是原始精度，收益为零，问题只能靠检查产物或换 dynamic_cache 做对比才暴露。
+  trigger_surface: '按 KV Smooth 指南在 type: linear_quant 下写 kv_cache 块 + pydantic 默认 extra=''ignore''；改用 type: dynamic_cache 即正常'
+  discovery: 2026-10-20 历史索引回填（issue created < 2026-10-07）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - effect
+    - behavior

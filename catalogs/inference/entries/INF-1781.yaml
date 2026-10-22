@@ -1,0 +1,53 @@
+id: INF-1781
+legacy_ids: []
+slug: ops_transformer_bsa_scale_zero_mask_mismatch
+aliases: []
+title: BlockSparseAttention 缺省 scale=0 与 mask 不
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: 默认值与 CheckSparsePattern
+  behavior: 两缺陷：(1) 不传 scale_value 时按 0.0 计算（算子定义 attr_scaleValue 默认 "0"、torch_npu 文档默认 0.0），输出退化为选中 token 的 V 均值；(2) blockSparseMas
+effect:
+  objects:
+  - 数值结果
+  detail: A2 实测：默认 vs scale=0.125 max_abs_diff 0.566；默认与显式 scale_value=0.0 逐位一致、与 CPU fp32 参考(scale=0)一致——即按 0 缩放静默算完；mask 块数不足用例输出与任何参考不可解释（0.678/NaN）、mssaniti
+  visibility: 静默错误
+mitigation:
+  detect: 与 CPU fp32 参考逐点比对；输出≈V 均值是 scale=0 特征
+  fix: 待定（建议默认改 1.0/强制显式/0 表示 D^-0.5 语义；两 issue open）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Atlas A2（910B2）+ CANN 9.2.0 + torch_npu 2.12.0.post3 + npu_block_sparse_attention；默认参数即触发（scale）或畸形 mask 触发
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+  stage: N/A
+remarks: '同系列还有 #6349（mask 块数错配）。默认值语义错误与校验缺失并存：用户按文档省略参数即拿到数学上退化但无告警的结果。'
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6347
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6349
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu.npu_block_sparse_attention（底层 aclnnBlockSparseAttention），Atlas A2（910B2）、CANN 9.2.0、torch_npu 2.12.0.post3。#6347：不传 scale_value 时按 0.0 计算——q[1,1,64,64]/k[1,1,128,64]/v 同、mask ones、[64,128] 块形、BNSD、num_key_value_heads=1、inner_precise=1。实测默认 vs 显式 scale_value=0.0 逐元素完全一致（0.0）；默认 vs scale_value=0.125（正确 D^-0.5）max_abs_diff 0.566；默认 vs CPU fp32 参考(scale=0.0) 0.0——即按 0 缩放静默完成，输出退化为选中 token 上 V 的均值（out_default[0,0,0,:5]≈mean(V)[0,0,:5]）。佐证：aic-ascend910b-ops-info-transformer.json attr_scaleValue 默认 "0"；torch_npu 文档 scale_value 默认 0.0。期望默认 1.0/强制显式/0 表示自动 D^-0.5。#6349：blockSparseMask 块数量错配未校验——mask [1,1,1,1]（Sq=128 应为 [1,1,2,1]）不报错，输出与「丢弃缺失块」参考差 NaN、与「全保留」参考差 0.678，不可解释；[2,2,1,1] vs [1,1,1,1] 报 561103（batch）、5D 报 161002（rank）——即只查这两类。mssanitizer memcheck 对块数不足用例不报非法访存但结果未定义。定位 block_sparse_attention_tiling.cpp CheckSparsePattern。
+  source: 2026-10-20 每日扫描；https://gitcode.com/cann/ops-transformer/issues/6347 ；https://gitcode.com/cann/ops-transformer/issues/6349
+  behavior: 调用 npu_block_sparse_attention 不传 scale_value 时，注意力按缩放 0 计算，输出静默退化成被选中 token 上 V 的平均：结果看似有限合理、无任何告警，与正确缩放（D^-0.5）相差达 0.566；另外 blockSparseMask 的块数量与序列长度不匹配时也不报错，输出无法用任何合理语义解释（既不是丢弃缺失块也不是全保留），内存检查工具不报错但结果未定义。
+  trigger_surface: Ascend + npu_block_sparse_attention + 缺省 scale_value 或块数量错配 mask
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
