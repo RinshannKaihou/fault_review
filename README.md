@@ -7,6 +7,8 @@
 
 检索结果**只供参考**，用于提出假设、寻找相似先例，不能直接当结论。引用前要打开条目原文核对（见[引用纪律](#引用纪律)）。
 
+当前快照（2026-10-22）含 **2,461 条**已审计故障条目（推理 2,097、训练 364），其中 **619 条**来自 2026-10-20/21 的 NPU 存量回填。仓库、硬件、来源的覆盖明细见 [1022 故障条目快照](#1022-故障条目快照)。
+
 ## 数据流
 
 编目的真源不在本仓库。两个上游仓库每天由扫描任务写入新条目，本仓库只读取它们的快照：
@@ -146,16 +148,138 @@ python scripts/download_model.py             # 下载 bge-m3（约 2.2 GB）到 
 
 `sync_catalogs.sh` 依次复制快照、重建索引、运行两道评测门禁。它**不是原子操作**：中途失败时，`catalogs/` 和索引可能已经改了。它也不会自己提交 Git，所以不要挂在每日扫描后面无人值守运行。上游仓库换了位置时，用 `FAULT_RAG_SRC_INFERENCE_REPO` / `FAULT_RAG_SRC_TRAINING_REPO` 指定新的仓库根目录。
 
+## 1022 故障条目快照
+
+2026-10-22 发布的快照：推理 `5ee424b`（2,097 条）、训练 `2671871`（364 条），合计 **2,461 条**，全部 `status: active`、`pending_audit: 0`。
+
+上游 23:00 扫描当天新写的 20 条（`INF-2098..2117`）**不在**本快照里：它们还处在 `pending_audit`，等 02:00 审计定稿后再单独增量同步。快照滞后于真源是设计如此，见[快照与同步](#快照与同步)。
+
+### 仓库覆盖
+
+按每条的主来源链接（`evidence[0].url`）聚合，同一仓库的多条 issue 各计一次；`(无 issue 链接)` 是 Markdown 时代迁移过来、没有可回溯外链的历史条目。
+
+| 来源仓库 | 条目 |
+|---|---|
+| `vllm-project/vllm` | 553 |
+| `tenstorrent/tt-metal` | 286 |
+| `sgl-project/sglang` | 263 |
+| `(无 issue 链接)` | 197 |
+| `vllm-project/vllm-ascend` | 179 |
+| `cann/ops-nn` | 96 |
+| `Ascend/pytorch` | 75 |
+| `cann/ops-transformer` | 70 |
+| `NVIDIA/Megatron-LM` | 61 |
+| `NVIDIA/TensorRT-LLM` | 56 |
+| `huggingface/transformers` | 50 |
+| `mindspore/mindspore` | 49 |
+| `huggingface/trl` | 44 |
+| `deepspeedai/DeepSpeed` | 41 |
+| `cann/ops-math` | 37 |
+| 其余 40 个来源 | 404 |
+
+### 来源平台
+
+| 平台 | 条目 | 占比 |
+|---|---|---|
+| GitHub | 1,732 | 70.4% |
+| GitCode | 530 | 21.5% |
+| AtomGit | 2 | 0.1% |
+| 无外链（历史迁移条目） | 197 | 8.0% |
+
+### 硬件覆盖
+
+条目 schema **没有硬件字段**，下表是按标题、`trigger_note`、`mechanism`、`behavior`、`source` 里出现的代号做的文本统计，**可多重计数**（一条同时提到 A3 与 910C 会各计一次），只能当覆盖面的粗略估计：
+
+| 硬件 | 提及条目 |
+|---|---|
+| 910B（含 B2/B3/B4） | 200 |
+| A3 | 86 |
+| 950 / 950PR | 57 |
+| A2 | 50 |
+| 310P / 300I Duo | 13 |
+| 910C | 12 |
+| Ascend / Atlas / CANN（未指明代际） | 717 |
+| tt-metal（Tenstorrent，非 Ascend） | 289 |
+| NVIDIA / CUDA / ROCm | 530 |
+| 文本里未提任何硬件 | **995（40.4%）** |
+
+各行的口径是"文本里出现过该代号"，彼此**重叠**（一条同时写 A3 与 CANN 会两行都计），所以不能相加。**40% 的条目说不清跑在什么硬件上**，这是当前编目的真实短板——需要硬件信息时读 `original.trigger_surface` 与 `source`，不要按分类猜。
+
+### 原因与影响分布
+
+| 原因子系统 | 条目 | | 影响可见性 | 条目 |
+|---|---|---|---|---|
+| 算子/内核 | 611 | | 静默错误 | 1,592 |
+| KV缓存 | 347 | | 报错 | 240 |
+| 量化 | 197 | | 质量退化 | 226 |
+| 解码/采样 | 149 | | 数值异常 | 134 |
+| 编译器 | 145 | | 性能退化 | 101 |
+| 运行时/执行 | 140 | | 不可复现 | 101 |
+| 调度/服务 | 88 | | 挂起 | 62 |
+| 观测/评测 | 88 | | 待定 | 5 |
+
+置信度：`verified` 612、`documented` 1,830、`speculative` 18、待定 1。`documented` 只表示"有来源记录"，不等于已复现。
+
+### 补齐的 NPU 存量
+
+2026-10-20/21 做了一次历史存量回扫，来源是 22 个仓库在 `2026-10-07` 之前创建的 issue：
+
+| 阶段 | 数量 |
+|---|---|
+| 索引到的 pre-cutoff issue | 42,002 |
+| 关键词命中 / 强命中 | 34,848 / 16,896 |
+| 逐条读正文并判定的候选 | 2,317（100% 覆盖，台账可查） |
+| 判为硬报错（`fail_loud`）未收录 | 62.1%（1,440 条） |
+| **写成条目** | **619**（推理 582、训练 37） |
+| 来源 issue | 619 个（GitCode 437、GitHub 182），跨 23 个仓库 |
+
+619 条全部经过多模型评审与逐条证据核对，`pending_audit: 0`。评审阵容当天换过一次：早期是 3 个基础评审 + 4 个面板模型，10-21 下午起改为 `glm-5.3-flash` / `deepseek-v4.1-flash` / `qwen3.8-flash` 基础评 + `kimi-k3` / `glm-5.3` / `qwen3.8-max` 面板；另有 27 个"改写后未过复核"的字段由 Opus 5.5 独立复核，15 条重写。未收录的候选不是"没有故障"，而是缺可落地机制、纯报错、纯性能或文档类。
+
+回填条目的仓库分布：
+
+| 仓库 | 回填条目 | | 仓库 | 回填条目 |
+|---|---|---|---|---|
+| `vllm-project/vllm-ascend` | 166 | | `cann/ge` | 22 |
+| `cann/ops-nn` | 68 | | `mindspore/mindformers` | 20 |
+| `Ascend/pytorch` | 62 | | `Ascend/msprobe` | 19 |
+| `cann/ops-transformer` | 55 | | `Ascend/torchair` | 15 |
+| `mindspore/mindspore` | 49 | | `Ascend/op-plugin` | 15 |
+| `cann/ops-math` | 28 | | `Ascend/msmodelslim` | 12 |
+| `Ascend/MindSpeed-LLM` | 26 | | `triton-lang/triton-ascend` | 12 |
+| | | | 其余 9 个仓库 | 50 |
+
+### 复算这些数字
+
+上面的计数都来自快照文件本身，没有外部台账。复算示例：
+
+```bash
+cd /workspace/RAG/fault_review
+python3 - <<'PY'
+import glob, re, yaml, collections
+url = re.compile(r"https?://(?:github|gitcode)\.com/([^/]+/[^/]+)/(?:issues|pull)/\d+")
+rows = [yaml.safe_load(open(p)) for p in glob.glob("catalogs/*/entries/*.yaml")]
+print(len(rows), collections.Counter(
+    (url.search(d["evidence"][0]["url"]).group(1) if d.get("evidence") and url.search(d["evidence"][0]["url"]) else "(no link)")
+    for d in rows).most_common(5))
+PY
+```
+
+硬件那一节是文本正则统计，换一套代号写法会得到略有出入的数字；引用时说明是"提及量"而非"条目归属"。
+
 ## 评测门禁与测试
 
 ```bash
 python3 -m unittest discover -s tests -q     # 单元测试
 bash tests/smoke.sh                          # CLI 冒烟测试
 python3 eval/run_eval.py --cases eval/cases.jsonl      --check eval/baseline.json
-python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_indy.json
+python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_indy.json --per-case
 ```
 
-两个评测集：`cases.jsonl` 是 36 条按来源核验的查询；`indy_cases.jsonl` 是 63 条独立盲测查询，由只读过源条目的独立生成者编写，2026-10-14 起纳入门禁。门禁规则：Recall@5 / Recall@10 不得低于基线，MRR@10 / nDCG@10 最多下降 0.02，此外还有绝对下限和负结果分片门槛。标注里的旧编号会自动换算成新编号。
+两个评测集：`cases.jsonl` 是 36 条按来源核验的查询；`indy_cases.jsonl` 是 63 条独立盲测查询，由只读过源条目的独立生成者编写，2026-10-14 起纳入门禁。
+
+**bench 用聚合口径**：Recall@5 / Recall@10 不得低于基线，MRR@10 / nDCG@10 最多下降 0.02，另有绝对下限与负结果分片门槛。
+
+**indy 用逐条口径**（`--per-case`）：基线通过的 query 必须继续通过 R@5 与 R@10，任意一条掉出即 block；通过集内的名次浮动不 block，但写进报告的 `churn` 字段，发布前要人工看一遍 `slipped` 列表。聚合口径在批量扩容下结构性不可通过——63 条上一条就是 1.6pp，语料 +46% 时只有 2 条真失守，聚合却报 4 项回退。`eval/fix_list.json` 只登记"基线时就已失守、且纯 BM25 / 纯 dense 都进不了前 20"的弱 gold，必须附单路诊断证据。标注里的旧编号会自动换算成新编号。
 
 检索结果只供参考，用户关心的是正确条目能否出现在浏览窗口内，所以 Recall@5/@10 是硬指标，MRR 等排序指标只作参考。通过门禁**不代表**新增、修订或退役的条目语义正确。字段说明、门槛和基线更新流程见 [eval/README.md](eval/README.md)，历次验收记录见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)。
 
@@ -169,8 +293,11 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 | 10-13 | 每日扫描写 YAML 的离线试点：glm-5.3 输出 JSON，脚本转成 YAML 并校验 | `scan_pilot/REPORT*.md` |
 | 10-13 | 上游切换：Markdown 冻结，每日扫描通过 `tools/catalog_tool.py` 写 YAML，新增 02:00 UTC 每日审计 | [normalize/cutover/CUTOVER.md](normalize/cutover/CUTOVER.md)（含回滚材料） |
 | 10-13 | 本仓库改读 YAML 快照，两道门禁的 Recall 均未下降 | [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) |
+| 10-20/21 | NPU 历史存量回扫：索引 22 仓、42,002 条 pre-cutoff issue，逐条判定 2,317 条候选，写入 619 条条目（推理 582、训练 37） | [1022 故障条目快照](#1022-故障条目快照) |
+| 10-21/22 | 评审阵容换为 3 个 flash 基础评 + 3 个强模型面板；27 个"改写后未过复核"的字段由 Opus 5.5 独立复核，15 条重写（其中 5 条模型的措辞也不合格，手工修正） | 见下方门禁与 `eval/fix_list.json` |
+| 10-22 | 快照发布 2,097 + 364 条；indy 门禁改为"逐条通过集"口径 | [评测门禁与测试](#评测门禁与测试) |
 
-后续计划按顺序进行，截至 2026-10-15 尚未开工：修复悬空的 `var` 关联 → 模式/实例分层（合并近重复条目）→ NPU 历史存量回扫（[normalize/npu_backfill/PLAN.md](normalize/npu_backfill/PLAN.md)）→ 补全改进措施。
+后续计划按顺序进行：修复悬空的 `var` 关联 → 模式/实例分层（合并近重复条目）→ 补全改进措施 → 给条目补用户的症状口语表达（口语 query 与条目文本的词汇鸿沟，见 `eval/fix_list.json` 的两条说明）。NPU 历史存量回扫已于 2026-10-21 完成，不再是待办（原方案见 [normalize/npu_backfill/PLAN.md](normalize/npu_backfill/PLAN.md)）。
 
 使用时注意：
 
