@@ -2,8 +2,14 @@
 
 import argparse
 import json
+import os
 import sys
 import time
+
+# CPU-only tool. On the 8-GPU box, the first forward pass probes the CUDA driver
+# (torch.cuda.is_available() alone measured 3.2 s); hiding the GPUs before torch is
+# imported cuts that to 0.3 s. setdefault, so an explicit setting still wins.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 
 def _print(obj):
@@ -34,6 +40,8 @@ def main(argv=None):
                    help="include pointer/meta entries in full-text search")
     s.add_argument("--full", action="store_true",
                    help="include complete fields instead of summary")
+    s.add_argument("--no-rerank", action="store_true",
+                   help="skip the cross-encoder stage (hybrid order only, ~2 s faster)")
 
     l = sub.add_parser("lookup", help="exact id (INF-0044 / TRN-0001), old id (1.44 / HW.01), snake_name or alias")
     l.add_argument("query")
@@ -66,6 +74,7 @@ def main(argv=None):
             category=args.category, confidence=args.confidence,
             trigger=args.trigger, include_neg=not args.no_neg,
             include_pointers=args.include_pointers, pattern=args.pattern,
+            rerank=not args.no_rerank,
         )
         if args.full:
             from .search import _full, get_index
@@ -75,6 +84,7 @@ def main(argv=None):
             for rec in res:
                 rec["fields"] = _full(by_key[(rec["repo"], rec["id"])])["fields"]
         _print({"query": args.query, "elapsed_ms": int((time.time() - t0) * 1000),
+                "reranked": any(r["rerank_rank"] is not None for r in res),
                 "results": res})
     elif args.cmd == "lookup":
         _print(search_mod.lookup(args.query))

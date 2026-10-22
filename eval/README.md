@@ -10,6 +10,15 @@ Two labelled sets gate the agent-facing search API:
   original `neg-docs` tag and `negative`. Tracked and gated since 2026-10-14; it is no
   longer blind to future changes, so do not tune against individual cases.
 
+A third set is measured but not gated:
+
+- `heldout_cases.jsonl`: 50 colloquial queries (2026-10-22), one per randomly sampled entry
+  (seed 20261022; 40 inference, 10 training) that is not a gold in either gated set. The
+  writer model (qwen3.8-max) saw only the entry's observable fields (effect detail,
+  behaviour, trigger surface) and was told not to copy distinctive phrases or identifiers.
+  It was the fresh check for the reranker; it has now informed one decision, so the next
+  change that needs an untouched check needs a new set.
+
 ## Label discipline
 
 Each row contains:
@@ -41,7 +50,10 @@ python3 eval/run_eval.py \
 # Release/regression gate against the checked-in baselines (both must pass;
 # scripts/sync_catalogs.sh runs both).
 python3 eval/run_eval.py --cases eval/cases.jsonl --check eval/baseline.json
-python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_indy.json
+python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_indy.json --per-case
+
+# Observation only.
+python3 eval/run_eval.py --cases eval/heldout_cases.jsonl --no-gate --min-cases 50
 ```
 
 The model is loaded once per run. Output is JSON on stdout; gate failures are also

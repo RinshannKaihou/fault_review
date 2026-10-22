@@ -2,7 +2,7 @@
 
 推理 / 训练两个故障编目的命令行检索工具，以及把这两个编目迁移成结构化 YAML 时留下的工具与记录。
 
-- **`fault-rag`**（主体）：输入症状、机制或编号，从两个编目里找相似故障。BM25 与 `BAAI/bge-m3` 向量混合检索，中英混排都能查；输出 JSON，供人或 agent 通过 Bash 调用。
+- **`fault-rag`**（主体）：输入症状、机制或编号，从两个编目里找相似故障。BM25 与 `BAAI/bge-m3` 向量混合检索，再用 `BAAI/bge-reranker-v2-m3` 交叉编码器重排，中英混排都能查；输出 JSON，供人或 agent 通过 Bash 调用。
 - **`normalize/`**：2026-10 编目结构化迁移的流水线、网关模型审计、每日扫描切换手册，以及后续批量任务（如 NPU 历史存量回扫）的方案与脚本。
 
 检索结果**只供参考**，用于提出假设、寻找相似先例，不能直接当结论。引用前要打开条目原文核对（见[引用纪律](#引用纪律)）。
@@ -22,7 +22,7 @@ scripts/sync_catalogs.sh   维护者审查后手动运行：复制快照 → rei
    ▼
 catalogs/                  已提交的快照；catalogs/SOURCES.txt 记录对应的上游提交与条目数
    ▼      ./fault-rag reindex
-data/、models/bge-m3/      本机索引与模型，不入 Git
+data/、models/               本机索引与模型（bge-m3、bge-reranker-v2-m3），不入 Git
    ▼
 ./fault-rag search | lookup | related
 ```
@@ -38,7 +38,7 @@ cd fault_review
 python3 -m venv "$HOME/fault-rag-venv"      # 已有满足 requirements.txt 的环境可跳过这两行
 source "$HOME/fault-rag-venv/bin/activate"
 python -m pip install -r requirements.txt
-python scripts/download_model.py             # 下载 bge-m3（约 2.2 GB）到 models/bge-m3/
+python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2-m3（各约 2.2 GB）到 models/
 ./fault-rag reindex --full                   # 首次从 catalogs/ 构建索引
 ./fault-rag stats                            # 确认索引条数
 ```
@@ -127,6 +127,7 @@ python scripts/download_model.py             # 下载 bge-m3（约 2.2 GB）到 
 
 - **BM25**：中文用 jieba 分词，代码与英文用正则切词。索引文本包括新旧编号、名称、新旧分类、标题，以及叙述字段（机制、行为、签名、触发面、复现、来源、回访记录）。
 - **向量**：`bge-m3` 只编码叙述原文（名称、旧分类、机制、行为、签名、触发面）。
+- **重排**：hybrid 取融合后前 30 名，交给 `bge-reranker-v2-m3` 把查询和条目（标题、现象、叙述原文）放在一起读、重新打分，最终名次是混合名次与重排名次的 RRF。只按重排分数排会把只共享表面现象（如"乱码"）的条目顶到具体机制之前，所以保留混合名次。查询向量与重排用 bf16（CPU 原生支持），进程内隐藏 GPU，避免 CUDA 驱动探测白耗 3 秒。冷启动约 11 秒，`--no-rerank` 约 6 秒。依据见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) 2026-10-22。
 - **融合**：hybrid 模式用 RRF 合并两路名次。向量路会给每个合格条目排名，所以 hybrid 总有结果；`--mode bm25` 时如果没有任何关键词命中，会返回空列表。空列表不代表编目里没有相关故障，可以换 hybrid 或换个说法再查。
 
 `cause`、`effect` 等结构化字段刻意**没有**加进向量文本，也没有整批加进 BM25。在 63 条独立集上实测：加进向量文本后，向量偏向机制措辞，离用户的症状描述更远（R@10 0.984 → 0.968）；加进 BM25 后，主题相近的条目反超正确条目（R@5 0.952 → 0.937）。详见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)，以及 `fault_rag/parse.py:embed_text`、`fault_rag/index.py:bm25_text` 的注释。
@@ -296,6 +297,7 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 | 10-20/21 | NPU 历史存量回扫：索引 22 仓、42,002 条 pre-cutoff issue，逐条判定 2,317 条候选，写入 619 条条目（推理 582、训练 37） | [1022 故障条目快照](#1022-故障条目快照) |
 | 10-21/22 | 评审阵容换为 3 个 flash 基础评 + 3 个强模型面板；27 个"改写后未过复核"的字段由 Opus 5.5 独立复核，15 条重写（其中 5 条模型的措辞也不合格，手工修正） | 见下方门禁与 `eval/fix_list.json` |
 | 10-22 | 快照发布 2,097 + 364 条；indy 门禁改为"逐条通过集"口径 | [评测门禁与测试](#评测门禁与测试) |
+| 10-22 | 交叉编码器重排上线（前 30 名，bf16）；新写 50 条口语留出题 R@5 0.76→0.88，冷启动延迟与之前持平（约 11 秒） | [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) |
 
 后续计划按顺序进行：修复悬空的 `var` 关联 → 模式/实例分层（合并近重复条目）→ 补全改进措施 → 口语/模糊症状 query 的检索改进（诊断与 A/B 结论见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) 2026-10-22 一节）。NPU 历史存量回扫已于 2026-10-21 完成，不再是待办（原方案见 [normalize/npu_backfill/PLAN.md](normalize/npu_backfill/PLAN.md)）。
 
@@ -310,7 +312,7 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 
 ```text
 fault-rag        CLI 入口（bash；切到仓库根目录后运行 python3 -m fault_rag）
-fault_rag/       parse.py 读快照 → index.py 建 BM25 与向量索引 → search.py 检索；embed.py 封装 bge-m3
+fault_rag/       parse.py 读快照 → index.py 建 BM25 与向量索引 → search.py 检索；embed.py 封装 bge-m3；rerank.py 交叉编码器重排
 catalogs/        上游编目的已提交快照（只读，不手工编辑）
 scripts/         sync_catalogs.sh（发布快照）、download_model.py（下载模型）
 eval/            评测集、基线、run_eval.py、验收记录

@@ -327,6 +327,9 @@ def main(argv=None):
     fix_list = set(fix_kinds)
     gate_failures = [] if args.no_gate else check_report(
         report, baseline=baseline, fix_list=fix_list, per_case=args.per_case)
+    from fault_rag import rerank as rerank_mod
+
+    report["reranker_available"] = rerank_mod.available()   # a missing model degrades every hybrid query
     report["quality_gate"] = {
         "passed": not gate_failures,
         "failures": gate_failures,

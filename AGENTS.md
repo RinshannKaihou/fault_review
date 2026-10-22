@@ -25,7 +25,10 @@ stdout 一律是 JSON。出错信息在 stderr。
 
 ## search 要点
 
-- 默认 hybrid（BM25 + bge-m3 稠密向量，RRF 融合）。中英混排查询都支持。
+- 默认 hybrid：BM25 + bge-m3 稠密向量 RRF 融合，再用交叉编码器（bge-reranker-v2-m3）重排前 30 名，
+  与混合名次再做一次 RRF。中英混排查询都支持。冷启动一次约 11 秒；`--no-rerank` 跳过重排（约 6 秒），
+  只在需要快速粗查时用。`rerank_rank`（0 起）是重排名次，`null` 表示没经过重排（`--no-rerank`、
+  `--mode bm25|dense`，或精排模型缺失——缺失时 stderr 会提示，输出的 `reranked` 为 false）。
 - 过滤：`--repo inference|training`、`--category <原因子系统，如 KV缓存> | <旧分类 NUM|cat1|KV1>`、
   `--pattern PAT-INF-0035`（只看该故障模式这一族）、
   `--confidence verified|documented|speculative`、`--trigger yes|partial|no|not_target`、
@@ -105,7 +108,9 @@ slice。**bench 用聚合口径**：R@5/R@10 不得低于基线，MRR/nDCG 容�
 ## 故障排查
 
 - `index not built yet` → 先跑 `reindex`。
-- 模型缺失 → `python3 scripts/download_model.py`；访问不了 huggingface.co 时先 `export HF_ENDPOINT=https://hf-mirror.com`。
+- 模型缺失 → `python3 scripts/download_model.py`（bge-m3 与精排模型，可只给一个名字）；访问不了 huggingface.co 时先
+  `export HF_ENDPOINT=https://hf-mirror.com`。2026-10-22 镜像把下载 308 跳回 huggingface.co、hf 客户端报错，
+  当时去掉 `HF_ENDPOINT` 经代理直连可用。
 - `reindex` 报 `No module named 'yaml'` → `pip install -r requirements.txt`（读条目 YAML 需要 PyYAML）。
 - 明知编号却查不到 → 对照 `catalogs/SOURCES.txt` 与 `stats`：上游当天新写的条目要等下次手动同步；`git pull` 后还要 `reindex`。
 - 编目真源仓库搬家了 → 给 `scripts/sync_catalogs.sh` 设 `FAULT_RAG_SRC_INFERENCE_REPO` / `FAULT_RAG_SRC_TRAINING_REPO`（仓库根目录）环境变量（或改脚本默认值）后重跑。

@@ -52,9 +52,11 @@ cat catalogs/SOURCES.txt
 # Acceptance gate: the 36-case bench and the 63-case independent set; Recall@5/@10
 # may not drop below either baseline (see eval/README.md, eval/ACCEPTANCE.md).
 mkdir -p eval/results
-for set in "cases baseline bench" "indy_cases baseline_indy indy"; do
-    read -r cases base name <<< "$set"
-    python3 eval/run_eval.py --cases "eval/$cases.jsonl" --check "eval/$base.json" \
+# bench is gated on aggregates, indy per case (AGENTS.md); the indy run used to omit
+# --per-case, which made any sync since the 2097 expansion fail on aggregates.
+for set in "cases baseline bench" "indy_cases baseline_indy indy --per-case"; do
+    read -r cases base name flags <<< "$set"
+    python3 eval/run_eval.py --cases "eval/$cases.jsonl" --check "eval/$base.json" $flags \
         --output "eval/results/sync_$name.json" > /dev/null
     python3 - "eval/$base.json" "eval/results/sync_$name.json" "$name" <<'EOF'
 import json, sys

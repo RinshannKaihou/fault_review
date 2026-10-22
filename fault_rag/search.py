@@ -4,6 +4,7 @@ import re
 import numpy as np
 
 from . import embed as embed_mod
+from . import rerank as rerank_mod
 from .index import get_index, tokenize
 
 RRF_K = 60
@@ -73,9 +74,21 @@ def _rrf_scores(*rankings):
     return fused
 
 
+def _rerank(query, entries, order, fused, pool):
+    """Re-score the hybrid head with the cross-encoder and blend the two ranks (RRF).
+    Returns (new order, scores to report, {row: cross-encoder rank})."""
+    head = order[:pool]
+    s = rerank_mod.scores(query, [entries[i] for i in head])
+    by_score = sorted(range(len(head)), key=lambda n: -s[n])
+    rerank_r = {head[n]: r for r, n in enumerate(by_score)}
+    blended = _rrf_scores({i: r for r, i in enumerate(head)}, rerank_r)
+    head = sorted(head, key=lambda i: -blended[i])
+    return head + order[pool:], {**fused, **blended}, rerank_r
+
+
 def search(query, topk=8, mode="hybrid", repo=None, category=None,
            confidence=None, trigger=None, include_neg=True,
-           include_pointers=False, pattern=None):
+           include_pointers=False, pattern=None, rerank=True):
     idx = get_index()
     neg_flag = None if include_neg else False
 
@@ -99,8 +112,17 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
         bm25_r = _positive_ranks(bscores, eligible)
 
     fused = _rrf_scores(dense_r, bm25_r)
+    order = sorted(fused, key=lambda i: -fused[i])
 
-    top = sorted(fused, key=lambda i: -fused[i])[:topk]
+    rerank_r = {}
+    if rerank and mode == "hybrid":
+        if rerank_mod.available():
+            order, fused, rerank_r = _rerank(query, idx.entries, order, fused,
+                                             max(rerank_mod.POOL, topk))
+        else:
+            rerank_mod.warn_unavailable()
+
+    top = order[:topk]
     out = []
     for rank, i in enumerate(top, start=1):
         e = idx.entries[i]
@@ -109,6 +131,7 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
             "score": round(fused[i], 6),
             "dense_rank": dense_r.get(i),
             "bm25_rank": bm25_r.get(i),
+            "rerank_rank": rerank_r.get(i),
             "id": e["id"],
             "name": e["name"],
             "title": e.get("title"),

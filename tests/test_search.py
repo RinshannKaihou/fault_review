@@ -132,5 +132,40 @@ class BM25IntegrationTests(unittest.TestCase):
         self.assertEqual(results, [])
 
 
+class RerankTests(unittest.TestCase):
+    def setUp(self):
+        from fault_rag import rerank as R
+        self.R = R
+        self._scores, self._available = R.scores, R.available
+
+    def tearDown(self):
+        self.R.scores, self.R.available = self._scores, self._available
+
+    def test_blend_keeps_hybrid_signal(self):
+        # cross-encoder alone would put row 3 first; the RRF blend with hybrid rank keeps row 0
+        self.R.scores = lambda q, entries: [0.5, 0.1, 0.2, 0.9]
+        order, scores, rr = S._rerank("q", [{}] * 5, [0, 1, 2, 3, 4], {i: 0.0 for i in range(5)}, pool=4)
+        self.assertEqual(rr, {3: 0, 0: 1, 2: 2, 1: 3})
+        self.assertEqual(order[:4], [0, 3, 1, 2])          # 1/61+1/63 edges out 1/62+1/62
+        self.assertEqual(order[4], 4)                       # rows past the pool keep hybrid order
+        self.assertAlmostEqual(scores[0], 1 / 60 + 1 / 61)
+
+    def test_missing_model_falls_back_to_hybrid(self):
+        self.R.available = lambda: False
+        rows = S.search("loss spike", topk=3)
+        self.assertTrue(rows)
+        self.assertTrue(all(r["rerank_rank"] is None for r in rows))
+
+    def test_single_channel_modes_are_not_reranked(self):
+        rows = S.search("loss spike", topk=3, mode="bm25")
+        self.assertTrue(all(r["rerank_rank"] is None for r in rows))
+
+    def test_hybrid_search_is_reranked_when_model_present(self):
+        if not self.R.available():
+            self.skipTest("reranker model not downloaded")
+        rows = S.search("loss spike", topk=3)
+        self.assertTrue(all(r["rerank_rank"] is not None for r in rows))
+
+
 if __name__ == "__main__":
     unittest.main()
