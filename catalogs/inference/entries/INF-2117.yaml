@@ -1,0 +1,59 @@
+id: INF-2117
+legacy_ids: []
+slug: vllm_glm_nvfp4_pcp_double_allreduce
+aliases: []
+title: GLM-5.3-NVFP4 EP+TP>1+PCP>1 双归约静默放大
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: DSv3.2 decoder MoE 双归约
+  behavior: decoder 的 MoE 总以 reduce_results=False 构建并把 all-reduce 推给下一层；EP+PCP>1 时 use_all2all_kernels 为真又强制 runner 侧也归约，两次归约都执行。
+effect:
+  objects:
+  - 输出内容
+  detail: EP+TP>1+PCP>1 时每 prompt 静默全错：TP4×PCP2 GSM8K 20 题 0.00（word salad）、TP2×PCP2 0.60（×2 退化但连贯）、TP1×PCP4 0.90、TP4 PCP off 0.70；同节点改一行即 0.85。
+  visibility: 静默错误
+mitigation:
+  detect: EP+TP>1+PCP>1 组合跑 GSM8K 小样本；TP4 输出 word salad、TP2 退化但连贯的 tp_size 缩放特征即命中；一行 A/B skip_final_all_reduce 对照。
+  fix: 待定（issue open 0 评论；规避=不开 PCP 或 TP1）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 'EP on + TP>1 + PCP>1 三条件同时满足；EP off 时 0.31 形状在 MoE top-k 崩溃（另一缺陷 #60946 已合）'
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: model.py:96-102/:144/:158/:319（模型层归约）与 fused_moe/layer.py:239-244、runner/moe_runner.py:505-512（runner 侧归约）；源码定位+同节点单行 A/B，因果闭合，documented 不越级 verified（无本地复现）。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62945
+  kind: github_issue
+relations: []
+original:
+  mechanism: serving nvidia/GLM-5.3-NVFP4（GlmMoeDsa → deepseek_v32 → .nvidia decoder）在 EP on、TP>1、prefill context parallelism>1（PCP>1）时输出静默损坏，任何后端任何 prompt 长度均错。机制：1) NVIDIA DSv3.2 decoder 总以 reduce_results=False 构建 MoE、把 all-reduce 推迟并在下一层 fused_allreduce_rms_norm 里自己做（vllm/models/deepseek_v32/nvidia/model.py:96-102 @0.31.0，调用 :144/:158/:319）；2) EP on 且 PCP>1 时 use_all2all_kernels=True（fused_moe/config.py:1025-1029 @0.31.0/:1035-1038 @main），强制 runner skip_final_all_reduce=False（fused_moe/layer.py:239-244 @0.31.0，0.32.0 :241-246 与 main :245-250 逐字节相同）；3) runner 也归约（runner/moe_runner.py:505-512）。两次归约都执行，每层 MoE 输出以 tp_size 缩放进入残差流。复现（8×B200，EP on + --enforce-eager）：TP4×PCP2 GSM8K 20 题贪心 0.00（word salad、18/20 不可解析）；同 0.32.0 8×RTX PRO 6000 SM120 节点 0.00（第二架构复现）；同节点仅改一行 skip_final_all_reduce=True 得 0.85 干净（同节点 A/B 决定性）；TP4 PCP off 0.70、TP1×PCP4 0.90、TP2×PCP2 0.60（×2 缩放）。KV dtype/attention backend/强制 MQA 变体同样失败。12-token 算术题答「 3910」（正确 391）；16-token 首都题仍答 Paris（静默非常数）；2.3K needle 返回数字墙。
+  source: https://github.com/vllm-project/vllm/issues/62945（open 0 评论，2026-10-21 每日扫描，正文全文已读）
+  behavior: 用 vLLM 部署 GLM-5.3-NVFP4 且同时开专家并行、TP>1、prefill context parallelism>1：服务正常起、请求正常答，但内容静默全错——GSM8K 直接 0 分、输出大面积乱码或数值放大后的退化文本；TP 越大越烂（TP4 乱码、TP2 退化）。任一条件不满足（TP1 或 PCP off）即正常，极易被当成量化或模型问题排查。
+  trigger_surface: vLLM 0.31.0~main（代码逐字节相同）、B200（SM100）与 RTX PRO 6000（SM120）实测、nvidia/GLM-5.3-NVFP4、EP on + TP>1 + PCP>1。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

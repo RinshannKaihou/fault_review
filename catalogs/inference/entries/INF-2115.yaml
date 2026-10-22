@@ -1,0 +1,56 @@
+id: INF-2115
+legacy_ids: []
+slug: tt_paged_fused_update_cache_rowmajor
+aliases: []
+title: tt paged_fused_update_cache 行主序写坏 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: tt-metal
+    component: paged_fused_update_cache
+  behavior: ROW_MAJOR 路径在三种校验放行的配置下写坏 cache：FP32 输入默认 dest_acc 更新行全坏（含非有限值）；FP32 cache 其余行被舍到 bf16/tf32；bf16 输入开 dest_acc 更新行错。
+effect:
+  objects:
+  - KV状态
+  detail: Llama 70B decode 形状与 TILE 输入对比：FP32 输入默认配置 32,456~851,961 元素不同且含非有限值；bf16+FP32 cache 819,193~851,872 不同；bf16+True 32,510~32,758 不同；两架构数字一致。
+  visibility: 静默错误
+mitigation:
+  detect: 同数据同形状分别用 ROW_MAJOR 与 TILE 输入调用并对比 cache；非零差异数即命中（现有测试看不到该路径）。
+  fix: 待定（issue open 0 评论）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: ROW_MAJOR 输入 + 特定 input/cache dtype 与 fp32_dest_acc_en 组合；TILE 输入不受影响
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 与 10-20 INF-1784 中 embedding L1/DRAM 垃圾等搬运族同为数据搬运/布局缺陷但不同 op 不同缺陷点，不建 var。直接污染 KV cache 内容。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61540
+  kind: github_issue
+relations: []
+original:
+  mechanism: ttnn.experimental.paged_fused_update_cache 以 ROW_MAJOR 输入调用时在三种校验放行的配置下写坏 cache：1) FLOAT32 输入 + 默认 fp32_dest_acc_en=False：更新行全坏（含非有限值），任意 cache dtype；2) FLOAT32 cache：被更新 tile 的其余 31 行精度丢失（默认被舍到 bfloat16、fp32_dest_acc_en=True 时舍到 TF32）；3) BFLOAT16 输入 + fp32_dest_acc_en=True：更新行错。量化（Llama 70B decode 形状：8 users、8 KV heads、head_dim 128、每 case 两次 update、4,194,304 cache 元素，ROW_MAJOR 与 TILE 结果逐元素对比）：BF16/BF16/False=0、BF16/BF16/True=32,758、BF16/FP32/False=819,193、BF16/FP32/True=851,872、BF16/BF8B/False=0、BF16/BF8B/True=32,510、FP32/BF16/False=32,756（非有限）、FP32/BF16/True=0、FP32/FP32/False=851,961（非有限）、FP32/FP32/True=851,868、FP32/BF8B/False=32,456（非有限）、FP32/BF8B/True=0。Blackhole p100a 与 Wormhole n150 数字完全一致。期望：ROW_MAJOR 路径写出与 TILE 路径相同的 cache，未触碰值保持原值。
+  source: https://github.com/tenstorrent/tt-metal/issues/61540（open 0 评论，2026-10-21 每日扫描，正文全文已读）
+  behavior: 用 ttnn.experimental.paged_fused_update_cache 更新 paged KV cache 且输入是 ROW_MAJOR 布局：FLOAT32 输入默认配置下被更新的那行直接变垃圾（可能含 inf/NaN）；FLOAT32 cache 时同 tile 未更新的 31 行也被悄悄舍到 bf16/tf32；bf16 输入开 fp32_dest_acc 反而坏。错误写进 KV cache 后模型后续 decode 全程消费坏状态，无报错。
+  trigger_surface: Blackhole p100a 与 Wormhole n150 实测、ttnn.experimental.paged_fused_update_cache、ROW_MAJOR 输入 + 表列 dtype/dest_acc 组合。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

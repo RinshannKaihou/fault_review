@@ -1,0 +1,53 @@
+id: INF-2116
+legacy_ids: []
+slug: vllm_ascend_hc_pre_sinkhorn_eps_alignment
+aliases: []
+title: vllm-ascend hc_pre_v3 epsilon 错位致输出依赖行位置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: hc_pre Sinkhorn 列归一化
+  behavior: hc_pre 对按对齐 stride 存储（hcMult=4→每行 4 有效+4 padding）的列和缓冲加 epsilon 时用 packed 计数（3 行漏 row2 有效位），部分行分母没得到 epsilon。
+effect:
+  objects:
+  - 数值结果
+  detail: 算子级隔离复现（A3 实机，hc_mult=4、排除投影 GEMM、128 相同隐行、hc_base 三态、迭代 1/2/4/20）：全部 12 组复现位置依赖的 comb 输出——相同输入因行位置/划分不同而不同。首次列归一化前与迭代内都发生。
+  visibility: 静默错误
+mitigation:
+  detect: 同隐输入复制多行跑 hc_pre 并对比 comb 输出是否逐行一致；行位置相关差异即命中。
+  fix: 上游修复 https://github.com/vllm-project/vllm-ascend/pull/19401（Fix Sinkhorn column epsilon alignment in hc_pre kernels，open 未合、发布未核实）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: hc_mult=4（hcMultAlign=8）等对齐 stride 场景；vllm-ascend commit fbb4d867 起的 npu_hc_pre_v3
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: A3（910_93）、vllm-ascend v0.30.0rc2 镜像、commit fbb4d867；报告方为 xLLM 移植方（A3 实机复现+修复验证），源码行号定位闭合。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/19357
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/19401
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'A3 的 npu_hc_pre_v3（vllm-ascend commit fbb4d867，xLLM 以 hc_pre_va 集成）数值一致性问题：Sinkhorn 列归一化对行按对齐 stride 存储的列和缓冲加 epsilon 时使用 packed 元素计数。hcMult=4 时 hcMultAlign=8：ReduceSumARAPerf 后每行列和占 8 个 FP32 元素（4 有效+4 padding），但 Adds(reduceLocal, reduceLocal, hcEps, curRowFactor*hcMult) 只更新前 curRowFactor*4 个元素（3 行即前 12 个，含 row0 的 padding、漏 row2 的全部有效位）；随后除法按对齐 stride 读分母，部分行得到 epsilon 部分行没有。首次列归一化前与后续 Sinkhorn 迭代内均发生。算子级隔离复现（A3 实机，排除 attention/cache/分布式）：BF16 隐输入、hc_mult=4、hc_fn=0、hc_scale=0 排除投影 GEMM、128 相同隐行与相同外部 pre_mix、hc_base 取 zero/normal/small、迭代 1/2/4/20，全部 12 组组合复现位置依赖 comb 输出。上游修复 PR #19401（open）。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/19357 + 修复 https://github.com/vllm-project/vllm-ascend/pull/19401（均 open，2026-10-21 每日扫描，正文全文已读）
+  behavior: 在 A3 上跑含 Sinkhorn 列归一化的 hc_pre 算子：同样的输入行因所处行位置或输入划分方式不同，comb 输出不一样（12 组对照全复现）；上游 vllm-ascend 服务与移植版都能观察到输出随行位置漂移，无报错。上层模型表现为难解释的数值不一致。
+  trigger_surface: Ascend A3（910_93）、quay.io/ascend/vllm-ascend:v0.30.0rc2-a3、vllm-ascend fbb4d867、npu_hc_pre_v3/hc_mult=4。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

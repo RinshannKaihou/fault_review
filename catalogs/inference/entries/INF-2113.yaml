@@ -1,0 +1,64 @@
+id: INF-2113
+legacy_ids: []
+slug: vllm_rocm_attn_sw_mask_v_nan
+aliases: []
+title: vLLM ROCM_ATTN 滑窗不 mask V，0×NaN 污染整行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: ROCM_ATTN 滑窗 kernel
+  behavior: 两个 Triton kernel 只把窗外 key 的 score mask 掉（softmax 权重 0）但仍加载其 V 并算 p@v；KV 管理器会释放整窗外的块供复用，窗外槽位可含 NaN/Inf，0*NaN=NaN 污染整行。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: MI355X 实测（Qwen3.8-27B+DFlash2，drafter 2048 token 窗非因果）：8k 并发 1 接受长度 3.05（少复用故不显现）；并发 16 塌到 1.21（修复后 3.22）；64k 并发 1 run failed（修复后 2.84），无报错。
+  visibility: 数值异常
+mitigation:
+  detect: 滑窗层 + ROCM_ATTN 下出现间歇性整行 NaN/接受长度骤降；切 TRITON_ATTN 对照。
+  fix: 修复任务 https://github.com/vllm-project/vllm/issues/62415（zero V for out-of-window keys，open 未合）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 滑窗层 + ROCM_ATTN + 窗外块被复用/含 NaN（hybrid 或非因果 drafter 最易）；并发越高复用越多越易触发
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 与 10-19 INF-1468 类「加载未初始化/复用显存参与计算」家族同类机制但不同库不同 kernel（本条 vLLM 自有 Triton kernel、score mask 而 V 未 mask）。MI355X/nightly 实测，vLLM 自有 kernel 故其他 ROCm GPU 同受影响。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62828
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'ROCM_ATTN 的 Triton kernel（prefix_prefill.py 的 context_attention_fwd 与 chunked_prefill_paged_decode.py 的 kernel_paged_attention_2d）把窗外 key 的 score mask 掉使 softmax 权重为 0，但仍不带 mask 地加载这些 key 的 V 并计算 p@v。KV cache 管理器会释放整块在窗外的 block 供其他请求复用；hybrid 模型中同一块内存还可能存 mamba state。窗外槽位因此可含 NaN/Inf，0*NaN=NaN 使整行输出 NaN。context_attention_fwd 跑带上下文的 prefill 块与每个 spec decode verify 步；kernel_paged_attention_2d 在 HIP paged-attention kernel 不可用时跑 decode。实测（MI355X gfx950、vllm/vllm-openai-rocm:nightly-rocm100-0cbac6cd1，Qwen3.8-27B+z-lab/Qwen3.8-27B-DFlash2，drafter 用 2048 token 窗非因果 attention）：8k/并发1 接受长度 3.05、54.9 tok/s（修复后 3.05/55.5）；8k/并发16 1.21、132.5（修复后 3.22、225.3）；64k/并发1 run failed（修复后 2.84、9.6）。并发 1 时少有块被释放复用故不显现。kernel 测试对每个窗外槽填 NaN/Inf，两个 kernel 因果/非因果均出 NaN。TRITON_ATTN 已对窗外 key mask V（triton_unified_attention.py 的 sw_mask_v）。修复任务 #62415（zero V）open。'
+  source: https://github.com/vllm-project/vllm/issues/62828（open，2026-10-21 每日扫描，正文全文已读）
+  behavior: ROCm 上用 ROCM_ATTN 跑带滑动窗口的模型（尤其 hybrid 或 DFlash2 等非因果 drafter）：一旦窗外 KV 块被别的请求复用过、里面残留 NaN/Inf，attention 输出整行变 NaN——DFlash2 场景表现为草稿接受率暴跌（并发 16 时 3.2→1.2）或长输入直接跑挂，无任何报错；并发低时几乎不触发，换 TRITON_ATTN 即恢复。
+  trigger_surface: MI355X（gfx950）实测、vLLM 自有 Triton kernel 故其他 ROCm GPU 同受影响、nightly-rocm100-0cbac6cd1（0.30.1rc1.dev558）；滑窗层 + 窗外块复用/含 NaN。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 数值结果
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail

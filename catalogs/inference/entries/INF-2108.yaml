@@ -1,0 +1,53 @@
+id: INF-2108
+legacy_ids: []
+slug: flashinfer_fa2_running_max_nan
+aliases: []
+title: FlashInfer FA2 running max 不变时重缩放出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: FA2 ragged 重缩放分支
+  behavior: FA2 online softmax 在某个早期主导 key 使后续 KV tile 的 running max 保持不变时，该重缩放分支产生 NaN：全部输出 NaN、LSE -inf，而独立全 KV FP64 参考为精确 1。
+effect:
+  objects:
+  - 数值结果
+  detail: 最小复现：q=full(32768) bf16 [1,1,128]、k/v zeros [4096,1,128]、k[0]=160、v[0]=1，disable_split_kv=True：期望输出精确 1、LSE 有限；实测全部 128 输出 NaN、LSE -inf。纯合成张量无模型权重。
+  visibility: 数值异常
+mitigation:
+  detect: 构造早期主导 key（首 key 分数远高于后续全零 key）的单序列 prefill 用例与 FP64 参考比对。
+  fix: 待定（issue open 0 评论，根因未定位）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 早期 dominant key 使 running max 跨后续 tile 不变 + 不开 split-KV；JIT 编译 FA2（backend='fa2'）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 'A100-SXM4-80GB（SM80）、CUDA 12.9、PyTorch 2.13.0+cu129、flashinfer main 23f3e8f6（0.7.2 metadata）独立 JIT 缓存；与 10-16 INF-1407（plan() workspace 竞争）不同缺陷点。与当日 #6860/#6861（padding NaN 传播）机制不同：本条输入全有限、无 padding 污染。'
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6907
+  kind: github_issue
+relations: []
+original:
+  mechanism: FlashInfer FA2（BatchPrefillWithRaggedKVCacheWrapper backend='fa2'，JIT 编译自 main 23f3e8f63b66e9f42f24ac4e3e71dc7c38afbd00，metadata 0.7.2，独立 JIT 缓存）在有限输入下产出 NaN：当早期主导 key 使跨后续 KV tile 的 running maximum 保持不变时，online softmax 的重缩放分支产生 NaN。最小复现（A100-SXM4-80GB、CUDA 12.9、PyTorch 2.13.0+cu129，纯合成张量无模型权重）：q=torch.full((1,1,128),32768,bf16)、k/v=torch.zeros((4096,1,128))、k[0]=160、v[0]=1；wrapper.plan 后 run(return_lse=True)，disable_split_kv=True（单 running state 处理全序列）。期望（独立全 KV FP64 参考）：输出精确 1、LSE 有限；实测全部 128 个输出 NaN、LSE -inf。
+  source: https://github.com/flashinfer-ai/flashinfer/issues/6907（open 0 评论，2026-10-21 每日扫描，正文全文已读）
+  behavior: 用 FlashInfer 的 FA2 ragged prefill（JIT 版）在序列前部有一个极大 key、其后 key 分数都很小的输入上跑 attention：输出整段 NaN、LSE 变 -inf，而数学上输出应为确定的有限值；同样的输入开 split-KV 或换参考实现即正常。表现为模型在这些输入模式下一输出就 NaN，且无告警。
+  trigger_surface: A100（SM80）实测、flashinfer main 23f3e8f6/0.7.2 JIT、BatchPrefillWithRaggedKVCacheWrapper backend='fa2'、disable_split_kv=True、早期 dominant key 模式。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    issue_unfixed:
+    - behavior

@@ -1,0 +1,56 @@
+id: INF-2104
+legacy_ids: []
+slug: threshold_backward_global_race
+aliases: []
+title: ThresholdBackward 全局 thresholdVal_ 多线程竞争
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnThresholdBackward
+  behavior: per-call threshold 放进程级全局，第一段写入与 IsFloatEqual 读取之间可被其他线程覆盖，线程按他人 threshold 选错 kernel 模板（ReluGrad vs ThresholdGradV2D）。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 多线程并发时 A 线程读到 B 的 threshold：threshold=0 应走 ReluGrad 却走 ThresholdGradV2D，输出 0 掩码整片错位，无报错；判别元素 self≈0.0020 两线程期望 1/0 随机互换。4 线程每轮连调 32 次第一段再校验以最大化窗口。
+  visibility: 静默错误
+mitigation:
+  detect: 并发负载下 ThresholdBackward 梯度掩码与阈值对不上（单线程正常、多线程随机错位）即可怀疑；根因定位靠读 aclnn_threshold_backward.cpp:33/:115/:147。
+  fix: 待定（建议去掉全局、参数随 executor 传递；issue open 未见修复 MR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 需多线程并发调用两段式接口的第一段（experimental 路径 threshold_grad_v2_d）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 'experimental/activation/threshold_grad_v2_d 目录；同日 AddRmsNormQuant #7006、tril/triu 为同类 TU 级全局状态残留家族的不同算子实例。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7026
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: experimental/activation/threshold_grad_v2_d/op_host/op_api/aclnn_threshold_backward.cpp:33 在匿名 namespace 声明 float thresholdVal_=0.0；:115 aclnnThresholdBackwardGetWorkspaceSize() 写入 thresholdVal_=threshold->ToFloat()；:60 GetDtypeSupportList() 与 :147 IsFloatEqual(thresholdVal_,0.0) 读取（决定走 l0op::ReluGrad 还是 l0op::ThresholdGradV2D）。串行无问题（写早于读），但多线程并发调 GetWorkspaceSize 时 A 线程 :115 写入自己的 threshold 后、:147 读取前会被 B 线程 :115 覆盖，A 走错 kernel 模板。ThresholdBackward 语义 out=grad if self>threshold else 0：threshold=0 走 ReluGrad（掩码 self>0）、非 0 走 ThresholdGradV2D（掩码 self>threshold），两者对同一数据结果完全不同，走错时静默错算。环境：Atlas A2 910B2×8、CANN 9.2.0 随包 libopapi/libophost_nn、aclnn 两段式 C++ 直调不经过 torch。复现 repro_threshold_race.cpp：4 线程（偶数 threshold=0.0、奇数 0.5），self=linspace(-1,1,512) fp32、grad≡1，判别元素 idx=256（≈0.0020）期望 1（thr=0）/0（thr=0.5）；每线程独立 context/stream/输出缓冲，跨线程唯一共享可变量即 thresholdVal_；每轮先连续调 32 次 GetWorkspaceSize 再统一校验以最大化写读窗口重叠。issue 标题含「输出 0 掩码错位（静默错算）」。
+  source: https://gitcode.com/cann/ops-nn/issues/7026（open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: 多线程同时调 aclnnThresholdBackward 时，部分线程的梯度输出掩码整体错位：本该按 threshold=0 算 ReluGrad 掩码的结果按 0.5 阈值截（或反之），self 落在两个阈值之间的元素 1/0 随机互换，无任何报错告警；单线程跑同样逻辑完全正常。并发越高、两段调用挨得越近越容易触发。
+  trigger_surface: Atlas A2（910B2）、CANN 9.2.0、aclnnThresholdBackward 两段式 C++ 直调；多线程并发调用；experimental threshold_grad_v2_d 路径。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度

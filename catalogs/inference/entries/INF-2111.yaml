@@ -1,0 +1,59 @@
+id: INF-2111
+legacy_ids: []
+slug: rope_a2_mode23_fallback_half
+aliases: []
+title: RoPE A2 上 mode=2/3 静默按 half 计算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: cann
+    component: RoPE mode 值域无校验
+  behavior: mode 未校验即下传；IsAscend950() 只用于 dtype 校验未用于 mode 支持面，A2 上 mode=2/3 落到与 mode=0 相同的 half 路径。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: A2 上传 mode=2/3 两段接口返回 0，输出与 mode=0（half）逐字节相同（mode=1 vs 0 输出不同，排除数据巧合）；文档明确 A2 仅支持 0/1、承诺 161002。调用方拿到 half 位置编码，精度异常时才暴露；同代码 A2 与 950 语义不同且都返回成功。
+  visibility: 静默错误
+mitigation:
+  detect: 同输入分别跑 mode=0/1/2/3 比较输出位模式；mode=2/3 与 mode=0 逐字节相同即命中（数据需保证模式间语义不同）。
+  fix: 待定（issue 建议复用 IsAscend950() 在入口拒绝并补 UT；open 未见修复 MR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Atlas A2/A3 上 mode=2/3；950 正常支持
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 同 issue 探针还含 DEF-01（fp16 次正规输出放大 8192 倍）一项，本轮按标题主缺陷（mode 静默回落）收录，DEF-01 证据段未在已读正文内展开，不写入本条。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6454
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnRotaryPositionEmbedding 在 Atlas A2 上对 mode 参数完全无值域校验：文档规定 A2/A3 仅支持 0=half、1=interleave，2=quarter、3=interleave-half 为 950 专属（aclnnRotaryPositionEmbedding.md :250/:253），错误码 161002 注明 mode 不在支持范围应报错。源码 aclnn_rotary_position_embedding.cpp:33-36 已有 IsAscend950()（GetCurNpuArch()==DAV_3510）但 :101 只用于 dtype 校验，:115 把 mode 原样下传 l0op::RotaryPositionEmbedding；全仓 posembedding/rotary_position_embedding/op_host/op_api/ 下不存在任何 mode>3/mode<0/mode==2/mode==3 判断。实测（910B2×8、CANN 9.2.0、ops-transformer HEAD 20e55f8f，探针 x fp16 [1,1,4,8] 递增数据保证四模式若语义不同输出必不同）：mode=1 vs mode=0 输出不同（符合预期，证明探针可区分）；mode=2 vs mode=0 与 mode=3 vs mode=0 均逐字节完全相同（静默回落 half），两段接口均返回 0。quarter 正确语义为 cat(-x2,x1,-x4,x3)（文档 :72），与 half 的 x1*cos-x2*sin 数学上不同。
+  source: https://gitcode.com/cann/ops-transformer/issues/6454（open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: 在 Atlas A2 上调 aclnnRotaryPositionEmbedding 传 mode=2（quarter）或 mode=3（interleave-half）：接口返回成功，但拿到的是 half 模式的位置编码结果，与要求的不同；部分大模型采用这两种模式，错误会在模型精度异常、长序列位置信息错乱时才被发现，无错误码可感知；同一份代码在 950 上得到正确 quarter/interleave-half 输出，跨平台移植无提示。
+  trigger_surface: Atlas A2（910B2，文档称 A3 同限）、CANN 9.2.0、ops-transformer HEAD 20e55f8f、mode=2/3。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 数值结果

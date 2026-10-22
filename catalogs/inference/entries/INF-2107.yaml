@@ -1,0 +1,58 @@
+id: INF-2107
+legacy_ids: []
+slug: ops_math_tril_triu_tiling_global_accum
+aliases: []
+title: tril/triu tiling 全局累乘不复位致二次调用起 tiling 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: tril/triu tiling 全局
+  behavior: experimental tril/triu tiling 把 per-call 中间状态放在 TU 级可变全局，matrix_Num 唯一写点是累乘且任何路径不复位，同进程第二次调用携带历史乘积，GM 访存循环上界被放大。
+effect:
+  objects:
+  - 数值结果
+  detail: 同进程两次相同入参（{2,3,4} fp32），第二次 matrixNum 应 2 实为 4、lastTileLength 应 32 实为 48；跨 shape 第二次 matrixNum 2（应 1）；kernel 循环越界为代码推演。ub_Sharing_Num 残留使 loopCnt 2→4。
+  visibility: 静默错误
+mitigation:
+  detect: 同进程两次调用后对比 tiling data 中 matrixNum/lastTileLength 与新进程基线。
+  fix: 待定（建议状态成员化或最小改动复位；issue open；默认发布包不含该算子，仅 --experimental 构建受影响）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 需 --experimental 构建 + 同进程第二次调用；默认 CANN 发布包不含该算子
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 'tril #3709 与 triu #3710 镜像实现同型（报告者声明非重复、按算子分单跟踪）；已发布 aclnnTril（conversion/tril arch35 路径）无同类全局。与 #3675/#801 不同机理。'
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3709
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3710
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'experimental/conversion/tril/op_host/tril_tiling.cpp 把 tiling 中间状态放 namespace optiling 匿名空间 TU 级可变全局：:51 声明 int64_t matrix_Num=1；:148-149 唯一写点 matrix_Num *= inputShape.GetDim(i)（只对前 rank-2 维累乘），全文件无复位，:119/:133 的 memset_s 只清 TrilTilingData 清不到该全局；:169 用它算 total_Length_Aligned，:221 写入 tiling data。kernel 侧 op_kernel/tril.h:89 把 matrixNum 赋为 GM 访存循环上界（:161/:183 循环条件）且无边界校验。复现（910B2/CANN 9.2.0，最小桩头直接编译 tiling 源文件、同进程按序调用 tiling 入口）：单起进程基线 matrixNum 2/1、lastTileLength 24/32；同进程 {2,3,4}→{2,3,4} 第二次 matrixNum 4、lastTileLength 48（两次入参完全相同）；{2,3,4}→{5,6} 第二次 matrixNum 2（应 1）、lastTileLength 64（应 32）；空输入路径 :116 提前返回同样不复位。ub_Sharing_Num 走 keyThree（:203 置 4）后再走 keyTwo（else 分支不写）时 loopCnt 基线 2 变 4、fullTileLength 24568 变 12280。kernel 循环越界后果为代码推演，未上板观测。可达性：CMakeLists.txt:47 ENABLE_EXPERIMENTAL 默认 OFF，默认发布包不含该算子。triu #3710 为镜像实现同型缺陷（triu_tiling.cpp:56/:158-159/:179/:231，复现表同）。报告者已在两单内做全量查重（3608 条，关键词含 matrix_Num/ub_Sharing_Num），确认与 #3675/#801/#1004/#1772 不同机理。'
+  source: https://gitcode.com/cann/ops-math/issues/3709 + https://gitcode.com/cann/ops-math/issues/3710（均 open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: 在 --experimental 构建的 CANN 包里，同一进程第二次及以后调用 aclnnTril/aclnnTriu（experimental 路径）时 tiling 结果错误：两次完全相同的入参第二次算出的 matrixNum/lastTileLength 与第一次不同（如 matrixNum 应 2 实为 4），kernel 的 GM 访存循环上界按错误值放大；换 shape、插空输入都无法恢复，只有新起进程才正常。默认发布包不含该算子，不触发。
+  trigger_surface: Atlas 800T A2（910B2）、CANN 9.2.0、aarch64；仅 --experimental 构建包含的 experimental/conversion/tril、triu；同进程第二次调用起。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail

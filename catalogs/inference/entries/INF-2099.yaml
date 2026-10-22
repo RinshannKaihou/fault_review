@@ -1,0 +1,53 @@
+id: INF-2099
+legacy_ids: []
+slug: tril_uint32_int64_partial_write
+aliases: []
+title: aclnnTril uint32/int64 返回成功但约半输出未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnTril dtype 模板分派
+  behavior: aclnnTril 按元素字节宽度分派执行模板，uint32/int64 两个 dtype 的宽度或模板映射条目疑似错配，两段接口返回 0 但输出约一半元素完全未写、已写部分掩码错误。
+effect:
+  objects:
+  - 数值结果
+  detail: 4×4 diagonal=0：uint32/int64 输出 11/16 不等、8/16 未写（预填值原样保留）；int32/uint64/fp32 同条件全对。未写元素恒为 ceil(n/2)（3×3 4/9、8×8 32/64），去预填仍错。
+  visibility: 静默错误
+mitigation:
+  detect: 调前对 out 预填哨兵值再读回：返回 0 但哨兵残留即未写；uint32/int64 路径专项用例。
+  fix: '待定（建议核查模板映射并一并核查同接口 bool #3748、int16 #3749；issue open 未见修复 MR）'
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: aclnnTril 输入 dtype 为 uint32 或 int64
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 与 experimental tril tiling 全局残留（#3709）不同路径：这是已发布 conversion/tril arch35 路径的 dtype 模板错配。910B2/CANN 9.2.0 纯 C 两段直调实测。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3747
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnTril 在 self dtype 为 uint32 或 int64 时两段接口都返回 0，但输出约一半元素完全没有被写、已写部分掩码也错。4×4、diagonal=0、输入 ramp [0..15]、out 调前预填 0xc0 0x7f 重复模式（识别未写）：uint32 上板输出 [0,0,2,0,4,5,6,7, 2143322048×8]，期望 [0,0,0,0,4,5,0,0,8,9,10,0,12,13,14,15]，11/16 不等、8/16 未写；int64 [0,0,2,0,4,5,6,7, 9205498103099064256×8]，11/16、8/16。2143322048=0x7FC07FC0、9205498103099064256=0x7FC07FC07FC07FC0 为预填值原样保留，证明后 8 元素一个字节未写。同宽度对照全部 0/16 正确：fp32、int32、uint64——同为 4 字节 int32 正确 uint32 错、同为 8 字节 uint64 正确 int64 错，排除宽度搬运单一解释，指向按元素字节宽度的模板分派条目错配。未写元素数恒为 ceil(n/2)：3×3 4/9、4×4 8/16、8×8 32/64、4×8 16/32；去掉预填仍错（4×4 10/16）与预填无关。环境：Atlas 800T A2（910B2）、CANN 9.2.0、纯 C 两段式直调。
+  source: https://gitcode.com/cann/ops-math/issues/3747（open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: 调 aclnnTril 传 uint32 或 int64 张量：接口返回成功，但拿到的是调用方缓冲区残留——约一半元素（恒为 ceil(n/2)）根本没写、写过的部分下三角掩码也是错的；换成 int32/uint64/fp32 同样调用完全正确。下游若不预填输出缓冲会直接消费到未定义数据且无任何报错。
+  trigger_surface: Atlas A2（910B2）、CANN 9.2.0、aclnnTril（conversion/tril 已发布路径）、uint32/int64 dtype。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    issue_unfixed:
+    - behavior

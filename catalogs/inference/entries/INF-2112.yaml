@@ -1,0 +1,57 @@
+id: INF-2112
+legacy_ids: []
+slug: tt_kimi_k3_shared_expert_corrupt
+aliases: []
+title: tt Kimi K3 共享专家不重叠时二次前向起损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: tt-metal
+    component: TtSharedExpert 缓冲覆写
+  behavior: forward 在 reduce_scatter 前释放 gate_out/up_out/activated，新输出分配在其上；算子直写邻居输出且因持久中间量跳过起始 barrier（输出并非持久）；共享专家随后读到覆写状态。
+effect:
+  objects:
+  - 数值结果
+  detail: 第一次前向正确（PCC 0.9996），之后每次 shared_output 错（PCC 0.48~0.87 且逐次不同）；trace replay 与 eager 不匹配。默认 overlap prefill、K2.7、GLM 5.3 不受影响；纯 bf16 eager 两次前向即复现。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 eager bf16 前向连跑两次对比 shared_output PCC；第二次起 PCC 掉到 0.48~0.87 即命中；开 overlap_shared_expert_with_dispatch 对照。
+  fix: 待定（issue open 0 评论）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: Kimi K3 MoE + overlap_shared_expert_with_dispatch=False（traced PCC 测试强制关闭、prefill PREFILL_OVERLAP_SHARED_EXPERT=0）
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 8x4 Blackhole Galaxy 实测；缓冲释放-复用+barrier 跳过组合机制，与 10-21 vllm-ascend GDN state indices（#19400 fail-loud）不同性质。日志级（缓冲地址）证据完整。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61942
+  kind: github_issue
+relations: []
+original:
+  mechanism: Kimi K3 MoE（TtMoe）在 8x4 Blackhole Galaxy、共享专家不与 dispatch 重叠（overlap_shared_expert_with_dispatch=False，traced MoE PCC 测试强制关闭、prefill PREFILL_OVERLAP_SHARED_EXPERT=0 也属此列）时：第一次前向正确（shared_output PCC 0.9996），之后每次前向返回错误 shared_output（PCC 0.48~0.87、每次运行不同）；traced 测试表现为 trace replay 与 eager 前向不匹配。原因：1) TtSharedExpert.forward 在跨 4 个 TP 列的 reduce_scatter_minimal_async 之前释放 gate_out、up_out、activated；reduce-scatter 的新输出分配在它们之上（日志显示缓冲地址恰从 gate_out 地址开始）；2) 该算机倒数第二步直接写入每个邻居的输出，且因传入持久中间量而跳过起始 barrier（use_barrier_sem = barrier_semaphore.has_value() && !using_persistent_buffers，但输出并不持久）；3) overlap 关闭时共享专家紧随其后运行，读到被覆写/未同步状态。不受影响：默认 prefill（overlap on）、Kimi K2.7、GLM 5.3。FP8 与 tracing 非诱因：纯 bf16 eager 前向连跑两次即复现。
+  source: https://github.com/tenstorrent/tt-metal/issues/61942（open 0 评论，2026-10-21 每日扫描，正文全文已读）
+  behavior: 在 Blackhole Galaxy 上跑 Kimi K3 且共享专家不与 dispatch 重叠（如 traced PCC 测试或 PREFILL_OVERLAP_SHARED_EXPERT=0 的 prefill）：第一次 forward 输出正确，第二次及以后每次共享专家输出都错且错得不一样（PCC 0.48~0.87），trace 回放与 eager 对不上；纯 bf16 eager 两次前向即可复现，无报错。默认 overlap 开启的 prefill 不触发。
+  trigger_surface: 8x4 Blackhole Galaxy、Kimi K3 MoE、overlap_shared_expert_with_dispatch=False；bf16 eager 两次前向即复现。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - visibility

@@ -1,0 +1,53 @@
+id: INF-2101
+legacy_ids: []
+slug: gelu_out_drops_approximate
+aliases: []
+title: gelu.out/gelu_backward 默认丢弃 approximate
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: GeluOut/Backward V1 分支
+  behavior: gelu.out/gelu_backward 的 NPU 实现默认走 V1 aclnnGelu（无 approximate 入参），approximate 未透传，tanh 近似静默按 erf 精确版计算。
+effect:
+  objects:
+  - 数值结果
+  detail: aten.gelu.out(x,'tanh',out) 与 gelu_backward('tanh') 在默认配置下结果等于精确版，与 CPU 不一致且无报错；F.gelu 函数式不受影响。现网 2.9.0 gelu.out 未派发不显现，op-plugin 26.0.0+/master 触发。
+  visibility: 静默错误
+mitigation:
+  detect: NPU 上 gelu.out(approximate='tanh') 与 CPU F.gelu(x,'tanh') 逐元素比对；或设 TORCH_NPU_USE_COMPATIBLE_IMPL=1 走 V2 对照。
+  fix: 待定（issue 建议 V1 分支在 approximate!='none' 且 V2 符号可用时改走 V2；修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6074 open 未发布）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 需含 gelu.out 派发的 op-plugin 版本 + approximate='tanh' + 默认环境变量
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: GeluOutKernelNpuOpApi.cpp:23-29 DO_COMPATIBILITY(aclnnGelu,...) 后 EXEC_NPU_CMD(aclnnGelu, self, out) 未透传 approximate；EnvVariables.cpp REGISTER_OPTION_BOOL_FUNCTION 默认 0 → 默认走 V1。与 10-20 tt-metal 近似 GELU 族不同库不同缺陷点。
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/616
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6074
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: op_plugin/ops/opapi/GeluOutKernelNpuOpApi.cpp:23-29：static gelu_sc=CheckCompatibleImpl()；if(!c10_npu::IsAclnnOnly() && !gelu_sc){ DO_COMPATIBILITY(aclnnGelu, acl_op::gelu_out(self,approximate,out)); EXEC_NPU_CMD(aclnnGelu, self, out);} else {... EXEC_NPU_CMD(aclnnGeluV2, self, approximate_mode, out);}。V1 的 EXEC_NPU_CMD 不带 approximate。GeluBackwardKernelNpuOpApi.cpp:24-35 结构相同。torch_npu/csrc/framework/interface/EnvVariables.cpp 里 TORCH_NPU_USE_COMPATIBLE_IMPL 默认 0，CANN/torch_npu set_env 脚本都不设它，故 910B 默认满足 !IsAclnnOnly()&&!gelu_sc 走 V1。CANN 侧 aclnnGelu/aclnnGeluBackward 本身无 approximate 入参，只有 V2 有。复现（含派发版本）：torch.ops.aten.gelu.out(x.npu(), approximate='tanh', out=out.npu()) 与 CPU F.gelu(x,'tanh') 对比为精确版结果。现网 torch_npu 2.9.0 的 gelu.out 未注册、回落 CPU，问题不显现；op-plugin 26.0.0 及以后或 master 含派发后触发。
+  source: https://gitcode.com/Ascend/op-plugin/issues/616 + 修复 https://gitcode.com/Ascend/op-plugin/merge_requests/6074（open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: 在带 gelu.out 派发的 torch_npu/op-plugin 版本上，用 approximate='tanh' 的 gelu 前向（.out 重载）或反向：NPU 算出来的是 erf 精确版数值，与 CPU 的 tanh 近似逐元素不同，训练/推理精度无声偏移；函数式 F.gelu 不受影响，设 TORCH_NPU_USE_COMPATIBLE_IMPL=1 走 V2 也可避开。
+  trigger_surface: op-plugin 26.0.0+/master（gelu.out 已派发）、910B 非 aclnn-only、默认 TORCH_NPU_USE_COMPATIBLE_IMPL=0、approximate='tanh'。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

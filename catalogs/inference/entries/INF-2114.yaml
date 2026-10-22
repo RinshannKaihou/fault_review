@@ -1,0 +1,56 @@
+id: INF-2114
+legacy_ids: []
+slug: vllm_dsv41_piecewise_last_chunk_wrong
+aliases: []
+title: vLLM DSV4.1 末 prefill 块走 PIECEWISE 图输出全错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: V2 CudaGraphManager 末块派发
+  behavior: chunked prefill 最后一个 prefill 块被派发为 PIECEWISE CUDA graph（padded 到捕获尺寸）时计算路径出错：同请求 eager 或 FULL 图精确，仅 PIECEWISE 末块错。
+effect:
+  objects:
+  - 输出内容
+  detail: DSV4.1单请求8202token、mnbt=8192（末块10）：首token起全错且逐次一致，enforce_eager精确；六并发mnbt=257下默认FULL_AND_PIECEWISE与纯PIECEWISE各1/6错，FULL/FULL_DECODE_ONLY/NONE 0错。
+  visibility: 静默错误
+mitigation:
+  detect: 同请求 enforce_eager 与默认图模式对比贪心输出；trace CudaGraphManager.dispatch 看末 prefill 块是否 PIECEWISE。
+  fix: 待定（issue open 0 评论，根因在 graph 内部哪一层未定位）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: DeepSeek-V4.1 类模型 + chunked prefill 末块落进 PIECEWISE 捕获尺寸 + 图模式含 PIECEWISE
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 与 INF-1762（FULL 图 FA3 split-KV tile scheduler）同为 CUDA graph 派发错选但不同组件（该条 combine kernel scheduler、本条末 prefill 块 PIECEWISE 路径），不建 var。vLLM 0.32.0 与 main 均在。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62811
+  kind: github_issue
+relations: []
+original:
+  mechanism: DeepSeek-V4.1（DeepseekV41ForCausalLM）在 vLLM 0.32.0 与 main 上，chunked prefill 的最后一个块以 PIECEWISE CUDA graph 运行时贪心输出错误。单请求 8202 token prompt、max_num_batched_tokens=8192（末块 10 token）即从第一个生成 token 起全错，同请求 enforce_eager=True 精确。矩阵实测：H100/H200 8192/8202、8208、8227 均错；cudagraph_decoder_replay=False 不变；H100 2048 与 257 桶（524/1807/1809/1815，末块 10/8/10/16）均错；末块 1 token 走 FULL 图精确、35 token 超 32 捕获上限走 eager 精确。六并发 max_num_batched_tokens=257 下默认 FULL_AND_PIECEWISE 与纯 PIECEWISE 各 1/6 错、FULL/FULL_DECODE_ONLY/NONE 0 错、enable_prefix_caching=False 与 swa_bounded_replay=False 仍 1/6 错。逐步 trace（调度器输出 + V2 CudaGraphManager.dispatch）显示精确与错误运行唯一差异在末块：早先各块 eager 后跟 128-token DecoderReplay 派发（eager），错误运行的末块派发为 PIECEWISE（10 padded 16）。checkpoint 为 DeepSeek-V4.1-Flash 的 probec 探针孪生（生产宽度 FP8 32x32 UE8M0 + MXFP4 experts，hidden 5120 等）。错误 token 跨 GPU 与重跑完全一致（非随机）。
+  source: https://github.com/vllm-project/vllm/issues/62811（open 0 评论，2026-10-21 每日扫描，正文全文已读）
+  behavior: 部署 DeepSeek-V4.1 类模型且开 piecewise CUDA graph：只要某个请求 chunked prefill 的最后一个小块（如 8202 token 的第 8193~8202 个）被派发进 PIECEWISE 图，该请求从第一个生成 token 起输出就完全错误且逐次确定（同 prompt 重跑同样错）；关图（enforce_eager）或只用 FULL 图立即精确。线上表现为特定长度 prompt 的回答稳定胡说，无任何告警。
+  trigger_surface: vLLM 0.32.0 与 main、H100/H200（大概率架构无关）、DeepSeek-V4.1（生产宽度探针孪生）、chunked prefill 末块 ≤32 token 且 PIECEWISE 图启用。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

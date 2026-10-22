@@ -1,0 +1,56 @@
+id: INF-2102
+legacy_ids: []
+slug: deepnorm_grad_cutd_tail_dgamma
+aliases: []
+title: DeepNormGrad cutD 尾块 dgamma 尾段静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: DeepNormGrad cutD 尾块
+  behavior: cutD 模板最后一个分块较小时 dgamma 尾段计算错误：错误区间起点恒为单次切 D 容量（fp32=6104、fp16/bf16=4432），尾块约 ≤1024 元素时触发。
+effect:
+  objects:
+  - 数值结果
+  detail: fp64 参考下 fp32 D=6144 尾段 40 元素错（max 0.63）、fp16/bf16 D=5120 尾段 683/681 元素错（max 0.12）；D 调大即正常（7168→1.4e-9）。与 N、确定性开关无关；dx/dgx/dbeta 正常；返回 0 无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 对 D 落在尾块 ≤1024 的 cutD 场景把 dgamma 与 fp64 参考逐元素比对；尾段（起点为单次切 D 容量）系统性偏差即命中。
+  fix: 待定（issue open 未见修复 MR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: cutD 模板 + 尾块约 ≤1024 元素；fp32 D∈{6113,6144,6500,7000,12225,13000} 复现、D≥7168 正常，fp16/bf16 D∈{4433,4600,5000,5120,8865} 复现、D≥5500 正常
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: Atlas A2 910B2、CANN 9.2.0、norm/deep_norm_grad；常见 hidden 维度命中的静默精度缺陷，影响直接。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7037
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnDeepNormGrad 在 Atlas A2 走 cutD 模板（归约维 D 超过单次切 D 容量）且最后一个分块较小时 dgamma 尾段结果错误、dx/dgx/dbeta 正常。实测（fp64 参考，判据 |a-b|<=1e-5+1e-4*|b|）：fp32 (1,6144)/(6144) dgamma[6104..6143]（40 元素）最大绝对误差 0.63（日志示例 dgamma[6104]=-0.004081 vs ref 0.003619），D=7168 对照 bad=0/7168、max 1.43e-9；fp16 (1,5120) dgamma[4432..5119]（683 元素）max 0.12；bf16 同 shape 681 元素 0.12。错误区间起点恒为 cutD 单次切 D 容量（fp32=6104、fp16/bf16=4432，UB 容量反算对齐 block）；与 N 无关（1/2/8/32 复现）；与确定性开关无关（none/acl 一致）；只在尾块约 ≤1024 元素时出现（fp32 D=6113/6144/6500/7000/12225/13000 失败、7168/8000/8192 正常；fp16 D=4433/4600/5000/5120/8865 失败、5500/6144/7168/8192/12288 正常）。复现：仓内 examples 改 fp32、dy/x/gx=(1,D)、gamma=(D)、mean/rstd=(1,1)，对 dgamma 与 fp64 逐元素比对。
+  source: https://gitcode.com/cann/ops-nn/issues/7037（open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: 使用 aclnnDeepNormGrad 且归约维 D 走 cutD 切分、尾块较小（如 fp32 hidden=6144、fp16/bf16 hidden=5120 这类常见维度）时，dgamma 的尾段几十到几百个元素静默错值（最大绝对误差可达 0.63），dx/dgx/dbeta 正常，接口返回成功；D 调大反而正常，极易在精度对齐时被当成模型问题排查。
+  trigger_surface: Atlas A2（910B2）、CANN 9.2.0、aclnnDeepNormGrad cutD 模板、尾块 ≤1024 元素的 D 组合。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

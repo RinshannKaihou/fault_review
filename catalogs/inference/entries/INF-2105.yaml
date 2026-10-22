@@ -1,0 +1,51 @@
+id: INF-2105
+legacy_ids: []
+slug: scaled_masked_softmax_minus10000_mask
+aliases: []
+title: ScaledMaskedSoftmax -10000 屏蔽致概率反转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: scaled_masked_softmax_v2
+  behavior: kernel 用 constexpr -10000.0f 填充屏蔽位后直接 SoftMax，屏蔽位并非恒小：某行有效位 scale*x 低于 -10000 时屏蔽位反而成为行最大值。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32 实测 x=[-60000,-60001,-100,-100]、mask={0,0,1,1}：期望 [0.731,0.269,0,0]、实测 [0,0,0.5,0.5]——概率全落屏蔽位、有效位归零；同 x 无 mask 对照正确，排除取值精度。三 dtype 腿均复现，两段接口返回 0。
+  visibility: 静默错误
+mitigation:
+  detect: 构造含低于 -10000 的有效 logits 加屏蔽的行级用例与无屏蔽对照组比对；被屏蔽位概率非 0 即命中。
+  fix: 待定（应改用 -inf 或保证屏蔽位恒小于有效位的最小值策略；issue open 未见修复 MR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 需某行有效位 scale*x < -10000 且存在屏蔽位；常见于加性 mask 预偏置/log 概率/大 scale
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 'vfusion/scaled_masked_softmax_v2/op_kernel/scaled_masked_softmax_v2.h；同文件 fp16 半精溢出问题另单 #7122（独立缺陷分立）。910B2/CANN 9.2.0 实测。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7121
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: vfusion/scaled_masked_softmax_v2 的 op_kernel/scaled_masked_softmax_v2.h 定义 constexpr float MASK_VAL=-10000.0f，用 AscendC::SelectWithBytesMask(scaledMaskedX, xTensor, MASK_VAL, maskTensor,...) 填充被屏蔽位置后直接 SoftMax。屏蔽语义要求被屏蔽位置未归一化值恒小于该行任何有效位，-10000 绝对值做不到：有效位 scale*x 低于 -10000 时屏蔽位成为行最大值，softmax 后概率全落屏蔽位。实测（910B2、CANN 9.2.0，aclnnScaledMaskedSoftmax 两段直调）：fp32 x=[-60000,-60001,-100,-100]、mask={0,0,1,1}（屏蔽第 3、4 位）期望 [0.731059,0.268941,0,0]、实测 [0,0,0.5,0.5]；同一批 x mask 全 0 对照组实测 [0.643914,0.236883,0.087144,0.032059] 与 softmax([-60000,-60001,-100,-100]) 一致，排除取值精度因素。fp32/fp16/bf16 三 dtype 腿均复现，两段接口都返回 0。
+  source: https://gitcode.com/cann/ops-nn/issues/7121（open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: 使用 aclnnScaledMaskedSoftmax 做 attention 屏蔽时，只要某行有效 logits（乘 scale 后）低于 -10000——例如 ALiBi 等加性偏置、已取过 log 的概率、或 scale>1 放大——被屏蔽位置会反过来吃掉整行概率，有效位输出全 0，比精度差严重得多且无任何告警；正常量级 logits 下看不出来。
+  trigger_surface: Atlas A2（910B2）、CANN 9.2.0（Ascend-cann-910b-ops 9.2.0）、vfusion/scaled_masked_softmax_v2、fp32/fp16/bf16；需行内有效位 scale*x < -10000。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

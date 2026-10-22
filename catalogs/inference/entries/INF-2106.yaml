@@ -1,0 +1,53 @@
+id: INF-2106
+legacy_ids: []
+slug: scaled_masked_softmax_fp16_scale_overflow
+aliases: []
+title: ScaledMaskedSoftmax fp16 乘 scale 溢出行 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SMS v2 fp16 腿
+  behavior: bf16 先 Cast fp32 再乘 scale，fp16 直接半精域 Muls：x 在 fp16 范围但 x*scale 超上限时中间量溢出 inf，SoftMax 得 inf-inf=NaN。
+effect:
+  objects:
+  - 数值结果
+  detail: x=[60000,0]、scale=2.0、mask 全 0 时，fp32/bf16 得 [1,0]，fp16 得 [nan,nan]，三 dtype 腿不一致，接口返回成功无告警；触发条件为 x 在 fp16 范围内但 |x*scale|>65504（预处理放大或显式大 scale）。
+  visibility: 数值异常
+mitigation:
+  detect: 半精 attention 中 logits 接近 fp16 上限（预处理放大或 scale>1）时出现整行 NaN 即可对照 bf16/fp32 腿定位。
+  fix: 待定（应统一先升 fp32 再乘；issue open 未见修复 MR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: fp16 输入且 |x*scale| 超 65504；x 本身须在 fp16 范围内
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: '与 #7121（-10000 常量屏蔽）同算子文件不同代码路径（Compute 乘 scale vs SelectWithBytesMask），独立缺陷分立。910B2/CANN 9.2.0 实测。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7122
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: vfusion/scaled_masked_softmax_v2 的 op_kernel/scaled_masked_softmax_v2.h Compute()：if constexpr(is_same<T,bfloat16_t>) 先 Cast(scaledMaskedX, xTensor, RoundMode::CAST_NONE) 升 fp32 再 Muls(..., (float)scale)；else 分支（fp16）直接 Muls(xTensor, xTensor, (T)scale) 在半精域乘。x 本身在 fp16 表示范围内（60000<65504）但乘 scale 后超上限，半精域直接溢出 inf，SoftMax 得 inf-inf=NaN。实测（910B2、CANN 9.2.0）：x=[60000,0]、scale=2.0、mask 全 0（全保留）：fp32 期望/实测 [1,0]、bf16 期望/实测 [1,0]、fp16 期望 [1,0] 实测 [nan,nan]。同一份输入同一个 scale，三 dtype 腿行为不一致，fp32/bf16 因先 Cast 到 fp32 再乘而正确。
+  source: https://gitcode.com/cann/ops-nn/issues/7122（open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: fp16 输入的 aclnnScaledMaskedSoftmax 在 logits 接近 fp16 上限（预处理已放大、或 scale>1）时整行输出 NaN 并向下游扩散；同样输入换 bf16 或 fp32 腿完全正确，接口返回成功无告警。半精 attention 的 scale 通常 <1 不易碰到，预处理放大或显式大 scale 场景会触发。
+  trigger_surface: Atlas A2（910B2）、CANN 9.2.0、vfusion/scaled_masked_softmax_v2 fp16 腿；|x*scale|>65504 且 x 在 fp16 范围内。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

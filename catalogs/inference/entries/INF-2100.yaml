@@ -1,0 +1,51 @@
+id: INF-2100
+legacy_ids: []
+slug: sinkhorn_fp32_noncontig_p_strides
+aliases: []
+title: Sinkhorn fp32 分支忽略非连续输出 strides 写错位置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnSinkhorn fp32 分支
+  behavior: fp32 分支把非连续 p 直接当 kernel 输出按连续布局写；非 fp32 分支先写连续临时张量再 ViewCopy 按 strides 搬运故正确；CheckParams 对 p 连续性无检查，文档声明不支持却不拒绝。
+effect:
+  objects:
+  - 数值结果
+  detail: p 为转置视图（strides=[1,4]）时 fp32 输出内容与语义不符；同样非连续 p 的 fp16/bf16 正确——同接口两分支行为不一致；返回 0 无报错。自洽判别（尊重/忽略 strides 两读法 L1 对比）实锤。
+  visibility: 静默错误
+mitigation:
+  detect: 对输出 p 用转置视图调用并与连续缓冲对照；两读法（尊重/忽略 strides）L1 误差对比定位。
+  fix: 待定（应在 CheckParams 拒绝非连续 p 或 fp32 分支补 ViewCopy；issue open 未见修复 MR）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 输出 p 非连续（如转置视图）+ cost 为 fp32
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: 'math/sinkhorn/op_api/aclnn_sinkhorn.cpp:156-166；同算子当日另有 #3794（非法 tol 设备挂死）、#3795/#3797（错误码契约）不同缺陷。910B2/CANN 9.2.0/ops-math HEAD 3e45432d。'
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3796
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnSinkhorn 输出参数 p 传非连续 Tensor 时不拒绝、返回 0，但 fp32 路径静默忽略 p 的 strides 把结果按连续布局写入，输出内容与语义不符；同样非连续 p 的 fp16/bf16 路径处理正确。文档（math/sinkhorn/docs/aclnnSinkhorn.md 参数表）声明 cost 支持非连续、p 不支持，但实现既不拒绝也不报错。源码 aclnn_sinkhorn.cpp:156-166：fp32 分支 l0op::Sinkhorn(costContiguous, tol, p, ...) 直接把非连续 p 当 kernel 输出（kernel 按连续布局写、strides 完全忽略）；非 fp32 分支先 AllocTensor 连续 pCast 计算再 Cast + l0op::ViewCopy(pOut, p) 按 strides 搬运因此正确；CheckParams 只有 CheckNotNull 与 CheckDtypeValid、无 p 连续性检查。复现（910B2、CANN 9.2.0、ops-math HEAD 3e45432d）：cost fp32 [4,4] 连续，p 三形态——连续对照取 ref；转置视图 view=[4,4] strides=[1,4]；自洽判别对每个 (i,j) 按偏移 A=i*stride0+j*stride1（尊重）与 B=i*C+j（忽略）两种解释从存储读出算 L1，只有 A≈0 为正确、只有 B≈0 为静默错值；fp16 同三步对照。
+  source: https://gitcode.com/cann/ops-math/issues/3796（open，2026-10-21 每日扫描，本地批次正文深读）
+  behavior: 给 aclnnSinkhorn 传转置等非连续的输出张量 p 且 cost 是 fp32：接口返回成功，但结果按连续布局写进了底层存储，从 p 读出来的矩阵内容错位；同样的 p 换 fp16/bf16 输入却正确。文档明写 p 不支持非连续，但实现不给错误码、静默产出错值。
+  trigger_surface: Atlas A2（910B2）、CANN 9.2.0、aclnnSinkhorn、fp32 cost + 非连续输出 p。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

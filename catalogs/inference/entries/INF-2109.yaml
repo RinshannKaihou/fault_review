@@ -1,0 +1,56 @@
+id: INF-2109
+legacy_ids: []
+slug: tt_fabric_router_partial_word_drop
+aliases: []
+title: tt fabric 路由器丢非 16B 倍包尾字致远端数据损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: tt-metal
+    component: fabric ERISC router 尾字
+  behavior: 路由器把精确字节数传给 eth_send_packet_bytes_unsafe()，但 TX 队列只搬整 16B 字：非 16B 倍包尾部部分字不被发送，接收端转发 buffer 槽位陈旧字节。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 非 16B 整数倍 fabric payload 尾部到达即损坏；fast dispatch 把任意长度完成队列写经 fabric 转发，宿主读远端 chip 得错误数据无报错。4×N300 实测 test_prefetcher 4 测全 Data mismatch，坏字恰为尾部字节。
+  visibility: 静默错误
+mitigation:
+  detect: 多 chip fabric 拓扑跑 ./build/test/tt_metal/perf_microbenchmark/dispatch/test_prefetcher；Data mismatch 且坏字集中在尾部即命中；单 chip（无 fabric hop）对照。
+  fix: 待定（issue open 0 评论）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 多 chip（fabric hop）+ payload 尺寸非 16B 整数倍；受影响发送点 edm_fabric/fabric_erisc_router.cpp send_next_data() 与 speedy path
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  stage: N/A
+remarks: CI 未抓到的原因（run 脚本对齐）报告者在 issue 内说明；WH 4×N300、main @fb8a11a93da。通信 fabric 层数据损坏，静默污染远端读数。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/61919
+  kind: github_issue
+relations: []
+original:
+  mechanism: fabric ERISC 路由器把包的精确字节尺寸传给 eth_send_packet_bytes_unsafe()，但 Ethernet TX 队列只搬整 16 字节字：tt_eth_ss_regs.h 的 ETH_TXQ_TRANSFER_SIZE_BYTES 必须为 16 的倍数。包尺寸非 16 倍数时尾部部分字从不被发送，接收路由器转发该 buffer 槽位已存在的陈旧字节，目的端拿到损坏的尾部字节，无错误抛出。受影响发送点：tt_metal/fabric/impl/kernels/edm_fabric/fabric_erisc_router.cpp 的 send_next_data() 与 tt_metal/fabric/hw/inc/edm_fabric/fabric_erisc_router_speedy_path.hpp 的 speedy 路径。影响：任何非 16B 整数倍 fabric payload 尾部损坏；fast dispatch 把任意长度完成队列写转发到远端 chip，宿主读远端 chip 可得错误数据。复现：WH 4×N300（8 chips）、main @fb8a11a93da：./build/test/tt_metal/perf_microbenchmark/dispatch/test_prefetcher --gtest_filter='PrefetcherTests/PrefetcherHostTestFixture.*' 全部 4 测 Data mismatch，坏字恰为尺寸非 16 倍数记录的尾部；TT_VISIBLE_DEVICES=0（无 fabric hop）同测试通过。
+  source: https://github.com/tenstorrent/tt-metal/issues/61919（open 0 评论，2026-10-21 每日扫描，正文全文已读）
+  behavior: 多 chip Wormhole/Blackhole 系统上经 fabric 发送尺寸不是 16 字节整数倍的报文（如 fast dispatch 的完成队列记录）：远端收到的最后几个字节是陈旧数据，宿主从远端 chip 读回的数值悄悄错误且无任何报错；单 chip 或 payload 恰好 16B 对齐时正常。表现为多 chip 作业里偶发且稳定的读数错位，极难定位。
+  trigger_surface: Wormhole 4×N300 实测、tt-metal main @fb8a11a93da、fabric hop + 非 16B 整数倍 payload（fast dispatch 完成队列写等）。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: 数值结果
