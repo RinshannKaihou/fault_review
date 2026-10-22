@@ -1,0 +1,59 @@
+id: TRN-0305
+legacy_ids: []
+slug: foreach_list_pair_tiling_x2_unvalidated
+aliases: []
+title: arch35 foreach 二元 list tiling 不校验 x2 列表
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: foreach list tiling
+  behavior: arch35 foreach 二元 list tiling 仅按 x1 求取 tensorCount、偏移、totalElements，未获取 x2 信息；kernel 用 x1 偏移/dtype 索引 x2。
+effect:
+  objects:
+  - 数值结果
+  detail: 图模式下 x2 列表与 x1 不匹配（长度短、tensor 小、dtype 不同）的 foreach 二元算子越界访存或结果静默错误，tiling 层无 GRAPH_FAILED 拦截（arch22 与 aclnn 入口均有校验）
+  visibility: 静默错误
+mitigation:
+  detect: 调用前自检两个张量列表逐项长度/dtype/shape 一致（框架层）；tiling 层无拦截
+  fix: 修复 MR !12121（open）：共享 validator 新增 ValidateTensorListPair 一次性校验实例个数、逐 tensor dtype 与 storage shape，六个算子 arch35 tiling 接入并补失败/匹配四类单测；本机无昇腾工具链，host UT 未跑（-fsyntax-only 语法检查过），以仓库 CI 为准。https://gitcode.com/cann/ops-nn/merge_requests/12121
+labels:
+  family: N/A
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 950（arch35 分支）；图模式 DYNAMIC_INPUT（x1/x2/weight 相互独立）；foreach_lerp_list tiling.cpp:87-98 及共享 foreach_flat_regbase_validator.h；触发需 x2 列表与 x1 不匹配（用户传参错误也会被静默放过而非报错）
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6781
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12121
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #6781 + MR !12121（2026-10-16，源码审查定位）。arch35 foreach 二元 list 算子（foreach_lerp_list 及走共享 foreach_flat_regbase_validator.h 的 foreach_mul/div/pow/minimum/maximum_list）tiling 只调 GetInputInstanceInfo(0)：tensorCount/cumulativeOffsets/totalElements 按 x1 求出，全文件无 GetInputInstanceInfo(1)/GetDynamicInputDesc(1,i)/GetDynamicInputShape(1,i)；kernel 侧 op_kernel/arch35/foreach_lerp_list_simt.h 按 tensorCount 循环 SimtGetTensorAddr(x2List, tensorId)，即拿 x1 摊平偏移与 x1 dtype 去索引 x2。后果：x2 更短时越界张量列表描述符；某 tensor 更小/dtype 不同时按错误元素个数与类型读写（越界访存或静默错值）。arch22 ForeachCommonTiling::CheckOpInfo 与 aclnn 入口有完整校验并 GRAPH_FAILED，arch35 缺失。修复 MR !12121 在共享 validator 新增 ValidateTensorListPair（个数+逐 tensor dtype+逐 tensor storage shape），六个算子接入并补 x2 更短/dtype 不一致/shape 不一致/匹配四类 tiling 单测；提交者本机无昇腾编译链，host UT 由 CI 执行（本地仅 g++ -fsyntax-only 通过）。'
+  source: https://gitcode.com/cann/ops-nn/issues/6781 （关联修复 https://gitcode.com/cann/ops-nn/merge_requests/12121 ）
+  behavior: 在 950 上用图模式跑 foreach 系二元 list 算子（如优化器 foreach_mul/foreach_lerp 更新参数组），若第二个张量列表与第一个不匹配（更短/更小/dtype 不同——常见于参数与状态列表错位、混合精度组装错），不会像 CPU/单算子入口那样报错拦下，而是越界访存或直接产出错误数值继续训练。foreach 是 torch 优化器与更新链路的常用底座，错误会直接进入权重更新。
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior

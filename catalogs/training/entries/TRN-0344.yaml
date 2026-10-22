@@ -1,0 +1,50 @@
+id: TRN-0344
+legacy_ids: []
+slug: opsnn_gns_twopass_cross_call_x_buffer_race
+aliases: []
+title: GroupNormSwish 大 shape 跨调用 x 缓冲竞态输出不定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: TWOPASS_PERF 模板 V_MTE2 握手
+  behavior: 每核多次调用 CalNormalize 时 chunk 复用同一 x ping/pong UB 缓冲，但 V_MTE2 事件握手只在单次调用内配对，下一次调用的 MTE2 覆写与上一调用尾部 V 读并发。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: N×G>114688 的大 shape（触发每核多次 CalNormalize）下 y 输出不确定：同输入多次执行二进制不一致，对 golden matched_ratio 约 98.99%（max_abs_err 5.74）；mean/rstd 不受影响。
+  visibility: 不可复现
+mitigation:
+  detect: 固定 seed 多次执行比对输出 MD5（修复前 5 次全不同）；TTK 逐位比对。
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12395（open）：新增 isFirstNormalizeCall/isLastNormalizeCall 使跨调用 V_MTE2 握手配对（Wait 侧与 SetFlag 侧成对修改）；修复后 5 次 MD5 全同、精度 PASS 100%（max_abs_err 0.00195），小 shape 零影响。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  family: N/A
+  trigger: partial
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12395
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann ops-nn GroupNormSwish 的 TilingKey 1110（TWOPASS_PERF）模板在 numPerCore > MAX_ONCE_NUM_PER_CORE(2048)（即 N×G > 114688）时 Process() 每核多次调用 CalNormalize()。下一次调用的 chunk 0/1 复用同一块 x ping/pong UB 物理缓冲，但 V_MTE2 事件握手仅在单次调用内部生效（末两个 chunk 不 SetFlag、首两个 chunk 不 WaitFlag），外层 MTE3_V 事件只保护 y 缓冲——下一次调用的 CopyX2UB（MTE2）对 x 缓冲的覆写与上一调用尾部 V 读并发。后果是 y 输出非确定（同输入多次执行二进制不一致）且精度劣化（对 golden matched_ratio≈98.99%，max_abs_err 5.74）；mean/rstd 不受影响（chunk 内 CalMeanAndRstd 先于 NormalizeAndSwish 完成，竞态落点在算 y 阶段）。MR !12395 验证（Ascend950PR，ttk 在线编译，N=65537/C=32/G=4/HW=8 fp16，--run 1 --seed 1 固定输入）：修复前 5 次 y 输出 MD5 全不同、FAIL 98.99%；修复后 5 次全同、PASS 100%（0.00195）；mean/rstd 修复前后逐位一致；不稳定批次 100% 落于每核 CalNormalize 调用边界的理论竞态窗口。修复为 6 行：WaitFlag 收紧为「首次调用且 i≤1」、非最后调用末两 chunk 补 SetFlag（两侧成对，只改 Wait 会提前放行）、最后调用不发旗标避免遗留事件位；单次调用 kernel 退化为原逻辑。
+  source: https://gitcode.com/cann/ops-nn/merge_requests/12395（2026-10-20，open；上游缺陷无独立 issue，修复论证与实测数据在 MR 正文）
+  behavior: 在 Ascend 950PR 上对 GroupNormSwish 走大 shape（N×G > 114688，如 N=65537）训练/推理时，输出 y 每次运行都不一样（同输入二进制不一致）且与参考值有约 1% 元素超差（max_abs_err 5.74 量级）；不报错、不崩溃；统计输出 mean/rstd 正常，使问题只体现在 y 上，逐位一致性检查才能发现。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

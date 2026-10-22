@@ -1,0 +1,53 @@
+id: TRN-0354
+legacy_ids: []
+slug: msllm_reuse_fp32_param_fp16_convert_nan
+aliases: []
+title: reuse-fp32-param 的 fp32→fp16 转换溢出成 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: mindspeed
+    component: reuse_param fp32→fp16 转换
+  behavior: reuse-fp32-param 的 fp32→fp16 转换在 optimizer step 里做 view(-1,2).transpose(1,0).reshape，第一环就出 NaN。
+effect:
+  objects:
+  - 模型权重
+  - 训练信号
+  detail: qwen3-4b 32k LoRA 在 CP=4 下精度溢出（ulysses 与 megatron CP 都溢出，CP4→TP4 不溢出）；msprobe 首个 NaN 在该 transpose 输入，关掉 reuse-fp32-param 即正常。
+  visibility: 数值异常
+mitigation:
+  detect: msprobe 精度溢出 dump 定位首个 NaN 算子，或直接对比开/关 reuse-fp32-param 的 loss
+  fix: 'issue #1404（closed）只给规避：关闭 reuse-fp32-param；未给修复 PR'
+labels:
+  family: N/A
+  trigger: config
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1404
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed + MindSpeed-LLM 26.0.0（CANN 8.5.2，A3）跑 qwen3-4b 32k LoRA，4 卡 CP=4、ulysses_cp_algo、--reuse-fp32-param、--use-distributed-optimizer、--lora-fusion 组合。用 msprobe dump 定位 step0/rank0 的第一个 NaN：Tensor.transpose.589.forward 的输入 shape 为 [7151616, 2]、dtype bf16 且 Max/Min/Mean/Norm 全 NaN；stack.json 把该算子回溯到 mindspeed/core/memory/reuse_param/reuse_distrib_optimizer.py:348 的 fp32_tensor_convert_to_fp16_tensor_dis，即 temp = workspace_convert_view.view(-1, 2).transpose(1, 0).reshape(-1).contiguous()，调用链为 adaptor.py:83 step_with_ready_grads → fp32_tensor_convert_to_fp16_tensor，属 reuse-fp32-param 特性的权重格式转换。把 CP 算法从 ulysses 换成 megatron 仍溢出、CP4 换 TP4 不溢出；关闭 reuse-fp32-param 后精度正常。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1404（closed；环境 26.0.0 + CANN 8.5.2 + A3，完整训练命令与 msprobe dump 片段在正文）
+  behavior: qwen3-4b 32k LoRA 四卡 CP4 训练一开始就出现精度溢出（loss 出 NaN），换 CP 算法、换并行组合都复现，只有 CP4 换 TP4 或关掉 reuse-fp32-param 才正常；dump 出来的第一个 NaN 出现在 fp32 权重转 fp16 的 transpose 上，说明溢出不是来自模型前向而是优化器侧的权重转换。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

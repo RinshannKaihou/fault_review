@@ -1,0 +1,54 @@
+id: TRN-0313
+legacy_ids: []
+slug: aten_gelu_approximate_attr_ignored_tanh_only
+aliases: []
+title: torch_npu ATen gelu 静默走 tanh 近似
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: ATen gelu 分发
+  behavior: ATen gelu 分发到无 approximate 参数的 tanh-only aclnnGelu，未按 'none' 路由到带 attr 的 aclnnGeluV2；正确的 erf 路径已在 CANN 包内存在但未被选用。
+effect:
+  objects:
+  - 数值结果
+  detail: F.gelu(none) 与 F.gelu(tanh) 在 NPU 逐位相同；4096 点 fp32 统计 |NPU(none)−CPU_erf|max=4.735e-4（vs CPU_tanh 仅 2.9e-7 噪声级）；fp16/bf16 同样按 tanh 式计算；无任何告警
+  visibility: 静默错误
+mitigation:
+  detect: 对比 F.gelu(x, approximate='none') 与 F.gelu(x, approximate='tanh') 是否逐位相同（相同即中招）；x=2.0 处 erf 期望 1.9544998
+  fix: 用户侧 workaround 已核实：torch_npu.npu_gelu(x, approximate='none') 走正确 erf 路径（vs CPU erf 4.8e-7）；根治=ATen gelu 分发按 approximate 路由到 aclnnGeluV2 TPL_NONE（未实施，闭源二进制分发无法直接落 PR）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Atlas A3（Ascend910_9362 ×2）、CANN 9.1.0、torch 2.7.1/torch_npu 2.7.1.post4；fp32/fp16/bf16 全命中；3 组 shape/种子稳定复现
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 训推共有：推理库同源条目 INF-1439（2026-10-18 收）。训练侧收录依据：fp32 训练 gelu 前向/梯度校验、蒸馏对齐受静默语义漂移影响。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6841
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-1439
+original:
+  mechanism: torch.nn.functional.gelu(approximate='none') 在 Atlas A3 上被静默按 tanh 近似计算。根因链（issue 给出本仓源码定位）：(1) activation/gelu/op_kernel/arch35/gelu_dag.h:29-62 kernel 只实现 tanh 式（GeluCustom），无 erf 分支；(2) activation/gelu/op_api/aclnn_gelu.cpp:87 aclnnGeluGetWorkspaceSize 签名没有 approximate 参数（:116 l0op::Gelu 同）；(3) 正确实现已存在：aclnn_gelu_v2.cpp:87 的 aclnnGeluV2(x, approximate:int64, y) 带 attr，gelu_v2_dag.h 实现 ErfFast/AscendC::Erf 与 GeluV2Tanh 双路径按 TPL_NONE/TPL_TANH 分派。结论：torch_npu 2.7.1.post4 的 ATen gelu 分发到 tanh-only 的 aclnnGelu，未按 approximate 路由到 aclnnGeluV2。数值证据：x=2.0 处 NPU F.gelu(none)=1.9545976 与 CPU tanh 式 1.9545977 逐位吻合、与 CPU erf 1.9544998 偏差 4.7e-4；4096 点 fp32 统计 |NPU(none)−CPU_erf|max=4.735e-4、|NPU(none)−CPU_tanh|max=2.9e-7；对照 torch_npu.npu_gelu(x,approximate='none') 正确（vs erf 4.8e-7 且与 tanh 结果不同）证明 CANN 包内存在正确 erf 路径仅分发选错。torch_npu/op-plugin 为闭源二进制分发无法在活动仓直接落 PR，故在 ops-nn 提 issue 记录。训练侧影响：fp32 训练中 gelu 输出与 PyTorch erf 语义偏差最高约 5e-4 且全程无告警，蒸馏对齐（teacher 为 erf 语义）、梯度校验、逐位回归会系统性失配或被静默吸收。
+  source: 2026-10-18 GitCode cann/ops-nn issue https://gitcode.com/cann/ops-nn/issues/6841 （open）；推理库同源条目 INF-1439（2026-10-18 收录）
+  behavior: 在 NPU 上调用 F.gelu(x, approximate='none')，返回的却是 tanh 近似值：与 F.gelu(x, approximate='tanh') 逐位相同，和 CPU 精确 erf 定义最大偏差约 4.7e-4（fp32 4096 点统计），fp16/bf16 同样如此，全程无告警。训练中表现为 gelu 层前向与参考实现存在系统性偏差，蒸馏对齐、梯度校验、逐位回归静默失配。改用 torch_npu.npu_gelu(x, approximate='none') 可得正确 erf 结果。
+  trigger_surface: torch_npu ATen gelu 分发（torch 2.7.1 + torch_npu 2.7.1.post4）；fp32/fp16/bf16；Atlas A3（910_9362）、CANN 9.1.0；训练与推理共用同一路径
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

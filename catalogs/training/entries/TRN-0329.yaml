@@ -1,0 +1,67 @@
+id: TRN-0329
+legacy_ids: []
+slug: mindspeed_llm_cp_rope_position_offset_tp1_zero
+aliases: []
+title: CP+TP=1 时 RoPE position offset 恒为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspeed-llm
+    component: CP 下 RoPE position id 初始化
+  behavior: cp_rank 的序列偏移依赖 tp_size 分支：TP>1 才按 cp_rank*(seq_len//cp_size) 算，TP=1 时置 0，两个 CP rank 的 rope cos/sin 都从 position 0 起。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 训练轨迹
+  detail: CP=2、TP=1 且启用带 RoPE 的 sequence parallel attention 时，两个 rank 的 attention 输出在 CP 切分边界附近对不上；训练不报错、不出 NaN，精度与单卡/CP=1 对齐不上，长序列位置语义整体错位。
+  visibility: 静默错误
+mitigation:
+  detect: 打印各 CP rank 首个 token 的 position id 与 rope cos/sin 头部值，按 cp_rank*(seq_len//cp_size) 对账；或对比 CP=2 与 CP=1 的 token 级 hidden state。
+  fix: issue 建议把 cp_offset 的计算与 tp_size 解耦，只由 cp_rank 与 cp_size 决定；issue 已 closed，正文未给出对应 PR（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1599
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed-LLM issue #1599（2026-07-08 提，已 closed）：CP=2 的 sequence parallel attention + rotary position embedding，rank0 负责 token 0~2048、rank1 负责 2048~4096。排查发现 rope 的 position id 初始化错：rank1 的 cos/sin 实际用的是 position 0 起的表。根因在 parallel_state.py 的 _set_global_rank_indices —— CP 的 rank offset 计算依赖 cp_size 和 tp_size，当 tp_size=1 时 cp_rank 的 offset 计算有 corner case（伪代码：if tp_size > 1: cp_offset = cp_rank * (seq_len // cp_size) else: cp_offset = 0），即 TP=1 时根本没设 cp_offset。所以 CP=2、TP=1 时两个 rank 的 rope 都从 0 开始，等效于没有 CP。报告者建议把 cp_offset 的计算和 tp_size 解耦，CP offset 只取决于 cp_rank 与 cp_size。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1599
+  behavior: 跑 CP=2 的 sequence parallel attention（TP=1）时，rank0 与 rank1 的 attention 输出在 CP 切分边界附近的 token 上对不上；进一步看是 rank1 的 rope cos/sin 用了 position 0 开始的值，而不是从 2048 开始。训练不报错、不出 NaN，只是精度与单卡/CP=1 对齐不上，长序列位置语义整体错位。
+  trigger_surface: context parallel + TP=1 + RoPE（CP 切分下的 position id 初始化）
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 位置编码
+        to: 并行切分
+      effect:
+        from: 隐状态
+        to: 数值结果
+    rewritten:
+    - detail

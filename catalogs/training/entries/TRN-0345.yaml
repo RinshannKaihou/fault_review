@@ -1,0 +1,57 @@
+id: TRN-0345
+legacy_ids: []
+slug: mswift_dynamic_num_samples_gdpo_ignored_chunk_rescale
+aliases: []
+title: ms-swift 动态 GRPO 丢 gdpo 归一化且分块重缩放 loss
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: ms-swift
+    component: 动态 advantage/分块 loss
+  behavior: 动态路径的 advantage 函数未实现 gdpo 分支而静默退化为无缩放；分块 loss 按样本数加权平均，把已按全局 token 归一的窗口归一化损失再除以块数，梯度被静默缩小。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: dynamic_num_samples=True 时 gdpo advantage 与静态路径不一致（实测 -1.895 vs -2.786）；本地 batch 触发分块时 dapo/cispo/fipo 损失缩为 1/k，等效学习率静默下降，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一批数据并行跑 compute_advantages 与 compute_advantages_dynamic 比对（gdpo 分支应一致）；分块前后 loss 数值比对（窗口归一化类应相等而非 /k）。
+  fix: 待定（issue 建议支持 gdpo 或拒绝该组合；分块对窗口归一化类求和、bnpo 按 token 数加权；该路径已计划移除）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  family: N/A
+  trigger: config
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10405
+  kind: github_issue
+relations: []
+original:
+  mechanism: ms-swift 请求感知 GRPO 路径（dynamic_num_samples=True，多轮调度器每个 request 产出多个训练样本）存在两个静默数值缺陷（issue 检查于 main 5c7f3ae，CPU 复现）：(1) compute_advantages 实现了 GDPO（先按 reward 函数分组归一化再 batch 归一化），但 compute_advantages_dynamic（swift/rl_core/advantage.py）只处理 'batch'/'group'，scale_rewards='gdpo' 落入 no-scaling 分支返回纯 mean-centered reward 和，且无任何拒绝或告警——同数据（4 生成×3 prompt，reward=[acc∈{0,1}, bonus∈[0,10]]，一 request 一样本，两路径本应一致）下 gdpo 时两函数输出不一致（首值 -1.895/0.461/1.038 vs -2.786/-0.320/0.930），group/batch 时一致。(2) 本地 batch 大于 per_device_train_batch_size 时 _compute_loss_chunked 返回 sum(chunk_loss*n_c)/sum(n_c)（n_c 为块内序列数）：这对 grpo/dr_grpo 正确，但 cispo/dapo/fipo（WINDOW_NORMALIZED_LOSS_TYPES）每块已除以全局 num_items_in_batch，应求和；加权平均把 loss/梯度缩放 n_c/N，k 个等大块时结果是无分块 loss 的 1/k，即分块一触发学习率静默变小；bnpo（token 均值）应按 token 数而非序列数加权。报告者注明该路径已计划移除，在移除前仍在用。
+  source: https://github.com/modelscope/ms-swift/issues/10405（2026-10-20，open，0 评论，含同数据两函数对照表与分块缩放推导）
+  behavior: 用 dynamic_num_samples=True 训 GRPO 时，若配置 scale_rewards='gdpo'，实际 advantage 悄悄变成无归一化版本（与静态路径同数据对照数值显著不同）；当单卡 batch 超过 per_device_train_batch_size 触发 loss 分块时，dapo/cispo/fipo 类损失被静默缩小（等分 k 块时缩为 1/k），等效学习率下降，训练曲线无任何报错或异常标记，只有收敛变慢或最终质量偏差可间接观察到。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+    - detail

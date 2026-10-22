@@ -1,0 +1,64 @@
+id: TRN-0312
+legacy_ids: []
+slug: opstransformer_swiglu_mx_scale_tail_pad_stale
+aliases: []
+title: CANN SwiGLU MX scale 行尾填充槽残留旧值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: SwiGLU MX scale 写回
+  behavior: SwiGLU MX scale 每行按 64 输出元素存一对 K32 scale；有效 K32 分组数为奇数时，行尾完整填充槽未被覆盖，输出缓冲区旧值残留。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  detail: 无报错。下游按行读取 scale 时把残留旧字节当成合法 scale 编码消费，量化权重/激活 scale 在奇数 K32 分组的行上来自未定义的旧内存；主机级验证为 padding 槽保留非零哨兵，硬件端到端数值精度未验证。
+  visibility: 静默错误
+mitigation:
+  detect: 将 scale 输出缓冲区预填非零哨兵，跑奇数有效 K32 分组宽度（outputN=32/96）检查行尾 padding 槽是否为零。
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14006（open）：HasSwigluMxScalePadding 判定尾块归属，尾 tile 清零 staging 并把写回长度加一字节；主机单测覆盖 outputN=1~1024×tileSize=32/64/128/256，未验证设备数值精度
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6247
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14006
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer GMM 通用 epilogue（gmm/common/cgmct/epilogue/cgmct_block_epilogue_swiglu_mx_quant.h）的 SwiGLU MX scale 写回：每行按 64 个输出元素存一对 K32 scale；有效 K32 分组数为奇数时行尾存在一个完整填充槽。原实现只写有效 scale 的范围，不覆盖该 padding 字节，输出缓冲区旧值残留。修复（MR 14006，open）：新增 HasSwigluMxScalePadding 按输出宽度/tile 宽度/列偏移判断 padding 归属，仅最后一个 N tile 负责把该槽写为编码 0（尾 tile 清零 UB staging 行、写回长度加一字节，内部 tile 仍只写有效 scale）。验证为主机级单测（TailOwnership、PoisonedRowsAllTails：outputN=1~1024 × tileSize=32/64/128/256，检查每槽恰好写一次、padding 为零、未处理行哨兵不变），明确声明未在硬件上运行端到端复现、单测不验证设备数值精度。触发条件：MX 量化（K32 scale）SwiGLU 融合 + 有效分组数为奇数的输出宽度（如 outputN=32/96）。来源 https://gitcode.com/cann/ops-transformer/issues/6247 + 修复 https://gitcode.com/cann/ops-transformer/merge_requests/14006
+  source: https://gitcode.com/cann/ops-transformer/issues/6247 + 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14006（均 open；主机级哨兵复现 + 写回范围单测，无硬件数值验证）
+  behavior: 使用昇腾 GMM SwiGLU MX 量化融合算子训练/量化模型时：无任何报错，但量化 scale 输出里每奇数分组的行尾 padding 字节不是约定的零，而是缓冲区残留的旧数据；下游若按行消费整段 scale（含 padding），量化权重或激活的 scale 在这些行上来自未定义内存。主机级复现方式是把 scale 缓冲区预填非零哨兵后检查行尾槽，修复前哨兵保留。
+  trigger_surface: 昇腾 NPU + CANN ops-transformer GMM SwiGLU MX quant epilogue；有效 K32 分组数为奇数的输出宽度（outputN=32/96 等）。
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - mitigation.fix
+  - date: '2026-10-19'
+    fields:
+    - evidence
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - behavior

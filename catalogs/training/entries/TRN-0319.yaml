@@ -1,0 +1,57 @@
+id: TRN-0319
+legacy_ids: []
+slug: mimo_whisper_encoder_attends_padded_mel_tail
+aliases: []
+title: MiMo Whisper 冻结塔前向泄漏 padded mel 尾部特征
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: megatron-lm
+    component: hf_whisper_encoder 包装
+  behavior: Wrapper 跑完整 3000 帧 encoder 后才按 seq_lengths 掩码；WhisperEncoder 忽略 attention_mask，各 query 仍 attend 到 pad 尾（0.0 非静默值）。
+effect:
+  objects:
+  - 隐状态
+  - 输入编码
+  detail: 掩码后完整前向与未 pad 主体输出不同（CPU tiny encoder 复现）；published AVLM recipe 默认冻结 Whisper 塔取第一 clip，pad 泄漏特征静默进入训练主干，无报错
+  visibility: 静默错误
+mitigation:
+  detect: CPU tiny WhisperEncoder 注入对照：3000 帧（前 13 帧真实前缀+尾垃圾）wrapper 输出 vs 未 pad 主体 vs masked full forward
+  fix: issue 给出期望实现（未落地）：按行裁剪 input_features[i,:,:mel]（1<=mel<=time）只跑真实帧，S=(mel-1)//2+1 须等于 seq_lengths，不同长度分开 forward 后拼接；issue open（mcore-oncall 已呼叫，无维护者回应）
+labels:
+  family: N/A
+  trigger: partial
+  trigger_review: false
+  trigger_note: examples/mimo/model_providers/hf_whisper_encoder.py；Transformers WhisperEncoder 要求 mel 时轴=3000（max_source_positions*conv1.stride*conv2.stride）；HF log-mel pad 值 0.0；finetune/multi-clip 为默认关闭的 opt-in（默认 recipe 即中招）；读点 65ac8216、main ce852bfb（2026-10-18 仍在）
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/8324
+  kind: github_issue
+relations: []
+original:
+  mechanism: Megatron-LM examples/mimo/model_providers/hf_whisper_encoder.py 的 HFWhisperEncoderWrapper 在 torch.no_grad() 下运行完整 HuggingFace Whisper encoder，之后才对 seq_lengths 布尔索引——即先做带 pad 的完整前向再掩码。而 Transformers 的 WhisperEncoder 忽略 attention_mask，且除非 mel 时轴为 3000（max_source_positions*conv1.stride*conv2.stride）否则抛错，因此无法直接喂变长：conv2（kernel 3、stride 2、padding 1）的边界帧会混合下一 mel 帧，且每个 query 仍 attend 到 pad 尾部；HF 对 log-mel pad 0.0，这不是 log-mel 域的静默值。issue 在 65ac8216 读码、main ce852bfb（2026-10-18）仍在；published AVLM recipe 默认对第一 clip 保持冻结 Whisper 塔（finetune 与 multi-clip 是默认关闭的 opt-in）。复现：CPU tiny WhisperEncoder 注入（无 from_pretrained），3000 帧 log-mel 前 13 帧为真实前缀、尾部垃圾，对比 wrapper 输出、测试内未 pad 主体、masked full forward——masked full forward 与未 pad 主体不同，wrapper 与 masked full forward 一致（即 wrapper 给的是含 pad 泄漏的特征）。修复方向（issue 详述）：forward(input_features, seq_lengths, feature_lengths) 按行裁剪至真实 mel 长度、逐行跑 conv1/GELU/conv2/GELU/positions/encoder.layers/layer_norm、S=(mel-1)//2+1 校验、拼接 [sum(S_i),H]；无维护者回应。
+  source: 2026-10-18 GitHub NVIDIA/Megatron-LM issue https://github.com/NVIDIA/Megatron-LM/issues/8324 （open）
+  behavior: 按默认 MiMo AVLM recipe（冻结 Whisper 塔）训练时，音频特征经完整 3000 帧 pad 前向再掩码取得：较短音频的 encoder 输出含有 padding 尾部泄漏（conv 边界混合 + 全 attention 看 pad 帧），与未 pad 的正确前向不同，无任何报错。冻结塔的这些偏差特征静默进入训练主干，多模态对齐质量受损而曲线不可见。
+  trigger_surface: Megatron-LM examples/mimo hf_whisper_encoder；Transformers WhisperEncoder（要求 3000 帧、忽略 attention_mask）；默认 published AVLM recipe 冻结塔路径
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 输入编码
+        to: 隐状态

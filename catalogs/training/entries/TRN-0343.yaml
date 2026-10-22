@@ -1,0 +1,58 @@
+id: TRN-0343
+legacy_ids: []
+slug: opsnn_bn_grad_kahan_inf_nan_accumulator
+aliases: []
+title: BN 梯度 Kahan 补偿位 Inf-Inf 成 NaN 毒化累加器
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: KahanAdd/KahanAddReg 累加路径
+  behavior: 部分和为 ±Inf 时 Kahan 补偿位 c=(t-sum)-y 算得 Inf-Inf=NaN，y=src-c 变 NaN 并跨调用毒化累加器；无 NaN lane 防护。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 含 ±Inf 极值的 BN 反向梯度输入下，NPU 输出 NaN 而 golden/GPU 输出 ±Inf；该算子是 BN 训练梯度路径，输出 NaN 传播进反向梯度。
+  visibility: 数值异常
+mitigation:
+  detect: 三方校验 cross_check 对含 Inf 用例比对（golden/GPU ±Inf vs NPU NaN）。
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12373（open）：c!=c 自比检出 NaN lane 并 Select 清零，非有限路径退化为 IEEE 普通加法（对齐 golden/torch.sum）；有限路径行为不变。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  family: N/A
+  trigger: partial
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12373
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann ops-nn BNTrainingUpdateGrad 的核内累加路径 KahanAddReg（NHWC reroute）与 KahanAdd（快路）中，Kahan 补偿位计算 c=(t-sum)-y 在部分和为 ±Inf 时得 Inf-Inf=NaN；随后 y=src-c 变 NaN 并跨调用毒化累加器。三方校验实测：golden/GPU 输出 ±Inf 而 NPU 输出 NaN。修复 !12373 用 c!=c 自比判定检出 NaN lane 并 Select 清零，非有限路径退化为 IEEE 普通加法语义（对齐 golden/torch.sum——torch.sum 对 Inf 输入返回 Inf 而非 NaN）；有限路径 c!=c 恒 false、原值保留，Kahan O(eps) 精度收益不受影响。该算子位于 BN 训练反向梯度计算路径（bn_training_update_grad），其输出直接进入参数梯度。
+  source: https://gitcode.com/cann/ops-nn/merge_requests/12373（2026-10-20，open；上游缺陷无独立 issue，复现与修复在 MR 正文，AI 辅助编写已声明）
+  behavior: 训练中某步 BatchNorm 反向梯度含 ±Inf 极值（如上游溢出经 loss/梯度链传入）时，NPU 上 BNTrainingUpdateGrad 的输出变 NaN（而 CPU/GPU 参考实现输出 ±Inf），NaN 随后毒化优化器状态与权重；触发前的常规有限值输入下输出正常，因此只有极值步才暴露。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度

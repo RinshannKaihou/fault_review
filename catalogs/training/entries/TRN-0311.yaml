@@ -1,0 +1,72 @@
+id: TRN-0311
+legacy_ids: []
+slug: ascend_fused_adamax_w_fp16_amp_storage_size_mismatch
+aliases: []
+title: NpuFusedAdamW BN 梯度 storage 与描述符长度失配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: pytorch
+    component: NpuFusedAdamW unscale_ 拼接
+  behavior: FP16 AMP 下 BN 小通道梯度 storage 容量(16)与 NPU 描述符长度(8)分叉；NpuFusedAdamW 按 storage().size() 累计 266、NPU 口径 250，首次 unscale_ 越界报错。
+effect:
+  objects:
+  - 可用性/进度
+  - 优化器状态
+  detail: 首个反向后首次 GradScaler.unscale_ 抛 RuntimeError(266>250)，训练无法进入首个 optimizer step；910B2 单卡小模型可复现；报错指向 combined_tensor 越界而非 BN 梯度本身。
+  visibility: 报错
+mitigation:
+  detect: 对每个梯度张量比对 storage().size() 与 torch_npu.get_storage_size()，不一致即预警。
+  fix: '待定（issue 2026-10-17 报于 Ascend/pytorch #5501，open；issue 提到 --bn-format3 强制 BN 参数 format 3 时两种长度一致、不触发，可作规避参考，作者未声称已验证为通用规避）'
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: fail-loud（首步报错）为主，但底层是梯度张量 storage 容量与 NPU 描述符静默不一致（两套长度口径共存、其余梯度一致），随报错暴露；按边界收录为延迟可见的 storage/描述符失配实例，留审计裁量。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5501
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'TorchNPU 2.14.0 / CANN 9.2.0，Ascend 910B2 单卡。模型 Conv2d(3→8)→BatchNorm2d(8)→SiLU→Pool→Linear，原版 NpuFusedAdamW + FP16 autocast + 默认 GradScaler + jit_compile=False + allow_internal_format=True。首个反向后 BN.weight.grad/BN.bias.grad（shape [8]、format 2）出现 storage().size()=16 而 torch_npu.get_storage_size()=8；其余梯度两种长度一致。全模型累计：storage().size() 合计 266（216+16+16+16+2），get_storage_size 合计 250（216+8+8+16+2），16 元素差恰为两个 BN 梯度各差 8。首次 scaler.unscale_(optimizer) 即 RuntimeError: (index + size) (266) > torch_npu.get_storage_size(combined_tensor) (250)。issue 提供 repro.py（含 --bn-format3 对照：强制 BN 参数 format 3 时 storage 两种口径一致、不触发）。复现不依赖业务框架/数据集/分布式。根因是 allow_internal_format 的 NPU 内部格式下梯度张量 storage 实际容量与 NPU 描述符长度两套口径不一致，而 NpuFusedAdamW unscale_ 拼接按 storage().size() 计算。截至 2026-10-18 issue open 无修复。来源 https://gitcode.com/Ascend/pytorch/issues/5501'
+  source: https://gitcode.com/Ascend/pytorch/issues/5501（2026-10-17 创建，open；单卡最小复现 + 逐梯度两种长度对照表 + repro 脚本）
+  behavior: 昇腾上用 NpuFusedAdamW 训含小通道 BatchNorm 的模型并开 FP16 AMP：第一步反向后第一次 GradScaler.unscale_ 直接抛 RuntimeError storage 越界（266>250），训练无法进入首个 optimizer step。报错信息指向 combined_tensor 越界而非 BN 梯度本身，定位有迷惑性；BN 通道数大（如 64）时不触发，仅小通道（8）的 format2 梯度出现 storage 与描述符长度分叉。
+  trigger_surface: Ascend 910B + torch_npu 2.14.0 + CANN 9.2.0；NpuFusedAdamW + FP16 AMP(GradScaler) + allow_internal_format=True + 小通道 BatchNorm(format2 梯度)。
+  discovery: 2026-10-18 每日扫描
+  notes:
+  - '2026-10-19 回访 2026-10-19：op-plugin #5501（本条来源）与同日新报 #593（fp32 conv 全族 HF32 降精度、TRN-0314）同出自 A3 精度矩阵扫描，属不同缺陷（BN 梯度 storage 长度失配 vs conv 出口精度模式）；无状态更新。'
+  - '2026-10-20 回访 2026-10-20：op-plugin #593 状态 open 无变化（updated 2026-10-19T06:07Z，同扫描者批次内新引用）；修复动向持续跟进。'
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 优化器状态
+        to: 可用性/进度
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-19'
+    fields:
+    - original.notes
+  - date: '2026-10-19'
+    fields:
+    - evidence
+  - date: '2026-10-20'
+    fields:
+    - original.notes

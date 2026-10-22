@@ -1,0 +1,58 @@
+id: TRN-0352
+legacy_ids: []
+slug: msllm_mg2hf_grouped_qkv_plain_unpack
+aliases: []
+title: MCore→HF 拆 grouped QKV 错位致导出模型乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspeed-llm
+    component: convert_mg2hf QKV unpack
+  behavior: convert_mg2hf 的 unpack 分支按 [Q,K,V] 顺序切 fused linear_qkv，而 GQA 模型在 MCore 里存的是 [Q 组,K,V] 交错布局，切完 q/k/v_proj 全错位。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: Qwen3-0.6B（TP=PP=EP=1）无训练 round-trip 后 311/311 键齐全，但仅 q_proj/k_proj/v_proj 有差（max_abs 0.42~0.67），其余为 0；生成 aseña/Glish/ature 类重复碎片，原 HF 权重同脚本正常。
+  visibility: 静默错误
+mitigation:
+  detect: 转换后逐 tensor 对比原始 HF ckpt，重点看 q/k/v_proj 的 mean_abs 是否非零
+  fix: 'issue #1532 建议新增 _split_grouped_qkv_weight，按 num_attention_heads/num_query_groups 分组拆分（issue closed，正文未附修复 PR，未核实）'
+labels:
+  family: N/A
+  trigger: 'yes'
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1532
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed-LLM 的 convert_ckpt_v2.py 做 HF→MCore→HF 无训练 round-trip 时，MCore→HF 方向由 mindspeed_llm/tasks/checkpoint/convert_mg2hf.py 的 Mg2HfConvert.set_model_layer_attn 处理 fused linear_qkv。qkv_type == 'unpack' 分支把 linear_qkv_list cat 起来后按 total_qkv_rows//(nh+2*ng) 求 head_dim，再切成 q = 前 nh 段、k = 中间 ng 段、v = 最后一段，即假设布局是 [all Q, all K, all V]。但 Qwen3-0.6B（nh=16, ng=8, head_dim=128, hidden=1024）的 MCore linear_qkv.weight 是 [4096,1024]，实际布局为 [Q-group0,K0,V0, Q-group1,K1,V1, ...]：把该张量与 HF plain 布局比对得 mean_abs 0.0297/max 0.6699，与 grouped 布局比对得 mean_abs 0.0/max 0.0，证明 HF→MCore 写对了、MCore→HF 拆错了。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1532（closed；环境 MindSpeed-LLM + Qwen3-0.6B，TP=PP=EP=1，逐 tensor 对比与源码定位均在正文）
+  behavior: 把 HuggingFace 的 Qwen3-0.6B 转成 MCore 再转回 HF 之后，checkpoint 的 key 一个不少（311/311，missing/extra 都为空），但模型生成的是 aseñaaseñaGLISHATUREATUREATURE 这类重复碎片，原始 HF 权重同一套 tokenizer 与推理脚本正常；逐 tensor 对比显示只有 q_proj/k_proj/v_proj 三组权重有差（max_abs 0.42~0.67），其余全为 0。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - visibility

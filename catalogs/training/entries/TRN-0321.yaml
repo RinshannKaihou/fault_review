@@ -1,0 +1,57 @@
+id: TRN-0321
+legacy_ids: []
+slug: op_plugin_embedding_bag_last_offset_double_count
+aliases: []
+title: op-plugin embedding_bag 末包重复累加致错值与梯度污染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: embedding_bag 转换层
+  behavior: embedding_bag 转换层在 2D 输入 + include_last_offset=True 时末包偏移处理错误，最后一个 bag 被重复累计：sum/mean 末包输出=正确值+末包真实和，梯度同污染；max 正确。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 2D embedding_bag（include_last_offset=True）训练时每个样本最后一个 bag 的 sum/mean 前向输出错值、对应梯度同错；无报错，错值随训练静默传播。max 模式与不含 include_last_offset 的调用不受影响。双芯一致。
+  visibility: 静默错误
+mitigation:
+  detect: 对含末包的样本用 CPU embedding_bag 对照 forward/backward；或抽验末 bag 输出是否等于「正确和 + 末包和」的二倍关系。
+  fix: 待定（issue 2026-10-19 open 建议核对 include_last_offset 偏移处理；无修复 MR）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/599
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend op-plugin（torch_npu 2.7.1.post4 + CANN 9.1.0，Atlas A3 910_9362×2）的 embedding_bag 2D 输入 + include_last_offset=True 路径：转换层对 include_last_offset 的末包偏移处理错误，最后一个 bag 的 embedding 被重复累计——sum/mean 输出实测 NPU = CPU 正确值 + 该末包的真实和；backward 梯度对照确认同污染；max 模式正确；不传 include_last_offset 时正确。issue（2026-10-19，open）建议 op-plugin 的 embedding_bag 转换层核对 include_last_offset 的偏移处理；复现脚本 A3 真机 /mnt/workspace/a3hunt/round5/。训练侧收录依据：embedding_bag 是推荐/排序等训练负载的常规算子，末包前向错值 + 梯度污染为静默训练正确性故障。推理库未收录该来源（find 核对 count=0），无需 cross。
+  source: https://gitcode.com/Ascend/op-plugin/issues/599
+  behavior: NPU 上以 2D 输入 + include_last_offset=True 调 F.embedding_bag(mode='sum'/'mean') 时，每个样本最后一个 bag 的输出值偏大（等于正确值再加一次末包元素和），反向梯度同样错；训练无任何报错，只有末 bag 受影响、其余 bag 正确，单测逐元素对照才能发现。环境：CANN 9.1.0、torch_npu 2.7.1.post4、Atlas A3，双芯一致。
+  trigger_surface: torch_npu + CANN 9.1.0（A3）F.embedding_bag 2D 输入 + include_last_offset=True 的 sum/mean 模式。
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

@@ -1,0 +1,55 @@
+id: TRN-0322
+legacy_ids: []
+slug: op_plugin_pack_padded_pad_dirty_residual
+aliases: []
+title: op-plugin pad_packed_sequence 残留原输入脏数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: pad_packed_sequence 转换层
+  behavior: op-plugin 的 pad_packed_sequence 输出转换层对 pad 区域不清零，pack→pad 往返后 pad 填充区残留原输入同位置的旧值（恒等拷贝级错误）；索引面（sorted_indices 等）全对。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 变长序列训练/RNN 路径中，pad 位若参与池化或 loss 累计，pad 区旧值会静默污染训练数值，无报错。双芯一致复现。
+  visibility: 静默错误
+mitigation:
+  detect: pack→pad 往返后断言 pad 区恒为 0；或对往返输出与 CPU 实现逐元素对照。
+  fix: 待定（issue 2026-10-19 open 建议 pad_packed_sequence 输出转换层对 pad 区域清零；无修复 MR）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/604
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend op-plugin（torch_npu 2.7.1.post4 + CANN 9.1.0，Atlas A3 910_9362×2）的 pad_packed_sequence 输出转换层不清零 pad 填充区域：pack_padded_sequence → pad_packed_sequence 往返后 pad 区残留「原输入同一位置的旧值」（恒等拷贝级错误，即往返未改写这些槽位）；索引面（sorted_indices/unsorted_indices）全部正确，错值只在 pad 数值区。issue（2026-10-19，open）建议转换层对 pad 区域清零；复现脚本 A3 真机 /mnt/workspace/a3hunt/round7/。训练侧收录依据：变长序列训练（RNN/LSTM/GRU + pack_padded_sequence）是标准负载，pad 位脏值在池化/loss 累计路径静默污染训练。推理库未收录该来源（find 核对 count=0），无需 cross。
+  source: https://gitcode.com/Ascend/op-plugin/issues/604
+  behavior: NPU 上对 pack_padded_sequence 的结果调 pad_packed_sequence（batch_first 两种均）后，pad 区域不是 0 而是进入 pack 前张量同位置的旧值；变长训练里 pad 位参与池化或 loss 时，训练数值被静默污染、无报错；索引信息全对，只有 pad 数值错。环境：CANN 9.1.0、torch_npu 2.7.1.post4、Atlas A3，双芯一致复现。
+  trigger_surface: torch_npu + CANN 9.1.0（A3）pack_padded_sequence→pad_packed_sequence 往返的变长训练/RNN 路径。
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

@@ -1,0 +1,63 @@
+id: TRN-0287
+legacy_ids: []
+slug: trl_torch_compile_chunked_loss_zero
+aliases: []
+title: trl torch<2.11 编译 chunked loss 全程 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: trl
+    component: Inductor 变异张量分析失败
+  behavior: '#7600 把 kernel 标量参数 cast 成 fp32；torch<2.11 的 Inductor 以 constexpr/float 追踪无 .to() 可调→分析抛异常→按全变异假设生成错误图。'
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: SFT/蒸馏等用 chunked logprob/divergence kernel 的训练在 torch<2.11 + torch_compile=True 下：无报错、loss 恒 0.0、grad_norm 恒 nan；不编译时 loss 约 10.7。CI 因用新 torch 不覆盖。
+  visibility: 静默错误
+mitigation:
+  detect: torch<2.11 + torch_compile=True 且用 chunked loss kernel 时，第 1 步即查 loss 是否 0.0、grad_norm 是否 nan；kernel 测试 TestChunkedLogProbFunction::test_torch_compile 在 2.6–2.10 均失败可作回归探针。
+  fix: 'kernel 侧 #7600 的 fp32 cast 引入此不兼容；torch 2.11 起分析器支持 scalar .to() 后测试通过（issue 已 closed；修复落地状态未逐 commit 核实，未确认是否单独 backport）'
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7687
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7600
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'trl 的 ChunkedLogProbFunction/ChunkedDivergenceFunction（SFT、蒸馏等 trainer 共用）在 torch_compile=True + torch<2.11 下全程训错值：#7600 把 kernel 标量参数 cast 为 fp32（x.to(tl.float32)）；torch 2.6 的 Inductor 以 constexpr、2.10 以 Python float 追踪用户 Triton kernel 判定变异张量，两者都无 .to()，identify_mutated_tensors 抛异常，Inductor 日志「Encountered an exception in identify_mutated_tensors, assuming every input is mutated」并按全变异假设编译出错误图。torch 2.11 起该分析支持标量 .to()，TestChunkedLogProbFunction::test_torch_compile / TestChunkedDivergenceFunction::test_torch_compile 在 2.6.0–2.10.0 失败、2.11.0 起通过；trl CI 只跑新 torch 故未拦截。issue #7687 已 closed（无评论，修复落地细节未核）。'
+  source: https://github.com/huggingface/trl/issues/7687 ；引入 PR：https://github.com/huggingface/trl/pull/7600
+  behavior: SFT/蒸馏训练开启 torch_compile=True（torch<2.11）：日志里 loss 恒 0.0、grad_norm 恒 nan，无任何报错或警告（Inductor 的 assuming every input is mutated 只在 debug 日志），训练跑完全程但模型完全没学到东西；关掉 torch_compile 立即恢复（loss≈10.7）。坑点在 CI 与常见教程都用新 torch，本地老环境一开编译就静默报废。
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

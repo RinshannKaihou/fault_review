@@ -1,0 +1,57 @@
+id: TRN-0337
+legacy_ids: []
+slug: mindspeed_fsdp_adamw_swap_no_stream_sync
+aliases: []
+title: AdamWSwap 计算流与 D2H 流无同步致动量错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: mindspeed
+    component: swap_optimizer 流同步
+  behavior: swap_optimizer 在用 _fused_adamw_ 更新参数后立刻 swap_tensors_to_host，计算流与 D2H 通信流之间没有同步或 wait，通信流可能在计算完成前就把未更新的一二阶动量搬到 CPU。
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  detail: fsdp 后端用 AdamWSwap、关 shuffle 并开确定性计算时，同一配置多次运行精度结果不一致，且与 adamw 的结果有差；加流同步后多次运行与 adamw 完全一致，无报错。
+  visibility: 不可复现
+mitigation:
+  detect: 关 shuffle + 确定性计算下同一配置重复运行，比对最终 loss/权重；或把 swap 关掉与 adamw 对照。
+  fix: 报告者验证加 torch.accelerator.synchronize() 或计算流 wait 后精度完全一致；issue 已 closed，正文未给出合入 PR（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/issues/210
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed issue #210（2026-07-16 提，已 closed；openEuler、910C、CANN 9.1.0.B108、26.1.0.B150）：在 MindSpeed-MM 仓库适配 AdamWSwap 优化器类型，在 qwen3.5 模型上做精度测试，关闭 shuffle 并开启确定性计算的场景下，多次运行的精度结果存在差异，且与使用 adamw 优化器的结果也有差异；换回 adamw 不会出现精度差异。代码定位在 mindspeed/fsdp/memory/swap_optimizer/swap_optimizer.py：第 247 行执行 torch._fused_adamw_([param.to_local()], [param.grad.to_local()], [state[''exp_avg''].to_local()], [state[''exp_avg_sq''].to_local()], ... lr=group[''lr''], beta1=beta1, beta2=beta2, weight_decay=..., eps=..., amsgrad=..., maximize=...)，第 253 行执行 self.swap_tensors_to_host(param)。计算流和 D2H 通信流之间没有等待操作，通信流可能在计算流完成之前就发起数据交换，把未更新的一二阶动量同步到 CPU，导致精度误差。在两条流之间加 torch.accelerator.synchronize()（或给计算流加 wait）后，多次运行结果以及与 adamw 的对比精度均完全一致。'
+  source: https://gitcode.com/Ascend/MindSpeed/issues/210
+  behavior: fsdp 后端用 AdamWSwap 优化器训练 qwen3.5，关 shuffle、开确定性计算这种本该可复现的配置下：同一份输入多次运行得到不同的精度结果，和 adamw 优化器的结果也对不上。没有任何报错或 NaN，只是数值不可复现、精度偏离；把 swap 换回 adamw 或补上流同步就恢复正常。
+  trigger_surface: fsdp + AdamWSwap（--swap-optimizer 路径的 CPU offload）+ 确定性计算
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 优化器
+        to: 重计算/卸载

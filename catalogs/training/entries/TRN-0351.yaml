@@ -1,0 +1,59 @@
+id: TRN-0351
+legacy_ids: []
+slug: msllm_mc2_allgather_base_mm_nan
+aliases: []
+title: MC2 融合 all-gather 输出 NaN 污染 loss
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: mindspeed
+    component: npu_all_gather_base_mm
+  behavior: 开 --use-ascend-mc2 后，MC2 列并行线性层里 npu_all_gather_base_mm 的输出整体为 NaN，通信与矩阵乘融合这条路径把中间结果污染成 NaN。
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: qwen3-32b 32k LoRA 训练 loss 变 NaN，改并行度与超参均复现；msprobe 溢出检测首个 NaN 为该算子输出（4096×75968 bf16）；关闭 use-ascend-mc2 后精度正常。
+  visibility: 数值异常
+mitigation:
+  detect: msprobe 溢出检测看 npu_all_gather_base_mm 输出；或 A/B 开关 use-ascend-mc2
+  fix: 'issue #1393（closed）只给规避：关闭 use-ascend-mc2；未给修复 PR'
+labels:
+  family: N/A
+  trigger: config
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1393
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed + MindSpeed-LLM 26.0.0（CANN 8.5.2，A3）16 卡跑 qwen3-32b 32k LoRA：TP=2、CP=8（ulysses_cp_algo）、--use-ascend-mc2、--use-distributed-optimizer、--recompute-granularity full。msprobe 溢出检测在 rank_10 报 NPU.npu_all_gather_base_mm.0.forward 的输出 shape [4096, 75968]、dtype bf16、Max/Min/Mean/Norm 全为 NaN；stack_info 指向 mindspeed/core/tensor_parallel/mc2_feature/linear_function.py:264 的 torch_npu.npu_all_gather_base_mm 调用，上一帧是 mc2_column_parallel_linear.py:187 的 ColumnSeqParallelLinearWithFrozenWeightFunction.apply。报告者定位为 mc2 的通信侧出问题，改超参与并行度仍 NaN，关闭 use-ascend-mc2 后无精度问题。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1393（closed；环境 26.0.0 + CANN 8.5.2 + A3，完整训练命令与 msprobe 溢出检测输出在正文）
+  behavior: qwen3-32b 32k LoRA 训练 loss 直接变 NaN，试各种参数组合都一样；msprobe 溢出的第一个算子是 MC2 的 all-gather 与 matmul 融合算子，而不是某个普通 matmul；把 --use-ascend-mc2 去掉（牺牲融合通信性能）训练就恢复正常，说明 NaN 是融合通信路径带进来的。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 训练信号
+        to: 数值结果
+    uncertain:
+    - subsystem

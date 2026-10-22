@@ -1,0 +1,57 @@
+id: TRN-0362
+legacy_ids: []
+slug: msllm_dualpipev_permute_fusion_capacity_conflict
+aliases: []
+title: DualPipeV 强绑 permute 融合与专家容量互斥
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: mindspeed-llm
+    component: fused_moe_permute 参数校验
+  behavior: DualPipeV 依赖 moe-permute-fusion 而自动开启它，capacity 又要按 token 截断/重路由、改变 permute 语义与输入 shape，参数校验直接把两者判为互斥。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 同时开 DualPipeV 与 --moe-expert-capacity-factor，训练在 initialize_megatron 的 validate_args 阶段就 AssertionError 退出，流水 overlap 与容量限制无法共存。
+  visibility: 报错
+mitigation:
+  detect: 启动参数校验里列出 DualPipeV 自动打开的 feature 集，与 capacity/pad 类参数做交叉检查
+  fix: issue 给两档：短期改报错文案、直接说明 DualPipeV 与 capacity 冲突并建议用 aux_loss；长期解耦调度与 permute 融合，capacity 开启时自动降级为非融合 permute（closed，未附 MR，未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: DualPipeV + --moe-expert-capacity-factor + mcore
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1401
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed-LLM 4 的 feature manager 在 initialize_megatron → validate_args → MindSpeedFeaturesManager.validate_features_args → feature.validate_args 阶段做参数互斥校验。DualPipeV 流水策略依赖 --moe-permute-fusion 来 overlap 通信与计算，因此会连带开启 permute 融合；而 --moe-expert-capacity-factor 需要按 token 维度截断/重路由，改变了 permute 操作的语义和输入 shape，融合 permute 算子不支持该场景。mindspeed/features_manager/fusions/fused_moe_permute.py:50 于是直接 raise AssertionError: The --moe-permute-fusion can only be enabled if ''--moe-expert-capacity-factor'' is disabled，训练在参数校验阶段就退出，两个特性无法共存。相关模块还有 mindspeed_llm/features_manager/pipeline_parallel/dualpipev_feature.py。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1401（closed；mcore 后端；完整栈与原因分析、两档方案在正文）
+  behavior: 同时打开 DualPipeV 和 --moe-expert-capacity-factor 拉起预训练，进程还没进训练循环就在 validate_args 阶段 AssertionError 退出，报 The --moe-permute-fusion can only be enabled if '--moe-expert-capacity-factor' is disabled；按提示关掉 capacity 能跑，但负载均衡只能退回 aux_loss，DualPipeV 的 overlap 也就用不上 capacity 的截断语义。
+  trigger_surface: DualPipeV + --moe-expert-capacity-factor + mcore 后端
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

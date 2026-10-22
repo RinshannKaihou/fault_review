@@ -1,0 +1,62 @@
+id: TRN-0364
+legacy_ids: []
+slug: msllm_low_precision_opt_duplicate_router_bias_patch
+aliases: []
+title: 低精度优化器重复打 router bias 补丁致导入失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: mindspeed-llm
+    component: 低精度优化器 patch 注册
+  behavior: MoE 特性已给 _update_router_expert_bias 打过补丁，低精度优化器在 register_patches 里再打一次，MindSpeed 的 patch 校验发现重复就抛错。
+effect:
+  objects:
+  - 可用性/进度
+  - 优化器状态
+  detail: 'MoE（已打 router bias 补丁）模型下启用--quant-states/--quant-grads，import阶段即报RuntimeError: the patch of _update_router_expert_bias exist，低精度优化器与MoE组合完全不可用。'
+  visibility: 报错
+mitigation:
+  detect: apply_features_patches 前打印已注册 patch 列表；对同一 orig_func 的重复注册做去重与告警
+  fix: issue 已提修复 PR https://gitcode.com/Ascend/MindSpeed-LLM/pull/4473，做法是去掉重复注册的那次补丁（PR 状态未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: --quant-states/--quant-grads + MoE 模型
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1371
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed-LLM 用 feature manager 在 import 时统一打补丁：mindspeed_llm/tasks/megatron_adaptor_v2.py 的 FeatureAdaptor.execute → MindSpeedFeaturesManager.apply_features_patches → 各 feature 的 register_patches → patch_manager.register_patch → patches_info.get(orig_func_name).set_patch_func。MoE 模块已经给 _update_router_expert_bias 打过补丁，而 mindspeed_llm/features_manager/low_precision/low_precision_optimizer_feature.py 在启用 --quant-states 或 --quant-grads 时又对同一函数注册一次，patch_utils.py:76 的 set_patch_func 检测到已有 patch 就 raise RuntimeError('the patch of {} exist !')。因为发生在 import megatron_adaptor 阶段，作业连参数解析都没走到就退出，低精度优化器与 MoE 的组合因此完全不可用。环境：MindSpeed master、Megatron-LM core_v0.12.1、MindSpeed-LLM master。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1371（closed；MindSpeed/MindSpeed-LLM master + core_v0.12.1；栈与修复 PR 在正文）
+  behavior: '训练脚本里加上 --quant-states 或 --quant-grads，python 一启动就报 RuntimeError: the patch of _update_router_expert_bias exist!，栈在 import mindspeed_llm → FeatureAdaptor.execute → register_patches；把这两个参数去掉就能启动，等于低精度优化器特性在 MoE 模型上根本没法用。'
+  trigger_surface: --quant-states/--quant-grads + MoE 模型（moe 模块已打 router bias 补丁）
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 优化器
+        to: 量化
+    rewritten:
+    - detail

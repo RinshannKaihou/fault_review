@@ -1,0 +1,65 @@
+id: TRN-0314
+legacy_ids: []
+slug: op_plugin_conv_family_hf32_silent_precision_loss
+aliases: []
+title: op-plugin fp32 conv 全族静默 HF32 降精度且污染梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: pytorch
+    component: conv 族 aclnn 出口精度模式选择
+  behavior: fp32 conv 四算子的 aclnn 出口按 HF32 类低位宽执行，不遵循 high_precision 配置，前向与梯度同偏离；set_option（已废弃）与 jit_compile 均无法绕开。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: fp32 conv 前向 rel 误差 6.0e-4~1.8e-3（≈2^-10.5 量级），梯度同样被污染；双芯逐位相同（确定性非随机），无告警；fp16 同形态正常；matmul/bmm/einsum 同机达标可排除平台普遍性
+  visibility: 静默错误
+mitigation:
+  detect: 同机 matmul/bmm/einsum fp32 对照（逐位或 <2.7e-6 达标）排除平台普遍性；conv 形态矩阵与 CPU 双端逐位比对
+  fix: 待定（issue open：要求 op-plugin 确认 conv 族 aclnn 出口选择是否遵循精度模式配置并文档化；high_precision 选项已废弃不生效）
+labels:
+  family: infra_off
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Atlas A3（Ascend910_9362 ×2）、CANN 9.1.0、torch 2.7.1 + torch_npu 2.7.1.post4；fp32 conv 四算子全族；fp16 正常
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 训推共有：推理库同源条目 INF-1434（2026-10-18 收）。本条按训练范围单独收录：梯度污染与 fp32 训练精度影响在 issue 正文中明确。
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/593
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-1434
+original:
+  mechanism: 'op-plugin fp32 conv 族（conv1d/conv2d/conv_transpose1d/conv_transpose2d）在 NPU 上存在 HF32 类静默降精度：rel 误差 6.0e-4~1.8e-3（≈2^-10.5 量级，mantissa 低位宽特征），且**梯度同样被污染**（conv2d 3 组种子稳定复现 + 其余三算子 24 个形态点复测同款）。已验证无效的规避：torch.npu.set_option({''ACL_OP_SELECT_IMPL_MODE'': ''high_precision''})（已废弃不生效）、jit_compile 路径。对照实验：同机 matmul/bmm/einsum fp32 逐位或 <2.7e-6 达标，排除平台普遍现象，缺陷限定在 conv 族 aclnn 出口的精度模式选择。issue 要求家族级跟踪（四算子同根因）。复现脚本位于 A3 真机 /mnt/workspace/a3hunt/round2-3/。环境：Atlas A3（Ascend910_9362 ×2）、CANN 9.1.0、torch 2.7.1 + torch_npu 2.7.1.post4、双芯 maxabs 逐位相同。训练侧影响：任何经 NPU fp32 conv 的训练（含冻结骨干的检测/分割微调、conv stem）其前向与反向梯度系统性偏离 fp32 语义，且无告警；精度敏感的对齐校验、逐位回归会首先失配。'
+  source: 2026-10-18 GitCode Ascend/op-plugin issue https://gitcode.com/Ascend/op-plugin/issues/593 （open）；推理库同源条目 INF-1434（2026-10-18 收录）
+  behavior: 在 NPU（Atlas A3）上以 fp32 跑 conv1d/conv2d/conv_transpose1d/conv_transpose2d，输出相对 fp32 参考误差 6.0e-4~1.8e-3（HF32 类低位宽量级），反向梯度同样偏差，全程无告警无报错。两次运行逐位相同（确定性），换芯片一致，fp16 同形态正常；同机 matmul/bmm/einsum 正常。设置 high_precision 选项无效（已废弃），jit_compile 无法绕开。训练中表现为 loss 表面正常但前向/梯度已偏离 fp32 语义，蒸馏对齐或逐位回归校验首先失配。
+  trigger_surface: op-plugin conv 族 aclnn 路径；fp32；Atlas A3（910_9362）双芯、CANN 9.1.0、torch_npu 2.7.1.post4 实测；训练与推理路径共用
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - behavior

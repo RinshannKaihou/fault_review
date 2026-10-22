@@ -1,0 +1,55 @@
+id: TRN-0317
+legacy_ids: []
+slug: deepspeed_bf16_safe_set_full_grad_wrong_buffer
+aliases: []
+title: BF16 safe_set_full_grad 写错缓冲致梯度掩蔽失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: safe_set_full_grad 分支
+  behavior: safe_set_full_grad() 对 BF16 写 staging param.grad，而 BF16_Optimizer 从独立累加缓冲 step；backward 与 step 之间的梯度掩蔽/替换被静默忽略。
+effect:
+  objects:
+  - 梯度
+  - 优化器状态
+  detail: BF16 训练下，backward 后、optimizer.step 前经 safe_set_full_grad 掩蔽/置零/替换梯度会被静默丢弃，更新用未修改梯度；梯度手术/掩蔽/替换类方法（如梯度裁剪定制、对抗训练、调试注入）失效。开启 immediate 累积且参数跨优化器分区时抛形状错误。
+  visibility: 静默错误
+mitigation:
+  detect: 回归含两真实 DP rank、双累加模式、BF16 ZeRO-1 与 ZeRO-2 兄弟路径、矩阵/偏置参数、双累加微批、零/非零替换梯度，检查公开 getter 与 SGD 参数更新；CPU repro 脚本随 PR 附带（无需编译 DeepSpeed ops）
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8856 （open 2026-10-18 未合入）：setter 改写既有的完整累加缓冲，匹配 getter 的 BF16 检测；普通梯度与 ZeRO 分片梯度分支不变
+labels:
+  family: N/A
+  trigger: config
+  trigger_review: false
+  trigger_note: DeepSpeed BF16_Optimizer（bf16.enabled=true）；backward 与 step 之间经 safe_set_full_grad 修改梯度的用户代码；ZeRO-1/2 均涉及；immediate_grad_update 开启且参数跨优化器分区时变异为形状报错
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8856
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed safe_set_full_grad() 的 BF16 分支把替换梯度写入 staging param.grad，但 BF16_Optimizer 的 step 从独立的累加缓冲（accumulation buffer）读取：backward 与 step 之间经 safe_set_full_grad 做的梯度掩蔽/替换被静默忽略——写进去的梯度不参与更新。开启 immediate 累积（bf16.immediate_grad_update）且参数跨优化器分区时，该路径直接报形状错误（fail-loud 变体）。修复 PR #8856（open）把 setter 改为写既有完整累加缓冲、匹配 getter 的 BF16 检测，普通梯度与 ZeRO 分片梯度分支不变；回归覆盖两真实数据并行 rank、双累加模式、BF16 ZeRO-1 与 ZeRO-2 兄弟路径、矩阵与偏置参数、双累加微批、零/非零替换梯度，检查公开 getter 与 SGD 参数更新；附 CPU repro（Gloo 后端、无需编译 DeepSpeed ops）。训练侧影响：依赖梯度手术/掩蔽/替换的训练方法（如梯度裁剪定制、对抗训练、调试注入）在 BF16 下静默失效，更新使用未修改梯度。'
+  source: 2026-10-18 GitHub deepspeedai/DeepSpeed PR https://github.com/deepspeedai/DeepSpeed/pull/8856 （open）
+  behavior: BF16 DeepSpeed 训练中，在 backward 之后、optimizer.step 之前通过 safe_set_full_grad 修改梯度（掩蔽、置零、替换），训练照常运行、无报错无日志，但 step 实际使用的是修改前的原始梯度——梯度手术类操作静默失效。开启 immediate 累积且参数跨优化器分区时则直接抛形状错误。
+  trigger_surface: DeepSpeed BF16_Optimizer + safe_set_full_grad 用户路径；ZeRO-1/2；immediate_grad_update 跨分区参数为 fail-loud 变体
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    rewritten:
+    - detail

@@ -1,0 +1,54 @@
+id: TRN-0361
+legacy_ids: []
+slug: msllm_batch_p2o_comm_hccl_group_unbalanced
+aliases: []
+title: 开 batch_p2o_comm 后 HcclGroupEnd 未配对
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: mindspeed-llm
+    component: optimize_p2p_comm 批量下发
+  behavior: 推断批量下发路径与 PP 调度实际收发次数/分支不一致，导致 HCCL group 调用不成对，HcclGroupEnd 缺少 HcclGroupStart。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 'DSv4 整网训练在 recv_forward 的同步点抛 Inner error，PLOG 记 HcclGroupEnd: not in a group call，进程直接退出；关掉该开关即恢复。'
+  visibility: 报错
+mitigation:
+  detect: 打开前后对比各 rank 的 HcclGroupStart/End 计数与 P2P 收发次数；PLOG 里筛 hccl_group.cc 的 group 配对告警
+  fix: issue 只提交复现与 PLOG 定位（closed，未附修复 PR，未核实）；规避是不开 config.batch_p2o_comm
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: PP>1 + adaptor.py 中 config.batch_p2o_comm=True
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1525
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'DSv4 整网训练时把 mindspeed/core/pipeline_parallel/optimize_p2p_comm/adaptor.py 里的 config.batch_p2o_comm 打开，该开关把 pipeline 的 P2P 收发批量折进 HCCL group 下发。开启后训练在 recv_forward → p2p_communication._communicate → torch.cuda.synchronize（torch_npu 的 transfer_to_npu 转发）处报 RuntimeError: The Inner error is reported as above ... the current working operator name is hcclGroupEnd。设备侧 PLOG 写明 HCCL(125186) [hccl_group.cc:266] HcclGroupEnd: not in a group call. Didn''t call HcclGroupStart before.，即该 rank 执行 group end 时没有配对的 group start；从现象判断是批量下发路径与 PP 调度实际的收发次数/分支不一致，导致 group 调用不成对（未取源码核对，属推断）。关闭该开关后作业恢复正常，报告者按 ASCEND_LAUNCH_BLOCKING=1 的提示才拿到准确定位。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1525（closed；dsv4 整网训练；栈与 PLOG 原文在正文）
+  behavior: '把 batch_p2o_comm 打开跑 dsv4 整网，训练在 pipeline 的 recv_forward 处退出，外层只报 RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is hcclGroupEnd，还提示要设 ASCEND_LAUNCH_BLOCKING=1 才能拿到准确栈；PLOG 里能看到 HcclGroupEnd: not in a group call。关掉这个开关就不再出现。'
+  trigger_surface: PP>1 + config.batch_p2o_comm=True + dsv4 整网
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

@@ -1,0 +1,53 @@
+id: TRN-0323
+legacy_ids: []
+slug: megatron_chained_optim_loss_scale_divergence
+aliases: []
+title: Megatron 链式优化器 loss scale 分叉静默错误反缩放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: megatron-lm
+    component: 链式 FP16 loss scaler 更新
+  behavior: FP16 链式优化器 backward 用第一个优化器的 scale，但各优化器用各自 overflow 结果独立更新 scaler；只一侧溢出时 scale 分叉，后续 update 按错 scale 反缩放部分模型。
+effect:
+  objects:
+  - 梯度
+  - 优化器状态
+  detail: FP16 MoE 链式优化器训练中，一侧溢出后 dense/expert 的 loss scale 静默分叉，后续步部分参数按错误 scale 反缩放（实测 64 步后 32768 vs 1048576，expert 梯度被多除 32 倍）；无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 监控各 scaler 的 scale 值是否始终相等；对 unscale 后梯度与 backward scale 对账。
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/8249 （open，未合入未发布）：推迟 scaler 更新至全部优化器完成梯度检查后按合并 overflow 结果统一更新；嵌套链同理；ckpt 格式不变。含 64 步 EP2 FP16 复现与 AdamW 参考对照（两卡 RTX 5090）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8249
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'Megatron-LM PR #8249（2026-10-15，open，2 评论）描述的缺陷：FP16 链式优化器（chained optimizers，如 dense+expert 双优化器、嵌套链）下，backward 用第一个优化器的 loss scale 放缩梯度，但每个优化器各自用自己看到的 overflow 结果更新自己的 scaler。只有 dense 或只有 expert 梯度溢出时，两个 scaler 的 scale 走向不同值，之后的更新把部分模型按错误的 scale 反缩放（unscale）。修复：推迟 scaler 更新直到所有优化器都检查完梯度，用合并的 overflow 结果更新每个不同 scaler；恢复（restore）的 scaler 状态与第一个 scaler（其 scale 用于 backward）对齐；独立优化器行为不变，ckpt 格式不变。验证：两卡 RTX 5090、PyTorch 2.11.0a0+eb65b36914.nv26.02、CUDA 13.1、TE 2.12.1、PR base 8c815a4c；64 步 FP16 EP2 运行中原代码 dense/expert scale 达 32768/1048576（expert 梯度被多除 32）、修复后两者相等且 unscale 梯度与 backward scale 匹配，对独立计算的 AdamW 参考更新最大参数误差 0.00146269 → 1.19209e-7；回退诊断补丁复现差异。该 PR 10-18 曾因「search item body 不足」留观，本轮读取 PR 正文后确认含完整复现、机制与量化影响，符合收录标准。修复未合入未发布。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/8249
+  behavior: Megatron-LM FP16 + 链式优化器（如 dense+expert）训练时，只有一侧（dense 或 expert）梯度溢出的 step 之后，两个 loss scale 静默分叉；后续训练步部分参数被按错误 scale 反缩放，梯度系统性错值（实测 expert 梯度被多除 32 倍、AdamW 参数误差 1.46e-3 量级），训练继续跑、无 NaN、无告警；单优化器不受影响。
+  trigger_surface: Megatron-LM FP16 + chained optimizers（dense/expert 链、嵌套链），一侧梯度溢出后的后续步。
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

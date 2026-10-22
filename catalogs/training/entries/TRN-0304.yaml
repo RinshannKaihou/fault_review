@@ -1,0 +1,57 @@
+id: TRN-0304
+legacy_ids: []
+slug: torchair_benchmark_check_recompile_false_negative
+aliases: []
+title: torchair benchmark --check 校验别的 kernel
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: benchmark.py --check 精度校验
+  behavior: --check 把 eager_fn 片段重交 torch.compile，重编 kernel 与整网 kernel 不同构（kernel 数与 md5 不同），校验通过不代表整网 kernel 正确
+effect:
+  objects:
+  - 测试判定
+  detail: 结构校验假阴性：整网 kernel 在 CANN 0923 上实测产生 23% NaN 导致训练 grad_norm=nan，同一 kernel 的 benchmark.py --check 却报 Precision check passed（CosineSim=1.0）；校验工具给出错误通过结论
+  visibility: 静默错误
+mitigation:
+  detect: 对 --check 结果保持怀疑：对比 TORCH_COMPILE_DEBUG=1 下整网与重编产物 kernel 目录数量与 md5（整网 1 个 vs 重编 2 个即暴露）；以固定 commit 源码核对 asc_graph.py 重复链
+  fix: 待定（issue open；已给出直观对比与根因分析（整网 kernel 重复子计算 vs 片段逻辑语义），尚无修复 MR）
+labels:
+  family: N/A
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: CANN 9.3.0~weekly.20260923.01 与 ~weekly.20261009.01 均复现；torch 2.14.0 / torch_npu 2.14.0（a9169594）；SoC Ascend910_9362；torchtitan-npu graph_trainer + --compile.inductor_compilation full；common/precision_check.py md5 f84ab595（与 torchair 64a65f56 一致）
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/870
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/torchair issue #870（2026-10-16，9362 实测 + 根因分析）。torchair _inductor_npu_ext 生成的 benchmark.py --check 精度校验结构性假阴性：把 eager_fn 片段重新交给 torch.compile 后得到的融合 kernel 与整网中该 kernel 不同构——TORCH_COMPILE_DEBUG=1 显示整网该段融合为 1 个 kernel（autofused__to_copy_add_expand_matmul_mean_mul_pow_rsqrt_sigmoid_sum_unsqueeze_view_d2a3593a），重编后变 2 个（md5 4e0f9ef3 主 kernel + autofused_mean_pow_140f5c02），md5 不同。根因：整网 asc_graph.py 里同一逻辑值经两条 broadcast 链各算一遍（两条完整 RMSNorm+gate 链：truediv/truediv1 ← 同样 Data5+Scalar16384、rsqrt/rsqrt1 ← 同样叶子、sigmoid/sigmoid1，三 Store 分别去向 output0/1/2），两条链都有实际消费者不可消除；而 eager_fn 按逻辑输出抽取、每个输出只算一次。因此 --check 校验的是另一个（更简单融合结构的）kernel。真实后果已实测：整网 kernel 在 CANN 0923 上产生 23% NaN 导致训练 grad_norm=nan，而同一 kernel 的 benchmark.py --check 报 PASSED（CosineSim=1.00000000 / RelEuclid=1.27e-07 等三 output 全过）。'
+  source: https://gitcode.com/Ascend/torchair/issues/870
+  behavior: 用 torchair 编译产物自带的 benchmark.py --check 做单 kernel 精度自检，会看到 Precision check passed，但被检的 kernel 与整网实际运行的 kernel 不是同一个（融合结构、kernel 数、md5 都不同）——训练已在报 grad_norm=nan 的 kernel 仍能拿到 PASSED。受影响的是所有依赖该 --check 流程判断 kernel 正确性的用户：绿灯不等于整网正确。整网含重复子计算链（CSE 未消除的同值双算）时必现。
+  discovery: 2026-10-17 每日扫描
+  notes:
+  - '2026-10-18 2026-10-18 回访：torchair #870 仍 open（2026-10-16T01:50 最后更新），无状态变化。'
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - original.notes

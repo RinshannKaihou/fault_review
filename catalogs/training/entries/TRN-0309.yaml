@@ -1,0 +1,67 @@
+id: TRN-0309
+legacy_ids: []
+slug: trl_async_opd_rollout_policy_version_mislabel
+aliases: []
+title: trl Async OPD rollout 样本策略版本错标
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: rollout 版本快照
+  behavior: rollout worker 任务入口读一次共享 model_version 盖章样本，发给 vLLM 的模型名 dispatch 时二次活读；期间 trainer 发布新 adapter 时样本被盖旧版本号。
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  detail: 无报错。provenance 错标；staleness 门把刚生成的全新 rollout 当陈旧丢弃（max_staleness=0 时必丢），非零门限下 batching 与 staleness 观测失真。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 batch 比对样本 model_version 与生成请求 payload 中的模型名版本（两者应恒等）。
+  fix: 报告者已备窄修复 fork（在 HTTP 请求构造边界快照版本、用它选 adapter 并随 token 返回），含确定性 CPU 测试：https://github.com/lindicaphxag-tech/trl/tree/fix/async-opd-pin-rollout-sampling-policy-version-20261017 （未合入上游，状态未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7781
+  kind: github_issue
+relations: []
+pattern: PAT-TRN-0047
+original:
+  mechanism: trl AsyncDistillationTrainer 的 rollout worker：`_generate_and_score_one` 在任务入口 `model_version = self.model_version` 读共享版本，随后构造 prompt、`await _generate_one_turn`；而 `_request_model` property 在 dispatch 时再次活读共享 `mp.Value` 拼 `f"{lora_name}-v{self.model_version}"`。trainer 进程在两读之间完成学生权重同步并 publish 新版本时，HTTP 请求打到新 adapter v1，返回的 RolloutSample 却 stamp 旧版本 0。报告者指出该交错不需要罕见事件循环竞态：apply_chat_template 是同步的，weight updater 在 trainer 的独立进程，准备期间即可改共享版本。报告含源码引用与确定性交错推演（0→1 一轮即错标），并有 fork 修复 + 确定性 CPU 测试（共享版本 0→9→10 推进下样本必须 stamp 9、payload 命名 v9）。影响 RolloutQueueDataset staleness 门（丢弃条件 current_model_version - sample.model_version > max_staleness）。截至 2026-10-18 issue open，1 条评论，修复未合上游。来源 https://github.com/huggingface/trl/issues/7781
+  source: https://github.com/huggingface/trl/issues/7781（2026-10-17 创建，open；源码级竞态推演 + fork 修复与确定性 CPU 测试）
+  behavior: 使用 trl AsyncDistillationTrainer（Async OPD）+ LoRA 权重同步的用户：训练与日志一切正常，但 rollout 样本标称的策略版本可能比实际采样的模型旧一轮。最直观的异常是样本被 staleness 门莫名丢弃——max_staleness=0 时刚出炉的新鲜 rollout 直接被丢；max_staleness>0 时丢弃不可见，只表现为有效 batch 变小、staleness 指标与 batching 观测失真。触发于异步权重同步与 rollout 准备重叠的常规运行，无需罕见竞态。
+  trigger_surface: AsyncDistillationTrainer + LoRA 版本化权重同步 + RolloutQueueDataset staleness 门；权重同步与 rollout 准备重叠时。
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - pattern
+  - date: '2026-10-19'
+    fields:
+    - evidence
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      effect:
+        from: 训练信号
+        to: 训练样本流
+    issue_unfixed:
+    - behavior

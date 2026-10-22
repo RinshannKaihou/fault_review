@@ -1,0 +1,51 @@
+id: TRN-0290
+legacy_ids: []
+slug: mswift_lazy_dataset_resume_fallback_divergence
+aliases: []
+title: ms-swift LazyLLMDataset resume 后超长替换样本选错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: LazyLLMDataset 替换游标
+  behavior: LazyLLMDataset 用自建 _idx/_idx_list 游标选超长删除后的替换样本，_idx 为实例内部状态；resume 重建实例后 _idx 归零，跳过已消费行不复放此前的编码失败，后续替换选择与连续训练分叉。
+effect:
+  objects:
+  - 训练样本流
+  detail: 固定 seed、sampler 位置正确、编码确定的前提下，resume 后再次触发超长删除时替换样本不同：64 行实验 row20 连续选 58、重建后选 52；真实 ckpt 实验步 5-8 最大 loss 差 0.0025。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 resume 与连续训练的 consumed batch 序列；对触发替换的样本记录替换来源做审计。
+  fix: issue 给出方向：为每个发生替换的样本现场生成只依赖全局 seed 与样本序号的候选列表，使数据集无状态（未核实修复 PR 状态；issue open）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10374
+  kind: github_issue
+relations: []
+original:
+  mechanism: ms-swift LazyLLMDataset（lazy tokenization）用自建 _idx/_idx_list 游标管理编码失败（MaxLengthError, strict=false 超长删除策略）后的替换样本选择；_idx 自增且为实例内部状态，其他模块（sampler/ckpt）不可见。resume 重建数据集实例时 permutation 重放但 _idx 归零，跳过已消费行不会复放此前的编码失败，后续替换候选选择与不中断训练分叉。CPU 复现：64 行、seed42、fail 行 {2,20}，连续读 32 行时 row20 选 58；重建后从 16 起读选 52。真实 ckpt 集成实验：Qwen3-0.6B-Base、2×B200、BF16、global batch 4、8 步、seed/data_seed 42、max_length 256、lazy tokenization、无 streaming/packing/shuffle、num_workers=0，行 2/20 真超长；连续 vs step4 存档退出重启，两 rank 均恢复 step=4、consumed_samples=16，step-6 batch 不同、step5-8 最大 loss 差 0.002499222755432129（Magnus/Megatron Bridge 集成，非原生 swift CLI 端到端）。Swift 4.4.2、PyTorch 2.13.0+cu130。
+  source: https://github.com/modelscope/ms-swift/issues/10374
+  behavior: 用过长删除策略（超长样本替换）+ lazy tokenization 的训练在中断 resume 后：训练正常推进、无任何告警，但替换样本与不中断训练不同——数据流静默分叉，loss 曲线有细微但持续的偏差（实测步 5-8 最大差约 0.0025），长跑累积后与预期轨迹不可对齐；只在再次触发替换时发生，不触发则无差异，定位困难。
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

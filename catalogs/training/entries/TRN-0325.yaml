@@ -1,0 +1,58 @@
+id: TRN-0325
+legacy_ids: []
+slug: trl_accuracy_reward_text_unit_false_equation_full_credit
+aliases: []
+title: trl accuracy_reward 对否定句与假等式给满分
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: accuracy_reward 解析与判定
+  behavior: accuracy_reward 把 box 尾部 \text{...} 当单位剥掉，且 math-verify 接受右边等于 gold 的等式，否定句与假等式拿满奖励。
+effect:
+  objects:
+  - 训练信号
+  detail: 以 accuracy_reward 为 reward 的 RLVR 训练中，模型写「R is wrong」或「W = R」即可拿满分：249 行样本否定句全满分、假等式 190 行满分；奖励与真实正确性脱钩、向 reward hack 漂移，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对 reward=1 的 completion 抽样人工/LLM 复核真实正确率；监控含 \text{} 或等式形态 box 的占比与 reward 曲线的相关性。
+  fix: 待定（issue open 提出两个部分缓解：completion 侧 units=False 或收紧 verify；均引入误杀，见 issue 实测数据；无修复 PR）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7794
+  kind: github_issue
+relations: []
+original:
+  mechanism: trl（1.16.0 与 main@c2b8859，math-verify 0.9.0、latex2sympy2-extended 1.11.0）的 accuracy_reward 用 NormalizationConfig(units=True) 解析 completion：该配置把 box 内尾部 \text{…} 当单位剥离；math-verify 的 verify 又接受右端等于 gold 的等式。两效应叠加：\boxed{R \text{ is wrong}} 剥掉否定文本后按 R 判对；\boxed{W = R} 按等式右边判对。实测（trl-lib/DeepMath-103K 前 300 行、249 行 gold 可解析）：R 249/249 满分（正确基准）、W 0/209（正确拒绝）、R \text{ is wrong} 249/249 全满分、W = R 190/209 满分；2000 行随机样本（1670 可解析）否定 1666、假等式 1524 行中招。其他 hedge（R or W、(this is wrong)）基本不得分。issue 给出两个部分修复并实测其代价：units=False 使否定降到 32/249 但带单位正确答案同降、裸答案丢 1 例；等式收紧会误杀 x = R 形态正确解。issue open（2 评论）。训练侧定性：奖励函数系统性错付 → RLVR 训练信号被污染；训练侧受害为条件性（依赖用户采用该内置 reward），未见端到端训练实测值，任务影响实测明说：无。
+  source: https://github.com/huggingface/trl/issues/7794
+  behavior: 用 trl accuracy_reward（默认 NormalizationConfig(units=True)）做 RLVR reward 时，模型在 \boxed{} 里写「正确答案 is wrong」或「错误值 = 正确值」都能拿满 reward：DeepMath-103K 抽样中否定句与假等式分别约 100%/91% 行得满分。RL 训练全程无报错，reward 曲线可能照常上涨而真实正确率停滞或下降；对 box 内其他 hedge 写法不触发。
+  trigger_surface: trl accuracy_reward（1.16.0 及 main@c2b8859）+ math-verify 0.9.0，RLVR/GRPO 等以答案正确性为 reward 的训练。
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior

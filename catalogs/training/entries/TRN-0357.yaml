@@ -1,0 +1,62 @@
+id: TRN-0357
+legacy_ids: []
+slug: msllm_mamba3_scratch_loss_zero_init
+aliases: []
+title: Mamba3 从零训练 loss 与 grad norm 骤降为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: mindspeed-llm
+    component: Mamba3 in/out_proj 初始化
+  behavior: Mamba3 FSDP2 Demo train_from_scratch 缺少 in_proj/out_proj Kaiming 初始化处理
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: Mamba3 FSDP2从零训练：initializer_range=0.1随机初始化开训即数值异常、loss为0；改0.02并去掉额外Kaiming初始化后前150step正常，约150step又loss突然归零，155起lm、mtp loss及grad norm为0，进程不报错不退出，显存不变
+  visibility: 静默错误
+mitigation:
+  detect: 监控 lm loss 与 grad norm 是否同时恒为 0；对 SSM 分支参数记录初始化 std 与是否全零
+  fix: issue 里 initializer_range 改 0.02 只恢复前 150 step；正文建议给 Mamba3 in_proj/out_proj 补 Kaiming 初始化并做长步数稳定性验证（closed，未附修复 PR，未核实）
+labels:
+  family: ambiguous
+  trigger: config
+  trigger_review: false
+  trigger_note: Mamba3 demo + FSDP2 + 默认 initializer_range
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1836
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed-LLM 26.1.0 + MindSpeed 0.12.1 + FSDPTurbo 0.1.0（CANN 9.1.0、8 NPU、torch_npu 2.7.1）的 Mamba3 FSDP2 Demo 做 train_from_scratch。报告者指出当前代码里没有对 Mamba3 in_proj/out_proj 的 Kaiming 初始化处理（历史提交里曾提过类似初始化修复）；默认 initializer_range=0.1 随机初始化时模型一开训就数值异常、loss 为 0，把 initializer_range 调到 0.02 并去掉额外 Kaiming 初始化后，前若干 step 的 loss 与 grad norm 恢复正常，但训练到约 150 step 又出现 loss 突然归零。报告者自己也没能确定根因落在初始化、SSM 数值状态、梯度/优化器、数据还是 loss 统计上，因此这里只记录现象、已试过的配置改动和未排除项。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1836（closed；CANN 9.1.0、MindSpeed-LLM 26.1.0、FSDPTurbo 0.1.0、8 NPU；逐 step 日志与 initializer_range 对照实验在正文）
+  behavior: 用 Mamba3 FSDP2 Demo 从零训练，日志里 lm loss 从 11.65 缓慢降到 11.24，iteration 154 时 grad norm 突然打印 0.000，iteration 155 起 lm loss 直接是 0.000000E+00，mtp loss 与 grad norm 也全为 0，一直到 159 及之后都这样；进程不报错、不退出，显存占用也不再变化。把 initializer_range 从 0.1 调到 0.02 只是让前 150 step 正常，到同一位置照样归零。
+  trigger_surface: Mamba3 demo + FSDP2 + train_from_scratch + initializer_range 0.1（或 0.02 长步数）
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - subsystem
+    - visibility

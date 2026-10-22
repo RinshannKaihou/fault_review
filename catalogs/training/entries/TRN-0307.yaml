@@ -1,0 +1,69 @@
+id: TRN-0307
+legacy_ids: []
+slug: mindformers_per_token_loss_degenerate_to_per_microbatch
+aliases: []
+title: mindformers per-token loss 等价退化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: cann
+    component: _extract_model_loss 归一
+  behavior: 崩溃修复把 (numerator, denominator) 当场相除还原标量 loss，数值与开关关闭完全等价：每个 micro-batch 仍按自身 token 数归一，per-token 语义丢失
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: mindformers pynative（!8656 已入 r2.1.0-beta1、!8655 master open）开 calculate_per_token_loss 后 loss 行为与关闭完全等价、随 micro 分组/dp 切法变化，全局 per-token 归一未发生
+  visibility: 静默错误
+mitigation:
+  detect: 改变 micro-batch 大小/dp 切分对比 loss 是否漂移（等价退化即暴露）；8 卡对拍静态图基线（开关两态各自对基线偏差一致才中性）
+  fix: '修复 MR !8875（open，Fixes #2509）：micro-batch 累加未归一 token-loss 与 token 数、每优化器步全局归约 (numerator, denominator) 后按平均 token 数缩放梯度（对齐 Megatron finalize_model_grads），MoE aux loss 接入配置、indexer loss 保持求和、MTP chunk 分支同语义；8 卡七组并行矩阵与静态图基线对拍中性。https://atomgit.com/mindspore/mindformers/merge_requests/8875'
+labels:
+  family: N/A
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: mindformers pynative；calculate_per_token_loss=True；!8656 已入 r2.1.0-beta1、!8655 master open；moE/MTP/DSA indexer 均涉及
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://atomgit.com/mindspore/mindformers/merge_requests/8875
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0175
+pattern: PAT-TRN-0046
+original:
+  mechanism: 'mindspore/mindformers MR !8875（2026-10-16，Fixes #2509）。背景：calculate_per_token_loss=True 时训练在 step 0 反向即崩（RuntimeError: Mismatch in shape: grad_output[0] (1,) vs output[0] ()）——CrossEntropyLoss 的 numerator 是 0 维归约，denominator 因防除零 1e-8 广播成 (1,)，关闭开关时 numerator/denominator 恰好继承 (1,) 与 trainer backward sense 对齐纯属巧合；loss 模块本身正确（value_and_grad 直测通过），崩溃只在 trainer 训练路径。已有修复 !8655（master open）与 !8656（r2.1.0-beta1 已合入）在 _extract_model_loss 中把 (numerator, denominator) 当场相除还原标量 loss，崩溃解决但数值与 calculate_per_token_loss=False 完全等价：每个 micro-batch 仍按自己的 token 数归一，loss 依旧依赖 micro 分组与 dp 切法，开关失去意义。本 PR !8875 补齐归一语义：累加未归一 token-loss 与 token 数、优化器步全局归约后按每 rank 平均 token 数缩放梯度（对齐 Megatron finalize_model_grads）；MoE aux loss 的 per-token 原写死 False 现接入配置（token 加权用 grad_aux_loss_group_size 而非 tp_cp_size，因本框架 loss sense 含 1/tp 且 aux 梯度无 TP 集合通信抵消）；indexer loss 保持原始和；MTP chunk_loss_num>1 同语义并解除互斥。8 卡（deepseek_v3 架构 8 层/seq4k/MoE/mHC/DSA 二阶段）七组并行矩阵 100 步全过，pp2 首步 loss 与纯 fsdp 逐位相同；以静态图为基准开/关两态各自对基线偏差之差 1.8e-05(loss)/5.0e-05(indexer_loss)/4.8e-04(grad_norm)，开关中性。'
+  source: 'https://atomgit.com/mindspore/mindformers/merge_requests/8875 （Fixes #2509；前序 !8655 master open / !8656 r2.1.0-beta1 已合入）'
+  behavior: 在 mindformers pynative 下开启 calculate_per_token_loss 训练：r2.1.0-beta1 起（!8656）不再崩溃，但 loss 的数值行为和不开该开关一模一样——每个 micro-batch 按自己的 token 数归一，换 micro-batch 大小或 dp 切法 loss 就变，全局 per-token 归一并没有发生；MoE aux loss 与 indexer loss 的 per-token 语义同样缺失（aux 原写死 False）。训练看似正常，仅在与其他实现/切分方式对拍时暴露不一致。
+  discovery: 2026-10-17 每日扫描
+  notes:
+  - 2026-10-18 2026-10-18 回访：MR !8875 仍 open（2026-10-16T09:25 最后更新），无状态变化。
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  updates:
+  - date: '2026-10-17'
+    fields:
+    - pattern
+  - date: '2026-10-18'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

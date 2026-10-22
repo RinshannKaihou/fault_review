@@ -1,0 +1,57 @@
+id: TRN-0341
+legacy_ids: []
+slug: mindspeed_rl_dapo_reward_labels_nested_loop_reversed
+aliases: []
+title: DAPO rule_reward labels 两层循环顺序反致奖励错配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: mindspeed-rl
+    component: rule_reward labels 展开
+  behavior: rule_reward.py 展开 labels 时把两层循环写反（外层 n_samples_per_prompt、内层 batch_data['labels']），得到的是按样本优先的顺序，而下游按样本内 n 次重复消费。
+effect:
+  objects:
+  - 训练信号
+  - 训练样本流
+  detail: reward_dispatch_size 与 n_samples_per_prompt 不一致时，labels 顺序与 rollout 样本不匹配，同一 prompt 的多次采样拿到别条样本的 label，reward/advantage 错配；无报错无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 batch 内 label 可区分的小样例跑一遍 rule_reward，检查展开后 labels 与样本的对应关系；或断言 len(labels) 与 reward 数一致且逐项对齐。
+  fix: issue 给出改法：外层改为 for label in batch_data['labels']、内层 for _ in range(self.n_samples_per_prompt)；issue 已 closed，正文未给出合入 PR（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-RL/issues/83
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed-RL issue #83（2025-10-13 提，已 closed，DAPO 多模态场景）：rule_reward.py 里计算 labels 时把两个嵌套循环写反了。原代码 labels = []；for _ in range(self.n_samples_per_prompt): for label in batch_data[''labels'']: labels.append(label)，即外层按采样次数、内层按 batch 内样本，展开顺序是「先遍历所有样本」的重复；正确写法是 for label in batch_data[''labels'']: for _ in range(self.n_samples_per_prompt): labels.append(label)，即每个样本的 label 连续重复 n 次。触发条件是 reward_dispatch_size 与 n_samples_per_prompt 不一致时会出现问题（issue 的 steps to reproduce 只写了这一条），此时展开得到的 labels 顺序与 rollout 样本顺序不匹配，同一 prompt 的多次采样会拿到别的样本的 label。报告方式是代码 review，无日志（Related log 一栏写「代码 review，无日志」），与环境无关。'
+  source: https://gitcode.com/Ascend/MindSpeed-RL/issues/83
+  behavior: DAPO 多模态训练里，当 reward_dispatch_size 与 n_samples_per_prompt 不同时，reward 计算用的 label 与 rollout 出来的样本对不上：同一条 prompt 的多次采样会拿到别的样本的 label，于是 rule reward 判对判错都错位，advantage 与真实回答质量脱钩。训练不报错、不出 NaN，loss 曲线看起来正常，只能靠逐条抽查 labels 与样本的对应关系才能发现。
+  trigger_surface: DAPO + 多模态 rule_reward + reward_dispatch_size ≠ n_samples_per_prompt
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

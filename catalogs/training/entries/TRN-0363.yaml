@@ -1,0 +1,57 @@
+id: TRN-0363
+legacy_ids: []
+slug: msllm_packed_prefix_double_suffix_glob
+aliases: []
+title: DATA_PATH 带 _packed 后 glob 双后缀取空数据集
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindspeed-llm
+    component: packed 数据集 glob 拼接
+  behavior: 预处理固定输出 {prefix}_packed_*_document*，训练侧又给 data_prefix 追加 _packed 再 glob，用户按输出名填 DATA_PATH 就变成 _packed_packed，匹配不到文件。
+effect:
+  objects:
+  - 可用性/进度
+  - 训练样本流
+  detail: 'glob 结果为空字典，decoder_packed_mtf_dataset.py:82 对 values()[0] 取长度抛 IndexError: list index out of range，报错完全不提路径或 _packed 后缀。'
+  visibility: 报错
+mitigation:
+  detect: 启动时断言 packed_indexed_dataset 非空并打印实际 glob 模式；预处理后核对输出文件名与 DATA_PATH 是否一致
+  fix: issue 建议：文档写明 DATA_PATH 取 --output-prefix 原值、空数据集抛带 glob 模式的 ValueError、检测到 _packed 结尾自动去后缀并告警（open，未核实修复）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: packed 指令微调数据 + DATA_PATH 用带 _packed 的输出名
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1792
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed-LLM 26.0.0dev0 的 preprocess_data.py 用 --output-prefix /path/alpaca 预处理后，实际产物是 alpaca_packed_input_ids_document.bin/.idx、alpaca_packed_attention_mask_document.*、alpaca_packed_labels_document.*，即固定带 _packed 段。训练侧 mindspeed_llm/tasks/preprocess/mtf_dataset.py 第 64–74 行的 get_packed_indexed_dataset(data_prefix) 用 f"{data_prefix}_packed_*_document*" 去 glob，因此 data_prefix 必须是 --output-prefix 的原值。用户看到文件名里有 _packed，直觉把 DATA_PATH 配成 /path/alpaca_packed，glob 变成 alpaca_packed_packed_*_document*，匹配不到任何文件、返回空字典；随后 decoder_packed_mtf_dataset.py 第 82 行 total_num_of_documents = len(list(packed_indexed_dataset.values())[0]) 抛 IndexError。环境：26.0.0dev0（master，2026-08-20）、mindspeed 0.12.1、Qwen3-0.6B、Atlas 800T A2 单 NPU。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1792（open；MindSpeed-LLM 26.0.0dev0、Qwen3-0.6B 单卡；复现步骤与源码行号在正文）
+  behavior: '指令微调数据用 preprocess_data.py 预处理完，按看到的文件名把 DATA_PATH 设成 .../alpaca_packed 再启动 tune 脚本，训练立刻 IndexError: list index out of range（decoder_packed_mtf_dataset.py line 82）；报错里没有任何“数据文件没找到”或“路径写错”的提示，用户要读源码才知道 DATA_PATH 不能带 _packed，自己估的定位耗时是 15–30 分钟。'
+  trigger_surface: packed 指令微调数据集 + DATA_PATH 使用带 _packed 的输出文件名
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 训练样本流
+        to: 可用性/进度

@@ -1,0 +1,62 @@
+id: TRN-0339
+legacy_ids: []
+slug: mindspeed_rl_grpo_reward_norm_no_cross_rank_sync
+aliases: []
+title: GRPO reward 归一化未跨 rank 同步致 advantage 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: mindspeed-rl
+    component: GRPO reward 归一化的跨 rank 同步
+  behavior: GRPO reward 归一化未先 allgather 所有 rank 的 reward，仅用本 rank 局部 reward 计算 mean/std。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: TP=2+DP=4 双机 GRPO 时同一 step 各 rank loss 差距最大 15%；rank 上 prompt 偏难或偏易时本地 mean/std 偏离全局，同一 pair 在不同 rank 上的 loss 不同，方向被拉偏但无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 step 打印各 rank 的 reward mean/std 与 advantage 均值做跨 rank 比对；或让单 rank 与全局归一化的 advantage 对照。
+  fix: issue 建议先 all_gather(rewards) 得到 [dp_size*batch] 再算全局 mean/std（veRL/OpenRLHF 参考实现如此）；issue 已 closed，正文未给出合入 PR（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-RL/issues/162
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed-RL issue #162（2026-07-08 提，已 closed）：按 #149 的模式用两台服务器跑 GRPO（TP=2 + DP=4），发现各 rank 在同一 step 的 loss 差距很大（最大 15%）。定位到 reward 归一化：伪代码里 rewards = compute_rewards(...) 每个 rank 只有局部数据，mean = rewards.mean() / std = rewards.std() 都只算本 rank，然后 advantages = (rewards - mean) / std，于是各 rank 的归一化基准不同。GRPO 的 reward 是 per-prompt 算的，某个 rank 的 prompt 恰好偏难或偏易时，本地 mean/std 与全局不一致，导致 update 时同一个 prompt-response pair 在不同 rank 上算出的 loss 不同。报告者指出正确做法是先 allgather 所有 rank 的 rewards 再算全局 mean/std，并说明这在 GRPO 的参考实现（veRL/OpenRLHF）里有做，MindSpeed-RL 的版本可能漏了；建议在 grpo_trainer.py 的 loss 计算前加 gathered_rewards = all_gather(rewards) 后按全局统计归一化。'
+  source: https://gitcode.com/Ascend/MindSpeed-RL/issues/162
+  behavior: TP=2 + DP=4 双机跑 GRPO 时，同一个 step 内各 rank 打印的 loss 差距很大（最大 15%），训练照常推进、不报错不出 NaN。各 rank 的 reward 均值/方差互不相同，同一个 prompt-response 对在不同 rank 上算出的 loss 不一致，梯度方向被拉偏，最终策略提升明显弱于单机或小 TP 配置。
+  trigger_surface: GRPO + TP>1（reward 归一化跨 rank 同步缺失）
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - visibility
+    - detail

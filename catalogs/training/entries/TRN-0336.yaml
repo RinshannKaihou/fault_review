@@ -1,0 +1,63 @@
+id: TRN-0336
+legacy_ids: []
+slug: mindspeed_te_rowparallel_parallel_mode_none_still_comm
+aliases: []
+title: parallel_mode 置空后仍做 TP 通信
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspeed
+    component: TE RowParallel 通信判定
+  behavior: TERowParallelLinear 未处理 parallel_mode=None：非序列并行仍调 matmul_all_reduce、序列并行仍调 matmul_reduce_scatter，而置 None 的语义是不做 TP 通信。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 开 moe_shared_expert_overlap 时 mcore 把共享专家的 linear.parallel_mode 置 None 期望跳过 TP 通信，实际仍重复 all-reduce/reduce-scatter，共享专家输出被多归约一次导致结果错，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 开 moe_shared_expert_overlap 后比对该层的通信次数与关闭 overlap 的等价配置；对比 TP=1 与 TP>1 的共享专家输出。
+  fix: issue 建议在 TERowParallelLinear.forward() 中检测 self.parallel_mode is None，切到无 TP 通信的 matmul 路径；issue 已 closed，正文未给出合入 PR（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/issues/209
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-0373
+original:
+  mechanism: 'MindSpeed issue #209（2026-07-15 提，已 closed；MindSpeed commit edd30e450dd64fe2d00fa5b963ab868a94b174f6，core_r0.16.0 分支）：TERowParallelLinear 未正确处理 parallel_mode=None。按 mcore 约定，shared_experts.py 在 --moe-shared-expert-overlap 时把 linear_fc1/linear_fc2 的 parallel_mode 置为 None（配合 ub_overlap_* 置 False），注释写明是「disable TP related AG/RS communications in the linear module」，目的是让这些层只做本地 matmul，通信由 SharedExpertMLP.post_forward_comm 里显式的 reduce_scatter_to_sequence_parallel_region / reduce_from_tensor_model_parallel_region 承担。但 MindSpeed 的 TERowParallelLinear.forward() 不看 parallel_mode：非序列并行场景仍调用 matmul_all_reduce，序列并行场景仍调用 matmul_reduce_scatter，于是该层在已经由 post_forward_comm 做通信的前提下又做了一遍 TP 通信，结果被重复归约。预期行为是 parallel_mode=None 时仅执行本地矩阵乘法。issue 建议在 forward() 中检测 parallel_mode is None 后切到无 TP 通信路径。'
+  source: https://gitcode.com/Ascend/MindSpeed/issues/209
+  behavior: 在 core_r0.16.0 上开 --moe-shared-expert-overlap 训练 MoE 模型时，不报错、不 NaN，但共享专家支路的输出与关闭 overlap 的等价配置不一致：linear 层在被要求不做 TP 通信（parallel_mode=None）时仍然执行了 all-reduce / reduce-scatter，等于同一份结果被多归约一次。表现为 loss 曲线与基准配置对不上，且只有打开 shared expert overlap 才出现。
+  trigger_surface: --moe-shared-expert-overlap + TERowParallelLinear（parallel_mode=None）
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

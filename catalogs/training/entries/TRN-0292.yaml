@@ -1,0 +1,66 @@
+id: TRN-0292
+legacy_ids: []
+slug: megatron_gdn_graph_fla_tensor_cache_uaf
+aliases: []
+title: Megatron GDN 图回放读已释放 chunk 元数据致错值/越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: megatron-lm
+    component: FLA tensor_cache 元数据生命周期
+  behavior: FLA 经 tensor_cache 构建 chunk 元数据：warmup 在捕获外算好，捕获命中缓存录下地址；后续图捕获逐出缓存项且无引用，存储归还池（106 个捕获元数据 98 个已释放），回放时把复用后的字节当索引用。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  - 可用性/进度
+  detail: prefill/mixed 图回放非法内存访问崩溃（确定性，cu_seqlens[10 亿级]）；保活元数据后仍有静默面：h 状态缓冲按 dummy 布局分配，kernel 按活 cu_seqlens 循环越界写 h，512 次回放 52-61 次越界写进图池，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: graph 回放后对 h 状态/输出做有限性与已知容量校验；compare-address 审计捕获张量是否已被池回收。
+  fix: 待定（issue open 无评论；方向=捕获期间持有元数据引用（如 pool-external 持久分配）并按活 cu_seqlens 分配 h，未核实上游进展）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/8151
+  kind: github_issue
+relations: []
+original:
+  mechanism: Megatron-LM GDN（GatedDeltaNet）动态推理（RL rollout 的 prefill/mixed CUDA graph 路径，decode-only 图不受影响）：ssm_prefill 调 FLA causal_conv1d/chunk_gated_delta_rule（变长 cu_seqlens），FLA 经 fla.utils.tensor_cache（4 桶、按参数身份）构建 chunk 元数据。图创建时 warmup 在捕获外常规分配池算好元数据，捕获命中缓存把地址录进图；后续图捕获逐出缓存项、无引用持有，存储归还池—— crashing run 中 106 个捕获的 chunk_indices/offsets 有 98 个在图创建结束前已释放。回放时 kernel 读复用后的字节当索引（graph[256] 捕获 chunk_indices=[0,0,1,0]，回放前同地址是无关张量的浮点位模式 [1,0,1036893556,-1087389815]，kernel 读 cu_seqlens[1036893556]→非法访问）。分配序确定故崩溃确定。第二问题：即使元数据全保活，FLA 按捕获时 dummy 布局 chunk 数分配 h 状态缓冲，chunk_gated_delta_rule_fwd_kernel_h_blockdim64 按活 cu_seqlens 循环写 h[captured_chunk_offsets[n]+i_t]，dummy 布局每请求一 chunk，普通 prompt 超容量：全保活流式测试 512 次 mixed 回放 52-61 次越界写 h（静默 OOB 进图池）；chunk-parallel kernel 的 grid 也按捕获 chunk 数启动。issue open 无评论。
+  source: https://github.com/NVIDIA/Megatron-LM/issues/8151
+  behavior: GDN/线性注意力类模型用 CUDA graph 做 RL rollout：prefill/mixed 回放两个后果——(1) 确定性 illegal memory access 崩溃，崩溃点在无关索引值（cu_seqlens[10 亿级]），栈看不出与元数据的关系；(2) 更隐蔽：即使不崩，h 状态缓冲按 dummy 布局分配不足，约 10% 回放静默越界写图池内存，污染相邻状态无任何报错，rollout 质量受损且难归因。decode-only 图不受影响。
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 数值结果
+        to: KV状态
+    uncertain:
+    - subsystem
+    - visibility
+    - title

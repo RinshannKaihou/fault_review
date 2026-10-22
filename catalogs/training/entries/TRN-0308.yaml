@@ -1,0 +1,59 @@
+id: TRN-0308
+legacy_ids: []
+slug: mindspeed_msswift_fsdp_decoupled_grad_mapping_missing
+aliases: []
+title: ms-swift Megatron-FSDP 精度优化器梯度静默丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 配置/参数
+    stack: ms-swift
+    component: DDPConfig 同名拷贝构造
+  behavior: swift 同名字段拷贝构造 DDPConfig，漏掉 use_precision_aware_optimizer→megatron_fsdp_use_decoupled_grad 映射，FusedAdam 跳过无梯度参数且不报错
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: Megatron-FSDP v1 + use_precision_aware_optimizer=True（MCore 0.19.x）出现零梯度范数、参数不更新；训练继续跑、无报错，官方 Megatron-LM 入口同配置正常，swift 封装下静默失效
+  visibility: 静默错误
+mitigation:
+  detect: 开启精度优化器时核对 megatron_fsdp_use_decoupled_grad 实际取值；观察 grad_norm 是否恒 0/参数指纹不变
+  fix: 待定（issue open：最小示例已隔离 swift 配置构造缺陷，期望按官方入口把 decoupled-gradient 跟随 use_precision_aware_optimizer；swift 侧修复未提交）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: ms-swift e132612 + Megatron-Core 0.19.0/0.19.x；use_megatron_fsdp=True + use_precision_aware_optimizer=True 组合
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10351
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'modelscope/ms-swift issue #10351（2026-10-13 创建，本轮窗口内首次评估；源码快照 e132612cb3be4d1c92c00fd7a1be878a9b44b082）。swift 构造 DistributedDataParallelConfig 时按同名字段拷贝（{field.name: getattr(args, field.name) for field in fields(...) if hasattr(...)}），而 use_precision_aware_optimizer 与 megatron_fsdp_use_decoupled_grad 不同名，映射缺失，MCore 0.19.0 中后者默认 False。后果：FSDP 梯度路径未走 decoupled 梯度，precision-aware TransformerEngine 优化器的 decoupled_grad 读取端拿不到所选梯度，FusedAdam 对梯度缺席参数跳过更新且无显式错误。报告者实测 Megatron-FSDP v1 + use_precision_aware_optimizer=True 出现零梯度范数，并给出最小示例（SimpleNamespace 模拟 args 构造 config，打印 megatron_fsdp_use_decoupled_grad=False；官方 Megatron-LM 训练入口该值跟随精度优化器为 True）。含 swift 配置构造源码链接。'
+  source: https://github.com/modelscope/ms-swift/issues/10351
+  behavior: 用 swift 走 Megatron-FSDP v1 并开启精度感知优化器（use_precision_aware_optimizer=True），训练日志里 grad_norm 是 0、权重实际不动或部分参数不更新，作业全程无报错无 warning，跑完得到近乎未训练的模型；同样的配置用官方 Megatron-LM 入口启动则正常。MCore 0.19.x + swift 封装组合触发。
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - subsystem
+    - behavior

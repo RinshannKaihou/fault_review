@@ -1,0 +1,61 @@
+id: TRN-0326
+legacy_ids: []
+slug: op_plugin_mul_cpu_scalar_premature_round
+aliases: []
+title: op-plugin mul CPU 标量提前舍入 1 ulp 偏差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: mul 入口标量上卡
+  behavior: mul/mul_out 在 result_type 为 half/bfloat16 时，将 CPU 0-dim 浮点标量按输出 dtype 上卡，H2D 时被提前舍入到 half/bf16。
+effect:
+  objects:
+  - 数值结果
+  detail: GPU/NPU 混合精度精度对齐训练中，CPU 0-dim 浮点标量乘卡上 half/bfloat16 张量时，mul 结果与 GPU 差 1 个 bf16 ulp（0.8476 vs 0.8515）；无报错、无 NaN，逐层 dump 比对暴露。
+  visibility: 静默错误
+mitigation:
+  detect: 跨设备标量乘法与纯 CPU/GPU 参对照逐元素比对；精度对齐 dump 中 mul 节点单算子复测。
+  fix: 修复 MR https://gitcode.com/Ascend/op-plugin/merge_requests/6062 （open 未合入未发布）：浮点标量且 result_type 为 Half/BFloat16 时改按 Float 上卡；mul(Tensor,Scalar) 与 mul_ 路径不受影响。910B2 + CANN 9.2.0 实测。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5392
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6062
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend op-plugin（issue #5392，2026-10-13 open，torch 2.7.1 + CANN 8.3.rc1；修复 MR !6062，2026-10-19 open）的 mul 混合精度缺陷：op_plugin/ops/opapi/MulKernelNpuOpApi.cpp 的 self_tensor_to_device 将 CPU 0-dim 浮点标量按输出 dtype（result_type 为 half/bfloat16 时）上卡，标量在 H2D 传输时被提前舍入到 half/bf16；原生 PyTorch TensorIterator 对 CPU 标量不落卡、以 opmath 精度（float）参与计算（aten/src/ATen/native/cuda/Loops.cuh 注明 scalar stored in higher precision）。三组实验（issue）：双 CPU 一致；双卡上（NPU/GPU）各内部一致但彼此不同；in0 CPU 标量 × in1 卡上张量时 NPU 与 GPU 结果互换式不一致——即跨设备标量路径引入 1 ulp 级偏差，GPU/NPU 精度对齐训练中通过 dump 精度数据发现。修复：浮点标量且 result_type 为 Half/BFloat16 时按 Float 上卡，其余场景不变；影响 mul/mul_out 两入口；同模式副本（Add/Sub/Div/Pow/Fmod/FloorDivide）逐一核实为与原生语义一致，不在修改范围。验证环境 Ascend 910B2 + CANN 9.2.0 + torch 2.13.0 + 自编译 torch_npu 2.13.0。训练侧收录依据：混合精度训练中跨设备标量乘法是常规路径（CPU 超参/缩放系数乘卡上张量），逐层精度对齐与梯度校验被系统性 1 ulp 偏差干扰。推理库未收录该来源（find 核对 count=0），无需 cross。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5392 ；修复：https://gitcode.com/Ascend/op-plugin/merge_requests/6062
+  behavior: GPU/NPU 混合精度精度对齐训练中，CPU 上的 0 维浮点标量与卡上 half/bfloat16 张量相乘时，mul 结果与 GPU 差 1 个 bf16 ulp（实测同一元素 0.8476 vs 0.8515）；无报错、无 NaN，只在做逐层 dump 比对时暴露；纯 CPU 或纯卡上路径结果正常。
+  trigger_surface: torch_npu mul/mul_out：CPU 0-dim 浮点标量 × 卡上 half/bfloat16 张量（混合精度训练、精度对齐流程）。
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail

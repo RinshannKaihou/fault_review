@@ -1,0 +1,62 @@
+id: TRN-0358
+legacy_ids: []
+slug: msllm_tft_rollback_dataloader_worker_loss
+aliases: []
+title: TFT 回滚重建 DataLoader 时丢 worker
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindspeed-llm
+    component: TFT 回滚 DataLoader 重建
+  behavior: TFT 高可用回滚时无条件重建 DataLoader 与迭代器，num_workers>0 下新旧 worker 生命周期切换，worker 异常退出后父进程只在 gc.collect 处报错。
+effect:
+  objects:
+  - 可用性/进度
+  - 训练样本流
+  detail: num_workers=2 时约十余次回滚出现一次 DataLoader worker exited unexpectedly(exit code 1)，父进程在 gc.collect 里抛 RuntimeError 退出；num_workers=0 未复现，worker stderr 丢失。
+  visibility: 报错
+mitigation:
+  detect: 回滚前后记录 worker pid 与 consumed_train_samples，对 single/cyclic sampler 状态做一致性断言
+  fix: issue 给出方案：仅在开高可用时对标准 map-style DataLoader 启用 persistent_workers，回滚时重置 single/cyclic 采样器并复用现有 worker（closed，未核实是否已合入）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 高可用 TFT 回滚 + num_workers=2
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1911
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed-LLM 的高可用训练用 mindio_ttp 的 tft_train 包住 train()，TFT 回滚恢复时会重建 DataLoader 与 data iterator。标准 GPTDataset、--num-workers 2、--dataloader-type single 下，多进程 loader 在回滚重建期间 worker 异常退出（约十余次运行一次）；父进程直到 ttp_decorator.py 的 gc.collect() → torch/utils/data/_utils/signal_handling.py 的 _error_if_any_worker_fails 才抛出 RuntimeError: DataLoader worker (pid 28765) exited unexpectedly with exit code 1，当时没有拿到 worker stderr，因此首个故障点未确认；--num-workers 0 未复现。报告者给出的处理方向是：仅在开启高可用时给标准 map-style DataLoader 打开 persistent_workers，回滚时重置 single/cyclic 采样器并复用现有 worker，保留通用预热逻辑与不可复用的回退路径；这样能减少回滚期间的 worker 生命周期切换，但能否彻底消除原始异常仍需 NPU/TFT 场景验证。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1911（closed；MindSpeed-LLM 高可用训练 + 标准 GPTDataset；父进程栈与处理方案在正文）
+  behavior: 开高可用（TFT）的预训练作业回滚恢复时，大约十余次里有一次直接失败退出：rank 上打印 DataLoader worker (pid 28765) exited unexpectedly with exit code 1，栈落在 mindio_ttp 的 gc.collect 和 torch 的 _error_if_any_worker_fails；把 --num-workers 设成 0 后没再复现，也没有 worker 的 stderr 可看，所以只能看到父进程这一侧的报错。
+  trigger_surface: TFT 高可用回滚 + num_workers=2 + dataloader-type single/cyclic
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 报错
+    uncertain:
+    - behavior

@@ -1,0 +1,66 @@
+id: TRN-0356
+legacy_ids: []
+slug: msllm_ms_ckpt_missing_qkv_bias_strict_false
+aliases: []
+title: MindSpore 加载 ckpt 缺键被 strict=False 吞掉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspore
+    component: MindSpore load_state_dict
+  behavior: MindSpore 路径转换出的 ckpt 缺 linear_qkv.bias 与 linear_fc1.layer_norm_weight，加载报 Missing key；改 strict=False 后缺键被跳过、参数保持随机初始化。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: 按 install_guide 与 quick_start 做完权重转换后训练起不来（load_state_dict 报 missing key）；改 strict=False 能跑，但缺失键对应参数保持初始化值、等于部分随机初始化继续训练，对结果影响未知
+  visibility: 报错
+mitigation:
+  detect: 加载后逐层比对 missing/unexpected 清单，必须为空才继续；对 qkv bias 与 fc1 layernorm 参数做加载前后指纹比对
+  fix: 'issue #1337 只给出把 strict 改 False 的规避（closed，无修复 PR，未核实）；正解是让权重转换补齐或映射这两个键，不要用 strict=False 掩盖'
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: MindSpore(msadapter) 路径 + 按文档转换的 Qwen2.5-7B ckpt
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1337
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed-LLM 的 MindSpore 路径（MindSpeed-Core-MS / Megatron-LM 的 megatron/training/checkpointing.py）在 pretrain 前用 ddp_model[0].load_state_dict(state_dict['model'], strict=strict) 装载转换后的权重。按 docs/zh/mindspore/install_guide.md 与 quick_start.md 做完权重转换后，RuntimeError 逐层列出 decoder.layers.0..N 缺失 self_attention.linear_qkv.bias 与 mlp.linear_fc1.layer_norm_weight，说明转换产物与 mcore GPTModel 的参数集合不一致：这两类键在 Qwen2.5 的 attention bias / pre-LN 布局里存在，转换脚本没有写出来。报告者把 strict 改成 False 后能拉起训练，代价是这些键对应的参数不被加载、保持初始化值，等于拿部分随机初始化的模型继续训练；原始提问正是在追问这样改对训练结果、精度与推理性能的影响。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1337（closed；CANN 8.3.RC1、MindSpeed-LLM/MindSpeed master、Megatron-LM core_v0.12.1、msadapter master、Atlas800I A2；完整 missing key 清单与规避办法在正文）
+  behavior: '照着 MindSpore 安装指导与 quick start 做完权重转换和数据处理，执行 examples/mindspore/qwen25/pretrain_qwen25_7b_32k_ms.sh 直接报 RuntimeError: Error(s) in loading state_dict for GPTModel，Missing key 列出每层 linear_qkv.bias 与 linear_fc1.layer_norm_weight；改成 strict=False 后训练能起来，用户因此追问会不会影响训练结果和精度。'
+  trigger_surface: MindSpore(msadapter) 后端 + examples/mindspore/qwen25 预训练脚本 + 按文档转换的 ckpt
+  discovery: 2026-10-21 每日扫描
+  notes:
+  - 2026-10-21 opus-5.5 复核重写（loss无异常与权重不等价原文未提）
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-21'
+    fields:
+    - effect.detail
+    - original.notes

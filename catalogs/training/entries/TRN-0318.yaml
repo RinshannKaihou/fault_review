@@ -1,0 +1,75 @@
+id: TRN-0318
+legacy_ids: []
+slug: trl_gemma3_server_mode_image_features_misplaced
+aliases: []
+title: trl vLLM server 模式 Gemma3 图像特征错位被静默忽略
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: trl
+    component: VLLMGeneration 图像特征定位
+  behavior: _place_features 以 processor 的 image_token_id（Gemma3/5.x 为 255999）定位特征 run，实际替换的 placeholder 是 262144，特征放错位置与长度。
+effect:
+  objects:
+  - 输入编码
+  - 训练样本流
+  detail: vLLM 生成完全忽略图像（纯红图+颜色提问→回答『无法判断颜色』而非『Red』）；GRPO/RLOO/Distillation/GOLD/SDFT/SDPO/IW-OPD 所有 server 模式 trainer 中招；无任何报错
+  visibility: 静默错误
+mitigation:
+  detect: 固定纯色图 +『What color』提示 + 贪心解码，检查 rollout completion 是否描述图像；对比 model.config.image_token_id（262144）与 processor.image_token_id（255999）的 run 长度
+  fix: 修复 PR https://github.com/huggingface/trl/pull/7773 已于 2026-10-19 closed 且未合入（merged_at=None），缺陷仍在 main；无替代修复。
+labels:
+  family: N/A
+  trigger: config
+  trigger_review: false
+  trigger_note: Gemma3 + vllm_mode=server + transformers 5.x（5.17.0）；vLLM 0.30.0；transformers 4.56.2/4.57.1 正常（processor 返回 placeholder token）；colocate 模式不经此路径
+  stage:
+  - rl
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7772
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7773
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'trl VLM 训练以 vllm_mode=server 运行时，VLLMGeneration._place_features 重算图像特征放置位置：在 prompt 中查找 processing_class.image_token_id 的连续 run。Gemma3 在 transformers 5.x 上 processor 的 image_token_id 是 <start_of_image>（255999），而图像特征实际替换的是 placeholder token（262144）：单图 prompt 下查 255999 得 run [(4,1)]（1 个 token），查 262144 得 [(5,256)]（256 token span）。两者 run 数相同（每图一个），run 数量校验通过，特征以错误位置与错误长度发给 vLLM——vLLM 生成为完全忽略图像。transformers 4.56.2/4.57.1 的 Gemma3 processor 返回 placeholder token，故仅 5.x 中招；代码由 PR #6765 引入。报告者以 google/gemma-3-4b-it、vLLM 0.30.0 server、transformers 5.17.0、GRPO、纯红 448×448 图、贪心解码复现：main 回答『This is a text-based prompt…cannot determine the color of an image』，期望『Red』。影响所有经 VLLMGeneration server 模式的 trainer：GRPO、RLOO、Distillation、实验 GOLD/SDFT/SDPO/IW-OPD。多模态 RL 训练在此缺陷下静默退化为纯文本训练，reward 与策略更新全部基于无图像 rollout。'
+  source: 2026-10-18 GitHub huggingface/trl issue https://github.com/huggingface/trl/issues/7772 （open）；修复 PR https://github.com/huggingface/trl/pull/7773 （merge 状态未核）
+  behavior: Gemma3 多模态 RL 训练（vllm_mode=server、transformers 5.x）静默忽略全部图像：rollout 生成回答『这是文本提示，无法判断图像颜色』而非『红色』，无任何报错；训练照常进行、reward 照常计算，实际策略在纯文本分布上更新。换 transformers 4.x 或 colocate 模式正常。
+  trigger_surface: trl VLLMGeneration server 模式 _place_features；Gemma3 + transformers 5.x；vLLM 0.30.0 server；多模态 GRPO/RLOO/Distillation/GOLD/SDFT/SDPO/IW-OPD
+  discovery: 2026-10-19 每日扫描
+  notes:
+  - '2026-10-20 回访 2026-10-20：修复 PR #7773 已 closed（2026-10-19T07:07Z），merged_at=None——未合入即关闭，缺陷仍在 main；条目 fix 状态更正为「PR closed 未合入」。'
+  - '2026-10-21 2026-10-21 回访：修复 PR #7773 经 pulls 端点核实 merged_at=2026-10-19T07:07:54Z（昨日按 closed+merged_at=None 判为未合入有误——同一 API 字段今日返回已合并时间戳；issue #7772 批次快照 open）。fix 状态：PR 已合入（发布版本待核）。'
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 数据管线
+        to: 调度/服务
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - mitigation.fix
+    - original.notes
+  - date: '2026-10-21'
+    fields:
+    - original.notes

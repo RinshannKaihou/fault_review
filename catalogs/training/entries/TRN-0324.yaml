@@ -1,0 +1,56 @@
+id: TRN-0324
+legacy_ids: []
+slug: megatron_fsdp_v1_grad_acc_fusion_wgrad_overwrite
+aliases: []
+title: Megatron-FSDP v1 梯度累积融合覆写未分片 wgrad
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: FSDP v1 local Linear 反向
+  behavior: ColumnParallelLinear 在 gradient_accumulation_fusion=True 且 FSDP v1 下，FSDP 反向把 wgrad 写入持久未分片缓冲，覆盖此前 microbatch 已累积值。
+effect:
+  objects:
+  - 梯度
+  detail: 多 microbatch 梯度累积下权重梯度只保留最后一个 microbatch 的贡献，前一 microbatch 分量被静默覆盖；无报错、无 NaN，梯度数值看似合理但错。单卡 16x16 Linear 双 microbatch（各贡献 8/96）实测应为 104 实得 96。
+  visibility: 静默错误
+mitigation:
+  detect: 对照关闭 gradient_accumulation_fusion 或启用真实分片的运行，比对逐步 wgrad（issue 提供 16x16 单卡确定性 repro，control 全部通过）。
+  fix: 待定（issue 2026-10-19 open，@mcore-oncall，无修复 PR；repro 脚本带 --fix 对照）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/8332
+  kind: github_issue
+relations: []
+original:
+  mechanism: Megatron-LM main@ce852bfb（2026-10-19 核对）ColumnParallelLinear 在 gradient_accumulation_fusion=True 且 Megatron-FSDP v1 下：optim/optim_grads/optim_grads_params 策略中 FSDP 包装器正确设置 weight.overwrite_main_grad=False，但 local Linear 的 FSDP 专用反向分支不消费该标志，仍把 fused_weight_gradient（fused_weight_gradient_mlp_cuda）产出的 wgrad 写入持久、未分片的梯度缓冲——该缓冲在 microbatch 间不重建，先前 microbatch 的累积被覆盖。纯 no_shard 还有第二处缺标志路径。复现：单卡 H200、PyTorch 2.10.0a0+b558c986e8.nv25.11、CUDA 13.0、TE 2.18.0+27486e0；单个 16x16 Linear、两个 microbatch 分别贡献 8 与 96，正确累积 104、实际 96（恰为第二 microbatch 分量），256 项全错、最大绝对误差 8；无 optimizer/数据集/MoE/CP/TP/ckpt/重计算参与。对照：--no-fusion 与 --fix 均得 104；--dtype bfloat16 同样失败（FP32 main grads）；8 卡真实分片对照通过（actual==expected==832）。BF16 参数 + FP32 main/main grads 配置亦受影响。issue 无维护者回应（0 评论）。
+  source: https://github.com/NVIDIA/Megatron-LM/issues/8332
+  behavior: 在 Megatron-LM 上以 Megatron-FSDP v1（optim/optim_grads/optim_grads_params 或 no_shard）训练并开启 gradient_accumulation_fusion=True 时，凡走 ColumnParallelLinear 的层，梯度累积多个 microbatch 的权重梯度只有最后一个 microbatch 生效，前面的贡献被静默覆盖；训练不报错、loss 不 NaN，梯度数值量级正常但系统性偏小。单 microbatch 训练或关闭融合则正常。复现脚本在 issue 内，torchrun 单卡即可跑出 96 vs 104。
+  trigger_surface: Megatron-FSDP v1（非 DDP/ZeRO 路径）+ gradient_accumulation_fusion=True + 多 microbatch 梯度累积。
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

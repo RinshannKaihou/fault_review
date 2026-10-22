@@ -1,0 +1,68 @@
+id: TRN-0330
+legacy_ids: []
+slug: mindspeed_llm_dsa_shareindex_cache_overwritten_in_recompute
+aliases: []
+title: DSA ShareIndex TopK 缓存被后组覆盖，重算错读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: mindspeed-llm
+    component: DSA ShareIndex TopK 缓存
+  behavior: ShareIndex 的 TopK 只存在进程级全局变量里、仅保留最近一次写入，未与当前 forward/microbatch 及 source layer 绑定；开启 full recomputation 后多个共享组互相覆盖。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 正向 L3 计算、L4-L6 复用，L7 计算、L8-L10 复用时，反向逆序重算 L4-L6 会误读 L7 的 TopK，attention 结果与梯度错；动态长度场景进一步表现为 shape 不匹配报错，无 NaN。
+  visibility: 静默错误
+mitigation:
+  detect: 在 Compute 层记录 layer key 与 TopK 的对应关系，重算后校验 Share 层读到的 source layer 是否与正向一致；开 full recompute 后对比关重算的 loss 曲线。
+  fix: issue 给出实现方案（参考 Megatron-LM 在 forward carrier 上存 dict[source_layer, topk_indices]，holder 绑定 packed_seq_params/attention mask，checkpoint 反向后恢复同一 holder 引用）；issue 已 closed，未在正文给出合入 PR 号（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1701
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-0648
+original:
+  mechanism: 'MindSpeed-LLM issue #1701（2026-08-04 提，已 closed）：DSA MLA 同时启用 ShareIndex 与 full activation recomputation 时，原实现只在进程级全局变量中保存最近一次计算得到的 TopK。存在多个共享组时，后一个 Compute 层会覆盖前一个组的结果；反向按逆序重计算时，较早的 Share 层可能错误读取后一个组的 TopK。例如正向 L3 计算、L4-L6 复用 L3，L7 计算、L8-L10 复用 L7；若缓存只有「最后一次写入」，反向重算 L4-L6 时可能误读 L7 的结果，动态长度场景还可能表现为 shape 不匹配。根因是 ShareIndex 缓存未与当前 forward/microbatch 及 source layer 绑定，只能表达单个最新 TopK，无法同时保留 L3、L7 等不同 Compute 层结果，也无法在 checkpoint 反向重建 tensor 参数后恢复对应 holder。期望实现要点：在 forward carrier 上保存 dict[source_layer, topk_indices]，Share 层按依赖的 source layer 精确读取；holder 优先绑定 packed_seq_params，非 packed 绑定 attention mask 或 RoPE tensor；Compute 层只覆盖自身 layer key、不 clone TopK；MindSpeed checkpoint 反向 detach/rebuild 时恢复同一 holder 引用，不重写 TransformerBlock._checkpointed_forward；对跨 PP/VPP 边界、source 缺失与 batch/sequence shape 不一致显式报错。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1701
+  behavior: DeepSeek 类 DSA/MLA 模型同时开 ShareIndex 与 full 重计算、且存在多个共享组时，训练能跑、loss 不出 NaN，但 attention 输出与梯度已经错：反向逆序重算较早的共享组时会读到后一个 Compute 层的 TopK。动态长度/变长 packed 样本下还会变成 shape 不匹配的报错，报错信息指不到缓存覆盖这一根因。
+  trigger_surface: DSA ShareIndex + full recomputation + 多共享组（动态长度 packed microbatch）
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

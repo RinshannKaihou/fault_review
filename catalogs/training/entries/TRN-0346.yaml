@@ -1,0 +1,54 @@
+id: TRN-0346
+legacy_ids: []
+slug: msllm_kvcompress_fp32_compressor_recursed_cast
+aliases: []
+title: MindSpeed-LLM kv-compress 误压 fp32 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: mindspeed-llm
+    component: Float16Module 与 wkv/wgate
+  behavior: 开 --kv-compress 时 Float16Module.__init__ 对整个模块递归 cast 到 bf16，把按 fp32 构造的 compressor wkv/wgate 一并降精（设计计算保持 fp32）。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: --kv-compress 训练 DeepSeek-V4 时 compressor 的 wkv/wgate 以 bf16 参与计算，与设计的 fp32 计算路径偏离，精度静默损失；无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 训练初始化后打印 compressor wkv/wgate dtype（应为 fp32）。
+  fix: 修复 MR https://gitcode.com/Ascend/MindSpeed-LLM/merge_requests/5176（open）：新增 compressor2fp32_fp16module_init_wrapper，在 Float16Module.__init__ 后把 compressor wkv/wgate 重新 cast 回 fp32，经 CSAFeature.register_patches 按 --kv-compress 门控注册（沿用 dsa_indexer/mhc fp32-init wrapper 同款机制）；验证 py_compile + patch 叠加，NPU 端到端未运行。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  family: N/A
+  trigger: config
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/merge_requests/5176
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: MindSpeed-LLM 开启 --kv-compress 训练 DeepSeek-V4 时，Float16Module.__init__ 把整个被包裹模块 cast 到 bf16，其中 compressor 的 wkv/wgate 权重按 fp32 构造（checkpoint 存 bf16、计算路径设计保持 fp32，与 dsa_indexer/mhc 的 fp32-init 约定同类），被整模块递归 cast 一并降到 bf16，破坏该计算路径的精度设计。修复 !5176 在 tests/mindspeed_llm/tasks/models/transformer/deepseek4/compressor.py 增加 compressor2fp32_fp16module_init_wrapper：Float16Module.__init__ 之后把 compressor wkv/wgate 重新 cast 回 fp32；经 CSAFeature.register_patches（multi_latent_attention/csa_feature.py）按 --kv-compress 门控注册，patch 叠加沿用既有 decorator-attach 机制。验证：py_compile（两个改动文件）+ patch 叠加检查；无 NPU 端到端精度对照数据。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/merge_requests/5176（2026-10-20，open，无关联 issue，机制与修复在 MR 正文）
+  behavior: 用 --kv-compress 在 MindSpeed-LLM 上训练 DeepSeek-V4 时，KV 压缩器的 wkv/wgate 权重悄悄变成 bf16 计算（设计为 fp32），训练全程无报错，精度损失只有通过逐层 dump 或最终模型质量对比才能发现；不开 kv-compress 或其他不受 wrapper 覆盖的路径不受影响。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: KV缓存

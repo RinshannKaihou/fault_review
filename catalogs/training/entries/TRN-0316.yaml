@@ -1,0 +1,60 @@
+id: TRN-0316
+legacy_ids: []
+slug: grpo_resume_inside_generation_block_shifts_schedule
+aliases: []
+title: GRPO 块内 resume 使 prompt 训练计划错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: _step 与 skip 基准分叉
+  behavior: resume 后 self._step 重启为 0 而 Trainer 按 global_step 跳过 dataloader；ckpt 落在 generation 块内时两套计数基准分叉，块边界整体移动。
+effect:
+  objects:
+  - 训练样本流
+  detail: resume 后奇数 optimizer step 训练的是上一块的 prompt（prompt 0,1 被第三次训练、最后一块只得一次更新），与不中断 run 的每步 prompt 集合从第 3 步起持续不同；无报错，loss 表面正常
+  visibility: 静默错误
+mitigation:
+  detect: 固定 shuffle_dataset=False、逐 optimizer step 记录 prompt id 集合，对比中断/连续 run（repro 脚本 exit 1 on mismatch）；resume 于块边界（checkpoint-2 对照）则完全一致可作判别
+  fix: 待定（issue open 2026-10-18，无评论；报告者含 CPU repro：8 prompts、num_iterations=2、steps_per_generation=1、Qwen2 tiny）
+labels:
+  family: N/A
+  trigger: config
+  trigger_review: false
+  trigger_note: resume_from_checkpoint 落在 generation 块内（非 steps_per_generation*num_iterations 边界）；GRPOTrainer 与 RLOOTrainer 同 _step 逻辑；shuffle_dataset=False 排除 RNG 因素、块边界 ckpt 对照通过
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-19'
+remarks: 与 TRN-0075（stale 丢弃钉死游标）、TRN-0290（LazyLLM 游标归零）同为 resume 后样本流错位家族但机制不同：本条是块内计数基准分叉，非游标丢失/钉死。
+evidence:
+- url: https://github.com/huggingface/trl/issues/7787
+  kind: github_issue
+relations: []
+original:
+  mechanism: trl GRPOTrainer resume 落在 generation 块内（steps_per_generation*num_iterations 微步）时，self._step 重启为 0 而 Trainer 按 global_step 跳过 dataloader，两套计数基准不一致使 generation 块边界整体移动。报告者 6d6901c 上以 shuffle_dataset=False、num_iterations=2、steps_per_generation=1、gradient_accumulation_steps=1、8 个含唯一 id 的 prompt、tiny Qwen2、CPU 复现：对比不中断 run 与从 checkpoint-1（块 1 内）resume 的 run，逐 optimizer step 记录 compute_loss 看到的 prompt id——resume 后 step 3 训 [0,1]（应为 [2,3]）、step 5 训 [2,3]（应 [4,5]）、step 7 训 [4,5]（应 [6,7]），计划整体错位一步；prompt 0,1 被第三次训练，最后一块 (6,7) 只得一次更新（应两次）。从 checkpoint-2（块边界对照）resume 则 step 3-8 全部一致；shuffle_dataset=False 下无 sampler RNG、两次重复运行结果一致，排除 RNG。RLOOTrainer 有相同 _step 逻辑（由修复 PR 的参数化回归覆盖，issue repro 只含 GRPO）。机制独立于 TRN-0075（stale 丢弃钉死 resume 游标）与 TRN-0290（数据集游标归零）：本条不涉及异步 rollout/数据集游标，纯同步 trainer 的块内计数分叉。
+  source: 2026-10-18 GitHub huggingface/trl issue https://github.com/huggingface/trl/issues/7787 （open，无评论）
+  behavior: GRPO 训练从落在 generation 块内的 checkpoint resume 后，无任何报错、loss 正常下降，但每个 optimizer step 训练的 prompt 与不中断 run 不同：前一块的 prompt 被多训一次、最后一块少一次更新（复现中 step 3 起持续错位、首错步 3）。块边界 checkpoint 的 resume 完全正常。多轮 resume 的训练数据分布与预算核算静默失真。
+  trigger_surface: trl GRPOTrainer/RLOOTrainer（6d6901c）；resume_from_checkpoint 落在 generation 块内；GRPO 主路径（非 async）
+  discovery: 2026-10-19 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-19'
+  audit:
+    round: daily-audit-2026-10-19
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 数据管线
+        to: RL训练回路

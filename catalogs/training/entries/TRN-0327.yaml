@@ -1,0 +1,61 @@
+id: TRN-0327
+legacy_ids: []
+slug: op_plugin_masked_scatter_small_src_oob_garbage
+aliases: []
+title: op-plugin masked_scatter src 不足静默填越界垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: masked_scatter 入口校验
+  behavior: masked_scatter 两条入口（opapi 与 aclops 兜底）都不校验 src 容量是否 ≥ mask 真值数，src 不足时静默接受，越界读设备内存垃圾填入结果。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: src.numel() < mask 真值数时，NPU 上 masked_scatter_ 不报错，超出 len(src) 的槽位填入越界读到的设备内存垃圾（确定性值、非 NaN），垃圾值随前向/反向传播扩散；双芯一致、上下文存活、无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 入口断言 src.numel() >= mask.sum()；或与 CPU 实现对照。
+  fix: 修复 MR https://gitcode.com/Ascend/op-plugin/merge_requests/6055 （open 未合入）：两条入口插入 check_source_capacity（快路径 numel 比较零同步、慢路径真值计数 TORCH_CHECK，报错语义与 CPU 对齐）；静态核验通过，真机验证未做（作者无本地 NPU）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/602
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6055
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-1470
+original:
+  mechanism: 'Ascend op-plugin（issue #602，2026-10-19 open，CANN 9.1.0 + torch_npu 2.7.1.post4，Atlas A3 910_9362×2）的 masked_scatter 缺陷：opapi 主路径 op_plugin/ops/opapi/MaskedScatterKernelNpuOpApi.cpp（masked_scatter_ → aclnnInplaceMaskedScatter）与 aclops 兜底 op_plugin/ops/aclops/MaskedScatterKernelNpu.cpp 均未校验 src 容量，src.numel() 小于 mask 非零元素数时静默接受，越界读设备内存垃圾填入结果（确定性值、非 NaN、上下文存活无告警）；CPU 同输入抛 RuntimeError（Number of elements of source < number of ones in mask）。复现：x=torch.zeros(3,4).npu(); mask=x==0（5 个 True）; src=2 元素 → NPU 静默填垃圾。修复 MR !6055（2026-10-19 open）：两入口插入 check_source_capacity——src.numel()>=mask.numel() 快路径零同步放行，否则 (mask!=0).sum() 精确 TORCH_CHECK；out-of-place 变体是 clone+inplace 组合自动覆盖；静态核验（clang++ -fsyntax-only、clang-format）通过，真机验证未做。报告者注明与 #598（cross_entropy 越界静默吞，→TRN-0320）同属「入口无校验→fail-silent」家族。训练侧收录依据：masked_scatter 常用于训练侧数据增强/掩码填充，静默垃圾值直接污染前向与梯度。cross → INF-1470（推理库同源已收，标题核对一致）。复现脚本 A3 真机 /mnt/workspace/a3hunt/round6/repro_r6_mscat_smallsrc.py。'
+  source: https://gitcode.com/Ascend/op-plugin/issues/602 ；修复：https://gitcode.com/Ascend/op-plugin/merge_requests/6055
+  behavior: NPU 上调用 x.masked_scatter_(mask, src) 且 src 元素数少于 mask 命中位置数时，不报错地返回结果，多余槽位填的是越界读到的设备内存垃圾（确定值、不是 NaN、无告警）；CPU 同代码立即抛 RuntimeError。垃圾值随前向传播与反向梯度扩散。环境：CANN 9.1.0、torch_npu 2.7.1.post4、Atlas A3，双芯一致复现、确定性。
+  trigger_surface: torch_npu masked_scatter_（opapi/aclops 两入口）+ src.numel() < mask 真值数（训练数据增强、掩码填充路径）。
+  discovery: 2026-10-20 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

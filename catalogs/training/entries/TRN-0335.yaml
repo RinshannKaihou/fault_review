@@ -1,0 +1,59 @@
+id: TRN-0335
+legacy_ids: []
+slug: mindspeed_llm_alpaca_ranking_rejected_index_asymmetry
+aliases: []
+title: alpaca 偏好数据 rejected 取 [1] 致偏好对错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindspeed-llm
+    component: alpaca ranking 分支
+  behavior: ranking=True 且 chosen 列为 list 时，convert_alpaca_to_intermediate 构造 response 时 chosen 取第 0 个元素，rejected 却取第 1 个元素，候选索引不对称。
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  detail: rejected 为单元素 list（偏好数据最常见形态）时必现 IndexError 中断数据处理；多元素时 chosen[0] 与 rejected[1] 配对错位，DPO/SimPO 训练的是错误偏好对，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 处理 ranking 数据后抽查若干样本的 chosen/rejected 内容是否成对；对 rejected 单元素 list 做一次试处理。
+  fix: issue 给出改法：把 rejected 的 [1] 改为 [0]，并像 sharegpt 分支那样在取索引前对 list 类型做防御性检查；issue 已 closed，正文未给出合入 PR（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1718
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed-LLM issue #1718（2026-08-10 提，已 closed）：mindspeed_llm/tasks/preprocess/utils.py 的 convert_alpaca_to_intermediate() 在 ranking=True（DPO/偏好数据集）且 chosen 列为 list 时，构造的 response 两个候选索引不对称——chosen 取列表第 0 个元素，rejected 却取第 1 个元素（代码 {\"content\": sample[dataset_attr.rejected][1]}，应为 [0]）。后果分两类：(1) rejected 列只有一个候选（单元素 list 是最常见的偏好数据形态：一条样本 = 一个 chosen + 一个 rejected）时，sample[dataset_attr.rejected][1] 直接抛 IndexError: list index out of range，整个数据处理流程中断；(2) rejected 是多元素列表时取的是第 2 个候选而不是第 1 个，与 chosen[0] 不对称，生成的偏好对错位。对照同文件 convert_sharegpt_to_intermediate / convert_hunyuan_to_intermediate 的 ranking 分支均为 chosen[content_tag] / rejected[content_tag] 对称取字段，此处 [0]/[1] 是笔误。该函数是 alpaca 格式偏好数据唯一入口，ranking=True 时必然走到此分支，准备 DPO/SimPO 数据必现。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1718
+  behavior: '用 alpaca 格式、ranking: true 的数据做 DPO/SimPO 数据预处理时：如果 chosen/rejected 各只有一个元素（最常见写法），处理脚本直接 IndexError: list index out of range，流程中断；如果把 rejected 写成多元素列表绕过报错，训练能正常跑完，但喂进去的偏好对是 chosen 第 1 个配 rejected 第 2 个，偏好信号与数据意图不符，且没有任何告警。'
+  trigger_surface: alpaca 格式偏好数据 + --stage dpo 的数据预处理（chosen/rejected 为 list）
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior

@@ -1,0 +1,57 @@
+id: TRN-0360
+legacy_ids: []
+slug: msllm_li_cp_kvallgather_double_transpose
+aliases: []
+title: CP 融合 LI 算子重复转置致 S/B 互换
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspeed-llm
+    component: fused LI CP KV 包装
+  behavior: CP 的 compress+KV-allgather 分支先把 q/k/weights 从 SBND 转成 BSND 再调 npu_lightning_indexer，而该算子本身收 SBND 并在内部转 BSND，S 与 B 因此互换。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: mbs=1、CP=2、S=4096 时 sub-chunk [1024,1,N,D] 被算子读成 B=1024，metadata 校验 batch_size 与 cmp_residual_k 的 1 不符即刻失败；CP=1 不走该分支故正常。
+  visibility: 报错
+mitigation:
+  detect: 开融合 LI 前先做 CP=1/CP=2 精度对齐；对传入 npu_lightning_indexer 的 q/k/weights 打印 shape 与 layout，确认上层没有再转置
+  fix: issue 标题即修复动作：去掉上层预转置、直接把 SBND 传入并让算子内部 rearrange（closed，正文为修复的根因说明，未附 MR 链接，未核实合入版本）
+labels:
+  family: infra_off
+  trigger: partial
+  trigger_review: false
+  trigger_note: 融合 LI + CP>1 + compress/KV-allgather 分支
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1564
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed-LLM 在 DeepSeek-V4 类模型上开启融合 Lightning Indexer 算子、并在 CP>1 下走 compress + KV-allgather 分支时，fused_lightning_indexer_with_compress_kvallgather 在调用 npu_lightning_indexer 之前把 q/k/weights 从 [S,B,N,D] 预先转置成 [B,S,N,D]。但 npu_lightning_indexer 约定入参是 SBND，layout="BSND" 指的是算子消费的目标布局，算子内部自己会 rearrange 到 BSND。重复转置使 S 与 B 互换：mbs=1 时单个 CP sub-chunk 是 [1024,1,N,D]，转置后是 [1,1024,N,D]，算子按 S_Q,B,N1,D = query.shape 解包得到 S_Q=1、B=1024，于是给 metadata 传 batch_size=1024，而 cmp_residual_k 形状恒为 [1]，aclnnLightningIndexerV2Metadata 以 The batch_size of cmp_residual_k should match the valid batch size, but got 1 and 1024 失败。CP=1 不走 KV-allgather 分支，所以只有 CP>1 暴露。复现配置：2 卡、TP1/PP1/EP1/CP2、seq 4096 定长、BSND 输入路径、mbs=1。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1564（closed；2 卡、CP=2、seq 4096；根因分析与完整栈在正文）
+  behavior: 'DeepSeek-V4 类模型开融合 Lightning Indexer、CP=2 训练在算子 metadata 预计算阶段直接崩：RuntimeError: call aclnnLightningIndexerV2Metadata failed, detail: AclNN_Parameter_Error(EZ1001): The batch_size of cmp_residual_k should match the valid batch size, but got 1 and 1024。同样的配置关掉融合算子、或把 CP 调成 1，都能正常跑；不开融合算子时 CP=1 与 CP=2 的精度是对齐的。'
+  trigger_surface: 融合 Lightning Indexer + CP>1 + compress/KV-allgather 分支 + 定长 BSND 输入 + mbs=1
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 并行切分
+        to: 算子/内核

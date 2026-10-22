@@ -1,0 +1,56 @@
+id: TRN-0348
+legacy_ids: []
+slug: msllm_capacity_auxloss_drop_denominator_nan
+aliases: []
+title: 专家容量 drop 与 aux_loss 并存致负载均衡 loss NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: mindspeed
+    component: capacity drop + aux_loss
+  behavior: drop与dropless策略在路由和aux_loss计算路径上互斥：drop下被丢token不计入aux_loss，分母偏小甚至为零；dropless下重路由后aux_loss的路由分布与实际专家计算分布不一致，梯度异常。
+effect:
+  objects:
+  - 训练信号
+  - 模型权重
+  detail: 910C 上训练中途 loss 变 NaN；验证阶段 capacity padding/截断后的 hidden size reshape 也对不齐，报 shape 不匹配。
+  visibility: 数值异常
+mitigation:
+  detect: 分别只开 capacity 或只开 aux_loss 做 A/B；打印 aux_loss 的分母 token 计数
+  fix: 'issue #1399（closed）给出方案：drop 下 aux_loss 只算未 drop 的 token、dropless 下 aux_loss 按 pre-capacity 原始路由分布算；或对参数组合直接报冲突'
+labels:
+  family: N/A
+  trigger: config
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1399
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed 2.3.0（openeuler + 910C/910_9392 + CANN 8.5.0）上同时开启 --moe-expert-capacity-factor（专家容量限制）与 --moe-router-load-balancing-type aux_loss（负载均衡 aux loss）。capacity 特性内部的 drop 策略（超容量 token 直接丢弃）与 dropless 策略（超容量 token 路由到其他专家）在路由计算和 aux_loss 计算路径上逻辑互斥：drop 策略下被丢掉的 token 不参与 aux_loss，负载均衡损失的 token 计数分母偏小甚至为零，除法后 loss 变 NaN；dropless 策略下 token 被重路由后，aux_loss 用的路由分布与实际专家计算分布不一致，梯度异常。验证阶段对 hidden size 的调整（capacity padding 或 token drop 后的 reshape）也没处理边界，出现 shape 不匹配。涉及模块 mindspeed_llm/core/transformer/moe/ 与 mindspeed_llm/features_manager/moe/。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1399（closed；环境 MindSpeed 2.3.0 + 910C + CANN 8.5.0；现象、原因分析与解决方案在正文）
+  behavior: 只开 capacity（不挂 aux_loss）训练正常，只开 aux_loss（不设 capacity）也正常；两个一起开时训练跑着跑着 loss 变成 NaN。同时验证阶段会报 shape 不匹配，提示 capacity padding 后的 hidden size 没对齐。用户想两种特性并存来同时控显存和保负载均衡，这条组合目前给不出可用结果。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

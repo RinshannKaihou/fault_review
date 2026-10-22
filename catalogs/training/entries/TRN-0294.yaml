@@ -1,0 +1,61 @@
+id: TRN-0294
+legacy_ids: []
+slug: mindspeed_llm_mtp_dsa_indexer_layer_mapping
+aliases: []
+title: MindSpeed-LLM MTP 层 DSA indexer 层号映射错且静默
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: mindspeed-llm
+    component: MTP 层号到全局层元数据的映射
+  behavior: MCore 对 MTP 层按预测深度从 1 编号而非接续 decoder 层号；MindSpeed-LLM 未传 is_mtp_layer，MTP 层映射到错误全局层元数据、错误参与 Compute/Share 分组。不抛异常。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: 同时开 MLA+MTP+DSA indexer（DeepSeek-V3、GLM5/GLM5.2 同路径，glm5_744b 示例脚本默认开启）时：MTP 层 indexer 层号/共享关系错误、DSA indexer loss 按错误层号记录，无堆栈无报错，训练正常跑但结构语义已错。
+  visibility: 静默错误
+mitigation:
+  detect: 核对 MTP 层 indexer 的全局层号与 Compute/Share 分组；开 DSA indexer 训练后检查 indexer loss 按层分布是否与结构一致。
+  fix: 修复 MR !5153（merged）：_with_mtp_self_attention_spec 克隆 spec 注入 is_mtp_layer=True、resolve_dsa_indexer_build_config 把 MTP 深度映射到 decoder 层之后、DualPipeV+MTP 场景改用 dualpipev_mtp_model_provider_wrapper。端到端 DeepSeek-V3 SFT（16×910）跑通验证问题二/三与 layer-spec 路径；问题一（DSA indexer 改动）未被该用例覆盖（用例中 indexer 关闭），仍需开 indexer 的 GLM5 验证。https://gitcode.com/Ascend/MindSpeed-LLM/merge_requests/5153
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1925
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/merge_requests/5153
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'MindSpeed-LLM 018（Megatron-Core 0.18）下 MLA+MTP+DSA indexer 组合的三个问题（issue #1925，修复 MR !5153 已 merged）：(1) 功能性静默错误——MCore 对 MTP 内部层按预测深度从 1 编号而非接续 decoder 层号；CustomMLASelfAttention 未接收 is_mtp_layer，MTP 层映射到错误全局层元数据、错误参与 decoder Compute/Share 分组；DualPipeV+MTP 用原生 Megatron 类构建而非 mindspeed GPTModel。不抛异常、无堆栈。(2)(3) 启动即报错（variable_seq_lengths 在 pre_validate_args 尚不存在→AttributeError；SFT 路径 position_ids=None→TypeError），fail-fast 不入本条主体。受影响模型：DeepSeek-V3、GLM5/GLM5.2（同一 deepseek_spec attention 路径，examples/mcore/glm5/pretrain_glm5_744b_4k_A3_ptd.sh 同时开 --mtp-num-layers 与 --enable-dsa-indexer）。验证：端到端 DeepSeek-V3 SFT 16×910 跑完设定迭代、MTP loss 正常、无 NaN；但该用例 DSA indexer 关闭，问题一未端到端验证，需 GLM5 开 indexer 复核。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1925 ；修复：https://gitcode.com/Ascend/MindSpeed-LLM/merge_requests/5153
+  behavior: 同时开 MLA+MTP+DSA indexer 训练 DeepSeek-V3/GLM5 类模型：训练正常推进、loss 正常输出、无 NaN 无报错，但 MTP 层的 DSA indexer 挂错全局层号并参与错误的 Compute/Share 共享分组、indexer loss 按错误层号记录——结构语义静默错位，产出的权重在 indexer 层号语义上与定义不符。配套的两个启动报错（AttributeError/TypeError）会把部分用户挡在门外，能跑起来的即进入静默面。
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - detail

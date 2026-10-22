@@ -1,0 +1,53 @@
+id: TRN-0349
+legacy_ids: []
+slug: msllm_fsdp2_epochs_lr_total_steps_default
+aliases: []
+title: 只填 num_train_epochs 时 LR 调度按 100000 步算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: mindspeed-llm
+    component: FSDP2 lr scheduler
+  behavior: 只配置 num_train_epochs、不配 max_steps 时，cosine scheduler 用默认 100000 当 total_steps，而 dataloader 按样本量实际只排 609 步。
+effect:
+  objects:
+  - 训练轨迹
+  - 训练信号
+  detail: 同一次启动里 scheduler 打印 total_steps=100000、训练器打印 609 步；cosine 只走 0.6%，lr 从 2.000000E-05 到 1.999993E-05，等效恒定学习率跑完 3 个 epoch。
+  visibility: 静默错误
+mitigation:
+  detect: 启动后比对 scheduler 打印的 total_steps 与 Total optimization steps 是否一致
+  fix: 'issue #1294（closed）未给修复 PR；规避是显式配置 max_steps'
+labels:
+  family: N/A
+  trigger: config
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1294
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed-LLM master（A3，FSDP2 路径）用 training.yaml 配置训练：per_device_train_batch_size=1、gradient_accumulation_steps=2、dataloader_drop_last=True、数据 52044 条、num_train_epochs=3，max_steps 被注释掉（注释值是 180）。启动日志里 Building LR Scheduler 阶段打印 Creating ''cosine'' scheduler: lr=2e-05, min_lr=2e-07, warmup_steps=0, total_steps=100000，随后 Running training (FSDP2) 打印 Num examples = 52044 / Num Epochs = 3.0 / Total Batch Size = 256 / Total optimization steps = 609.0。即 scheduler 侧没有按 epoch×样本数/global batch 推出 609，而是落在 100000 的默认值上，两个 total_steps 各算各的。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1294（closed；环境 mindspeed-llm master + A3，配置与启动日志均在正文）
+  behavior: 按 epoch 数训练时，日志第一屏就看得到 total_steps=100000，而 iteration 计数是 1/609、118/609、123/609 这样走。跑下来 learning rate 一直是 2.0E-05 附近（1.999993E-05），cosine 调度等于没生效，3 个 epoch 全程恒定学习率；除了两处数字对不上，没有报错也没有告警，很容易被当成正常训练。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,70 @@
+id: TRN-0328
+legacy_ids: []
+slug: mindspeed_llm_sp_grad_reduce_scatter_residual_chunk_bf16
+aliases: []
+title: SP 梯度 reduce-scatter 残块 bf16 归约精度发散
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspeed-llm
+    component: SP 梯度 reduce-scatter 残块归约
+  behavior: grad reduce-scatter 沿序列维切分；seq_len 不整除 SP world_size 时尾部 residual chunk 单独 allreduce，bf16 多一次 cast 损失，边界 grad 跨 rank 不齐。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 训练 seq_len 从 4096 扩到 4608、开 SP、bf16 时，序号 4096~4608 的 grad 在各 SP rank 间出现量级差异，update 后参数沿 SP 维不统一，loss 逐步发散；日志无异常，需逐 chunk allclose 才看得到。
+  visibility: 静默错误
+mitigation:
+  detect: 对 _reduce_scatter_along_first_dim 的输出按 chunk 做跨 rank allclose 比较；或临时改 fp32 归约复跑同一 step 对比 loss。
+  fix: issue 建议把 residual chunk padding 到 align_size 再 allreduce、之后 strip，或 SP 归约改用 fp32；issue 已 closed，未在正文给出对应 PR 与合入版本（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1598
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0014
+pattern: PAT-TRN-0048
+original:
+  mechanism: 'MindSpeed-LLM issue #1598（2026-07-08 提，已 closed）承接 #1589：PP+DP 配通后开启 sequence_parallel，bf16 训练，seq_len 由 4096 扩展到 4608（非 2 的幂、不能被 SP world_size 整除）。SP 的 grad reduce-scatter 沿序列维切分、各 rank 负责一段后 allreduce 拿全局 grad；当 seq_len 不能整除 SP world_size 时尾部产生 residual chunk，其处理方式是把多余 token 的 grad 单独做一次 allreduce 再拼回。报告者在 mindspeed/core/parallel_state 侧的 scatter_gather_tensors.py 的 _reduce_scatter_along_first_dim 里加 torch.allclose 检查，确认差异只出现在边界 chunk：residual chunk 比正常 chunk 小很多（512 vs 2048），bf16 下额外多一次 cast 损失，精度更差。结果同一 param 的 grad 在 SP rank 0 与 rank 1 的边界附近出现量级差异。报告者建议两条修法：(1) residual chunk padding 到 align_size 后 allreduce 再 strip；(2) SP 归约改 fp32（代价大但安全）。issue 已 closed，正文未给出落地 PR 与合入版本。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1598
+  behavior: 开 SP + bf16 训练、seq_len 不是 2 的幂（例如 4608）时，训练跑着跑着 loss 发散；查 grad distribution 发现序号 4096~4608 这段元素的 grad 在不同 SP rank 上不统一，update 之后参数在 SP 维上分叉。没有报错、没有 NaN，日志里只有 loss 缓慢变坏，定位要靠逐 chunk 跨 rank 比对。把 seq_len 换回能整除 SP world_size 的长度或关掉 SP 即不复现。
+  trigger_surface: sequence_parallel + bf16 + seq_len 不能整除 SP world_size（residual chunk 非空）
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - visibility
+    - behavior

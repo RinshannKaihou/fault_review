@@ -1,0 +1,66 @@
+id: TRN-0334
+legacy_ids: []
+slug: mindspeed_llm_dsv4_indexer_loss_coeff_microbatch_scale
+aliases: []
+title: DSv4 indexer 梯度漏乘 coeff 与 mbs 缩放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: mindspeed-llm
+    component: fused DSv4 indexer 梯度缩放
+  behavior: fused indexer loss 路径把 loss_coeff 只用于日志、未作用于反向梯度缩放，且未消费 MCore schedule 的 micro-batch loss scale，默认梯度缩放恒为 1.0。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: indexer-loss-coeff 从 1.0 调到 0.1 时日志 dsa_indexer_loss 降 10 倍而 gnorm 不变，只有设 0.0 才关分支；num_microbatches=8 时 fused indexer 辅助梯度约大 8 倍，主辅 loss 配比失衡。
+  visibility: 静默错误
+mitigation:
+  detect: 改 indexer-loss-coeff 后同时看 dsa_indexer_loss 与 gnorm：日志 loss 变而 gnorm 不变即为未生效；再把 fused 与非 fused 路径的 indexer 梯度逐元素对比。
+  fix: 修复 PR https://gitcode.com/Ascend/MindSpeed-LLM/pull/4993 ：indexer_scale = grad_scale * loss_coeff / num_seqs，并让 SparseFlashMlaWithIndexerLossFunction 读取与未融合路径一致的 loss_scale/num_microbatches（状态未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1818
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/pull/4993
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0164
+pattern: PAT-TRN-0023
+original:
+  mechanism: 'MindSpeed-LLM issue #1818（2026-08-31 提，已 closed；环境 MindSpeed-LLM f685ac7164f3df0034288ace956aba2085a1c817 + MindSpeed v0.12.1）。两个缺陷同处 fused DSv4（DSA）indexer loss 路径：(1) loss_coeff 仅用于 loss 日志，未在反向的 indexer 梯度缩放中生效，因此任何正的 indexer-loss-coeff 产生的实际 indexer 梯度都一样——把 loss_coeff 从 1.0 改成 0.1，日志里的 dsa_indexer_loss 缩小 10 倍，但 gnorm 不变；只有设成 0.0 关掉 fused indexer-loss 分支，gnorm 才显著下降。修复方式是把 loss_coeff 直接乘进 indexer 梯度 scale：indexer_scale = grad_scale * loss_coeff / num_seqs。(2) fused indexer loss 路径没有消费 MCore schedule 设置的 microbatch loss scale：非融合路径用 DSAIndexerLossAutoScaler.set_loss_scale(loss_scale / num_microbatches)，而融合的 SparseFlashMlaWithIndexerLossFunction 保持默认梯度 scale 1.0；当前配置 num_microbatches = 8，使融合 indexer 的辅助梯度相对主 loss 实际大约 8 倍。修复统一 indexer loss scale 设置，并在反向应用 indexer 梯度缩放前让融合路径读到正确的运行期 scale。对应 PR !4993。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1818 ；修复：https://gitcode.com/Ascend/MindSpeed-LLM/pull/4993
+  behavior: 开 DSA indexer loss 的 DeepSeek-V4 训练里，调 --indexer-loss-coeff 不改变实际训练效果：日志中 dsa_indexer_loss 按比例变小，但 grad norm 一点不变，只有把 coeff 设成 0 才真正关掉辅助 loss。同时因为 micro-batch 数为 8，indexer 的辅助梯度比预期大约 8 倍，主/辅 loss 配比与配置意图不符。全程无报错、无 NaN，只能靠改 coeff 前后对比 gnorm 才能发现。
+  trigger_surface: fused DSv4/DSA indexer loss + indexer-loss-coeff + num_microbatches>1
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

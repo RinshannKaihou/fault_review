@@ -1,0 +1,71 @@
+id: TRN-0338
+legacy_ids: []
+slug: mindspeed_te_rowparallel_noseq_ignores_gaf
+aliases: []
+title: 非序列并行 RowParallel 忽略梯度累积融合
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspeed
+    component: RowParallelNoSeq wgrad
+  behavior: 非序列并行分支 RowParallelNoSeq 的 forward 未保存 gaf，backward 恒走分离 matmul；只有序列并行分支才按 gaf 走 fp32 融合累加。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: gaf=True 时 linear_proj/linear_fc2 的 wgrad 由 aclnnMatmul 产出 bf16 中间张量再累加，与融合路径的 fp32 累加差约 1e-4，经优化器传播后出现可见精度发散；另 patch 对 mcore 0.16 间接引用未生效。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 gaf=True/False 两条路径同名参数的 wgrad 范数与差异量级；或检查 TERowParallelLinear patch 是否真的替换了 TESpecProvider 返回的类。
+  fix: issue 建议 RowParallelNoSeq 对齐 RowParallelSeq：forward 保存 ctx.gradient_accumulation_fusion、backward 增加走 npu_matmul_add_fp32 的分支；issue 已 closed，正文未给出合入 PR（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/issues/231
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0118
+pattern: PAT-TRN-0049
+original:
+  mechanism: 'MindSpeed issue #231（2026-07-31 提，已 closed；MindSpeed commit 3dda166cb，master 基于 core_r0.16.0；mcore 0.16.1、torch_npu 2.8.0.post2、CANN 8.5.1、Ascend910_9392 非 A5）：mindspeed/te/pytorch/module/linear.py 中 RowParallelSeq.backward（序列并行分支，L528-607）正确检查 gradient_accumulation_fusion，gaf=True 时走 npu_matmul_add_fp32 融合路径；但 RowParallelNoSeq.backward（非序列并行分支，L610-657）完全没有检查 gaf，forward 中也没保存该标志，backward 恒走分离路径 grad_output.t().matmul(input_)。因此 gaf=True 时，非序列并行 RowParallel 层（linear_proj、linear_fc2）的 wgrad 走 aclnnMatmul 产出 bf16 中间张量再累加到 fp32，而非融合路径的 ATB LinearOperation 直接 fp32 累加；两条路径使用不同 NPU GEMM kernel，bf16 中间张量 rounding 带来约 1e-4 的 fp32 梯度偏差，经 optimizer 传播后引发可见精度发散。补充：非 FP8 分支（transformer_engine_basic.py:117）注册的 TERowParallelLinear → RowParallelLinear patch 在 mcore 0.16 中未生效，因为 mcore 0.16 通过 TESpecProvider.row_parallel_linear() 返回值间接引用 Linear 类，而 apply_patch（patch_utils.py:130-133）的 sys.modules + id() 匹配只能覆盖模块级直接引用。'
+  source: https://gitcode.com/Ascend/MindSpeed/issues/231
+  behavior: 在 TE + 非序列并行（TP>1、不开 sequence parallel）的配置下开 --gradient-accumulation-fusion，训练不报错、loss 也降，但与关掉 gaf 的同配置相比长跑后精度对不上，梯度有约 1e-4 的系统性偏差；开序列并行时反而没有这个差异。属于「同一个融合开关在两个 RowParallel 分支上行为不一致」导致的静默梯度 rounding 偏差。
+  trigger_surface: TE + 非序列并行 RowParallel + --gradient-accumulation-fusion
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - relations
+  - date: '2026-10-20'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      subsystem:
+        from: 并行切分
+        to: 算子/内核

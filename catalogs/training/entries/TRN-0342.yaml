@@ -1,0 +1,50 @@
+id: TRN-0342
+legacy_ids: []
+slug: mindspeed_mla_yarn_original_max_pos_misforwarded
+aliases: []
+title: MindSpeed MLA YaRN 原始长度参数传错致长序列退化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: mindspeed
+    component: MLA YaRN 初始化
+  behavior: 构造 YarnRotaryEmbedding 时把扩展后的 max_position_embeddings 当作 original_max_position_embeddings 传入，YaRN 缩放范围按错误的原始长度计算。
+effect:
+  objects:
+  - 隐状态
+  - 训练轨迹
+  detail: 长上下文模型（如 Kimi-k2.5：original 4096 / 扩展 128000）启用 MLA+YaRN 时缩放区间错位，长序列前向精度静默退化；两值相等的模型不受影响。
+  visibility: 质量退化
+mitigation:
+  detect: 对 YarnRotaryEmbedding 收到的 original_max_position_embeddings 断言等于 config.original_max_position_embeddings（PR 已加该单测）。
+  fix: '修复 MR https://gitcode.com/Ascend/MindSpeed/merge_requests/4103（open）：改传 config.original_max_position_embeddings，新增单测断言转发值（4096 vs 128000 用例）；端到端 Kimi-k2.5 长序列验证需 NPU 环境未本地运行。Fixes #185（issue 正文批次内无缓存，机制以 PR 为准）。'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+  family: N/A
+  trigger: config
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/merge_requests/4103
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: MindSpeed（Megatron 昇腾补丁层）MLA YaRN 初始化把 max_position_embeddings 传作 original_max_position_embeddings。YaRN 插值的缩放上下界由「原始训练长度→扩展长度」区间决定；对长上下文模型（PR 例子 Kimi-k2.5：original_max_position_embeddings=4096，max_position_embeddings=128000）扩展后的长度不是 YaRN 原始长度，缩放范围错误导致长序列精度退化。修复改传 config.original_max_position_embeddings 并加单测：mock YarnRotaryEmbedding 断言收到 original_max_position_embeddings=4096（当 max=128000）；两值相等的模型行为不变、无新增参数。验证：py_compile + 该单测（CPU）；NPU 端到端 Kimi-k2.5 长序列精度验证未运行（需 NPU 环境）。
+  source: 'https://gitcode.com/Ascend/MindSpeed/merge_requests/4103（2026-10-20，open，Fixes #185）'
+  behavior: 在 MindSpeed 上用 MLA + YaRN 长上下文配置训练或微调时，长序列输入的前向输出精度静默劣化（缩放区间错位），无报错；最终表现为长上下文评测指标低于预期，短序列（两长度参数相等或序列小于原长度）不受影响。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []

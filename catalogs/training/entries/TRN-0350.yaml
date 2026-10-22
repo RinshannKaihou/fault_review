@@ -1,0 +1,63 @@
+id: TRN-0350
+legacy_ids: []
+slug: msllm_fsdp2_mxfp8_quantizeconfig_field_mismatch
+aliases: []
+title: FSDP2 mxfp8 配置字段名不匹配致量化静默跳过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: mindspeed-llm
+    component: QuantizeConfig 字段映射
+  behavior: 本地 QuantizeConfig 传给 FSDPTurbo 的 build_model_converter，recipe_name 对不上 quant_recipe 使量化门控恒 None，converters 字段也不匹配。
+effect:
+  objects:
+  - 性能/资源
+  - 模型权重
+  detail: mxfp8 训练要么在 ModelConvertersContainer 初始化就崩，要么门控提前返回、整条 mxfp8 量化路径没生效而训练照常跑完；quant_format/block_size/fsdp_world_size 缺失时 get_mxfp8linear_config 报错。
+  visibility: 性能退化
+mitigation:
+  detect: 训练启动后确认 build_model_converter 真正产出了 mxfp8 converter，而不是门控返回 None
+  fix: MR !4962（open，未发布）：把 QuantizeConfig 字段名适配到 FSDPTurbo 的 mxfp8 定义
+labels:
+  family: N/A
+  trigger: config
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1783
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/merge_requests/4962
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: mxfp8 量化路径迁到消费 3rdparty/FSDPTurbo 包之后，mindspeed_llm/fsdp2/distributed/parallel_engine_config.py 里本地 QuantizeConfig 被整体传给 FSDPTurbo 的 build_model_converter(config)，字段名不再匹配对方的 converter 流水线：本地 recipe_name 对应 quant_recipe（FSDPTurbo 门控与本地 engine guard 都读它）、quant_converters 对应 converters（ModelConvertersContainer.__init__ 读它，崩溃点）、apply_modules/ignored_modules 对应 quant_apply_modules/quant_ignored_modules，另外 quant_format、block_size、fsdp_world_size 三个字段本地根本没有，get_mxfp8linear_config 读它们时失败。复现路径是 --model.quant_recipe_name mxfp8 --model.quant_converters quantize.linear.mx quantize.moe.mx 启 FSDP2 训练，MindSpeedParallelEngine.apply_quantization_modules() 调 build_model_converter 后先撞 AttributeError；即便绕过，config.quant_recipe 为 None 使门控提前 return，量化被静默关掉。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1783（closed；含字段映射表与复现步骤）+ 关联 MR https://gitcode.com/Ascend/MindSpeed-LLM/merge_requests/4962（open）
+  behavior: 用 --model.quant_recipe_name mxfp8 拉起 FSDP2 训练，最常见的两种结果都不好看：一种是 ModelConvertersContainer 初始化时 AttributeError（读不到 config.converters）；另一种是训练能跑，但量化根本没打上，模型还是按原精度在训，显存与吞吐都拿不到 mxfp8 的收益，日志里没有任何“量化未生效”的告警。另外 get_mxfp8linear_config 读 quant_format/block_size/fsdp_world_size 时会直接报错。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 模型权重
+        to: 性能/资源
+      visibility:
+        from: 静默错误
+        to: 性能退化

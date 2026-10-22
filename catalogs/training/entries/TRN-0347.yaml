@@ -1,0 +1,57 @@
+id: TRN-0347
+legacy_ids: []
+slug: mindspeed_cp_pad_data_negative_seq_len
+aliases: []
+title: CP 长序列 pad_data 把 -1 填充算进序列长度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspeed
+    component: context_parallel pad_data
+  behavior: pad_data 对含 -1 占位的 actual_seq_len 直接 torch.diff，算出 -166 这类负段长，再用它构造 arange(start,end) 时上下界与 step 符号矛盾。
+effect:
+  objects:
+  - 可用性/进度
+  - 训练样本流
+  detail: 长序列 + CP=4 的 SFT 取 batch 时崩：actual_seq_len=[19,165,-1,...] 使 per_seq_lens 出现 -166，start=192/end=26，抛 upper bound 与 step 符号矛盾。
+  visibility: 报错
+mitigation:
+  detect: 在 pad_data 打印 per_seq_lens，检查是否出现负段长（actual_seq_len 尾部 -1 占位）
+  fix: 'issue #165（open）未给修复；须在 torch.diff 前剔除 -1 padding 项'
+labels:
+  family: N/A
+  trigger: config
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/issues/165
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed 26.0.0_core_r0.12.1（A3，CANN 8.5.2）长序列场景开 CP：MindSpeed-LLM 的 sft_trainer.get_batch 调用 mindspeed/core/context_parallel/utils.py 的 pad_data(actual_seq_len, batch, cp_size, tp_size)。该函数先 pad_to = lcm(2, tp_size)*cp_size（本例 tp=4, cp=4 → 16），再用 first_seq_len = actual_seq_len[0:1] 与 per_seq_lens = torch.cat((first_seq_len, torch.diff(actual_seq_len))) 求每段长度。本次 actual_seq_len = [19, 165, -1, -1, ...]，尾部的 -1 占位没有被剔除，diff 在 165→-1 处算出 -166，per_seq_lens 变成 [19, 146, -166, 0, 0, ...]；随后 line 747 的 torch.arange(start_val, end_val) 拿到 start_val=192、end_val=26，arange 因上下界与 step 符号矛盾直接抛错。
+  source: https://gitcode.com/Ascend/MindSpeed/issues/165（open；环境 26.0.0_core_r0.12.1 + A3 + CANN 8.5.2，pysnooper 逐行变量与完整栈在正文）
+  behavior: '长序列配 CP 的 SFT 一开始取 batch 就崩，报 RuntimeError: upper bound and larger bound inconsistent with step sign，栈停在 pad_data 的 torch.arange；打印出来 actual_seq_len 尾部全是 -1 占位，per_seq_lens 里出现 -166 这样的负段长，说明 padding 位被当成真实序列长度参与了 diff。关掉 CP 或不走 packing 的短序列不触发。'
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 数据管线
+        to: 并行切分
+      effect:
+        from: 训练样本流
+        to: 可用性/进度

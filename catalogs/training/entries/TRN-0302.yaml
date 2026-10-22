@@ -1,0 +1,60 @@
+id: TRN-0302
+legacy_ids: []
+slug: conv3d_dx_enlarge_partial_tail_oob_read
+aliases: []
+title: Conv3D 反向 enlarge 尾组越界读致尾通道系统性错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Conv3D dx ENLARGE tiling
+  behavior: ENLARGE下multiple_extend不整除groups产生不完整尾放大组，尾组K轴C0对齐后A矩阵加载越界读dedy外内存；tailN为singleShapeN_正整数倍时%取余把尾组最后N块有效列数误置0致漏算
+effect:
+  objects:
+  - 梯度
+  detail: Ascend950分组转置卷积反向，groups不被enlarge整除（如24/16）时梯度输出尾放大组对应通道96-143系统性错误，原失败规格10/10随机种子33.3%元素超差，其余通道正确；相邻内存恰为零侥幸正确、脏数据则错，无crash、无告警
+  visibility: 静默错误
+mitigation:
+  detect: 按输出通道分组比对梯度（尾放大组通道整体超差是签名）；比对相邻内存清零与否会翻转结果的即为数据依赖错
+  fix: 修复 MR !12064（open）：CalRealG 在 enlarge 不整除 groups 时回退 multiple_extend=1（ORIGIN 分组，无尾放大组）；CalBasicBlockCnt 尾块改减法式。实机 10/10 种子由 33.3% 元素超差转 bit-exact，11 例结构变体通过。https://gitcode.com/cann/ops-nn/merge_requests/12064
+labels:
+  family: N/A
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend950（arch35）；Conv3DBackpropInputV2/Conv3DTransposeV2（含 aclnnConvolution transposed 通路）；GROUP_MODE_ENLARGE 且 multiple_extend 不整除 groups（如 24/16、20、25、28、40、56）；bf16 实测
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12064
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn MR !12064（2026-10-16，修复 PR 自带根因与实机验证，无独立 issue）。Conv3DBackpropInputV2（dx，含 Conv3DTransposeV2 与 aclnnConvolution transposed 通路）在 GROUP_MODE_ENLARGE tiling 下：(1) CalRealG 计算的 multiple_extend 不整除 groups 时产生不完整尾放大组（groups=24、enlarge=16 时尾组仅 8 个原始分组），尾组 K 轴 DivCeilC0 对齐后 GEMM K 迭代范围超过尾组实际 dout 通道数，A 矩阵加载越界读 dedy 张量外内存，输出取决于相邻内存内容；(2) conv3d_dx_rowc_block.h CalBasicBlockCnt 的 nGroupCoreTail_ 用 % 取余，tailN 为 singleShapeN_ 正整数倍时结果为 0，把尾组最后一个 N 块有效列数误置 0，该块输出通道未被计算。修复：不整除时回退 ORIGIN 分组 + 尾块改减法式。实机（单卡 Ascend950）验证：原失败规格 10/10 随机种子由失败（33.3% 元素超差，坏通道 96-143）转 bit-exact；结构变体矩阵 11 例（groups=20/24/25/28/40/56 回退 ORIGIN、8/12/16/32/48 保留 ENLARGE）全过；回归无通过转判否。
+  source: https://gitcode.com/cann/ops-nn/merge_requests/12064
+  behavior: 在 Ascend950 上跑分组转置卷积反向（groups 不被 enlarge 整除，如 groups=24 且放大 16），梯度输出的尾放大组对应通道（本例 96-143 共 48 个通道）系统性错误、其余通道全对，多种子稳定复现；相邻内存恰为零时侥幸正确、为脏数据时错（数据依赖性）。无 crash、无告警，只有对参考实现逐通道比对才能发现。
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - effect

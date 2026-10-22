@@ -1,0 +1,63 @@
+id: TRN-0299
+legacy_ids: []
+slug: hccl_single_rank_v_op_displacement_ignored
+aliases: []
+title: HCCL 单 rank 路径 V 算子忽略位移错位读写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: SingleRankProc 单 rank 拷贝
+  behavior: 单 rank 分支对 AllGatherV/ReduceScatterV/AlltoAllV 只按 count 拷贝、直接用原始地址，未应用 displacement，拷贝成功不报错但结果不符算子语义
+effect:
+  objects:
+  - 数值结果
+  detail: 单 rank 调带非零位移的 V 算子时数据写到错误下标（如 recvDispls={3} 实写到 0、1）或读错片段；缓冲区足够、拷贝成功、无报错，仅数值与语义不符
+  visibility: 静默错误
+mitigation:
+  detect: 单 rank 单测覆盖三个 V 算子的非零位移用例并检查未涉及区域不变；现有测试未覆盖该组合
+  fix: 待定（issue open，建议按算子类型计算有效源/目的地址后再同址判断与本地拷贝，并补三个 V 算子单 rank 非零位移回归；源码逻辑分析定位，无修复 MR）
+labels:
+  family: N/A
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: HCCL 源码 1510b4c8；Ascend 950PR/950DT；单 rank 分支 + 非零 displacement 的 V 算子（all_gather_v.cc:249-261 / reduce_scatter_v.cc:245-307,371-373 / all_to_all_v.cc:664-690,759-761）
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/827
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-1425
+original:
+  mechanism: 'cann/hccl issue #827（2026-10-16，源码版本 1510b4c8ae9f7a267ba974a086f345a28d715c62，报告平台 Ascend 950PR、950DT）。src/ops/op_common/op_common.cc:3537 的 SingleRankProc() 对 AllGatherV、ReduceScatterV、AlltoAllV 只根据 count 计算拷贝长度（HcommLocalCopyOnThread(cpuTsThread, param.outputPtr, param.inputPtr, len)），直接使用原始 buffer 地址，没有应用 displacement。上游参数准备代码（all_gather_v.cc:249-261、reduce_scatter_v.cc:245-307/371-373、all_to_all_v.cc:664-690/759-761）保留了原始地址和位移，单 rank 退化为本地拷贝时位移语义仍有效。后果：AllGatherV 目的地址应加 recvDispls[0]×typeSize（写错接收位置）、ReduceScatterV 源地址应加 sendDispls[0]×typeSize（读错数据片段）、AlltoAllV 两侧都应加（读写位置均可能错）。反例：sendCount=2、recvCounts={2}、recvDispls={3} 应写到下标 3、4，实际写到 0、1，缓冲区容量足够、拷贝成功、不报错。报告为源码逻辑分析（issue 明言），无运行时复现日志。'
+  source: https://gitcode.com/cann/hccl/issues/827
+  behavior: 单卡（或通信组只含自己）跑分布式训练/推理脚本时，任何带非零位移的 AllGatherV/ReduceScatterV/AlltoAllV 调用返回的数据块位置错：数据没丢、无报错、无 warning，但拼出来的张量里各段放错了偏移，下游按语义消费就拿到错值。例如 AllGatherV 期望本 rank 数据出现在位置 3，实际出现在位置 0。多 rank 路径正常，仅单 rank 分支触发。
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - relations

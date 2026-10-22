@@ -1,0 +1,59 @@
+id: TRN-0303
+legacy_ids: []
+slug: conv3d_dx_vec_fp32_refactor_precision_regression
+aliases: []
+title: Conv3D 反向 vec FP32 行计算重构后精度回归
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Conv3D dx vec FP32 行累加
+  behavior: 9.2.0 为消行数告警把 FP32 专用 ComputeRowBf16Vec 合并进共享函数并改运行期分支+三元缓冲选择，FP32 行累加路径被破坏
+effect:
+  objects:
+  - 梯度
+  detail: Ascend910B 上 FP32 NCDHW dx 用例最大绝对误差达 4.03e7~6.95e8（A_max）/1.68e5~6.21e5（A_rms），如 dx[1,7,32,32,256]/w[7,1,9,9,9]/p4 g7 规格整体梯度错误；bf16 不受影响；无报错，判例靠精度比对
+  visibility: 静默错误
+mitigation:
+  detect: FP32 conv3d 反向用例 A_max/A_rms 比对（回归用例矩阵在 PR 内）；CI ST 白名单不含本算子（仅 mat_mul_v3/batch_mat_mul_v3），门禁测不到
+  fix: 修复 MR !12084（open）：恢复 FP32 独立函数与显式分派（与整改前逐字一致），行数目标靠搬文件不改逻辑；修复后 3 例由 2.34e7/4.03e7/6.95e8 降到 0.04/0.02/1.56，14/145/169 判否转通过、213 例逐位不变、16 个内核 .o 与直接回退版逐字节一致。https://gitcode.com/cann/ops-nn/merge_requests/12084
+labels:
+  family: N/A
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend910B（arch22）；CANN 9.2.0 引入（9942b7559）；FP32 NCDHW dx vec 兜底分支；注：ST 门禁 TARGET_BRANCH!=master 跳过且白名单不含本算子、实跑固定 ascend950，910B 用例无法进 PR 门禁
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12084
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn MR !12084（2026-10-16，修复 PR 自带根因与 236 例实机验证）。9.2.0 的 9942b7559（master cb43ce0cf）为消除『方法超过 50 行』codecheck 告警，把 FP32 专用的 ComputeRowBf16Vec() 合并进共享 ComputeRowBf16VecPlain()，累加缓冲选择改为行内运行期 dhBlocked 分支+三元表达式，FP32 行累加路径被破坏。实测（Ascend910B，236 例同基准分段执行）：修复前 8 例判否，3 个 FP32 用例 A_max 达 4.03e7/2.34e7/6.95e8；修复后 5 例（均为既有极值判据类，修复前同样判否），14/145/169 转通过，其余 213 例逐位不变；16 个内核 .o 与直接回退整改的版本逐字节一致，证明不改变代码生成。另指出 CI ST 任务 TARGET_BRANCH!=master 直接 need_st=no、白名单仅 mat_mul_v3/batch_mat_mul_v3、实跑固定 ascend950 只读 arch35，本算子 910B ttk 用例无法在 PR 门禁执行。
+  source: https://gitcode.com/cann/ops-nn/merge_requests/12084
+  behavior: CANN 9.2.0 起，在 910B 上跑 FP32 conv3d 反向（NCDHW，vec 兜底分支），梯度输出大幅错误：单例最大绝对误差可达 1e7~1e8 量级（相对基准完全不可用），三组规格稳定命中；bf16 与其他 dtype 不受影响。无 crash、无 NaN 告警，训练曲线上表现为梯度质量崩坏但来源不可见。
+  discovery: 2026-10-17 每日扫描
+  notes:
+  - 2026-10-18 2026-10-18 回访：MR !12084 正文更新——910B(arch22) 侧 ttk 用例因 ST 门禁白名单（仅 mat_mul_v3/batch_mat_mul_v3）+ TARGET_BRANCH!=master 跳过而无法在 PR 门禁执行，附建议用例形态（groups 1/7、k 9³/8³、W=256）；CI 盲区证据更完整。同日新开姊妹修复 !12179/!12180（conv3d_backprop_input_v2 vec 兜底 FP32 短行 Kahan 补偿 alignedWi<512 失效，case14 RMS 比例 2.608→0.896），属同算子族不同缺陷（短行累加精度），留观待独立评估。
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel: []
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - original.notes

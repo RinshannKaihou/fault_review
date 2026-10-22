@@ -1,0 +1,57 @@
+id: TRN-0306
+legacy_ids: []
+slug: mswift_last_ckpt_symlink_shared_tmp_race
+aliases: []
+title: ms-swift last-checkpoint 符号链接共享 tmp 路径竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: ms-swift
+    component: last-checkpoint 符号链接更新
+  behavior: update_last_checkpoint_symlink 用固定暂存路径 last-checkpoint.tmp：并发保存回调互删对方暂存链接，os.replace 后发布别人的目标且返回成功，另一方丢暂存链接
+effect:
+  objects:
+  - 模型权重
+  detail: 并发 checkpoint 保存（如多进程训练各自更新 last-checkpoint，或保存与导出重叠）时，训练完成后 last-checkpoint 链接可能指向另一个（旧的或别人的）checkpoint 目录，且一个调用方收到成功返回；按该链接恢复训练会静默加载错检查点，无任何报错。
+  visibility: 静默错误
+mitigation:
+  detect: 发布后 readlink 校验目标等于自身 checkpoint 名；并发保存时对链接做轮询比对
+  fix: 待定（issue open：给出确定性双线程 barrier 复现与修复方向——每次更新用唯一暂存名（如 mkstemp 风格/pid 后缀）；swift 侧修复 PR 未见）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: swift/utils/io_utils.py update_last_checkpoint_symlink()；触发需并发 checkpoint-save 回调（多进程/多线程保存或训练与评估保存重叠）；单 writer 不触发
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10336
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'modelscope/ms-swift issue #10336（2026-10-12 创建，本轮窗口内首次评估）。update_last_checkpoint_symlink() 的实现：tmp_path = link_path + ''.tmp''；if os.path.lexists(tmp_path): os.remove(tmp_path)；os.symlink(basename(checkpoint_dir), tmp_path)；os.replace(tmp_path, link_path)。目标替换原子，但暂存文件名固定、多 writer 之间不隔离。确定性复现：A 建 checkpoint-1 暂存 → B remove 并建 checkpoint-2 暂存 → A os.replace 发布 checkpoint-2（成功返回）→ B 再 replace 时 FileNotFoundError（丢暂存链接）。同样的交错已用两个线程 + 围绕原 helper 文件系统操作的 barrier 复现：A 返回 success、B 返回 None、最终链接指向 B 的目标。并发 checkpoint-save 回调（多保存器/并发训练+导出）即现实触发面。'
+  source: https://github.com/modelscope/ms-swift/issues/10336
+  behavior: 训练任务里如果有两个保存动作并发发生（例如多进程训练各自更新 last-checkpoint、或保存与导出重叠），训练完成后 last-checkpoint 链接可能指向另一个（旧的或别人的）checkpoint 目录，而其中一个调用方还收到成功返回；之后按 last-checkpoint 恢复训练就静默加载错检查点，无任何报错。单 writer 的常规保存不受影响。
+  discovery: 2026-10-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

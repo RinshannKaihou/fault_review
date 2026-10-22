@@ -1,0 +1,59 @@
+id: TRN-0340
+legacy_ids: []
+slug: mindspeed_rl_grpo_group_norm_contiguous_assumption
+aliases: []
+title: GRPO group_norm 依赖同 prompt 连续排布的隐式假设
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: mindspeed-rl
+    component: group_norm 组对齐
+  behavior: 组内归一化直接按行序 reshape(-1, n)，隐含假设连续 n 行同属一个 prompt；调用侧异步取数不保证顺序，也不校验 micro_batch_size 为 n 的整数倍。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: 异步 rollout 下样本顺序不保证；micro-batch 横跨 prompt 组或多组交错时，只要总数能被 n 整除，reshape 不报错但归一化不同 prompt 的 reward，组基线失真、静默污染；总数不能被 n 整除则直接抛 shape 错误。
+  visibility: 静默错误
+mitigation:
+  detect: 给 experience 带 prompt_id，reshape 后校验每组 prompt_id 一致；或在 validate_config 里断言 micro_batch_size % n_samples_per_prompt == 0。
+  fix: issue 建议两条：compute_advantage 中显式校验组对齐（prompt_id 一致），或把优势计算改为完整 global batch 收齐后做、不再依赖 micro-batch 取数顺序；issue 已 closed，正文未给出合入 PR（未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-RL/issues/166
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'MindSpeed-RL issue #166（2026-08-13 提，已 closed）：mindspeed_rl/trainer/utils/compute_utils.py 的 compute_group_norm_advantage_return 对优势做组内归一化时直接按行序 reshape：scores = scores.reshape(-1, n_sample_per_prompt)，再 (scores - scores.mean(dim=1, keepdim=True)) / (scores.std(dim=1, keepdim=True) + 1e-6)。这隐含假设 micro-batch 中每连续 n_sample_per_prompt 行 rm_scores 都来自同一个 prompt。但调用侧 grpo_trainer_hybrid.py::compute_advantage 以 experience_count = self.micro_batch_size 从 TransferQueue 消费，而 guarantee_order 在 rl_config.py 中默认 False，此时 get_experience 不传 indexes，取数顺序由队列状态决定。异步 rollout 下同一组的各样本完成时刻不同，入队顺序通常不是「完整组按行优先」；一旦某个 micro-batch 横跨两个 prompt 组（或多个组的样本交错），只要总数能被 n 整除，reshape 就不会报错，但归一化的是来自不同 prompt 的 reward，GRPO 的组基线完全失真，训练信号被静默污染，不表现为 NaN，只能靠 reward 曲线交叉排查。另有配置空档：validate_config.py 校验了 global_batch_size*n_samples 能被 micro_batch_size 整除，但没校验 micro_batch_size 是否为 n_samples_per_prompt 的整数倍，不满足时 reshape(-1, n) 直接抛 shape 错误、报错指不到根因。'
+  source: https://gitcode.com/Ascend/MindSpeed-RL/issues/166
+  behavior: 异步 rollout + GRPO 组内归一化训练时，loss 与 reward 曲线都不出异常、也没有 NaN，但策略提升远低于预期，组内比较基准实际来自别的 prompt。定位要靠把 prompt_id 带进 experience 后逐 batch 校验；把 micro_batch_size 设成 n_samples_per_prompt 的整数倍或让队列保序后现象消失。部分配置下会直接抛 reshape 的 shape 错误，但报错信息指不到「micro_batch_size 不是 n_samples_per_prompt 整数倍」这个真实原因。
+  trigger_surface: GRPO + 异步 rollout + guarantee_order=False + micro_batch_size 非 n_samples_per_prompt 整数倍
+  discovery: 2026-10-20 每日扫描（NPU 历史 issue 回填）
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail

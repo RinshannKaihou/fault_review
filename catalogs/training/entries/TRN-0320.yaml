@@ -1,0 +1,75 @@
+id: TRN-0320
+legacy_ids: []
+slug: op_plugin_cross_entropy_oob_target_silent
+aliases: []
+title: op-plugin cross_entropy 越界 target 静默吞掉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: cross_entropy 入口校验
+  behavior: cross_entropy NPU 入口缺少主机端 target 边界校验，越界值直接下发设备端；reduction=mean 时越界样本被静默排除，reduction=none 时越界槽位为真实越界读。
+effect:
+  objects:
+  - 训练信号
+  - 数值结果
+  detail: 训练 batch 含越界/污染 target 时，NPU 上 loss 静默少算一个样本（mean）或该槽位返回跨芯不一致垃圾值（none：npu:0=0.624 vs npu:1=1.797）；CPU 同代码抛 IndexError。双芯一致复现。
+  visibility: 静默错误
+mitigation:
+  detect: 训练前在 host 侧断言 0<=target<C 且 target 无 NaN；或对照 CPU 前几个 batch 的 loss。
+  fix: 待定（issue 2026-10-19 open 建议入口加主机端 target 边界校验对齐 CPU 抛 IndexError；无修复 MR）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-20'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/598
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6055
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-1471
+original:
+  mechanism: 'Ascend op-plugin（torch_npu 2.7.1.post4 + CANN 9.1.0，Atlas A3 910_9362×2）的 F.cross_entropy NPU 实现入口缺少主机端 target 边界校验（CPU 会先校验抛 IndexError），越界值直接下发设备端 kernel。reduction=mean 时越界样本被静默排除（结果可复现但与语义不符）；reduction=none 时越界槽位为真实越界读：同输入 npu:0 得 0.624、npu:1 得 1.797，跨芯不一致即非确定性。复现：x=torch.randn(4,8,requires_grad=True).npu(); t=[0,1,99,2]；CPU 抛 IndexError，NPU 静默返回。报告者注与 #592（index_select 越界崩核）同族——那边 fail-loud 崩核、这边 fail-silent 更隐蔽。训练侧收录依据：越界 target 常来自上游数据/label 污染，GPU 上 fail-loud、NPU 上静默吞掉并可能注入非确定垃圾值进 loss/梯度。cross → INF-1471（推理库同源已收，标题核对一致）。复现脚本：A3 真机 /mnt/workspace/a3hunt/round5/。'
+  source: https://gitcode.com/Ascend/op-plugin/issues/598
+  behavior: NPU 上训练时若某个 batch 的 target 含越界类别（如类别数 8 里的 99，常来自数据管线 bug），cross_entropy 不报错：reduction=mean 的 loss 悄悄少算该样本、数值看似正常；reduction=none 的对应槽位返回跨卡不一致的垃圾值（同一输入 npu:0 与 npu:1 结果不同）。CPU 上同代码会立刻抛 IndexError。环境：CANN 9.1.0、torch_npu 2.7.1.post4、Atlas A3，双芯一致复现。
+  trigger_surface: torch_npu + CANN 9.1.0（A3）F.cross_entropy 且 target 含越界值（数据污染、label 错误或未 clamp 的动态类别数）。
+  discovery: 2026-10-20 每日扫描
+  notes:
+  - '2026-10-20 更正：先前误将 MR !6055 补入本条 evidence——该 MR 修复的是 #602（masked_scatter src 不足静默填垃圾，另立新条），与本条（#598 cross_entropy 越界 target）机制不同；evidence 列表中的 MR6055 请审计时移除（工具暂无 remove-evidence 命令）。'
+migration:
+  method: scan
+  scanned: '2026-10-20'
+  updates:
+  - date: '2026-10-20'
+    fields:
+    - evidence
+  - date: '2026-10-20'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-20
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    uncertain:
+    - subsystem
+    - effect

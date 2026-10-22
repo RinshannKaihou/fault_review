@@ -1,0 +1,50 @@
+id: TRN-0353
+legacy_ids: []
+slug: msllm_mtp_loss_num_tokens_zero_nan
+aliases: []
+title: MTP num_tokens 为 0 致 mtp_1 loss 成 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: mindspeed-llm
+    component: MTP loss tracker
+  behavior: multi_token_prediction.py 用 sum(mtp_loss)/num_tokens 存 loss tracker，num_tokens 为 0 时结果成 NaN 被静默写进 tracker。
+effect:
+  objects:
+  - 指标/日志
+  - 训练信号
+  detail: glm5.2 SFT 开 --mtp-num-layers 1 后日志只剩 lm loss 与 global_load_balancing_loss，mtp_1 loss 字段整个消失（值为 NaN）；主 loss 看起来正常，MTP 层是否在学无法从日志判断。
+  visibility: 静默错误
+mitigation:
+  detect: 检查日志是否打印 mtp_1 loss；或直接在 MTPLossLoggingHelper.save_loss_to_tracker 入口断言 num_tokens>0
+  fix: 'issue #1841（closed）只指出 num_tokens=0 这一处，正文未附修复 PR，未核实'
+labels:
+  family: N/A
+  trigger: config
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1841
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpeed-LLM master（openEuler + 910C + CANN 9.1.0）跑 glm5.2 SFT，脚本开 --mtp-num-layers 1 --mtp-loss-scaling-factor 0.3。日志显示 MTP block 确实建起来了（transformer block 20.95B、mtp block 2.62B、embedding 1.90B），但训练日志里只有 lm loss 与 global_load_balancing_loss，没有 mtp_1 loss。定位到 mindspeed_llm/core/transformer/multi_token_prediction.py：self.training 分支调用 MTPLossLoggingHelper.save_loss_to_tracker(torch.sum(mtp_loss)/num_tokens, layer_number, self.config.mtp_num_layers, avg_group=get_tensor_and_data_parallel_group(with_context_parallel=True))，该 micro-batch 里 num_tokens 为 0，除法得到 NaN，NaN 被写进 tracker 后日志侧不再能把 mtp_1 loss 打出来。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1841（closed；环境 MindSpeed-LLM master + 910C + CANN 9.1.0，日志与源码定位在正文）
+  behavior: glm5.2 SFT 打开 MTP 后，日志里参数统计显示 mtp block 已经建好，但每行 iteration 只剩 lm loss 和 global_load_balancing_loss，mtp_1 loss 这个字段完全不出现；loss scale、grad norm、num zeros、nan iterations 都是正常值，没有 NaN 报错。也就是说训练看起来一切正常，只有 MTP 层的 loss 监控静默丢了。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

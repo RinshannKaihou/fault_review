@@ -1,0 +1,68 @@
+id: TRN-0301
+legacy_ids: []
+slug: scatteraddwithsorted_fp32_missing_sync_stale_row
+aliases: []
+title: ScatterAddWithSorted FP32 缺向量同步偶发混入前行累加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ScatterAddWithSorted FP32
+  behavior: FP32 路径初始化累加缓存后缺少向量流水同步，当前行可读到前一行残留值，相同输入重复执行 scatter_add_ 偶发错果
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3/CANN 9.1.0 上 FP32 scatter_add_ 使用行广播索引（由一维 expand 得 stride [1,0]）时，相同输入重复执行偶发输出与 CPU 参考不一致；首次差异轮次不固定，输入未变，无报错
+  visibility: 不可复现
+mitigation:
+  detect: 循环比对 NPU 输出与 CPU 参考（逐字节）；出错轮次不固定，单次校验不足
+  fix: 待定（issue open；报告者按上游 commit 8ce9e83 头文件比对定位到 FP32 路径缺同步，修复未提交）
+labels:
+  family: N/A
+  trigger: hw_specific
+  trigger_review: false
+  trigger_note: Ascend 910B3、CANN 9.1.0、torch_npu 2.9.0.post8；FP32 + 行广播索引（expand stride [1,0]）路径；profiling 路径 LinearIndex→SortAiCore→ScatterAddWithSorted
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6782
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12144
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #6782（2026-10-16，Ascend 910B3 / CANN 9.1.0 / 驱动 26.0.rc1 / torch 2.9.0+cpu / torch_npu 2.9.0.post8，aarch64）。FP32 scatter_add_ 行广播索引（index 由一维 expand 得 stride [1,0]）走 LinearIndex→SortAiCore→ScatterAddWithSorted 路径；相同输入重复执行偶发输出错（首次差异出现在不同轮次，三次独立进程均命中，iteration 2 即命中的记录存在）。报告者核对上游 commit 8ce9e834d1ae1dd5143cc01217764036db91111f 的 FP32 内核头文件（与本机 CANN 9.1.0 去空白后相同）：源码与修复对照表明 FP32 路径初始化累加缓存后缺少向量流水同步，当前行可能读到前一行的残留值。torch.use_deterministic_algorithms(True) + 固定种子仍复现，排除框架层非确定性。输入回读校验确认源与索引未变，排除输入被污染。附带完整复现脚本（自动选空闲卡、CPU 参考按 bit 比较、1e6 次上限、首次差异即停并输出 expected/actual/max_abs/changed_elements）。'
+  source: https://gitcode.com/cann/ops-nn/issues/6782
+  behavior: 在 910B3 上用行广播索引对 FP32 张量做 scatter_add_（如 embedding 梯度按行累加、小整数输入），同一脚本重复跑会出现偶发的错行：某一行输出混入前一行的累加值（如 expected [89.0,...] 实际混入前行残数），diff 元素数与 max_abs 随机，输入检查未变化；不开 deterministic 也复现、开了也复现。不崩溃、无告警，错误随执行轮次漂移。
+  discovery: 2026-10-17 每日扫描
+  notes:
+  - '2026-10-18 2026-10-18 回访：修复 MR !12144（2026-10-17 open）补齐 PIPE_V 屏障与三路径索引缓存 S_MTE2 同步；issue #6782 正文新增分层对照实验（只补索引同步第184次仍错、只补累加屏障100万次逐位通过、两处均补后 racecheck 无报告）+ 独立诊断算子证据，机制定论从偶发观察升级为同步缺失实证。'
+migration:
+  method: scan
+  scanned: '2026-10-17'
+  audit:
+    round: daily-audit-2026-10-17
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - visibility
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - evidence
+    - original.notes

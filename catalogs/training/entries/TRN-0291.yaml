@@ -1,0 +1,70 @@
+id: TRN-0291
+legacy_ids: []
+slug: hinge_loss_grad_boundary_gate_decay
+aliases: []
+title: HingeLossGrad hinge 边界附近正梯度被错误缩小
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: epsilon 平滑门函数
+  behavior: kernel 把 margin>0 门函数实现为 (margin+|margin|)/(2*(|margin|+1e-7))，margin 为很小正数时系数<1，有效梯度被错误衰减；文档/注释/golden 均定义为严格阈值。
+effect:
+  objects:
+  - 梯度
+  detail: 预测值紧邻 hinge 边界且 margin 为极小正数（如 5.96e-8）时，梯度幅值被静默压低，最严重约 0.37 倍，更新方向对但步长错；无报错无 NaN，边界样本学习偏慢、收敛质量受损；远离边界样本无差异。
+  visibility: 静默错误
+mitigation:
+  detect: 对紧邻边界的 margin（nextafter(1,0) 等）构造梯度对照用例。
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12150（2026-10-17 open）：Compares(GT)+Select 硬阈值替代软门，float32 与 fp16/bf16 路径都改；910B1 三 dtype UT 全绿，未发布
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6730
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12150
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn experimental/loss/hinge_loss_grad（固定源码 ae873b1）：float32 与 fp16/bf16 转 float32 两路径的门函数实现为 (margin+|margin|)/(2*(|margin|+1e-7)) 而非定义的硬阈值 (margin>0)；margin 为小正数时系数<1（margin=5.9604645e-8 时系数≈0.37345），有效梯度 -target*grad_output 被错误衰减。README、kernel 头注释与 Python golden 一致定义 margin>0 严格阈值，差异来自以 epsilon 平滑分母实现 ReLU 门。数值对照：predict=[nextafter(1,0),1,nextafter(1,+inf)]、target=grad_output=1 → margin=[5.96e-8,0,-1.19e-7]，旧表达式输出 [-0.37345183,0,0] vs 定义 [-1,0,0]。修复方案已验证到补丁适用性（gen_data 断言通过、py_compile、git apply --check、pre-commit 基础检查），kernel UT/设备执行未跑，无修复 MR 编号。
+  source: https://gitcode.com/cann/ops-nn/issues/6730
+  behavior: 使用 HingeLoss（如最大间隔分类/排序目标）的训练：预测值紧邻 hinge 边界（margin 为极小正数）的样本梯度幅值被静默压低（最严重到 0.37 倍），更新方向对但步长错；远离边界样本无差异。无报错无 NaN，表现为边界样本学习偏慢、收敛质量受损，单看 loss 曲线难以定位。
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - 2026-10-18 2026-10-18 回访：修复 MR !12150 已提交（open），软阈值 (margin+|margin|)/(2*(|margin|+1e-7)) 改为 GT bit mask + Select 硬选择；边界样本 margin=+2^-24 修复前 -0.373 vs golden -1.0，含 8205 非对齐尾块用例。
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+    - title
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - evidence
+    - mitigation.fix
+    - original.notes

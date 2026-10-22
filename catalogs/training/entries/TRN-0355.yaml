@@ -1,0 +1,50 @@
+id: TRN-0355
+legacy_ids: []
+slug: msllm_tnd_cp_empty_rank_collective_desync
+aliases: []
+title: TND+CP 空 rank 跳过 indexer 反传致挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspeed-llm
+    component: DSv4 CSA indexer CP 分支
+  behavior: CP 下某 rank 的 KV 段全短于 compress_ratio 就跳过 indexer/compressor 与索引 loss 反传，非空 rank 仍发 CP all_gather，两边梯度 bucket 不一致。
+effect:
+  objects:
+  - 可用性/进度
+  - 梯度
+  detail: 空 rank 场景下 backward collective 顺序不一致直接 hang；空 rank 还缺 indexer/compressor 的 grad hook 与 bucket，用 dummy KV 硬闯会 shape 校验失败或非法索引。
+  visibility: 挂起
+mitigation:
+  detect: 统计各 rank 的 compressed KV 段数，空 rank 与非空 rank 的 loss tracker key、grad bucket 顺序比对
+  fix: 'issue #1895（closed）给出方案：_ZeroGradientAnchor 造显式零梯度、_EmptyIndexerLossCommunicationAnchor 让空 rank 参与 CP collective、gather_tnd_local_num() 统一 dtype/shape/process group'
+labels:
+  family: N/A
+  trigger: partial
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1895
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: DeepSeek-V4 CSA 在 TND packed sequence + Context Parallel 下按 compress_ratio 切 document segment：某些 rank 上所有有效 KV segment 都短于 compress_ratio，该 rank 生成不了有效 compressed KV。非空 rank 继续走 indexer、compressor 和 fused indexer-loss 的 backward，空 rank 提前跳过相关计算，于是 1) 各 rank autograd graph 不一致；2) 空 rank 不触发部分参数的 gradient hook 与 distributed gradient bucket；3) 非空 rank 在 fused indexer-loss backward 里做 CP all_gather，空 rank 没参与，collective 顺序错位；4) 若用 dummy KV/dummy top-k/dummy weights 强行进入 fused op，会 shape 校验失败、非法索引或白算；5) 用 NPU Tensor .item() 判空 rank 会在非空路径上引入额外 Host-Device 同步。触发面是 CSA + TND + CP + 该 rank 所有 segment 短于 compress_ratio + 启用 indexer loss，activation recompute 或 distributed optimizer 会放大 collective 顺序不一致。
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1895（closed；CANN 9.1.0；现象、触发条件与修复方案均在正文）
+  behavior: DeepSeek-V4 CSA 的 TND + CP 训练跑到某些数据形态时整个作业卡住不动（hang），既没有 loss 也没有报错；出问题的 rank 是“空 rank”，即它分到的 document segment 全都短于 compress_ratio。同一套配置在数据切分均匀、没有空 rank 时正常。
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

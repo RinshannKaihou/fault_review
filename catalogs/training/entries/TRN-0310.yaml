@@ -1,0 +1,74 @@
+id: TRN-0310
+legacy_ids: []
+slug: trl_merged_weight_sync_publish_after_resume
+aliases: []
+title: trl merged 权重同步先 resume 后发布版本号
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: merged 同步发布顺序
+  behavior: rank0 的 _sync_weight_merged 按 resume()→model_version+=1→update_model_version() 执行，版本发布在 resume 之后。
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  detail: 非 LoRA merged/dense 每次同步的 resume 与版本发布间隙训练照常、无报错；vLLM 已用新权重出 token 但样本标旧版本，新样本可被 max_staleness 门当过期丢弃（门限 0 时尤甚），staleness 观测/批次构成偏离。
+  visibility: 静默错误
+mitigation:
+  detect: 对版本发布与 resume 的相对顺序做单元断言（issue 提供了六场景生产方法级回归，fork CI PASS）。
+  fix: 报告者修复：把版本发布移到 resume 之前（publish while paused → resume），fork https://github.com/lindicaphxag-tech/trl/tree/fix/async-dense-policy-publish-before-resume-20261017 含两个 trainer 的生产方法级单测与 fork CI PASS（未合入上游，状态未核实）。
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-18'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7782
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0309
+pattern: PAT-TRN-0047
+original:
+  mechanism: 'trl AsyncGRPOTrainer._sync_weight_merged 与 AsyncDistillationTrainer._sync_weight_merged 在 rank0 上执行顺序为 `self.weight_transfer.resume()` → `self.model_version += 1` → `self.rollout_worker.update_model_version(self.model_version)`。worker 是独立进程、从共享状态读已发布版本：v7 live、服务暂停更新到 v8、resume() 返回后 worker 仍在读 v7 时派发 /v1/completions、随后 trainer 才 publish v8——该请求用 v8 权重生成但 RolloutSample.model_version 标 v7。报告者明示这是源码级发布窗口分析、非端到端 GPU 事故复现；确定性验证为 fork 上执行真实 _sync_weight_merged 方法（transfer/barrier→publish→resume 顺序、非 rank0 行为、传输错误后不发布不 resume，六场景）CPU GitHub Actions PASS。修复（publish while paused，再 resume）明确与 #7781 的 LoRA 双读问题分开（LoRA 版本化模式新旧 adapter 显式可寻址；dense merged 模式无版本化模型名）。截至 2026-10-18 open，修复未合上游。与 #7781 同为「rollout 样本策略版本标签与实际采样权重不一致」，但缺陷位置不同：本条是同步流程的发布顺序窗口，#7781 是 worker 侧双活读。来源 https://github.com/huggingface/trl/issues/7782'
+  source: https://github.com/huggingface/trl/issues/7782（2026-10-17 创建，open；源码级发布窗口 + 生产方法级确定性回归）
+  behavior: 使用 trl AsyncGRPO 或 AsyncDistillation 的 merged/dense 权重同步的用户：每次同步后存在一个短暂窗口，期间 vLLM 已用新权重出 token，样本却标着旧版本号；训练照常进行、无任何报错。后果是刚生成的新样本被 max_staleness 门当成过期丢弃（门限 0 时尤甚），或 staleness 观测/批次构成与真实情况偏离。异步训练下该窗口随每次同步反复出现。
+  trigger_surface: AsyncGRPOTrainer / AsyncDistillationTrainer 的 merged dense 权重同步（非 LoRA 版本化模式）；每次同步的 resume 与版本发布间隙。
+  discovery: 2026-10-18 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-18'
+  updates:
+  - date: '2026-10-18'
+    fields:
+    - pattern
+  - date: '2026-10-19'
+    fields:
+    - evidence
+  audit:
+    round: daily-audit-2026-10-18
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    corrected:
+      effect:
+        from: 训练信号
+        to: 训练样本流
+    rewritten:
+    - behavior
+    - detail

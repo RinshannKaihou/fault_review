@@ -1,0 +1,62 @@
+id: TRN-0284
+legacy_ids: []
+slug: matmulv3_mode4_uninit_k_tail_nan_pollution
+aliases: []
+title: MatMulV3 mode4 读同 stream 前序残留 NaN 污染输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MatMulV3 A 尾部
+  behavior: FORCE_GRP_ACC_FOR_FP32（mode4）下 A 的 K 尾部未被输入覆盖的加载区不初始化也不屏蔽，NaN×0=NaN 把残留 NaN 扩散进整块归约；mode0 不受影响。
+effect:
+  objects:
+  - 数值结果
+  - 训练轨迹
+  detail: 输入矩阵全部有限且逐位不变时输出 16/16 NaN；训练中同 stream 任意前序 NaN fill 可让后续正常 matmul 间歇性全 NaN，随内存历史变化，难以稳定复现。
+  visibility: 数值异常
+mitigation:
+  detect: 输入有限性检查无法发现（输入本就有限）；对 matmul 输出抽查非有限值；用零历史 vs NaN 历史对照定位；issue 附常量矩阵脚本在原安装包 10/10 触发。
+  fix: 待定（issue open；最强根因判断为 TO_MUL 路径 A 的 K 尾部未初始化，参考实现仅增加 A 清零后 5/5 恢复正确，维护方未回应；正确修法应为初始化或屏蔽尾部而非只补零乘法侧）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6698
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN 9.1.0 / Ascend950DT_9574（NpuArch=3510），FP32 [1,389]@[389,16] 走 aclnnMatmul→MatMulV3 的 FORCE_GRP_ACC_FOR_FP32（mode4）：同一 stream 前一个无关 NaN fill（独立 256MiB 缓冲、MM 期间仍存活）后，真实输入全有限且运行前后逐位不变，输出 16 个 NaN。原安装包上实际训练输入 50/50 次失败、常量矩阵脚本 10/10 触发；mode0 同 NaN 历史正常、mode4 零历史正常且 NaN 历史后清零可恢复。按原安装 tiling 用参考源码重编译的直调诊断内核 UB dump 抓到 A 尾部残留 NaN、B 尾部全零、乘加后 C 尾部 NaN；仅增加 A 清零后 5/5 恢复正确。证据边界：dump 来自独立编译参考内核而非安装二进制插桩，原 kernel 与源码精确版本对应请维护方核对；NaN×0=NaN 使单侧补零无法隔离。
+  source: https://gitcode.com/cann/ops-nn/issues/6698
+  behavior: 训练中 matmul 输出间歇性整块 NaN：输入矩阵检查全部有限、换 batch/重跑可能消失又出现，取决于同 stream 此前是否有 NaN 写入过被复用的内存；会被误判为数据问题或偶发硬件故障。实测有限输出下 mode4 最大绝对误差约 3e-9（结果约 1），触发时 16/16 全 NaN。附带确定性触发脚本与修复对照（A 清零后恢复），可作为定位工具。
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - component
+    issue_unfixed:
+    - detail
+    uncertain:
+    - behavior

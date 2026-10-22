@@ -1,0 +1,55 @@
+id: TRN-0359
+legacy_ids: []
+slug: msllm_hf2mg_convert_ckpt_path_mismatch
+aliases: []
+title: hf2mg 自动转换与切分策略不对齐致加载失败
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: mindspeed-llm
+    component: hf2mg convert + VPP 切分
+  behavior: 示例脚本默认带 --enable-hf2mg-convert，会就地把 CKPT_LOAD_DIR 的 HF 权重转成 mg；README 却让人先转换再传转换后目录，且转换脚本未给 VPP 而预训练脚本给了。
+effect:
+  objects:
+  - 可用性/进度
+  - 模型权重
+  detail: '按 README 填转换后路径启动，报 AssertionError: cannot find safetensor, please check load dir；对齐转换与 VPP 后仍可能以 KeyError: model0 退出，预训练拉不起来。'
+  visibility: 报错
+mitigation:
+  detect: 启动前断言 CKPT_LOAD_DIR 内是否含 HF safetensors 与 --enable-hf2mg-convert 是否同时成立；核对转换脚本与训练脚本的 tp/pp/ep/vpp
+  fix: issue 建议文档提醒：带 --enable-hf2mg-convert 时不要先做转换；并在切分脚本补 VPP 参数或从预训练脚本移除 VPP（closed，未附修复 PR，未核实）
+labels:
+  family: infra_off
+  trigger: config
+  trigger_review: false
+  trigger_note: 示例预训练脚本自带 hf2mg 自动转换 + 用户按 README 先转换
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-21'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1299
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'examples/mcore/qwen3_next/pretrain_qwen3_next_80b_16K_A3_ptd.sh 里带着 --enable-hf2mg-convert，该参数的作用是把传进 CKPT_LOAD_DIR 的原始 HF 权重在拉起时自动转成 megatron 格式，因此不需要另外做权重转换。但 README 的流程是先做权重切分/转换、再把转换后的 mg 目录填进 CKPT_LOAD_DIR，用户按 README 操作就与脚本语义冲突，权重加载处找不到 safetensors，报 AssertionError: cannot find safetensor, please check load dir。第二个坑是权重转换脚本没有指定 VPP 切分方式，而预训练脚本指定了 num-layers-per-virtual-pipeline-stage，两边策略不一致时加载报 KeyError: model0，同样拉不起来。报告者建议在文档里点明这两点，或者在预训练脚本里去掉 VPP、在切分脚本里补 VPP 参数及说明；环境为 openEuler、910B3 64G×8、CANN 8.5.0。'
+  source: https://gitcode.com/Ascend/MindSpeed-LLM/issues/1299（closed；910B3 64G×8、CANN 8.5.0；两个坑与建议均在正文）
+  behavior: '照着 README 先做 80B 权重切分，再把填好路径的 pretrain_qwen3_next_80b_16K_A3_ptd.sh 跑起来，第一行就 AssertionError: cannot find safetensor, please check load dir；把自动转换与转换流程理清之后，还会在加载阶段以 KeyError: model0 退出，预训练始终起不来，脚本本身不改就跑不通。'
+  trigger_surface: Qwen3-Next 80B 16K A3 预训练脚本 + --enable-hf2mg-convert + 转换脚本与训练脚本 PP/VPP 不一致
+  discovery: 2026-10-21 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-21'
+  audit:
+    round: daily-audit-2026-10-21
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    issue_unfixed:
+    - detail

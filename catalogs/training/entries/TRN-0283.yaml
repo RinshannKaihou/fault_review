@@ -1,0 +1,58 @@
+id: TRN-0283
+legacy_ids: []
+slug: silu_grad_exp_intermediate_overflow_flag
+aliases: []
+title: SiluGrad 指数中间溢出置硬件溢出标志，AMP 持续跳过更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SiluGrad sigmoid 实现的中间指数
+  behavior: SiluGrad 各浮点及混合类型路径直接计算 exp(-x)，大负有限输入的中间指数超出 FP32 有限范围产生溢出并置硬件浮点状态；FP16/BF16 转 FP32 路径同样存在。
+effect:
+  objects:
+  - 训练轨迹
+  - 训练信号
+  detail: 输入与最终梯度均有限的正常训练 step 被浮点状态检测判为 overflow，AMP 持续跳过参数更新；输出值本身可能仍正确，无 NaN 无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 观察 AMP 每步跳过率与 loss 长期不动；固定 x=-100/-109 等梯度用例检查硬件溢出标志。
+  fix: 修复 MR !12059（open 未合入）：sigmoid 改用非正指数稳定形式 exp(min(x,0))/(1+exp(-|x|))；CANN 9.1.0-beta.1 + Ascend910B1 显式饱和模式下三种 dtype 有限梯度用例溢出标志 true→false。https://gitcode.com/cann/ops-nn/merge_requests/12059
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/6737
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12059
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn master e03cebe4 的 SiluGrad（实验版与正式 arch35 三种同类型+六种混合类型路径）直接用 1/(1+exp(-x)) 计算 sigmoid：x=-100 可精确表示，exp(100) 超出 FP32 最大有限值，中间指数溢出并置浮点溢出标志；FP16/BF16 先转 FP32 不能消除。issue 报告在 Ascend310P3 / CANN 9.1.0 / torch_npu 2.10.0.post4 随包 legacy SiLU 反向中实测：有限输入、有限最终梯度仍设置溢出标志，AMP 据此持续跳过参数更新（该 SDK 实测与社区源码构建验证分开记录）。修复 MR !12059 改用两个输入均非正的等价稳定形式，并在 CANN 9.1.0-beta.1 + Ascend910B1 显式饱和模式（INF_NAN_MODE_ENABLE=0）下验证三种类型有限梯度用例溢出标志 true→false、真实输出溢出的反例仍置标志；默认 Inf/NaN 模式下 AMP 行为未验证。
+  source: https://gitcode.com/cann/ops-nn/issues/6737 ；修复：https://gitcode.com/cann/ops-nn/merge_requests/12059
+  behavior: 使用浮点状态检测/AMP 的训练在激活出现大负值（x 约 -80 以下）时，每步被硬件溢出标志判为 overflow 而跳过参数更新：loss 长期不动、参数不更新，日志无 NaN、无报错，看起来像学习率或数据问题；SiLU/SwiGLU 是 Transformer 标配激活，负尾部大值在训练中常见。
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3

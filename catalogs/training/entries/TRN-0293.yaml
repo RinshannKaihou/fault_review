@@ -1,0 +1,62 @@
+id: TRN-0293
+legacy_ids: []
+slug: trl_diffusion_gemma_sliding_prefix_eviction
+aliases: []
+title: trl DiffusionGemma SFT 滑窗逐出被 mask 的前缀
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: trl
+    component: 示例 decoder mask 与滑窗缓存交互
+  behavior: 示例 compute_loss 先为 encoder AR co-loss 编码完整序列，再用 decoder mask 限制上下文到 prefix；native 滑窗缓存在 mask 生效前可能已把该 prefix 逐出。
+effect:
+  objects:
+  - 梯度
+  - 隐状态
+  detail: 滑窗逐出 prefix 时 diffusion loss 偏移（4.3688 vs 4.3668）、decoder 可见 cached prefix 从 128 token 变 0，最大参数梯度差 0.146（相对 L2 77%）；384-token 不逐出对照差 2.38e-7。SFT 静默训错。
+  visibility: 静默错误
+mitigation:
+  detect: 对照独立编码 prefix 的 loss/梯度（issue 附 CPU 复现脚本）；检查滑窗保留位置与 mask 窗口的覆盖关系。
+  fix: 待定（issue open 5 评论；参考修法=decoder 侧单独编码 sampled prefix、保留完整 encoder pass，示例代码修正未核实合入）
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7734
+  kind: github_issue
+relations: []
+original:
+  mechanism: trl examples/sft_diffusion_gemma（TRL main 8f39f8f 的 DiffusionGemmaSFTTrainer.compute_loss）：为 encoder AR co-loss 编码完整干净序列后，用 decoder mask 限制上下文到 sampled response block 之前的 prefix；native sliding-window cache（窗口 512）在 mask 应用前已把序列前部（prompt 128）逐出——1024 长序列下滑窗只保留 513-1023，被 mask 保留的 prefix 0-127 已不在缓存。对照组：独立编码 prefix 时 diffusion loss 4.36683178 vs 示例 4.368756；最大参数梯度差 0.14644143（相对 L2 77.14%）；384-token 不逐出前缀时梯度差 2.38e-7（证明差异完全来自逐出）。CPU 可复现（执行未修改的示例方法 + native Transformers 模型 + autograd + 默认 self-conditioning 概率）。缺陷在示例代码而非通用 autoregressive SFT 目标。
+  source: https://github.com/huggingface/trl/issues/7734
+  behavior: 照官方 DiffusionGemma SFT 示例训练：序列长于滑窗时 prompt/前缀在 decoder mask 生效前被缓存逐出，diffusion 分支 loss 与梯度静默偏差（小模型实测最大梯度差 0.146、相对 L2 77%），训练不报错、曲线看似正常，但学到的条件分布已不含被逐出的 prefix；短于窗口的序列完全正常，使问题随 batch 内容波动。
+  discovery: 2026-10-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - behavior

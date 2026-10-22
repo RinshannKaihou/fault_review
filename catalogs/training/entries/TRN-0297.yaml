@@ -1,0 +1,67 @@
+id: TRN-0297
+legacy_ids: []
+slug: radix_top_k_ws_sync_missing_int64_overflow
+aliases: []
+title: RadixTopK WS 变体 V→MTE3 失同步与 int64 索引越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: radix_top_k WS 同步与索引
+  behavior: V写tileTopK、MTE3读同块UB，原SToMTE3Sync覆盖不到V→MTE3，可读旧值；i64多段且tileNum_超UB上限，无符号下溢越出6144元素缓冲区；跨核前缀和可超2^31而累加器int32；UT未测int64主路径
+effect:
+  objects:
+  - 数值结果
+  detail: 910B/910_93上，超大sortLen（>2^31，约21亿元素）的int64 topk（MoE大词表/超长序列采样）输出k配额错乱（少选/多选）、索引越界写破坏相邻内存或跨核前缀和溢出错值，均无报错；普通规模正常，仅int64大shape且K配额需末轮边界补齐时触发。
+  visibility: 静默错误
+mitigation:
+  detect: 对 topk 输出做配额/去重校验；触发面为 sortLen>2^31 或 K 需末轮边界补齐的大 shape。
+  fix: '修复 MR !6396 已 merged（2026-10-16，批次快照核实）；issue #3604 已 closed。VToMTE3Sync 替换、CreateVecIndex4TopK 前置防御、ComputeCumSumPrev 统一 int64、static_assert、host UT 补 bit3 编码。https://gitcode.com/cann/ops-math/merge_requests/6396'
+labels:
+  family: N/A
+  trigger: N/A
+  trigger_review: false
+  trigger_note: N/A
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3604
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6396
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-math radix_top_k WS 变体（issue #3604，平台 ASCEND910B/910_93，配置目录仅含此两平台）三缺陷+UT 缺口：(1) HandleLastRoundBoundary 中 Add 在 V 流水线写 tileTopK、MTE3 经 CopyTileTopKUb2Ws 读同块 UB，原 SToMTE3Sync 覆盖不到 V→MTE3，MTE3 可读旧值→该段 k 配额错乱（AddTileHist2TileTopKInWs 对同序列已用 VToMTE3Sync）；(2) i64 多段 regime 命中 tileNum_>MAX_TILE_NUM_IN_UB 时 CreateVecIndex4TopK 的 MAX_TILE_NUM_IN_UB-tileNumAlign_ 无符号下溢被 tileLen_ 兜住，GetWithOffset 偏移写出 6144 元素 buffer；(3) 跨核前缀和（CopyOutBoundaryBinCumSum→ComputeCumSumPrev）总量可达 sortLen>2^31 而 UB 变体累加器为 int32（WS 有只差类型的 ComputeCumSumPrevI64）。UT ComputeExpectedTilingKey 只编码 3 位未含 isInt64Shape（bit3），int64 主路径恒测不到。修复 MR !6396（open WIP）：三处修复+static_assert(LARGE_SORT_LEN<INT32_SORT_LEN_MAX)+UT 补充+README 约束说明。'
+  source: https://gitcode.com/cann/ops-math/issues/3604 ；修复：https://gitcode.com/cann/ops-math/merge_requests/6396
+  behavior: 超大 sortLen（>2^31，约 21 亿元素）的 int64 topk（MoE 大词表/超长序列采样场景）：输出 k 配额错乱（少选/多选）、索引越界写破坏相邻内存或跨核前缀和溢出错值，均无报错；普通规模 topk 完全正常，只有 int64 大 shape 且 K 配额需末轮边界补齐时触发，规模门槛使问题在生产前难以暴露。
+  discovery: 2026-10-16 每日扫描
+  notes:
+  - '2026-10-17 回访 2026-10-17（批次快照 2026-10-16T23:00Z）：修复 MR !6396 已 merged（2026-10-16T03:48Z），issue #3604 已 closed。机制判定不变，修复已合入主线（发布版本未核实）。'
+migration:
+  method: scan
+  scanned: '2026-10-16'
+  audit:
+    round: daily-audit-2026-10-16
+    base:
+    - qwen3.8-max
+    - kimi-k3
+    - doubao-seed-2.1-pro
+    panel:
+    - deepseek-v4-pro
+    - MiniMax-M3
+    - hy3
+    - glm-5.3
+    rewritten:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-10-17'
+    fields:
+    - mitigation.fix
+    - original.notes
