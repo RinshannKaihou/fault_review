@@ -109,8 +109,9 @@ slice。**bench 用聚合口径**：R@5/R@10 不得低于基线，MRR/nDCG 容�
 
 - `index not built yet` → 先跑 `reindex`。
 - 模型缺失 → `python3 scripts/download_model.py`（bge-m3 与精排模型，可只给一个名字）；访问不了 huggingface.co 时先
-  `export HF_ENDPOINT=https://hf-mirror.com`。2026-10-22 镜像把下载 308 跳回 huggingface.co、hf 客户端报错，
-  当时去掉 `HF_ENDPOINT` 经代理直连可用。
+  `export HF_ENDPOINT=https://hf-mirror.com`。但若进程走了代理（如指向 mihomo 的 `HTTPS_PROXY=http://127.0.0.1:7890`），
+  hf-mirror 会把请求 308 跳回 huggingface.co，hf 客户端随即报 "Local entry not found"。此时二选一（2026-10-22 均实测可用）：
+  把 `hf-mirror.com` 加进 `NO_PROXY`/`no_proxy` 直连镜像；或去掉 `HF_ENDPOINT`，经代理直连 huggingface.co。
 - `reindex` 报 `No module named 'yaml'` → `pip install -r requirements.txt`（读条目 YAML 需要 PyYAML）。
 - 明知编号却查不到 → 对照 `catalogs/SOURCES.txt` 与 `stats`：上游当天新写的条目要等下次手动同步；`git pull` 后还要 `reindex`。
 - 编目真源仓库搬家了 → 给 `scripts/sync_catalogs.sh` 设 `FAULT_RAG_SRC_INFERENCE_REPO` / `FAULT_RAG_SRC_TRAINING_REPO`（仓库根目录）环境变量（或改脚本默认值）后重跑。
