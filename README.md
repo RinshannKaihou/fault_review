@@ -279,7 +279,7 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 
 **bench 用聚合口径**：Recall@5 / Recall@10 不得低于基线，MRR@10 / nDCG@10 最多下降 0.02，另有绝对下限与负结果分片门槛。
 
-**indy 用逐条口径**（`--per-case`）：基线通过的 query 必须继续通过 R@5 与 R@10，任意一条掉出即 block；通过集内的名次浮动不 block，但写进报告的 `churn` 字段，发布前要人工看一遍 `slipped` 列表。聚合口径在批量扩容下结构性不可通过——63 条上一条就是 1.6pp，语料 +46% 时只有 2 条真失守，聚合却报 4 项回退。`eval/fix_list.json` 只登记"基线时就已失守、且纯 BM25 / 纯 dense 都进不了前 20"的弱 gold，必须附单路诊断证据。标注里的旧编号会自动换算成新编号。
+**indy 用逐条口径**（`--per-case`）：基线通过的 query 必须继续通过 R@5 与 R@10，任意一条掉出即 block；通过集内的名次浮动不 block，但写进报告的 `churn` 字段，发布前要人工看一遍 `slipped` 列表。聚合口径在批量扩容下结构性不可通过——63 条上一条就是 1.6pp，语料 +46% 时只有 2 条真失守，聚合却报 4 项回退。`eval/fix_list.json` 是豁免名单，每条必须标 `kind`：`weak_gold`（基线时纯 BM25 / 纯 dense 都进不了前 20，附单路诊断证据）或 `accepted_regression`（真实退化，经用户确认接受，写明原因与移出条件）；真实退化不得记成 `weak_gold`。标注里的旧编号会自动换算成新编号。
 
 检索结果只供参考，用户关心的是正确条目能否出现在浏览窗口内，所以 Recall@5/@10 是硬指标，MRR 等排序指标只作参考。通过门禁**不代表**新增、修订或退役的条目语义正确。字段说明、门槛和基线更新流程见 [eval/README.md](eval/README.md)，历次验收记录见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)。
 
@@ -297,7 +297,7 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 | 10-21/22 | 评审阵容换为 3 个 flash 基础评 + 3 个强模型面板；27 个"改写后未过复核"的字段由 Opus 5.5 独立复核，15 条重写（其中 5 条模型的措辞也不合格，手工修正） | 见下方门禁与 `eval/fix_list.json` |
 | 10-22 | 快照发布 2,097 + 364 条；indy 门禁改为"逐条通过集"口径 | [评测门禁与测试](#评测门禁与测试) |
 
-后续计划按顺序进行：修复悬空的 `var` 关联 → 模式/实例分层（合并近重复条目）→ 补全改进措施 → 给条目补用户的症状口语表达（口语 query 与条目文本的词汇鸿沟，见 `eval/fix_list.json` 的两条说明）。NPU 历史存量回扫已于 2026-10-21 完成，不再是待办（原方案见 [normalize/npu_backfill/PLAN.md](normalize/npu_backfill/PLAN.md)）。
+后续计划按顺序进行：修复悬空的 `var` 关联 → 模式/实例分层（合并近重复条目）→ 补全改进措施 → 口语/模糊症状 query 的检索改进（诊断与 A/B 结论见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) 2026-10-22 一节）。NPU 历史存量回扫已于 2026-10-21 完成，不再是待办（原方案见 [normalize/npu_backfill/PLAN.md](normalize/npu_backfill/PLAN.md)）。
 
 使用时注意：
 

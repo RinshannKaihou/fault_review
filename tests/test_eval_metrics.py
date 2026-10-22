@@ -207,5 +207,44 @@ class RecallAtTenAndLegacyLabelTests(unittest.TestCase):
         self.assertEqual(cases[0]["relevant"][0]["id"], "1.44")          # input not mutated
 
 
+class FixListKindTests(unittest.TestCase):
+    def _load(self, rows):
+        import json
+        import tempfile
+        from eval.run_eval import load_fix_list
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"fix_list": rows}, f)
+        try:
+            return load_fix_list(f.name)
+        finally:
+            os.unlink(f.name)
+
+    def test_row_without_kind_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._load([{"case_id": "indy-014"}])
+
+    def test_unknown_kind_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._load([{"case_id": "indy-014", "kind": "rrf_coincidence"}])
+
+    def test_both_kinds_are_exempt(self):
+        got = self._load([{"case_id": "a", "kind": "weak_gold"},
+                          {"case_id": "b", "kind": "accepted_regression"}])
+        self.assertEqual(got, {"a": "weak_gold", "b": "accepted_regression"})
+        baseline = {"cases": [{"case_id": c, "metrics": {"recall_at_5": 1.0, "recall_at_10": 1.0}}
+                              for c in ("a", "b")]}
+        report = {"aggregate": {"recall_at_5": 0.9, "mrr_at_10": 0.9, "ndcg_at_10": 0.9},
+                  "slices": {"negative": {"recall_at_5": 1.0}},
+                  "cases": [{"case_id": c, "metrics": {"recall_at_5": 0.0, "recall_at_10": 0.0}}
+                            for c in ("a", "b")]}
+        self.assertEqual(check_report(report, baseline, fix_list=set(got), per_case=True), [])
+
+    def test_checked_in_fix_list_declares_kinds(self):
+        from eval.run_eval import load_fix_list
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        kinds = load_fix_list(os.path.join(root, "eval", "fix_list.json"))
+        self.assertEqual(kinds.get("indy-014"), "accepted_regression")
+
+
 if __name__ == "__main__":
     unittest.main()

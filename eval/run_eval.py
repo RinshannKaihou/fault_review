@@ -193,8 +193,8 @@ def check_report(report, baseline=None, regression_tolerance=0.02,
         is 1.6pp, so ordinary reshuffling reads as a regression.
       per_case (--per-case): a query that passed at baseline must still pass.
         Membership loss is the failure condition; rank churn is reported but
-        does not block.  Cases in fix_list are known-weak golds (documented in
-        eval/fix_list.json) and are exempt at every cutoff.
+        does not block.  Cases in fix_list are exempt at every cutoff; each is
+        either a weak gold or an owner-accepted regression (see load_fix_list).
     """
     floors = {
         "recall_at_5": 0.85,
@@ -244,6 +244,31 @@ def check_report(report, baseline=None, regression_tolerance=0.02,
                     f"(limit {limit:.6f})"
                 )
     return failures
+
+
+FIX_LIST_KINDS = {
+    # gold outside the top 20 of BOTH single channels at baseline: its pass was RRF coincidence
+    "weak_gold",
+    # a real loss under a new snapshot, accepted explicitly by the owner with cause and exit condition
+    "accepted_regression",
+}
+
+
+def load_fix_list(path):
+    """Return {case_id: kind}.  Every row must declare its kind, so a real
+    regression cannot be filed as a weak gold by omission."""
+    with open(path, encoding="utf-8") as f:
+        rows = json.load(f)["fix_list"]
+    out = {}
+    for row in rows:
+        kind = row.get("kind")
+        if kind not in FIX_LIST_KINDS:
+            raise ValueError(
+                f"{path}: {row.get('case_id')}: kind must be one of "
+                f"{sorted(FIX_LIST_KINDS)}, got {kind!r}"
+            )
+        out[row["case_id"]] = kind
+    return out
 
 
 def load_cases(path):
@@ -296,10 +321,10 @@ def main(argv=None):
     if args.check:
         with open(args.check, encoding="utf-8") as f:
             baseline = json.load(f)
-    fix_list = set()
+    fix_kinds = {}
     if args.per_case and args.fix_list and os.path.exists(args.fix_list):
-        with open(args.fix_list, encoding="utf-8") as f:
-            fix_list = {row["case_id"] for row in json.load(f)["fix_list"]}
+        fix_kinds = load_fix_list(args.fix_list)
+    fix_list = set(fix_kinds)
     gate_failures = [] if args.no_gate else check_report(
         report, baseline=baseline, fix_list=fix_list, per_case=args.per_case)
     report["quality_gate"] = {
@@ -307,6 +332,10 @@ def main(argv=None):
         "failures": gate_failures,
         "mode": "per_case" if args.per_case else "aggregate",
         "fix_list": sorted(fix_list),
+        "fix_list_by_kind": {
+            kind: sorted(c for c, k in fix_kinds.items() if k == kind)
+            for kind in sorted(FIX_LIST_KINDS)
+        },
     }
     if args.per_case and baseline is not None:
         before = {row["case_id"]: row for row in baseline.get("cases", [])}
