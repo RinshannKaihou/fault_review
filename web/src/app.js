@@ -25,7 +25,8 @@ const LABEL_LABEL = {
 };
 const EXAMPLES = ["loss spike 但无 NaN", "GRPO advantage std zero", "前缀缓存命中后输出串到别的请求",
                   "INF-0044", "HW.05"];
-const PAGE = 10;
+const PAGE = 10;          // search results per page
+const BROWSE_PAGE = 50;   // browse rows per page
 
 // ---------- tiny DOM helpers (text only: catalog content never becomes HTML) ----------
 function h(tag, attrs = {}, ...kids) {
@@ -57,17 +58,18 @@ function value(v) {
 }
 
 // ---------- state <-> URL hash ----------
-const FIELDS = ["q", "repo", "category", "confidence", "trigger", "pattern", "mode", "no_neg", "pointers", "e"];
+// all: browse every entry (no query, no filter); sort: browse order ("" = catalog id, "new" = newest first-seen)
+const FIELDS = ["q", "repo", "category", "confidence", "trigger", "pattern", "mode", "no_neg", "pointers", "all", "sort", "e"];
 function readState() {
   const p = new URLSearchParams(location.hash.slice(1));
   const s = Object.fromEntries(FIELDS.map((f) => [f, p.get(f) || ""]));
-  s.k = Number(p.get("k")) || PAGE;
+  s.k = Number(p.get("k")) || 0;           // rows shown; 0 = first page of the current view
   return s;
 }
 function writeState(s, { push = false } = {}) {
   const p = new URLSearchParams();
   for (const f of FIELDS) if (s[f]) p.set(f, s[f]);
-  if (s.k && s.k !== PAGE) p.set("k", s.k);
+  if (s.k) p.set("k", s.k);
   const hash = "#" + p.toString();
   if (hash === location.hash) return render();
   if (push) location.hash = hash;
@@ -110,7 +112,7 @@ const form = () => $("#search-form");
 function initForm() {
   $("#examples").replaceChildren("试试：", ...EXAMPLES.flatMap((q, i) => [
     i ? "、" : "",
-    h("button", { type: "button", onclick: () => writeState({ ...readState(), q, e: "", k: PAGE }, { push: true }) }, q),
+    h("button", { type: "button", onclick: () => writeState({ ...readState(), q, e: "", k: 0 }, { push: true }) }, q),
   ]));
   const triggers = meta.filters.trigger;
   $("#f-trigger").append(...triggers.map((t) => h("option", { value: t }, t)));
@@ -135,7 +137,8 @@ function initForm() {
     });
   }
   for (const sel of form().querySelectorAll("select:not(#model-source), input[type=checkbox]")) {
-    sel.addEventListener("change", () => readState().q && writeState({ ...collect(), e: readState().e }));
+    // With a query this re-runs the search; without one it browses whatever the filters select.
+    sel.addEventListener("change", () => writeState({ ...collect(), e: readState().e }));
   }
   form().addEventListener("submit", (ev) => {
     ev.preventDefault();
@@ -160,11 +163,12 @@ function fillCategories(repo) {
 function collect() {
   const f = new FormData(form());
   const s = readState();
+  const q = (f.get("q") || "").trim();
   return {
-    q: (f.get("q") || "").trim(), repo: f.get("repo") || "", category: f.get("category") || "",
+    q, repo: f.get("repo") || "", category: f.get("category") || "",
     confidence: f.get("confidence") || "", trigger: f.get("trigger") || "", pattern: s.pattern,
     mode: f.get("mode") === "hybrid" ? "hybrid" : "", no_neg: f.get("no_neg") ? "1" : "",
-    pointers: f.get("pointers") ? "1" : "", k: PAGE,
+    pointers: f.get("pointers") ? "1" : "", all: q ? "" : s.all, sort: s.sort, k: 0,
   };
 }
 
@@ -183,7 +187,7 @@ function syncForm(s) {
   pf.hidden = !s.pattern;
   if (s.pattern) {
     pf.replaceChildren("只看故障模式 ", h("code", {}, s.pattern), " ",
-      h("button", { type: "button", onclick: () => writeState({ ...readState(), pattern: "", k: PAGE }) }, "取消"));
+      h("button", { type: "button", onclick: () => writeState({ ...readState(), pattern: "", k: 0 }) }, "取消"));
   }
 }
 
@@ -253,10 +257,18 @@ async function render() {
   if (seq === renderSeq) renderSheet(s.e);
 }
 
+const filterOpts = (s) => ({
+  repo: s.repo || undefined, category: s.category || undefined, confidence: s.confidence || undefined,
+  trigger: s.trigger || undefined, pattern: s.pattern || undefined,
+  include_neg: !s.no_neg, include_pointers: !!s.pointers,
+});
+const isBrowsing = (s) => !s.q && !!(s.repo || s.category || s.confidence || s.trigger || s.pattern || s.all);
+
 async function renderResults(s, seq) {
   const out = $("#results");
   if (!s.q) {
-    out.replaceChildren();
+    out.replaceChildren(...(isBrowsing(s) ? browseNodes(s) : [emptyPrompt()]));
+    markCurrent(s.e);
     return;
   }
   let mode = "bm25", qv = null;
@@ -267,12 +279,8 @@ async function renderResults(s, seq) {
     if (seq !== renderSeq) return;
     if (ok) { mode = "hybrid"; qv = await semantic.embedder.query(s.q); }
   }
-  const opts = {
-    topk: s.k, mode, repo: s.repo || undefined, category: s.category || undefined,
-    confidence: s.confidence || undefined, trigger: s.trigger || undefined, pattern: s.pattern || undefined,
-    include_neg: !s.no_neg, include_pointers: !!s.pointers,
-  };
-  const hits = index.search(s.q, opts, qv);
+  const topk = s.k || PAGE;
+  const hits = index.search(s.q, { topk, mode, ...filterOpts(s) }, qv);
   const exact = index.exactLookup(s.q);
   const nodes = [];
 
@@ -294,12 +302,43 @@ async function renderResults(s, seq) {
       : "当前过滤条件下没有合格条目，放宽过滤再试。"));
   }
   nodes.push(...hits.map((r) => hitNode(r, mode)));
-  if (hits.length === s.k && s.k < 50) {
-    nodes.push(h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), k: s.k + PAGE }) }, "显示更多"));
+  if (hits.length === topk && topk < 50) {
+    nodes.push(h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), k: topk + PAGE }) }, "显示更多"));
   }
   if (seq !== renderSeq) return;
   out.replaceChildren(...nodes);
   markCurrent(s.e);
+}
+
+function emptyPrompt() {
+  return h("div", { class: "browse-prompt" },
+    h("p", {}, "不输入检索词也可以：在上面选任一筛选条件（编目、原因子系统、置信度、触发标签），会直接列出符合条件的全部条目。"),
+    h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), all: "1", k: 0 }, { push: true }) },
+      `浏览全部 ${index.filter().length.toLocaleString()} 条`));    // same default as search: no pointers
+}
+
+// Newest first-seen first; undated entries (待定) go last, in catalog order.
+function byNewest(rows) {
+  return [...rows].sort((a, b) => (docs[b].discovered || "").localeCompare(docs[a].discovered || "") || a - b);
+}
+
+// No query: a plain listing of everything the filters select, no ranking involved.
+function browseNodes(s) {
+  const rows = index.filter(filterOpts(s));
+  const ordered = s.sort === "new" ? byNewest(rows) : rows;
+  const shown = Math.min(ordered.length, s.k || BROWSE_PAGE);
+  const sort = h("select", { "aria-label": "排序", onchange: (ev) => writeState({ ...readState(), sort: ev.target.value, k: 0 }) },
+    h("option", { value: "" }, "按编号"), h("option", { value: "new" }, "最新首录在前"));
+  sort.value = s.sort === "new" ? "new" : "";
+  const nodes = [h("div", { class: "results-head" },
+    h("span", {}, `浏览：共 ${ordered.length.toLocaleString()} 条符合筛选条件`), sort)];
+  if (!ordered.length) nodes.push(h("p", { class: "notice" }, "没有条目同时满足这些筛选条件，放宽一项再试。"));
+  nodes.push(...ordered.slice(0, shown).map((row) => hitNode({ ...docs[row], row }, "browse")));
+  if (shown < ordered.length) {
+    nodes.push(h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), k: shown + BROWSE_PAGE }) },
+      `显示更多（还有 ${(ordered.length - shown).toLocaleString()} 条）`));
+  }
+  return nodes;
 }
 
 function stampFor(e) {
@@ -323,11 +362,15 @@ function summaryLines(summary) {
   });
 }
 
+// mode: "bm25" | "hybrid" for ranked hits, "browse" for the filter listing, null for ID matches.
 function hitNode(r, mode) {
   const key = `${r.repo}/${r.id}`;
+  const doc = docs[r.row] || r;
   const facts = [
     h("span", {}, "编目", h("b", {}, REPO_LABEL[r.repo] || r.repo)),
     r.category ? h("span", {}, "子系统", h("b", {}, r.category)) : null,
+    doc.trigger && !r.neg ? h("span", {}, "触发", h("b", {}, doc.trigger)) : null,
+    mode === "browse" ? h("span", {}, "首录", h("b", {}, doc.discovered || "待定")) : null,
     r.legacy_ids && r.legacy_ids.length ? h("span", {}, "旧号", h("b", {}, r.legacy_ids.join("、"))) : null,
     r.pattern ? h("span", { title: "同族只表示同一底层问题的一族，不等于已核实同机制" }, "故障模式", h("b", {}, r.pattern)) : null,
     r.status === "pending_audit" ? h("span", { class: "warn" }, "待审计（每日扫描新写入）") : null,
@@ -455,7 +498,7 @@ function sheetNodes(d, row) {
   if (d.pattern) {
     nodes.push(section("故障模式",
       h("p", {}, "属于 ", h("code", {}, d.pattern), "。 ",
-        h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), pattern: d.pattern, k: PAGE }) }, "只看这一族")),
+        h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), pattern: d.pattern, k: 0 }) }, "只看这一族")),
       h("p", { class: "note" }, "模式成员由变体关系派生，只表示同族，不等于已核实同机制。")));
   }
 

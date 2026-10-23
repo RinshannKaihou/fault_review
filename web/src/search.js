@@ -119,14 +119,20 @@ export class Index {
     return out;
   }
 
-  // mode: "bm25" | "dense" | "hybrid"; dense and hybrid need the query vector qv.
-  search(query, { topk = 8, mode = "bm25", repo, category, confidence, trigger,
-                  include_neg = true, include_pointers = false, pattern } = {}, qv = null) {
-    if (mode !== "bm25" && !qv) throw new Error(`mode ${mode} needs a query vector`);
+  // Rows passing the filters, in catalog order: the browse view, and search's candidate set.
+  filter({ repo, category, confidence, trigger, include_neg = true, include_pointers = false,
+           pattern } = {}) {
     const f = { repo, category, confidence, trigger, pattern, include_pointers,
                 neg: include_neg ? null : false };
-    const eligible = [];
-    this.docs.forEach((e, i) => passes(e, f) && eligible.push(i));
+    const rows = [];
+    this.docs.forEach((e, i) => passes(e, f) && rows.push(i));
+    return rows;
+  }
+
+  // mode: "bm25" | "dense" | "hybrid"; dense and hybrid need the query vector qv.
+  search(query, { topk = 8, mode = "bm25", ...filters } = {}, qv = null) {
+    if (mode !== "bm25" && !qv) throw new Error(`mode ${mode} needs a query vector`);
+    const eligible = this.filter(filters);
     if (!eligible.length) return [];
 
     let denseR = new Map(), bm25R = new Map();

@@ -67,8 +67,22 @@ def rel(path):
     return os.path.relpath(path, ROOT).replace(os.sep, "/")
 
 
-def doc_row(e):
-    """What search results, filters, lookup and related read; mirrors fault_rag.search output."""
+def entry_yaml(e):
+    """The entry's own YAML (fault and pointer entries), minus the pipeline audit trail that the
+    source file keeps; None for negative chunks, which come from Markdown."""
+    import yaml
+
+    if not e["file"].endswith(".yaml"):
+        return None
+    y = yaml.safe_load(e["raw"]) or {}
+    y.pop("migration", None)
+    return y
+
+
+def doc_row(e, y):
+    """What search results, filters, browsing, lookup and related read; mirrors fault_rag.search
+    output plus the first-seen date the browse view sorts by."""
+    discovered = str(((y or {}).get("labels") or {}).get("discovered") or "")
     return {
         "id": e["id"],
         "name": e["name"],
@@ -92,21 +106,15 @@ def doc_row(e):
         "line": e["line"],
         "line_end": e.get("line_end"),
         "links": e["links"],
+        "discovered": discovered if re.fullmatch(r"\d{4}-\d{2}-\d{2}", discovered) else None,
     }
 
 
-def entry_detail(e):
-    import yaml
-
+def entry_detail(e, y):
     d = _full(e)
     d["file"] = rel(e["file"])
     d["summary"] = _summary(e)
-    if e["file"].endswith(".yaml"):
-        y = yaml.safe_load(e["raw"]) or {}
-        y.pop("migration", None)        # pipeline audit trail; the source file keeps it
-        d["yaml"] = y
-    else:
-        d["yaml"] = None
+    d["yaml"] = y
     return d
 
 
@@ -189,10 +197,11 @@ def main(argv=None):
     open(os.path.join(out, ".nojekyll"), "w").close()
     data = os.path.join(out, "data")
 
-    write_json(os.path.join(data, "docs.json"), [doc_row(e) for e in entries])
+    ys = [entry_yaml(e) for e in entries]
+    write_json(os.path.join(data, "docs.json"), [doc_row(e, y) for e, y in zip(entries, ys)])
     write_json(os.path.join(data, "bm25.json"), bm25_payload(entries))
-    for e in entries:
-        write_json(os.path.join(data, "entry", e["repo"], e["id"] + ".json"), entry_detail(e))
+    for e, y in zip(entries, ys):
+        write_json(os.path.join(data, "entry", e["repo"], e["id"] + ".json"), entry_detail(e, y))
 
     semantic = None
     if not args.no_vectors:
