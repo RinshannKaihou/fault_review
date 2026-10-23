@@ -207,6 +207,21 @@ def build(full=False, progress=True):
     return meta
 
 
+def mark_name_collisions(entries):
+    """Flag same-catalog name clashes in place (name_ambiguous / same_name_ids) and return
+    {(repo, name): sorted ids}. Cross-catalog clashes are deliberately not flagged.
+    Shared with web/build_site.py so the static site marks exactly what the CLI marks."""
+    rows = {}
+    for e in entries:
+        rows.setdefault((e["repo"], e["name"]), []).append(e["id"])
+    collisions = {key: sorted(ids) for key, ids in rows.items() if len(ids) > 1}
+    for e in entries:
+        ids = collisions.get((e["repo"], e["name"]), [])
+        e["name_ambiguous"] = bool(ids)
+        e["same_name_ids"] = ids
+    return collisions
+
+
 class Index:
     """Lazy-loaded in-memory index used by search/lookup/related."""
 
@@ -220,26 +235,14 @@ class Index:
         self.by_id = {}
         self.by_legacy = {}
         self.by_name = {}
-        canonical_names = {}
         for i, e in enumerate(self.entries):
             self.by_id.setdefault(e["id"], []).append(i)
             for old in e.get("legacy_ids", []):
                 self.by_legacy.setdefault(old, []).append(i)
             self.by_name.setdefault(e["name"], []).append(i)
-            canonical_names.setdefault((e["repo"], e["name"]), []).append(i)
             for alias in e.get("aliases", []):
                 self.by_name.setdefault(alias, []).append(i)
-
-        self.name_collisions = {}
-        for key, rows in canonical_names.items():
-            if len(rows) > 1:
-                self.name_collisions[key] = sorted(
-                    (self.entries[i]["id"] for i in rows)
-                )
-        for e in self.entries:
-            ids = self.name_collisions.get((e["repo"], e["name"]), [])
-            e["name_ambiguous"] = bool(ids)
-            e["same_name_ids"] = ids
+        self.name_collisions = mark_name_collisions(self.entries)
 
 
 _INDEX = None

@@ -104,6 +104,11 @@ slice。**bench 用聚合口径**：R@5/R@10 不得低于基线，MRR/nDCG 容�
 标签来自源条目（用旧编号书写，评测时自动对应到新编号），不得按当前 top-k 反向生成。
 旧题通过不代表新增、退役或修订条目语义正确；每次发布须补本次变更的定向检查。
 
+网页版（`web/`，GitHub Pages）有自己的门禁与基线：推送 `catalogs/` 后 CI 构建站点并跑
+`python3 web/eval/check_web.py`（同样的 bench 聚合 / indy 逐条规则，基线在 `web/eval/baselines/`），
+失败则线上保持上一版。本地复现：`python3 web/build_site.py && python3 web/eval/check_web.py`，处理规则同上。
+网页版没有重排，召回低于本 CLI；agent 检索一律用 CLI，不要用网页结果代替。
+
 
 ## 故障排查
 

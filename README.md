@@ -308,6 +308,10 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 - `normalize/sync_upstream.py` 用于切换期间把上游 Markdown 里有、YAML 里还没有的条目补转到上游。
 - `normalize/audit/votes/` 保存各模型的原始投票，作溯源材料。
 
+## 网页版
+
+`web/` 是部署到 GitHub Pages 的静态检索站：关键词检索（BM25，中文 bigram）在浏览器里运行，首屏约 2.3 MB；可选的语义档另下载约 135 MB 的 `multilingual-e5-small`（int8）。没有交叉编码器重排，召回低于命令行版（indy R@5 0.905 / 0.921 对命令行 0.952），需要最好的结果时用命令行。`main` 上快照或代码变动后，CI 构建站点、跑网页门禁（`web/eval/check_web.py`，网页自己的基线），通过才发布。设计取舍、实测数字与本地构建见 [web/README.md](web/README.md)。
+
 ## 目录结构
 
 ```text
@@ -317,6 +321,8 @@ catalogs/        上游编目的已提交快照（只读，不手工编辑）
 scripts/         sync_catalogs.sh（发布快照）、download_model.py（下载模型）
 eval/            评测集、基线、run_eval.py、验收记录
 tests/           单元测试与冒烟测试
+web/             GitHub Pages 静态检索站（构建脚本、页面、网页门禁；见 web/README.md）
+.github/         pages.yml：构建网页版、跑网页门禁、发布
 normalize/       编目结构化迁移的工具与记录（见上）
 AGENTS.md        给 agent 的调用与引用约定
 data/  models/   本机索引与模型（已被 gitignore）

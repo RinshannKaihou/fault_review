@@ -246,6 +246,26 @@ def check_report(report, baseline=None, regression_tolerance=0.02,
     return failures
 
 
+def rank_churn(report, baseline):
+    """Gold-rank movement inside the top 10 versus the baseline (reported, never blocking)."""
+    before = {row["case_id"]: row for row in baseline.get("cases", [])}
+    slipped, improved = [], []
+    for row in report["cases"]:
+        old = before.get(row["case_id"])
+        if not old:
+            continue
+        gold = row["relevant"][0]
+        old_rank = next((n for n, key in enumerate(old["top_10"], 1) if list(key) == gold), None)
+        new_rank = next((n for n, key in enumerate(row["top_10"], 1) if list(key) == gold), None)
+        if old_rank and new_rank and new_rank > old_rank:
+            slipped.append({"case_id": row["case_id"], "from": old_rank, "to": new_rank})
+        elif old_rank and new_rank and new_rank < old_rank:
+            improved.append({"case_id": row["case_id"], "from": old_rank, "to": new_rank})
+        elif old_rank and not new_rank:
+            slipped.append({"case_id": row["case_id"], "from": old_rank, "to": None})
+    return {"slipped": slipped, "improved": improved}
+
+
 FIX_LIST_KINDS = {
     # gold outside the top 20 of BOTH single channels at baseline: its pass was RRF coincidence
     "weak_gold",
@@ -341,22 +361,7 @@ def main(argv=None):
         },
     }
     if args.per_case and baseline is not None:
-        before = {row["case_id"]: row for row in baseline.get("cases", [])}
-        slipped, improved = [], []
-        for row in report["cases"]:
-            old = before.get(row["case_id"])
-            if not old:
-                continue
-            gold = row["relevant"][0]
-            old_rank = next((n for n, key in enumerate(old["top_10"], 1) if list(key) == gold), None)
-            new_rank = next((n for n, key in enumerate(row["top_10"], 1) if list(key) == gold), None)
-            if old_rank and new_rank and new_rank > old_rank:
-                slipped.append({"case_id": row["case_id"], "from": old_rank, "to": new_rank})
-            elif old_rank and new_rank and new_rank < old_rank:
-                improved.append({"case_id": row["case_id"], "from": old_rank, "to": new_rank})
-            elif old_rank and not new_rank:
-                slipped.append({"case_id": row["case_id"], "from": old_rank, "to": None})
-        report["churn"] = {"slipped": slipped, "improved": improved}
+        report["churn"] = rank_churn(report, baseline)
 
     json.dump(report, sys.stdout, ensure_ascii=False, indent=1)
     sys.stdout.write("\n")

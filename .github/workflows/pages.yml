@@ -1,0 +1,78 @@
+# Build the static fault-rag site from the committed catalog snapshot, gate it, publish to Pages.
+# A failing web quality gate leaves the previously published site in place.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "catalogs/**"
+      - "web/**"
+      - "fault_rag/**"
+      - "eval/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install pyyaml numpy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+        env:
+          ONNXRUNTIME_NODE_INSTALL: skip    # onnxruntime-node is unused; skip its CUDA download
+
+      # transformers.js caches the pinned model here (after npm ci, which recreates node_modules)
+      - uses: actions/cache@v4
+        with:
+          path: web/node_modules/@huggingface/transformers/.cache
+          key: e5-small-${{ hashFiles('web/src/model.json') }}
+
+      - name: Build site (keyword index, entry pages, wasm corpus vectors)
+        run: python web/build_site.py
+
+      - name: Web quality gate (bench aggregate, indy per case, both tiers)
+        run: python web/eval/check_web.py --report web/gate-report.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-gate-report
+          path: web/gate-report.json
+          if-no-files-found: ignore
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
