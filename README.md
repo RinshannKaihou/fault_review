@@ -338,7 +338,8 @@ data/  models/   本机索引与模型（已被 gitignore）
 
 ## 许可证
 
-Copyright 2026 RinshannKaihou。本仓库按 [Apache License 2.0](LICENSE) 发布，以下两项除外：
+Copyright 2026 RinshannKaihou。本仓库按 [Apache License 2.0](LICENSE) 发布，以下几项除外：
 
 - `web/src/fonts/` 里的 Barlow 字体是第三方作品，按 SIL Open Font License 1.1 授权，见 [OFL.txt](web/src/fonts/OFL.txt)。
 - `catalogs/` 条目中摘录的 issue、PR 等来源原文，版权归原作者；来源链接记在各条目的 `evidence` 里。
+- 网页版随站点分发 transformers.js 与 ONNX Runtime 等第三方组件，它们按各自许可证授权；许可文本在 [web/src/licenses/](web/src/licenses/README.txt)，随站点一起发布。

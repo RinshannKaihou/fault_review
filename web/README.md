@@ -36,7 +36,7 @@ R@5 / R@10 / MRR@10：
 - **语义模型选 me5-small**：在同一套题上对比过 bge-m3 int8（570 MB，查询向量与 fp32 只有余弦 0.985，indy 还丢 1 条）、bge-small-zh（24 MB，中英混排很差，留出 R@5 0.62）、bge-m3 静态 token 向量（崩）。me5-small 118 MB 的 int8 是体积与质量的平衡点。模型版本钉死在 `src/model.json` 的 `revision`；transformers.js 4.3.1 取文件清单时不带 revision，所以 `semantic.js` 把版本也写进了 URL 模板。
 - **所有推理都跑浏览器那份 wasm**：原生 onnxruntime-node 的 int8 内核与浏览器的 wasm 不同，查询向量只有余弦 ~0.999，足以让近邻条目换位，门禁测的就不是用户拿到的了（实测 149 条里 115 条前 10 列表不同）。现在语料嵌入、门禁和浏览器都用 onnxruntime-web 同一个 wasm 二进制、单线程：Node 与 Chromium 的查询向量逐位相同，`browser_parity.py` 实测 149/149 条前 10 完全一致。wasm 也不随 CPU 指令集变化，本机与 CI 构建出的向量相同。
 - **语料逐条嵌入**：int8 模型按整批张量量化激活，批内每条向量都受邻居和 padding 影响（余弦 ~0.998）。逐条嵌入后每条向量只取决于自己的文本，新增条目不再扰动其他向量，也能多 worker 分片而结果逐位不变。
-- **运行时随站点发布**：transformers.js 与 onnxruntime-web 的 wasm 放在站点 `vendor/` 下，不走 jsdelivr；字体自托管（Barlow Semi Condensed，OFL）。站点只在加载语义档时访问模型源（huggingface.co 或 hf-mirror.com，页面上可切换）。GitHub Pages 发不了多线程 wasm 需要的 COOP/COEP 头，所以浏览器里单线程运行，一次查询是一次短前向，够用。
+- **运行时随站点发布**：transformers.js 与 onnxruntime-web 的 wasm 放在站点 `vendor/` 下，不走 jsdelivr；字体自托管（Barlow Semi Condensed，OFL）。它们的许可证随站点发布在 `src/licenses/`（`README.txt` 是索引）。onnxruntime 的 npm 包不带许可文本，`onnxruntime-MIT.txt` 与 `onnxruntime-ThirdPartyNotices.txt` 取自 microsoft/onnxruntime 在 `node_modules/onnxruntime-web/__commit.txt` 所记的提交；升级 transformers.js 或 onnxruntime-web 时，要重新确认 `transformers.min.js` 打包了哪些依赖，并按新提交重取这两个文件。站点只在加载语义档时访问模型源（huggingface.co 或 hf-mirror.com，页面上可切换）。GitHub Pages 发不了多线程 wasm 需要的 COOP/COEP 头，所以浏览器里单线程运行，一次查询是一次短前向，够用。
 
 ## 本地构建与预览
 
@@ -81,6 +81,7 @@ src/search.js        检索内核（过滤、BM25、RRF、lookup、related），
 src/semantic.js      语义档：模型加载与查询编码，浏览器与 Node 共用
 src/app.js           页面：检索、编号匹配、条目详情、引用行
 src/model.json       语义模型与固定 revision
+src/licenses/        随站点发布的许可证：本项目与 vendor/ 里第三方运行时（README.txt 是索引）
 eval/check_web.py    网页门禁；eval/rank.mjs 是它调用的 Node 排序器
 eval/browser_parity.py   浏览器与门禁逐条一致性检查
 ```
