@@ -325,6 +325,7 @@ web/             GitHub Pages 静态检索站（构建脚本、页面、网页�
 .github/         pages.yml：构建网页版、跑网页门禁、发布
 normalize/       编目结构化迁移的工具与记录（见上）
 AGENTS.md        给 agent 的调用与引用约定
+LICENSE          Apache License 2.0 全文
 data/  models/   本机索引与模型（已被 gitignore）
 ```
 
@@ -334,3 +335,10 @@ data/  models/   本机索引与模型（已被 gitignore）
 - 提示模型缺失：运行 `python scripts/download_model.py`；访问不了 Hugging Face 时先设置 `HF_ENDPOINT`。
 - 明知编号却查不到：先对照 `catalogs/SOURCES.txt` 和 `./fault-rag stats`，确认快照和本机索引都是新的（上游当天的新条目要等下次同步）；再确认该编号是否已被合并（用 `lookup` 查旧编号会指向保留条目）。
 - `git pull` 之后结果没变：本机索引还是旧的，运行 `./fault-rag reindex`。
+
+## 许可证
+
+Copyright 2026 RinshannKaihou。本仓库按 [Apache License 2.0](LICENSE) 发布，以下两项除外：
+
+- `web/src/fonts/` 里的 Barlow 字体是第三方作品，按 SIL Open Font License 1.1 授权，见 [OFL.txt](web/src/fonts/OFL.txt)。
+- `catalogs/` 条目中摘录的 issue、PR 等来源原文，版权归原作者；来源链接记在各条目的 `evidence` 里。
