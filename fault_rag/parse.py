@@ -288,8 +288,7 @@ def parse_negative_doc(path, repo, kind):
                 "line_end": end_line,
                 "neg": True,
                 "entry_type": "negative",
-                "stage": None, "axis": None, "coverage": None, "pattern": None,
-                "trigger": None, "confidence": None,
+                "stage": None, "coverage": None, "pattern": None, "confidence": None,
                 "fields": {"content": text},
                 "raw": text,
             })
@@ -339,8 +338,7 @@ def parse_appendix(path, repo, letters=("C", "D")):
                 "line_end": end_line,
                 "neg": True,
                 "entry_type": "negative",
-                "stage": None, "axis": None, "coverage": None, "pattern": None,
-                "trigger": None, "confidence": None,
+                "stage": None, "coverage": None, "pattern": None, "confidence": None,
                 "fields": {"content": text},
                 "raw": text,
             })
@@ -436,12 +434,10 @@ def parse_yaml_entries(path, repo):
             "kind": y.get("kind"),
             "status": y.get("status"),
             "stage": "/".join(stage) if isinstance(stage, list) else None,
-            "axis": None if labels.get("family") in (None, "N/A", "待定") else labels.get("family"),
             "coverage": labels.get("coverage"),
             # 模式层（PAT-xxxx）只做投影与过滤，不进嵌入文本也不进 BM25：结构化字段加进
             # 检索文本会让近似主题条目反超（独立集 Recall@5 0.952 -> 0.937 的旧教训）。
             "pattern": y.get("pattern"),
-            "trigger": None if labels.get("trigger") in (None, "N/A", "待定") else labels.get("trigger"),
             "confidence": None if labels.get("confidence") in (None, "N/A", "待定") else labels.get("confidence"),
             "relations": list(y.get("relations") or []),
             "fields": fields,

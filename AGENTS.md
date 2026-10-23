@@ -31,7 +31,7 @@ stdout 一律是 JSON。出错信息在 stderr。
   `--mode bm25|dense`，或精排模型缺失——缺失时 stderr 会提示，输出的 `reranked` 为 false）。
 - 过滤：`--repo inference|training`、`--category <原因子系统，如 KV缓存> | <旧分类 NUM|cat1|KV1>`、
   `--pattern PAT-INF-0035`（只看该故障模式这一族）、
-  `--confidence verified|documented|speculative`、`--trigger yes|partial|no|not_target`、
+  `--confidence verified|documented|speculative`、
   `--no-neg`（排除负结果块）、`--include-pointers`（显式包含指针行）、
   `--full`（返回条目全部字段）。
 - pointer 默认不参与 search；精确 `lookup` 仍可读取并沿 links 找到真实条目。

@@ -15,7 +15,7 @@ def _entry_type(e):
     return e.get("entry_type", "negative" if e.get("neg") else "fault")
 
 
-def _passes(e, repo=None, category=None, confidence=None, trigger=None,
+def _passes(e, repo=None, category=None, confidence=None,
             neg=None, include_pointers=False, pattern=None):
     if _entry_type(e) == "pointer" and not include_pointers:
         return False
@@ -26,8 +26,6 @@ def _passes(e, repo=None, category=None, confidence=None, trigger=None,
     if confidence and (e.get("confidence") or "") != confidence:
         return False
     if pattern and (e.get("pattern") or "") != pattern:
-        return False
-    if trigger and _norm_trigger(e.get("trigger") or "") != _norm_trigger(trigger):
         return False
     if neg is not None and bool(e["neg"]) != neg:
         return False
@@ -47,10 +45,6 @@ def _category_matches(e, category):
         return True
     legacy = e.get("legacy_category") or (e["category"] if e.get("neg") or "legacy_ids" not in e else None)
     return bool(legacy) and _legacy_category_matches(legacy, category)
-
-
-def _norm_trigger(value):
-    return "not_target" if value == "n/a" else value
 
 
 def _ranks(scores, eligible):
@@ -87,14 +81,14 @@ def _rerank(query, entries, order, fused, pool):
 
 
 def search(query, topk=8, mode="hybrid", repo=None, category=None,
-           confidence=None, trigger=None, include_neg=True,
+           confidence=None, include_neg=True,
            include_pointers=False, pattern=None, rerank=True):
     idx = get_index()
     neg_flag = None if include_neg else False
 
     eligible = [
         i for i, e in enumerate(idx.entries)
-        if _passes(e, repo, category, confidence, trigger, neg=neg_flag,
+        if _passes(e, repo, category, confidence, neg=neg_flag,
                    include_pointers=include_pointers, pattern=pattern)
     ]
     if not eligible:
@@ -229,8 +223,6 @@ def _full(e):
         "coverage": e.get("coverage"),
         "pattern": e.get("pattern"),
         "stage": e.get("stage"),
-        "axis": e.get("axis"),
-        "trigger": e.get("trigger"),
         "neg": e["neg"],
         "entry_type": _entry_type(e),
         "name_ambiguous": e.get("name_ambiguous", False),

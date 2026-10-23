@@ -17,7 +17,7 @@ METRIC_NAMES = ("recall_at_5", "recall_at_10", "mrr_at_10", "ndcg_at_10")
 STRICT_RECALL = ("recall_at_5", "recall_at_10")   # no regression tolerance
 ALLOWED_MODES = {"hybrid", "dense", "bm25"}
 ALLOWED_FILTERS = {
-    "repo", "category", "confidence", "trigger", "include_neg",
+    "repo", "category", "confidence", "include_neg",
     "include_pointers",
 }
 

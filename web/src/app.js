@@ -20,8 +20,7 @@ const ORIGINAL_LABEL = {
   priority: "优先级", meta: "元信息", category: "旧分类", section: "旧章节",
 };
 const LABEL_LABEL = {
-  confidence: "置信度", trigger: "触发标签", trigger_note: "触发说明", trigger_review: "触发待复核",
-  family: "家族", stage: "阶段", coverage: "覆盖", discovered: "首录日期",
+  confidence: "置信度", stage: "阶段", coverage: "覆盖", discovered: "首录日期",
 };
 const EXAMPLES = ["loss spike 但无 NaN", "GRPO advantage std zero", "前缀缓存命中后输出串到别的请求",
                   "INF-0044", "HW.05"];
@@ -59,7 +58,7 @@ function value(v) {
 
 // ---------- state <-> URL hash ----------
 // all: browse every entry (no query, no filter); sort: browse order ("" = catalog id, "new" = newest first-seen)
-const FIELDS = ["q", "repo", "category", "confidence", "trigger", "pattern", "mode", "no_neg", "pointers", "all", "sort", "e"];
+const FIELDS = ["q", "repo", "category", "confidence", "pattern", "mode", "no_neg", "pointers", "all", "sort", "e"];
 function readState() {
   const p = new URLSearchParams(location.hash.slice(1));
   const s = Object.fromEntries(FIELDS.map((f) => [f, p.get(f) || ""]));
@@ -114,8 +113,6 @@ function initForm() {
     i ? "、" : "",
     h("button", { type: "button", onclick: () => writeState({ ...readState(), q, e: "", k: 0 }, { push: true }) }, q),
   ]));
-  const triggers = meta.filters.trigger;
-  $("#f-trigger").append(...triggers.map((t) => h("option", { value: t }, t)));
   fillCategories("");
   $("#f-repo").addEventListener("change", (ev) => fillCategories(ev.target.value));
 
@@ -166,7 +163,7 @@ function collect() {
   const q = (f.get("q") || "").trim();
   return {
     q, repo: f.get("repo") || "", category: f.get("category") || "",
-    confidence: f.get("confidence") || "", trigger: f.get("trigger") || "", pattern: s.pattern,
+    confidence: f.get("confidence") || "", pattern: s.pattern,
     mode: f.get("mode") === "hybrid" ? "hybrid" : "", no_neg: f.get("no_neg") ? "1" : "",
     pointers: f.get("pointers") ? "1" : "", all: q ? "" : s.all, sort: s.sort, k: 0,
   };
@@ -178,7 +175,6 @@ function syncForm(s) {
   fillCategories(s.repo);
   $("#f-category").value = s.category;
   $("#f-confidence").value = s.confidence;
-  $("#f-trigger").value = s.trigger;
   $("#f-noneg").checked = !!s.no_neg;
   $("#f-pointers").checked = !!s.pointers;
   form().querySelector(`input[name="mode"][value="${s.mode === "hybrid" ? "hybrid" : "bm25"}"]`).checked = true;
@@ -259,10 +255,10 @@ async function render() {
 
 const filterOpts = (s) => ({
   repo: s.repo || undefined, category: s.category || undefined, confidence: s.confidence || undefined,
-  trigger: s.trigger || undefined, pattern: s.pattern || undefined,
+  pattern: s.pattern || undefined,
   include_neg: !s.no_neg, include_pointers: !!s.pointers,
 });
-const isBrowsing = (s) => !s.q && !!(s.repo || s.category || s.confidence || s.trigger || s.pattern || s.all);
+const isBrowsing = (s) => !s.q && !!(s.repo || s.category || s.confidence || s.pattern || s.all);
 
 async function renderResults(s, seq) {
   const out = $("#results");
@@ -312,7 +308,7 @@ async function renderResults(s, seq) {
 
 function emptyPrompt() {
   return h("div", { class: "browse-prompt" },
-    h("p", {}, "不输入检索词也可以：在上面选任一筛选条件（编目、原因子系统、置信度、触发标签），会直接列出符合条件的全部条目。"),
+    h("p", {}, "不输入检索词也可以：在上面选任一筛选条件（编目、原因子系统、置信度），会直接列出符合条件的全部条目。"),
     h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), all: "1", k: 0 }, { push: true }) },
       `浏览全部 ${index.filter().length.toLocaleString()} 条`));    // same default as search: no pointers
 }
@@ -369,7 +365,6 @@ function hitNode(r, mode) {
   const facts = [
     h("span", {}, "编目", h("b", {}, REPO_LABEL[r.repo] || r.repo)),
     r.category ? h("span", {}, "子系统", h("b", {}, r.category)) : null,
-    doc.trigger && !r.neg ? h("span", {}, "触发", h("b", {}, doc.trigger)) : null,
     mode === "browse" ? h("span", {}, "首录", h("b", {}, doc.discovered || "待定")) : null,
     r.legacy_ids && r.legacy_ids.length ? h("span", {}, "旧号", h("b", {}, r.legacy_ids.join("、"))) : null,
     r.pattern ? h("span", { title: "同族只表示同一底层问题的一族，不等于已核实同机制" }, "故障模式", h("b", {}, r.pattern)) : null,

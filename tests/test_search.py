@@ -29,7 +29,6 @@ class EntryTypeFilterTests(unittest.TestCase):
             "repo": "inference",
             "category": "cat10",
             "confidence": None,
-            "trigger": "n/a",
             "entry_type": entry_type,
             "neg": neg,
         }

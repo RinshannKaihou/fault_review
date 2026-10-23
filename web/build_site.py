@@ -97,7 +97,6 @@ def doc_row(e, y):
         "confidence": e.get("confidence"),
         "status": e.get("status"),
         "pattern": e.get("pattern"),
-        "trigger": e.get("trigger"),
         "neg": e["neg"],
         "entry_type": _entry_type(e),
         "name_ambiguous": e.get("name_ambiguous", False),
@@ -238,7 +237,6 @@ def main(argv=None):
             "category": {r: counted(e["category"] for e in entries if e["repo"] == r and not e["neg"])
                          for r in ("inference", "training")},
             "confidence": [c for c, _ in counted(e.get("confidence") for e in entries)],
-            "trigger": [t for t, _ in counted(e.get("trigger") for e in entries)],
         },
         "tokenizer": TOKENIZER,
         "semantic": semantic,

@@ -31,7 +31,6 @@ def main(argv=None):
     s.add_argument("--category", help="subsystem (e.g. KV缓存) or old category: NUM / HW / cat1 / KV1 / neg_rejected ...")
     s.add_argument("--pattern", help="fault pattern id (PAT-0042): only entries in that family")
     s.add_argument("--confidence", choices=["verified", "documented", "speculative"])
-    s.add_argument("--trigger", help="inference 触发 tag, e.g. yes/partial/no")
     s.add_argument("--topk", type=int, default=8)
     s.add_argument("--mode", choices=["hybrid", "dense", "bm25"], default="hybrid")
     s.add_argument("--no-neg", action="store_true",
@@ -72,7 +71,7 @@ def main(argv=None):
         res = search_mod.search(
             args.query, topk=args.topk, mode=args.mode, repo=args.repo,
             category=args.category, confidence=args.confidence,
-            trigger=args.trigger, include_neg=not args.no_neg,
+            include_neg=not args.no_neg,
             include_pointers=args.include_pointers, pattern=args.pattern,
             rerank=not args.no_rerank,
         )

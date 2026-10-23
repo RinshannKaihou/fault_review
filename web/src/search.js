@@ -39,15 +39,12 @@ function categoryMatches(e, category) {
   return !!legacy && legacyCategoryMatches(legacy, category);
 }
 
-const normTrigger = (v) => (v === "n/a" ? "not_target" : v);
-
 function passes(e, f) {
   if (e.entry_type === "pointer" && !f.include_pointers) return false;
   if (f.repo && e.repo !== f.repo) return false;
   if (f.category && !categoryMatches(e, f.category)) return false;
   if (f.confidence && (e.confidence || "") !== f.confidence) return false;
   if (f.pattern && (e.pattern || "") !== f.pattern) return false;
-  if (f.trigger && normTrigger(e.trigger || "") !== normTrigger(f.trigger)) return false;
   if (f.neg != null && !!e.neg !== f.neg) return false;
   return true;
 }
@@ -120,9 +117,9 @@ export class Index {
   }
 
   // Rows passing the filters, in catalog order: the browse view, and search's candidate set.
-  filter({ repo, category, confidence, trigger, include_neg = true, include_pointers = false,
+  filter({ repo, category, confidence, include_neg = true, include_pointers = false,
            pattern } = {}) {
-    const f = { repo, category, confidence, trigger, pattern, include_pointers,
+    const f = { repo, category, confidence, pattern, include_pointers,
                 neg: include_neg ? null : false };
     const rows = [];
     this.docs.forEach((e, i) => passes(e, f) && rows.push(i));
