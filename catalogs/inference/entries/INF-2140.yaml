@@ -1,0 +1,60 @@
+id: INF-2140
+legacy_ids: []
+slug: vllm_mtp_draft_uninitialized_embedding_pp
+aliases: []
+title: MTP draft-only 检查点 PP 下嵌入未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: MTP drafter 嵌入共享/加载检查
+  behavior: _maybe_share_embeddings 仅 world_size==1 共享；draft-only 检查点无 embed_tokens 不被加载；process_weights_after_loading 使未加载参数通过检查
+effect:
+  objects:
+  - 性能/资源
+  - 输出分布
+  detail: drafter 用 torch.empty 的随机位嵌入 x_{t+1}：输出仍正确（验证拒绝坏 draft），唯一症状是接受率坍塌（实测 0.779→0.22 与零嵌入消融吻合；补嵌入后 0.55-0.85、K=2 +49-53% 吞吐），投机加速静默丢失
+  visibility: 性能退化
+mitigation:
+  detect: 离线 draft top-1 评测（真嵌入 vs 零嵌入 vs 随机嵌入消融）；对照服务 acceptance 指标
+  fix: 数据级规避：把目标 model.embed_tokens.weight 复制为 draft 目录 model.layers.N.embed_tokens.weight（_rewrite_spec_layer_name 映射，免代码）；建议修复 fail-loud 或 last-stage 加载（#57171 曾提 glm5next 未合）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63128
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.27.1 V1（main 87b804f09d 2026-10-22 同码）：MTP draft 模型来自 draft-only 检查点（只含 model.layers.N.* + config.json）且 PP>1 时，drafter 的 embed_tokens 从未初始化：(1) LLMBaseProposer._maybe_share_embeddings 只在 get_pp_group().world_size==1 时共享目标嵌入（PP 下仅打 "loaded separately" 日志，lm_head 仍共享）；(2) draft 检查点无嵌入权重，DeepSeekMTP/DeepseekV32MTP.load_weights 不写 drafter 的 embed_tokens（#46994 只覆盖顶层 tied 情形）；(3) DefaultModelLoader.track_weights_loading 把 quant_method 有 process_weights_after_loading 的模块全部参数计入 loaded_weights（UnquantizedEmbeddingMethod 有该方法），未加载嵌入通过检查——无错误。drafter 以 torch.empty 的随机位嵌入 x_{t+1}。实测（7×CMP 170HX PP7、GLM-5.3 MTP 层 78）：离线 draft top-1 真嵌入 0.779 / 零嵌入 0.200 / 随机 0.194；服务 K=1 acceptance ~0.22（0.13-0.31）与零嵌入消融吻合；把目标嵌入复制进 draft 目录后 0.55-0.85、K=2 tokens/step 2.58、+49-53%（4k）/+41-49%（100k）。输出正确性由验证保障，损失的是静默的投机加速。
+  source: https://github.com/vllm-project/vllm/issues/63128（vLLM 0.27.1/main 87b804f09d，7×CMP 170HX PP7 GLM-5.3 实测含消融对照）
+  behavior: 以 draft-only 检查点（只有 MTP 层权重）开 MTP 推测解码且 PP>1 时，服务正常启动、生成结果正确，但投机接受率从头部本应的 ~0.78 坍塌到 ~0.22：解码几乎不做投机加速甚至变慢，日志只有一行嵌入将单独加载的提示，无任何错误。向 draft 目录补入目标模型嵌入（数据级修复）后接受率恢复 0.55-0.85、吞吐提升 49-53%。
+  trigger_surface: vLLM --speculative-config method=mtp + draft-only 检查点 + --pipeline-parallel-size>1
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出分布
+        to: 性能/资源
+      visibility:
+        from: 静默错误
+        to: 性能退化
+    uncertain:
+    - subsystem

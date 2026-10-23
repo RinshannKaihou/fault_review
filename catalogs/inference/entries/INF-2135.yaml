@@ -1,0 +1,51 @@
+id: INF-2135
+legacy_ids: []
+slug: sglang_fp4_kv_pd_transfer_drops_block_scales
+aliases: []
+title: sglang FP4 KV 块缩放因子 PD 传输/回退丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: PD 传输与回退的 scale 注册
+  behavior: FP4 KV 池是普通池加量化方法，setup_state_kv_args 只为 MXFP8 注册 BLOCK_SCALE；get_cpu_copy 也只拷 KV，decode 端用自己的零或他人的 scale 反量化 packed KV
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: FP4 KV + PD 分离下 decode 输出垃圾（如 "The \" \" \" ..."），8 prompt 全部与非 PD 不一致；bf16 KV 同设置 8/8 一致，加修复 8/8
+  visibility: 静默错误
+mitigation:
+  detect: PD 与非 PD 同 prompt 贪心对比（报告者的判定法）
+  fix: 'issue 描述修复方向（FP4 池注册 BLOCK_SCALE + get_cpu_copy 拷 scale；MXFP8 已有 #35718/#40792 先例），PR 合入状态未核实'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/45866
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang 以 --kv-cache-dtype fp4_mx_block16 运行时，FP4 KV 池实现为普通 MHATokenToKVPool 挂量化方法（非 MXFP8 的专用池）。PD 分离的 setup_state_kv_args 只为 MHATokenToKVPoolMXFP8 注册 BLOCK_SCALE 传输，FP4 池的 k_scale_buffer/v_scale_buffer 从不注册；decode 端只收到 packed KV，用自己的池内 scale 反量化——新池为零、复用后为他人的。decode 侧 cpu_tensor 回退同样只拷贝 k/v（MHATokenToKVPool.get_cpu_copy/load_cpu_copy）。Qwen3-0.6B、fp4_mx_block16、triton 后端、单机 1P1D NIXL 对比非 PD：8 个 greedy prompt 0/8 一致（输出如 "The \" \" \" \"..."）；bf16 KV 同设置 8/8；加修复后 fp4 8/8。MXFP8 路径已分别由 #35718（PD）与 #40792（retraction get_cpu_copy）处理。sglang main d0a7565436，H200。'
+  source: https://github.com/sgl-project/sglang/issues/45866（sglang main d0a7565436，H200 1P1D NIXL 实测）
+  behavior: 开启 FP4 KV cache（fp4_mx_block16）并使用 PD 分离部署时，decode 节点输出完全垃圾化（重复引号等乱码）；同一模型不开 PD 输出正常，bf16 KV 开 PD 也正常。错误来自 decode 端用错误的全局缩放因子反量化 KV，用户看到的是突然的乱码输出而非报错。
+  trigger_surface: sglang --kv-cache-dtype fp4_mx_block16 + PD disaggregation（NIXL）或 decode 回退；triton 注意力后端实测
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

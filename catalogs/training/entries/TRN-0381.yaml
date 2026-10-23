@@ -1,0 +1,59 @@
+id: TRN-0381
+legacy_ids: []
+slug: pytorch_npu_flight_recorder_hccl_matcher_false_matched
+aliases: []
+title: Flight Recorder HCCL 匹配器把不匹配集体通信报全匹配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: torch_npu
+    component: Flight Recorder matcher
+  behavior: 匹配器读首个栈帧名当 HCCL 操作而非 profiling_name，比较内置 type 而非 self.type，dtypes 与自身比——不同 size/dtype 的 collective 判 FULLY_MATCHED，端点不解析
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: 构造 input_sizes=(2,) 与 (3,) 的两个 Op 返回 FULLY_MATCHED；Float 与 Half 同样；hccl:send 0->1 事件 src=dst=-1。排障分布式训练挂起的开发者拿到假阴性干净结果
+  visibility: 静默错误
+mitigation:
+  detect: 用已知 size/dtype 不同的两个 collective 事件构造单测断言必须 mismatch
+  fix: 修复 MR https://gitcode.com/Ascend/pytorch/merge_requests/48400（open，2026-10-22）：用 profiling_name 识别 HCCL 操作、解析 P2P 端点、比较两个操作的 size/dtype，不一致报 mismatch（关联 issue 自带 CPU-only 复现探针）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5616
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/48400
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: Ascend/pytorch（torch_npu）Flight Recorder 的 operation matcher（跨 rank trace 分析）：读取第一个栈帧名 training_step 作为 HCCL 操作而非事件 profiling_name（hccl:all_reduce）；比较内置 type 对象而非 self.type；把操作 dtypes 与自身比较。后果：tensor size 或 dtype 不同的两个 collective 事件可被报 FULLY_MATCHED；send/recv 端点不解析（profiling_name=hccl:send 0->1 记录 src=dst=-1）。复现为纯 Python 构造两个 Op（frames=[{name:training_step}]，input_sizes (2,) vs (3,)）master 上 match() 返回 FULLY_MATCHED；等 size Float vs Half 也 FULLY_MATCHED。OBS 类观测性骗过：分析工具漏报真实存在的跨 rank collective 不匹配，调查分布式训练挂起时拿到假干净结果。修复 MR !48400（open）改为用 profiling_name 识别、解析 P2P 端点、比较两操作 size/dtype。
+  source: https://gitcode.com/Ascend/pytorch/issues/5616（2026-10-22，open）+ 修复 MR https://gitcode.com/Ascend/pytorch/merge_requests/48400（open）
+  behavior: 'NPU 分布式训练出现挂起/错值疑似 collective 不匹配时，用 Flight Recorder 对齐两侧 trace：即使两侧 all_reduce 的 size/dtype 真的不一致（正是根因），工具也输出 FULLY_MATCHED，把开发者引向错误方向、延长定位时间；send/recv 端点显示 -1 无法核对路由。日常无故障时工具静默，仅在真正需要它排障时给出假阴性。同日 #5619（损坏 trace 被 UnboundLocalError 掩盖）、#5620/#5621/#5612（前缀推断/空 rank/CLI）为同工具其他缺陷，见日报留观。'
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 指标/日志
+        to: 测试判定
+    uncertain:
+    - behavior

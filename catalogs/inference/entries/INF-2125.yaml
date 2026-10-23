@@ -1,0 +1,53 @@
+id: INF-2125
+legacy_ids: []
+slug: flashinfer_blockscale_sf_underflow_nan
+aliases: []
+title: flashinfer 块缩放量化守卫旧值致 SF 下溢 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: flashinfer
+    component: 块 SF 零守卫用舍入前值
+  behavior: 5 处块缩放量化站点守卫舍入前 vecMax 却用 fp8 舍入后 SFValue：SFScaleVal*vecMax/6<=2^-10 时 SF 舍为 0 而守卫通过，reciprocal(0)=inf，零元素 NaN、非零元素 inf
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 受影响窗口为块最大值约比张量最大值低 2^18.8（~460000×）的块（全局 scale 顶格放置时）；nvfp4 GEMM/DiT norm/FP4-KV 量化输出含 NaN/inf；纯零块走守卫分支不受影响
+  visibility: 数值异常
+mitigation:
+  detect: 输出 NaN 扫描（触发窗口确定性）
+  fix: 仓内已有正确形态（#2441 修 cvt_warp_fp16_to_mxfp8 守卫 SFValue!=0；trtllm_moe_allreduce_fusion.cuh L622 同），5 站点对齐即可；修复未提交
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6994
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'flashinfer 6a2f2661d 的块缩放量化构造在 5 处站点（nvfp4_smooth_quantize_sm100.cuh:233 cvt_warp_fp16_to_fp4 与 :382 quantizeSmoothed16（SVDQuant nvfp4 GEMM JIT，e4m3）、fused_dit_layernorm.cuh:364/:444（nvfp4 输出变体，e4m3/e8m0）、fp4_kv_quantization.cu:125 quantize_fp16_to_e2m1_with_scaling（顶层 nvfp4_kv_quantize，e4m3））沿用 #2441 已修复的旧形态：块 SF 先经 fp8 转换舍入，再分支于舍入前的 vecMax 而用舍入后的 SFValue 缩放。e4m3 最小正值为 2^-9，块缩放最大值 <= 2^-10 时 SFValue 舍入为精确 0 而守卫（vecMax!=0）通过：reciprocal_approximate_ftz(0)=inf，块内零元素 0*inf=NaN、非零元素 inf。核内触发条件 SFScaleVal*vecMax/6 <= 2^-10；全局 scale 把张量最大值顶格放置（标准做法）时即块最大值比张量最大值低约 2^18.8（460000×）的块——恰是真 SF 低于 e4m3 最小 subnormal、0 是唯一可表示 scale 的舍入边界窗口。全零块走守卫分支返回 0 不受影响。仓库在 quantization_utils.cuh:892 与 trtllm_moe_allreduce_fusion.cuh:622 已有正确守卫形态（判 SFValue!=0），本修复即对齐。CPU torch.float8_e4m3fn 复现链（同 round-to-nearest）。'
+  source: https://github.com/flashinfer-ai/flashinfer/issues/6994（flashinfer 6a2f2661d 设备码审查 + CPU 复现链）
+  behavior: nvfp4 平滑量化、DiT LayerNorm nvfp4 量化或 FP4 KV 量化遇到块内最大值远低于张量最大值（约 1/460000）的块时，该块输出 NaN（零元素）与 inf（非零元素）；这是标准全局 scale 放置下稀疏/局部激活的正常形态，用户看到的是下游 GEMM/norm 产出 NaN 传播。
+  trigger_surface: flashinfer nvfp4_smooth_quantize / fused_dit_layernorm(nvfp4) / nvfp4_kv_quantize；块最大值落入 e4m3 SF 舍入为零的窗口
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

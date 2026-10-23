@@ -1,0 +1,50 @@
+id: INF-2131
+legacy_ids: []
+slug: ttmetal_unary_int8_gate_skip_garbage
+aliases: []
+title: ttnn 一元算子静默接受 INT8 返回确定性垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: unary 整型输入门控
+  behavior: is_integer_dtype() 不含 INT8，#56980 门控 early-return 跳过；ABS/RELU 的 UINT/INT32 特例不含 INT8，落入 float SFPU kernel 解释原始整数字节
+effect:
+  objects:
+  - 数值结果
+  detail: abs/neg 对每个非零值返回 0、sign 对正数也返回 -1、relu 原样拷贝不钳负、sigmoid/exp 返回 -1；兄弟 dtype（uint8/int32/uint32）同算子正确 TT_FATAL 拒绝
+  visibility: 静默错误
+mitigation:
+  detect: 与 torch int8 语义对照（报告者表）；同 rig 上 uint8/int32 的对照 TT_FATAL 可作判别
+  fix: issue 给出方向：is_integer_dtype 加 DataType::INT8 让既有门控统一拒绝（门控已编码正确答案）+ int8 拒绝测试；报告者愿提 PR，未提交
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62133
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal main 84ddc0ae9b（ttsim v1.13.0 Blackhole）一元算子静默接受 ttnn.int8 TILE 张量并返回确定性垃圾：#56980（commit f0025ce5f30，针对 #56938 "28 op types return float32 bit patterns for int32 input"）添加的整数输入门控经 validate_integer_input_dtype 在 !is_integer_dtype 时 early-return，而 is_integer_dtype（unary_device_operation.cpp L19-21）按注释故意不含 INT8（"no unary op has native INT8 implementation yet"），门控从不执行。unary_op_utils.cpp 中 ABS（L826-832）/RELU（L766-776）对 UINT32/16/8 走空拷贝、INT32 走整数 LLK，INT8 落入 float abs_tile/relu_tile；INT8 的 DFB 是 DataFormat::UInt8（tensor_types.cpp L108），float kernel 把小整数当 fp16 denormal/NaN 解释。实测（确定性、跨运行一致）：abs 全 0（每非零值）、neg 全 0、sign 对含正数的每个非零 -1、relu 原样拷贝（-56 不钳 0）、sqrt 0、sigmoid/exp -1、floor/eqz 0、bitwise_not -1；float relu/abs 不可能产生 int8 语义，错误在硅上成立（精确垃圾字节或与 ttsim 边缘不同；sign→-1 的微架构机制是假设）。对照：同 rig 上 neg(uint8)/sign(uint8)/sign(int32)/sqrt(int32) 均按设计 TT_FATAL。相关不同缺陷：#61023 typecast 链绕过、#57211 融合激活绕过。测试无 int8 钉死行为。'
+  source: https://github.com/tenstorrent/tt-metal/issues/62133（main 84ddc0ae9b + ttsim v1.13.0 Blackhole 确定性复现）
+  behavior: 对 INT8 TILE 张量调用 ttnn.abs/neg/sign/relu 等一元算子不报错但返回错误值：abs 把所有非零值算成 0、sign 把正数也判为 -1、relu 不剪裁负值原样返回、sigmoid/exp 返回 -1。同一算子对 uint8/int32/uint32 输入会正确拒绝（TT_FATAL），仅 INT8 静默放行。
+  trigger_surface: ttnn 一元算子 + ttnn.int8 TILE 输入；host 侧机制与硅无关
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,54 @@
+id: INF-2130
+legacy_ids: []
+slug: sglang_qsa_retraction_state_confusion
+aliases: []
+title: sglang 回退恢复后 QSA 索引状态来自其他请求
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: cpu_tensor 回退备份 QSA 池
+  behavior: QSATokenToKVPool 未覆写 get_cpu_copy/load_cpu_copy，沿用只备份 KV+Mamba 的版本；QSA 压缩索引键与 pending 环从不保存恢复，恢复后槽位已被他请求写入
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 跨请求/跨样本数据
+  detail: 回退恢复的请求用别的请求的 QSA 键做 top-k 选块而注意力读正确 KV，输出静默变差；实测 23/23 恢复带非空压缩键的请求状态错（max diff 3.75），修复后 0/33
+  visibility: 静默错误
+mitigation:
+  detect: 对比每个请求 QSA 行备份前后内容（报告者已在单测与 live server 实施）
+  fix: issue 附单测+修复 PR（覆写 QSA 备份/恢复；#39893 曾修 HiCache 同类、#35957 修 Mamba，此路径漏网），合入状态未核实
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/45864
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang PD decode 服务器上请求被 retract 再 resume 时，混合模型恒走 cpu_tensor 回退备份路径。QSATokenToKVPool 没有覆写 get_cpu_copy/load_cpu_copy，因此使用 HybridLinearKVPool 的实现——只保存完整 KV 和 Mamba 状态；QSA 的压缩索引键（compressed index keys）与 pending key/RoPE 环（ring buffer）从不被保存或恢复。恢复后这些槽位已被期间使用它们的请求写入：top-k 用另一请求的键选块，而注意力读的 KV 是正确的，无报错，仅输出静默变差。sglang main d0a7565436、H200：单测（备份 A→让 B 写入 A 的未来槽位→恢复 A）在 main 上 A 获得 B 的 QSA 状态；live decode server（1P1D NIXL、SGLANG_TEST_RETRACT=1、小 Qwen4-Exp 配置）逐请求比对 QSA 行，main 上 23/23 带非空压缩键的恢复出错（max abs diff 3.75），修复后 0/33。PD 传输本身已携带 QSA_PENDING/QSA_COMPRESSED（#39893 修 HiCache、#35957 修 Mamba 后此路径被漏掉）。
+  source: https://github.com/sgl-project/sglang/issues/45864（sglang main d0a7565436，H200 1P1D NIXL 实测）
+  behavior: Qwen3.8-Flash-Next 等混合模型在 PD decode 下发生回退（retraction）再恢复的请求，恢复后稀疏注意力索引选择基于其他请求的 QSA 索引键：生成内容静默变差、无报错；实测所有带压缩索引的恢复请求（23/23）状态错误，与正确状态最大绝对差 3.75。
+  trigger_surface: sglang PD decode + 混合架构（QSA indexer）模型 + cpu_tensor 回退路径；恢复时槽位被其他请求复用
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

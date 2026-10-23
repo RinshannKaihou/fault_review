@@ -1,0 +1,55 @@
+id: INF-2141
+legacy_ids: []
+slug: sglang_kimi_k3_mxfp4_situ_as_gptoss_swiglu
+aliases: []
+title: sglang Kimi-K3 MXFP4 静默算成 GPT-OSS SwiGLU
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: sglang
+    component: SM90 CUTLASS mxfp4 激活分发
+  behavior: _fused_experts_flashinfer_mxfp4_cutlass 硬编码 Swiglu 不读 activation；K3 的 SiTU 常量被按 GPT-OSS 语义 g·σ(4g)·(u+1) 钳 25 解释，数学上不等价
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: SM90 上 Kimi-K3 路由专家全程按错误激活函数计算，无错误无告警；4×8 H20 PP4 观察到生成退化为重复（未隔离本因），+1 项与 σ(4g) 数学上排除任何参数下与 SiTU 等价
+  visibility: 静默错误
+mitigation:
+  detect: 对比 SiTU 与 GPT-OSS SwiGLU 的算子级输出（公式 4·tanh(g/4)·σ(g)·25·tanh(u/25) vs g·σ(4g)·(u+1) clamp 25）
+  fix: 待定（同文件 materialize_swiglu_params_for_cutlass 对 situ 返回 (None,None,None) 的正确机制存在但 MXFP4 路径未用；修复未提交）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/45755
+  kind: github_issue
+relations: []
+original:
+  mechanism: sglang v0.5.22/main ce66b3ab 在 Hopper（SM90）用 --moe-runner-backend flashinfer_mxfp4 服务 Kimi-K3 时，路由专家被以 GPT-OSS clamped SwiGLU 而非 K3 的 SiTU 激活计算，无告警。链条：(1) kimi_k3.py L510-512 把 SiTU 常量塞进通用 gemm1_alpha=activation_situ_beta(4.0)、gemm1_clamp_limit=activation_situ_linear_beta(25.0)；(2) Mxfp4MoEMethod._process_weights_for_sm90_cutlass（mxfp4.py L1275-1289）按 GPT-OSS 语义重组为 per-expert swiglu_alpha=4.0、硬编码 swiglu_beta=1.0、swiglu_limit=25.0（注释 "fallback to GPT-OSS defaults"）；(3) flashinfer_cutlass.py L504-528 的 _fused_experts_flashinfer_mxfp4_cutlass 不读 runner_config.activation 硬编码 ActivationType.Swiglu/SwigluStep。实际计算 g·σ(4g)·(u+1) clamp 25，而 SiTU 是 4·tanh(g/4)·σ(g)·25·tanh(u/25)（activation.py L187-207）；+1 项与 σ(4g) 门在任何 alpha/beta/limit 下不可能相等。同文件 materialize_swiglu_params_for_cutlass（L64-80）对 situ 正确返回 (None,None,None)，通用 CUTLASS runner 的 _activation_type 校验（L159-180）被 MXFP4 runner 跳过。K3 cookbook 声明 FlashInfer MXFP4 runner 用于 Blackwell（trtllm-gen SiTU），SM90 路径是缺口。相关：#32650（closed 未合）、flashinfer#4209（open）。
+  source: https://github.com/sgl-project/sglang/issues/45755（sglang v0.5.22/main ce66b3ab，H20 SM90 源码链路 + 4×8 H20 观察记录）
+  behavior: Kimi-K3 在 Hopper（SM90）GPU 上以 flashinfer_mxfp4 MoE 后端服务时，模型加载、推理均无报错，但每个路由专家的激活函数被静默替换为 GPT-OSS SwiGLU（含错误的 (u+1) 项），数学上不可能与 SiTU 等价；用户观察到生成质量下降或重复退化（4×8 H20 PP4 实测重复退化，但该运行未隔离本因）。
+  trigger_surface: Kimi-K3（hidden_act=situ）+ sglang --moe-runner-backend flashinfer_mxfp4 + SM90；同仓 SiTU 正确路径在 Blackwell
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - visibility
+    - detail

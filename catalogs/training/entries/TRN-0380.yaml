@@ -1,0 +1,53 @@
+id: TRN-0380
+legacy_ids: []
+slug: triton_ascend_gather_rows_ep_rank_device_fault
+aliases: []
+title: Triton gather_rows EP 前向 rank1 设备越界静默楔死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: triton
+    component: gather_rows kernel
+  behavior: Triton gather_rows 做 AutoEP token 重排，2-rank 下 rank1 两形态故障：多为前向静默楔死（3/3 复现），偶发 host 同步报 MTE 访问 DDR 越界（多核同 PC）；单进程不复现
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 多数形态（3/3）为 rank1 流静默楔死、rank0 在下一个 collective 挂起约 600s 后 ACL ERR00100 超时；少数形态 host 同步直接报设备异常 dump。切回 torch fallback 同负载 29.87s 全通过
+  visibility: 挂起
+mitigation:
+  detect: EP 前向加 per-rank 心跳/进度探针区分静默楔死；设备异常 dump 的同 PC 多核特征
+  fix: 规避：DeepSpeed permute 路径切回 torch fallback（issue 已验证因果对照）；上游修复待定（open，0 评论）
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2648
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend（torch 2.10.0+cpu / torch_npu 2.10.0.post7+git51c843b / triton 3.6.0 / Ascend 910B4 / CANN 8.5.1）：DeepSpeed AutoEP 启用 Triton gather_rows kernel（deepspeed/moe/ep_kernels.py 的 _gather_rows_kernel）做 forward token reordering 后，world_size=2 时 rank1 设备故障两种形态：① 静默楔死（3/3 复现）rank1 前向内不再产出、rank0 在下一 collective 等它约 600s 后 ACL runtime ERR00100 超时；② 偶发 host 同步直接报设备异常 dump——MTE 指令访问 DDR 地址越界（aivec vector core 异常 error code 0x800000、retCode 0x31、多核同一 PC）。因果对照：permute 路径切回 torch fallback 后同 2-rank 测试 29.87s 全通过；单进程裸扫 kernel 同 shape 不 fault，故障依赖 2-rank 上下文。kernel 来自 DeepSpeed ep_kernels 裁剪。open 0 评论，未定位到具体代码行。
+  source: https://github.com/triton-lang/triton-ascend/issues/2648（2026-10-20，open；含两形态复现与因果对照脚本）
+  behavior: NPU 上跑 DeepSpeed AutoEP MoE 训练（2 卡及以上）：前向随机卡死——某 rank 不再出结果，其他 rank 在 collective 上等它直到 ~600s 报 PTA call acl api failed 超时，job 挂起无崩溃无报错；偶尔直接抛 MTE 地址越界设备异常。关掉 Triton permute 用 torch fallback 立即恢复。表现为 EP 训练偶发挂死/设备异常且难复现（单进程不复现），多卡回归测试期间尤甚。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

@@ -1,0 +1,50 @@
+id: TRN-0370
+legacy_ids: []
+slug: opsnn_bn_backward_saveinvstd_as_variance
+aliases: []
+title: BN 反向把 saveInvstd 当方差致梯度静默偏差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BNBackward saveInvstd
+  behavior: kernel 把入参 saveInvstd 直接当方差参与梯度公式，与资料/参数名定义的 1/sqrt(Var+eps) 口径相反；无校验。
+effect:
+  objects:
+  - 梯度
+  detail: 按 torch save_invstd 口径传入时 gradInput 偏 4.77%、gradWeight 偏 8.10%（fp64 参考对照），rc=0。
+  visibility: 静默错误
+mitigation:
+  detect: 分别传 invstd 与 var 跑 BN 反向，与 fp64 参考比对（偏差>4% 即命中）；对齐口径后再用。
+  fix: 待定（issue open，实现改口径或资料/校验对齐）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7035
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnBatchNormBackward 把入参 saveInvstd 当方差参与计算，与资料 docs/aclnnBatchNormBackward.md「(Var(x)+eps) 开平方的倒数」的定义相反。实测（A2 910B2×8、CANN 9.2.0，torch_npu 路径）：按 torch save_invstd 口径（1/sqrt(var+eps)）传入时 gradInput 与 fp64 参考偏差 4.77%、gradWeight 偏 8.10%；传 var 反而 ≤1.7e-7 全对——证明实现消费口径是 var。两段 rc=0 无报错。该算子是 BN/SyncBN 训练反向路径，上游 torch 生态按参数名传 invstd 的调用方全部命中。
+  source: https://gitcode.com/cann/ops-nn/issues/7035（2026-10-21，open；含 python+ctypes 复现与双口径对照数据）
+  behavior: 任何按 torch 语义传 save_invstd=1/sqrt(var+eps) 的 BN 反向调用（torch_npu 透传路径）在 NPU 上 gradInput/gradWeight 系统性偏差约 5%/8%，训练持续跑但 BN 参数更新方向偏差，最终模型质量受损且难以察觉——没有 NaN、没有报错，只有慢性的梯度偏差。
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

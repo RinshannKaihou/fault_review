@@ -1,0 +1,52 @@
+id: TRN-0367
+legacy_ids: []
+slug: opsnn_cegrad_target_oob_weight_oobread
+aliases: []
+title: CELossGrad target 越界静默错值并越界读 weight
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CELossGrad target 处理
+  behavior: target 越界/负值仅处理「负且等于 ignoreIndex」，其余直接当下标做 one-hot 减法，weight 路径 weightGm.GetValue(target) 越界读 GM。
+effect:
+  objects:
+  - 梯度
+  detail: target 含 padding(-1)/越界标注时 CE 反向不中断、梯度按错误位置计算，weight 越界读读到其他显存。
+  visibility: 静默错误
+mitigation:
+  detect: 训练侧在 loss 前断言 target∈[0,C) 或 ==ignoreIndex；golden 比对含越界 target 用例。
+  fix: '待定（issue open，期望取值校验；关联 #7047 aclnnNLLLoss、#4837 同类不同算子）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7136
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnCrossEntropyLossGrad：op_kernel/cross_entropy_loss_grad_weight_not_none.h:84-88 只处理 target<0 且 ==ignoreIndex 的分支，其余越界/负值直接作下标——weight 路径 weightGm.GetValue(target) 按越界地址读 GM（target=-1 读 weight 之前、99 读之后）；infershape 只校验 rank/维度耦合无法校验取值。实测（A2 910B2、CANN 9.2.0）：C=2 时 target=[0,1,0,2]（2 越界）两段 rc=0、out=-0.107577 vs 合法对照 -0.0896471，输出按错误位置做 one-hot 减法而非拒绝；源码注释自称「其他负数报错内存越界符合预期」但实测不报错。issue 明确指出训练数据管线 target 偶发 -1（padding 值）或标注错误越界时训练不中断而梯度错误。
+  source: https://gitcode.com/cann/ops-nn/issues/7136（2026-10-21，open；含自包含 C 复现）
+  behavior: 数据管线里标签偶发 -1（padding）或越界值时，NPU 上 CE 反向不报错不中断，梯度按错误位置计算，带 weight 时还按越界地址读显存——值随分配器布局漂移、可复现性差；训练继续跑但方向错，长跑中表现为收敛异常且难归因。
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

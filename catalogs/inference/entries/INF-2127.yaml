@@ -1,0 +1,61 @@
+id: INF-2127
+legacy_ids: []
+slug: cann_triu_tiling_global_state_reuse
+aliases: []
+title: Triu tiling 进程级全局状态跨调用残留
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Triu tiling 全局变量
+  behavior: TriuTilingFunc 的 per-call 状态存 namespace 级变量：matrix_Num 初始 1 只设一次、L159 原位累乘不复位，第二次调用从首调用积起步；ub_Sharing_Num 设 4 不恢复 2；并发竞争
+effect:
+  objects:
+  - 数值结果
+  detail: 同进程第二次调用起 tiling 的 matrixNum 膨胀（kernel 按 tiling->matrixNum 迭代），kernel 读写过 x/y 实际存储越界；ub 缓冲尺寸错位
+  visibility: 静默错误
+mitigation:
+  detect: 同进程连续两次相同入参调用比对 tiling（第二次 matrixNum 翻倍）
+  fix: 修复 PR !6604（Make Triu tiling state per invocation，open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3818
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6604
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: INF-2107
+pattern: PAT-INF-0188
+original:
+  mechanism: ops-math 的 TriuTilingFunc 把全部 per-call tiling 状态存于 namespace 作用域变量（triu tiling 源 L50-61）：matrix_Num 仅初始化一次为 1，L159 原位累乘（matrix_Num *= inputShape.GetDim(i)），第二次 tiling 调用从首调用乘积起步；累积值经 L179 total_Length_Aligned 与 L231 写入 tiling->matrixNum，kernel 侧 NsTriu::Triu<T>::Init（experimental/conversion/triu/op_kernel/triu.h:95）与 NaivePath（triu.h:170）按其迭代——膨胀的 matrixNum 使 kernel 读写过 x/y 实际存储（越界）。ub_Sharing_Num 同缺陷：L190/L213 设 4 不恢复默认 2，改变后续调用 UB 缓冲尺寸。并发 tiling 调用也在这些全局上竞争。修复 PR !6604（per-invocation 状态）open。与 INF-2107（tril/triu experimental tiling TU 级全局累乘，2026-10-21 收录）同族失效机制（tiling 状态进程级残留）但为独立算子路径与代码站点。
+  source: https://gitcode.com/cann/ops-math/issues/3818（源码级定位）；修复 https://gitcode.com/cann/ops-math/merge_requests/6604（open）
+  behavior: 同一 Python/C++ 进程内第二次及以后调用 Triu（任意形状）时，算子内部 tiling 的 matrixNum 等状态沿用上次调用的累积值：tiling 决定性被破坏，kernel 循环范围按膨胀的 matrixNum 读写下标，越过输入/输出张量实际存储（越界读写），输出可能损坏且无告警；连续调用间输出不可预测。另有并发调用竞态。
+  trigger_surface: 同进程多次 Triu 调用（含相同入参）；并发 tiling；ops-math 已发布路径（非 experimental 专属）
+  discovery: 2026-10-22 每日扫描
+  notes:
+  - 2026-10-22 回执核对：relations var 目标 INF-2107 = tril/triu tiling 全局累乘不复位致二次调用起 tiling 错（同族 tiling 状态进程级残留），标题核对无误
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  updates:
+  - date: '2026-10-22'
+    fields:
+    - original.notes
+  - date: '2026-10-23'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,50 @@
+id: TRN-0371
+legacy_ids: []
+slug: opsnn_bnelemtgrad_counter_reducesum_divisor
+aliases: []
+title: null
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BNElemtBackward 除数
+  behavior: MeanByCounter() 对 counter 先全轴 ReduceSum 再作除数，把资料公式的逐元素除法改成按总和除，多元素 counter 时除数放大 C 倍。
+effect:
+  objects:
+  - 梯度
+  detail: counter 多元素（如 [2,2]）时 gradInput 整体再除一次 2（实测 -1 vs 期望 -2），rc=0 无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 多元素 counter 用例与 CPU 参考比对；检查 counter 形状是否 >1 维。
+  fix: 待定（issue open，改逐元素除法）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7093
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnBatchNormElemtBackward（norm/sync_batch_norm_backward_elemt，SyncBN 多卡路径）MeanByCounter()：auto reduceSumOut = l0op::ReduceSumOp(counterCasted, dim全部轴, false, executor) 后用总和作 sumDy/sumDyXmu 的除数；资料公式为逐元素除 counter，且资料自带示例即多元素 counter（counterShape={2} 值 {5,5}）。实测（A2 910B2、CANN 9.2.0）：counter=[2] 正确；counter=[2,2]（合法）gradInput=[-1,-1] vs 期望 [-2,-2]——整体被再除一次 2；两段 rc=0。空 counter 时输出全 NaN/Inf（问题 2，同单）。
+  source: https://gitcode.com/cann/ops-nn/issues/7093（2026-10-21，open；含 C 复现）
+  behavior: 多卡 SyncBN 训练（counter 天然多元素，每卡一个计数）在 NPU 上反向梯度整体缩小 C 倍（C=卡数/计数元素数），loss 看似正常下降但 BN 梯度尺度系统性偏小，多卡比单卡劣化且无任何报错；单元素 counter 的单卡路径不受影响。
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,55 @@
+id: TRN-0387
+legacy_ids: []
+slug: opsnn_dequant_swiglu_quant_no_group_mode0_training
+aliases: []
+title: DequantSwigluQuant 无 group 变体模式静默按 mode0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: DequantSwigluQuant tiling
+  behavior: 变体 SwiGLU 适配只覆盖 Dsk 路径（group 场景），无 group 时路由至通用 tiling 链路，该链路无 mode/clamp_limit/glu_alpha/glu_bias 参数管道、内核硬编码标准 SwiGLU
+effect:
+  objects:
+  - 数值结果
+  detail: A2(910B) 不传 group_index 时 swiglu_mode 1/2/3 静默按 mode0：clamp_limit/glu_alpha/glu_bias 全丢失，int8 与 golden 一致率 24%/44%/56%，mode2 输出与 mode0 100% 相同，无报错
+  visibility: 静默错误
+mitigation:
+  detect: no-group 调用后对拍文档公式 golden（clamp 语义丢失误配立即显形）；或带 group_index=[T] 对照
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12598（open，2026-10-22）：no-group+mode≠0+int32/bf16 路由至 Dsk Base kernel；连带修复 shape 未初始化（blockDim=0）、mode1 gather 偏移表未建 UB 越界、bf16 WITHOUT_GROUP 分支缺失；fp16 x + mode≠0 改显式拒绝（原静默错算）；33 用例 910B3 实测全过
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7225
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12598
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2138
+original:
+  mechanism: cann ops-nn aclnnDequantSwigluQuantV2（Atlas A2 910B3 / CANN 9.3.0，内置 opp 与 master 一致、源码级缺口）：不传 group_index 时 swiglu_mode 1/2/3（GPT-OSS 变体 SwiGLU）被静默按 mode0 计算。根因链路：DequantSwigluQuantDskTiling::IsCapable() 仅 group_index 存在时 capable（commit 30732bc4c 只覆盖 Dsk 路径）；无 group 落到通用 DequantSwigluQuantTiling → SwiGluTilingData 系内核完全没有 mode 参数管道、硬编码标准 silu×up×smooth。实测（T=128,I=2048,int32 x,动态量化,mode2,clamp_limit=7）：与文档公式 golden 对比 int8 一致率 mode1 23.98%/mode2 43.65%/mode3 56.36%；mode2 输出与 mode0 100% 相同；带 group_index=[T] 时 100% 对齐 golden。修复 MR !12598 连带修复三个源码级潜伏问题：GetShapeAttrsInfoInner 无 group 提前返回致 shape 未初始化（blockDim=0）、Base kernel no-group 分支跳过 CreateOffsetLocalTensor（mode1 gather 偏移表未建 → UB 越界）、bf16 段缺 WITHOUT_GROUP 分支；另把 fp16 x+mode≠0 从静默错算改显式拒绝。训练侧收录依据：W8A8 动态量化 MoE 训练（量化激活 SwiGLU）在无分组整批调用（最常见形态）时激活值静默错算，前向与梯度全链路偏离。推理库同日已收同 URL（INF-2138，pending_audit），本条为训练侧独立条目。
+  source: https://gitcode.com/cann/ops-nn/issues/7225（2026-10-22，open；含一致率实测、源码链路定位与连带修复清单）+ 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12598（open，33 用例实机验证）
+  behavior: NPU 上 W8A8 动态量化训练/推理用 npu_dequant_swiglu_quant 的 GPT-OSS 变体激活（swiglu_mode=1/2/3、配 clamp_limit/glu_alpha/glu_bias）：不传 group_index（整批稠密调用，最常见的训练写法）时这些参数全部静默失效——算子按标准 SwiGLU 算，输出 int8 约 44%~76% 元素与文档公式不符，无任何报错；带 group_index 调用（分组长序列）结果正确。表现为量化 MoE 训练精度莫名上不去、与 GPU 对拍激活对不齐，单看 loss 曲线无崩溃特征。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化

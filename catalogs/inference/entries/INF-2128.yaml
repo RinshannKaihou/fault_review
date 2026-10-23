@@ -1,0 +1,54 @@
+id: INF-2128
+legacy_ids: []
+slug: torch_npu_torchbench_fp64_golden_silent_downgrade
+aliases: []
+title: NPU torchbench fp64 golden 静默降级致误报
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: torch_npu
+    component: torchbench 精度判据链
+  behavior: NPU 无 float64 内核，dtype 转换静默替换为 float32（仅 W 告警）；fp64 golden 采集退化为第二次 fp32 前向产出伪 golden，fp64 RMSE 回退被 dtype 门槛静默跳过
+effect:
+  objects:
+  - 测试判定
+  detail: resnet18/50 fp32 推理双版本系统性误报 fail_accuracy（合法浮点差异 4.85e-4 被判失败）；同链 H100 全绿；修复 golden 采集后同偏差判过
+  visibility: 静默错误
+mitigation:
+  detect: 插桩检查最终 same() 调用点的 fp64_outputs dtype（报告者实测 dtype=float32、cos=False）
+  fix: PR !48370（torchbench --accuracy 在 CPU 计算 fp64 golden 当加速器无 float64 支持，open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5602
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/48370
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: Ascend TorchBench --accuracy（torchbench.py）在 NPU 上系统性误报 fail_accuracy：resnet18/50 fp32 推理（v2.13.0-26.2.0 分支与 master@ec69335 双版本可复现、偏差逐位一致，eager vs compiled maxdiff≈4.85e-4 超 allclose@1e-4）。根因链：上游判据是两段式——same() 先 allclose(tol)，失败后用 fp64 golden 做 RMSE 比值宽松回退（res_error ≤ 2.0×ref_error + tol/10）；本 case res/ref≈1.03 本应判过。NPU 上链条静默断裂：(1) NPU 无 float64 内核，x.double()/x.to(torch.float64) 被静默替换为 float32（ToKernelNpu.cpp:40 仅 W 告警）；(2) fp64 golden 采集退化为第二次 fp32 前向，产出伪 golden（无异常无提示）；(3) same() 的 fp64 回退以 fp64_ref.dtype==torch.float64 为门槛被静默跳过；(4) 判据退化为裸 allclose 绝对阈，合法求值顺序差异被判失败。插桩实测最终 same() 调用点 fp64_outputs 为 Tensor 但 dtype=float32；同偏差下真 fp64 golden（CPU）判 True。上游 H100 nightly 同链全绿。修复 PR !48370（CPU 算 fp64 golden）open。预训练权重是必要条件（真实 BN running_var 决定偏差量级）。
+  source: https://gitcode.com/Ascend/pytorch/issues/5602（v2.13.0-26.2.0/master 双版本复现 + 插桩证据）；修复 https://gitcode.com/Ascend/pytorch/merge_requests/48370（open）
+  behavior: 在 NPU 上跑 TorchBench 精度评测（--accuracy）时，resnet/densenet 等 CV 模型被系统性误报精度失败（fail_accuracy）：合法的浮点求值顺序差异（与 fp64 真值等距）被判为错误；fp64 参考（golden）被静默降级为 float32 后宽松回退判据失效。评测结论失真，用户误以为算子/编译有正确性缺陷；同链 H100 全绿可对照。随机权重测不出，须预训练权重。
+  trigger_surface: Ascend NPU + TorchBench --accuracy（fp32 推理、预训练权重）；NPU 缺 float64 内核的机型
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

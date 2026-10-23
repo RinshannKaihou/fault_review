@@ -1,0 +1,55 @@
+id: INF-2134
+legacy_ids: []
+slug: transformers_finegrained_fp8_partial_block_dequantize
+aliases: []
+title: transformers FP8 反量化部分尾块错块尺寸
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: transformers
+    component: Fp8Dequantize 块尺寸推导
+  behavior: _dequantize_one 以 rows//scale_rows 推块尺寸，DeepSeek 式 ceil 网格尾块非整块：不整除时 ValueError 拒载；整除时用错块尺寸（96 代 128）静默装错权重
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: DeepSeek-V3/R1 每层 kv_a_proj_with_mqa [576,7168]/scale [5,56] 无 GPU 或 CC<8.9 反量化路径必炸；整除 lucky 形状加载成功但权重错、推理结果静默偏差
+  visibility: 静默错误
+mitigation:
+  detect: 对 DeepSeek 检查点在无 GPU 环境尝试 dequantize=True 加载（必现 ValueError）；权重值与 GPU 路径抽样比对
+  fix: 待定（非反量化路径已用 ceil 约定：FP8Linear 按 (out+block-1)//block 分配 scale 行；修复未提交）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/49873
+  kind: github_issue
+relations: []
+original:
+  mechanism: transformers 5.17.0（同码至 v5.20.2 与 main 73d9b84f）integrations/finegrained_fp8.py 的 Fp8Dequantize._dequantize_one 以 block_m = rows // scale_rows 从 scale 网格反推块尺寸。DeepSeek 式块 FP8 检查点的 weight_scale_inv 是 [ceil(M/128), ceil(K/128)]，尾块为部分块：(1) rows%scale_rows!=0 时直接 ValueError——DeepSeek-V3/R1 每层 self_attn.kv_a_proj_with_mqa.weight [576,7168]（kv_lora_rank 512+qk_rope 64）scale [5,56]，故无 GPU 机器（自动回退 dequantize）与 CC<8.9 GPU 上这些检查点无法加载；(2) 除法恰好整除时（如 [192,K] 配 2 行 scale 网格）用 96 而非 128 的块尺寸，加载成功且权重错。非反量化路径（FP8Linear）按 (out_features+block-1)//block 分配 scale 行，同检查点在 FP8 GPU 上正常。CPU 复现：按真实 MLA 维度构造 DeepSeek-V3Config 小检查点 + 128×128 块量化 + ceil 网格，CUDA_VISIBLE_THREADS 为空加载即触发。
+  source: https://github.com/huggingface/transformers/issues/49873（transformers 5.17.0/5.20.2/main 73d9b84f，CPU 复现）
+  behavior: DeepSeek-V3/R1 等块 FP8 检查点在 transformers 里走反量化加载（无 GPU 或算力<8.9 自动回退）时：要么因 576 维 MLA 投影的尾块直接 ValueError 无法加载；要么在维度恰好整除的层用错块尺寸（96 而非 128）成功加载但权重数值错误，推理输出静默偏差。GPU FP8 直载路径不受影响。
+  trigger_surface: transformers ≥5.17 + DeepSeek 式 128 块 FP8 检查点 + dequantize 路径
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 量化

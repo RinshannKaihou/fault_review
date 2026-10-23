@@ -1,0 +1,50 @@
+id: TRN-0369
+legacy_ids: []
+slug: opsnn_flceg_maskedtarget_oob_gm_rw
+aliases: []
+title: 融合CE梯度 maskedTarget 越界 GM 读写静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FusedLinearCEGrad 下标
+  behavior: 高性能分支直接用 maskedTarget 值算目标下标，op_api 只校验长度不校验取值；-1 等越界值在 softmaxOptional 缓冲区外 4 字节非法读写。
+effect:
+  objects:
+  - 梯度
+  detail: maskedTarget 含 -1（词表并行惯例）时 inputGrad/weightGrad 各一整行与 CPU 标杆不符（maxabs≈1.5），rc=0。
+  visibility: 静默错误
+mitigation:
+  detect: msSanitizer memcheck 检出 illegal read/write；golden 用例应覆盖 maskedTarget=-1。
+  fix: 待定（issue open；仓内 golden 自身写 clamp(0,V-1)，实现需对齐夹取或显式校验）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7115
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnFusedLinearCrossEntropyLossGrad 高性能分支（softmaxOptional 非空）：maskedTarget 出现越界值（如 -1）时 kernel 直接用该值算目标下标，在 softmaxOptional 缓冲区外做 4 字节非法读+非法写；op_api 只校验 maskedTarget 长度不校验取值范围。关键在 -1 是词表并行场景的惯例合法输入——本分片无对应词时上游常置 -1，仓内自带 golden（tests/assets/golden.py）对同一参数写 masked_target.clamp(0,V-1)，即实现侧预期是「可能越界、按夹取处理」但 kernel 未实现。实测（A2 910B2×8、CANN 9.2.0，python ctypes）：BT=64,H=128,V=128,fp16，maskedTarget[0]=-1 时 inputGradOut/weightGradOut 各一整行（128 元素）与 CPU 标杆不符（maxabs≈1.5），msSanitizer 报同地址 4B illegal read+write（softmax 首地址前 4 字节）；对照组合法 maskedTarget 同命令 0 illegal。
+  source: https://gitcode.com/cann/ops-nn/issues/7115（2026-10-21，open；含 ctypes 复现与 mssanitizer 实证）
+  behavior: 词表并行训练用融合线性 CE 梯度算子且 maskedTarget 按惯例置 -1（本分片无该词）时，NPU 上该步 input/weight 梯度各有一整行静默错误，同时越界读写相邻显存；训练无报错继续跑，错误行随 batch 内容变化，表现为难复现的偶发梯度异常。
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,52 @@
+id: INF-2122
+legacy_ids: []
+slug: ttmetal_where_int_scalar_rounds_via_float32
+aliases: []
+title: ttnn.where 整型标量经 float32 舍入静默变值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ternary where 标量通道
+  behavior: TensorScalarVariant 接受 int，但 std::visit 进 invoke_impl 的唯一标量重载收 float，int 隐式转换静默丢精度；范围校验在已舍入 float 上进行（INT32_MAX 被拒）
+effect:
+  objects:
+  - 数值结果
+  detail: int32/uint32 张量配 Python int 标量 |s|>2^24 返回 float32(s)（16777217→16777216、-2147483647→-2147483648）；INT32_MAX/UINT32_MAX 合法值反被 TT_FATAL 拒绝；ttnn.add 同标量精确
+  visibility: 静默错误
+mitigation:
+  detect: 对照 torch.where / ttnn.add 的同标量结果（报告者的表）
+  fix: issue 建议 int32_t/uint32_t 标量重载 + 按整数做范围校验 + 2^24+1/123456789/±(2^31-1)/UINT32_MAX 测试；修复 PR 未提交
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62016
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal main 84ddc0ae9b（ttsim v1.13.0 Blackhole）ttnn.where 对 int32/uint32 张量与 Python int 标量的组合把标量静默经 float32 舍入：ternary/common/ternary_op_types.hpp:14 的 TensorScalarVariant = std::variant<float,int,Tensor> 接受 int，但 ternary.cpp std::visit 进 invoke_impl 的唯一标量重载收 float，int 隐式转换丢精度；validate_where_scalar_for_integer_tensor（ternary.cpp:99 经 scalar_fits_integer_dtype）在已舍入的 float 上校验，16777217 以 16777216.0 通过、INT32_MAX 以 2^31 被拒绝（TT_FATAL）。实测表：16777217→16777216、123456789→123456792、-2147483647→-2147483648、1000000001→1000000000，每个错值都恰为 float32(s)；uint32 同（3000000001→3000000000、4294967295 被拒）。ttnn.add(int32,s) 与 torch.where 保持精确。测试缺口：test_where.py 的整型标量只有 ±9/10/7，无 |s|>2^24。#60508（自 #58403）加的 float 标量不可表示拒绝检查不覆盖此路径（精度在校验前已丢）。'
+  source: https://github.com/tenstorrent/tt-metal/issues/62016（main 84ddc0ae9b + ttsim v1.13.0 Blackhole，确定性复现）
+  behavior: 对 int32/uint32 张量调用 ttnn.where 传入绝对值大于 2^24 的 Python 整数标量时，返回值是该标量的 float32 舍入（如 16777217 变 16777216），无任何错误；而合法的 INT32_MAX/UINT32_MAX 反而触发 TT_FATAL 拒绝。ttnn.add 同标量正确，torch.where 亦正确。
+  trigger_surface: ttnn.where + int32/uint32 tensor + Python int 标量 |s|>2^24；TTS/TST/TSS 全部形态
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

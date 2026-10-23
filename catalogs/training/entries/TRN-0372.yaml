@@ -1,0 +1,64 @@
+id: TRN-0372
+legacy_ids: []
+slug: opsnn_gns_grad_tiling_init_dropped_fp16bf16
+aliases: []
+title: GroupNormSwishGrad tiling 失败被丢弃梯度未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: GroupNormSwishGrad tiling
+  behavior: GetDataTypeSize 对 fp16/bf16 按 6 字节虚增 3 倍，UB 预算算错使 tiling Init 返回 GRAPH_FAILED，但返回值被丢弃仍下发半初始化 tiling 并报成功，kernel 空转
+effect:
+  objects:
+  - 梯度
+  - 训练信号
+  detail: C/G=4000（3999 亦命中）、HxW=1 且 fp16/bf16 时，dx 11360/12000 未写、dgamma/dbeta 出现 NaN，返回码仍为 0；host 日志有告警但未传到返回码；C=256000、G=64 时触发 507035 vector core 异常进程退出。
+  visibility: 数值异常
+mitigation:
+  detect: 训练侧对 GroupNorm+Swish 反向输出做 NaN/零占比抽检（dgamma NaN 计数、dx 零元素占比）；fp32 路径正常可作对照
+  fix: 待定（issue 给出修复建议：检查 Init() 返回值失败即 GRAPH_FAILED；GetDataTypeSize 对 fp16/bf16 返回 2；无修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7081
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0344
+pattern: PAT-TRN-0050
+original:
+  mechanism: cann ops-nn aclnnGroupNormSwishGrad（norm/group_norm_swish_grad，master 2026-10-21）反向：op_host/group_norm_swish_grad_tiling.cpp:418-431 GetDataTypeSize() 对 DT_FLOAT16/DT_BF16 返回 2+4=6（实际元素 2 字节），UB 预算放大约 3 倍；:345-397 CalStage1TilingInfo() 在 C/G=4000、HxW=1 时 reserveSpace=1024+4000*6*8=193024 > 910B2 UB 196608 的余量，mode2UbCapacityEle 取 128 倍数后为 0，返回 GRAPH_FAILED；:623-628 TilingGroupNormSwishGrad 调 tilingObject.Init() 丢弃返回值，仍 SetKernelTiling() 下发 castEleNum=0/stage2CoreUsed=0 等初值字段并返回成功。kernel 按 TILING_KEY 1/2/11/12 进入 fp16/bf16 分支后 stage1 循环 0 次、stage2 跳过。实测（Atlas A2 910B2、CANN 9.2.0、torch_npu 2.12.0.post3，5/5 复现）：fp16 N=3,C=4000,G=1 dx 11360/12000 未写、dgamma 55/4000 NaN、dbeta 65/4000 NaN；bf16 同型；C/G=3999 同样命中（Ceil(C/G,16) 仍 4000）；C=256000,G=64 触发 507035 vector core 异常进程退出。host 日志有 tilingParams->mode2UbCapacityEle should not be zero! 但未传到接口返回码。fp32 与 C/G≤2000 对照正确。与 TRN-0344（同算子前向 TWOPASS 模板跨调用 x 双缓冲竞态）同算子族不同缺陷：本条是 tiling 失败被静默吞掉，非同步竞态。
+  source: https://gitcode.com/cann/ops-nn/issues/7081（2026-10-21，open；含 torch_npu 复现脚本、源码行定位与 tiling 数值推导）
+  behavior: NPU 上做 GroupNorm+Swish（视觉/卷积后归一化类）训练反传，fp16/bf16 且每组通道数接近 4000 时：返回码 0、无报错日志，但打印梯度会看到 dx 大片为 0（本批未写）、dgamma/dbeta 混入 NaN，训练 loss 曲线逐步劣化或后继层被 NaN 点燃；把 C/G 压到 2000 以下或改 fp32 一切正常，换 shape 到 C=256000,G=64 则直接设备异常崩进程。这是写使用者视角：症状随 dtype 与 C/G 阈值出现/消失，常规单测（小 C/G）抓不到。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  updates:
+  - date: '2026-10-23'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail

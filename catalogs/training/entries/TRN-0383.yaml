@@ -1,0 +1,55 @@
+id: TRN-0383
+legacy_ids: []
+slug: opstransformer_mrs_v2_attrs_silently_ignored
+aliases: []
+title: MatmulReduceScatterV2 非法 reduceOp 静默按sum
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MatmulReduceScatterV2 校验
+  behavior: V1 有 reduceOp/commTurn 校验（非法值返回 561002），V2 缺失：reduceOp=max 或 commTurn=1 两段返回 0、执行成功，输出与 sum/0 逐元素一致——两个属性被静默忽略
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 同一输入 V1 返回 561002、V2 返回 0；max 与 sum 输出不同元素数 0/2048。资料规定 reduceOp 仅支持 sum、commTurn 仅支持 0
+  visibility: 静默错误
+mitigation:
+  detect: V2 调用前在框架层显式断言 reduceOp=sum/commTurn=0；对拍 V1 行为
+  fix: 待定
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6524
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann ops-transformer aclnnMatmulReduceScatterV2（Atlas A2 910B2×2 / CANN 9.2.0，2 卡 HCCL 实测）：资料规定 reduceOp 仅支持 "sum"、commTurn 仅支持 0，实测传 reduceOp="max" 或 commTurn=1 时第一段返回 0、执行成功，输出与 "sum"/0 逐元素完全一致（max 与 sum 不同元素数 0/2048；commTurn=1 与 sum/0 同 0/2048）——两个属性被静默忽略。同一份输入改用 V1（aclnnMatmulReduceScatter）返回 561002，说明 V1 有校验、V2 缺失。同日同报告者 #6523（MRS/V2 output 首维未校验，声明行数偏少时把第 m/rank_size 行写到声明范围之外、越界写 n*sizeof(dtype) 字节）见日报留观（越界写形态）。Matmul+ReduceScatter 融合算子是 Megatron/DeepSpeed 类 TP 梯度归约路径的 NPU 等价物，调用方传错枚举在 V2 下无任何反馈。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6524（2026-10-22，open；含 2 卡复现输出与 V1 对照）
+  behavior: NPU 训练用 MatmulReduceScatter(V2) 做矩阵乘+梯度归约：若框架或用户把 reduceOp 配成 max（或期望 commTurn=1 的分步行为），V2 不报错直接按 sum/0 算——归约语义与配置不符、梯度数值静默偏离预期，配置错误完全无反馈；同参数 V1 会直接报 561002 暴露问题。表现为「换 V2 后配置错误不再被发现，训练照跑但归约结果口径与预期不符」。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 集合通信
+        to: 算子/内核
+      effect:
+        from: 数值结果
+        to: 梯度

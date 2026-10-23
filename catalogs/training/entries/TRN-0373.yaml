@@ -1,0 +1,53 @@
+id: TRN-0373
+legacy_ids: []
+slug: opsnn_ctc_loss_backward_blank_nonzero_grad_misplaced
+aliases: []
+title: CtcLossBackward blank!=0 修正项错写 c=0 梯度错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CtcLossBackward kernel
+  behavior: blank 属性非 0 时 kernel 把 blank 修正项写到 c=0 而非 c=blank，相当于把 blank 当 0 使用，梯度分布整体错位
+effect:
+  objects:
+  - 梯度
+  - 训练信号
+  detail: blank!=0 的 CTC 训练每个 (t,n) 的梯度行和偏离 0 约 0.327（应≈2.8e-7 浮点噪声），log_probs 梯度错位分布，返回码 0 无告警；blank=0 时正确
+  visibility: 静默错误
+mitigation:
+  detect: 对 CTC 反向输出按行求 sum_c 验证 ≈0（softmax+CTC 自洽不变式，与标杆无关）；blank=0 对照
+  fix: 待定
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7162
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnCtcLossBackward（Atlas A2 910B2 / CANN 9.2.0 / aclnn 两段式直调）在 blank!=0 时输出梯度错误：修正项被写到 c=0 而不是 c=blank。判据是与标杆无关的自洽不变式——softmax+CTC 梯度在每个 (t,n) 上必须满足 Σ_c ∂L/∂log_probs[t,n,c]=0（概率单纯形上梯度正交全 1 方向）。实测 blank=0 时行和≈2.8e-7（浮点噪声量级）；blank=1/2 时行和≈0.327，多个数量级偏离，且差值恰好等于被错位到 c=0 的那一项。复现：gradOutput=fp32[N]、logProbs=fp32[T,N,C]、targets int64、blank=1 触发、blank=0 正确。推理库未收录（find count=0）。
+  source: https://gitcode.com/cann/ops-nn/issues/7162（2026-10-22，open；含判据、复现参数与 fp64 口径）
+  behavior: 语音/序列任务用 CTC loss 训练且 blank label 非 0（如 blank=1）时：训练照常跑、loss 正常下降口径，但每步反传给 log_probs 的梯度行和不再为 0，blank 通道与本该是 blank 的位置梯度互串——模型收敛速度与最终对齐质量受损，且没有任何报错。若 blank=0（多数默认配置）完全正常，所以只在自定义 blank label 的训练里出现，表现为难定位的收敛劣化。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

@@ -1,0 +1,47 @@
+id: TRN-0368
+legacy_ids: []
+slug: opsnn_bcegrad_target_weight_broadcast_missing
+aliases: []
+title: BCE 反向 target/weight 广播未生效越界读错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BCEBackward 广播处理
+  behavior: aclnn CheckShape 只校验可广播性不 expand，下游 TBE 动态内核只 broadcast grad_output，target/weight 按元素总数读取越界。
+effect:
+  objects:
+  - 梯度
+  detail: target=[1x4]/weight=[N] 等文档支持的广播输入下 BCE 反向输出 4/8~7/8 元素错，fp32 最大超容差 1.8e6 倍。
+  visibility: 静默错误
+mitigation:
+  detect: 训练前用小张量 CPU 对照 BCE 反向；检查 target/weight 是否为广播形状。
+  fix: 待定（issue open，修复方向：aclnn 层 expand 后下发或 kernel 补广播）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7132
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnBinaryCrossEntropyBackward（A2 走 ops_legacy TBE 动态内核）：资料声明 target/weightOptional 可广播到 self，但 opp/built-in/.../ops_legacy/binary_cross_entropy_grad.py 只 tbe.broadcast(grad_output, shape)，val1=tbe.vsub(x,y) 的 y=target 与 vmul(weight,result) 均未广播；aclnn 层 CheckShape（aclnn_binary_cross_entropy_backward.cpp:143-155）用 OP_CHECK_BROADCAST_AND_INFER_SHAPE 只校验可广播性（不可广播正确 161002）但不把输入 expand 到 self 形状再下发。实测（A2 910B2、CANN 9.2.0-beta.2）：target=[1x4]/[1x1]/[2x1] 或 weight 同构时 rc=0、输出与闭式 out=g*w*(x-t)/(x*(1-x)) 对照 4/8~7/8 元素不符，fp32 最大超容差 1.8e6 倍，fp16/bf16 同错；deterministic 开关两腿同值（非竞态）；形状小的输入按 self 元素数读取读到声明范围外相邻显存。
+  source: https://gitcode.com/cann/ops-nn/issues/7132（2026-10-21，open；含自包含 C 复现与 TBE 源码定位）
+  behavior: 训练用跨 batch 共享标签（target=[1,N]）或逐类别权重（weight=[N]）——两者都是 BCE 文档明确支持的常规写法——时，NPU 上 BCE 反向梯度大部分元素静默错误（超容差可达百万倍量级），且因读相邻显存、同输入换显存布局结果会变；训练不报错但梯度方向错误。
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

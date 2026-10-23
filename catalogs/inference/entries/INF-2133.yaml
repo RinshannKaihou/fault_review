@@ -1,0 +1,58 @@
+id: INF-2133
+legacy_ids: []
+slug: vllm_flashinfer_bf16_q_nonunit_qscale_garbage
+aliases: []
+title: vLLM FlashInfer BF16 Q 非单位 q_scale 输出垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FlashInfer q_scale 传参
+  behavior: FP8 K/V 下 native FlashInfer 路径把 layer._q_scale_float 传给 kernel，即使 Q 是 BF16/FP16 未量化；非单位 query scale 错误缩放注意力；q_scale=1 掩盖
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 受影响请求输出垃圾而非正确答案；Qwen3.8-27B FP8 非单位 attention scale 服务实测 0.29.0/0.32.0 复现、0.23.0 通过；修复后同请求恢复正确
+  visibility: 静默错误
+mitigation:
+  detect: CPU 参数边界测试（issue 提供复现器：stored_q_scale=0.25 时 passed=0.25）
+  fix: 'query-dtype 修复（BF16/FP16 Q 传 q_scale=1，保留 FP8 Q 反量化）——#53754 既有 PR，关联 #53481；发布状态未核实'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63043
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.32.0（v1/attention/backends/flashinfer.py L2264-2271）native FlashInfer 路径在 FP8 K/V 下把 layer._q_scale_float 传给 kernel，即使 Q 是 BF16/FP16 且未经 FP8 量化——非单位 query scale 因此错误缩放注意力（sm_scale*q_scale），q_scale=1 时掩盖。CPU 参数边界复现（调用真实 FlashInferImpl.forward，GPU 包装换数值替身）：stored_q_scale=1.0 时 passed=1.0；stored_q_scale=0.25 时 passed=0.25、error=1.234（断言 "BF16 Q must not receive FP8 query descaling"）；query-dtype 修复后两档 passed=1.0。服务实测：Qwen3.8-27B FP8 非单位 attention scale 在 0.29.0/0.32.0 输出垃圾、0.23.0 通过检查；修复后恢复。#53481 线程、#53754（gaoxiaomo）修复 PR、Ministral 复现同在。
+  source: https://github.com/vllm-project/vllm/issues/63043（vLLM 0.32.0 CPU 边界复现 + 0.29/0.32 服务实测）
+  behavior: FP8 KV cache 模型（如 Qwen3.8-27B FP8）以 BF16 查询运行 vLLM 0.29-0.32 native FlashInfer 后端且注意力 q_scale 非默认 1 时，请求输出垃圾文本；无报错。同配置 q_scale=1 正常，dtype 修复后同请求恢复正常输出。
+  trigger_surface: vLLM 0.29-0.32 + native FlashInfer + FP8 K/V + BF16/FP16 Q + 非单位 q_scale
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 量化
+      effect:
+        from: 输出内容
+        to: 数值结果

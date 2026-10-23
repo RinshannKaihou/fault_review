@@ -1,0 +1,58 @@
+id: INF-2118
+legacy_ids: []
+slug: vllm_glm_kpool_unchunked_start_unwritten_or_foreign
+aliases: []
+title: GLM kpool 跨非对齐 chunk 起点未写或池入他请求 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: vllm
+    component: GLM5Next kpool 压缩写入
+  behavior: _kpool_compress_insert 假定 pool 对齐 chunk 起点；起点 mod 4 != 0 时跨界 pool 被行号掩码丢弃：首行时永不写出、有前置请求时用上一请求 key/gate 压缩
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  - 跨请求/跨样本数据
+  detail: GLM-5.3-Flash 推理服务中 index-K 槽位读到旧值或另一请求 token 的压缩记录，后续稀疏注意力选错 KV 行；输出影响未量化，观察 217 次 index-K 写异常均在非 4 对齐 chunk 起点
+  visibility: 静默错误
+mitigation:
+  detect: observe-only 校验每个 index-K 写与调度器期望重建（报告者已实施，双 GPU 217 事件一致）
+  fix: issue 附 writer-side-correction.diff（读跨边界 pool 的首尾段合并后压缩），未提交合入，未发布
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63168
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM GLM5Next 的 _kpool_compress_insert（vllm/models/glm5next/nvidia/sparse_indexer.py L61-L104，amd/sparse_indexer.py 同）把行 t-3..t 压缩为一条 index-K 记录，仅当行 t 持有 pool 槽时写出（write_mask = valid & (pos >= kpool-1)），docstring 声明前置条件 "Assumes pool-aligned chunk starts"。当请求的 prefill chunk 起点 s mod 4 = r != 0：覆盖 s-r..s-r+3 的 pool 在该 chunk 的行 3-r 处完成，但该行号低于 kpool-1 被掩码丢弃——(a) 该请求是本步首条 prefill 行时 pool 永不写出，后续 index-K 读到旧内容；(b) 前面有其他请求时行窗口 t-3..t 混入上一请求最后 r 个 token，pool 由他请求的 key/gate 压缩。CPU 最小复现（main c723f6d3，把 compress 换成按 key 字节识别成员的记录器）：start=2045..2047 时 pool511 期望 A2044..A2047，首行情形为 UNWRITTEN、后行情形分别为 P111 A2045 A2046 A2047 等 FOREIGN；--kernel 模式用 Triton 解释器跑真实 kpool_compress_and_write_cache 判定一致。调度器无任何机制对齐 chunk 起点到 kpool：共享 step、decode 行消耗（MTP K=1 奇数 decode 请求即可）、draft 槽预留、long_prefill_token_threshold、Mamba align 子块都能留下非对齐偏移；下游 GLM-5.3-Flash 构建（DFlash x3 预留 K=3 草稿槽，2048 mnbt 切成 2045-token chunk）在 2×RTX PRO 6000 实测：50 请求 217 个 index-K 写事件双 GPU 完全一致且全部位于非 4 对齐 chunk 起点，186 个 pool 未写、31 个池入他请求 token；index-K 读方实际选中受影响 pool 的频率与对模型输出的影响未测量。
+  source: https://github.com/vllm-project/vllm/issues/63168（vLLM main c723f6d3 源码复现 + 下游 0.1.dev20051 服务实测）
+  behavior: GLM-5.3-Flash 长前缀服务中，稀疏索引 index-K 池的部分槽位内容错误：同一请求连续生成时无明显报错，但被选中的 KV 行可能来自旧内容或上一请求的 token；观察期内每 50 请求约 217 个 index-K 写事件异常，全部发生在 prefill chunk 起点 4 不整除时（如 2045/2046/2047 对齐破坏），输出质量影响未量化，无任何日志或异常提示。
+  trigger_surface: GLM-5.x/GLM-5.3-Flash sparse indexer + chunked prefill；chunk 起点 mod 4 != 0（共享 step、decode 并存、DFlash/MTP 草稿槽预留、长前缀阈值切分）
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - detail

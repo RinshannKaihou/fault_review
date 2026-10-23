@@ -1,0 +1,53 @@
+id: TRN-0376
+legacy_ids: []
+slug: opsnn_kldiv_target_backward_overflow_empty_unwritten
+aliases: []
+title: KlDivTargetBackward 中间量溢出 inf 且空输入不写输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: KlDivTargetBackward
+  behavior: 公式改写为 g*log t - g*s + (g*t)/t，(g*t) 在 fp32 下先溢出再除回；空输入分支两段返回 0 但完全不去写 gradTarget 输出
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: g=1e10、t=1e30 时 gradTarget=inf（真值 7.00776e11 有限）；合法空输入形态 self=[0,3] 时 gradTarget 保持预填 NaN 原样未被写入，返回码 0
+  visibility: 数值异常
+mitigation:
+  detect: 对极端幅度输入做有限性检查；空输入路径用 NaN 金丝雀预填输出验证写行为
+  fix: 待定（issue 建议：避免 g*t 中间量/改 fp64 中间量/先除后乘；空输入写 0 或报 161002）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7168
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann ops-nn aclnnKlDivTargetBackward（Atlas A2 910B2 / CANN 9.2.0，aclnn 两段式直调）两缺陷：① 溢出——实现把公式改写为 g*log t - g*s + (g*t)/t，(g*t) 在 fp32 下先溢出再除回来，g=1e10、t=1e30、s=0、reduction=none 时输出 inf，真值 7.00776e11 有限。② 空输入不写输出——self=[0,3]、target=[3]、gradTarget=[3]（合法形态）两段返回 0，但 gradTarget 完全没有被写入（预填 NaN 原样保留）。同批 #7167（KlDivBackward dtype 不一致未拒绝/reduction 非法静默按 none）为同接口家族的入参校验类，机制不同，见日报留观。'
+  source: https://gitcode.com/cann/ops-nn/issues/7168（2026-10-22，open；含两组复现参数与期望值）
+  behavior: 用 KL 散度 target 梯度（蒸馏/正则场景）时两种可观察后果：① 大幅度梯度/概率组合下 gradTarget 直接 inf——正常训练里 loss 曲线从某步起被 inf 点燃变 NaN，而输入本身全是有限值；② batch 维含空段（动态 shape、变长聚合）时该段输出保持分配时的脏值/预填值不写，两段返回 0，下游拿到未初始化数据。两类都无报错，靠 NaN 金丝雀或幅度检查才能发现。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

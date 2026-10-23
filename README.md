@@ -7,7 +7,7 @@
 
 检索结果**只供参考**，用于提出假设、寻找相似先例，不能直接当结论。引用前要打开条目原文核对（见[引用纪律](#引用纪律)）。
 
-当前快照（2026-10-22）含 **2,481 条**已审计故障条目（推理 2,117、训练 364），其中 **619 条**来自 2026-10-20/21 的 NPU 存量回填。仓库、硬件、来源的覆盖明细见 [1022 故障条目快照](#1022-故障条目快照)。
+当前快照（2026-10-23）含 **2,528 条**已审计故障条目（推理 2,141、训练 387），其中 **619 条**来自 2026-10-20/21 的 NPU 存量回填。仓库、硬件、来源的覆盖明细见 [1022 故障条目快照](#1022-故障条目快照)（按 10-22 的 2,481 条统计）。
 
 ## 数据流
 
@@ -75,7 +75,7 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
 | 命令 | 用途与选项 |
 |---|---|
 | `search "<描述>"` | `--topk N`（默认 8）；`--mode hybrid\|dense\|bm25`（默认 hybrid） |
-| | 过滤：`--repo inference\|training`；`--category <子系统或旧分类>`（如 `KV缓存`、`cat6`、`NUM`、`neg_rejected`）；`--confidence verified\|documented\|speculative`；`--trigger yes\|partial\|no\|not_target`（推理编目的触发标签） |
+| | 过滤：`--repo inference\|training`；`--category <子系统或旧分类>`（如 `KV缓存`、`cat6`、`NUM`、`neg_rejected`）；`--confidence verified\|documented\|speculative` |
 | | `--no-neg` 排除负结果；`--include-pointers` 让指针条目参加检索；`--full` 附带条目全部字段 |
 | `lookup <编号或名称>` | 依次精确匹配新编号、旧编号、名称或别名；不是编号形式的查询再按名称子串匹配（最多 10 条）。**编号形式的查询查不到时返回空，不会模糊命中别的编号** |
 | `related <编号或名称> --depth N` | 返回关联条目（不含自身），每条带 `link_kind` |
@@ -189,7 +189,7 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
 
 ### 硬件覆盖
 
-条目 schema **没有硬件字段**，下表是按标题、`trigger_note`、`mechanism`、`behavior`、`source` 里出现的代号做的文本统计，**可多重计数**（一条同时提到 A3 与 910C 会各计一次），只能当覆盖面的粗略估计：
+条目 schema **没有硬件字段**，下表是按标题、`trigger_note`（10-23 已取消，是 `original.trigger_surface` 的复述；复算请改用后者）、`mechanism`、`behavior`、`source` 里出现的代号做的文本统计，**可多重计数**（一条同时提到 A3 与 910C 会各计一次），只能当覆盖面的粗略估计：
 
 | 硬件 | 提及条目 |
 |---|---|
@@ -298,6 +298,7 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 | 10-21/22 | 评审阵容换为 3 个 flash 基础评 + 3 个强模型面板；27 个"改写后未过复核"的字段由 Opus 5.5 独立复核，15 条重写（其中 5 条模型的措辞也不合格，手工修正） | 见下方门禁与 `eval/fix_list.json` |
 | 10-22 | 快照发布 2,097 + 364 条；indy 门禁改为"逐条通过集"口径 | [评测门禁与测试](#评测门禁与测试) |
 | 10-22 | 交叉编码器重排上线（前 30 名，bf16）；新写 50 条口语留出题 R@5 0.76→0.88，冷启动延迟与之前持平（约 11 秒） | [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) |
+| 10-23 | 取消 `family` / `trigger` / `trigger_review` / `trigger_note` 四个标签（研究期判定轴，issue/PR 给不出依据；扫描期 `family` 775 条有 774 条是 `infra_off`），`--trigger` 过滤与网页触发筛选随之下线；迁移条目的历史取值留在 `original.meta`。快照 2,141 + 387 条 | 上游 `catalog/SCHEMA.md` |
 
 后续计划按顺序进行：修复悬空的 `var` 关联 → 模式/实例分层（合并近重复条目）→ 补全改进措施 → 口语/模糊症状 query 的检索改进（诊断与 A/B 结论见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) 2026-10-22 一节）。NPU 历史存量回扫已于 2026-10-21 完成，不再是待办（原方案见 [normalize/npu_backfill/PLAN.md](normalize/npu_backfill/PLAN.md)）。
 

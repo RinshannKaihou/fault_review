@@ -1,0 +1,47 @@
+id: INF-2139
+legacy_ids: []
+slug: torch_npu_format_cast_two_arg_aclnn_uses_self
+aliases: []
+title: npu_format_cast_ 两参 aclnn 路径误用 self 转换源
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: FormatCast aclnn 分支
+  behavior: npu_format_cast_(self, src) 的 aclnn 分支把 self 而非 src 传给转换实现，再 set_ 换 self 的 storage；legacy 路径正确，两路径语义分叉
+effect:
+  objects:
+  - 数值结果
+  detail: src 中暂存的数据被静默丢弃，self 变成"自身旧内容"的格式转换结果，共享旧 storage 的视图失效；Python 侧 npu_format_cast_(nz, src) 实测 nz 仍全为旧值 -100
+  visibility: 静默错误
+mitigation:
+  detect: 调用后核对 self 是否获得 src 数据（报告者最小用例）
+  fix: 修复分支 fix/npu-format-cast-aclnn-src（aclnn 分支转换源 self→src + Group 3b 直接用例，报告者本地，未上游合入）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5613
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu（v2.7.1/master）npu_format_cast_(Tensor self, Tensor src) 两参 in-place 重载（语义：将 src 转为 self 的格式并写入 self）的 aclnn 分支把 self 误传给 format_cast_impl_out_npu_aclnn（torch_npu/csrc/aten/common/FormatCastKernelNpu.cpp）：dst = format_cast_impl_out_npu_aclnn(self, ...)（应为 src），随后 self.set_(dst.storage(), ...)。后果：src 数据静默丢弃，self 被换成自身旧内容的转换结果，且 storage 指针被更换使共享旧 storage 的视图失效。legacy Identity 路径（format_cast_impl_out_npu(self, src)）正确。触发：Ascend950DT（aclnn-only 机型恒走）与 Ascend910B CANN>=9.1.0（支持且张量非 view）。该重载仅 CopyKernel.cpp 三处内部调用（legacy copy 三明治写回），Python 经 npu_format_cast_(self, src_tensor) 可达但无测试覆盖，自 !22299 引入未被 CI 发现。Ascend950 复现：nz 全 -100 的 fp16 转 NZ 格式后，src=arange 数据，调用 npu_format_cast_(nz, src) 再转回，nz 仍全 -100。修复在报告者 fork 分支（含 Group 3b 用例），未上游。
+  source: https://gitcode.com/Ascend/pytorch/issues/5613（Ascend950DT/CANN 9.2.0B076 复现 + 源码行号；910B CANN>=9.1.0 同样可达）
+  behavior: 在 Ascend 950 或 910B（CANN≥9.1.0）上调用两参版 torch_npu.npu_format_cast_(self, src) 后，self 并未获得 src 的数据：仍保持自身旧内容（实测预填 -100 的张量转换后仍全 -100），src 数据静默丢失；同时 self 的 storage 指针被更换，之前共享其 storage 的其他视图悄然失效。无任何报错。
+  trigger_surface: npu_format_cast_(self, src) 两参重载；Ascend950 恒触发、910B CANN>=9.1.0 非视图张量触发
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,56 @@
+id: TRN-0365
+legacy_ids: []
+slug: opsnn_cegrad_label_smoothing_uninit_out
+aliases: []
+title: CELossGrad label_smoothing 非 0 返回未初始化内存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CELossGrad 写回路径
+  behavior: kernel 在 labelSmoothing!=0 时无任何输出写回与拒绝路径，外层 CopyOutLog 把未初始化 UB 数据当结果写出；tiling/aclnn 层均未校验该取值。
+effect:
+  objects:
+  - 梯度
+  detail: labelSmoothing!=0 的 CE 反向输出为随机字节，同输入多次调用结果互不相同；直接污染训练梯度。
+  visibility: 不可复现
+mitigation:
+  detect: 出参预填哨兵值（如 12345）重跑比对；同输入连续 3 次调用比对原始字节是否一致。
+  fix: 待定（issue open，期望非 0 时返回 161002 或实现 smoothing 项）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7135
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnCrossEntropyLossGrad（loss/cross_entropy_loss_grad）在 labelSmoothing!=0 时：op_kernel/cross_entropy_loss_grad_weight_not_none.h:133/145 与 ..._weight_none.h:119/127 均为 if(labelSmoothing==0){...EnQue(xGradLocal);}，非 0 时既不实现资料公式的 predictionsGradSmoothLoss 项、也不把结果放进输出队列，但外层照样 CopyOutLog() 把 UB 里未初始化内存写到 out；op_host tiling GetTilingAttr() 只取数值不校验取值范围，aclnn 层也未拦截（资料标明「当前仅支持 0.0」但错误码表无对应条目）。实测（Atlas A2 910B2、CANN 9.2.0，纯 ACL C 两段式直调）：出参预填 12345 后 labelSmoothing=0.5 返回 out=-0.166667/0.166667（既非哨兵也非 fp64 标杆 ≈-0.0276），4×6 用例连续三次同输入调用 out 原始字节互不相同（02000000…/…184f86b6…/40e38db7…），典型未初始化 UB 数据；两段 rc 均 0。
+  source: https://gitcode.com/cann/ops-nn/issues/7135（2026-10-21，open；含自包含 C 复现与源码行定位；同日系列 issue 之一）
+  behavior: 训练用 CrossEntropyLoss(label_smoothing=0.1/0.2) 时，NPU 上 CE 反向梯度输出为随机字节——不是固定错值而是每次调用都变；loss 曲线无立即异常但梯度被垃圾数据污染，权重逐步劣化且无法通过固定 seed 复现。labelSmoothing=0 的常规路径正常，只有开启 label smoothing 的训练受影响。
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-22
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    uncertain:
+    - subsystem

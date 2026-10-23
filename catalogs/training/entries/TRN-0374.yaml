@@ -1,0 +1,53 @@
+id: TRN-0374
+legacy_ids: []
+slug: opsnn_logit_grad_double_eps_narrowed_fp32
+aliases: []
+title: LogitGrad double eps 被窄化 float32 边界判错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: LogitGrad 入口与 tiling 链路
+  behavior: 原型声明 double eps 但实现链路按 float32 承载（static_cast<float>(eps)），eps 与 x 的边界比较在比较前被舍入到 float32，次正规 eps 下溢为 0
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: eps=x+ulp32/8（double 下严格大于 x）时按资料应输出 0，实测输出与 eps==x 完全相同；eps=1e-320 输出与 eps=0.0 逐字节相同，x=0 时输出 inf 而非 0，返回码 0
+  visibility: 静默错误
+mitigation:
+  detect: 对 eps 邻近 x 的边界点做 fp64 标杆对拍（x+ulp32/8 / 1e-320 两档）
+  fix: 待定（issue 建议 eps 全程 double 或把原型/资料改 float 二选一）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7163
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnLogitGrad（Atlas A2 910B2 / CANN 9.2.0）原型声明 double eps（资料参数表亦为 double），但 op_api/aclnn_logit_grad.cpp 中 l0op::LogitGrad(..., static_cast<float>(eps), ...)，下游 l0op/tilingData 形参亦为 float。实测：① x=float32(0.3)、eps=x+ulp32(x)/8（double 下严格大于 x，按公式 x<eps 应输出 0）实测输出 4.76190472，与 eps==x 时逐字节相同，证明 eps 比较前被舍入到 float32；eps=x+ulp32/4、x+3*ulp32/8 同样。② eps=1e-320（double 可表示）输出与 eps=0.0 逐字节相同（次正规下溢），eps=1e-45（fp32 非零）正常；x=0、eps=1e-320 时按资料应输出 0、实测 inf。环境为 aclnn 两段式直调，判据为第一段返回码 + fp64 标杆逐元素比对。
+  source: https://gitcode.com/cann/ops-nn/issues/7163（2026-10-22，open；含源码定位与两组复现值）
+  behavior: 调用 torch.nn.functional.logit 相关梯度（或直接调 aclnnLogitGrad）且 eps 取极小值或紧贴 x 边界时：NPU 输出与文档 double 语义不符——x 恰在 eps 边界的样本本应被判越界输出 0/被抑制，实际按 eps==x 计算，x=0 配次正规 eps 时甚至直接出 inf。训练中如果用 logit+eps 做数值稳定或掩码边界，边界样本的梯度被静默算错，无任何报错；eps 常规量级（如 1e-6）不受影响。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

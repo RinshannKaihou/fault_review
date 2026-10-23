@@ -1,0 +1,60 @@
+id: INF-2136
+legacy_ids: []
+slug: cann_clipped_swiglu_group_rows_uninitialized
+aliases: []
+title: ClippedSwiglu 组外输出行为未初始化显存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: clipped_swiglu 输出分配
+  behavior: kernel 只写 group 覆盖行（realBatchSize_=min(sum(gi),batch)），适配层用 at::empty 分配输出——范围外行是显存池残影；仓库 golden 表明正确语义是输出 0
+effect:
+  objects:
+  - 数值结果
+  detail: sum(group_index) 小于 batch 行数时，输出未被组覆盖的尾部行是随机非零脏数据（显存池残影）；同一代码同一输入有时全 0、有时出现残影，取决于显存分配历史；无报错，下游消费脏值；预热污染显存池后可稳定复现。
+  visibility: 静默错误
+mitigation:
+  detect: 多次调用并先污染显存池（报告者的预热污染法）
+  fix: 修复 PR !12603（clipped_swiglu 传 group_index 时输出未初始化为显存残影，改用 at::zeros 初始化，open）；grad 同缺陷另修
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7223
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12603
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0386
+original:
+  mechanism: ops-nn 的 clipped_swiglu 与 clipped_swiglu_grad 传 group_index 且 sum(group_index) 小于 x 的 batch 行数时，输出的 min(sum(gi),batch) 之外行是未初始化显存（显存池残影）：kernel 侧只写 group 覆盖行（clipped_swiglu.hpp Process() 的 realBatchSize_ = min(sum(group),dimBatchSize)，CopyOut 仅按 realBatchSize_ 循环）；torch_extension 适配层用 at::empty 分配输出（csrc/clipped_swiglu.cpp、clipped_swiglu_grad.cpp）。仓库自身参考实现（golden.py 的 dx=np.zeros、executor 的 remain_tensor=zeros_like 后 cat、示例的全 0 预置 H2D）表明正确语义是范围外行输出 0。脏值取决于分配器当时复用的内存块：同一代码同一输入有时全 0（碰巧干净）、有时残影，典型未定义行为，潜伏至今。A3（910_93 双卡，CANN 9.1.0 toolkit，ops-nn master ddbbfc99 的 torch_extension whl 1.0.1 eager 模式）复现；内置 CANN 预编译 ClippedSwiglu_*_high_performance.o 与自编 kernel 均复现内核写范围行为。修复 PR !12603（at::zeros 初始化）open 未合。
+  source: https://gitcode.com/cann/ops-nn/issues/7223（A3 910_93/CANN 9.1.0 实测，预热污染显存池后稳定复现）；修复 https://gitcode.com/cann/ops-nn/merge_requests/12603（open）
+  behavior: MoE 组场景（sum(group_index) < batch）下调用 clipped_swiglu/clipped_swiglu_grad，输出张量未被组覆盖的尾部行是随机非零脏数据：同一代码同一输入有时全 0、有时出现残影值，取决于显存分配历史；无报错，下游消费脏值。预热污染显存池后可稳定复现。
+  trigger_surface: clipped_swiglu/clipped_swiglu_grad + group_index 且 sum(gi)<batch；Ascend A3/910_93，CANN 9.1.0 内置与自编 kernel 均命中
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  updates:
+  - date: '2026-10-23'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

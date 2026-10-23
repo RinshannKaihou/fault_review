@@ -1,0 +1,59 @@
+id: TRN-0382
+legacy_ids: []
+slug: msformers_muon_ns_schedule_spectral_divergence_nan
+aliases: []
+title: mindformers Muon 分段 NS 谱爆炸写 NaN 入参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: mindformers
+    component: Muon Newton-Schulz 分段系数
+  behavior: 8 步分段 NS 系数下，归一化输入（谱≤1）经首步过冲至 σ≈1.3~1.97，中段负二次项交替放大，谱轨迹 1→1.30→1.97→4.52→588→2.4e13→inf，inf 参与后续迭代得 inf-inf=NaN 写入参数
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  - 训练轨迹
+  detail: 形状选择性：8 组形状中 6 个近方阵形状触发、扁长矩阵不触发，与生产任务「仅特定层参数爆炸」吻合；12B 生产任务 step 37342 稳定复现参数 NaN→下一步前向全 NaN，重跑同位置复现，日志仅见 NaN、无 optimizer 内部异常
+  visibility: 数值异常
+mitigation:
+  detect: 监控 Muon update 谱半径/有限性（NS 迭代中间量 σ）；参数 NaN 告警前置到 optimizer step 后
+  fix: 修复 MR https://atomgit.com/mindspore/mindformers/merge_requests/8882（open，2026-10-22）：双层防护——非有限输入清洗为零 + NS 输出非有限回退归一化输入；对收敛迭代 bitwise 恒等；8×910B3 deterministic 40 步端到端 loss/grad_norm 逐步 bitwise 一致
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://atomgit.com/mindspore/mindformers/merge_requests/8882
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: mindspore/mindformers pynative/optimizer/muon.py 的 8 步分段 Newton-Schulz schedule（首步 8.2051/-22.9019/16.4607、中段 -0.0108/0.7558/-0.3487）在近似方阵梯度上自然发散：归一化输入（谱≤1）经首步放大至 σ≈1.3~1.97（设计内过冲），中段系数负二次项在该谱区交替放大，实测谱轨迹 1→1.30→1.97→4.52→588→2.4e13→inf，inf 参与 NS 后续迭代得 inf-inf=NaN，NaN 直接写入参数、下一步前向全 NaN。形状选择性（6/8 近方阵形状触发、扁长矩阵不触发）与生产任务「仅特定层参数爆炸」吻合：12B 生产任务 step 37342 稳定复现参数 NaN→前向全 NaN（8×910B3、mindspore 2.10）。修复 MR !8882（open）：_normalize_newton_schulz_input 非有限输入清洗为零 + newton_schulz 迭代后非有限输出回退归一化输入；标准 5 步系数与收敛迭代 bitwise 不变；NaN/Inf 注入单测、8 步 schedule 8 组形状全有限（σmax≤0.25）、40 步端到端 loss/grad_norm bitwise 一致。与已编 Muon 家族（OPT.08/10/11 矩阵几何/频率/NS 执行，均 DeepSpeed/Megatron 栈）机制不同：本条是 NS 多项式系数本身的谱稳定性缺陷，属 mindformers 栈新机制。
+  source: https://atomgit.com/mindspore/mindformers/merge_requests/8882（2026-10-22，open；含逐步谱轨迹、形状矩阵与端到端 A/B 验证）
+  behavior: mindformers + Muon 优化器训练大模型：跑到某一步（生产 12B 任务在 step 37342）loss 突然变 NaN、前向全 NaN，无法继续；重跑同样位置复现。根因是特定形状（近方阵）参数的 NS 迭代谱爆炸把 NaN 写进权重。换成分段系数不同的配置或避开 Muon 的层不炸。用户视角：稳定复现的「参数 NaN→前向全 NaN」事故，日志里只有 NaN 出现，无 optimizer 内部异常。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 优化器状态
+        to: 模型权重
+    rewritten:
+    - behavior
+    - detail

@@ -1,0 +1,59 @@
+id: TRN-0377
+legacy_ids: []
+slug: opstransformer_sparse_flash_mla_grad_oob_write_legal_input
+aliases: []
+title: SparseFlashMlaGrad 合法输入 GM 越界写 1060 处
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SparseFlashMlaGrad arch22
+  behavior: A2 的 post.h 与 sfag_basic.h/smlag_basic.h 里 DataCopyPad 目标地址按 tile 步进直接计算，尾块/对齐无越界保护，写越界落在已映射内存时静默、落在未映射内存时 AI Core 异常
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: '合法基线返回 0、结果可用，但 mssanitizer memcheck 报 1060 处 GM 写越界（单笔最大 896B），--padding 1024 后仍同样报；同族 #6534/#6535 在边界形态表现为 507057/507015 崩核'
+  visibility: 静默错误
+mitigation:
+  detect: mssanitizer -t memcheck --padding 1024 包住训练进程，统计 out of bounds 计数；越界落在未映射页时提前表现为 AI Core 异常
+  fix: 待定（master 复核 arch22 post.h/sfag_basic.h 未见尾块越界保护，未修）
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6537
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6534
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6535
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6536
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann ops-transformer aclnnSparseFlashMlaGrad（Atlas A2 910B2 8 卡 / CANN 9.2.0）在完全合法的基线上（BSND、B=2、S1=128、S2=256、N1=32、D=512、cmpRatio=1、sinks/dSinksOut 齐备、metadata 正常前置）程序正常返回 0、结果可用，但 mssanitizer memcheck 报 1060 处 GM 写越界、单笔最大 896B（block aiv(1)，SparseFlashMlaGrad kernel）；--padding 1024 放大安全区后仍同样报，说明越界量超出对齐 padding、非对齐假阳性。master 复核（A2 op_kernel/arch22/post.h 与 arch22/sfag_basic.h/smlag_basic.h）：DataCopyPad 目标地址按 tile 步进直接计算，未见尾块/对齐的越界保护。报告者指明与本批 #6534（sinksOptional 为空 AI Core 越界 507057）、#6535（TND+cmpRatio=128 部分组合越界 507057/507015）是同一类问题不同表现：越界落在已映射内存只被 sanitizer 抓到，落在未映射内存直接 AI Core 异常——即平时静默写坏相邻显存，边界情形崩核。复现 1/1，ctypes 直调，先 aclnnSparseFlashMlaGradMetadata 再主算子。'
+  source: 'https://gitcode.com/cann/ops-transformer/issues/6537（2026-10-22，open；含 sanitizer 计数、padding 对照与 master 源码复核）；同族 #6534 https://gitcode.com/cann/ops-transformer/issues/6534 、#6535 https://gitcode.com/cann/ops-transformer/issues/6535 、跨参数校验缺失 #6536 https://gitcode.com/cann/ops-transformer/issues/6536'
+  behavior: MLA 类模型训练用 Sparse Flash MLA 反传：日常跑合法 shape 一切正常（返回 0、结果能对拍），但 kernel 每次都在向输出张量声明范围之外的 GM 写最多 896B——相邻显存（可能是别的激活、优化器状态）被悄悄改写，训练出现难归因的偶发数值污染；换成特定参数组合（sinks 为空、TND+cmpRatio=128）则直接 AI Core 异常崩训练。不用 mssanitizer 包住进程时第一种形态完全不可见。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

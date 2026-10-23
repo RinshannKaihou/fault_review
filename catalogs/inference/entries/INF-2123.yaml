@@ -1,0 +1,51 @@
+id: INF-2123
+legacy_ids: []
+slug: ttmetal_logit_output_dtype_mismatch_garbage
+aliases: []
+title: ttnn.logit 输出 dtype 与输入不同时半数元素错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: logit 两段 kernel scratch
+  behavior: compute_kernel_hw_startup 按 dfb::out 配 packer，tmp0 却按输入格式分配；阶段1按输出格式 pack、阶段2按输入格式 unpack，DataFormatReconfig 全程 Disabled
+effect:
+  objects:
+  - 数值结果
+  detail: bf16→fp32 输出 ~50% 元素 -inf、~99% abs err>0.05（偶位 logit(0)=-inf、奇位为错位的正确值）；fp32→bf16 输出 451/1024 非有限；同 dtype 或 60+ 其他混合 dtype 一元算子均正确
+  visibility: 数值异常
+mitigation:
+  detect: same-dtype 输出对照或 ttnn.log 同配置对照（均正确）
+  fix: 'issue 建议按输出格式分配 tmp0 并在阶段2重配 unpacker 或对 tmp0 pack/unpack 启用 DataFormatReconfig；测试覆盖混合 output_tensor dtype；修复未提交（PR #59167 不触此文件）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62019
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal main 84ddc0ae9b（ttsim v1.13.0 Blackhole）ttnn.logit(x, output_tensor=o) 当预分配输出的 float dtype 与输入不同（unary.cpp L45-55 显式允许 mixed-float）时返回 -inf 与垃圾：logit_kernel.cpp 分两阶段经 scratch buffer tmp0——阶段1拷贝输入（可选 clamp）pack 进 tmp0，阶段2 unpack tmp0 算 log(x/(1-x))。硬件以 compute_kernel_hw_startup(dfb::in, dfb::out) 配置一次、packer 用输出格式，每步 DataFormatReconfig::Disabled，而 unary_program_factory.cpp L519-525 给 tmp0 按输入的 page size/data format 分配。于是阶段1按输出格式 pack、阶段2按输入格式 unpack：bf16→fp32 时 1024 元素 bf16 读覆盖 fp32 流前 2048 字节——偶元素是 fp32 低半（来自 bf16 的值为 0 → logit(0)=-inf）、奇元素是高半即原 bf16 值移位到 2k+1；主机字节重解释模型精确复现全部 1024 输出。fp32→bf16 时读前半为 bf16 对、后半为陈旧 L1（451 非有限）。实测表：bf16→bf16 正确 0/1024 非有限；bf16→fp32 logit 512/1024 非有限、1015 元素 abs err>0.05。[INFERENCE 未验证] fp32 输出时 packer 写 4096B tile 进 2048B 槽，多 tile 输入疑写穿 tmp0 尾部。测试缺口：tests/ttnn 无 mixed output_tensor 的 logit 测试。
+  source: https://github.com/tenstorrent/tt-metal/issues/62019（main 84ddc0ae9b + ttsim v1.13.0 Blackhole 确定性复现）
+  behavior: 预分配与输入 dtype 不同的输出张量调用 ttnn.logit（如 bf16 输入配 fp32 输出）时，约一半元素返回 -inf、99% 元素误差大于 0.05：偶数位是 logit(0)=-inf，奇数位是正确值被移到错误下标；fp32→bf16 方向近半元素为非有限垃圾值。同 dtype 输出完全正确，相同混合配置下 60+ 个其他一元算子也正确。
+  trigger_surface: ttnn.logit 显式 output_tensor 且 float dtype 与输入不同；Blackhole ttsim 确定性、机制 host 侧与硅无关
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常

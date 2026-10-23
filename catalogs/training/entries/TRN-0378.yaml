@@ -1,0 +1,51 @@
+id: TRN-0378
+legacy_ids: []
+slug: opstransformer_moe_finalize_routing_v3_a2_range_ignored
+aliases: []
+title: MoeFinalizeRoutingV3 A2 忽略特殊专家区间静默按普通专家
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: MoeFinalizeRoutingV2/V3
+  behavior: zero/copy/constant 三类特殊专家区间实现只存在于 950 arch35 路径，A2 绑定的 membase tiling 与 kernel 完全不读这三个属性、也不校验，接口已暴露但实现缺失
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: Atlas A2 上无论三类 range 取何值（含非法 end<start、超上限、区间重叠）均 rc=0 且输出与不传完全相同，按普通专家累加；期望 100.0/114.0/120.0 的用例实测全为基线 97.41
+  visibility: 静默错误
+mitigation:
+  detect: 传任一 range 后断言输出与不传时不同；非法区间（end<start/重叠）应报 161002
+  fix: 待定（issue 建议补 A2 实现或把资料 A2 改不支持二选一，并加 A2 回归用例）
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6549
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-transformer aclnnMoeFinalizeRoutingV3（Atlas A2 910B2 / CANN 9.2.0 / master 4dc31cf4）的 zeroExpertRange/copyExpertRange/constantExpertRange 三参数在 A2 上被完全忽略。资料把 Atlas A2 标为支持并给出三类特殊专家规则（zero→跳过该 k、copy→用 x[i] 替代 expandedX、constant→α1·x[i]+α2·v）。源码定位：op_host/moe_finalize_routing_v2_def.cpp:94-95 把 ascend910b/ascend910_93 绑定 membaseCfg；membase tiling 文件中 ExpertRange 出现次数为 0（只读 drop_pad_mode 与 k 属性，从不读索引 1/2/3 的三个 range）；对比 arch35 tiling 有 GetDropPadModeAndExpertRangeAttrs/CheckExpertRangeValidity；A2 kernel 15 个头文件 zeroExpert/copyExpert/constantExpert 出现次数全为 0。实测 NUM_ROWS=4,K=2,H=8,E=6：三类 range 覆盖全部专家后期望 100.0/114.0/120.0，实测全部与基线 97.410095 逐元素相同；非法取值（[-1,-5]、[1,99999]、区间重叠）同样 rc=0。
+  source: https://gitcode.com/cann/ops-transformer/issues/6549（2026-10-22，open；含期望/实测对照表与源码计数证据）
+  behavior: MoE 训练里用 MoeFinalizeRoutingV3 表达零计算专家/拷贝专家/常量专家（如 shared expert 特殊处理、专家裁剪）语义时：Atlas A2 上这些专家被静默当普通路由专家累加，输出错误但接口返回 0；非法区间配置也不报错。表现是模型输出整体偏差、专家行为与设计不符，且任何返回码/日志都看不到异常；Ascend 950 上同样代码正常，跨平台迁移训练时才会暴露。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

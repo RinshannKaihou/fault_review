@@ -1,0 +1,58 @@
+id: INF-2121
+legacy_ids: []
+slug: vllm_glm_dsa_pp_stale_topk_indices
+aliases: []
+title: GLM-5.x DSA 流水并行程边界丢失 top-k 索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: PP 边界 topk_indices 传递
+  behavior: PP>1 只传 hidden_states/residual，indexer 层的 top-k 索引留在本 GPU buffer；stage 首个复用层读旧值（上一 batch 或未初始化内存），attend 错误 KV 行
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: stage 边界后的复用层 attend 错误 KV 行，输出仍连贯（其他层正确）故静默；PP8 默认切分 78 层中 13 层受影响
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 待定（issue 报告者建议在 PP 边界传播索引或 stage 首层重算，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63170
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.30.0 起 GLM-5.x（GlmMoeDsaForCausalLM，由 deepseek_v32/nvidia/model.py 服务）的 DSA indexer 只在部分层运行（GLM-5.3：层 0,1,2 及从 6 起每 4 层，index_topk_freq=4），其余层复用最近 indexer 层的 top-k 索引，存于 per-GPU 的 topk_indices_buffer。PP>1 时 vLLM 只向下一 stage 传递 hidden_states 和 residual，索引不随行；当 stage 边界落在 indexer 层与复用层之间（如默认切分 [9,10,10,10,10,10,10,9] 影响 PP8 的 13/78 层：9、19-21、29、39-41、49、59-61、69；PP2 [39,39] 影响 39-41），下一 GPU 的首批复用层读到其自身 buffer 的旧内容——上一 batch 的选择或首 step 的未初始化内存，attend 到错误 KV 行。调度派生的注意力元数据（block tables、slot mappings）在各 rank 正确重建，仅计算出的索引缺失。报告者按源码定位（8×B200 PP8 GLM-5.3 FP8，FLASHMLA_SPARSE 后端；H200 PP8 FLASH_ATTN_MLA_SPARSE 同码同问题）；输出保持连贯，静默。
+  source: https://github.com/vllm-project/vllm/issues/63170（vLLM 0.30.0 pip + main，8×B200 PP8 GLM-5.3 FP8 实测环境，源码定位）
+  behavior: GLM-5.3/GDN-DSA 模型以流水并行（PP>1）服务时，输出文本连贯但质量下降：stage 边界后的注意力层使用陈旧或未初始化的 top-k 稀疏索引，attend 到错误的 KV 行；无任何报错或日志，用户只观察到生成质量劣化，PP8 默认切分下 78 层中 13 层受影响。
+  trigger_surface: GLM-5.x DSA/GlmMoeDsa + --pipeline-parallel-size>1，任意 GPU；stage 边界落在 indexer 层与复用层之间
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 隐状态
+      visibility:
+        from: 静默错误
+        to: 质量退化

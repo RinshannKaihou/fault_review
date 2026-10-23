@@ -1,0 +1,52 @@
+id: TRN-0375
+legacy_ids: []
+slug: opsnn_thnn_fused_lstm_cell_global_state_mt_race
+aliases: []
+title: ThnnFusedLstmCell 全局状态多线程竞态错果崩进程
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ThnnFusedLstmCell 全局状态
+  behavior: aclnn 入口 AclnnParams/AclnnInfo/BaseOpOutputs 与 tiling 的 info/TilingData 均为文件作用域全局对象、被隐式共享，host 侧并发不安全；根因未钉死为串写
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 8 线程×60 次并发调用（含同 shape 对照）出现 hy 输出失配 max_diff≈0.937、第一段 561103 共 61 次、段错误 rc=139；单线程 160 次全正常
+  visibility: 不可复现
+mitigation:
+  detect: 并发压测同算子（交替 shape + 同 shape 对照）；DoOpTiling 首尾加 atomic 计数 peak>1 即证重入
+  fix: '修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12590（open，2026-10-22）：全局对象改栈上 context/局部 tiling，辅助函数显式传参；MR 自述未附并发测试，需按 #7007 脚本验证'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7007
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12590
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann ops-nn aclnnThnnFusedLstmCell（Atlas A2 910B2 / CANN 9.2.0 / torch_npu 2.12.0.post3，ctypes 直调）host 侧并发不安全：op_api/aclnn_thnn_fused_lstm_cell.cpp 把 AclnnParams/AclnnInfo/BaseOpOutputs 三个结构体在定义处实例化为全局对象，被 CheckParamsValid/HandleParams/RunBaseOp/ViewCopyResults 隐式共享；op_host/thnn_fused_lstm_cell_tiling.cpp 的 ThnnFusedLstmCellTilingInfo info 与 TilingData 同为文件作用域。实测 8 线程×60 次交替两种 shape：hy 输出失配 3 次（max_diff≈0.937）、第一段 561103（INNER_NULLPTR）61 次、同 shape 对照（--pin-variant 0）8 线程必现段错误 rc=139；单线程 160 次全正常。报告者明确归因边界：同 shape 时全局 TilingData 每次写入值相同，不能把根因钉死为全局 TilingData 串写，可确认的是 host 侧并发不安全，候选共享状态含 :39 全局 tilingData 与 :25-38 全局 info（写入读窗口跨 30 行）。修复 MR !12590（AI 辅助）把全局对象全部改局部并显式传参；MR 未附并发测试。
+  source: https://gitcode.com/cann/ops-nn/issues/7007（2026-10-21，open）+ 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12590（2026-10-22，open）
+  behavior: RNN/LSTM 训练或多线程数据增强/采样在 host 侧并发调用同一 LSTM cell 算子时：偶发输出错值（hidden state 与正确值差到 0.9 量级）、偶发 561103 错误码、最坏直接进程段错误；单线程跑同一负载完全正常。表现为「多线程加速后训练结果不可复现、偶发崩溃」，重跑结果每次不同，典型竞态外观。训练框架若把 tiling host 段串行化则不触发。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

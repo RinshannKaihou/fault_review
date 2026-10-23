@@ -1,0 +1,61 @@
+id: INF-2138
+legacy_ids: []
+slug: cann_dequant_swiglu_quant_no_group_mode_silent
+aliases: []
+title: DequantSwigluQuant 无 group 静默回落 mode0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: dequant_swiglu 无 group 路径
+  behavior: Dsk tiling 仅 group_index 存在时 capable，无 group 落到 base tiling 内核——没有 swiglu_mode/clamp/glu 参数管道，硬编码标准 silu×up×smooth
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: mode2 与 mode0 输出 100% 相同、int8 与文档公式 golden 一致率 43.65%；clamp_limit/glu_alpha/glu_bias 全部静默丢失，无报错无告警
+  visibility: 静默错误
+mitigation:
+  detect: 同输入 mode2 vs mode0 输出比对（100% 相同即命中）
+  fix: '修复 PR !12598（fix(dequant_swiglu_quant): 修复无 group_index 时 swiglu_mode 1/2/3 被静默按 mode0 计算，open）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7225
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12598
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0387
+original:
+  mechanism: ops-nn 的 aclnnDequantSwigluQuantV2 在 Atlas A2（910B3，CANN 9.3.0，内置 opp 与 master 一致）不传 group_index 时，swiglu_mode 1/2/3（GPT-OSS 变体 SwiGLU）被静默按 mode 0（标准 SwiGLU）计算：clamp_limit/glu_alpha/glu_bias 全部丢失。源码链路：DequantSwigluQuantDskTiling::IsCapable()（dequant_swiglu_quant_tiling.cpp）仅 group_index 存在时 capable，变体模式适配（commit 30732bc4c）只覆盖 Dsk 路径；无 group 落到 DequantSwigluQuantTiling（base）→ SwiGluTilingData 系内核（dequant_swiglu_quant_dynamic_performance.hpp 等），该链路完全没有 swiglu_mode/clamp_limit/glu_alpha/glu_bias 参数管道，性能内核硬编码标准 silu×up×smooth 流水。实测（T=128、I=2048、int32 x、动态量化、mode2、clamp_limit=7）与文档公式 golden 对比 int8 一致率仅 43.65%，且 mode2 与 mode0 输出 100% 相同（torch.equal True）。修复 PR !12598 已开（同日），open 未合。
+  source: https://gitcode.com/cann/ops-nn/issues/7225（A2 910B3/CANN 9.3.0 实测 + ops-nn master 源码链路）；修复 https://gitcode.com/cann/ops-nn/merge_requests/12598（open）
+  behavior: 在 Ascend 上以 npu_dequant_swiglu_quant 融合算子做 W8A8/动态量化推理，当模型配置 GPT-OSS 式变体激活（swiglu_mode 1/2/3、clamp_limit、glu_alpha）且不传 group_index 时，算子无任何告警地按标准 SwiGLU 计算：实测与正确公式的一致率仅 43.65%，与显式 mode=0 的输出逐位相同。依赖变体激活语义的模型（GPT-OSS 系）输出静默劣化。
+  trigger_surface: aclnnDequantSwigluQuantV2 + 无 group_index + swiglu_mode 1/2/3；Ascend 910B3/CANN 9.3.0 实测（源码级缺口，非二进制过期）
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  updates:
+  - date: '2026-10-23'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

@@ -1,0 +1,55 @@
+id: INF-2132
+legacy_ids: []
+slug: flashinfer_b12x_deterministic_moe_tile32_masked_routes
+aliases: []
+title: flashinfer b12x 确定性 MoE tile32/掩码路由错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: b12x 确定性 fused_moe 计划
+  behavior: 确定性 w4a8_mx 后端两缺陷：dynamic_tile_m=32 计划输出错；grouped 模式 topk_ids==-1 的行不写 per-route 输出，合并时累加此前调用的陈旧 scratch
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Top-6/K=5120/n=2048、5-64 token 调用 cosine 对非确定性路径约 0；掩码约 60% 时 cosine 0.5-0.85、全 -1 行输出非零；新 plan 首调干净、后续调用错；EP 集成恒命中
+  visibility: 静默错误
+mitigation:
+  detect: 与 deterministic_output=False 同输入对比（报告者方法）
+  fix: 'issue 给出规避：dynamic_tile_m>=64 + 掩码路由重映射为本地专家权重 0（E12/16/96、T1-2100 全扫与非线性路径一致）；正式修复未提交（相关 #6941）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-22'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/7021
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'flashinfer b12x 1.5.1（SM120 RTX 5090、CUDA 13.2）fused_moe（w4a8_mx、dynamic 后端）在 Caps(deterministic_output=True) 下两处错值（deterministic_output=False 同输入正确）：(1) dynamic_tile_m==32 的确定性计划输出错——planner 在 decode_config=None 时也选它；Top-6、K=5120、n=2048、E=16 于 5-64 token/调用 cosine 对非确定性路径约 0，E=96 于 65-512 token 同；dynamic_tile_m 64/128 正确。(2) grouped 路由模式（deterministic_output 唯一接受模式）下 topk_ids==-1 的行不写 per-route 输出，top-k-sum 合并把此前调用残留在 scratch 的 per-route 行累加进来：先脏化 scratch 再以约 60% -1 调用，cosine 0.5-0.85、全 -1 行输出非零；新 plan 首调干净、后续错。专家并行集成把非本地专家掩为 -1，每个 EP rank 都命中。规避：tile>=64 + 掩码重映射为（专家0，权重0），E12/16/96、T1-2100、masked/unmasked 全扫与非线性路径一致。相关 #6941（deterministic_output with direct routing）。'
+  source: https://github.com/flashinfer-ai/flashinfer/issues/7021（b12x 1.5.1，SM120 RTX 5090 实测）
+  behavior: 启用确定性输出（deterministic_output=True）的 b12x fused_moe（w4a8_mx）在两种常见配置下返回错误结果且无告警：dynamic_tile_m=32 时输出与正确值 cosine 接近 0（近乎随机）；专家并行掩码路由（topk_ids=-1）时输出混入此前调用的陈旧专家结果（cosine 0.5-0.85），被掩码的行本应为零却非零。规避是改用 dynamic_tile_m>=64 并把掩码路由重映射。
+  trigger_surface: flashinfer b12x fused_moe w4a8_mx + deterministic_output=True + dynamic_tile_m=32 或 grouped 掩码路由（EP）
+  discovery: 2026-10-22 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-22'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 算子/内核

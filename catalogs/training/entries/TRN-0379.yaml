@@ -1,0 +1,64 @@
+id: TRN-0379
+legacy_ids: []
+slug: vllm_ascend_rl_sampler_q_premature_reuse
+aliases: []
+title: RL 采样 q 显存异步除完成前被复用训推不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: sampler probs.div_(q)
+  behavior: 异步原地除 probs.div_(q) 完成前 q 的 NPU memory 被提前复用/再分配，采样分布与训练侧重算 logprob 的输入分叉
+effect:
+  objects:
+  - 输出分布
+  - 训练信号
+  detail: DeepSeek v4 Flash RL post-training（NPU、rollout 与训练同进程/同卡池）中，rollout 采样与训练侧重算的 logprob/分布不一致，重要性比值漂移、策略更新方向异常，reward 不涨或策略慢慢跑偏；无报错无 NaN、单测都绿，修复前难定位。
+  visibility: 静默错误
+mitigation:
+  detect: RL 回路内对 rollout 采样 logprob 与训练侧重算做 KL/比例抽检
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/19461（open，2026-10-22，release/v0.23.0 backport）：对 q 记录当前 stream 防止提前再分配；作者自述 DeepSeek v4 Flash RL 端到端验证修复、sampler UT 通过
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/19461
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/pull/13394
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend（release/v0.23.0）RL post-training DeepSeek v4 Flash 场景：sampler 中异步除法 probs.div_(q) 完成前，q 的 NPU memory 被提前复用（再分配），导致训练与推理不一致。修复 PR #19461 通过对 q 记录当前 stream（record current stream）防止过早内存再分配；作者自述该修复已在 DeepSeek v4 Flash RL post-training 端到端验证解决训推不一致，sampler 单测通过；关联早期 PR #13394（同类 stream 记录修复）。属 RL rollout 侧采样路径异步内存生命周期缺陷——训推不一致正是 RL-RO 类故障的 rollout 侧来源之一；训练侧证据为端到端验证表述，未见逐步数值对照。'
+  source: https://github.com/vllm-project/vllm-ascend/pull/19461（2026-10-22，open；关联 https://github.com/vllm-project/vllm-ascend/pull/13394）
+  behavior: NPU 上用 vllm-ascend 做 RL post-training（rollout 与训练同进程/同卡池）：训练中观察到 rollout 采样与训练侧重算的 logprob/分布不一致（重要性比值漂移、策略更新方向异常），但各自单独看都在正常跑、无报错无 NaN。这类「训推不一致」会让 RL 信号失真，表现为 reward 不涨或策略慢慢跑偏；修复前难定位，因为两边代码单测都绿。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-23
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 解码/采样
+      effect:
+        from: 训练信号
+        to: 输出分布
+    rewritten:
+    - detail
+    issue_unfixed:
+    - behavior
