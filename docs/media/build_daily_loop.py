@@ -3,7 +3,7 @@
 
   python3 build_daily_loop.py terminal-dark daily-loop-dark.json
   python3 build_daily_loop.py light-pastel  daily-loop-light.json
-Render with the live-panel skill: scripts/render.py --config <json> --out <mp4>, then ffmpeg -> animated webp.
+Render and encode with render_daily_loop.py (2x pixel density; the skill's render.py alone gives a blurry README image).
 Numbers on screen: entry counts from catalogs/SOURCES.txt, daily growth from the two catalog repos git log (2026-10-21..26).
 """
 import json, sys

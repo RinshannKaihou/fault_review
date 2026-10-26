@@ -1,11 +1,13 @@
 # fault-rag
 
 <picture>
+  <source media="(prefers-color-scheme: dark)" type="image/avif" srcset="docs/media/daily-loop-dark.avif">
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/daily-loop-dark.webp">
+  <source type="image/avif" srcset="docs/media/daily-loop-light.avif">
   <img src="docs/media/daily-loop-light.webp" alt="故障模式库每日自主增长 Loop：推理 / 训练两库每夜扫描 → 记录 → 审计 → 合入，人只在发布前拍板" width="900">
 </picture>
 
-<sub>两个编目每夜自动扫描、记录、审计与合入（`daily_scan.prompt.md` · `daily_audit.sh`），检索库的快照同步须经人工审查。动图由 [`docs/media/build_daily_loop.py`](docs/media/build_daily_loop.py) 生成，节奏为示意。</sub>
+<sub>两个编目每夜自动扫描、记录、审计与合入（`daily_scan.prompt.md` · `daily_audit.sh`），检索库的快照同步须经人工审查。动图由 [`docs/media/build_daily_loop.py`](docs/media/build_daily_loop.py) 生成配置、[`render_daily_loop.py`](docs/media/render_daily_loop.py) 按 2 倍像素渲染，节奏为示意。</sub>
 
 推理 / 训练两个故障编目的命令行检索工具，以及把这两个编目迁移成结构化 YAML 时留下的工具与记录。
 
@@ -333,7 +335,7 @@ tests/           单元测试与冒烟测试
 web/             GitHub Pages 静态检索站（构建脚本、页面、网页门禁；见 web/README.md）
 .github/         pages.yml：构建网页版、跑网页门禁、发布
 normalize/       编目结构化迁移的工具与记录（见上）
-docs/media/      README 顶部的每日 Loop 动图（深 / 浅两版）及其生成脚本
+docs/media/      README 顶部的每日 Loop 动图（深 / 浅两版，AVIF 为主、WebP 兜底）及其生成与渲染脚本
 AGENTS.md        给 agent 的调用与引用约定
 LICENSE          Apache License 2.0 全文
 data/  models/   本机索引与模型（已被 gitignore）
