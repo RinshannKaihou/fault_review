@@ -1,0 +1,58 @@
+id: TRN-0396
+legacy_ids: []
+slug: triton_ascend_num_stages_loop_carried_store_misched_training
+aliases: []
+title: triton-ascend num_stages>1 携带态存储错调度（训练侧）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 软件流水携带态存储调度
+  behavior: 带 loop-carried 值且循环体内 store 的 kernel 在 num_stages>1 软件流水下被错调度：in-loop store 读到陈旧流水级，kernel 跑完并返回看似合理的错数——非崩溃非编译错误。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: Mamba-2 SSD 状态传递 kernel（fwd/bwd 同模式）约 25%~46% 新起进程输出 bit 级一致错值；固定 num_stages=1 全部消失（16/16 PASS，梯度 bit 一致）；进程内稳定、跨进程翻转。
+  visibility: 不可复现
+mitigation:
+  detect: 多进程重跑对比输出 bit 一致性；对携带态 kernel 固定 num_stages=1 做 A/B。
+  fix: 待定（issue open，3.6.0+dev20260921 与 3.2.2 均复现；规避：相关 config 固定 num_stages=1）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2662
+  kind: github_issue
+relations:
+- kind: cross
+  target: INF-1769
+original:
+  mechanism: 'triton-ascend（910B3、CANN 9.1.0、triton-ascend 3.6.0+dev20260921，3.2.2 亦复现）：num_stages>1 软件流水对「循环体内存储 loop-carried 值」的 kernel 错调度，in-loop store 读陈旧流水级。Mamba-2 SSD 的 _state_passing_fwd_kernel/_state_passing_bwd_kernel（state-spaces/mamba，mamba_ssm/ops/triton/ssd_state_passing.py）跨 chunk 迭代携带 acc 并在循环内 tl.store：autotune 到 num_stages=3 的配置时约 25%~46% 新进程产出 bit 级一致错误输出；固定 num_stages=1 完全消失（16/16 多进程 PASS、反向梯度 bit 一致）。特征：进程级间歇（同进程重复结果一致、重启翻转）、bit 级一致错误（编译期调度决定而非运行期竞态）、恰为 num_stages>1 配置、前向反向同模式都中。推理库已收同 URL 为 INF-1769（active，含 mamba 上游 PR #1063 证据）；训练侧按 NPU_SCAN 第 9 条独立收录：state_passing kernel 正是 Mamba-2 训练前向/反向路径组件，错值直接进梯度。cross→INF-1769。'
+  source: https://github.com/triton-lang/triton-ascend/issues/2662
+  behavior: 在 NPU 上训练 Mamba-2（SSD）：前向状态传递与反向梯度 kernel 在 autotune 选中多流水级（num_stages>1）时，约四分之一到近一半的新进程算出每次都一样、但和正确值不同的输出和梯度；同一个进程里反复跑结果稳定，重启训练才可能翻到另一版本，固定 num_stages=1 后彻底正常——典型的「换个进程结果不同」型静默错。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

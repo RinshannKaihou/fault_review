@@ -1,0 +1,54 @@
+id: TRN-0406
+legacy_ids: []
+slug: ops_transformer_msa_index_score_kv_head0_only
+aliases: []
+title: MsaIndexScore N2>1 只读 KV head0 输出静默错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnMsaIndexScore KV hea
+  behavior: key 的 N2>1 时算子对所有 query head 都只读取第 0 个 KV head，未按 n2=n1/(N1/N2) 取对应 KV head，输出对 head1 以后的数据完全不敏感。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: GQA/MQA 形态（N2>1，每 KV head 服务多个 query head）调用 MsaIndexScore 时，只改 head1 及以后的 KV 数据输出逐位不变（max|diff|=0 bitwise），其余 head 的信息全部丢失；接口返回 0 无报错。训练侧该算子输出直接作为前向结
+  visibility: 静默错误
+mitigation:
+  detect: 扰动单个非 0 KV head 数据检查输出是否变化（bitwise 对照）；与 CPU GQA 参考对拍。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6639
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2161
+original:
+  mechanism: 'cann/ops-transformer #6639（2026-10-24，open，A2 910B2 / CANN 9.2.0 / aclnn 直调）。aclnnMsaIndexScore 在 key 的 N2>1 时，所有 query head 只读取第 0 个 KV head：报告者以最小复现定量证明——只改 KV head1（1.0→100.0）输出 max|diff|=0（bitwise 相同）；对照只改 head0 时 max|diff|=12672。期望按 n2 = n1/(N1/N2) 映射。复现配置 TND、N1=2、N2=2、D=128、T1=128、T2=256。机制为 KV head 索引映射缺失，源码行级定位未见（上游以对照实验闭合）。推理编目 INF-2161 已按推理范围收录同源；本条为训练侧条目，机制相同、影响面向训练前向。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6639
+  behavior: 带 GQA（多 query head 共享少量 KV head）调用 MsaIndexScore 的模型，把第 1 个及以后的 KV head 换成任意值，算子输出完全不变；两个 head 各自的正确贡献没有被算进去，输出值错误但无任何报错、接口返回成功。训练或评估中该层注意力分数静默偏离。
+  trigger_surface: aclnnMsaIndexScore，key 的 N2>1（GQA/MQA）；A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,52 @@
+id: TRN-0395
+legacy_ids: []
+slug: opsmath_exp_segsum_tail_stripe_column_calcount_oob_read
+aliases: []
+title: ExpSegsum 末条带误用列向长度 GM 越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ExpSegsum arch22 末条带搬运
+  behavior: 末条带 CopyInBatch 搬运长度取列向钳位 calCount，搬运起点却按行向 inOffset 计算，两者不同源；tailDimSize>slideSize 且不整除时读窗口越过 x 张量末尾，末 batch 越出整块 GM。
+effect:
+  objects:
+  - 数值结果
+  detail: mssanitizer memcheck 实测 self=(1,1,13000) 报 illegal read fp16 22944B / fp32 45952B；多读数据不被消费，数值结果仍正确，属静默越界读。
+  visibility: 静默错误
+mitigation:
+  detect: mssanitizer -t memcheck 扫 ExpSegsum kernel；T>slideSize 且 T%slideSize≠0 的形状单测。
+  fix: 待定（issue open 2026-10-23；master efff3523 缺陷行原样在位，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3845
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-math aclnnExpSegsum（Atlas A2 910B2、CANN 9.2.0、master efff3523 2026-10-23）：arch22 路径（910B/A2、910_93）的 SegsumND::Compute 里，末条带 CopyInBatch 搬运长度取列向钳位 calCount=Min(slideSize, tailDimSize-colIdx)，而搬运起点按行向 inOffset=batchIdx*tailDimSize+rowIdx 计算；当 tailDimSize>slideSize 且 tailDimSize%slideSize≠0 时末条带读窗口越过 x 张量末尾，对最后一个 batch 即越出整块 GM。数值结果仍正确（多读数据不被消费），因此是静默越界读，只能靠 mssanitizer 抓：memcheck 实测 self=(1,1,13000)/out=(1,1,13000,13000) fp16 报 illegal read of size 22944、fp32 报 45952（约 11472/11488 元素，与静态推导 slideSize-loopCount≈12264-736=11528 同量级）。Mamba/SSM 类训练（exp_segsum 是 SSD 状态空间模型核的一部分）。issue open 无修复 MR。无训练框架受害报告。
+  source: https://gitcode.com/cann/ops-math/issues/3845
+  behavior: 在 A2 上跑含 exp_segsum 的 Mamba/SSM 训练，序列长度 T 大于分块 slideSize 且不整除（如 T=13000）时，kernel 会读出 x 张量末尾之外上万元素（约 45KB），结果数值碰巧不受影响、不报错；只有 mssanitizer memcheck 能看到 illegal read，越界读在邻近显存布局变化时可能转为崩溃或数据污染，属隐藏的内存安全缺陷。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

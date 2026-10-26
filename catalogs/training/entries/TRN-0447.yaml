@@ -1,0 +1,54 @@
+id: TRN-0447
+legacy_ids: []
+slug: verl_sglang_rollout_logprobs_mode_ignored
+aliases: []
+title: verl SGLang rollout 忽略 logprobs_mode 配置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: SGLang rollout
+  behavior: rollout.logprobs_mode 只传给 vLLM，SGLang rollout 不消费：固定返回全词表 log(softmax(logits/T))，raw 模式所需环境变量从不被 verl 设置。
+effect:
+  objects:
+  - 训练信号
+  - 输出分布
+  detail: 同一配置切后端 rollout logprobs 语义不同：top_p=0.8 时 vLLM rollout_corr 0.951/kl 0.053，SGLang 0.9994/0.0010；IS 权重、拒绝掩码、失配指标随后端静默变化。
+  visibility: 静默错误
+mitigation:
+  detect: 同配置双后端对比 rollout_is_mean/kl/probs_diff 指标（issue 附量化表）。
+  fix: 待定（issue open；issue 提到有 PR 在 SGLang 侧补 raw logprobs 透传，未核实合入状态）。
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/8362
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'verl #8362（2026-10-25，open，verl main@3c6d9b4 / vllm 0.29.0 / sglang 0.5.20 / RTX 4090 实测）。rollout.logprobs_mode（processed/raw）被 SGLang rollout 忽略：vLLM 的 processed_logprobs 在 TopKTopPSampler 之后归一化（携带 #8020 的 log(kept mass) 项），SGLang sampler.py 固定返回全词表 log(softmax(logits/T))，raw 模式所需的 SGLANG_RETURN_ORIGINAL_LOGPROB verl 从不设置。GSM8K GRPO Qwen3-0.6B 32×4 两步实测：top_p=0.8 下 vLLM rollout_corr 0.951/kl 0.053 vs SGLang 0.9994/0.0010；温度 0.7 下 vLLM raw 1.0336 vs SGLang raw 1.0006（设置无效）。后端切换静默改变 rollout-correction 权重、拒绝掩码与失配指标——与 #8020 的截断 IS 偏置族（TRN-0229）同域但机制不同：本条是配置被后端忽略导致口径漂移，不是截断本身的数学问题。'
+  source: https://github.com/verl-project/verl/issues/8362
+  behavior: verl 里 rollout.logprobs_mode 这个配置在用 SGLang 后端时完全不生效：同样的训练配置，换 rollout 后端后 rollout log-prob 的含义就不一样了（vLLM 是截断后归一化的 logprob、SGLang 是全词表的），IS 权重和 KL 指标跟着漂移，训练行为随后端选择静默变化。
+  trigger_surface: verl GRPO/RL rollout，SGLang 后端（0.5.20 锁文件版本）+ 任何依赖 logprobs_mode 的配置；vLLM 0.29.0 对照实测。
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

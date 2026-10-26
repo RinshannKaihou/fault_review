@@ -1,0 +1,56 @@
+id: TRN-0398
+legacy_ids: []
+slug: pytorch_npu_inductor_reduction_mask_bias_grad_axis_flatten
+aliases: []
+title: NPU Inductor 归约 mask 缺失污染 bias 梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: Inductor 归约 mask/layout
+  behavior: GPT2/BERT 派生归约实际长度 768、tile 扩展到 1024，越界值置零后减均值、平方仍使无效 lane 非零污染归约；BERT 反向 bias 梯度的轴压平把应保留的输出轴一并归约。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: NPU 上用 torch.compile(backend=inductor) 训练 GPT2/BERT 时，均值、方差、bias 梯度等归约被 padding lane 非零中间值污染，或 bias 梯度按错误轴归约致维度语义丢失；训练不报错、loss 可能只轻微偏离，需 eager 对照才见差异。
+  visibility: 静默错误
+mitigation:
+  detect: 编译前后 amax/amin/bias-grad 与 eager 对账；dump Triton 源码检查归约 mask 处理。
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/pull/48448（merged 2026-10-23）：保留不能证明恒真的轴 mask 并在融合表达式计算后选择归约单位元；多轴 reduction 只压平 reduction axes；负索引/Load 生存期/tiling 搜索/符号 group 匹配/stride 证明/range 拆分拒绝协议共八类修复（issue !48387 关联）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5625
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/pull/48448
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/pytorch NPU Inductor 路径（PyTorch/torch_npu 2.13，torch.compile backend=inductor）八类缺陷中的数值正确性核心两类（issue #5625 汇总，修复 PR !48448 已 merged 2026-10-23）：(1) Persistent reduction mask——GPT2/BERT 派生归约实际长度 768、SIMT tile 扩展到 1024，即使 load 的越界值置零，后续减均值、平方仍会使无效 lane 非零污染归约结果；修复为保留不能证明恒真的轴 mask、在融合表达式计算后实际归约前选择该归约的单位元。(2) 多轴 reduction layout——BERT 反向 bias gradient 的轴压平与归约维分析不一致，把应保留的输出轴一并归约；修复为只压平 reduction axes、保留各 channel 独立结果。其余六类（负索引、Load 生存期 UB 资源、tiling 资源搜索、符号 group 匹配、符号 stride 证明、range split 拒绝协议）多为编译失败/资源类，非静默错值。修复已 merged；BERT/GPT2 均为真实训练模型。与 TRN-0281（Inductor 取模消除错地址）同为 NPU Inductor 归约正确性缺陷但缺陷位置不同（mask/layout vs 取模消除）。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5625 ｜修复 PR：https://gitcode.com/Ascend/pytorch/pull/48448
+  behavior: 在 NPU 上用 torch.compile 训练 GPT2/BERT 类模型时，部分归约（如均值、方差、bias 梯度）的结果被 padding lane 的非零中间值污染，或 bias 梯度按错误轴归约后维度语义丢失；训练不报错、loss 可能只轻微偏离， eager 对照才能看出差异；修复 PR 已合入（2026-10-23），合入前版本均受影响。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 梯度
+        to: 数值结果
+    rewritten:
+    - detail

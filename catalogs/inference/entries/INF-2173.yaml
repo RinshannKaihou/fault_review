@@ -1,0 +1,59 @@
+id: INF-2173
+legacy_ids: []
+slug: cann_moe_permute_with_ep_wraparound_tail_unwritten_infer
+aliases: []
+title: CANN MoeTokenPermuteWithEp 环绕区间尾部行不写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MoeTokenPermuteWithEp
+  behavior: 环绕区间（start>end）时 kernel 过滤条件以 sortedIndices 的 rank 值域 [0,totalLength) 截断，实际只写 numOutTokens-end 行，尾部 end 行从未写出。
+effect:
+  objects:
+  - 数值结果
+  detail: EP 环绕窗口（start>end 且 end>0）下调用，输出形状正确、前段正确，但尾部 end 行是未初始化显存的残留内容（哨兵实测全部保留），两段接口均返回成功、无报错或告警；76 组 (start,end) 扫描显示缺口恒等于 end，start<end 时缺口恒为 0。
+  visibility: 静默错误
+mitigation:
+  detect: 输出缓冲预填哨兵值可检出未写行
+  fix: 待定（issue 未附修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6622
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0393
+original:
+  mechanism: 'ops-transformer #6622：aclnnMoeTokenPermuteWithEp 在 rangeOptional 环绕区间（start>end，EP 切分窗口跨 token 数组末尾）时，tiling 按 end-start+totalLength 得 numOutTokens（输出 shape 合法、GetWorkspaceSize 返回 0），但 op_kernel/moe_index_copy_with_ep.h 第 158/185 行过滤条件用 sortedIndicesOut 的 rank 值域 [0,totalLength) 与 [start,start+numOutTokens) 求交，只能命中 totalLength-start 个元素；目标地址 dstGm[(indicesValue-start)*cols] 行号也覆盖不到 [totalLength-start,numOutTokens) 尾段。哨兵 -12345 预填实测 8 行只写前 4 行；4 种 shape 76 组 (start,end) 扫描：凡 start>end 且 end>0，实际写入行数恒为 numOutTokens-end，缺口恒等于 end；start<end 时缺口恒 0。环境 Atlas A2 910B2、CANN 9.2.0，源码 65f049da，本机安装包与仓库逐行核对一致。'
+  source: 2026-10-25 每日扫描；issue https://gitcode.com/cann/ops-transformer/issues/6622
+  behavior: 使用者在 EP 环绕窗口（range start>end）下调用该 MoE permute 算子，拿到形状正确、前段正确的输出，但尾部 end 行是未初始化显存的残留内容（哨兵实测全部保留），两段接口都返回成功、无任何报错或告警。下游按 token 置信度/内容消费这些行时静默读到垃圾值；只在非环绕窗口（start<end）不受影响。
+  trigger_surface: Atlas A2 910B2 + CANN 9.2.0（ops-transformer master 65f049da）；aclnnMoeTokenPermuteWithEp rangeOptional start>end 且 end>0 的环绕窗口。
+  signature: 未写行数恒等于 end；哨兵预填保留；两段 rc=0。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 算子/内核
+    rewritten:
+    - detail

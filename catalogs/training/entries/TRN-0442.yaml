@@ -1,0 +1,52 @@
+id: TRN-0442
+legacy_ids: []
+slug: opstransformer_dense_lightning_indexer_softmax_lse_bsnd_tail_unwritten
+aliases: []
+title: LightningIndexerSoftmaxLse BSND 尾部未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: DenseLightningIndexer
+  behavior: BSND 分支在 actualSeqLengthsQuery[b]<S1 时不写 softmaxMaxOut/softmaxSumOut 尾部；同语义 TND 分支已补零，BSND 缺该行为。
+effect:
+  objects:
+  - 数值结果
+  detail: 出参预填 NaN 后调用，尾部 8/16（asq=8）或 15/16（asq=1）元素保持 NaN；两段返回 0；TND 对照组正确补零。
+  visibility: 数值异常
+mitigation:
+  detect: 出参预填 NaN，对照 TND/BSND 两 layout 的尾部写入。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6711
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #6711（2026-10-25，open，A2 910B2 / CANN 9.2.0 / master 5d750997）。aclnnDenseLightningIndexerSoftmaxLse 在 BSND layout 且 actualSeqLengthsQueryOptional[b]<S1 时，softmaxMaxOut/softmaxSumOut 的 [asq[b],S1) 区间完全不写：出参预填 0x7fc00001 NaN，B=1,S1=S2=16,N1=8,D=128,fp16 下 asq=8 → 8/16 NaN、asq=1 → 15/16 NaN，两段返回 0。资料声明输出形状由 queryIndex 的 S1 决定、与 asq 无关，每个元素应有确定值；TND 路径 ResetInvalidOutputZero() 已补零，证明补齐到声明形状是既定语义，BSND 分支缺失。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6711
+  behavior: 稀疏注意力 indexer 的 softmax 统计输出在 BSND 布局下、当某 batch 实际 query 长度小于 S1 时，尾部元素完全不被写：预填的 NaN 原样保留，接口却返回成功；同一参数换 TND 布局尾部会正确补 0。
+  trigger_surface: aclnnDenseLightningIndexerSoftmaxLse，BSND layout + actualSeqLengthsQuery[b]<S1；A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常

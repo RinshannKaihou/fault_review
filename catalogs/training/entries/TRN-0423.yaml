@@ -1,0 +1,65 @@
+id: TRN-0423
+legacy_ids: []
+slug: ops_math_tiling_overflow_and_rank_guard_family
+aliases: []
+title: Tiling int64 溢出与 infershape rank 守卫缺失族
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: TileWithAxis/fatrelu_mul
+  behavior: tiling 乘积链缺 int64 溢出守卫、batchSize=前导维乘积无溢出保护；CeilDiv 空张量除 0/负回绕；infershape 无 rank 校验；rank=0 标量 tiles 超单缓冲容量 UB 越界写
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 极端 shape（乘积近 INT64_MAX）、空张量、rank<2 输入下：tiling 回绕致切分错乱、输出错值或越界写；rank=1 末维静默折半使输出 shape 错误；正常训练规模不触发
+  visibility: 静默错误
+mitigation:
+  detect: 2^63-1 邻域构造的溢出 UT（修复 PR 已含 RED→GREEN 3 例）；rank 0/1/未知秩 infershape UT 11 例。
+  fix: fatrelu_mul 修复 PR https://gitcode.com/cann/ops-nn/pull/12501 （open，含 UT 证据）；TileWithAxis 关联 PR https://gitcode.com/cann/ops-math/pull/6647 （open，未核实）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3874
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7274
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3967
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '2026-10-24 新报的 tiling 溢出/infershape 守卫缺失族：1) ops-math #3874：TileWithAxis（Ascend950）tiling 乘积链缺 int64 溢出守卫、CeilDiv 空张量除 0/负回绕、rank=0 标量 tiles 超单缓冲容量 UB 越界写；属性契约与 TBE/AICPU 基线不一致（axis 缺省 0 应为 1、tiles 可选应必选）、缺 InferShapeRange（关联 PR !6647 open）。2) ops-nn #7274：fatrelu_mul（Ascend950PR）proto threshold dtype 声明塌缩（{DT_FLOAT,DT_FLOAT,DT_FLOAT} 去重仅 FLOAT，fp16/bf16 threshold 被 GE 构图拒绝而 kernel 实际支持）、tiling batchSize=∏前导维乘积无溢出保护、infershape 无 rank 校验（rank=0 GetDim(xDimNum-1) SIZE_MAX 下溢读+SetDim 越界写；rank=1 末维静默折半——输出 shape 错误）、示例错误路径资源泄漏（修复 PR !12501 open，含溢出拒绝 3 例与 infershape 11 例 RED→GREEN）。共同模式：极端 shape/rank 边界的防御缺失，正常训练规模不触发；rank=1 输出 shape 静默折半是其中唯一直接静默错值面。'
+  source: https://gitcode.com/cann/ops-math/issues/3874 ；https://gitcode.com/cann/ops-nn/issues/7274
+  behavior: 极端构造下的一组算子防御缺陷：超大 shape（乘积接近 int64 上限）时 tiling 乘积回绕、切分错乱，输出错值或越界写；空张量除零、秩 0/1 的输入让 infershape 读越界或把输出形状悄悄折半。日常规模看不见，一旦自动化 shape 探索或特殊数据构造碰到就静默出错。
+  trigger_surface: CANN ops-math/ops-nn tiling 乘积链与 infershape（TileWithAxis、fatrelu_mul 等）；极端 shape（乘积近 INT64_MAX）、空张量、rank<2；Ascend950/950PR / CANN 9.x。
+  discovery: 2026-10-25 每日扫描
+  notes:
+  - '2026-10-26 2026-10-26 回访：新增同族证据 ops-math #3967——aclnnMean 对 FRACTAL_NZ 输入 CheckFormat() 只 OP_LOGW 不返回错误（void 函数、裸调用无 CHECK_RET），两段 0/0 且输出按 ND 语义算出：格式校验缺失静默放行，并入本族（tiling 溢出与 rank/format 守卫缺失族）。'
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - evidence
+  - date: '2026-10-26'
+    fields:
+    - original.notes

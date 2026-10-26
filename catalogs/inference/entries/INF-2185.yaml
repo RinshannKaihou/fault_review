@@ -1,0 +1,59 @@
+id: INF-2185
+legacy_ids: []
+slug: cann_quantmatmulv5_1x1x1_kernel_oob_read_392b
+aliases: []
+title: CANN QuantMatmulV5 最小形状 kernel 静默越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: QuantBatchMatmulV3
+  behavior: aclnnQuantMatmulV5 在 M=N=K=1 int8×int8 量化矩阵乘上 kernel 越界读 GM 392 字节，两段接口返回 0、输出数值正确，属静默越界读。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 6 个 1x1x1 用例（bf16/fp16/int32 出参×4 量化模式）×2 确定性腿 10/10 全命中 illegal read 392B；同进程 OnesLike/MatMulV3 对照无告警；页边界/不同布局下可能触发非法访问或把相邻内存读入计算。
+  visibility: 静默错误
+mitigation:
+  detect: mssanitizer --tool=memcheck 可稳定检出
+  fix: 待定（issue 未附修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7303
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-nn #7303（c2026-10-25）：aclnnQuantMatmulV5 在最小 shape M=N=K=1 int8×int8 量化矩阵乘上，两段接口返回 0、输出数值正确（3×(-5)×0.5×0.25=-1.875，bf16 bits 0xbff0），但 kernel 实际越界读：mssanitizer memcheck 报 illegal read of size 392（地址 0x120000200058 on GM，device 0）。复现率：6 个 1×1×1 用例（bf16/fp16/int32 出参 × K-C/T-C/K-T/T-T 四量化模式）× 2 条确定性腿 = 10/10 全命中；同进程对照 kernel（OnesLike、MatMulV3）No error detected，排除工具误报。环境 Ascend950PR、CANN 9.2.0-beta.2、ops-nn f834b617（matmul/quant_batch_matmul_v4 路径）。接口返回 0 且结果正确，属静默越界读：页边界或不同内存布局下可能触发非法访问，或把相邻已释放/未初始化内存读入计算。'
+  source: 2026-10-25 每日扫描；issue https://gitcode.com/cann/ops-nn/issues/7303
+  behavior: 使用者视角：最小形状（1x1x1）的 int8 量化矩阵乘调用正常、结果正确、返回码 0，但内核每次都在张量之外多读 392 字节显存。平时数值上看不出来；当读越界落在页边界或被复用的内存上时，可能升级为非法访问崩溃，或把相邻数据静默卷入计算。sanitizer 10/10 必现，对照 kernel 全干净，可用工具直接检出。
+  trigger_surface: Ascend 950PR + CANN 9.2.0-beta.2（ops-nn f834b617）；aclnnQuantMatmulV5 M=N=K=1 int8 量化路径（bf16/fp16/int32 出参、4 种量化模式）。
+  signature: mssanitizer illegal read of size 392 @QuantBatchMatmulV3…high_performance_768；对照 kernel 干净。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: 数值结果
+    rewritten:
+    - behavior
+    - component

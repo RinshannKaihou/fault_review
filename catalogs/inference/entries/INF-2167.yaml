@@ -1,0 +1,59 @@
+id: INF-2167
+legacy_ids: []
+slug: cann_sparse_flash_mla_metadata_drops_seqused_q
+aliases: []
+title: CANN SparseFlashMlaMetadata 丢弃 sequsedQ
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SparseFlashMlaMetadata
+  behavior: A2 路径把可选输入 sequsedQOptional 整条数据通路丢弃：无论传什么值产出的 metadata 与不传时逐字节相同，分核按 maxSeqlenQ 满长切分；同签名的 sequsedOriKvOptional 正常生效。
+effect:
+  objects:
+  - 数值结果
+  - 性能/资源
+  detail: sequsedQ=0（应无有效 Q token）仍产出满长 105 非零元素调度；下游 SparseFlashMla 按满长任务搬运 KV 多算；接口始终返回成功，用户给的有效长度约束被静默无视。
+  visibility: 静默错误
+mitigation:
+  detect: 把 sequsedQ 全置 0/1，检查 metadata 指纹是否变化
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6625
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0414
+original:
+  mechanism: CANN 9.2.0 Atlas A2（910B2）上 aclnnSparseFlashMlaMetadata 把每个 Batch 的 Q 侧有效 token 数可选输入 sequsedQOptional 整条数据通路丢弃：固定 batchSize=4、maxSeqlenQ=1024 等配置，只改 sequsedQ 元素值（1024/256/64/2/1/0），metadata 内容指纹全部 9ae9154dd9ceb7e3 不变、非零元素恒 105，与完全不传时逐字节相同；sequsedQ 全 0（语义上无任何 Q token 应全空调度）仍满长。分核方案按 maxSeqlenQ 满长切 s2/m 区间，下游 aclnnSparseFlashMla 按满长任务搬运 KV 多算。对照实验同签名 sequsedOriKvOptional 真实改变调度（256→105、1→11 非零元素），证明 seqused 数据链本身通、唯独 sequsedQ 没接进去；kernel 侧针对 seqused_q 的越界校验也从未触发。
+  source: https://gitcode.com/cann/ops-transformer/issues/6625
+  behavior: 调用 SparseFlashMlaMetadata 时传入的 Q 侧有效长度 sequsedQ 完全不起作用：传 0（本该没有要算的 token）与传满长 1024 产出的 metadata 一模一样，下游 attention 按满长度去做本不需要的计算；接口始终返回成功，用户给的有效长度约束被静默无视。
+  trigger_surface: CANN 9.2.0 / Atlas A2 910B2；aclnnSparseFlashMlaMetadata；任何 sequsedQOptional 取值（含 0）。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  updates:
+  - date: '2026-10-25'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

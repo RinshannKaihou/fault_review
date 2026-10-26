@@ -1,0 +1,52 @@
+id: INF-2168
+legacy_ids: []
+slug: vllm_responses_api_drops_developer_message
+aliases: []
+title: vLLM Responses API 静默丢 developer 消息
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: deepseek_v4 渲染
+  behavior: Python DeepSeek-V4 tokenizer 路径在 thinking 激活且请求未携带 tools 时，把开头的 role:developer 输入项从 prompt 里整体删除，HTTP 200 正常返回。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: developer 消息（Codex 式 harness/策略文本）完全没进模型，模型在无系统提示下作答；usage.input_tokens 不随策略文本增长可证；无任何错误。
+  visibility: 静默错误
+mitigation:
+  detect: 对比带/不带 developer 消息的 usage.input_tokens 是否增长
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63480
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.32.0（system_fingerprint vllm-0.32.0-tp8-ep-afec8c75，/v1/responses 端点，模型 DeepSeek-V4.1，渲染走 Python tokenizer 路径 vllm/tokenizers/deepseek_v4.py 而非 Rust 前端）：请求开启 reasoning 且不带 tools 时，开头 role:developer 输入项被从 prompt 整体删除，仍返回 HTTP 200。证据以 usage.input_tokens 定量：不带 developer 消息基线 32 tokens；带长策略文本的 developer 消息时 input_tokens 不增长（若渲染应增长策略文本长度），证明文本未达模型。影响所有以 developer 消息发指令的 OpenAI Responses API 客户端（Codex 式 harness、pi-ai 等）——模型静默跑在完全没有系统提示的状态。
+  source: https://github.com/vllm-project/vllm/issues/63480
+  behavior: 用 OpenAI Responses API 格式给 DeepSeek V4 发请求：只要开了 thinking 且请求里没声明 tools，放在最前面的 developer 角色消息（系统级指令/policy 文本）会被直接丢掉，接口正常返回 200，token 计数也不包含这段文本；模型实际在没有任何系统提示的状态下作答，输出看起来正常但完全没遵守你的策略指令。
+  trigger_surface: vLLM 0.32.0 /v1/responses；DeepSeek-V4.1 Python tokenizer 路径；reasoning 开启 + 无 tools + 首条 developer 消息。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 分词/模板

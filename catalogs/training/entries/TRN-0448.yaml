@@ -1,0 +1,51 @@
+id: TRN-0448
+legacy_ids: []
+slug: verl_agent_loop_masked_suffix_reward_dropped
+aliases: []
+title: verl agent-loop 掩码后缀 reward 被丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: agent_loop+GAE/RF++
+  behavior: agent_loop 把轨迹分数放在最后一个响应 token，而模板后缀（如 '\n'）response_mask=0：GAE/REINFORCE++/ReMax/OTB 忽略 mask=0 上的 reward，outcome 分数丢失。
+effect:
+  objects:
+  - 训练信号
+  detail: 两轮轨迹末 3 token ['```','<|im_end|>','\n'] mask [1,1,0]：分数落在 mask=0 的 '\n' 上，GAE/RF++ returns 全零；mask 假设被模板后缀打破。
+  visibility: 静默错误
+mitigation:
+  detect: 检查 reward 张量落点 token 的 response_mask；对照 compute_gae_advantage_return 手工核算。
+  fix: 待定（issue open，未见修复 PR）。
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/8367
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'verl #8367（2026-10-25，open，verl main 3c6d9b43 / verl-recipe e7f8895 / transformers 5.12.1 / CPU 复现）。agent loop 把轨迹 score 放在最后一个响应 token（agent_loop.py:147、:1129）；SWE agent recipe 的 trajectory.py:258 给每轮 append mask=0 的 chat-template 后缀，两轮轨迹末 3 token 为 [''```'',''<|im_end|>'',''\n''] 且 mask [1,1,0]——分数落在 ''\n''（mask=0）上。compute_gae_advantage_return / compute_reinforce_plus_plus_outcome_advantage 忽略 mask=0 上的 reward，outcome reward 整体丢失（advantage/returns 全零）。GAE/REINFORCE++/ReMax/OTB 均受影响；官方 example 脚本 + Qwen3-4B-Instruct-2507 tokenizer 复现。'
+  source: https://github.com/verl-project/verl/issues/8367
+  behavior: SWE agent 多轮轨迹训练时，整个轨迹的 outcome 分数被加在最后一个 token 上——但那个 token 恰好是 chat 模板自动补的换行符，loss mask 是 0：GAE 和 REINFORCE++ 都会忽略它，整条轨迹等于没有 reward，advantage 全零，训练静默空转。
+  trigger_surface: verl agent-loop + GAE/REINFORCE++/ReMax/OTB + 模板以 mask=0 后缀结尾的 recipe（swe_agent 等）；verl main 3c6d9b43 复现。
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -27,3 +27,7 @@
 | 纯推理 KV 串扰 | 推理 `K*` / §8 |
 
 训推 logprob 不一致（TIM）**要写在训练目录** `RL-RO`：它改的是 RL 目标，不是某个用户请求的 serving 输出。
+
+## B.6 msprobe 精度对拍把反号 Inf 归一化成相同值
+
+`Ascend/msprobe #655` + 修复 [!1123](https://gitcode.com/Ascend/msprobe/merge_requests/1123)（open）：`handle_inf_nan()` 只检查 Inf/NaN 位置，+Inf 与 -Inf 位置匹配时双双替换为 0——**正负无穷符号相反本应判不一致，对拍却显示一致**（CPU 复现：actual=[1,inf] vs expected=[1,-inf] 返回 `(False,'')` 且两输入都被改成 [1,0]）。精度对拍工具把「符号翻转级」的数值分歧归一化成相等，训练侧 NPU/CPU 对比的绿灯可能来自工具缺陷而非模型一致。观测/评测工具假一致，按口径记盲区不占故障条目；修复 PR 要求在归一化前先拒绝符号不匹配的 Inf。

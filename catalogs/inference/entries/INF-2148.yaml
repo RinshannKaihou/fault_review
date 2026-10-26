@@ -1,0 +1,50 @@
+id: INF-2148
+legacy_ids: []
+slug: triton_sm89_fp8_acc_rewrite_loses_fp32_accum
+aliases: []
+title: Triton sm_89 把 fp8 acc+=dot 静默改写为低精度累加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: fp8 dot 加法折叠 pass
+  behavior: sm_89 上 acc += tl.dot(a,b) 被静默重写为 tl.dot(a,b,acc)，运行和放进 fp8 mma.sync 内部低精度累加，而不是保留显式 fp32 add
+effect:
+  objects:
+  - 数值结果
+  detail: fp8 ones K=20000 累加只得 16384；[0.5,1.5) 随机数 K=8192 偏差最高 15%；TTIR 中 arith.addf 被移除
+  visibility: 静默错误
+mitigation:
+  detect: TTIR 检查 arith.addf 是否被折叠；max_num_imprecise_acc 显式传值可控制
+  fix: 'issue closed（修复状态未核实；同型 sm_90 重写曾在 #8056 作为 bug 处理）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12392
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'Triton 在 sm_89 上把 fp8 输入、fp32 acc 的 acc += tl.dot(a, b) 静默重写为 tl.dot(a, b, acc)：运行和被放进 fp8 mma.sync 的内部累加器，按低精度累加而非用户要求的显式 fp32 加法。+= 形式是 kernel 请求精确累加的方式（Inductor 为 torch._scaled_mm(use_fast_accum=False) 生成的正是它）；同一重写在 sm_90 曾被 #8056 判为 bug。实测（L40S，main 6fe3348e6）：fp8 ones、625 个 32 积 tile（K=20000）期望 20000 实得 16384；[0.5,1.5) 随机数 K=8192 偏差最高 15%。控制组 max_num_imprecise_acc=32 阻止折叠后结果正确，且 TTIR 里 arith.addf 的有无可直接观察重写是否发生。'
+  source: 2026-10-23 每日扫描 https://github.com/triton-lang/triton/issues/12392（closed，附最小复现与 TTIR 证据）
+  behavior: 在 sm_89（L40S/4090 等）上用 Triton 写 fp8 GEMM 且用 acc += tl.dot(a,b) 累加时，长 K 维结果静默偏低：全 1 输入 K=20000 得 16384（差 18%），随机数据 K=8192 偏差最高 15%。无任何警告；kernel 照常运行输出看似合理的数。
+  trigger_surface: Triton main（6fe3348e6）；sm_89 目标 + fp8 输入 + fp32 acc 的 acc += tl.dot(a,b) 形式；K 维长度越大偏差越大。Inductor use_fast_accum=False 路径同样生成该形式。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

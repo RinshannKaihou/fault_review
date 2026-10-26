@@ -1,0 +1,54 @@
+id: TRN-0425
+legacy_ids: []
+slug: ops_math_replication_pad_negative_padding_device_fault
+aliases: []
+title: ReplicationPad 负 padding 设备侧 507035 假绿
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ReplicationPad1d/2d/3d 负
+  behavior: op_api 的 SafePadSum() 明确实现负值裁剪语义并在 host 侧放行负 padding，但 FLOAT32/FLOAT16 负 padding 路径 kernel 存在缺陷：两段接口返回 0，aclrtSynchroniz
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: fp32/fp16 负 padding（裁剪，torch F.pad mode='replicate' 常用）在 A2 上作业崩溃于设备侧 507035，host 侧无拦截；三接口（1d/2d/3d）一致，复现 2/2。
+  visibility: 报错
+mitigation:
+  detect: 负 padding × dtype(fp32/fp16/int32) 矩阵回归；ASCEND_LAUNCH_BLOCKING=1 定位。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3878
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math #3878（2026-10-24，open，A2 910B2 / CANN 9.2.0 / master 584b2ea6）。aclnnReplicationPad1d 传负 padding（裁剪语义）时 FLOAT32/FLOAT16 输入两段返回 0 但 sync 报 507035（AICore vector core exception）；同机对照：正 padding（含 8000,8000）正常、INT32 负 padding 正常（数值与 torch 一致）。ReplicationPad2d（[1,2,4,6] 四向 -1）、ReplicationPad3d（六向 -1）同现象。复现频率 2/2（连续两轮、两个 dtype、三个接口）。host 侧 op_api SafePadSum()（op_replication_pad.h:51-68）明确实现负值裁剪（dimSize+padFront<0 才非法），即负 padding 是 host 主动放行的合法入参，缺陷在浮点 dtype 的 kernel 路径。训练影响：数据增强/序列裁剪用 replicate 负 padding（torch.nn.functional.pad mode=''replicate''）在 NPU 上浮点输入必崩，但两段接口不报错、错误延迟到同步——对训练属 fail-loud（崩溃）但 host 假绿一面值得记录。'
+  source: https://gitcode.com/cann/ops-math/issues/3878
+  behavior: 在 NPU 上对 fp32/fp16 张量用 replication padding 的负数（裁剪）模式：接口调用返回成功，同步时进程被设备侧 vector core 异常（507035）打断；同样的负 padding 换 INT32 输入又完全正常。三个维度接口（1d/2d/3d）都复现，训练作业在数据增强/裁剪处崩掉且第一段不报参数错。
+  trigger_surface: aclnnReplicationPad1d/2d/3d，FLOAT32/FLOAT16 + 负 padding（裁剪）；A2 910B2 / CANN 9.2.0 实测 2/2；INT32 不触发。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

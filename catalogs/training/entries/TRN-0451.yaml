@@ -1,0 +1,79 @@
+id: TRN-0451
+legacy_ids: []
+slug: verl_logprob_margin_fp32_rounds_to_zero
+aliases: []
+title: verl 确信标签 logprob 与梯度 fp32 舍入到 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: verl
+    component: logprobs_from_logits
+  behavior: logp_t=z_t-logsumexp(z) 把标签自身 exp(0)=1 计入和式：margin 超 ~16.6 后 fp32 的 1+exp(-m) 舍入为 1，logprob 与标签梯度变精确 0，其余梯度保留。
+effect:
+  objects:
+  - 梯度
+  - 训练信号
+  detail: 30.0 margin 下 logprob=0、label_grad=0、other_grads_sum=-2.994e-09（fp64 参考 -2.994e-09）；bf16 分支 margin~5.5 即触发；Triton fused linear CE 同病。
+  visibility: 静默错误
+mitigation:
+  detect: 大 margin 标签（如 30.0）单元对拍 fp64；检查梯度逐元素和是否为零。
+  fix: 待定（issue open，未见修复 PR）。
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/8376
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'verl #8376（2026-10-25，open，verl main@3c6d9b43 / torch 2.9.1+cu128 / Triton 3.5.1 / RTX 3090）。logprobs_from_logits_naive / logprobs_from_logits_v2（verl/utils/torch_functional.py）与 Triton fused linear cross-entropy（kernels.py，use_fused_kernels=True）都以 z_t-logsumexp(z) 计算：标签 margin m>16.6 时 fp32 的 1+exp(-m) 舍入为 1，logprob 与标签梯度 1-p_t 精确为 0，其余 -p_j 保留 → 梯度和≠0。bf16 分支 v2 用 bf16 log_softmax，CPU 上 margin~5.5 即舍入。30.0 margin 复现：logprob=0、label_grad=0、other_grads_sum=-2.994e-09；fp64 参考 logprob=-2.994e-09。确信标签（易分类样本）的监督信号被静默丢弃。'
+  source: https://github.com/verl-project/verl/issues/8376
+  behavior: 当训练标签是模型非常有把握的（logit 领先其他 16.6 以上）时，fp32 下这个样本的 logprob 和它自己的梯度都被算成精确 0：监督信号静默消失，且因为其他 token 的梯度还在，梯度总和不等于零；bf16 下 5.5 的把握度就会触发。
+  trigger_surface: verl logprob 计算（naive/v2/Triton fused linear CE），标签 margin>16.6（fp32）或 >5.5（bf16 log_softmax 分支）；torch 2.9.1/Triton 3.5.1 实测。
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: reaudit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: RL训练回路
+        to: 损失计算
+      effect:
+        from: 训练信号
+        to: 梯度
+    previous:
+      round: daily-audit-2026-10-26
+      base:
+      - glm-5.3-flash
+      - deepseek-v4.1-flash
+      - qwen3.8-flash
+      panel:
+      - kimi-k3
+      - glm-5.3
+      - qwen3.8-max
+      uncertain:
+      - kind
+      - subsystem
+      - effect
+      - visibility
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - cause.objects
+    - effect.objects

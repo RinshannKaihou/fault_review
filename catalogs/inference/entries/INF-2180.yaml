@@ -1,0 +1,53 @@
+id: INF-2180
+legacy_ids: []
+slug: ttmetal_round_negative_decimals_whole_step_error
+aliases: []
+title: tt-metal round 负 decimals 邻 tie 整步错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU round kernel（WH/BH）
+  behavior: kernel 用 x*fl(10^-k)（不精确，如 0.01f=0.0099999998）代替精确除法 x/10^k，再 round-half-even；50.000004 在 d=-2 乘积恰舍到 0.5 得 0，正确为 100。
+effect:
+  objects:
+  - 数值结果
+  detail: FLOAT32 decimals<0 时邻 tie 输入整步（10^k）错值：50.000004/-2→0（应100）、1499.9999/-3→2000（应1000）、-1999850.1/-2→-1999800（应-1999900）；确定性必现。
+  visibility: 静默错误
+mitigation:
+  detect: 与 torch.round/np.round 邻 tie 样本对比
+  fix: 待定（issue 未附修复；模型确认 ttsim 与 kernel 逐位一致，根因闭合）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62176
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal #62176（c2026-10-22）：ttnn.round FLOAT32、decimals=-k<0 时邻 tie 输入错一个整步。ctkernel_sfpu_rounding_ops.h @9ea5881b46（WH ~L175-181、BH ~L163-169）以 coeff=exp10i(decimals)（1e-2F=0.0099999998 等不精确值）乘代替精确除：x*coeff 舍入恰到 0.5 时 _round_even_ 得 0（真商 0.50000006 应进到 1），再乘 inverse 回 10^k 尺度。三例：50.000004/-2→0（torch 100）、1499.9999/-3→2000（torch 1000）、-1999850.1/-2→-1999800（torch -1999900）。numpy 模型评估：每个 1.6e7 以下正 fp32 在 d=-2 有 32,819 个错值、d=-3 有 11,525 个，全为一步错。既有 test_round 不触发：其输入 generate_float32_bits() 实为 bf16 值，2^23 以下不触发，且 decimals<0 容差宽松。非 #55709（那是溢出到 inf）。环境：ttsim BH（ttsim 输出与 numpy kernel 模型逐位一致；WH kernel 源码相同，本轮未在硅上实测—— ttsim v1.13.0、ttnn 0.80.0、SFPI 7.85.0）。'
+  source: 2026-10-25 每日扫描；issue https://github.com/tenstorrent/tt-metal/issues/62176
+  behavior: 使用者视角：对 FLOAT32 张量调用 ttnn.round(x, decimals=-2/-3…)（舍到百/千位），部分邻 tie 的输入会错一整个舍入步长——该进位到 100 的得 0、该舍到 1000 的得 2000。确定性必现、无告警；数值上「看起来仍像舍入结果」只是差一步，容易当成数据噪声漏过。量化/定标、价格与度量取整等场景直接拿错值。正负输入都可触发（负数例 -1999850.1）。
+  trigger_surface: tt-metal SFPU round kernel（WH/BH 同源，9ea5881b46）；FLOAT32 输入 + decimals<0 + 邻 tie 值（本条证据来自 ttsim BH，硅上未实测）。
+  signature: x*fl(10^-k) 恰舍到 0.5 的输入集合（每 1.6e7 正 fp32 约 3.3 万个@d=-2）。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - component

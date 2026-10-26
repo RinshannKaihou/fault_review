@@ -1,0 +1,52 @@
+id: INF-2154
+legacy_ids: []
+slug: flashinfer_mla_padding_nan_propagation
+aliases: []
+title: FlashInfer MLA 把页尾 padding NaN 传入有效输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: MLA paged attention 内核
+  behavior: CUTLASS/CuTe DSL monolithic 后端的 MLA 分页注意力未隔离有效 KV 长度之外的存储（末页未用尾部、block_tables 未用槽位指向的物理页），其中 NaN 会传播进有效输出行；传播路径为疑似、未证实。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 仅毒化存储越界区即可让有效输出行出现 NaN（单请求最多 540,672 个非有限元素）；同输入 FA2 后端保持有限且匹配参考
+  visibility: 数值异常
+mitigation:
+  detect: 对 KV 池未用区域预填非 NaN 哨兵后复跑可定位
+  fix: 待定（两个 issue open；疑似机制为越过 kv_len 加载后 0×NaN 进入 P@V，报告者明示非证实的 kernel 级根因）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6860
+  kind: github_issue
+- url: https://github.com/flashinfer-ai/flashinfer/issues/6861
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'FlashInfer BatchMLAPagedAttentionWrapper 的 cutlass 与 cute-dsl-monolithic 后端会把请求有效 KV 长度之外的存储 NaN 传播进有效输出行，两个独立来源：1）请求末页 kv_len % page_size 之后的未用尾部；2）dense block_tables 中请求末页之后未用槽位所指向的合法物理页。复现中所有 page ID 均在界内、所有逻辑有效 Q/K/V 元素均有限：对上述区域独立投毒后，有效行出现非有限元素（B300/SM103，fuzzer seed 90：request 1 有 524,288 个非有限元素；seed 112：request 4 有 540,672 个）。显式选 FA2 同输入保持有限且匹配独立 FP32 参考；backend=auto 在 fuzzer seed 90/112 上自动选中 cute-dsl-monolithic。B200/SM100 上另有独立报告者在 PR #6743 review 中用 seed 1/9/92 报告同两来源。报告者说明观察与「加载越过 kv_len、mask score 后 0×NaN 进入 P@V」一致但为疑似机制、非证实根因。'
+  source: 2026-10-23 每日扫描 https://github.com/flashinfer-ai/flashinfer/issues/6860（open，CUTLASS）+ https://github.com/flashinfer-ai/flashinfer/issues/6861（open，CuTe DSL monolithic，SM103）
+  behavior: MLA 服务（B200/B300）用 CUTLASS 或 CuTe DSL monolithic 后端时，只要 KV 池里请求长度之外的区域（末页尾部、padding 页）存有 NaN（如先前请求残留或未初始化），当前请求的有效输出行就可能变成 NaN——输出发散/乱码，而输入 token 与 page table 完全合法。同一输入切到 FA2 后端即正常。
+  trigger_surface: FlashInfer main（#6861 复现于 B300/SM103，#6860 同证于 B300 且 B200/SM100 有独立复现）；BatchMLAPagedAttentionWrapper backend=cutlass 或 cute-dsl-monolithic（auto 可选中后者）；KV 存储越界区含 NaN。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

@@ -1,0 +1,56 @@
+id: TRN-0418
+legacy_ids: []
+slug: ascend_pytorch_task_queue_fatal_error_downgrade
+aliases: []
+title: torch_npu 任务队列致命错误被降级后续计算假成功
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: Repository 异步任务队列错误状态机
+  behavior: 异步算子失败后原实现首次抛异常时把 ERROR_EXIT 转 CAN_EXIT；消费者退出后后续任务可能被丢弃，但提交与同步不再报告原始错误，上层误用未经计算的输出；重试也假成功。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 任一异步算子设备侧失败后，队列进入半死状态：后续提交/同步不报错，训练继续跑但输出是未计算显存残留；重试同样假成功。实机复现（#4738）以提交不存在的算子触发真实异步错误验证。
+  visibility: 静默错误
+mitigation:
+  detect: 故障注入（提交不存在算子）后检查后续提交/同步是否持续报错；输出 canary 校验。
+  fix: 修复 MR https://gitcode.com/Ascend/pytorch/pull/48474 （open 未合入：Repository 增加持久故障标志，故障后提交/同步持续抛异常；6 组配置实机验证通过；未核实发布版本）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/4738
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/pull/48474
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #4738（issue）+ 修复 MR !48474（2026-10-24，issue 状态未在本批索引、MR open）。torch_npu 异步任务队列（TASK_QUEUE_ENABLE=1/2）在异步算子执行失败后，原实现首次抛出异常时将 ERROR_EXIT 转为 CAN_EXIT；消费者退出后，后续任务可能被丢弃，但提交与同步不再报告原始错误——上层拿到未经计算的输出缓冲继续算，重试也假成功。修复（open，未合入）：Repository 增加持久故障标志，把故障记录与队列生命周期状态分离；CAN_EXIT 后正常计算提交与重复同步仍明确报错；生产者互斥区内发布故障、唤醒多生产者、eventfd EINTR 处理；错误信息按 Repository 保存保留原始上下文。验证：Ascend910_9362 / CANN 9.2.0 / torch_npu 2.7.1.post4 隔离构建，子进程提交不存在算子触发真实 CANN 异步错误，TASK_QUEUE 4 组配置+同步控制 1 组+三生产者并发 1 组全部通过。训练影响：异步执行路径上任一算子真失败后，后续 step 的提交/同步假成功，输出为残留显存——典型静默污染。'
+  source: https://gitcode.com/Ascend/pytorch/issues/4738 ；修复 https://gitcode.com/Ascend/pytorch/pull/48474
+  behavior: 训练中某个异步算子在设备侧真失败了（报错可能一闪而过或被吞），之后任务队列进入半死状态：后续算子提交、同步全部返回成功，但输出根本没有被计算过——是显存里残留的旧值；重试也照样假成功。训练看似正常继续，模型更新全是脏数据。开关 TASK_QUEUE_ENABLE=1/2 的 torch_npu 环境可触发。
+  trigger_surface: torch_npu 异步任务队列（TASK_QUEUE_ENABLE=1/2，含 PER_STREAM_QUEUE 两种）；任一异步算子执行失败后；Ascend910 实机验证。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

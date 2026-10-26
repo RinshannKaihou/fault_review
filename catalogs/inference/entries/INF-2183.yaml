@@ -1,0 +1,53 @@
+id: INF-2183
+legacy_ids: []
+slug: ttmetal_fpu_reduce_row_fp32dest_face1_partial_leak
+aliases: []
+title: tt-metal FPU REDUCE_ROW fp32Dest 列16残留
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: FPU REDUCE_ROW 归约
+  behavior: fp32_dest_acc_en=True 且 fp32 输出时 REDUCE_ROW 每 tile 列 16 残留 face-1 部分和；row-major W 分块回载再并入列0，W>256 结果错数个百分点。
+effect:
+  objects:
+  - 数值结果
+  detail: ttnn.sum(x,dim=-1) row-major Float32 W>256 结果错数个百分点；bf16 fp32 中间链 ttnn.mean N·C>1 且 W>256 同样错（既有测试 xfail）；逻辑形状 [...,1] 掩盖单次 reduce 的隐藏列。
+  visibility: 静默错误
+mitigation:
+  detect: 对 W>256 的 row-major fp32 sum 与 torch 参照对比
+  fix: 待定（issue 未附修复；fp32_dest_acc_en=False + HiFi4 可规避）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62259
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal #62259（c2026-10-23）：Blackhole p150b、main 48444d1f、默认 compute config（fp32_dest_acc_en=True）。fp32_dest_acc_en=True 且 Float32 输出时，FPU 行归约 REDUCE_ROW 打包的每个 tile 在列 16（face 1 列 0）携带 face-1 部分和（复现1：x[...,0]=1, x[...,16]=3, x[...,48]=5 行和应为 9，实测 fp32 输出 [(0,9.0),(16,8.0)]——8=3+5 即 face-1 部分和残留；bf16 输出无此列）。逻辑 shape [...,1] 隐藏该列，读 padded tile 或跨 reduce 调用以 fp32 partial 累加者会看到：row-major Float32 W>256 时 ttnn.sum 错数个百分点（reduce_rm.cpp 8-tile 分块回载把列16 拷回 Dest，下一块 reduce_row_perform_transpose 再并入列0 一次）；#62253 合入后 bf16 fp32-intermediate 链（#61588）同路径，ttnn.mean row-major bf16 N·C>1 且 W>256 仍错（test_mean_full_tensor_bf16 shape=(1,2,32,2048) ROW_MARKED 在该 PR xfail）。非 #61588/#62253 回归：W=288 fp32 row-major sum 在其合入前 main 上已错。fp32_dest_acc_en=False + HiFi4 时干净。'
+  source: 2026-10-25 每日扫描；issue https://github.com/tenstorrent/tt-metal/issues/62259
+  behavior: 使用者视角：在 Blackhole 上对 row-major Float32 张量做 ttnn.sum/mean 沿最后一维，宽度超过 256 时结果错几个百分点且无任何告警；bf16 输入走 fp32 中间链且批维>1 时同样错。单次 reduce 看起来正确（残留在被逻辑形状隐藏的列16），只有跨 tile 累加或读 padded tile 才暴露——归约类算子的输出被静默污染，拿去做 norm/softmax 前置统计会连带出错。关 fp32_dest_acc_en 或降 W<=256 可规避。
+  trigger_surface: tt-metal main（48444d1f，Blackhole p150b；WH/BH LLK 共路径）默认 fp32_dest_acc_en=True；REDUCE_ROW(SUM/AVG) + Float32 输出 + row-major W>256 累加路径；bf16 fp32-intermediate ttnn.mean N·C>1。
+  signature: 输出 tile 列16 残留 face-1 部分和（fp32 输出特有，bf16 无）。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

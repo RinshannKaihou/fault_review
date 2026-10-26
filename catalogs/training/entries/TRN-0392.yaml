@@ -1,0 +1,59 @@
+id: TRN-0392
+legacy_ids: []
+slug: opsnn_softplus_grad_sigmoid_overflow_inf_times_zero_nan
+aliases: []
+title: SoftplusGrad 大负输入 sigmoid 下溢 inf×0 出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SoftplusGrad sigmoid 计算
+  behavior: sigmoid=1/(1+exp(-features)) 在大负 features 时中间量溢出为 inf、sigmoid 下溢为 0；特定窗口内遇 inf 梯度时 inf×0=NaN，正确应为 ±inf。
+effect:
+  objects:
+  - 梯度
+  detail: softplus 反向在深负激活区（约 -103~- -89）遇到 inf 梯度时输出 NaN 而非 ±inf；修复前 375 条旧用例 374 PASS、唯一失败即此边界。
+  visibility: 数值异常
+mitigation:
+  detect: 对 features∈(-103.28,-88.73] × gradients=±inf 组合做边界单测；已写修复。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/12612（open 2026-10-23）：sigmoid 改 Compare/Select 双分支稳定实现（两分支 exp 参数均 ≤0）并叠加 fp32 最小正规数 1.17549435e-38 防 FTZ 刷 0；Kernel UT 13/13、Host UT 29/29、上板 83/83 PASS（PR 记录，未发布）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7268
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/12612
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: CANN ops-nn SoftplusGrad（activation/softplus_grad，master）：(1) sigmoid=1/(1+exp(-features)) 数值不稳定——features 绝对值较大的负数时 exp(-features) 中间量溢出为 inf，sigmoid 错误下溢为 0（REQUIREMENTS 8.1 要求 exp 参数均 ≤0 的稳定实现）；(2) features∈(-103.28,-88.73] 时 sigmoid 因 fp32 FTZ denormal 刷 0，若 gradients=±inf 则 inf×0=NaN，而数学上 sigmoid∈(0,1) 恒正、正确结果 ±inf。修复 PR !12612（issue 同日提）：sigmoid 改 Compare/Select 双分支稳定实现 + 叠加 fp32 最小正规数；修复前验证 375 条旧用例唯一失败项即 inf×NaN 边界；修复后 Kernel UT 13/13、Host UT 29/29、上板 kernel 83/83、GEIR 83/83 PASS（PR 自述，open 未合入）。另含空 Tensor 误拦截、未知秩推导失败、INT64_MAX 容量防护缺失等非数值项。硬件 Atlas A2/A3。无训练框架受害报告，缺陷为算子级实测（PR 修复前后对照）。
+  source: https://gitcode.com/cann/ops-nn/issues/7268 ｜修复 PR：https://gitcode.com/cann/ops-nn/pull/12612
+  behavior: 训练中激活值落在深负区（约 -103 到 -89）且上游梯度为 ±inf 时，softplus 的反向梯度输出 NaN（正确应为 ±inf）；修复前仓库回归 375 条用例中唯一失败项就是这个边界，常规区间用例全过，平时不可见，只在极端梯度（如 loss spike 后的 inf 回传）时显形。
+  discovery: 2026-10-24 每日扫描
+  notes:
+  - 2026-10-25 2026-10-25 回访：修复 MR !12612（softplus_grad 空 Tensor/未知秩/稳定 sigmoid/inf×0）open，2026-10-24T16:32Z 仍有更新；未合入。
+  - 2026-10-26 2026-10-26 回访：修复 MR !12612 批次快照 open、2026-10-25T00:48Z 仍更新未合入。
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-10-25'
+    fields:
+    - original.notes
+  - date: '2026-10-26'
+    fields:
+    - original.notes

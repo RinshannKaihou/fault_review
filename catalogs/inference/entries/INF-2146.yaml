@@ -1,0 +1,57 @@
+id: INF-2146
+legacy_ids: []
+slug: aclnn_thnn_fused_lstm_cell_global_state_race
+aliases: []
+title: aclnnThnnFusedLstmCell 全局状态并发互覆错值/段错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn 入口与 tiling 全局对象
+  behavior: aclnn 入口的 AclnnParams/Info/BaseOpOutputs 三个结构体在文件作用域实例化为全局对象，多线程并发调用互相覆盖；tiling 的 Info/TilingData 同样全局
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 并发下输出失配、第一段返回 561103、进程段错误；单线程正常；修复 PR 把全局对象改栈上构造+显式传参
+  visibility: 不可复现
+mitigation:
+  detect: 多线程并发压测同算子可复现
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/12590（open，2026-10-22；发布状态未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: 与 INF-2098（AddRmsNormQuant TU 级全局 optionalUbNum 残留）同属 aclnn host 侧全局状态家族，但一个是跨调用残留、一个是并发互覆，失效方式不同
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7007
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12590
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: INF-2098
+pattern: PAT-INF-0189
+original:
+  mechanism: 'cann ops-nn aclnnThnnFusedLstmCell 在 host 侧多线程并发调用时不安全（issue #7007：并发下输出失配、第一段返回 561103、进程段错误，单线程正常）。根因源码级定位：aclnn_thnn_fused_lstm_cell.cpp 中 AclnnParams/AclnnInfo/BaseOpOutputs 三个结构体在定义处直接实例化为全局对象 aclnnParams/info/baseOuts，被 CheckParamsValid/HandleParams/RunBaseOp/ViewCopyResults 隐式共享，并发调用互相覆盖；thnn_fused_lstm_cell_tiling.cpp 的 ThnnFusedLstmCellTilingInfo info 与 TilingData tiling 同为文件作用域对象，GetInfo/FillTilingInfo/SetTilingData 直接读写。修复 MR !12590 去掉全局实例化、改栈上构造 context 并全部显式传参（open，2026-10-22，未发布）。torch_npu 上 LSTM 类模型多线程/多 stream 并发推理可触发。与 INF-2098（AddRmsNormQuant 全局 optionalUbNum 跨调用残留）同属 host 侧全局状态家族但机制不同：一个是并发互覆、一个是跨调用残留。'
+  source: 2026-10-23 每日扫描 https://gitcode.com/cann/ops-nn/issues/7007（open）+ 修复 https://gitcode.com/cann/ops-nn/merge_requests/12590（open）
+  behavior: NPU 上多个线程/流同时跑 LSTM cell（ThnnFusedLstmCell）时输出静默失配（读到别的调用的参数算出的结果）、偶发 561103 参数错误乃至进程段错误；单线程逐次调用完全正常。同一输入反复并发运行结果不稳定，难以稳定复现。
+  trigger_surface: cann ops-nn（issue 报告未注明 CANN 版本，master 定位）；aclnnThnnFusedLstmCell；host 侧多线程并发调用（多流/多 worker 服务）；单线程不触发。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  updates:
+  - date: '2026-10-24'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

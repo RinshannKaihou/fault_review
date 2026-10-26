@@ -1,0 +1,60 @@
+id: TRN-0393
+legacy_ids: []
+slug: opstransformer_moe_permute_with_ep_wraparound_tail_unwritten
+aliases: []
+title: MoeTokenPermuteWithEp 环绕区间尾部 end 行输出未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: MoeTokenPermuteWithEp 搬运
+  behavior: 环绕区间（start>end）时 tiling 按环绕语义算 numOutTokens，但 kernel 过滤条件的索引值域只到数组末尾，尾部 end 行从未写入，两段返回成功。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: EP 环绕窗口下 permuteTokensOut/permuteProbsOut 尾部恒缺 end 行（实测 8 行缺 4），输出为未初始化显存残留，形状正确、前段正确、无报错；76 组 (start,end) 扫描缺口恒等于 end。
+  visibility: 静默错误
+mitigation:
+  detect: 输出预填哨兵做 round-trip；环绕窗口（start>end）下校验实际写入行数==numOutTokens。
+  fix: 待定（issue open 2026-10-23，根因定位至 moe_index_copy_with_ep.h:158/185 过滤条件，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6622
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2173
+original:
+  mechanism: CANN ops-transformer aclnnMoeTokenPermuteWithEp：rangeOptional 为环绕区间（start>end，即 EP 切分窗口跨 token 数组末尾）时，op_host/moe_token_permute_with_ep_tiling.cpp:498-505 按环绕语义算出 numOutTokens=end-start+totalLength（输出形状合法）；但 op_kernel/moe_index_copy_with_ep.h:158/185 的过滤条件 (indicesValue>=start && indicesValue<start+numOutTokens) 中 indicesValue 取自 sortedIndicesOut，其值域恒为 [0,totalLength)，环绕场景实际命中区间 [start,min(start+numOutTokens,totalLength)) 只到数组末尾，尾部 end 行从未被 DataCopyPad 写入。实测 num_tokens=8,range=[12,4]：8 行只有前 4 行写入，后 4 行保持哨兵 -12345；4 种 shape×76 组 (start,end) 扫描，start>end 且 end>0 时实际写入行数恒为 numOutTokens-end，无一例外；start<end 时缺口为 0。两段接口均返回 ACLNN_SUCCESS。C++ 纯 aclnn 直调（非框架路径）实测。与 TRN-0386/0387（clipped_swiglu/dequant_swiglu_quant 输出未初始化/变体丢失）同为 MoE 训练算子输出完整性缺陷，但触发点不同（EP 环绕窗口语义）。无训练框架受害报告。
+  source: https://gitcode.com/cann/ops-transformer/issues/6622
+  behavior: MoE EP 训练中 EP 切分窗口跨 token 数组末尾（环绕区间 start>end）时，token 重排输出 permuteTokensOut/permuteProbsOut 的末尾 end 行是从未被写过的显存残留（哨兵实测 8 行缺 4），形状与前段内容都对、接口成功返回，下游按正常重排结果继续算，梯度在不知情下被垃圾数据污染。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - detail
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - relations

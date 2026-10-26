@@ -1,0 +1,71 @@
+id: TRN-0410
+legacy_ids: []
+slug: ops_transformer_moe_init_routing_v2_grad_oob_skip
+aliases: []
+title: MoeInitRoutingV2Grad 越界行 idx 静默当 -1 跳过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: aclnnMoeInitRoutingV2Grad
+  behavior: kernel 侧对 idx<0 与 idx≥rows 一律按无效行跳过，host 侧未做值域校验；越界（≥行数）与小于 -1 的 expandedRowIdx 被当作 -1，两段返回 0，被跳过行的梯度静默丢失。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: MoE 路由反向展开行索引越界时（Drop/Pad 之外场景值域 [0,B*S*K)），该行梯度被静默丢弃——输出与 skip 语义逐元素一致（CPU 三语义标杆判据），梯度少加一项；接口无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 含越界 idx 的输入对拍 CPU skip/clamp/mod 三语义标杆；上游路由 idx 生成处加值域断言。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6691
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6710
+  kind: gitcode_issue
+relations: []
+pattern: PAT-TRN-0053
+original:
+  mechanism: 'cann/ops-transformer #6691（2026-10-24，open，A2 910B2 / CANN 9.2.0 / master 5f9cdcf3）。aclnnMoeInitRoutingV2Grad 对越界（≥gradExpandedX 行数）与小于 -1 的 expandedRowIdx 两段均返回 0、同步 0，并把这类值当 -1（跳过）处理，被跳过行的梯度静默丢失。报告者以同一份输入按 skip/clamp/mod 三种语义算 CPU 标杆：算子输出与 skip 逐元素一致（max_abs≤6e-8），与 clamp/mod 差 0.43~0.54，判据闭合。资料约束 Drop/Pad 场景 [-1,E*C)、其他 [0,B*S*K)，区间外属非法入参应报 161002。根因：kernel 侧对 idx<0 与 idx≥rows 一律按无效行跳过，host 第一段无值域校验。正常流程上游 MoeInitRoutingV2 产出的 idx 不会越界；该缺陷在 idx 被外部改写/错配时把显式报错机会吞掉，梯度静默少项。同族 #6672（MoeTokenPermuteGrad numTopk 负数）、#6685/#6693 等为 MoE 反向校验缺失族。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6691
+  behavior: MoE 路由反向算子 MoeInitRoutingV2Grad 收到越界的展开行索引（比如超出实际行数的 15，或小于 -1 的 -2）时不报参数错误，接口返回成功，但那一行的梯度被直接丢掉（等价于当成 -1 跳过），输出梯度少加一项；只有对拍标杆才能发现。
+  trigger_surface: aclnnMoeInitRoutingV2Grad，expandedRowIdx 越界（≥行数）或 <-1；正常上游产物不触发，idx 被错配/改写时静默吞错。A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-10-25 每日扫描
+  notes:
+  - '2026-10-26 2026-10-26 回访：新增同算子证据 ops-transformer #6710——expandedRowIdx 越界的另一缺陷面：越界偏移落相邻显存时把相邻张量内容当梯度累加（脏数据）、极大偏移 sync 507035；三条 tiling 分支校验均不完整。独立成条 TRN-0441（var→本条），本条证据已补 #6710。'
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: MoE路由
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - evidence
+  - date: '2026-10-26'
+    fields:
+    - original.notes
+  - date: '2026-10-26'
+    fields:
+    - pattern

@@ -1,0 +1,53 @@
+id: INF-2165
+legacy_ids: []
+slug: vllm_hadacore_transform_odd_rows_garbage_kv
+aliases: []
+title: vLLM hadacore 奇数行错值污染 INT4 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: hadacore_transform
+  behavior: 量化前 K/V 经 hadacore_transform 旋转，行数（token×KV head）为奇数时该 kernel 结果有时错误，越读未映射内存时崩溃。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 奇数行时变换值出现 ~1e36 量级相对误差（垃圾 K/V 写入 INT4 KV cache，推理输出错），或间歇 illegal memory access 崩引擎；1-4352 全扫 1101 个奇数 N 错。
+  visibility: 静默错误
+mitigation:
+  detect: 对 single_rht 输出与 float64 参考逐元素比对（奇数行探针）
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63514
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.30.0（pip wheel，torch 2.13.0、triton 3.7.1，4×L4 sm_89，--kv-cache-dtype int4_per_token_head，head_dim 256、TP=2/DP=2 每 rank 1 KV head）。vllm/v1/attention/ops/int4_per_token_head.py 的 reshape_and_cache_int4 在量化前先旋转 K/V：key/value=single_rht(·.float())，single_rht→fast_hadamard_transform→ops.hadacore_transform(x.contiguous().to(bfloat16), inplace=True)。输入 [num_tokens, num_kv_heads_per_rank, 256]，hadacore 按 num_tokens×heads 行处理；行数为奇数时结果有时错误（相对误差最高 ~1e36，即为垃圾值而非 Hadamard 变换），kernel 越读未映射内存时引擎 illegal memory access 死亡。报告对 [N,1,256] fp32 全扫 N=1..4352 与 float64 参考 (x*signs)@H_256 比较：错误全部集中在奇数 N，共 1101/4352（如 257-512 区间 87/128 个奇数错）。被污染的 K/V 随后量化写入 INT4 per-token-head KV cache。
+  source: https://github.com/vllm-project/vllm/issues/63514
+  behavior: 开 --kv-cache-dtype int4_per_token_head 服务时，只要一个 batch 的 token 数×KV head 数是奇数，写入 KV cache 的 Hadamard 旋转结果可能整体变成天文数字级垃圾（相对误差 1e36），后续生成明显错误；有时则是内核越界读到未映射显存直接 illegal memory access 把引擎打挂。奇偶性决定对错，同一配置时好时坏，很难从输出直接定位到 KV 层。
+  trigger_surface: vLLM 0.30.0；--kv-cache-dtype int4_per_token_head（head_dim 256、TP=2 DP=2）；num_tokens×num_kv_heads_per_rank 为奇数的 batch。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

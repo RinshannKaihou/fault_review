@@ -1,0 +1,59 @@
+id: TRN-0402
+legacy_ids: []
+slug: opstransformer_fa_grad_v3_deterministic_dsink_unwritten
+aliases: []
+title: FA-Grad V3 确定性路径 dsink 输出未写出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FA-Grad V3 确定性 tiling
+  behavior: 确定性计算=1 且 attenMask 为空时，非确定性 tiling 读 SINK_IN 判断 sink 维，确定性 tiling 无任何 sink/dsink 处理，dsinkOut 完全不写；sinkIn 非空时资料要求必须写出。
+effect:
+  objects:
+  - 梯度
+  detail: sinkInOptional 非空（fp32[headNum]）+确定性开关=1 时 dsinkOut 保持预填金丝雀 0xA5A5A5A5（重复执行同），开关=0 同输入正常写出；无报错，两段返回 0。
+  visibility: 静默错误
+mitigation:
+  detect: 确定性开关下对 dsinkOut 预填金丝雀 round-trip；与开关=0 的输出对拍。
+  fix: 待定（issue open，master 复核确定性 tiling 无 sink 处理，未修）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6521
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0273
+pattern: PAT-TRN-0051
+original:
+  mechanism: 'CANN ops-transformer aclnnFlashAttentionScoreGradV3（attention/flash_attention_score_grad，Atlas A2 910B2、CANN 9.2.0）：开启确定性计算（aclrtCtxSetSysParamOpt(ACL_OPT_DETERMINISTIC,1)）且 attenMaskOptional 为空时，dqOut/dkOut/dvOut 正常写出但 dsinkOut 完全未写（预填 0xA5A5A5A5 读回不变，重复执行一致）；同输入开关=0 时 dsinkOut 正常写出（0xC7C8BE65）。master 根因复核：非确定性 tiling flash_attention_score_grad_tiling_s1s2_bn2gs1s2_basic.cpp:205-206 读取 SINK_IN 判 sink 维；确定性 tiling 同名 _basic_det.cpp 内 grep -inE "sink|dsink" 零命中——确定性路径根本没有 sink/dsink 处理，dsinkOut 不会被写。与 #6365（无 sinks 时允许省略 dSinks）不同：本场景 sinkIn 是传了的（fp32[headNum] 非空），属「有 sinks 但确定性路径不产出 dSink」。与 TRN-0273（FA 反向 dsink 工作区未清零致梯度爆炸，arch35/950）同一算子族同一输出的完整性缺陷、不同触发路径（确定性开关 vs 稀疏无 mask 模式），标 var。issue created 2026-10-22T12:48Z（上轮批次窗口内未判，本轮补判）。无训练框架受害报告。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6521
+  behavior: 训练带可学习 attention sink 的模型并开启确定性计算（ACL_OPT_DETERMINISTIC=1）、attention 无显式 mask 张量时：反向的 dSink 梯度输出是调用前缓冲区里的旧值（金丝雀实测原样读回），dq/dk/dv 都正常、接口成功返回；sink 参数拿不到真实梯度被垃圾值更新，开关关掉后同输入立即正常，很难联想到是确定性路径的问题。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  updates:
+  - date: '2026-10-24'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

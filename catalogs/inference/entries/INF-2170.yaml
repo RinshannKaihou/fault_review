@@ -1,0 +1,55 @@
+id: INF-2170
+legacy_ids: []
+slug: torch_npu_complex_special_value_propagation_mismatch
+aliases: []
+title: torch_npu 复数特殊值传播与 CPU 不一致（Inf/NaN 翻转）
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: 复数算子向量化/标量分路径
+  behavior: 复数张量 Inf/NaN/零的传播语义与 CPU 不一致：小尺寸走标量路径改变特殊值结果，reciprocal 存在按元素数（<3）分路径。
+effect:
+  objects:
+  - 数值结果
+  detail: 含 Inf/NaN 复数输入下 NPU 与 CPU 结果模式翻转（cpu=finite→npu=nan、cpu=nan→npu=inf、cpu=inf→npu=nan）；同一算子 1 与 2/3/4 元素结果不同。910 与 910B3 双机逐位一致。
+  visibility: 静默错误
+mitigation:
+  detect: 与 CPU 参照逐元素对比特殊值输入可发现
+  fix: '待定（关联上游 pytorch #157272/#141487，本仓 #641 未附修复）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/641
+  kind: gitcode_issue
+- url: https://github.com/pytorch/pytorch/issues/157272
+  kind: github_issue
+- url: https://github.com/pytorch/pytorch/issues/141487
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'op-plugin #641：复数张量特殊值（Inf/NaN/零）传播在 NPU 与 CPU 不一致，c08/c10/c11 三案确定性复现（910 经典 + 910B3 双机逐位一致，CANN 9.1.0 + torch_npu 2.7.1）。reciprocal 小尺寸分路径（c08，上游 #157272 同形态）：z[0]=complex(inf,1.0) 时 1/z 在 1 元素正确、2/3/4 元素 imag 出现 cpu=finite→npu=nan 翻转；Inf/NaN 四则传播（c10，上游 #141487 同形态）cpu=nan→npu=inf、cpu=finite→npu=nan 各 1-2 处；exp/log/sqrt/pow 特殊点（c11）cpu=inf→npu=nan。定位为 NPU 向量化/标量双路径对特殊值语义不一致，同一算子结果依赖输入元素数量。'
+  source: 2026-10-25 每日扫描；issue https://gitcode.com/Ascend/op-plugin/issues/641 ；上游同形态 https://github.com/pytorch/pytorch/issues/157272 、https://github.com/pytorch/pytorch/issues/141487
+  behavior: 使用者在 NPU 上对含 Inf/NaN 的复数张量做 reciprocal/四则/exp/log/sqrt/pow，结果与 CPU 不一致：本应 NaN 的位置得到 Inf 或有限值，本应有限值的位置得到 NaN；更隐蔽的是同一算子 1 个元素和 2-4 个元素的结果规则不同（小尺寸分路径），不同 batch 大小下特殊值行为翻转。信号处理、FFT 逆运算等复数路径的异常检测与数值校验会失效，且无任何告警。
+  trigger_surface: torch_npu 2.7.1 + CANN 9.1.0（910 经典/910B3，aarch64）；复数 dtype 张量含 Inf/NaN/零输入；reciprocal/div 元素数<3 分路径；exp/log/sqrt/pow 特殊点。
+  signature: 复数特殊值 cpu/npv 结果模式翻转表；元素数依赖的同构分路径差异。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

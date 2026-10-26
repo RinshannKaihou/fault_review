@@ -1,0 +1,53 @@
+id: INF-2150
+legacy_ids: []
+slug: vllm_evs_mrope_recompute_chunk_boundary_wrong
+aliases: []
+title: vLLM EVS 视频剪枝 chunk 边界内 M-RoPE 位置静默错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: recompute_mrope_positions
+  behavior: chunked prefill 边界落进视频占位符内部时，recompute_mrope_positions 对从视频中间开始的 chunk 写错 M-RoPE 位置，delta 随之错位
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: chunk 中部起的视频 token、其后全部文本 token 的 M-RoPE 位置错，mrope_position_delta 偏移每个解码 token，无异常抛出
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: '待定（issue open，未附修复 PR；与 #62937/#62959 首块锚点、#48833/#48835 边界崩溃均为不同缺陷）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62969
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM --video-pruning-rate 开启 5 通道 EVS 路径（Qwen3-VL 及其子类如 Cosmos3-Edge）时，recompute_mrope_positions()（vllm/multimodal/video_prune/evs.py）在 chunked-prefill 边界落进视频占位符内部时写出错误的 M-RoPE 位置。默认配置即触发：chunked prefill 开启且 disable_chunked_mm_input=False，调度器在步 token 预算装不下视频占位符时切分（示例 Qwen3-VL-4B、video_pruning_rate=0.75、默认 max_num_batched_tokens=2048、32 帧 1280x720 视频，首个 2048-token chunk 含 2044 项视频切片，视频延伸到第二个 chunk）。报告提供 CPU-only 最小复现：逐 chunk 调用 recompute_mrope_positions 并携带位置张量到下一 chunk，以不分块调用为 oracle，错误在第二个 chunk（从视频中间开始的 chunk）出现，且影响其后的文本 token 与 mrope_position_delta（漂移每个后续解码 token）。该缺陷在 main、#62959、#48835 及两者叠加下结果相同，与 #62937/#62959（首 prefill 步锚点错）和 #48833/#48835（VISION_START|MEDIA 边界崩溃/错挂媒体）都是不同缺陷。vLLM main 90c4a1a73e。'
+  source: 2026-10-23 每日扫描 https://github.com/vllm-project/vllm/issues/62969（open，CPU-only 最小复现）
+  behavior: 多模态视频请求 + 默认 chunked prefill（视频占位符被切分）+ --video-pruning-rate 时，生成结果静默劣化：视频 chunk 后半的 token 位置错、随后文本 token 位置错、解码位置增量整体漂移，全程无报错。短视频（单 chunk 装下）不触发。
+  trigger_surface: vLLM main（90c4a1a73e，2026-10-22）；Qwen3-VL 类 5 通道 EVS 模型；--video-pruning-rate 开启 + 默认 chunked prefill；触发条件是 chunk 边界落在视频占位符内部。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

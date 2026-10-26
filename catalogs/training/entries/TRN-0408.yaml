@@ -1,0 +1,51 @@
+id: TRN-0408
+legacy_ids: []
+slug: ops_transformer_mhc_pre_alpha2_hres_unwritten
+aliases: []
+title: MhcPre alpha=(2) 且 hRes 非空时返回未写显存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnMhcPre alpha=(2) 分支
+  behavior: alpha=[2]（无残差分支语义，资料称 hRes 输出为 0）且调用方给 hRes 传非空张量时，两段接口返回 0 但 hRes 一个字节都不写，保持调用方原有内容；alpha=[3] 对照组正常写满。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: alpha=(2) 配置下消费 hRes 的下游读到调用前显存残留值（canary -777 原样保留），静默脏数据进入后续计算；接口无报错。训练侧残差分支张量被未初始化值污染。
+  visibility: 静默错误
+mitigation:
+  detect: hRes 预填 canary 后调用检查是否被改写；alpha=(2) 分支读回对拍。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6658
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2163
+original:
+  mechanism: 'cann/ops-transformer #6658（2026-10-24，open，A2 910B2 / CANN 9.2.0 / aclnn 两段式直调）。aclnnMhcPre 的 alpha shape=[2] 表示无残差分支，资料《规格约束》写明「当 alpha=(2) 时，hRes 输出为 0」、参数表只说可传空指针并未禁止传张量。实测 alpha=[2] 且 hRes 传非空张量：两段返回 0，hRes 一个字节未写、保持调用方原有内容；阴性对照 alpha=[3] 同一套 shape 下 hRes 立刻被写满（canary 全部消失），证明读回路径有效、问题在 alpha=(2) 分支。下游把未初始化显存当 hRes 消费。MhcPre 为 McMix 前置算子（MHC 混合卷积/attention 前置，MHC2 模型族训练路径）。推理编目 INF-2163 已收同源；本条为训练侧条目。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6658
+  behavior: 调用 McMix 前置算子 MhcPre 且 alpha 配成 [2]（无残差）时，如果按常规习惯给可选输出 hRes 传了张量而不传空指针，接口正常返回成功，但读回的 hRes 是调用前显存里残留的任意旧值（预填 -777 就读回 -777）；下游残差分支静默吃到脏数据，无任何报错。
+  trigger_surface: aclnnMhcPre，alpha=[2] + hRes 传非空张量；A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

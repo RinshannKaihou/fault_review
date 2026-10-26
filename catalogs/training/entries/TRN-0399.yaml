@@ -1,0 +1,53 @@
+id: TRN-0399
+legacy_ids: []
+slug: verl_agent_loop_prompt_cap_ignores_truncation_policy
+aliases: []
+title: verl agent loop 忽略 truncation 策略截头
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: verl
+    component: AgentLoop prompt cap
+  behavior: agent_loop 共享 prompt cap 对超长文本 prompt 无条件左截断，data.truncation 配置完全不生效；#4759 移除策略执行后未迁入 agent loop，无条件 cap 由 caf9fee 引入。
+effect:
+  objects:
+  - 输入编码
+  - 训练样本流
+  detail: 配置 error 的用户预期报错拒绝，实际静默左截断：system prompt/头部指令被丢弃、训练在残缺 prompt 上进行；CPU 可复现（4 种策略输出全相同 [6,7,8,9]），agent-loop 文本 prompt 路径（SingleTurn/ToolAgentLoop）。
+  visibility: 静默错误
+mitigation:
+  detect: 对 max_prompt_length 边界样本断言截断方向与配置一致；训练前 dump 首个 batch prompt 首部核对 system prompt。
+  fix: '待定（issue open 2026-10-19，verl 0.10.0.dev 4b26c78；关联 #4600 针对旧 tokenization 路径，未覆盖 agent loop）'
+labels:
+  stage:
+  - rl
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/8281
+  kind: github_issue
+relations: []
+original:
+  mechanism: verl（0.10.0.dev commit 4b26c78）experimental/agent_loop/agent_loop.py:467-476 的共享 prompt cap 对超长文本 prompt 无条件左截断（保留后缀）并打告警，无视 docs/examples/config.rst 声明的 data.truncation 策略（error/right/middle/left）。#4759 移除了数据集 postprocess_data(...,truncation=...) 调用与 raw_prompt_ids 四向处理，策略执行未迁入 agent loop；无条件 cap 由 caf9fee 引入。CPU 复现：stub 配置 error/left/right/middle 四种策略调 _cap_text_prompt_length([0..9], prompt_length=4)，输出全部 [6,7,8,9]（左截断）。影响 SingleTurnAgentLoop 与 ToolAgentLoop 的文本 prompt；多模态有独立保对齐的拒绝路径。训练中 overlong rendered prompt 到达该路径时 filter 未拦截的样本即被静默截头。issue open（2026-10-19）。无训练质量实测（复现为 CPU 单测级）。
+  source: https://github.com/verl-project/verl/issues/8281
+  behavior: 用 verl agent loop 做 RL 训练、prompt 渲染超过 max_prompt_length 时：不管 data.truncation 配成 error（应报错）还是 right/middle，全部被静默左截断——放在 prompt 开头的 system 指令、任务说明被丢掉，模型只在残缺后半段上采样和更新，训练照常进行、指标无异常标志，样本检查才发现头部内容没了。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 训练样本流
+        to: 输入编码

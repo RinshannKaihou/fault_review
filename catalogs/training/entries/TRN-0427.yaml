@@ -1,0 +1,60 @@
+id: TRN-0427
+legacy_ids: []
+slug: ops_transformer_sla_kl_grad_metadata_numheads_boundary_delayed_aicpu
+aliases: []
+title: SLA KL Grad Metadata 边界头数假绿后异常
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: IndexerKLLossGradMetadata
+  behavior: A2 资料「numHeadsQ 仅支持 8/16/32/64」，取 1/7/128 时第一段不按 161002 拒绝而返回 0，第二段也返回 0，错误延迟到 aclrtSynchronizeStream 以 507018（AICPU 异常）
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: Lightning Indexer KL loss 反向 metadata 算子在不支持的头数下假绿：调用方拿到成功返回，metadata 未写（哨兵全残留），错误迟到同步点；训练在 loss 反向处崩或拿到未写 metadata。
+  visibility: 报错
+mitigation:
+  detect: numHeadsQ 边界值（0/1/7/128/129）矩阵回归；metadata 预填哨兵校验写出。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6653
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #6653（2026-10-24，open，A2 910B2 / CANN 9.2.0 / master 92d0f9c2）。aclnnSparseLightningIndexerKLLossGradMetadata 资料「产品支持情况」对 A2 限定 numHeadsQ 仅支持 8/16/32/64，错误码表声明规格外第一段返回 161002。实测 numHeadsQ=1/7/128 时两段都返回 0，错误延迟到 aclrtSynchronizeStream 以 507018（AICPU 异常）暴露，metadata 64/64 元素一个未写（预填哨兵全残留）；8/16/32/64 正常、0/129 被正确 161002 拒绝。属 host 支持面校验缺失 + 错误延迟暴露。与 TRN-0400（Lightning Indexer KL loss 官方 example 输出 nan，#6614）同算子族不同缺陷（本条为 metadata 算子边界假绿，非主算子数值 nan）。Lightning Indexer KL loss 为 Qwen3-Next/Sparse attention 训练损失路径。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6653
+  behavior: Lightning Indexer KL loss 反向的 metadata 算子，头数配成 1、7、128 这类边界值：两段接口都返回成功，但 metadata 一个字没写，直到同步时才抛 AICPU 异常把训练打断；0 和 129 反而被立刻拒绝。报错离根因远、且中间有一段假绿窗口。
+  trigger_surface: aclnnSparseLightningIndexerKLLossGradMetadata，numHeadsQ∈{1,7,128}（支持面 8/16/32/64 之外、参数区间内）；A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 可用性/进度
+        to: 数值结果
+    rewritten:
+    - component
+    issue_unfixed:
+    - detail

@@ -1,0 +1,52 @@
+id: INF-2182
+legacy_ids: []
+slug: triton_ascend_swiglu_packed_bwd_not_bitwise_identical
+aliases: []
+title: triton-ascend packed SwiGLU 反向非 bitwise
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: Ascend 后端 hfusion 重排
+  behavior: packed（gate/up 交错）与 separate SwiGLU 数学相同、前向 bitwise 一致，反向梯度仍差（fp32 29% 元素 2.4e-7）；疑 hfusion 改变 packed 反向运算顺序。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: DeepSpeed swiglu_triton 训练/微调路径 packed 反向与 separate 反向梯度不 bitwise 一致（float 舍入量级），破坏严格 bitwise 对比测试；2-D fp16/bf16 bitwise 一致。
+  visibility: 静默错误
+mitigation:
+  detect: packed vs separate 反向逐元素 diff
+  fix: 待定（issue 询问是否有禁用融合的 kernel 级开关，尚无回复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2645
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'triton-ascend #2645（c2026-10-20，10-22 有更新）：DeepSpeed swiglu_triton 的 packed SwiGLU kernel（gate/up 交错在同一张量）与 separate 两张量 kernel 数学相同，triton-ascend 3.6.0 上前向已 bitwise 一致（3.6.0 已修），但反向梯度仍不一致：float32 shape(32,16) max|diff|=2.384e-07（29% 元素差）、float16 shape(3,5,384) 1/11520 元素差 3.8147e-06、fp16/bf16 2-D 形状 bitwise 一致。报告者判断为编译器融合（hfusion 类）在 packed 反向路径改变运算顺序，量级为浮点舍入噪声，非通常意义 correctness bug；诉求是确认是否预期行为、是否有 kernel 级开关禁用该融合（类似 enable_fp_fusion=False）以便严格 bitwise 对比测试在 Ascend 上运行。环境 torch 2.10.0+cpu（torch_npu 2.10.0.post7）、triton 3.6.0（amd/ascend/nvidia 后端）、Ascend 910B4。最小复现 kernel 取自 deepspeed/ops/triton_ops/swiglu_triton.py。对本库而言：影响推理侧主要不在数值（舍入量级），而是同一 kernel 源在两种数据布局下编译产物行为不同——bitwise 回归门控在 NPU 上不可用，掩盖真数值缺陷的检测。'
+  source: 2026-10-25 每日扫描；issue https://github.com/triton-lang/triton-ascend/issues/2645
+  behavior: 使用者视角：在昇腾上跑 DeepSpeed 的 SwiGLU triton kernel，把 gate/up 打包进一个张量（packed）和拆成两个张量（separate）写的同一数学，前向结果逐位一致，但反向梯度在部分形状下出现 1e-7~4e-6 量级的差异（fp32 小形状最多 29% 元素不同）。做严格 bitwise 对比的训练/微调回归测试在 Ascend 上会间歇失败；作为参考基线对齐工具也不可靠。无报错，差异稳定复现。
+  trigger_surface: triton-ascend 3.6.0 + torch_npu 2.10.0.post7 + Ascend 910B4；DeepSpeed swiglu_triton packed 反向 kernel；fp32 小形状与 fp16 3-D 形状（2-D fp16/bf16 不触发）。
+  signature: packed vs separate 反向 diff>0、前向 bitwise 一致；融合 pass 重排特征。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

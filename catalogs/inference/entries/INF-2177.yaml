@@ -1,0 +1,54 @@
+id: INF-2177
+legacy_ids: []
+slug: mindspore_ascend_videodecoder_sparse_batch_corruption
+aliases: []
+title: MindSpore Ascend VideoDecoder 稀疏批量抽帧码块损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: mindspore
+    component: VideoDecoder 批量抽帧
+  behavior: 每组最后一个目标包提交后即结束该组，不等解码完成或排空输出；多区间 seek 复用同一通道且组间无 EOS/drain，前序区间解码残留污染后续帧。
+effect:
+  objects:
+  - 输入编码
+  detail: get_frames_at([1810,2212,2615]) 第 2615 帧确定性码块损坏（最大像素差 255、平均差 55），删除任一前序索引即逐字节一致；API 正常返回、无报错无告警，若这些帧直接送入视频理解模型，输入特征已被污染且不可察觉。
+  visibility: 静默错误
+mitigation:
+  detect: 批量与单帧抽取结果逐字节比对（batch==single 断言）可发现
+  fix: 待定（EOS+drain 诊断 helper 可恢复但为受控诊断、非生产补丁，未回归验证）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29702
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'mindspore #29702：MindSpore 2.10.0 Ascend VideoDecoder get_frames_at() 对合法稀疏索引批量抽帧，第 2615 帧出现确定性码块损坏（HEVC Main 1080p，Video-MME-v2 001.mp4）。删除任一前序索引（[2212,2615] 或 [1810,2615]）即逐字节一致。代码定位（utils.py 1233-1250、1292-1311、1314 行）：_compute_ret_tensor 在目标包提交后结束当前组，不等待解码完成或排空输出；_decode_video_dvpp_frames 只创建一个通道与接收线程，多次 seek 送不同区间，组间无 EOS/drain。EOS 诊断：下一次 seek 前向原通道发 end_of_stream=true 并等 left_stream_bytes==0 且 left_decoded_frames==0，2 次试验三张输出全部与各自单帧一致——证明缺陷是通道内区间历史残留。两个独立容器、同版本重复验证 3/3 全损坏，坏帧 SHA256 相同；起始点均为 HEVC CRA NAL 21，非浮点截断错跳。受影响路径为多模态视频输入预处理（VLM 视频理解管线的数据侧）。'
+  source: 2026-10-25 每日扫描；issue https://gitcode.com/mindspore/mindspore/issues/29702 ；数据集 Video-MME-v2 videos/001.zip（001.mp4 SHA256 842dcc59…05eb95）
+  behavior: 使用者视角：用 MindSpore 2.10.0 在昇腾上对同一视频批量稀疏抽帧（get_frames_at 传多个索引），其中部分帧出现肉眼可见的码块损坏（最大像素差 255、平均差 55），而单独抽该帧或去掉任何一个前序索引就完全正常——结果依赖请求里带了哪些其他帧。API 正常返回、无报错无告警；若这些帧直接送入视频理解模型，输入特征已被污染且不可察觉。同请求重复运行损坏位置与内容完全相同（确定性），坏帧哈希稳定可校验。
+  trigger_surface: MindSpore 2.10.0 发布版 wheel + Ascend 910B2C + CANN 9.1.0；dataset.vision.VideoDecoder get_frames_at 多索引稀疏批量抽帧；HEVC（GOP/CRA 结构敏感，具体依赖源视频参考帧结构）。
+  signature: batch!=single 逐字节断言失败；删除任一前序索引恢复；EOS+drain 后恢复。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 数据管线
+        to: 调度/服务
+    rewritten:
+    - detail

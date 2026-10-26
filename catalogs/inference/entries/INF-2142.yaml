@@ -1,0 +1,59 @@
+id: INF-2142
+legacy_ids: []
+slug: vllm_cpu_kv_dtype_unchecked_bf16_write_overflow
+aliases: []
+title: vLLM CPU 后端不校验 kv-cache-dtype，写核越界坏 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: CPU 后端 dtype 校验与写核
+  behavior: CpuPlatform 不校验 kv-cache-dtype，恒选 CPU_ATTN；量化格式下按 uint8 分配缓存，写核对 fp8 外 dtype 按 bf16 字节步长写，越过缓存末端
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 启动不报错；短请求看似正常（Qwen2.5-0.5B greedy 答 Paris），~100 token prompt 从首个生成 token 起输出垃圾且无错误日志；块序号进入 KV 池上半区后写入越过缓存末端，最小复现 4 块越界 512 字节（期望 0）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: issue 附修复方向：平台侧 validate_configuration 启动即拒绝不支持 dtype（closed，合入状态未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62664
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM CPU 后端对 --kv-cache-dtype 完全不做支持性校验：CUDA/ROCm/XPU 平台各有 validate_configuration 拒绝不支持的 dtype，CpuPlatform.get_attn_backend_cls 却总是返回 CPU_ATTN。当传入 turboquant_k8v4 等量化格式时引擎正常启动：缓存按 uint8 分配，而 CPU 写核（cpu_attn_reshape_and_cache）只对 fp8 有专门分支，其他 dtype 一律当 auto 处理，按 bf16 的字节步长写入 uint8 缓冲——块序号进入 KV 池上半区后写入位置越过缓存末端。最小复现无需模型：4 块写 512 字节越界（期望 0）；端到端 Qwen2.5-0.5B greedy 下 "The capital of France is" 仍答 Paris，~100 token prompt 从第一个生成 token 起输出垃圾且无报错。同根因还有两个表现：host 无 AVX-512/AMX 时 fp8 启动加载权重后才 NotImplementedError；MLA 分支同样不校验任何 dtype。来源 issue 已附修复方向（启动时拒绝），closed 但未核实合入版本。
+  source: 2026-10-23 每日扫描 https://github.com/vllm-project/vllm/issues/62664（closed，含最小复现与修复方向）
+  behavior: 在 CPU 后端用 --kv-cache-dtype turboquant_*/ultraquant_4bit 启动服务不报错；短请求看似正常，一旦请求用到 KV 池上半区的块，生成内容从某个 token 起变成乱码/垃圾且全程无错误日志。复现脚本直接统计出写越过缓存末端的字节数（512 字节，期望 0）。
+  trigger_surface: vLLM CPU 后端（源码构建 main e4a676cdc2，Apple M4 Pro/torch 2.14 复现）；--kv-cache-dtype 传 turboquant_*/ultraquant_4bit；请求块序号进入 KV 池上半区时显现。fp8 无 AVX-512/AMX 与 MLA 分支为同根因的相邻表现。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    - behavior

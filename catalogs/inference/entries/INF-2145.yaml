@@ -1,0 +1,55 @@
+id: INF-2145
+legacy_ids: []
+slug: triton_ascend_pipelining_loopcarried_store_stale_stage
+aliases: []
+title: triton-ascend 流水线错排 loop-carried 存储间歇错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: num_stages>1 流水调度
+  behavior: 循环体内存 loop-carried 值且 num_stages>1 时，in-loop store 读取过期流水 stage，kernel 跑完返回貌似合理的错值；num_stages=1 完全消失
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Mamba-2 SSD state_passing 前向/反向 25-46% 新进程产出 bit 级相同错误；进程内重复一致、跨进程翻转；梯度同样错
+  visibility: 静默错误
+mitigation:
+  detect: 固定 num_stages=1 对照可判别
+  fix: 待定（issue open：规避 pin num_stages=1，16/16 多进程 PASS、输出 bit 稳定）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/triton-lang/triton-ascend/issues/2662
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: triton-ascend（3.6.0+dev20260921，3.2.2 同样复现；Ascend 910B3 aarch64、CANN 9.1.0、torch 2.8.0+cpu、torch_npu 2.8.0.post1）对含软件流水循环且循环体内存 loop-carried 值的 kernel，num_stages>1 时 in-loop store 读取过期流水 stage，静默产出错误结果——非崩溃、非编译错误，kernel 正常运行完毕返回貌似合理的错值。具体触发：Mamba-2 SSD _state_passing_fwd_kernel/_state_passing_bwd_kernel（state-spaces/mamba，mamba_ssm/ops/triton/ssd_state_passing.py）跨 chunk 迭代携带 acc 并在循环内 store 每 chunk 中间输出 out。autotune 配置 num_stages=3 时约 25-46% 新进程产出 bit 级相同的错误输出；签名独特：1）进程级间歇——同一进程内重复运行结果一致（要么恒对要么恒错），新进程以 25-46% 概率翻转；2）bit 级相同错误——错误进程每次重复产出相同错误位，与调度确定性缺陷一致。pin num_stages=1 后 16/16 多进程 PASS、输出 bit 稳定、反向梯度 bit 级一致。
+  source: 2026-10-23 每日扫描 https://gitcode.com/triton-lang/triton-ascend/issues/2662（open，附签名分析与规避）
+  behavior: NPU 上跑 Mamba-2/SSD 类模型（含 triton state-passing kernel 的 autotune num_stages=3 配置）时，约四分之一到近半数的新启动进程静默产出错误输出：同一进程里每次推理结果一致（错的恒错），重启进程后对错随机翻转；反向梯度同样错。没有报错、没有 NaN，输出看起来合理但数值错，极易当成模型/数据问题排查。
+  trigger_surface: triton-ascend 3.6.0+dev20260921 与 3.2.2；Ascend 910B3 + CANN 9.1.0 + torch_npu 2.8.0.post1；kernel 含循环内 store 的 loop-carried 状态 + num_stages>1（autotune 默认可选中）；Mamba-2 SSD 前向/反向实测。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误

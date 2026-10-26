@@ -1,0 +1,50 @@
+id: TRN-0389
+legacy_ids: []
+slug: opsnn_matmul_bf16_fp16_mixed_nd_silent_low_precision
+aliases: []
+title: aclnnMatmul BF16×FP16 ND 路径静默低精度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnMatmul ND 路径校验
+  behavior: self/mat2 分别为 BF16 与 FP16/FP32 且均 ND 时，校验只在 mat2 为 NZ 时拦截混用，ND 路径无校验，两段返回 0 静默出结果；文档明确该组合应返回 161002。
+effect:
+  objects:
+  - 数值结果
+  detail: A2/910b 与 A3 文档均声明不支持 BF16+FP16/BF16+FP32 推导，实际 ND 路径静默执行；实测 16x16 cubeMathType=KEEP_DTYPE 返回 0/0 出结果，结果 dtype 语义未按文档拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前在框架层断言两输入 dtype 一致；对拍文档约束矩阵。
+  fix: 待定（issue open 2026-10-23，根因定位至 aclnn_matmul.cpp CheckInputParams/CheckWeightNzDtype 校验缺口）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7237
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-nn aclnnMatmul（matmul/mat_mul_v3）：文档（npu="A3,910b" 段）明确「不支持两个输入分别为 BFLOAT16 和 FLOAT16/FLOAT32 的数据类型推导」，但 op_host/op_api/aclnn_matmul.cpp 的 CheckWeightNzDtype 仅在 mat2->GetStorageFormat()==FORMAT_FRACTAL_NZ 时拦截 FP16/BF16 混用；主接口 ND 路径（GetWorkspaceSize→CheckInputParams）对该组合无任何校验，archRule->CheckInput 亦未拦截。实测 Atlas A2 910B2 / CANN 9.2.0、16x16、cubeMathType=KEEP_DTYPE：BF16×FP16 组合 GetWorkspaceSize 与第二段均返回 0 并静默出结果，未按文档返回 161002。混 dtype 矩阵乘在训练框架中通常由上层保证一致，但 torch_npu adapter / 自定义算子路径可能漏拦，静默按低精度语义执行。issue open（2026-10-23），无修复 MR。无训练框架受害报告。
+  source: https://gitcode.com/cann/ops-nn/issues/7237
+  behavior: 两个 matmul 输入一个 bf16 一个 fp16（ND 格式）时，算子不按文档报参数错误（161002），而是直接成功执行并返回结果；调用方以为混 dtype 被拒绝了，实际拿到一份低精度语义的输出，任何告警都没有。文档与实现不一致，排查时按文档走分支会得出「不该走到这里」的错误结论。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

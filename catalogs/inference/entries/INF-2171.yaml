@@ -1,0 +1,48 @@
+id: INF-2171
+legacy_ids: []
+slug: cann_poolkeyindexer_pooltailk_oob_sparse_indices
+aliases: []
+title: CANN PoolKeyIndexer poolTailK>0 输出越界索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: PoolKeyIndexer kernel
+  behavior: poolTailK>0 时 sparseIndicesOut 在应为 -1 填充的位置产出超出合法域（npool*poolSize）的索引 32/33；poolTailK=0 同输入该位置是 -1。
+effect:
+  objects:
+  - 数值结果
+  detail: 稀疏注意力索引输出含越界索引（合法 0..31 实测 32/33，两行各 2 个共 4 个），下游按索引寻址 KV 池将读越界块或产生未定义行为；接口返回 0。
+  visibility: 静默错误
+mitigation:
+  detect: 对 sparseIndicesOut 做值域断言（>=npool*poolSize 或非 -1 即报）可发现
+  fix: 待定（issue 未附修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6636
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer #6636：aclnnPoolKeyIndexer 在 poolTailK>0 时 sparseIndicesOut 出现超出 KV token 上界的索引。对照实测：poolTailK=0 时 idx[0..18] 尾部为 -1 -1 -1（合法无效标记）；poolTailK=2 时同一位置变成 32 33（合法域 npool*poolSize=32，即 0..31），越界数 4（两行各 2 个）。输入数据相同（固定 LCG 种子），rc=0。该算子为稀疏 KV 池索引器（pool 选取/topk 加权），越界索引若被下游 gather 直接寻址 KV cache block，将读不存在的块。环境 Atlas A2 910B2、CANN 9.2.0，aclnn 两段式 C 接口直调（不经框架适配层），单文件 57 行复现含对照组与缺陷组。'
+  source: 2026-10-25 每日扫描；issue https://gitcode.com/cann/ops-transformer/issues/6636
+  behavior: 使用者视角：带 poolTailK 尾部参数调用稀疏 KV 池索引算子，接口正常返回，但输出的 sparseIndicesOut 里混进超出池大小上界的索引（如合法 0..31 时出现 32/33），而正确行为应是 -1 无效标记。下游注意力按这些索引取 KV 时读越界块，输出可能静默错值或触发设备异常；把 poolTailK 设回 0 即恢复正常，可作为规避。
+  trigger_surface: Atlas A2 910B2 + CANN 9.2.0；aclnnPoolKeyIndexer poolTailK>0 的稀疏池配置。
+  signature: sparseIndicesOut 出现 [npool*poolSize, npool*poolSize+poolTailK) 区间的索引；poolTailK=0 对照全 -1。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

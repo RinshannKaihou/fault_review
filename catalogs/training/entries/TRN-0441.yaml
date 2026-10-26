@@ -1,0 +1,61 @@
+id: TRN-0441
+legacy_ids: []
+slug: opstransformer_moe_init_routing_v2_grad_oob_dirty_read
+aliases: []
+title: MoeInitRoutingV2Grad 越界 idx 读相邻显存当梯度累加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: aclnnMoeInitRoutingV2Grad
+  behavior: expandedRowIdx 三条 tiling 分支校验均不完整（dropless 无校验、activate 只有上界、drop/pad 只查 -1），kernel 直接按 idx*cols 寻址，越界时把相邻内容当梯度累加。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: expandedRowIdx 越界时不报参数错误：偏移落在相邻已分配显存时把相邻张量内容当梯度累加（静默脏数据）；偏移极大时同步阶段报 507035 AI Core MTE invalid GM address。A2 910B3 / CANN 9.2.0 实测。
+  visibility: 静默错误
+mitigation:
+  detect: idx 注入越界值对拍宿主侧区间校验；mssanitizer memcheck。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6710
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0410
+pattern: PAT-TRN-0053
+original:
+  mechanism: 'cann/ops-transformer #6710（2026-10-25，open，A2 910B3 / CANN 9.2.0 / master 5d750997）。aclnnMoeInitRoutingV2Grad 的 expandedRowIdx 元素值在两段均不做值域校验：dropless 分支（tiling key 1000/1001/1002，with_dropless.h:83/111）无任何校验，activate 分支（1010/1011/1012）只有上界 xRow>=activeNum 无下界，drop/pad 分支（1100/1101/1102）只查 xRow==-1；tiling 只校验形状与属性。kernel 直接以 gradExpandedXGm[idx*cols] 寻址，越界偏移落在相邻已分配显存时把相邻张量内容当梯度累加（静默脏数据），偏移极大时同步 507035 AI Core MTE invalid GM address。与 TRN-0410（#6691，越界当 -1 跳过、梯度少加）同一算子不同缺陷面：本条是越界读脏数据，0410 是越界跳过丢梯度。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6710
+  behavior: MoE 路由反向算子收到越界的展开行索引时不报参数错误：索引落到旁边张量的显存时，会把那块内存的数值当梯度加进来（结果悄悄变错）；索引特别大时同步阶段才报 507035 设备错误。
+  trigger_surface: aclnnMoeInitRoutingV2Grad，expandedRowIdx 越界；A2 910B3 / CANN 9.2.0 实测（idx=-2 与 idx=INT32_MAX 两分支实测）。
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

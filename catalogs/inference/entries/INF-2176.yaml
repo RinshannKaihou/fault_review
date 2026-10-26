@@ -1,0 +1,51 @@
+id: INF-2176
+legacy_ids: []
+slug: cann_all_uint8_out_truncates_self_values
+aliases: []
+title: CANN aclnnAll out=UINT8 输出数值截断非布尔
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnAll out dtype 路径
+  behavior: out dtype 为 UINT8（资料列为支持）时，kernel 不做 all() 归约，而是把 self 的数值直接截断成 UINT8 写入 out；out=BOOL 路径正确。
+effect:
+  objects:
+  - 数值结果
+  detail: '[100,200,300,400]→[100,200,44,144]（300%256=44），[0.1..0.8]→[0,0,0,0]；BOOL 对照 [1,1,1,1]。多 self dtype 均错，两段返回 0，静默脏数据。'
+  visibility: 静默错误
+mitigation:
+  detect: 用 BOOL 对照或断言 out 值域∈{0,1} 可发现
+  fix: 待定（issue 未附修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3963
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-math #3963：aclnnAll 在 out dtype=UINT8（资料明确列为支持的出参类型）时，输出不是 all() 的布尔真值，而是对 self 的数值截断。关键配方：self=[100,200,300,400,...]（fp16[2x4] dim=0 每列非零，正确 [1,1,1,1]）实测 out=[100,200,44,144]——300%256=44、400%256=144，证明写回的是 self 数值的 UINT8 截断而非归约结果。其余 self dtype：[1..8] 输入 FLOAT16→[1,2,3,4]、BOOL→[0,60,0,64]、FLOAT/INT32/INT64→[0,0,0,0]、BFLOAT16→[0,2,32,0]。canary 对照 out=BOOL 正确 [1,1,1,1]。环境 Atlas A2 910B2、CANN 9.2.0，ops-math master 584b2ea6，自包含 C++ 复现。'
+  source: 2026-10-25 每日扫描；issue https://gitcode.com/cann/ops-math/issues/3963
+  behavior: 使用者视角：把 all() 的输出张量声明为 UINT8（文档支持的类型）时，得到的结果不是 0/1 布尔值，而是输入张量本身数值的低 8 位截断——例如输入某列是 300、400 时输出 44、144，输入 0.1~0.8 的小数时输出全 0。接口正常返回，下游把 out 当布尔掩码用（非零即真）时，300/400 仍判真但 0.1~0.8 判假——语义完全取决于输入数值而非归约结果，逻辑判断静默出错。
+  trigger_surface: Atlas A2 910B2 + CANN 9.2.0（ops-math master 584b2ea6）；aclnnAll out dtype=UINT8（资料支持列表内）；任意 self dtype。
+  signature: out 恰为 self 的 mod-256 截断；BOOL 对照正确。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

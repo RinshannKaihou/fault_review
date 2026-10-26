@@ -1,0 +1,51 @@
+id: TRN-0439
+legacy_ids: []
+slug: opstransformer_gmm_v5_grouplist_last_value_unchecked
+aliases: []
+title: GroupedMatmulV5 groupList 末值越界不校验
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnGroupedMatmulV5
+  behavior: Tensor 版 groupList 末值不校验：V5/V4/V3/WeightNz 分支只查长度/dtype 后直接 return SUCCESS，末值≤x 第一维的约束只在 int-array 分支；末值>M 仍两段 0 并执行。
+effect:
+  objects:
+  - 数值结果
+  detail: groupList 末值 40>M=32 时 0/0 且输出被写出；kernel 按 groupList 取行区间越过 x 末行，同用例 memcheck 已见合法输入下 illegal read of size 256。
+  visibility: 静默错误
+mitigation:
+  detect: groupList 末值变异扫描 + mssanitizer memcheck。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6708
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #6708（2026-10-25，open，950PR / CANN 9.2.0-beta.2 / master）。aclnnGroupedMatmulV5（groupType=0、splitItem=2、x 单 Tensor、weight 多个 2 维）对 Tensor 版 groupList 末值不校验：末值从 32（=M）改成 40（>M）两段仍 0/0 且输出正常写出。源码定位 aclnn_grouped_matmul.cpp:676-723 CheckGroupListSplitM 在 V5/V4/V3/WeightNz 分支调用 CheckGroupListCommonTensor（:593-623，只查长度/组数/dtype）后直接 return ACLNN_SUCCESS；「末值==x dim0」校验只存在于 int-array 分支（:717-719）。资料平台约束写明 groupListType=0 末值须 ≤ x 第一维。同用例 memcheck 下（合法 groupList）已观察到 GroupedMatmul_* kernel illegal read of size 256（一行 128 个 fp16），报告者注明将另行单独反馈。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6708
+  behavior: 分组矩阵乘按文档传累计分组行数时，末值写大了（超过 x 的实际行数）也不会被拒绝：接口返回成功、结果照常写出，但 kernel 会按越界的行区间取数；memcheck 能看到越界读。
+  trigger_surface: aclnnGroupedMatmulV5，groupType=0 + Tensor 版 groupList + 末值 > x 第一维；950PR / CANN 9.2.0-beta.2 实测。
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

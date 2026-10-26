@@ -1,0 +1,54 @@
+id: TRN-0394
+legacy_ids: []
+slug: opsmath_clamp_max_scalar_wraps_bit_pattern
+aliases: []
+title: aclnnClampMax 标量越界按位环绕静默改写输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnClampMax 标量类型转换
+  behavior: A2 分支 promoteType 直接取 out dtype，标量转换无范围校验无饱和：整数越界按补码截断（1000→-24），「上界」变小负数后 min(x,max) 静默算成另一结果；原地入口直接改写入参缓冲。
+effect:
+  objects:
+  - 数值结果
+  detail: int8 上界 1000 时全表输出 -24（期望原值）；反向 -200 时原样返回输入（期望全 -200），语义完全相反；uint8 300 时输出 0,44,44；原地入口把调用方输入数据直接覆盖，无法从返回值或输出察觉。PyTorch 同类调用直接 RuntimeError 拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前校验标量在目标 dtype 可表示范围；对拍 CPU clamp 语义。
+  fix: 待定（issue open 2026-10-23，根因定位至 conversion/clip_by_value_v2/op_api/aclnn_clamp.cpp:345-362 A2 分支，master efff3523 在位）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3849
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3850
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'CANN ops-math aclnnClampMax / aclnnInplaceClampMax（conversion/clip_by_value_v2，Atlas A2 910B2、CANN 9.2.0、master efff3523）：clipValueMax 超出 self/out 整型可表示范围时标量被按位环绕。根因：aclnn_clamp.cpp:345-362 的 A2 分支 promoteType=out->GetDataType()（RegBase 分支才走 ClampPromoteType 推导），NormalizeMaxScalar 非空时原样返回标量，ScalarToTensor 的 ConvertToTensor 到 promoteType 无范围校验无饱和，整数越界按补码截断（1000→0xE8→-24）；ClipByValueV2 用错值当上界，ViewCopy 原地写回。实测 int8 x=[-2..2] clip=1000：输出全 -24（期望原值）；clip=-200：输出原样（期望全 -200）；uint8 clip=300 输出 0,44,44；int16 clip=100000 输出 -31072。aclnnInplaceClampMax 同根因且直接覆盖调用方输入缓冲。资料参数表允许 clipValueMax 为 INT32/INT64 与 INT8/UINT8/INT16 的 self 组合（文档声明支持形态，非非法入参）。PyTorch 对照 torch.clamp_max(int8,1000) 直接 RuntimeError。issue open（2026-10-23）无修复 MR；同源 #3850 跟踪原地入口。无训练框架受害报告。'
+  source: https://gitcode.com/cann/ops-math/issues/3849 ｜同源原地入口：https://gitcode.com/cann/ops-math/issues/3850
+  behavior: 对整型张量做 clamp_max 且上界标量超出该 dtype 表示范围（如 int8 传 1000）时，NPU 不报错，把标量按位截断成另一个小数（1000 变 -24）再当下界用：正向越界时整块输出被改写成同一个错值，反向越界（-200）时本应全表压到 -200 的调用原样返回输入，语义完全相反；原地版本还会把输入数据直接覆盖掉，返回值依然成功。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - component

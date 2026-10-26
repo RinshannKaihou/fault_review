@@ -1,0 +1,50 @@
+id: TRN-0397
+legacy_ids: []
+slug: opsnn_add_rms_norm_quant_multi_defects_large_number_overflow
+aliases: []
+title: AddRmsNormQuant 大 epsilon 下溢与大数中间溢出错量化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: AddRmsNormQuant V1/V2 数值
+  behavior: PERF 路径大 epsilon 下 Newton-Raphson 中间倒数下溢，应非零的归一化结果变 0；有限大数输入因加法/平方或 norm*gamma 中间溢出产出错误量化结果。
+effect:
+  objects:
+  - 数值结果
+  detail: 大 epsilon（如 FLT_MAX）时 y1/resOut 为 0（参考 5/5.421）；x1=1e20 级输入量化输出 0 或错值；dst_type int64 属性按 int32 读取、rstd 32B 缓冲区按每核行号索引越界等多重缺陷并存。
+  visibility: 静默错误
+mitigation:
+  detect: 大 epsilon 与大数有限输入边界用例对拍 FP64 参考；dst_type 属性回读校验。
+  fix: 待定（issue open 2026-10-23，Ascend950PR/CANN 9.3.0 weekly，基线 e3f2542，含 kernel 验证记录但未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7272
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-nn AddRmsNormQuant V1/V2（arch35/Ascend950PR_9579，CANN 9.3.0 weekly.20261021.01，基线 e3f2542bf58f，TTK e25508ae 全部 --pc=1）多缺陷：(1) PERF 路径大 epsilon 下 Newton-Raphson 中间倒数下溢，把应非零的归一化结果变为 0——最小见证 FP32 shape(16,64) x1=1,x2=0,gamma=1e20,scale=1,epsilon=FLT_MAX，原 y1/resOut 为 0，参考 y1=5、resOut≈5.421；(2) 有限 FP32/BF16 输入因加法/平方或 norm*gamma 中间溢出产生错误量化结果——x1=1e20、x2=0、gamma=1、scale=0.01 时 FP64 参考归一化约 1、量化 100，原设备平方溢出后得 0；(3) dst_type 的 int64 属性被按 int32 读取（4294967298 被当作 2）；(4) NORMAL/SPLIT_REDUCE 用 32B rstd 缓冲区却按每核行号索引（越界）；(5) V2 ACLNN 未拒绝 rank=0 输入、legacy tiling gamma rank>x rank 无符号减法下溢可卡死、zp2-only 组合被静默忽略。kernel 正式验证 V1 352/352、V2 360/360 与定向 62/62+9/9+8/8+7/7 全 BINARY_MATCH（含有限大数/特殊值/大 epsilon 对照），V2 历史 FP16 3 个原始 FAIL 保留。量化训练/推理路径（W8A8 类 RMSNorm+量化融合算子）。issue open，未见修复 MR。
+  source: https://gitcode.com/cann/ops-nn/issues/7272
+  behavior: 量化训练里经过 AddRmsNormQuant（RMSNorm+量化融合）时，遇到大 epsilon 或极大有限数值（如 1e20 量级激活/权重）后，归一化和量化结果静默变 0 或明显错误（参考值应为非零正常数），接口成功、无告警；普通范围输入全部正确，只有数值边界输入踩中，量化后的 int8 输出整体失真。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

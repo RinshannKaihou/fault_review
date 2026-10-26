@@ -1,0 +1,51 @@
+id: INF-2164
+legacy_ids: []
+slug: torch_npu_semantic_divergence_triple
+aliases: []
+title: torch_npu 三连：div±inf/空max/cummin NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: div、max、cummin 适配
+  behavior: 三处适配缺陷：div floor/trunc 对 ±inf 除法结果错误且丢 -0.0 符号；空张量 max() 不报错静默返回 0；cummin 遇 NaN 跳过继续归约不传播。
+effect:
+  objects:
+  - 数值结果
+  detail: -1/+inf floor 得 0.0 应为 -1.0、trunc 丢 -0.0 符号；空张量 max() 得 tensor(0.) 而 CPU 报 RuntimeError；cummin 输入含 NaN 时 NaN 后位置取后续有限值；均无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 与 CPU 同输入对照（边界值 ±inf/NaN/空张量探针）
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/618
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/issues/619
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/issues/637
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu 2.7.1（CANN 9.0.0，Atlas A3 双芯 910B3）三处与 CPU/上游语义不一致（2026-10-21~23 三份报告，最小复现齐全）：(1) op-plugin#618 torch.div(rounding_mode='floor'/'trunc')：-1/+inf 与 1/-inf 的 floor 结果应为 -1.0，NPU 返 0.0；trunc 应保留 -0.0 符号，NPU 丢符号返 0.0；np 与 CPU tolist 对照直接可见。(2) op-plugin#619 空张量 max()：CPU 抛 RuntimeError（无元素归约），NPU 静默返回 tensor(0.)；同机对照 sum 一致（0.）、aminmax 一致（报错）、mean 一致（nan），仅 max 静默；下游数值管线把 0 当合法最大值消费。(3) op-plugin#637（Ascend950PR/CANN 9.1.0/torch_npu 2.9.1）cummin 不传播 NaN：输入 [1.0, nan, 3.0] NPU values=[1, nan, 3]，CPU 与同芯片 cummax 均为 [1, nan, nan]；PyTorch 文档口径 NaN 传播。三者均 fail-silent，无错误码。
+  source: https://gitcode.com/Ascend/op-plugin/issues/618 + https://gitcode.com/Ascend/op-plugin/issues/619 + https://gitcode.com/Ascend/op-plugin/issues/637
+  behavior: 在 NPU 上跑这几类常见操作会拿到和 CPU 不一样却看似正常的数：除法 floor/trunc 碰到 ±inf 除数时结果错（-1/+inf 得 0 而非 -1）、-0.0 符号丢失；空张量上 max() 本该报错却返回 0；cummin 碰到 NaN 后面位置不传播 NaN 而是继续取后续值。都不报错，数值管线悄悄偏离参考实现。
+  trigger_surface: torch_npu 2.7.1.post4/CANN 9.0.0（#618/#619，A3）、torch_npu 2.9.1/CANN 9.1.0（#637，950PR）；div rounding_mode floor/trunc ±inf、空张量 max()、含 NaN 输入的 cummin。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

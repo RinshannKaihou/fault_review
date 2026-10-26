@@ -1,0 +1,71 @@
+id: TRN-0419
+legacy_ids: []
+slug: ops_transformer_moe_backward_missing_value_range_validation_family
+aliases: []
+title: MoE 反向算子族缺值域校验静默吞错输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MoE 反向算子 host 值域/枚举校验
+  behavior: MoeGatingTopKBackward、MoeTokenPermuteWithEpGrad、MoeTokenUnpermuteWithEpGrad、MoeTokenPermuteGrad、MoeTokenUnpermuteGrad 等
+effect:
+  objects:
+  - 梯度
+  - 可用性/进度
+  detail: 上游路由产物被错配/改写时，越界或负的专家索引、负 numTopk、非法枚举、空张量、start>end 区间进入 MoE 反向算子：host 第一段校验不报参数错误，轻则接口成功返回 0、该项梯度被当 -1 静默丢掉，重则设备侧向量核异常 507035 打断作业；上游路由正常时不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 上游路由产物 idx/numTopk 加值域断言；跨边界输入对拍 CPU 标杆（skip/clamp/mod 三语义）。
+  fix: 待定（各 issue open，未见统一修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6690
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6659
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6672
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6685
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6693
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6674
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6691
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #6690（2026-10-24，open，A2 910B2 / CANN 9.2.0 / master 5f9cdcf3）：aclnnMoeGatingTopKBackward 对 N=1（约束 N∈[2,2048]）、renorm=2（约束 0/1）、空 Tensor（不支持）、expertIdx 全 100（N=8 越界）四类约束外输入全部 0/0/0 静默接受——CheckExpertIdx() 只校验 rank/两维/dtype 不校验值域。同族同日新报：#6659 负 expertIdx 未校验致设备向量核异常 507035；#6672 MoeTokenPermuteGrad 标量 numTopk 负数（-1 静默当 1、-3 崩溃 507035）；#6685 MoeTokenUnpermuteWithEpGrad topkNum=0 返回 0（上界 513 报对）；#6693 MoeTokenPermuteWithEpGrad rangeOptional(start>end) 未校验两段返回 0；#6674 MoeGatingTopKBackward kernel Gather 读未初始化 UB（initcheck 合法调用必现，mssanitizer 插桩定位 kernel.h:254）。其中 #6691（MoeInitRoutingV2Grad 越界 idx 静默 skip）单独立条（梯度静默丢失已量化）。共同根因：MoE 反向算子族 host 第一段校验只到 shape/dtype 层，值域/枚举/关系校验缺失，非法输入被静默接受或延迟到设备异常。正常流程上游产物不触发；在路由产物被错配/改写时本应 fail-fast 的机会被吞掉。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6690 ；同族：https://gitcode.com/cann/ops-transformer/issues/6659 、https://gitcode.com/cann/ops-transformer/issues/6672 、https://gitcode.com/cann/ops-transformer/issues/6685 、https://gitcode.com/cann/ops-transformer/issues/6693 、https://gitcode.com/cann/ops-transformer/issues/6674 ；单独立条：https://gitcode.com/cann/ops-transformer/issues/6691
+  behavior: MoE 训练反向路径里，门控/排列类反向算子对明显非法的输入（越界或负的专家索引、负的 top-k 数、非法枚举、空张量、start>end 的区间）不报参数错误：轻则两段接口成功返回、那一项梯度被当 -1 悄悄丢掉；重则设备侧向量核异常（507035）把作业打断；没有一处是 host 侧第一段干净地拒绝。上游路由正常时看不到，一旦上游索引错配，训练要么静默少梯度要么莫名崩溃。
+  trigger_surface: CANN ops-transformer MoE 反向算子族（MoeGatingTopKBackward / MoeTokenPermute(WithEp)Grad / MoeTokenUnpermute(WithEp)Grad 等）host 第一段校验；A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility

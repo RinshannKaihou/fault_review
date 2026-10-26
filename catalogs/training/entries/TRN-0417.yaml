@@ -1,0 +1,56 @@
+id: TRN-0417
+legacy_ids: []
+slug: ops_transformer_concat_final_tile_overrun
+aliases: []
+title: ops-transformer concat 末 tile 全量拷贝越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: concat kernel 末 tile 长度 c
+  behavior: TilingFunc 设 tileNum=ceil(posPerBlock/posPerTile)、tileLength=posPerTile*headDim，kernel 对每个 tile 恒用完整 tileLength 的 CopyIn
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: shape 使 posPerBlock 不能整除 posPerTile 时末 tile 必越界：相邻核数据被越界读写、末核读写越过张量边界上万元素（如 x[1,1024,128]、196608B UB 下末核越写 16128 元素），输出悄悄错或进程崩溃，随 shape 与 UB 容量浮动。
+  visibility: 静默错误
+mitigation:
+  detect: memcheck/保护带定量（报告者给出越界元素数计算）；tile 边界 shape 扫描用例。
+  fix: 待定（issue open；修复方向为末 tile 按剩余量 clamp）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6627
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #6627（2026-10-24，open，源码级静态定位，rotary_position_embedding3d_tiling.cpp:179-180 与 rotary_position_embedding3d.h:73-114，但报告者标注适用于 concat kernel 通用末 tile 处理——TilingFunc 设 tileNum/tileLength 后 kernel 循环所有 tile 恒用完整 tileLength_，CopyIn/CopyOut 无对剩余 blockLength 的 clamp）。例：x[1,1024,128] fp32、仓内 196608B UB 下 maxTileElts=16362、posPerBlock=128、posPerTile=127，tileNum=2、tileLength=16256；每核有效 block 16384 元素，第二个 tile 从 offset 16256 起访问 16256 元素，越过本核 block 与下一核重叠；最后一核越界读写出张量 16128 元素。注意：该 issue 标题为 final tile overrun、正文以 RotaryPositionEmbedding3D 代码路径为例展开，通用 concat 形态末 tile 缺 clamp 的机制在多个张量拼接 kernel 同构（报告者以静态分析给出定量计算，无实机 memcheck 输出）。同日 ops-math !6660（>512 拆树 desc 推导缺失）是另一条 concat 缺陷（已另立条）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6627
+  behavior: 做张量拼接（concat 形态 kernel，含 RoPE3D 等以 tile 循环实现的算子）时，最后一个 tile 不按剩余长度截断、照抄整块长度：跨核数据被相邻核越界读写、末核读写越过张量边界上万元素，表现为输出悄悄错或进程崩溃，具体随 shape 与 UB 容量浮动。
+  trigger_surface: CANN ops-transformer tile 循环类 kernel（报告以 RotaryPositionEmbedding3D 路径定位）；shape 使 posPerBlock 不能整除 posPerTile 时末 tile 必越界。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

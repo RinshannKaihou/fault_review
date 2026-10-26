@@ -1,0 +1,73 @@
+id: INF-2181
+legacy_ids: []
+slug: vllm_mtp_forced_reject_gdn_state_divergence_qwen38
+aliases: []
+title: vLLM MTP forced-reject 与 target-only 发散
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MTP 推测解码拒绝路径
+  behavior: 强制拒绝全部 draft 下 MTP 与 target-only 确定性发散：margin 0.6-5.9 nats 远超底噪 0.5，victim prompt 确定、首分叉随 batch 平移；K>=5、n>=8、L>=192 触发。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  - 隐状态
+  detail: 同一请求输出从某位置起完全走偏，两侧置信 margin 0.6-5.9 nats，远超 ≤0.5 nats 实测底噪；受害请求固定为 r006，首分叉位置随 batch 平移；3 重复 + 2 独立 boot 稳定、跨重启可复现；触发需 K>=5、n>=8、L>=192，任一轴取小配置留在底噪内。
+  visibility: 静默错误
+mitigation:
+  detect: all-reject 等价测试（SpecSafe 型差分）可检出
+  fix: 待定（issue 新开未附修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63593
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/39273
+  kind: github_issue
+- url: https://github.com/sgl-project/sglang/issues/35150
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1062
+pattern: PAT-INF-0190
+original:
+  mechanism: 'vllm #63593（c2026-10-25）：Qwen3.8-27B（GDN hybrid）MTP 推测解码强制拒绝每个 draft（all-reject 等价不变量——拒绝采样必须退化为 target-only 解码）与 target-only 运行发散，置信 margin 0.6-5.9 nats（两侧都是），远超该栈实测非确定性底噪（跨 rebuild 与批组合 ≤0.5 nats）。触发条件 K>=5、n>=8、L>=192（自 K=7/n=32/L=256 单轴缩减）；任一轴小配置（K<=3/n<=4/L<=128）留在底噪内。victim 确定：所有失败配置中同一请求 r006 是唯一发散者，首分叉位置随 batch 平移（n=8 pos 154、n=32/n=1 pos 181），提示 prompt 依赖可二分。跨 3 重复 + 2 独立 boot 稳定——与 #39273（GDN 拒绝状态损坏家族）部分实例「引擎实例内稳定但跨重启不可复现」不同，本例跨重启可复现，适合作回归测试。#39273 明确排除 MTP（「MTP、Eagle3 状态管理路径不同，多用户确认干净」），本例证明 MTP 路径在拒绝下有自己的（或共享底层的）状态缺陷。自包含场景 JSON + 独立 runner 附上（SpecSafe 差分测试器将开源）。SGLang #35150（2026-08，Qwen3.8 DSpark forced-reject GDN persistent state 累积漂移）为同族机制：GDN 状态累积漂移使 forced-reject 检验对这类故障是伪检验。'
+  source: 2026-10-25 每日扫描；issue https://github.com/vllm-project/vllm/issues/63593 ；家族 https://github.com/vllm-project/vllm/issues/39273 ；同族 SGLang https://github.com/sgl-project/sglang/issues/35150
+  behavior: 使用者视角：对 Qwen3.8-27B（GDN 混合架构）开 MTP 推测解码，即使理论上「每个草稿都被拒绝、只采纳目标模型自身 token」也应与不开推测逐 token 一致，但实际在长 prompt（L>=192）、批较大（n>=8）、草稿数 K>=5 时同一请求的输出从某位置起完全走偏——且两侧 logits margin 高达数个 nat，不是平局抖动。同一 prompt 固定是受害者，位置随 batch 大小移动。表现为「开推测解码后答案变了/变差」，关 MTP 或降 K/n/L 恢复一致。
+  trigger_surface: vLLM（issue 未报具体版本，2026-10-25 时点 main 附近）+ Qwen3.8-27B GDN hybrid + MTP 推测解码；K>=5、n>=8、L>=192 组合。
+  signature: all-reject 差分（margin 0.6-5.9 nats vs 底噪 ≤0.5）；victim r006 确定与首分叉位置随 batch 平移。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: KV缓存
+      effect:
+        from: 输出内容
+        to: KV状态
+    rewritten:
+    - detail

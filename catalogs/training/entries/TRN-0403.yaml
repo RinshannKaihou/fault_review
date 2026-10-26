@@ -1,0 +1,52 @@
+id: TRN-0403
+legacy_ids: []
+slug: msswift_grpo_liger_mm_double_vision_encoder_hang
+aliases: []
+title: ms-swift GRPO+Liger 多模态双跑挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: ms-swift
+    component: GRPO Liger 前向重定向
+  behavior: Liger 前向重定向：hook 先在所有 rank 转好 inputs_embeds，lambda 又用原始 pixel_values 再跑一次，vision encoder 被 rank 间不一致地执行两遍。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 混合 text/image batch 下 image rank 两次进 vision encoder、text rank 已前进，默认超时下静默挂起；短超时后 watchdog 显示 4 rank 卡同一 allgather 序号但张量大小两两分组（1769472 vs 24）。
+  visibility: 挂起
+mitigation:
+  detect: 首 step 后 rank 间 vision encoder 调用计数对账；watchdog NumelIn 差异模式识别；小 ddp_timeout 冒烟。
+  fix: 待定（issue open 2026-10-22，根因链定位至 _forward_redirection 双跑；规避：--use_liger_kernel false）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10410
+  kind: github_issue
+relations: []
+original:
+  mechanism: ms-swift GRPO 多模态训练（--use_liger_kernel true + --deepspeed zero3，torch 生态）：GRPOTrainer.compute_loss 的 Liger 路径调 _forward_redirection(model, unwrapped_model, lambda..., **model_inputs)——经 DeepSpeed engine 时模板 pre_forward_hook（Template.pre_forward_hook→_post_encode）先在所有 rank 执行，把 input_ids/pixel_values 转成 inputs_embeds（文本样本经 _get_inputs_embeds_hf 用 dummy 图跑 vision encoder，每个 rank 都跑一遍）；lambda 忽略 hook 产出的 kwargs，compute_liger_loss→_get_last_hidden_state 用原始 model_inputs（仍含 pixel_values）再调内层模型——vision encoder 第二次执行。混合 text/image batch 下：image rank 两次进 vision encoder（NumelIn 442368/NumelOut 1769472=1152x3x2x16x16 patch_embed 权重），text rank（NumelIn 24，小对象 gather）已前进到下一步 collective，各 rank collective 序列错位。默认 ddp_timeout=18000000s 无限等待静默挂起；--ddp_timeout 7200 时 NCCL watchdog 2 小时后 abort（4 rank watchdog 日志 SeqNum=76799 相同、参数大小两两分组）。issue open（2026-10-22）。与 TRN-0041（liger gate 绕过 DDP hooks）不同机制（本条是前向重定向双跑 vision encoder 致 collective 错位）。无修复 PR。
+  source: https://github.com/modelscope/ms-swift/issues/10410
+  behavior: 多模态 GRPO 训练开 Liger kernel + ZeRO-3：一个 step 同时含纯文本和图像样本时，第一个训练 step 就卡死不动——不报错、不退出（默认超时约 208 天），日志停在某个 allgather；设短超时后 2 小时 abort，watchdog 显示不同 rank 卡在同一个 allgather 序号但张量大小不同（一组在搬 vision encoder 权重、另一组已往下走），关掉 use_liger_kernel 立即恢复。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

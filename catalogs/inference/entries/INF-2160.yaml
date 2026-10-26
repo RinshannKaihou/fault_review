@@ -1,0 +1,56 @@
+id: INF-2160
+legacy_ids: []
+slug: cann_addcmul_nan_value_treated_as_one
+aliases: []
+title: CANN Addcmul 把标量 value=NaN 判为 1 静默输出有限值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnAddcmul
+  behavior: IsEqualToOne 用 !(value>1||value<1) 判等，NaN 比较全 false 取反为 true，NaN 被判为 1 进入不乘 value 的 AxpyV2 快路径。
+effect:
+  objects:
+  - 数值结果
+  detail: value=NaN 时输出全表有限值 self+t1×t2 而非应有的全 NaN，调用方以为计算正常；原地接口同病；两段接口返回 0。
+  visibility: 静默错误
+mitigation:
+  detect: NaN 传播探针：value=NaN 时期望输出全 NaN，有限值即命中
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3894
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0411
+original:
+  mechanism: CANN 9.2.0（Ascend 910B2/A2，torch 2.14+torch_npu 2.14，aclnn C 两段式直调）math/addcmul 的 op_api 源码 aclnn_addcmul.cpp:203-209 的 IsEqualToOne 判据为 return !(value->ToFloat() > 1 || value->ToFloat() < 1)。NaN 与任何数比较均为 false，NaN>1 与 NaN<1 同为 false，取反后整体为 true，于是 value=NaN 被判为等于 1；:285-286 据此进入 l0op::AxpyV2 快路径，该路径不做 value 乘法，输出退化为 self+tensor1×tensor2。aclnnInplaceAddcmulGetWorkspaceSize 以 selfRef 为 out 直接复用 aclnnAddcmulGetWorkspaceSize，原地接口同病。资料公式 out=self+value×t1×t2 且 value 为 FLOAT 标量未声明 NaN 例外，value=NaN 时结果应为全 NaN。报告附 C 直调最小复现（对照组 value=1.0、缺陷组 out-of-place/inplace value=NaN），源码行号定位闭合。
+  source: https://gitcode.com/cann/ops-math/issues/3894
+  behavior: 调用 aclnnAddcmul/aclnnInplaceAddcmul 时若标量 value 传了 NaN，本应输出全 NaN（NaN 乘任何数加任何数仍是 NaN），实际却返回看似正常的有限值（等于没乘 value 的 self+t1×t2），接口返回成功码，没有任何报错；依赖 NaN 传播做异常检测的下游逻辑全部失效。
+  trigger_surface: CANN 9.2.0 / Atlas A2 910B2；aclnnAddcmul、aclnnInplaceAddcmul 两接口；标量 value=NaN（任何形状/dtype 输入）。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  updates:
+  - date: '2026-10-25'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

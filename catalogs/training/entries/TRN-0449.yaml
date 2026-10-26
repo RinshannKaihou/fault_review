@@ -1,0 +1,55 @@
+id: TRN-0449
+legacy_ids: []
+slug: msswift_multiturn_nonthinking_prefix_context_mismatch
+aliases: []
+title: ms-swift 多轮非思考模板中间轮上下文错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: ms-swift
+    component: multi_turn_scheduler
+  behavior: rollout 给每轮 assistant 加非思考前缀采样，训练侧重编码只给最后一轮注入前缀、中间轮原样插入：中间轮训练上下文与采样上下文不同。
+effect:
+  objects:
+  - 训练信号
+  detail: 中间轮 token 在从未采样过的上下文里计分；两遍 logprob 同用 train 编码，IS ratio 恒 1，无指标暴露该错位。
+  visibility: 静默错误
+mitigation:
+  detect: rollout/train 双侧 tokenize 后 diff 中间轮上下文；检查 prefix 前后的 token 序列。
+  fix: '待定（issue open；related #10106/#10107 同类 response_prefix 已修（merged），本条为多轮非思考模板路径）。'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10429
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0238
+pattern: PAT-TRN-0052
+original:
+  mechanism: 'ms-swift #10429（2026-10-25，open，ms-swift 4.5.2 / main d5253cb / template qwen3_5 enable_thinking=False / GRPO multi_turn_scheduler / colocate vLLM）。非思考模板 rollout 时 _add_non_thinking_prefix 给每轮 assistant 输出加 ''<think>\n\n</think>\n\n'' 前缀采样；训练侧 replace_assistant_response_with_ids（swift/rlhf_trainers/utils.py）只对最后一轮注入 non_thinking_prefix_ids，中间轮 response_token_ids 原样插入且 _add_non_thinking_prefix 跳过 token-id 内容——中间轮在训练序列里的上下文少了 think 前缀，与采样上下文不一致。两次 logprob 都用 train 模式编码，importance ratio 恒 1，无 metric 暴露。与 #10106/#10107（response_prefix 同类错位，已修 merged，TRN-0238）同族：var 关系指向 TRN-0238。'
+  source: https://github.com/modelscope/ms-swift/issues/10429
+  behavior: GRPO 多轮训练用非思考模板时，rollout 生成的每个中间轮回复都带空 think 前缀采样，但训练重新编码时中间轮的这段前缀丢了：中间轮 token 是在一个从未采样过的上下文里算 logprob/loss 的。两边编码方式一致所以 IS ratio 恒为 1，任何训练指标都看不出问题。
+  trigger_surface: ms-swift GRPO + --multi_turn_scheduler + enable_thinking=False（非思考模板）；qwen3_5 模板实测，4.5.2 与 main 均在。
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

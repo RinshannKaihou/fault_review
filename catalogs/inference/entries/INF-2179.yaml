@@ -1,0 +1,58 @@
+id: INF-2179
+legacy_ids: []
+slug: sglang_flashinfer_prefill_split_invariant_greedy_flip
+aliases: []
+title: SGLang FlashInfer prefill 分裂不变性破坏贪心翻转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: ragged/paged prefill 双路径
+  behavior: 同一批 token 注意力走两种数值分解：无前缀整段 ragged；有前缀 ragged 新段 + paged 前缀 + merge_state，两者差 1-2 bf16 ulp；FP8 上放大为 0.35 nat logit 漂移。
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 同 prompt 温度 0 二次调用（radix 命中 1344 token 或 chunked prefill 1344+61）首个贪心 token 翻转（chat→query_robot_status），3/3 复现；隔离测试排除 GDN 状态/卷积/GEMM/checkpoint。
+  visibility: 不可复现
+mitigation:
+  detect: 同 prompt 冷/热前缀两次生成对比首 token
+  fix: 待定（issue 未附修复；无模型权重最小复现已给出）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/46259
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'sglang #46259（c2026-10-24）：SGLang 0.5.19 + flashinfer 0.6.18，Qwen3.5-style hybrid GDN（48 线性注意力+16 全注意力，FP8 compressed-tensors，head_dim 256）TP1。同一请求温度 0：冷前缀首 token 为 chat（logprobs chat -0.2324）；第二次 radix 命中 1344 token 后首 token 翻转为 query_robot_status（query -0.5844）。radix 关闭时同 prompt 按 1344+61 chunked prefill 同样翻转——触发是 prefill 分裂而非缓存本身。根因：FlashInfer prefill 路径对同批行用两种数值分解（无前缀：整段 ragged；有前缀：ragged 新 token + paged 前缀 + merge_state），同 q/k/v 差 1-2 bf16 ulp；paged kernel 在默认 split 策略下对 query 行数不变式。隔离排除：chunk_gated_delta_rule 1344+61 vs 1405 逐位一致、causal_conv1d 带 conv state 逐位一致、bf16/FP8 GEMM M=1405 vs M=61 行不变、checkpoint 拷贝 conv state 一致（temporal state 差 2.6e-7，首个分叉在全注意力层且 q/k/v 相同）。无模型权重最小复现（随机 q/k/v，T=1405 P=1344 Hq=24 Hkv=4 D=256 bf16 page_size=1）。main d0a7565（10-22）仍存在。首次分叉在全注意力层而非 GDN 层。'
+  source: 2026-10-25 每日扫描；issue https://github.com/sgl-project/sglang/issues/46259
+  behavior: 使用者视角：同一个 prompt、温度 0、单请求，第一次问和第二次问（命中前缀缓存后）给出的贪心首 token 不同——冷调用答「chat」，热调用答「query_robot_status」，3/3 稳定复现；开 chunked prefill 且关缓存也一样翻，说明不是缓存损坏而是 prefill 怎么切分就怎么算。对用户表现为同一问题两次得到不同答案、缓存命中反而换答案；FP8 模型上差异被放大到 0.35 nat 的 logit 漂移并翻转标签。
+  trigger_surface: SGLang 0.5.19（main d0a7565 仍在）+ flashinfer 0.6.18 默认 flashinfer 后端；--chunked-prefill-size 2048；radix 命中或 chunked prefill 造成的前缀分裂；hybrid GDN FP8 模型放大（SM 12.0 RTX PRO 5000 复现，机制层面与具体卡无关）。
+  signature: 冷/热前缀首 token 翻转；隔离矩阵（GDN/conv/GEMM 逐位一致）排除法定位到注意力双路径分解。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    uncertain:
+    - effect

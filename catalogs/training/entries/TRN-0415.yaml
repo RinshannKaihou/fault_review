@@ -1,0 +1,58 @@
+id: TRN-0415
+legacy_ids: []
+slug: ops_math_concat_empty_sorter_invalid_iterator
+aliases: []
+title: SearchSorted 空 sorter 空序列解引用末迭代器
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SearchSortedKernel::Compu
+  behavior: GetInputAndCheck 在空张量短路前执行；sorted_sequence 与 sorter 均为空时 size 检查通过（0==0），对空范围取 std::max/min_element 返回的 end 迭代符立即解引用，读出有
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: sorted_sequence 与 sorter 元素数均为 0（文档允许空 shape 如 {2,0}）时带 sorter 调 SearchSorted，host 侧解引用空范围迭代器读到越界/null：可能段错误，或把垃圾值当边界输出错误结果；空 batch 偶发。无实机崩溃日志，训练面较窄。
+  visibility: 静默错误
+mitigation:
+  detect: 空序列 + sorter 用例回归；ASan/memcheck 落点 SearchSortedKernel:127-128。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3863
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math #3863（2026-10-24，open，源码级静态定位）。SearchSortedKernel::Compute 第 219 行在任何空张量短路之前调用 GetInputAndCheck；当 sorter 非空指针但 sorted_sequence 与 sorter 元素数均为 0 时，第 119 行 size 检查因两侧计数都为 0 通过，第 126 行取 sorter 数据指针，第 127-128 行对空范围调用 std::max_element/std::min_element 并立即解引用返回的 end 迭代符——对 GetData() 得到的空张量缓冲读出有效分配之外，对 null 缓冲为空读。CalSearchSorted 第 165-169 行的空序列返回在校验之后执行，无法保护该路径。文档契约只要求 sorter shape 与 sorted_sequence 相同，含 {2,0} 等空 shape。报告者为源码行级静态分析（无实机崩溃日志），机制定位闭合；searchsorted 在训练数据管线（采样/检索排序）可用但训练面较窄。附带：同日 ops-math #3869（diag_flat 空输入越界读/除零、batch_to_space 校验缺失、cosh 样例资产）为同仓边界校验打包单。'
+  source: https://gitcode.com/cann/ops-math/issues/3863
+  behavior: 带 sorter 调 searchsorted 且排序序列为空张量（元素数为 0，shape 如 {2,0}，属文档允许）时，算子在 host 侧直接解引用空范围的迭代器：读到越界/空指针，进程可能段错误，或把垃圾值当作序列边界产出错误检索结果。空 batch 边缘的数据管线偶发触发。
+  trigger_surface: CANN SearchSorted（带 sorter），sorted_sequence 与 sorter 元素数为 0；文档契约允许空 shape。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 报错
+        to: 静默错误
+    rewritten:
+    - detail

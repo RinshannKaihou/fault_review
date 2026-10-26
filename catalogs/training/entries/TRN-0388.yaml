@@ -1,0 +1,58 @@
+id: TRN-0388
+legacy_ids: []
+slug: opstransformer_mhc_pre_sinkhorn_backward_fd_bias_race
+aliases: []
+title: mhcPreSinkhornBackward 梯度系统偏差与并发输出污染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MhcPreSinkhornBackward 归约
+  behavior: 大 shape 反向梯度与前向有限差分存在 ~2e-2 系统偏差（偏差在 backward 侧）；kernel 侧归约读与清零构成跨调用 WAR 并伴 UB 越界读，共享 context 并发调用时输出被跨调用污染。
+effect:
+  objects:
+  - 梯度
+  detail: M·K≥2M 起 gradBias/gradPhi 与有限差分偏差达 1e-2~3e-2 且符号可反；8 线程共享 context 并发重放不同 shape 时 74 次输出位模式与单线程基准不一致（部分稳定错、部分随机错），单线程串行不可见。
+  visibility: 静默错误
+mitigation:
+  detect: 反向梯度与前向有限差分对拍（多 eps 平滑外推）；mssanitizer racecheck 检同 block WAR；并发多 shape 重放与单线程基准比位模式。
+  fix: 待定（issue open 2026-10-23；master arch22 kernel 与 9.2.0 零功能改动，缺陷同存）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6619
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-transformer aclnnMhcPreSinkhornBackward（Ascend 910B3×8、CANN 9.2.0，libopapi 两段式纯 C 调用实测，master arch22 与 9.2.0 零功能改动）三缺陷：(1) 大 shape 反向梯度与前向有限差分存在 ~2e-2 系统偏差，触发条件 M·K≥2M（M=B·S,K=N·C），bf16/fp16 均复现，FD eps 0.2→0.005 平滑收敛证明偏差在 backward 侧、前向 bitwise 可复现；(2) B=0 空批次两段返回 0 但 gradPhi/gradAlpha/gradBias 全部未写（金丝雀 0xAB 残留，mssanitizer initcheck 交叉验证 393220 字节 GM 未初始化读）——该面与 TRN-0275 空输入早退族同机制；(3) 共享 aclrt context 8 线程并发调用时输出被跨调用污染（74 次 FAIL，2 条稳定错摘要+大 shape/空批次随机摘要），单 case×8 线程干净、aclnnAdd 同参数并发干净，定位为 kernel 侧 mhc_pre_grad_kernel.h:938 WholeReduceSum 读 dpreLocalList_[outPos] 与 :826 Duplicate 清零的跨调用 WAR（racecheck 16 处）加 28 处 UB 越界读（串行下残渣稳定、并发下随核间调度变化）。无训练框架受害报告。
+  source: https://gitcode.com/cann/ops-transformer/issues/6619
+  behavior: 训练中使用 mhcPreSinkhorn 类算子的模型：大 batch/序列（M·K≥2M）时反向梯度和数值微分对不上，偏差约百分之一到百分之三且方向不定，loss 曲线看不出但收敛质量受损；多线程共享 context 并发跑不同 shape 时梯度输出时而固定错、时而每次都不一样，单线程重跑又消失，排查极难。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

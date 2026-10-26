@@ -1,0 +1,51 @@
+id: TRN-0412
+legacy_ids: []
+slug: ops_math_tan_large_input_stale_nan_guard
+aliases: []
+title: Tan |x|≥1e7 遗留 NaN 保护输出全 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: tan_simt.h LARGE_THRESHOL
+  behavior: arch35 tan_simt.h 保留旧手写 Cody-Waite 约化时代的 LARGE_THRESHOLD=1e7f 保护，|x|≥1e7 的有限输入被直接置 NaN；fb7fd5371 换 SIMT tanf 高精度范围约化后该保护
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: 大参数 tan 输入（|x|≥1e7，如大坐标/未归一化特征）在 GEIR/aclnnTan/aclnnInplaceTan 三条通路输出全 NaN，torch/numpy 同输入输出有限值、同算子 aicpu fp64 通路亦输出有限值；训练中该位置激活/梯度变 NaN 传播。
+  visibility: 数值异常
+mitigation:
+  detect: 大值输入（1e7~FLT_MAX、±2^31）21 点精度探针对拍 torch.tan（修复 PR 已含）。
+  fix: 修复 MR https://gitcode.com/cann/ops-math/pull/6661 （open，未合入未发布；删除 guard 后 21 点探针全 PASS、精准回归 71 例 FAIL→PASS 6/PASS→FAIL 0，未核实发布版本）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3871
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/pull/6661
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-math #3871 + 修复 MR !6661（2026-10-24，issue open / MR open，Ascend950PR / CANN 9.2.0 / TTK 3.0.0）。Tan 算子 |x|≥1e7 输出全 NaN，覆盖 GEIR、aclnnTan、aclnnInplaceTan 三条通路。根因：math/tan/op_kernel/arch35/tan_simt.h 定义 LARGE_THRESHOLD=1e7f，|x|≥1e7 有限输入在特殊值分支被直接置 NaN；该阈值源自旧手写 Cody-Waite 3-part 约化精度上限（|fn|≤2^20 留余量），fb7fd5371 更换 SIMT tanf 高精度范围约化后依据已消失（实测阈值以下全值域 ≤2.7 ulp，含旧失效区间 (1.65e6,1e7)），guard 却被保留；REQUIREMENTS「大数→NaN 对齐 TF/PyTorch」为事实误载并被 spec.yaml 固化。同算子 aicpu fp64 通路（std::tan/Eigen）对 1e20/DBL_MAX 输出有限值，双通路语义自相矛盾。修复删除该判定仅保留 Inf/NaN→NaN，21 点大值探针全 PASS（±FLT_MAX rel=6.3e-8）、精准回归 FAIL→PASS 6 例。附带发现 golden 资产错配（tests/assets/golden.py 实为 Tanh）与 TTK third_party 类绑定调用缺陷（cross_check 无三方输出），属测试资产缺陷另计。大参数 tan 在训练中见于未归一化特征/坐标编码等路径。'
+  source: https://gitcode.com/cann/ops-math/issues/3871 ；修复 https://gitcode.com/cann/ops-math/pull/6661
+  behavior: 对绝对值 ≥1e7 的输入调 tan（含原地），输出整片 NaN，而同样输入在 CPU/GPU 的 torch、numpy 上是有意义的有限值；训练中一旦有未归一化的大数特征流过 tan，该位置起激活和梯度全部变 NaN 并向后传播，其余小值位置照常。同算子 fp64 通路又是有限值，同一模型换精度行为不一致。
+  trigger_surface: Ascend arch35（950PR 等）Tan 算子，|x|≥1e7 有限输入；GEIR/aclnnTan/aclnnInplaceTan 三通路；CANN 9.2.0 实测。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,59 @@
+id: TRN-0404
+legacy_ids: []
+slug: hcomm_allreduce_deterministic_pipeline_misaligned_split
+aliases: []
+title: HCCL allreduce 确定性 pipeline 数据切分阈值用错设备数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: AllReduceOperator::Determ
+  behavior: 确定性 allreduce 判断数据切分是否对齐的阈值使用每聚合域设备数 deviceNumPerAggregation_，而切分应按参与通信的总 rank 数 userRankSize_ 对齐，特定规模下切分对齐判断错误。修复将阈值判断改
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 使用确定性 allreduce 的分布式训练作业，在聚合域设备数与参与通信总 rank 数不同的部署（如多 die/多聚合域组网）下，特定机器/rank 规模时运行正常无报错，但梯度归约结果与正确值有偏差，loss 曲线可能无突变而模型更新方向偏离。
+  visibility: 静默错误
+mitigation:
+  detect: 同规模确定性 allreduce 与 CPU/单机参考对拍归约结果；跨 rank 一致性校验。
+  fix: 修复 MR https://gitcode.com/cann/hcomm/pull/6258 与 https://gitcode.com/cann/hcomm/pull/6259（均 open，未合入未发布，未核实发布版本）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/1122
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/hcomm/pull/6258
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/hcomm/pull/6259
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/hcomm #1122（2026-10-24，open）：AllReduceOperator::DeterministicSelector 中判断数据切分是否对齐的阈值使用了 deviceNumPerAggregation_（每聚合域设备数），但确定性 pipeline 算法的数据切分应按 userRankSize_（参与通信的总 rank 数）对齐；在聚合域设备数与总 rank 数不一致的部署形态（多聚合域组网）下，切分对齐判断错误，特定规模下确定性 allreduce 的数据切分偏离预期。issue 正文与修复 MR !6258/!6259 描述一致，改动文件 src/legacy/ascend910/algorithm/impl/operator/all_reduce_operator.cc，将阈值判断中的 deviceNumPerAggregation_ 改为 userRankSize_。上游以文字描述定位到具体函数与变量，未附数值对拍数据；机制定位明确但训练侧具体错值形态未见量化（无 max|diff| 数据）。'
+  source: https://gitcode.com/cann/hcomm/issues/1122 ；修复 https://gitcode.com/cann/hcomm/pull/6258 、https://gitcode.com/cann/hcomm/pull/6259
+  behavior: 使用确定性 allreduce 的分布式训练作业在特定机器/rank 规模下运行正常无报错，但梯度归约结果与正确值有偏差：作业不崩、loss 曲线可能看不出突变，模型更新方向偏离。触发条件是聚合域设备数与参与 allreduce 的总 rank 数不同的部署（如多 die/多聚合域组网）；文档未给具体规模阈值。
+  trigger_surface: 确定性 allreduce（HCCL deterministic pipeline）+ 聚合域设备数 ≠ 总 rank 数的组网；Ascend 910 系 legacy 算法路径。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度
+    rewritten:
+    - detail

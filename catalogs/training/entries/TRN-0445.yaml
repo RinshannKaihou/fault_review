@@ -1,0 +1,58 @@
+id: TRN-0445
+legacy_ids: []
+slug: op_plugin_sdpa_bool_mask_full_masked_row_uniform
+aliases: []
+title: SDPA bool 掩码全遮行输出均匀分布而非 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: SDPA bool 融合 kernel
+  behavior: bool 融合 kernel 对整行 max=-inf 做 clamp，softmax 退化为对该行 key 的均匀分布（≈v.mean）；CPU 语义为输出全 0 行。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: bool attn_mask 有全遮 query 行（padding 等）时，NPU 该行输出非零实值＝对该行 key 的均匀 softmax（v.mean，allclose 5.96e-08），CPU 为全 0 行；加性 -inf 掩码遮 query 行两端一致全 0，仅 bool 路径受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 构造全遮 query 行四象限对照（bool/additive × query/key）。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/642
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/op-plugin #642（2026-10-25，open，Ascend950PR / CANN 9.1.0 / torch_npu 2.9.1）。torch.scaled_dot_product_attention 的 bool 掩码全遮 query 行：CPU 输出全 0 行，NPU 输出非零实值=对该行 key 的均匀 softmax（v.mean，allclose 5.96e-08）；bool 掩码融合 kernel 对整行 max=-inf 做了 clamp 使 softmax 退化为均匀分布。四象限对照：加性 -inf×遮 query 行两端口径一致全 0；bool/additive×遮 key 列一致。仅 bool 掩码路径受影响。训练场景 bool attn_mask 存在全遮行（padding/sinkhorn 等）时注意力输出被静默污染。'
+  source: https://gitcode.com/Ascend/op-plugin/issues/642
+  behavior: scaled_dot_product_attention 用 bool 掩码且某 query 行被全部遮住时，NPU 输出的是这一行对全部 key 的均匀注意力值（看似正常的非零数字），而 CPU 输出全 0：数值外观可信但语义已错；用加性 -inf 掩码则两端一致。
+  trigger_surface: torch SDPA + bool attn_mask 且存在全遮 query 行（padding/全屏蔽行）；Ascend950PR / torch_npu 2.9.1 实测。
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+    rewritten:
+    - detail

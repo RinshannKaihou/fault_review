@@ -1,0 +1,58 @@
+id: INF-2175
+legacy_ids: []
+slug: cann_simthreadexponential_tail_oob_write
+aliases: []
+title: CANN SimThreadExponential 尾部越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SimThreadExp kernel
+  behavior: aclnnSimThreadExponential 每次调用在输出张量尾部之外越界写，多写 32~992 字节；接口返回成功、生成数值正确；分配尾部留白 4096 字节后同一调用零告警，说明越界写紧贴张量尾部而非野指针。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 显存池场景下多写的字节静默改坏相邻张量或通信缓冲，返回码 0、输出正确；破坏要到后续算子才以数值异常或 507035 暴露。fp32 n=256 越界写 992 字节，同夹具 12 个随机/dropout 接口零告警（阴性对照成立）。
+  visibility: 静默错误
+mitigation:
+  detect: mssanitizer --tool=memcheck 可稳定检出（illegal write）
+  fix: 待定（issue 未附修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3920
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-math #3920：aclnnSimThreadExponential 每次调用在输出张量尾部之外越界写。mssanitizer memcheck 实测矩阵：fp32 n=200 写 192B、n=256 写 992B；fp16 n=200/216/223/224 写 64/32/32/32B（225/226/240 不触发）；fp16 n=1/100/336/1024/2048 写 448/256/320/480/480B；bf16 n=100/2048 写 256/480B。机制对照：分配 n*4+4096 字节留白后同一调用零告警，说明越界写紧贴张量尾部而非野指针。同批 12 个随机/dropout 接口同一夹具全部零告警，阴性对照成立。该接口用于并行随机数生成（dropout/采样），训练主循环每步调用。环境 Atlas A2 910B2 + CANN 9.2.0，ops-math master 584b2ea6。'
+  source: 2026-10-25 每日扫描；issue https://gitcode.com/cann/ops-math/issues/3920
+  behavior: 使用者视角：该随机数生成算子接口返回成功、生成数值正确，但每次调用都在输出张量尾部之外多写最多近 1KB 的数据。在显存池/相邻张量布局下，这些字节会静默改坏旁边的张量或通信缓冲——被污染的受害者稍后才以数值异常或设备错误 507035 暴露，且难以回溯到写入者。dropout/采样路径每步调用，破坏可持续累积。
+  trigger_surface: Atlas A2 910B2 + CANN 9.2.0（ops-math master 584b2ea6）；aclnnSimThreadExponential 精确分配输出缓冲（无尾部留白）；特定 n 与 dtype 组合（fp32 n=200/256、fp16 多数 n、bf16）。
+  signature: mssanitizer illegal write of size 32~992 紧贴张量尾部；+4096B 留白后消失。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: 数值结果
+    rewritten:
+    - behavior

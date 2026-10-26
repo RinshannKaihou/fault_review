@@ -1,0 +1,50 @@
+id: INF-2152
+legacy_ids: []
+slug: aclnn_einsum_int_input_cast_fp16_overflow
+aliases: []
+title: aclnnEinsum 整型 Cast FP16 溢出饱和错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: einsum 整型 Cast FP16 路径
+  behavior: '"abcd,abced->abce" 路径把所有非 FLOAT/FLOAT16 输入一律 Cast 到 DT_FLOAT16 参与 BMM 再 cast 回原 dtype，整型语义无保真'
+effect:
+  objects:
+  - 数值结果
+  detail: int64 b=2049 得 2048（失精）；b=70000/1000000 溢出为 +inf 再饱和 9223372036854775807；声明面支持 INT16-UINT64 全域
+  visibility: 静默错误
+mitigation:
+  detect: 整型 einsum 与 CPU 对拍
+  fix: 待定（issue open：源码定位 master a74516ec，建议整型走整型路径）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7234
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-nn aclnnEinsum 的 "abcd,abced->abce" equation 在 HandleABCDxABCED2ABCE 处理路径中把所有非 FLOAT/FLOAT16 输入一律 Cast 到 DT_FLOAT16 参与 BMM 计算，算完再 cast 回原 dtype——而声明面（DAV_2201_DTYPE_SUPPORT_LIST）支持 INT16/INT32/INT64/UINT16/UINT32/UINT64。结果整型输入静默降精度：整数 >2048（fp16 尾数上限）开始失精（2049→2048、4097→4096）；>65504（fp16 最大值）溢出为 +inf，回 cast INT64 时饱和成 9223372036854775807（70000 与 1000000 均如此）。两次返回码均 0/0，调用方无法感知。Atlas A2 910B2、CANN 9.2.0、ops-nn master a74516ec（2026-10-23），报告附 C++ 最小复现脚本。
+  source: 2026-10-23 每日扫描 https://gitcode.com/cann/ops-nn/issues/7234（open，源码定位+C++ 复现）
+  behavior: NPU 上用整型张量做这条 einsum（乘法语义）：乘数超过 2048 结果开始低位丢失，超过 65504 直接变成 9223372036854775807（INT64_MAX）——正常相乘应得 70000/1000000，实际输出一个荒谬的饱和值。接口返回成功码，无任何告警，文档声明支持这些整型。
+  trigger_surface: CANN 9.2.0（Atlas A2 910B2）；aclnnEinsum equation "abcd,abced->abce"；INT16~UINT64 整型输入且数值 >2048（>65504 饱和）；ops-nn master a74516ec 定位。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

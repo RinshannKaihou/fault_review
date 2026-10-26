@@ -1,0 +1,75 @@
+id: TRN-0421
+legacy_ids: []
+slug: ops_math_searchsorted_cuSeq_shape_validation_family
+aliases: []
+title: 索引/可选输入 shape 与值域缺校验静默越界族
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: 搜索/元数据算子 host shape·值域校验
+  behavior: 可选输入只校验非空不校验长度/值域：cuSeqLengths 未与 B 校验即按 b+1 索引越界读；argmax 零长归约轴返回成功；MaxDim indices dtype 未校验放行；LeScalar out dtype 白名单误用
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 变长/检索类算子收到 shape 与值域外的可选输入：越界读相邻显存当序列长度（total_task_num 33554432 垃圾值）静默产出错误调度/检索结果，或对非法输入返回成功、合法输入反被拒；无 host 拦截。
+  visibility: 静默错误
+mitigation:
+  detect: 可选输入长度与主维度的关系断言；metadata 字段与 CPU 标杆对拍。
+  fix: 部分有修复：ArgMax !6667（open）、MaxDim !6668（open）；cuSeqLengths 校验未见修复 MR。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6647
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3890
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3879
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3880
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6643
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6678
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6634
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6700
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '2026-10-24 新报的 cann host 第一段「可选/索引输入校验缺失」族打包（同一根因模式：只查非空/形状白名单，不查与主维度的关系与值域）：1) ops-transformer #6647：aclnnGenericBlockSparseAttentionGradMetadata 的 cuSeqLengthsQ/Kv 只校验非空不校验长度==B+1，传 [2]（应 [5]）时 AICPU kernel 直接按 b+1 索引越界读，两段返回 0，metadata 的 total_task_num 变垃圾值 33554432（正确 16），下游主算子按错误分核执行；2) ops-math #3890：aclnnArgMax 对零长归约轴返回成功（修复 !6667 open）；3) ops-math #3879：aclnnMaxDim 未校验 indices dtype，FLOAT32/BFLOAT16 被放行（应 161002，修复 !6668 open）；4) ops-math #3880：aclnnLeScalar out dtype 白名单误用 self 列表，UINT32/UINT64 合法输入反被拒 161002；5) 同族 ops-transformer #6634/#6635（PoolKeyIndexer 布局参数组合 561002 拒绝）、#6643（DequantRopeQuantKvcache 三个字符串枚举非法值静默接受按默认算完）、#6678（五个接口枚举标量未校验）。共性：约束在资料里存在、实现未覆盖，非法输入静默执行或合法输入误拒；#6647 的越界读后果已量化（垃圾调度值）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6647 ；同族：https://gitcode.com/cann/ops-math/issues/3890 、https://gitcode.com/cann/ops-math/issues/3879 、https://gitcode.com/cann/ops-math/issues/3880 、https://gitcode.com/cann/ops-transformer/issues/6643 、https://gitcode.com/cann/ops-transformer/issues/6678 、https://gitcode.com/cann/ops-transformer/issues/6634
+  behavior: 变长/检索类算子对可选输入的检查只到「传没传」，不查长度和取值：cuSeqLengths 传短了就越界读显存、把随机数当序列长度算出离谱的任务数还静默喂给下游；零长轴的 argmax 照样成功；indices 传浮点 dtype 也放行。训练里遇到形状错配不报参数错，直接出错误结果或远端崩溃，另有个别合法组合反被错误码拒绝。
+  trigger_surface: CANN aclnn 变长/检索/元数据算子（GenericBlockSparseAttentionGradMetadata、ArgMax、MaxDim、LeScalar、PoolKeyIndexer、DequantRopeQuantKvcache 等）host 第一段；A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-10-25 每日扫描
+  notes:
+  - '2026-10-26 2026-10-26 回访：新增同族证据 ops-transformer #6700——FlashAttentionVarLenScore/ScoreGrad 的 GetSumIntArrayMaxValue 对空 actual-seq 数组（size==0==0 通过 IsNeedPad 检查）无条件解引用 [0] 越界读（#6700，TND+StrideLimited 路径），属同族「索引/可选输入 shape 与值域缺校验静默越界」，并入本族。'
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - evidence
+  - date: '2026-10-26'
+    fields:
+    - original.notes

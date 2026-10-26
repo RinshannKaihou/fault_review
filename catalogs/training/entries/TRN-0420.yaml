@@ -1,0 +1,60 @@
+id: TRN-0420
+legacy_ids: []
+slug: ops_transformer_gmsq_quant_param_validation
+aliases: []
+title: GMSQ 量化融合算子参数静默忽略与延迟异常
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnnGroupedMatmulSwigluQ
+  behavior: A8W8 场景传非空 bias 被完全忽略（输出与不传逐字节相同，资料要求报 161002）；groupList 只校验长度不校验取值，负值/非单调/末值越界/全零均两段返回 0，错误延迟到 sync 以 507015 暴露。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: MoE 量化 FFN 融合算子在非法参数组合下：bias 被静默丢弃（输出错值无报错）或设备侧 AICore 异常延迟炸出；host 侧不拦截，作业中断点远离根因。
+  visibility: 静默错误
+mitigation:
+  detect: bias 置大值（如 1e6）对比输出 hash 是否变化；groupList 单调性/末值断言。
+  fix: 待定（两个 issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6695
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6696
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #6695 与 #6696（2026-10-24，open，A2 910B2 / CANN 9.2.0 / master 92d0f9c2）。#6695：aclnnGroupedMatmulSwigluQuantWeightNZ 在 A8W8 场景传非空 bias（资料明确「仅 A8W4 生效，A8W8 需传空指针」，属非法用法应 161002）时两段返回 0，bias 被完全忽略且无日志——bias 全填 1000000 与传 nullptr 输出 hash 完全相同（9f8cd4da3df82b83）。#6696：同算子对 groupList 只校验长度不校验取值；[-8,64]（负值）、[48,32]（非单调，违反 cumsum 语义）、[32,128]（末值>M）、[0,0]（全零）四类违反资料约束的输入均 0/0，错误延迟到 aclrtSynchronizeStream 以 507015（AICORE_EXCEPTION）暴露；合法基线 [32,64] 正常。该算子为 MoE 分组 SwiGLU 量化 FFN 融合（训练/推理量化路径）。两缺陷同属 host 第一段参数校验缺失族（与 #6690 MoE 反向族同谱系、不同算子），一个静默忽略参数、一个延迟设备异常。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6695 ；https://gitcode.com/cann/ops-transformer/issues/6696
+  behavior: MoE 量化 FFN 融合算子：A8W8 场景把 bias 传成巨大值输出也一个字节不变（参数被静默扔掉，结果错但无报错）；groupList 传负值/乱序/末值超界/全零时接口照样成功，直到同步时才 AICore 异常 507015 把训练打断，且报错位置离真正根因很远。
+  trigger_surface: aclnnGroupedMatmulSwigluQuantWeightNZ（A2 910B2 / CANN 9.2.0）：A8W8 + 非空 bias；groupList 违反非负/单调/末值约束。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+    uncertain:
+    - component

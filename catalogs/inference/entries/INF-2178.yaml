@@ -1,0 +1,71 @@
+id: INF-2178
+legacy_ids: []
+slug: vllm_ascend_mooncake_v2_producer_hold_expiry_race
+aliases: []
+title: vllm-ascend Mooncake V2 hold 过期 KV 误收
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake V2 KV 传输完成校验
+  behavior: transfer 完成消息只校验 request ID，不校验 producer 延迟释放 hold 在读期间是否仍有效；producer 过期并回收块后，D 端仍按成功接收 KV 入池；同 ID 复用时旧完成消息可释放新 hold。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  detail: PD 分离下 P 端 hold 过期块被回收复用后，D 端 pull 仍报成功并把可能已属他请求的 KV 当本请求内容使用；完成消息仅标识 request ID，延迟完成可误放新 hold。
+  visibility: 静默错误
+mitigation:
+  detect: 对 pull 后 KV 与重算值比对可发现（成本高）
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/19282 （Validate Mooncake V2 producer holds after KV reads，open 未合入）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/19281
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/19282
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm/issues/61229
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/62065
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1350
+pattern: PAT-INF-0191
+original:
+  mechanism: 'vllm-ascend #19281（c2026-10-20，10-24 有更新）：Mooncake V2 实现中 P 节点导出 pull descriptor 并登记延迟释放请求；D 延迟于 pull 期间 P 的 hold 过期并上报 finished_sending、块被回收；D 完成传输后 worker 直接上报接收完成，未校验 producer 在整个读期间仍持有那些块——成功的传输本身不能证明拷贝的 KV 属于该请求。完成消息只含 request ID，同 ID 复用时早前尝试的延迟完成消息可释放新 hold。报告者基于 main 399c30d3 做离线控制路径复现（Loopback ZeroMQ 测试覆盖 producer 过期与陈旧完成消息），明确这是控制路径复现、非 NPU 数据损坏重放。与 vllm 主仓 NIXL 同类生命周期竞态（#61229=INF-1350、#62065）机制同构，但为 Ascend Mooncake V2 独立实现。修复 PR #19282 在读后校验 producer hold。'
+  source: 2026-10-25 每日扫描；issue https://github.com/vllm-project/vllm-ascend/issues/19281 ；修复 PR https://github.com/vllm-project/vllm-ascend/pull/19282 ；上游同构 https://github.com/vllm-project/vllm/issues/61229 、https://github.com/vllm-project/vllm/issues/62065
+  behavior: 使用者视角：PD 分离部署中 prefill 节点把 KV 移交 decode 节点时，若 decode 端拉取慢于 producer 的延迟释放窗口（hold 过期、块已回收复用），decode 端仍会收到「成功」并把这块 KV 当本请求前缀使用——内容可能已经是别的请求的数据，后续生成基于错误前缀静默偏移，无任何错误日志。同 request ID 复用时陈旧的完成消息还会错误释放新的 hold，扩大污染面。调度压力或网络抖动越大越容易触发。
+  trigger_surface: vLLM-Ascend main（399c30d3，2026-10 检视）Mooncake V2 KV 传输；PD 分离 + producer hold 过期（延迟 pull）+ request ID 复用。
+  signature: '离线控制路径复现（Loopback ZeroMQ producer 过期 + 陈旧完成消息测试）；与 NIXL #61229 同构签名。'
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  updates:
+  - date: '2026-10-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: KV状态
+        to: 跨请求/跨样本数据
+    uncertain:
+    - detail

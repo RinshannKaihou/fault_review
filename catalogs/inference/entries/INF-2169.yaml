@@ -1,0 +1,68 @@
+id: INF-2169
+legacy_ids: []
+slug: torch_npu_foreach_add_noncontig_view_silent_noop
+aliases: []
+title: torch_npu _foreach_add_ 非连续视图静默不生效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: _foreach_ 组算子快路径
+  behavior: foreach 快路径对非连续视图（转置等）就地加法跳过实际写回，不报错、原存储不变，连续张量路径正常。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  detail: 对转置等非连续视图调用 _foreach_add_ 后数值保持原值（maxabs 3.38），无任何报错；下游 fused 优化器/AMP 更新静默丢失，权重冻结。三芯（910/910B3/950PR）一致。
+  visibility: 静默错误
+mitigation:
+  detect: 对照连续克隆张量结果 allclose 可发现
+  fix: 修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6099 （open，快路径门控收紧非连续走慢路径，未发布）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/640
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6099
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0444
+original:
+  mechanism: 'torch._foreach_add_ 对非连续视图（如转置张量）的就地加法在 NPU 上静默不执行。issue #640 给出三芯最小复现：经典 910 / 910B3（CANN 9.1.0 + torch_npu 2.7.1）/ Ascend950PR（CANN 9.1.0 + torch_npu 2.9.1）逐位同错，t=torch.randn(3,4).t() 后 _foreach_add_ 结果与 base.t()+other.t() allclose=False（maxabs=3.383），连续 clone 对照正确。机制指向 foreach 族 133 签名 op_api 单路径无回退（#638 清单 S1 面），快路径假定连续布局；与上游 GPU 端 2025-10 实测的 foreach 非连续静默失效同构（另 pytorch#94865 size-0 列表破坏栈）。同日修复 PR !6099 收紧 foreach 快路径门控：非连续视图改走慢路径。上游 op-plugin #638 记录的 GScaler 多步失败疑似本缺陷为嫌疑机制。'
+  source: 2026-10-25 每日扫描；issue https://gitcode.com/Ascend/op-plugin/issues/640 ；修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6099
+  behavior: 使用者视角：在 NPU 上对转置/非连续张量做 torch._foreach_add_（及同族 foreach 就地更新），调用返回无报错，但张量数值完全没变（allclose 检查为 False，maxabs 差 3.38）；只有连续张量正常。若优化器/AMP 走 foreach 路径更新非连续权重视图，权重会静默冻结不更新，loss/输出无直接异常信号，训练与推理后处理均可能被污染。经典 910、910B3、Ascend950PR 三种芯片一致复现。
+  trigger_surface: torch_npu 2.7.1/2.9.1 + CANN 9.1.0；torch._foreach_add_ 等 foreach 族对非连续视图（转置、切片视图）就地更新；fused 优化器与 AMP GradScaler 底层路径。
+  signature: 同输入连续 clone 对照正常、非连续视图不生效；allclose=False 但无报错无 NaN。
+  discovery: 2026-10-25 每日扫描
+  notes:
+  - 2026-10-25 勘误：TRN-0305（foreach 二元 list tiling 不校验 x2 列表）与本条（非连续视图快路径静默跳过）同 foreach 族但机制不同，撤回 cross 关联；如训练库后续收录 op-plugin#640 再建同机制关联。
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  updates:
+  - date: '2026-10-25'
+    fields:
+    - relations
+  - date: '2026-10-25'
+    fields:
+    - original.notes
+  - date: '2026-10-26'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

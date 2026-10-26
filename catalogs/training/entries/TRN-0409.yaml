@@ -1,0 +1,54 @@
+id: TRN-0409
+legacy_ids: []
+slug: ops_transformer_nsa_compress_grad_weightgrad_256_boundary
+aliases: []
+title: NsaCompressGrad weightGrad 乘积≥256 边界静默算错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnNsaCompressGrad weig
+  behavior: compressBlockSize*headNum≥256 时 weightGradOut 归约行/头索引错位，输出为别的 (row,head) 的归约值；同用例 inputGradOut 始终正确，两段与同步均返回 0。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: NSA（Native Sparse Attention）压缩算子反向，compressBlockSize 与 headNum 乘积≥256 时 weightGrad 静默错值（错误结构为其他行列的归约值，非全零），240 及以下全对；训练中权重梯度错误进入优化器。
+  visibility: 静默错误
+mitigation:
+  detect: blockSize*headNum 跨 240/256 边界的梯度对拍 CPU 标杆；扫描 49 组配置（报告者已做）。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6666
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #6666（2026-10-24，open，A2 910B2 / CANN 9.2.0 / master 92d0f9c2）。aclnnNsaCompressGrad 的 weightGradOut 在 compressBlockSize*headNum≥256 时计算错误，同用例 inputGradOut 始终正确。49 组规模扫描无一例外：240（16×15、48×5）PASS，256（16×16、32×8、64×4，headDim 16/32/48）FAIL（256/256 全错）、320（80×4）FAIL。错误结构不是全 0 而是别的 (row,head) 的归约值（示例 want/got 前缀完全错位），指向归约索引在乘积≥256 时行/头映射错位。资料只约束 blockSize/stride 为 16 的整数倍且 blockSize>stride，未限制乘积，256+ 属支持面内。两段与同步返回 0。NsaCompressGrad 是 NSA 稀疏注意力压缩（compress）的反向梯度算子，训练路径。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6666
+  behavior: NSA 稀疏注意力训练中，压缩块的 weightGrad 输出在 blockSize×headNum 达到 256 及以上时全部算错——错误值不是 0 而是张冠李戴的其他行列归约结果；240 以下全部正确。作业不报错继续跑，权重梯度一直错到有人对拍才会发现。
+  trigger_surface: aclnnNsaCompressGrad，compressBlockSize*headNum≥256（如 16×16、32×8、64×4、80×4）；A2 910B2 / CANN 9.2.0 实测，49 组扫描无一例外。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

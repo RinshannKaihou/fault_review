@@ -1,0 +1,50 @@
+id: INF-2144
+legacy_ids: []
+slug: aclnn_div_integer_fp32_truncation
+aliases: []
+title: aclnnDiv 整型除法提升 FP32，|x|>2^24 静默丢位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: div 整型提升 FP32 逻辑
+  behavior: aclnnDiv/aclnnInplaceDiv 把 int32/int64 输入一律 Cast 到 DT_FLOAT 参与计算再截断回整型，FP32 仅 24 位有效位
+effect:
+  objects:
+  - 数值结果
+  detail: INT32 1073741825/1=1073741824；INT64 4294967297/1=4294967296、1e18/3 误差达 1e8 量级；两段接口返回 0 无告警，文档列 INT32/INT64 却无精度说明
+  visibility: 静默错误
+mitigation:
+  detect: 大整数除法与 CPU 对拍（>2^24 输入即可暴露）
+  fix: 待定（issue open：源码级定位 master efff3523，建议整型路径不走 FP32 或文档声明）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3859
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann ops-math aclnnDiv（与共用实现的 aclnnInplaceDiv）在 Atlas A2（910B2，CANN 9.2.0）上对全整型（self/other/out 均 INT32 或 INT64）输入按 FP32 计算后截断：math/div/op_api/aclnn_div.cpp 的 PromoteIntegerInputsToFloat 把 IsIntegralType 一律提升到 DT_FLOAT。FP32 只有 24 位有效位，任何 |值|>2^24 的整型输入丢位：INT32 1073741825/1 返回 1073741824、2147483647/2 返回 1073741824（应 1073741823）；INT64 4294967297/1=4294967296、1000000000000000001/3=333333317812224（误差 1e8 量级）、9007199254740993/1=9007199254740992。实测值恰为 FP32 舍入结果。文档 aclnnDiv&aclnnInplaceDiv.md 参数表列 INT32/INT64 却无任何整型精度损失说明（对照 aclnnAdds 文档有明确声明）。源码定位 master efff3523。业务面 int64 除法常用于时间戳换算（ns→s）、ID 取模分组、计数归一化，量级普遍超 2^24。
+  source: 2026-10-23 每日扫描 https://gitcode.com/cann/ops-math/issues/3859（open，源码定位+实测表）
+  behavior: NPU 上做 int32/int64 张量除法，只要数值超过 2^24（16777216），结果就静默丢位——连 x/1 都不等于 x（1073741825/1 得 1073741824）；int64 大数除法误差可达 1e8 量级。接口正常返回成功，无任何告警，时间戳换算、ID 分组、计数归一化这类常规 int64 用法直接算错。
+  trigger_surface: CANN 9.2.0（Atlas A2 910B2 实测）；aclnnDiv/aclnnInplaceDiv；self/other/out 全整型且 |值|>2^24；ops-math master efff3523 定位。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

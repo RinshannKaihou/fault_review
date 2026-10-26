@@ -1,0 +1,52 @@
+id: TRN-0424
+legacy_ids: []
+slug: ops_transformer_ffn_worker_batching_nullptr_ids_zero_output
+aliases: []
+title: FfnWorkerBatching 二级指针未填静默返回空批
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnFfnWorkerBatching Ff
+  behavior: FfnArea 的 expert_ids_buf/session_ids_buf/micro_batch_ids_buf/layer_ids_buf 四个二级指针未填 device 地址时，host/tiling 校验放行、两段返回 0，k
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: FFN worker 批处理算子在框架看不到内层缓冲的二级指针场景下静默产出空 token 批（actualTokenNum=0、空 groupList），接口成功返回；下游以为无活可干，训练 token 静默丢失或流水线空转。
+  visibility: 静默错误
+mitigation:
+  detect: actualTokenNum 与预期 token 数对账；二级指针非空断言。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6670
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #6670（2026-10-24，open，A2 910B2 / CANN 9.2.0，aclnn C 直调）。aclnnFfnWorkerBatching 的 FfnArea 结构含 expert_ids_buf/session_ids_buf/micro_batch_ids_buf/layer_ids_buf 四个二级指针；资料调用示例注释写明「框架看不到内层缓冲，不填也能通过 tiling 校验，只在 kernel 访存时暴露为 errcode:(95) MTE 越界，NORM 路径两代实现都会读，必须提供」。实测不填时既非 MTE 越界也无错误码：两段返回 0，输出 actualTokenNum=0（正确配置 72）+ 空 groupList，即静默空批。期望 host/tiling 拒绝或 kernel 显式失败。FfnWorkerBatching 为 MoE/FFN 流水线 worker 批处理算子，训练与推理共用的执行面；静默空批使 token 被无声丢弃。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6670
+  behavior: 调 FFN worker 批处理算子时如果 FfnArea 里四个二级 id 缓冲没填 device 地址：接口成功返回，但 actualTokenNum 是 0、分组列表是空的——整批 token 被静默当成没活干，下游空转或样本悄悄丢失，连资料承诺的 MTE 越界报错都没有。
+  trigger_surface: aclnnFfnWorkerBatching，FfnArea 四个二级指针未填（框架侧易发生）；A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

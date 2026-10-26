@@ -1,0 +1,79 @@
+id: INF-2162
+legacy_ids: []
+slug: cann_gather_pa_kv_cache_missing_validation_family
+aliases: []
+title: CANN GatherPaKvCache 索引/长度缺校验族静默越界或错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnGatherPaKvCache
+  behavior: blockTables 取值、sum(seqLens) 对 keyRef 容量、seqOffset 折算 tableOffset 均无值域校验：越界块号读 keyCache、容量不足写缓冲外、偏移越界读。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 非法 blockTables/seqLens/seqOffset 下两段接口返回 rc=0：越界 KV 数据进输出或静默错值，sum(seqLens)>keyRef dim0 时写到缓冲外（0x5A 保护带实测）；修复 PR !14535（closed）/!14536（open），合入状态未核实。
+  visibility: 静默错误
+mitigation:
+  detect: 对 blockTables/seqLens/seqOffset 做值域断言；保护带 canary 检查越界写
+  fix: '修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14535 （closed，未合入核实）与 https://gitcode.com/cann/ops-transformer/merge_requests/14536 （open，未发布）；关联 issue #6576 已 closed（10-24）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6675
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6655
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6656
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6676
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14535
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14536
+  kind: gitcode_pr
+relations: []
+pattern: PAT-INF-0192
+original:
+  mechanism: 'CANN 9.2.0（Atlas A2 910B2，aclnn C 两段式直调）aclnnGatherPaKvCache 同一算子三个同型校验缺失（2026-10-24 三份独立报告 #6675/#6676/#6656）：(1) #6675 blockId >= num_blocks 未校验，kernel 按 blockTables 给的块号直接读 keyCache，越界数据进输出且两段 rc=0 静默返回 0 值；关联 #6576（同机制，已 closed）。(2) #6655 sum(seqLens)=12 > keyRef dim0=8 时 kernel 仍按 12 token 搬运，写到 keyRef 缓冲之外；报告用前后 0x5A 保护带定量测得越界写。(3) #6656 seqOffset[0]=100000 折算 tableOffset=25000 无值域校验，块号从 blockTables 张量之外约 100KB 处读出，输出静默错值。另 #6676 同族（keyCache 首维 0 早退返回成功不写输出、静默 no-op）。修复 PR !14535（blockTables 越界输出置零，closed）与 !14536（scatter_pa_kv_cache 同族越界 slotMapping 跳过，open）已提交，合入状态未核实。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6675 + https://gitcode.com/cann/ops-transformer/issues/6655 + https://gitcode.com/cann/ops-transformer/issues/6656 + https://gitcode.com/cann/ops-transformer/issues/6676 + https://gitcode.com/cann/ops-transformer/merge_requests/14535 + https://gitcode.com/cann/ops-transformer/merge_requests/14536
+  behavior: 调用 GatherPaKvCache 收集 KV cache 时，如果 blockTables 里的块号超出实际 cache 块数、各序列长度之和超过输出缓冲容量、或 seqOffset 折算的偏移越界，接口都返回成功，实际却把越界内存里的数据当 KV 读进输出（或输出静默错值），甚至往输出缓冲区外面写数据（保护带实测越界写 keyRef 之外）；不崩溃、不报错，注意力输入悄悄被污染。
+  trigger_surface: CANN 9.2.0 / Atlas A2 910B2；aclnnGatherPaKvCache（cacheMode=Norm、isSeqLensCumsum=false 路径）；blockTables 越界值 / sum(seqLens)>keyRef dim0 / seqOffset 超界 / keyCache 首维 0。
+  discovery: 2026-10-24 每日扫描
+  notes:
+  - '2026-10-25 回访 2026-10-25：修复 MR !14535（gather 越界读）已 closed/合入 10-24T09:31Z，发布版本未核实；!14536（scatter 越界写跳过）仍 open。族内新增 #6676 空输入静默 no-op 分支（INF-2187）。'
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 算子/内核
+    rewritten:
+    - detail
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-10-25'
+    fields:
+    - original.notes
+  - date: '2026-10-26'
+    fields:
+    - pattern

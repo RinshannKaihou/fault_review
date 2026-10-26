@@ -1,0 +1,56 @@
+id: TRN-0414
+legacy_ids: []
+slug: ops_transformer_sparse_flash_mla_metadata_ignores_sequsedq
+aliases: []
+title: SparseFlashMlaMetadata 丢弃 sequsedQ 按满长调度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnSparseFlashMlaMetada
+  behavior: A2 上 sequsedQOptional（每 batch Q 侧有效 token 数）整条数据通路被丢弃，无论传什么值 metadata 与不传逐字节相同；同签名 sequsedOriKvOptional 生效（对照闭合），唯独 sequ
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: Q 侧有效长度被无视、分核按 maxSeqlenQ 满长切分（sequsedQ=0 仍产出满长 105 元素调度），下游 SparseFlashMla 按满长任务搬 KV 多算；接口返回 0 无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 变 sequsedQ 值（1024/256/64/2/1/0）比对 metadata 指纹是否变化（应变化而不变）；与 KV 侧对照。
+  fix: 待定（issue open，未见修复 MR）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-25'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6625
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2167
+original:
+  mechanism: 'cann/ops-transformer #6625（2026-10-24，open，A2 910B2 / CANN 9.2.0）。aclnnSparseFlashMlaMetadata 在 A2 上把可选输入 sequsedQOptional 整条数据通路丢弃：固定 batchSize=4、只改 sequsedQ 元素值（1024/256/64/2/1/0），metadata 内容指纹全部相同（9ae9154dd9ceb7e3，105 个非零元素），与不传时逐字节一致；sequsedQ=0（应空任务）仍满长。对照 sequsedOriKvOptional 生效（256→105、32→99、1→11），证明读 seqused 并切分的链路通、唯独 sequsedQ 没接进去。sequsedQ 是调度输入：分核 s2/m 区间按它切，丢弃后按 maxSeqlenQ 满长切，下游 SparseFlashMla 按满长任务描述搬 KV、做多算（多算部分对有效区的数值影响未经报告者量化，主要是无效计算与潜在越界面）。kernel 侧针对 seqused_q 的越界校验也从未触发。推理编目 INF-2167 已收同源；本条为训练侧条目（训练期 MLA 稀疏前向同样经 metadata 调度，变长 batch 下满长调度改变计算划分）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6625
+  behavior: 变长 batch 下调用 SparseFlashMla 前的 metadata 算子，把每个 batch 的 Q 有效长度参数整个忽略：全 0 也照样按满长 1024 切分核，metadata 输出和不传该参数一模一样；接口返回成功。下游按满长任务搬 KV 做多余计算，浪费算力且调度划分与预期不符，无任何告警。
+  trigger_surface: aclnnSparseFlashMlaMetadata（A2 910B2 / CANN 9.2.0），变长 batch 传 sequsedQOptional；KV 侧同名参数不受影响。
+  discovery: 2026-10-25 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-25'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - component

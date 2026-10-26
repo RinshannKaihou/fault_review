@@ -1,0 +1,47 @@
+id: INF-2149
+legacy_ids: []
+slug: triton_batched_dot_n1_accum_overlap
+aliases: []
+title: Triton 批量 dot N==1 时批间累加器寄存器重叠错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: MMAv2 批间寄存器步进
+  behavior: '[B,M,K]x[B,K,1] 批量 dot 在一个 warp 计算多个 batch（B>num_warps）时，MMAv2 lower 步进按 N==1 减半的寄存器数移动，相邻 batch 共享累加器寄存器'
+effect:
+  objects:
+  - 数值结果
+  detail: 全 1 输入 B=2/M=16/K=16、单 warp：应全 16 的结果出现 0 和 32；每 warp 单 batch 控制组正确
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: issue closed（修复状态未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-23'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12394
+  kind: github_issue
+relations: []
+original:
+  mechanism: Triton 批量 3D tl.dot（[B,M,K]x[B,K,1]，结果 N==1）在一个 warp 计算多于一个 batch（B>num_warps）时静默返回错值：线程把所有 batch 的累加器寄存器放在一个数组里，MMAv2 lowering 从一个 batch 步进到下一个时用的寄存器计数对 N==1 只有实际占用的一半，导致相邻 batch 共享寄存器。最小复现（L40S，main 6fe3348e6）：全 1 half 输入 2x16x16 · 2x16x1，num_warps=1（两 batch 同 warp）时输出 [0.0, 16.0, 32.0] 而非全 16；num_warps=2（每 warp 单 batch）正确。批间相互覆盖使结果既可能偏大又可能为 0。
+  source: 2026-10-23 每日扫描 https://github.com/triton-lang/triton/issues/12394（closed，附最小复现）
+  behavior: Triton kernel 里写批量 tl.dot 且第二操作数最后一维为 1（例如逐样本内积/打分）时，只要 batch 数超过 num_warps，输出静默错值：全 1 输入应得 16 的位置出现 0 或 32。无报错、无警告，调大 num_warps 到每 warp 单 batch 就正确。
+  trigger_surface: Triton main（6fe3348e6）；批量 3D tl.dot 且 N==1 且 B>num_warps；复现于 NVIDIA L40S。
+  discovery: 2026-10-23 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-23'
+  audit:
+    round: daily-audit-2026-10-24
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

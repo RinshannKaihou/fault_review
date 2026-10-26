@@ -1,0 +1,56 @@
+id: INF-2166
+legacy_ids: []
+slug: flashinfer_trtllm_gen_fused_moe_sm120_silent_corruption
+aliases: []
+title: FlashInfer fused MoE SM120 静默输出垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: fused_moe_120 JIT
+  behavior: trtllm-gen fused MoE 的 fused_moe_120 在 SM120 产生静默损坏输出，运行时无架构门控即接受调用；测试矩阵自声明仅保证 SM100/SM103。
+effect:
+  objects:
+  - 输出内容
+  detail: 同权重同配置仅切 moe backend：DEEPGEMM_MXFP4 全部正确，flashinfer_cutlass 从第 1 个 token 起垃圾（6131>6131*19=…）；无任何报错，流畅但错误的补全。
+  visibility: 静默错误
+mitigation:
+  detect: 切换 moe backend A/B 对比输出；gsm8k/固定题集回归
+  fix: 报告建议运行时可用性门控对齐测试矩阵（mirror tests/moe/utils.py 的 SM100/SM103 限制），未实现
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-24'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/7179
+  kind: github_issue
+relations: []
+original:
+  mechanism: flashinfer 0.7.2 wheel（8×RTX 6000D 84G SM120 cc12.0，vLLM 0.32.1rc1.dev440，DeepSeek-V4.1-Flash-1017 TP8+EP8）。vllm --moe-backend flashinfer_cutlass 对 MXFP4×MXFP8 专家配置解析到 FLASHINFER_CUTLASS_MXFP4_MXFP8，即 JIT fused_moe_120 内核（boot log Building JIT module fused_moe_120 + Tuning trtllm::fused_moe::gemm1/gemm2 各 21 profiles）。该路径在 SM120 输出静默损坏；flashinfer 自己的测试矩阵 tests/moe/utils.py 写明 only guaranteed to work on SM100 and SM103（其他架构 6063 个测试 skip），但运行时 API 无对应门控，SM120 调用被照常接受。单变量 A/B：同权重同引擎配置同 graph（PIEWISE）同 spec（DSpark k4），auto→DEEPGEMM_MXFP4 输出正确（17*19=323、中文问答、tool calls 正常），flashinfer_cutlass 从第 1 个 token 起垃圾（6131 > 6131*19=…）；关 spec decode 依旧损坏。
+  source: https://github.com/flashinfer-ai/flashinfer/issues/7179
+  behavior: 在 SM120（RTX 6000D 等）上用 vLLM flashinfer_cutlass MoE 后端跑 DeepSeek-V4.1-Flash：服务正常起来、无任何报错，但生成内容从第一个 token 就是错的（简单乘法题输出乱数字），中文问答和工具调用全部损坏；同一份权重切回 DEEPGEMM 后端立刻全对。流利但错误的补全对线上质量监控完全隐形。
+  trigger_surface: flashinfer 0.7.2 fused_moe_120（trtllm-gen fused MoE）；SM120；vLLM --moe-backend flashinfer_cutlass + MXFP4×MXFP8（DeepSeek-V4.1-Flash）；graph/spec 配置无关。
+  discovery: 2026-10-24 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-24'
+  audit:
+    round: daily-audit-2026-10-25
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 算子/内核
+    uncertain:
+    - effect
