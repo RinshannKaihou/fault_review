@@ -1,5 +1,6 @@
 """Hybrid retrieval: BM25 + dense cosine, fused with Reciprocal Rank Fusion."""
 import re
+import sys
 
 import numpy as np
 
@@ -8,6 +9,8 @@ from . import rerank as rerank_mod
 from .index import get_index, tokenize
 
 RRF_K = 60
+# Old Markdown ids (inference 1.44 / K9.3, training HW.01 / RL-RO.01), retired 2026-10-26.
+LEGACY_ID_RE = re.compile(r"(?:\d+|[A-Z][A-Z0-9-]*)\.\d+")
 
 
 def _entry_type(e):
@@ -32,19 +35,9 @@ def _passes(e, repo=None, category=None, confidence=None,
     return True
 
 
-def _legacy_category_matches(ec, category):
-    """Old Markdown categories: accept NUM / cat1 / 1 / KV1 / kv1 / neg_rejected forms."""
-    cat = category.lower().lstrip("cat")
-    ec = ec.lower()
-    return ec == category.lower() or ec == "cat" + cat or ec == "kv" + cat or ec.lstrip("catkv") == cat
-
-
 def _category_matches(e, category):
-    """--category takes either the current subsystem (e.g. KV缓存) or an old Markdown category."""
-    if e["category"] == category or e["category"].lower() == category.lower():
-        return True
-    legacy = e.get("legacy_category") or (e["category"] if e.get("neg") or "legacy_ids" not in e else None)
-    return bool(legacy) and _legacy_category_matches(legacy, category)
+    """--category is the cause subsystem (e.g. KV缓存) or a negative kind (neg_rejected)."""
+    return e["category"].lower() == category.lower()
 
 
 def _ranks(scores, eligible):
@@ -92,6 +85,11 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
                    include_pointers=include_pointers, pattern=pattern)
     ]
     if not eligible:
+        if category and not any(_category_matches(e, category) for e in idx.entries):
+            print(f"fault-rag: no entry has category {category!r}. --category takes a cause subsystem "
+                  "(e.g. KV缓存) or neg_rejected / neg_blindspot / neg_appendix; `stats` lists them "
+                  "under by_category. Old categories (cat1 / KV9 / HW ...) were retired 2026-10-26.",
+                  file=sys.stderr)
         return []
 
     dense_r = {}
@@ -130,10 +128,8 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
             "name": e["name"],
             "title": e.get("title"),
             "summary": _summary(e),
-            "legacy_ids": e.get("legacy_ids", []),
             "repo": e["repo"],
             "category": e["category"],
-            "legacy_category": e.get("legacy_category"),
             "confidence": e.get("confidence"),
             "status": e.get("status"),
             "pattern": e.get("pattern"),
@@ -149,17 +145,21 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
 
 
 def lookup(q):
-    """Exact id, old Markdown id (incl. merged ones such as 1.70 -> INF-0044), name / alias,
-    then name substring for non-ID queries."""
+    """Exact id, name / alias, then name substring for non-ID queries. Old Markdown ids are not
+    resolved: they return nothing, with a pointer to the id registry on stderr."""
     idx = get_index()
     rows = []
     if q in idx.by_id:
         rows = idx.by_id[q]
-    elif q in getattr(idx, "by_legacy", {}):
-        rows = idx.by_legacy[q]
     elif q in idx.by_name:
         rows = idx.by_name[q]
-    elif re.fullmatch(r"(?:\d+|[A-Z][A-Z0-9-]*)\.\d+|(?:INF|TRN)-\d+|K\d+\.\d+", q):
+    elif LEGACY_ID_RE.fullmatch(q):
+        repo = "inference" if re.fullmatch(r"K?\d+\.\d+", q) else "training"
+        print(f"fault-rag: {q} looks like an old Markdown id; those were retired 2026-10-26 and are not "
+              f"resolved. Find its INF-/TRN- id in catalogs/{repo}/id_registry.tsv, or with "
+              f"`tools/catalog_tool.py find {q}` in the upstream catalog repo (also covers merged ids).",
+              file=sys.stderr)
+    elif re.fullmatch(r"(?:INF|TRN)-\d+", q):
         # An unknown catalog ID must not partially match an unrelated ID.
         rows = []
     else:
@@ -213,10 +213,8 @@ def _full(e):
         "id": e["id"],
         "name": e["name"],
         "title": e.get("title"),
-        "legacy_ids": e.get("legacy_ids", []),
         "repo": e["repo"],
         "category": e["category"],
-        "legacy_category": e.get("legacy_category"),
         "kind": e.get("kind"),
         "status": e.get("status"),
         "confidence": e.get("confidence"),

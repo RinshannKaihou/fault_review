@@ -56,11 +56,9 @@ def bm25_text(e):
     f = e["fields"]
     parts = [
         e["id"],
-        " ".join(e.get("legacy_ids", [])),
         e["name"],
         e["name"].replace("_", " "),
         e["category"],
-        e.get("legacy_category") or "",
     ]
     # Not the other structured fields (cause_behavior / effect_detail / component /
     # effect_objects): their repeated technical terms let near-topic entries outrank
@@ -233,12 +231,9 @@ class Index:
             self.bm25 = pickle.load(f)
         self.tokens = [None] * len(self.entries)  # filled on demand if needed
         self.by_id = {}
-        self.by_legacy = {}
         self.by_name = {}
         for i, e in enumerate(self.entries):
             self.by_id.setdefault(e["id"], []).append(i)
-            for old in e.get("legacy_ids", []):
-                self.by_legacy.setdefault(old, []).append(i)
             self.by_name.setdefault(e["name"], []).append(i)
             for alias in e.get("aliases", []):
                 self.by_name.setdefault(alias, []).append(i)

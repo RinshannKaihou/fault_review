@@ -18,8 +18,8 @@ stdout 一律是 JSON。出错信息在 stderr。
 | 你要做什么 | 命令 |
 |---|---|
 | 用症状/机制描述找相似故障模式 | `search "<描述>" --topk 5` |
-| 已知编号或 snake_case 名，取完整条目 | `lookup INF-0044` / `lookup 1.44`（旧编号自动对应）/ `lookup sdc_multibit_warp_spray` |
-| 顺覆盖关系/交叉指针找关联条目 | `related TRN-0005 --depth 1`（旧号 `HW.05` 亦可） |
+| 已知编号或 snake_case 名，取完整条目 | `lookup INF-0044` / `lookup sdc_multibit_warp_spray` |
+| 顺覆盖关系/交叉指针找关联条目 | `related TRN-0005 --depth 1` |
 | 看某个故障模式下的全部实例 | `search "<描述>" --pattern PAT-INF-0035`，或读模式文件 `catalog/<repo>/patterns/` |
 | 人工确认发布已审查的编目更新 | 先在隔离副本运行 `scripts/sync_catalogs.sh` 与定向校验；无读者窗口在正式库重跑、核验后才提交 `catalogs/`。脚本非原子，失败不得发布 |
 
@@ -29,7 +29,7 @@ stdout 一律是 JSON。出错信息在 stderr。
   与混合名次再做一次 RRF。中英混排查询都支持。冷启动一次约 11 秒；`--no-rerank` 跳过重排（约 6 秒），
   只在需要快速粗查时用。`rerank_rank`（0 起）是重排名次，`null` 表示没经过重排（`--no-rerank`、
   `--mode bm25|dense`，或精排模型缺失——缺失时 stderr 会提示，输出的 `reranked` 为 false）。
-- 过滤：`--repo inference|training`、`--category <原因子系统，如 KV缓存> | <旧分类 NUM|cat1|KV1>`、
+- 过滤：`--repo inference|training`、`--category <原因子系统，如 KV缓存；或负结果类型 neg_rejected 等，可选值见 stats>`、
   `--pattern PAT-INF-0035`（只看该故障模式这一族）、
   `--confidence verified|documented|speculative`、
   `--no-neg`（排除负结果块）、`--include-pointers`（显式包含指针行）、
@@ -38,7 +38,7 @@ stdout 一律是 JSON。出错信息在 stderr。
 - hybrid 的向量路会给每个合格条目排名，所以 hybrid **总有结果**，排在后面的不一定相关；
   `bm25_rank: null` 表示该条没有任何关键词命中、只靠向量相似进来，要读原文再判断。
   `--mode bm25` 下关键词零命中返回空列表，这不代表编目里没有相关故障，可换 hybrid 或换说法再查。
-- 新编号 `INF-xxxx` / `TRN-xxxx` 不含分类语义；旧编号记在 `legacy_ids`，`lookup` 会对应到新编号，已合并的 `1.70`、`11.30` 也会对应到保留条目（`INF-0044`、`INF-1048`）。精确查不到的编号不会模糊命中别的编号。
+- 编号 `INF-xxxx` / `TRN-xxxx` 不含分类语义。旧 Markdown 编号（`1.44`、`HW.01`）和旧分类（`cat1`、`KV9`、`NUM`）2026-10-26 起在本工具中退役：`lookup` 旧编号返回空，stderr 指向 `catalogs/<repo>/id_registry.tsv`（已合并的旧编号如 `1.70` 不在表里，用上游 `tools/catalog_tool.py find`）；`--category` 给旧分类返回空。上游条目 YAML 与正文里仍写着旧编号，读到时先换算，引用一律写新编号。精确查不到的编号不会模糊命中别的编号。
 - `status: pending_audit` 的条目是每日扫描刚写入、尚未经次日自动审计的，引用时注明。
 - `pattern: PAT-INF-0035` 是条目所属的**故障模式**（同一底层问题的一族）。编号带编目命名空间，
   `PAT-INF-` 与 `PAT-TRN-` 不可混。模式的 `members` 由 `var` 关系派生，**不是**人工策划的分类；
@@ -57,14 +57,14 @@ stdout 一律是 JSON。出错信息在 stderr。
 ## 回答用户时的引用纪律
 
 - 引用条目必须带 **编号 + snake_case 名 + file**，例如
-  `TRN-0005 training_sdc_checkpoint_inherit`（旧号 HW.05；catalogs/training/entries/TRN-0005.yaml）。
+  `TRN-0005 training_sdc_checkpoint_inherit`（catalogs/training/entries/TRN-0005.yaml）。
 - 置信度照实标注（`verified` / `documented` / `speculative`），不要把
   `documented` 说成已复现。
 - 跨仓库关联用 `related` 查，不要凭记忆猜指针。
-- `related` 只表示存在编目关联，`link_kind: var` 是来源作者更强的变体断言，不能据此声称机制已核实相同；`INF-0647`（旧号 6.254）的该关系仍待复核。
+- `related` 只表示存在编目关联，`link_kind: var` 是来源作者更强的变体断言，不能据此声称机制已核实相同；`INF-0647` 的该关系仍待复核。
 - `entry_type: pointer` 不是独立故障，不得作为故障证据引用。
 - `name_ambiguous: true` 时必须使用 repo + ID + name + file；不能只写
-  snake name。当前同名的 `INF-0421` / `INF-0426`（旧号 6.28 / 6.33）是两条不同来源记录。
+  snake name。当前同名的 `INF-0421` / `INF-0426` 是两条不同来源记录。
 - `name_ambiguous` 只检查**同一编目内**的重名。跨库同名不会被标记，例如
   `training_sdc_checkpoint_inherit` 同时是 `INF-0006` 与 `TRN-0005`（同一机制的推理/训练两个视角），
   按名称 `lookup` 会返回两条。所以任何时候都要写明 repo + ID。
@@ -101,7 +101,7 @@ slice。**bench 用聚合口径**：R@5/R@10 不得低于基线，MRR/nDCG 容�
 禁止把真实退化登记成 `weak_gold`。判定要在基线索引上测（按 `baseline_indy.json` 生成时的快照重建，
 数值须与基线完全一致），不能只比两个新快照。
 
-标签来自源条目（用旧编号书写，评测时自动对应到新编号），不得按当前 top-k 反向生成。
+标签来自源条目（一律写现行编号；写旧编号会被评测当作未知条目拒绝），不得按当前 top-k 反向生成。
 旧题通过不代表新增、退役或修订条目语义正确；每次发布须补本次变更的定向检查。
 
 网页版（`web/`，GitHub Pages）有自己的门禁与基线：推送 `catalogs/` 后 CI 构建站点并跑

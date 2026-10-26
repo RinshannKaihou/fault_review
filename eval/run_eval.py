@@ -68,26 +68,6 @@ def metrics_for_ranking(ranked, relevant, recall_k=5, rank_k=10):
     }
 
 
-def resolve_legacy_ids(cases, corpus_keys, legacy_map):
-    """Map labels written with old Markdown ids (e.g. inference 1.44) to the entry that now carries them.
-
-    legacy_map: {(repo, legacy_id): (repo, current_id)} from the index. Labels that already name a
-    corpus entry are left alone, so the same cases run unchanged on Markdown- and YAML-built indexes.
-    """
-    corpus_keys = set(corpus_keys)
-    out = []
-    for case in cases:
-        case = dict(case)
-        case["relevant"] = [
-            item if (item.get("repo"), item.get("id")) in corpus_keys
-            else {**item, "id": legacy_map.get((item.get("repo"), item.get("id")), (None, item.get("id")))[1],
-                  "label_id": item.get("id")}
-            for item in case.get("relevant", [])
-        ]
-        out.append(case)
-    return out
-
-
 def validate_cases(cases, corpus_keys):
     """Reject malformed or unauditable benchmark labels."""
     corpus_keys = set(corpus_keys)
@@ -332,8 +312,6 @@ def main(argv=None):
         )
     idx = get_index()
     corpus_keys = {(e["repo"], e["id"]) for e in idx.entries}
-    legacy_map = {(e["repo"], old): (e["repo"], e["id"]) for e in idx.entries for old in e.get("legacy_ids", [])}
-    cases = resolve_legacy_ids(cases, corpus_keys, legacy_map)
     validate_cases(cases, corpus_keys)
     report = evaluate_cases(cases)
 

@@ -1,3 +1,5 @@
+import contextlib
+import io
 import unittest
 
 import numpy as np
@@ -47,10 +49,10 @@ class EntryTypeFilterTests(unittest.TestCase):
 
 
 class IndexedPointerIntegrationTests(unittest.TestCase):
-    POINTER = "INF-0920"   # legacy 10.4 chat_template_faults
+    POINTER = "INF-0920"   # chat_template_faults
 
     def test_lookup_preserves_pointer_with_explicit_type(self):
-        rows = S.lookup("10.4")
+        rows = S.lookup(self.POINTER)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["id"], self.POINTER)
         self.assertEqual(rows[0]["entry_type"], "pointer")
@@ -81,13 +83,13 @@ class DuplicateNameIntegrationTests(unittest.TestCase):
 
     def test_lookup_marks_every_duplicate_name_result_as_ambiguous(self):
         rows = S.lookup(self.DUPLICATE)
-        self.assertEqual({r["id"] for r in rows}, {"INF-0421", "INF-0426"})   # legacy 6.28 / 6.33
+        self.assertEqual({r["id"] for r in rows}, {"INF-0421", "INF-0426"})
         for row in rows:
             self.assertTrue(row["name_ambiguous"])
             self.assertEqual(row["same_name_ids"], ["INF-0421", "INF-0426"])
 
     def test_unique_name_is_not_marked_ambiguous(self):
-        row = S.lookup("HW.01")[0]
+        row = S.lookup("TRN-0001")[0]
         self.assertFalse(row["name_ambiguous"])
         self.assertEqual(row["same_name_ids"], [])
 
@@ -104,20 +106,31 @@ class DuplicateNameIntegrationTests(unittest.TestCase):
 
 
 class CategoryFilterTests(unittest.TestCase):
-    def test_subsystem_and_legacy_category_both_filter(self):
-        new = S.search("prefix cache stale KV reuse", topk=10, repo="inference", category="KV缓存")
-        self.assertTrue(new)
-        self.assertTrue(all(r["category"] == "KV缓存" for r in new))
-        old = S.search("prefix cache stale KV reuse", topk=10, repo="inference", category="cat6")
-        self.assertTrue(old)
-        # old-category semantics are kept unchanged for benchmark comparability: a numbered
-        # category also matches the KV section of the same number (cat6 -> cat6 and KV6)
-        self.assertTrue(all(r["legacy_category"] in ("cat6", "KV6") for r in old))
+    def test_subsystem_filters(self):
+        rows = S.search("prefix cache stale KV reuse", topk=10, repo="inference", category="KV缓存")
+        self.assertTrue(rows)
+        self.assertTrue(all(r["category"] == "KV缓存" for r in rows))
 
-    def test_rows_carry_legacy_ids_and_title(self):
+    def test_negative_kind_filters(self):
+        rows = S.search("OOM", topk=5, mode="bm25", category="neg_rejected")
+        self.assertTrue(rows)
+        self.assertTrue(all(r["neg"] and r["category"] == "neg_rejected" for r in rows))
+
+    def test_retired_old_category_matches_nothing_and_says_so(self):
+        # cat6 / KV6 / NUM were the old Markdown categories, retired 2026-10-26
+        for old in ("cat6", "KV6", "NUM"):
+            with self.subTest(old=old):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rows = S.search("prefix cache stale KV reuse", topk=5, mode="bm25", category=old)
+                self.assertEqual(rows, [])
+                self.assertIn("retired", err.getvalue())
+
+    def test_rows_carry_title_and_no_old_id_fields(self):
         row = S.search("topk single core ignores indices tensor", topk=3, mode="bm25", repo="inference")[0]
         self.assertTrue(row["title"])
-        self.assertIsInstance(row["legacy_ids"], list)
+        self.assertNotIn("legacy_ids", row)
+        self.assertNotIn("legacy_category", row)
 
 
 class BM25IntegrationTests(unittest.TestCase):

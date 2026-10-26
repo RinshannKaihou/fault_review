@@ -188,7 +188,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertTrue(any("recall_at_10 regressed" in item for item in failures))
 
 
-class RecallAtTenAndLegacyLabelTests(unittest.TestCase):
+class RecallAtTenAndLabelTests(unittest.TestCase):
     def test_recall_at_10_counts_ranks_six_to_ten(self):
         from eval.run_eval import metrics_for_ranking
         ranked = [("inference", f"x{i}") for i in range(7)] + [("inference", "gold")]
@@ -196,15 +196,16 @@ class RecallAtTenAndLegacyLabelTests(unittest.TestCase):
         self.assertEqual(got["recall_at_5"], 0.0)
         self.assertEqual(got["recall_at_10"], 1.0)
 
-    def test_legacy_labels_resolve_to_current_ids(self):
-        from eval.run_eval import resolve_legacy_ids
-        cases = [{"relevant": [{"repo": "inference", "id": "1.44"}, {"repo": "inference", "id": "NEG-INF-C6"}]}]
-        corpus = {("inference", "INF-0044"), ("inference", "NEG-INF-C6")}
-        legacy = {("inference", "1.44"): ("inference", "INF-0044"), ("inference", "1.70"): ("inference", "INF-0044")}
-        out = resolve_legacy_ids(cases, corpus, legacy)
-        self.assertEqual([r["id"] for r in out[0]["relevant"]], ["INF-0044", "NEG-INF-C6"])
-        self.assertEqual(out[0]["relevant"][0]["label_id"], "1.44")
-        self.assertEqual(cases[0]["relevant"][0]["id"], "1.44")          # input not mutated
+    def test_labels_must_name_current_ids(self):
+        # old Markdown ids (1.44) were retired 2026-10-26; a label written with one is rejected
+        from eval.run_eval import validate_cases
+        case = {"case_id": "c1", "query": "q", "mode": "hybrid", "filters": {}, "tags": ["t"],
+                "rationale": "r", "relevant": [{"repo": "inference", "id": "1.44"}]}
+        corpus = {("inference", "INF-0044")}
+        with self.assertRaisesRegex(ValueError, "unknown relevant entry"):
+            validate_cases([case], corpus)
+        case["relevant"] = [{"repo": "inference", "id": "INF-0044"}]
+        self.assertEqual(validate_cases([case], corpus), [case])
 
 
 class FixListKindTests(unittest.TestCase):

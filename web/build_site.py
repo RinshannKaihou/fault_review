@@ -69,13 +69,17 @@ def rel(path):
 
 def entry_yaml(e):
     """The entry's own YAML (fault and pointer entries), minus the pipeline audit trail that the
-    source file keeps; None for negative chunks, which come from Markdown."""
+    source file keeps and the old Markdown id / category / chapter retired 2026-10-26; None for
+    negative chunks, which come from Markdown."""
     import yaml
 
     if not e["file"].endswith(".yaml"):
         return None
     y = yaml.safe_load(e["raw"]) or {}
     y.pop("migration", None)
+    y.pop("legacy_ids", None)
+    for key in ("category", "section"):
+        (y.get("original") or {}).pop(key, None)
     return y
 
 
@@ -88,12 +92,9 @@ def doc_row(e, y):
         "name": e["name"],
         "title": e.get("title"),
         "summary": _summary(e),
-        # null (not []) when the entry has no legacy_ids key: _category_matches reads that.
-        "legacy_ids": e.get("legacy_ids"),
         "aliases": e.get("aliases", []),
         "repo": e["repo"],
         "category": e["category"],
-        "legacy_category": e.get("legacy_category"),
         "confidence": e.get("confidence"),
         "status": e.get("status"),
         "pattern": e.get("pattern"),

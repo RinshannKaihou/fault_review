@@ -2,9 +2,11 @@
 
 Since the 2026-10-13 cut-over the fault entries come from the upstream structured catalogs
 (catalogs/<repo>/entries/*.yaml, synced by scripts/sync_catalogs.sh): one YAML per fault with a
-semantic-free id (INF-0044 / TRN-0001) and the old Markdown ids in legacy_ids, so lookups and
-benchmark labels written with old ids keep resolving. Negative docs are unchanged: training
-rejected.md / blindspots.md and appendix C/D of the frozen inference Markdown master.
+semantic-free id (INF-0044 / TRN-0001). The old Markdown ids that the YAML still records in
+legacy_ids were retired from this tool on 2026-10-26: they are no input, output, filter, or
+retrieval text. They are read once, in build_links, to resolve the old-id mentions in text
+written before the cut-over. Negative docs are unchanged: training rejected.md / blindspots.md
+and appendix C/D of the frozen inference Markdown master.
 
 The Markdown entry parser below (parse_master) is kept for the frozen masters and for tools that
 still read Markdown (e.g. normalize/convert.py); parse_all no longer uses it for fault entries.
@@ -370,16 +372,6 @@ def _join(values, sep="；"):
     return sep.join(str(v) for v in values if v not in (None, "", "N/A")) if isinstance(values, list) else (values or "")
 
 
-def _legacy_category(legacy_ids, repo):
-    """Old Markdown category of an entry, derived from its first old id (the old ids encoded it)."""
-    for old in legacy_ids or []:
-        try:
-            return _category_from_id(str(old), repo)
-        except ValueError:
-            continue
-    return None
-
-
 def parse_yaml_entries(path, repo):
     """One entry per catalog/entries/<ID>.yaml, in the schema the index and search already use."""
     import yaml
@@ -420,12 +412,10 @@ def parse_yaml_entries(path, repo):
             "name": y["slug"],
             "title": y.get("title", ""),
             "aliases": list(y.get("aliases") or []),
-            "legacy_ids": [str(x) for x in y.get("legacy_ids") or []],
+            # build_links only; parse_all drops it before anything is indexed or shown
+            "_legacy_ids": [str(x) for x in y.get("legacy_ids") or []],
             "repo": repo,
             "category": (objs[0].get("subsystem") if objs else None) or "待定",
-            "legacy_category": orig.get("category") or _legacy_category(y.get("legacy_ids"), repo),
-            "section": orig.get("section", ""),
-            "section_line": 0,
             "file": fp,
             "line": 1,
             "line_end": text.count("\n") + 1,
@@ -449,26 +439,27 @@ def parse_yaml_entries(path, repo):
 def build_links(entries):
     """Wire cross-references between entries.
 
-    Sources: explicit `relations` (var / cross, by current id), legacy Markdown coverage
-    `var:<name|id>` and `交叉：<repo> <id>` pointers, and exact mentions of known ids — current or
-    legacy — in the narrative text. Legacy ids resolve to the entry that now carries them; only ids
-    that exist in the corpus are kept (no false positives from version numbers like 2.7.1).
+    Sources: explicit `relations` (var / cross, by current id) and exact mentions of current ids in
+    the narrative text. Text written before the 2026-10-13 cut-over (migrated entries, negative
+    docs) cites entries by old Markdown id (「与 6.192（…）」); those mentions are resolved here
+    through the snapshot's legacy_ids to the entry that now carries the id. Text written after the
+    cut-over is not decoded: its old-id-shaped hits were all decimals and model versions (3.6,
+    K2.7) when checked on 2026-10-26. Only ids that exist in the corpus are kept.
     """
-    by_id = {}
-    by_name = {}
+    by_id, by_legacy = {}, {}
     for e in entries:
         by_id.setdefault(e["id"], []).append(e)
-        for old in e.get("legacy_ids", []):
-            by_id.setdefault(old, []).append(e)
-        by_name.setdefault(e["name"], []).append(e)
-        for alias in e.get("aliases", []):
-            by_name.setdefault(alias, []).append(e)
+        for old in e.get("_legacy_ids", []):
+            by_legacy.setdefault(old, []).append(e)
 
-    # long ids first so `RL-RO.01` wins over a bare `1.1` style prefix clash
-    known_ids = sorted(by_id, key=len, reverse=True)
-    id_pat = re.compile(
-        r"(?<![\w.])(" + "|".join(re.escape(i) for i in known_ids) + r")(?![\w.])"
-    ) if known_ids else None
+    def id_pattern(ids):
+        # long ids first so `RL-RO.01` wins over a bare `1.1` style prefix clash
+        ids = sorted(ids, key=len, reverse=True)
+        return re.compile(
+            r"(?<![\w.])(" + "|".join(re.escape(i) for i in ids) + r")(?![\w.])"
+        ) if ids else None
+
+    current_pat, legacy_pat = id_pattern(by_id), id_pattern(by_legacy)
 
     for e in entries:
         links = {}  # (repo, id) -> kind, strongest wins
@@ -484,19 +475,13 @@ def build_links(entries):
         for rel in e.get("relations", []):
             for t in by_id.get(rel.get("target"), []):
                 add("var" if rel.get("kind") == "var" else "cross", t)
-        cov = e.get("coverage") or ""
-        if cov.startswith("var:"):
-            target = cov[4:]
-            # training: var:<snake_name>; inference: var:<id> (e.g. var:1.212)
-            for t in by_name.get(target, []) + by_id.get(target, []):
-                add("var", t)
-        text = e["raw"] if e.get("neg") or "relations" not in e else "\n".join(str(v) for v in e["fields"].values())
-        for m in re.finditer(r"交叉[：:]\s*(\S+)\s+([A-Z]*\d+\.\d+)", text):
-            for t in by_id.get(m.group(2), []):
-                add("cross", t)
-        if id_pat:
-            for m in id_pat.finditer(text):
-                for t in by_id.get(m.group(1), []):
+        text = e["raw"] if e["neg"] else "\n".join(str(v) for v in e["fields"].values())
+        scans = [(current_pat, by_id)]
+        if e["neg"] or e.get("_legacy_ids"):
+            scans.append((legacy_pat, by_legacy))
+        for pat, table in scans:
+            for m in pat.finditer(text) if pat else ():
+                for t in table.get(m.group(1), []):
                     add("mentions", t)
         e["links"] = sorted(
             ({"kind": k, "repo": r, "id": i} for (r, i), k in links.items()),
@@ -525,8 +510,11 @@ def embed_text(e):
     fields are summaries of this same narrative, and prepending them pulled the
     vectors toward mechanism wording and away from the symptom phrasing users
     query with (independent set Recall@10 0.984 -> 0.968). Only the title goes
-    to BM25 (see index.bm25_text). Migrated entries keep their old category
-    token, so their vectors are identical to the Markdown-era ones.
+    to BM25 (see index.bm25_text). The category token is the cause subsystem
+    (算子/内核): until 2026-10-26 migrated entries carried their old Markdown
+    category here instead (cat1 / KV9 / HW). Switching to the subsystem raised
+    independent-set MRR@10 0.880 -> 0.911 and no gated case left the top 10;
+    indy-065, already outside it (weak_gold), fell further (hybrid 33 -> 93).
     """
     f = e["fields"]
     if e["neg"]:
@@ -534,7 +522,7 @@ def embed_text(e):
     else:
         parts = [
             e["name"].replace("_", " "),
-            f"category {e.get('legacy_category') or e['category']}",
+            f"category {e['category']}",
             f.get("mechanism", ""),
             f.get("behavior", ""),
             f.get("signature", ""),
@@ -552,6 +540,7 @@ def parse_all():
     entries += parse_appendix(INFERENCE_MASTER, "inference")
     entries = build_links(entries)
     for e in entries:
+        e.pop("_legacy_ids", None)
         e["hash"] = content_hash(e)
         e["embed_text"] = embed_text(e)
         e["embed_hash"] = embedding_hash(e["embed_text"])

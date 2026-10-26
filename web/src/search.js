@@ -6,7 +6,9 @@
 export const RRF_K = 60;
 const LATIN_RE = /[a-z0-9][a-z0-9_.\-\/#]*/g;
 const CJK_RUN_RE = /[一-鿿]+/g;
-const ID_SHAPED = /^(?:(?:\d+|[A-Z][A-Z0-9-]*)\.\d+|(?:INF|TRN)-\d+|K\d+\.\d+)$/;
+const ID_SHAPED = /^(?:INF|TRN)-\d+$/;
+// Old Markdown ids (inference 1.44 / K9.3, training HW.01 / RL-RO.01), retired 2026-10-26.
+const LEGACY_ID_SHAPED = /^(?:\d+|[A-Z][A-Z0-9-]*)\.\d+$/;
 
 // Byte-identical to build_site.tokenize (checked by web/eval/check_web.py).
 export function tokenize(text) {
@@ -19,25 +21,8 @@ export function tokenize(text) {
   return toks;
 }
 
-const lstrip = (s, chars) => {
-  let k = 0;
-  while (k < s.length && chars.includes(s[k])) k++;
-  return s.slice(k);
-};
-
-// Old Markdown categories: accept NUM / cat1 / 1 / KV1 / kv1 / neg_rejected forms.
-function legacyCategoryMatches(ec, category) {
-  const cat = lstrip(category.toLowerCase(), "cat");
-  ec = ec.toLowerCase();
-  return ec === category.toLowerCase() || ec === "cat" + cat || ec === "kv" + cat ||
-    lstrip(ec, "catkv") === cat;
-}
-
-function categoryMatches(e, category) {
-  if (e.category === category || e.category.toLowerCase() === category.toLowerCase()) return true;
-  const legacy = e.legacy_category || (e.neg || e.legacy_ids == null ? e.category : null);
-  return !!legacy && legacyCategoryMatches(legacy, category);
-}
+// The cause subsystem (e.g. KV缓存) or a negative kind (neg_rejected).
+const categoryMatches = (e, category) => e.category.toLowerCase() === category.toLowerCase();
 
 function passes(e, f) {
   if (e.entry_type === "pointer" && !f.include_pointers) return false;
@@ -74,13 +59,11 @@ export class Index {
     this.vectors = vectors;
     this.dim = dim;
     this.byId = new Map();
-    this.byLegacy = new Map();
     this.byName = new Map();
     this.byKey = new Map();
     const add = (m, k, i) => (m.has(k) ? m.get(k).push(i) : m.set(k, [i]));
     docs.forEach((e, i) => {
       add(this.byId, e.id, i);
-      for (const old of e.legacy_ids || []) add(this.byLegacy, old, i);
       add(this.byName, e.name, i);
       for (const alias of e.aliases || []) add(this.byName, alias, i);
       this.byKey.set(`${e.repo}\u0000${e.id}`, i);
@@ -148,8 +131,7 @@ export class Index {
         rerank_rank: null,          // the cross-encoder only runs in the CLI
         row: i,
         id: e.id, name: e.name, title: e.title, summary: e.summary,
-        legacy_ids: e.legacy_ids || [], repo: e.repo, category: e.category,
-        legacy_category: e.legacy_category, confidence: e.confidence, status: e.status,
+        repo: e.repo, category: e.category, confidence: e.confidence, status: e.status,
         pattern: e.pattern, neg: e.neg, entry_type: e.entry_type,
         name_ambiguous: e.name_ambiguous, same_name_ids: e.same_name_ids,
         file: e.file, line: e.line, links: e.links.slice(0, 6),
@@ -157,13 +139,13 @@ export class Index {
     });
   }
 
-  // Exact id, old Markdown id (incl. merged ones such as 1.70 -> INF-0044), name / alias, then
-  // name substring for non-ID queries. Returns row numbers.
+  // Exact id, name / alias, then name substring for non-ID queries. Returns row numbers. Old
+  // Markdown ids are not resolved (the UI explains, see LEGACY_ID_SHAPED).
   lookup(q) {
     if (this.byId.has(q)) return this.byId.get(q);
-    if (this.byLegacy.has(q)) return this.byLegacy.get(q);
     if (this.byName.has(q)) return this.byName.get(q);
-    if (ID_SHAPED.test(q)) return [];     // an unknown catalog ID must not partially match another
+    // an unknown catalog ID must not partially match another
+    if (ID_SHAPED.test(q) || LEGACY_ID_SHAPED.test(q)) return [];
     const ql = q.toLowerCase();
     const rows = [];
     for (let i = 0; i < this.docs.length && rows.length < 10; i++) {
@@ -173,14 +155,18 @@ export class Index {
     return rows;
   }
 
-  // Only the exact tiers of lookup (id, old id, name/alias): the page shows these as an
+  // Only the exact tiers of lookup (id, name/alias): the page shows these as an
   // "ID match" above the search results, where a name-substring hit would be noise.
   exactLookup(q) {
-    return this.byId.get(q) || this.byLegacy.get(q) || this.byName.get(q) || [];
+    return this.byId.get(q) || this.byName.get(q) || [];
   }
 
   isIdShaped(q) {
     return ID_SHAPED.test(q);
+  }
+
+  isLegacyIdShaped(q) {
+    return LEGACY_ID_SHAPED.test(q);
   }
 
   // Walk cross-reference links from the lookup hits: [{row, link_kind}], seeds excluded.

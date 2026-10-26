@@ -62,19 +62,15 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
 # 按症状/机制检索（默认 hybrid，返回 8 条）
 ./fault-rag search "loss spike 但无 NaN" --topk 5
 
-# 限定编目与分类；--category 接受原因子系统，也接受旧 Markdown 分类
+# 限定编目与原因子系统（可选值见 stats 的 by_category）
 ./fault-rag search "GRPO advantage std zero" --repo training --category RL训练回路
-./fault-rag search "GRPO advantage std zero" --repo training --category RL-ADV
 
-# 按编号或名称取完整条目；旧编号自动换算，已合并的旧编号指向保留条目
+# 按编号或名称取完整条目
 ./fault-rag lookup INF-0044
-./fault-rag lookup 1.44        # → INF-0044
-./fault-rag lookup 1.70        # 已并入 → INF-0044
-./fault-rag lookup HW.01       # → TRN-0001
 ./fault-rag lookup training_sdc_checkpoint_inherit   # 两库同名，返回 INF-0006 与 TRN-0005 两条
 
 # 沿编目里的关联走一层
-./fault-rag related HW.05 --depth 1
+./fault-rag related TRN-0005 --depth 1
 
 # 索引统计与分类
 ./fault-rag stats
@@ -84,14 +80,16 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
 | 命令 | 用途与选项 |
 |---|---|
 | `search "<描述>"` | `--topk N`（默认 8）；`--mode hybrid\|dense\|bm25`（默认 hybrid） |
-| | 过滤：`--repo inference\|training`；`--category <子系统或旧分类>`（如 `KV缓存`、`cat6`、`NUM`、`neg_rejected`）；`--confidence verified\|documented\|speculative` |
+| | 过滤：`--repo inference\|training`；`--category <原因子系统或负结果类型>`（如 `KV缓存`、`neg_rejected`，可选值见 `stats`）；`--confidence verified\|documented\|speculative` |
 | | `--no-neg` 排除负结果；`--include-pointers` 让指针条目参加检索；`--full` 附带条目全部字段 |
-| `lookup <编号或名称>` | 依次精确匹配新编号、旧编号、名称或别名；不是编号形式的查询再按名称子串匹配（最多 10 条）。**编号形式的查询查不到时返回空，不会模糊命中别的编号** |
+| `lookup <编号或名称>` | 依次精确匹配编号、名称或别名；不是编号形式的查询再按名称子串匹配（最多 10 条）。**编号形式的查询查不到时返回空，不会模糊命中别的编号** |
 | `related <编号或名称> --depth N` | 返回关联条目（不含自身），每条带 `link_kind` |
 | `stats` / `taxonomy` | 索引按库、分类、置信度、类型、状态的计数，以及同名冲突；`taxonomy` 只列分类计数 |
 | `reindex [--full]` | 从 `catalogs/` 重建索引；默认只为文本变化的条目重算向量，`--full` 全部重算 |
 
 查询命令的 stdout 一律是 JSON，错误信息在 stderr；`reindex` 另外打印构建进度。
+
+旧 Markdown 编号（`1.44`、`HW.01`）和旧分类（`cat1`、`KV9`、`NUM`）已于 2026-10-26 在本工具中退役，不再作为输入、输出、过滤条件或检索文本：`lookup 1.44` 返回空，stderr 提示去 `catalogs/<repo>/id_registry.tsv` 换算；`--category cat1` 返回空，stderr 说明可选值。
 
 ## 结果怎么读
 
@@ -105,10 +103,8 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
   "id": "INF-0044",
   "name": "ttmetal_topk_singlecore_ignores_indices_tensor",
   "title": "ttnn.topk 单核路径忽略传入的 indices_tensor",
-  "legacy_ids": ["1.44", "1.70"],
   "repo": "inference",
   "category": "算子/内核",
-  "legacy_category": "cat1",
   "confidence": "documented",
   "status": "active",
   "neg": false,
@@ -118,24 +114,24 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
 }
 ```
 
-- `id`：新编号 `INF-xxxx` / `TRN-xxxx`，只表示分配顺序，不含分类含义；旧 Markdown 编号在 `legacy_ids` 里。
-- `category`：原因子系统（条目里第一个 `cause.objects[].subsystem`）；`legacy_category`：旧 Markdown 分类。
+- `id`：编号 `INF-xxxx` / `TRN-xxxx`，只表示分配顺序，不含分类含义。
+- `category`：原因子系统（条目里第一个 `cause.objects[].subsystem`）。
 - `dense_rank` / `bm25_rank`：两路检索各自的名次（从 0 起；`null` 表示这一路没有召回该条）。
 - `file`：条目 YAML。主要字段有 `title`、`kind`、`status`、`cause`（原因对象与行为）、`effect`（影响对象、详情、可见性）、`mitigation`（检测与修复，多数仍为 `待定`）、`labels`（置信度、阶段等）、`evidence`（来源链接）、`relations`（`var` / `cross`）、`original`（扫描写下的原始叙述）、`migration`（迁移与审计记录）。结构化字段是从 `original` 抽取的摘要，下结论前请读 `original`。
 
 ### 引用纪律
 
-- 写全 **库 + 编号 + 名称 + file**，例如：`TRN-0005 training_sdc_checkpoint_inherit`（旧号 HW.05；`catalogs/training/entries/TRN-0005.yaml`）。只写名称不够：`name_ambiguous: true` 表示同一编目内有同名条目，`same_name_ids` 列出全部同名编号；跨库同名（如上面的 `INF-0006` / `TRN-0005`）不会被标记。
+- 写全 **库 + 编号 + 名称 + file**，例如：`TRN-0005 training_sdc_checkpoint_inherit`（`catalogs/training/entries/TRN-0005.yaml`）。只写名称不够：`name_ambiguous: true` 表示同一编目内有同名条目，`same_name_ids` 列出全部同名编号；跨库同名（如上面的 `INF-0006` / `TRN-0005`）不会被标记。
 - 置信度照实写：`documented` 不等于已复现，`speculative` 不能当结论。
 - `status: pending_audit`：每日扫描刚写入、还没经过次日审计的条目，引用时要注明。
 - `neg: true`：负结果，来自训练编目的 `rejected.md`、`blindspots.md` 和推理 Markdown 编目的附录 C/D。它表示“这条路被否过”，不是可复用的故障案例。
 - `entry_type: pointer`：指向其他记录的说明，不是独立故障。默认不参加 `search`，`lookup` 仍能读到。
-- `related` 只用于导航。`link_kind` 分三种：`var`（编目作者断言的变体，最强）、`cross`（显式交叉引用，常见于训推两库之间）、`mentions`（正文提到了对方编号）。即使是 `var`，也不能仅凭这条关联断定两个故障机制相同。
+- `related` 只用于导航。`link_kind` 分三种：`var`（编目作者断言的变体，最强）、`cross`（显式交叉引用，常见于训推两库之间）、`mentions`（正文提到了对方编号；迁移条目和负结果的正文仍按旧编号书写，建索引时按快照里的 `legacy_ids` 换算成新编号，切换后写入的条目不换算）。即使是 `var`，也不能仅凭这条关联断定两个故障机制相同。
 
 ## 检索方式
 
-- **BM25**：中文用 jieba 分词，代码与英文用正则切词。索引文本包括新旧编号、名称、新旧分类、标题，以及叙述字段（机制、行为、签名、触发面、复现、来源、回访记录）。
-- **向量**：`bge-m3` 只编码叙述原文（名称、旧分类、机制、行为、签名、触发面）。
+- **BM25**：中文用 jieba 分词，代码与英文用正则切词。索引文本包括编号、名称、原因子系统、标题，以及叙述字段（机制、行为、签名、触发面、复现、来源、回访记录）。
+- **向量**：`bge-m3` 只编码叙述原文（名称、原因子系统、机制、行为、签名、触发面）。
 - **重排**：hybrid 取融合后前 30 名，交给 `bge-reranker-v2-m3` 把查询和条目（标题、现象、叙述原文）放在一起读、重新打分，最终名次是混合名次与重排名次的 RRF。只按重排分数排会把只共享表面现象（如"乱码"）的条目顶到具体机制之前，所以保留混合名次。查询向量与重排用 bf16（CPU 原生支持），进程内隐藏 GPU，避免 CUDA 驱动探测白耗 3 秒。冷启动约 11 秒，`--no-rerank` 约 6 秒。依据见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) 2026-10-22。
 - **融合**：hybrid 模式用 RRF 合并两路名次。向量路会给每个合格条目排名，所以 hybrid 总有结果；`--mode bm25` 时如果没有任何关键词命中，会返回空列表。空列表不代表编目里没有相关故障，可以换 hybrid 或换个说法再查。
 
@@ -146,7 +142,7 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
 | 路径 | 内容 |
 |---|---|
 | `catalogs/{inference,training}/entries/*.yaml` | 两个编目的结构化条目，每条一个 YAML（字段规范见上游 `catalog/SCHEMA.md`） |
-| `catalogs/*/id_registry.tsv` | 新旧编号登记表 |
+| `catalogs/*/id_registry.tsv` | 上游编号登记表，含旧编号对照；RAG 不读，留作旧编号的人工换算 |
 | `catalogs/inference/FAULT_MASTER_REFERENCE.zh.md` | 已冻结的推理 Markdown 编目，只取附录 C/D 作负结果 |
 | `catalogs/training/rejected.md`、`blindspots.md` | 训练编目的拒录证据与盲区，作负结果 |
 | `catalogs/SOURCES.txt` | 本次快照对应的上游提交与条目数 |
@@ -289,7 +285,7 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 
 **bench 用聚合口径**：Recall@5 / Recall@10 不得低于基线，MRR@10 / nDCG@10 最多下降 0.02，另有绝对下限与负结果分片门槛。
 
-**indy 用逐条口径**（`--per-case`）：基线通过的 query 必须继续通过 R@5 与 R@10，任意一条掉出即 block；通过集内的名次浮动不 block，但写进报告的 `churn` 字段，发布前要人工看一遍 `slipped` 列表。聚合口径在批量扩容下结构性不可通过——63 条上一条就是 1.6pp，语料 +46% 时只有 2 条真失守，聚合却报 4 项回退。`eval/fix_list.json` 是豁免名单，每条必须标 `kind`：`weak_gold`（基线时纯 BM25 / 纯 dense 都进不了前 20，附单路诊断证据）或 `accepted_regression`（真实退化，经用户确认接受，写明原因与移出条件）；真实退化不得记成 `weak_gold`。标注里的旧编号会自动换算成新编号。
+**indy 用逐条口径**（`--per-case`）：基线通过的 query 必须继续通过 R@5 与 R@10，任意一条掉出即 block；通过集内的名次浮动不 block，但写进报告的 `churn` 字段，发布前要人工看一遍 `slipped` 列表。聚合口径在批量扩容下结构性不可通过——63 条上一条就是 1.6pp，语料 +46% 时只有 2 条真失守，聚合却报 4 项回退。`eval/fix_list.json` 是豁免名单，每条必须标 `kind`：`weak_gold`（基线时纯 BM25 / 纯 dense 都进不了前 20，附单路诊断证据）或 `accepted_regression`（真实退化，经用户确认接受，写明原因与移出条件）；真实退化不得记成 `weak_gold`。标注一律写现行编号（`INF-`/`TRN-`/`NEG-`），写旧编号会被评测当作未知条目直接拒绝。
 
 检索结果只供参考，用户关心的是正确条目能否出现在浏览窗口内，所以 Recall@5/@10 是硬指标，MRR 等排序指标只作参考。通过门禁**不代表**新增、修订或退役的条目语义正确。字段说明、门槛和基线更新流程见 [eval/README.md](eval/README.md)，历次验收记录见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)。
 
@@ -345,7 +341,7 @@ data/  models/   本机索引与模型（已被 gitignore）
 
 - 提示 `index not built yet`：运行 `./fault-rag reindex`。
 - 提示模型缺失：运行 `python scripts/download_model.py`；访问不了 Hugging Face 时先设置 `HF_ENDPOINT`。
-- 明知编号却查不到：先对照 `catalogs/SOURCES.txt` 和 `./fault-rag stats`，确认快照和本机索引都是新的（上游当天的新条目要等下次同步）；再确认该编号是否已被合并（用 `lookup` 查旧编号会指向保留条目）。
+- 明知编号却查不到：先对照 `catalogs/SOURCES.txt` 和 `./fault-rag stats`，确认快照和本机索引都是新的（上游当天的新条目要等下次同步）；手里是旧编号（`1.44`、`HW.01`）时，先在 `catalogs/<repo>/id_registry.tsv` 换算成新编号；已合并的旧编号（如 `1.70`）不在登记表里，用上游 `tools/catalog_tool.py find <旧编号>` 查。
 - `git pull` 之后结果没变：本机索引还是旧的，运行 `./fault-rag reindex`。
 
 ## 许可证

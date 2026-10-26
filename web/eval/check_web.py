@@ -28,7 +28,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, WEB)
 
 from eval.run_eval import (check_report, evaluate_cases, load_cases, load_fix_list,  # noqa: E402
-                           rank_churn, resolve_legacy_ids, validate_cases)
+                           rank_churn, validate_cases)
 from build_site import tokenize                     # noqa: E402
 
 SUITES = (   # name, cases file, per-case gate, gating
@@ -74,10 +74,9 @@ def main(argv=None):
     tiers = args.tier or (["bm25", "hybrid"] if meta.get("semantic") else ["bm25"])
 
     corpus_keys = {(d["repo"], d["id"]) for d in docs}
-    legacy = {(d["repo"], old): (d["repo"], d["id"]) for d in docs for old in d["legacy_ids"] or []}
     suites = []
     for name, fname, per_case, gating in SUITES:
-        cases = resolve_legacy_ids(load_cases(os.path.join(ROOT, "eval", fname)), corpus_keys, legacy)
+        cases = load_cases(os.path.join(ROOT, "eval", fname))
         validate_cases(cases, corpus_keys)
         suites.append((name, cases, per_case, gating))
 

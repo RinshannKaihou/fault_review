@@ -17,13 +17,13 @@ const LINK_KIND = {
 const ORIGINAL_LABEL = {
   mechanism: "机制", behavior: "行为", signature: "签名", trigger_surface: "触发面",
   repro: "复现", source: "来源", discovery: "发现记录", notes: "回访记录", locus: "位置",
-  priority: "优先级", meta: "元信息", category: "旧分类", section: "旧章节",
+  priority: "优先级", meta: "元信息",
 };
 const LABEL_LABEL = {
   confidence: "置信度", stage: "阶段", coverage: "覆盖", discovered: "首录日期",
 };
 const EXAMPLES = ["loss spike 但无 NaN", "GRPO advantage std zero", "前缀缓存命中后输出串到别的请求",
-                  "INF-0044", "HW.05"];
+                  "INF-0044", "TRN-0005"];
 const PAGE = 10;          // search results per page
 const BROWSE_PAGE = 50;   // browse rows per page
 
@@ -287,6 +287,12 @@ async function renderResults(s, seq) {
     }
   } else if (index.isIdShaped(s.q)) {
     nodes.push(h("p", { class: "notice" }, `编目里没有编号为 ${s.q} 的条目。编号查询不做模糊匹配；若是上游刚写入的新条目，要等下一次快照同步。`));
+  } else if (index.isLegacyIdShaped(s.q)) {
+    const file = `catalogs/${/^K?\d+\.\d+$/.test(s.q) ? "inference" : "training"}/id_registry.tsv`;
+    const url = meta.repo_url && meta.site_commit ? `${meta.repo_url}/blob/${meta.site_commit}/${file}` : null;
+    nodes.push(h("p", { class: "notice" }, `${s.q} 像是旧编号。旧编号已于 2026-10-26 退役，本站不再识别；请在 `,
+      url ? h("a", { href: url, rel: "noopener", target: "_blank" }, file) : h("code", {}, file),
+      " 里换算成 INF-/TRN- 编号再查。"));
   }
 
   nodes.push(h("div", { class: "results-head" },
@@ -366,7 +372,6 @@ function hitNode(r, mode) {
     h("span", {}, "编目", h("b", {}, REPO_LABEL[r.repo] || r.repo)),
     r.category ? h("span", {}, "子系统", h("b", {}, r.category)) : null,
     mode === "browse" ? h("span", {}, "首录", h("b", {}, doc.discovered || "待定")) : null,
-    r.legacy_ids && r.legacy_ids.length ? h("span", {}, "旧号", h("b", {}, r.legacy_ids.join("、"))) : null,
     r.pattern ? h("span", { title: "同族只表示同一底层问题的一族，不等于已核实同机制" }, "故障模式", h("b", {}, r.pattern)) : null,
     r.status === "pending_audit" ? h("span", { class: "warn" }, "待审计（每日扫描新写入）") : null,
     r.name_ambiguous ? h("span", { class: "warn" }, `同名：${r.same_name_ids.join("、")}`) : null,
@@ -434,10 +439,9 @@ function sourceUrl(d) {
 }
 
 function citation(d) {
-  const legacy = d.legacy_ids && d.legacy_ids.length ? `旧号 ${d.legacy_ids.join("、")}；` : "";
   const where = d.file.endsWith(".md") && d.line ? `${d.file}:${d.line}-${d.line_end || d.line}` : d.file;
   const conf = d.neg ? "负结果" : d.entry_type === "pointer" ? "指针条目" : `置信度 ${d.confidence || "待定"}`;
-  return `${REPO_LABEL[d.repo]}编目 ${d.id} ${d.name}（${legacy}${where}；${conf}）`;
+  return `${REPO_LABEL[d.repo]}编目 ${d.id} ${d.name}（${where}；${conf}）`;
 }
 
 function sheetNodes(d, row) {
@@ -480,7 +484,7 @@ function sheetNodes(d, row) {
     }))));
     const orig = y.original || {};
     const order = ["mechanism", "behavior", "signature", "trigger_surface", "repro", "source", "discovery", "notes",
-                   "locus", "priority", "meta", "category", "section"];
+                   "locus", "priority", "meta"];
     const keys = [...order.filter((k) => k in orig), ...Object.keys(orig).filter((k) => !order.includes(k))];
     nodes.push(section("原始说明",
       h("p", { class: "note" }, "扫描写下的完整原始叙述；上面的结构化字段是从这里抽取的摘要，下结论前请读这一节。"),

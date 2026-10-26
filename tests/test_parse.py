@@ -113,8 +113,9 @@ class EmbeddingHashTests(unittest.TestCase):
 
 
 class YamlIndexTextTests(unittest.TestCase):
-    """Accepted composition (2026-10-13 YAML switch): narrative-only embedding,
-    BM25 adds legacy ids / old category / title but not the other structured fields."""
+    """Accepted composition (2026-10-13 YAML switch): narrative-only embedding, BM25 adds the
+    title but not the other structured fields. Since 2026-10-26 neither carries the old Markdown
+    id or category (here HW.99 / HW)."""
 
     ENTRY = """id: TRN-9001
 legacy_ids:
@@ -155,20 +156,51 @@ original:
 
     def test_embedding_text_is_narrative_only(self):
         text = parse.embed_text(self._entry())
-        self.assertIn("category HW", text)
+        self.assertIn("category 硬件", text)
+        self.assertNotIn("HW", text)
         self.assertIn("机制叙述词条", text)
         self.assertIn("表现叙述词条", text)
         for structured in ("标题词条", "原因摘要词条", "影响摘要词条", "组件词条"):
             self.assertNotIn(structured, text)
 
-    def test_bm25_text_adds_title_and_legacy_id_only(self):
+    def test_bm25_text_adds_title_only(self):
         from fault_rag.index import bm25_text
 
         text = bm25_text(self._entry())
-        for wanted in ("TRN-9001", "HW.99", "标题词条", "机制叙述词条"):
+        for wanted in ("TRN-9001", "标题词条", "机制叙述词条"):
             self.assertIn(wanted, text)
-        for structured in ("原因摘要词条", "影响摘要词条", "组件词条"):
-            self.assertNotIn(structured, text)
+        for unwanted in ("原因摘要词条", "影响摘要词条", "组件词条", "HW"):
+            self.assertNotIn(unwanted, text)
+
+
+class LinkTests(unittest.TestCase):
+    """Old-id mentions resolve to links in pre-cut-over text only, and never reach the index."""
+
+    @staticmethod
+    def _entry(eid, legacy, text, neg=False):
+        return {"id": eid, "repo": "training", "name": eid.lower(), "neg": neg, "relations": [],
+                "_legacy_ids": legacy, "fields": {"mechanism": text}, "raw": text}
+
+    def test_old_id_mentions_resolve_only_in_migrated_and_negative_text(self):
+        entries = parse.build_links([
+            self._entry("TRN-0001", ["HW.01"], "本条。"),
+            self._entry("TRN-0002", ["HW.02"], "与 HW.01（同机制）对照；另见 TRN-0003。"),
+            self._entry("TRN-0003", [], "新条目里的 HW.01 不解码，TRN-0002 照常解析。"),
+            self._entry("NEG-X-1", [], "负结果引用 HW.02。", neg=True),
+        ])
+        links = {e["id"]: {(l["id"], l["kind"]) for l in e["links"]} for e in entries}
+        self.assertEqual(links["TRN-0002"], {("TRN-0001", "mentions"), ("TRN-0003", "mentions")})
+        self.assertEqual(links["TRN-0003"], {("TRN-0002", "mentions")})
+        self.assertEqual(links["NEG-X-1"], {("TRN-0002", "mentions")})
+
+    def test_old_ids_are_kept_only_under_the_transient_key(self):
+        # parse_all pops _legacy_ids after build_links; tests/smoke.py checks the built index
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "TRN-9001.yaml"), "w", encoding="utf-8") as f:
+                f.write(YamlIndexTextTests.ENTRY)
+            entry = parse.parse_yaml_entries(d, "training")[0]
+        self.assertEqual(entry["_legacy_ids"], ["HW.99"])
+        self.assertEqual([k for k in entry if "legacy" in k], ["_legacy_ids"])
 
 
 class TrainingBoundaryTests(unittest.TestCase):

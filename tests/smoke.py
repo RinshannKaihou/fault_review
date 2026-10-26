@@ -27,14 +27,7 @@ def top_ids(res):
 
 
 def cats(res):
-    # semantic category checks accept either taxonomy: the old Markdown category kept on migrated
-    # entries (e.g. RL-ADV, cat6, KV3) or the current subsystem (e.g. KV缓存)
-    return {c for r in res for c in (r.get("legacy_category"), r["category"]) if c}
-
-
-def keys(row):
-    """Current id plus every old Markdown id the entry carries."""
-    return {row["id"], *row.get("legacy_ids", [])}
+    return {r["category"] for r in res}
 
 
 # 1. index counts -----------------------------------------------------------
@@ -56,35 +49,24 @@ check("entry types: fault >= 1404, negative >= 14, pointer == 1",
       str(st["by_entry_type"]))
 
 idx = S.get_index()
-bad_ids, bad_categories = [], []
-for e in idx.entries:
-    if e["neg"]:
-        continue
-    if not e["id"].startswith({"inference": "INF-", "training": "TRN-"}[e["repo"]]):
-        bad_ids.append((e["repo"], e["id"]))
-    legacy = (e.get("legacy_ids") or [None])[0]
-    if legacy:
-        if e["repo"] == "inference":
-            expected = ("KV" + legacy[1:].split(".")[0] if legacy.startswith("K")
-                        else "cat" + legacy.split(".")[0])
-        else:
-            expected = legacy.rsplit(".", 1)[0]
-        if e.get("legacy_category") != expected:
-            bad_categories.append((e["id"], legacy, e.get("legacy_category"), expected))
+bad_ids = [(e["repo"], e["id"]) for e in idx.entries if not e["neg"] and not
+           e["id"].startswith({"inference": "INF-", "training": "TRN-"}[e["repo"]])]
 check("entry ids use the repo namespace (INF-/TRN-)", not bad_ids, str(bad_ids[:5]))
-check("legacy categories follow the old ID grammar", not bad_categories, str(bad_categories[:5]))
+old_keys = sorted({k for e in idx.entries for k in e if "legacy" in k})
+check("index carries no old Markdown ids or categories (retired 2026-10-26)", not old_keys, str(old_keys))
 check("regular faults all have confidence",
       all(e.get("confidence") for e in idx.entries
           if e.get("entry_type") == "fault"))
 
 # 2. lookup -----------------------------------------------------------------
-r = S.lookup("HW.01")
-check("lookup HW.01", len(r) == 1 and
+r = S.lookup("TRN-0001")
+check("lookup TRN-0001", len(r) == 1 and
       r[0]["name"] == "training_sdc_unhealthy_node_optima_shift")
+check("lookup of a retired old id (HW.01) returns nothing", S.lookup("HW.01") == [])
 r = S.lookup("minp_typical_misconfig")
-check("lookup alias -> legacy 11.5", any("11.5" in x["legacy_ids"] for x in r))
-r = S.lookup("10.4")
-check("lookup pointer 10.4 is explicit and non-negative",
+check("lookup alias -> INF-1029", [x["id"] for x in r] == ["INF-1029"])
+r = S.lookup("INF-0920")
+check("lookup pointer INF-0920 is explicit and non-negative",
       len(r) == 1 and r[0]["entry_type"] == "pointer" and not r[0]["neg"])
 r = S.lookup("vllm_prefix_cache_silent_noop_mamba_gdn_hybrid")
 check("duplicate snake name is explicit",
@@ -95,26 +77,24 @@ check("duplicate snake name is explicit",
 # 3. hybrid searches --------------------------------------------------------
 t0 = time.time()
 res = S.search("loss spike 但训练没有 crash", topk=5)
-check("search 'loss spike' -> LOSS.* or cat* in top5",
-      any(c.startswith("LOSS") or c.startswith("cat") for c in cats(res)),
-      str(top_ids(res)[:5]))
+check("search 'loss spike' -> a training entry in top5",
+      any(r["repo"] == "training" for r in res), str(top_ids(res)[:5]))
 
 res = S.search("GRPO advantage std zero 组内无对比", topk=5)
-check("search GRPO std=0 -> RL-ADV in top5",
-      any(c == "RL-ADV" for c in cats(res)), str(top_ids(res)[:5]))
+check("search GRPO std=0 -> RL训练回路 in top5",
+      "RL训练回路" in cats(res), str(top_ids(res)[:5]))
 
 res = S.search("vllm prefix caching gibberish tokens", topk=5)
-check("search vllm prefix caching -> KV* in top5",
-      any(c.startswith("KV") for c in cats(res)), str(top_ids(res)[:5]))
+check("search vllm prefix caching -> KV缓存 in top5",
+      "KV缓存" in cats(res), str(top_ids(res)[:5]))
 
 res = S.search("训练 reward 上涨但能力下降", topk=5)
-check("search zh reward-hacking -> RL-RWD in top5",
-      any(c == "RL-RWD" for c in cats(res)), str(top_ids(res)[:5]))
+check("search zh reward-hacking -> RL训练回路 in top5",
+      "RL训练回路" in cats(res), str(top_ids(res)[:5]))
 
 res = S.search("checkpoint resume loads wrong weights silently", topk=5)
-check("search ckpt resume -> CKPT.* or cat12 in top5",
-      any(c.startswith("CKPT") or c == "cat12" for c in cats(res)),
-      str(top_ids(res)[:5]))
+check("search ckpt resume -> 权重/检查点 in top5",
+      "权重/检查点" in cats(res), str(top_ids(res)[:5]))
 
 res = S.search("OOM 算静默故障吗", topk=6)
 check("negative recall: rejected.md surfaces for OOM question",
@@ -123,34 +103,34 @@ check("negative recall: rejected.md surfaces for OOM question",
 # Six source-labelled benchmark representatives -----------------------------
 benchmark_cases = [
     ("Blackhole 11-wide grid batch 32 RoPE cos sin shards do not match the query shard grid",
-     {"repo": "inference", "category": "cat9"}, {"9.27"}),
+     {"repo": "inference", "category": "位置编码"}, {"INF-0913"}),
     ("答案已经正确但模型认不出结束 token，持续重复直到 max_new_tokens",
-     {"repo": "inference", "category": "cat10"}, {"10.5"}),
+     {"repo": "inference", "category": "分词/模板"}, {"INF-0921"}),
     ("训练时一次 SDC 坏更新进入发布 checkpoint，serving 前向本身完全干净",
-     {"repo": "training", "category": "HW"}, {"HW.05"}),
+     {"repo": "training", "category": "硬件"}, {"TRN-0005"}),
     ("packed samples share one sequence but attention mask does not cut document boundaries",
-     {"repo": "training", "category": "DATA"}, {"DATA.02"}),
+     {"repo": "training", "category": "数据管线"}, {"TRN-0084"}),
     ("monitor JSONL file exists but is empty and has no hidden-state samples",
      {"repo": "training"}, {"NEG-BLINDSPOTS-4"}),
     ("chat_template_faults cited for completeness not a new entry",
-     {"repo": "inference", "include_pointers": True}, {"10.4"}),
+     {"repo": "inference", "include_pointers": True}, {"INF-0920"}),
 ]
 for query, kwargs, expected_ids in benchmark_cases:
     res = S.search(query, topk=5, **kwargs)
     check(f"labelled retrieval: {sorted(expected_ids)} in top5",
-          any(expected_ids & keys(x) for x in res), str(top_ids(res)))
+          any(x["id"] in expected_ids for x in res), str(top_ids(res)))
 
 # 4. filters ----------------------------------------------------------------
-res = S.search("bf16 mixed precision", topk=5, repo="training", category="NUM")
-check("filter repo=training category=NUM",
-      bool(res) and all(r["repo"] == "training" and "NUM" in (r["category"], r.get("legacy_category"))
-                        for r in res), str(top_ids(res)))
+res = S.search("bf16 mixed precision", topk=5, repo="training", category="量化")
+check("filter repo=training category=量化",
+      bool(res) and all(r["repo"] == "training" and r["category"] == "量化" for r in res),
+      str(top_ids(res)))
 
 res = S.search("silent data corruption", topk=5, confidence="verified")
 check("filter confidence=verified",
       bool(res) and all(r["confidence"] == "verified" for r in res))
 
-res = S.search("bf16", topk=5, repo="training", category="NUM",
+res = S.search("bf16", topk=5, repo="training", category="量化",
                include_neg=False)
 check("--no-neg excludes negative chunks",
       all(not r["neg"] for r in res))
@@ -159,9 +139,9 @@ res = S.search("zzzxqv_nonexistent_token_94731", topk=3, mode="bm25",
 check("BM25 zero-hit query returns no fabricated rows", res == [], str(res))
 
 # 5. related ----------------------------------------------------------------
-rel = S.related("HW.05")
-check("related HW.05 -> cross link to inference 1.6 (INF-0006)",
-      any(r["repo"] == "inference" and "1.6" in keys(r) for r in rel),
+rel = S.related("TRN-0005")
+check("related TRN-0005 -> cross link to inference INF-0006",
+      any(r["repo"] == "inference" and r["id"] == "INF-0006" for r in rel),
       str([(r["repo"], r["id"], r.get("link_kind")) for r in rel]))
 
 # 6. latency ----------------------------------------------------------------

@@ -27,9 +27,10 @@ Each row contains:
 - `query`: user-style retrieval query;
 - `mode`: `hybrid`, `dense`, or `bm25`;
 - `filters`: arguments passed to `fault_rag.search.search`;
-- `relevant`: one or more `{repo, id}` labels. Labels may use the current ids (`INF-0044`, `TRN-0001`)
-  or the old Markdown ids they were written with (`1.44`, `HW.01`); old ids are resolved through the
-  index's `legacy_ids` before scoring, so the same cases run on Markdown- and YAML-built indexes;
+- `relevant`: one or more `{repo, id}` labels with current ids (`INF-0044`, `TRN-0001`,
+  `NEG-INF-C6`). The labels were first written with the old Markdown ids (`1.44`, `HW.01`) and
+  rewritten one-to-one through the snapshot's `legacy_ids` when those ids were retired
+  (2026-10-26); an old id is now an unknown entry and fails validation;
 - `tags`: reporting slices;
 - `rationale`: why the source entry is relevant.
 

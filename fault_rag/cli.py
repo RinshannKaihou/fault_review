@@ -28,7 +28,7 @@ def main(argv=None):
     s = sub.add_parser("search", help="hybrid retrieval over catalog entries")
     s.add_argument("query")
     s.add_argument("--repo", choices=["inference", "training"])
-    s.add_argument("--category", help="subsystem (e.g. KV缓存) or old category: NUM / HW / cat1 / KV1 / neg_rejected ...")
+    s.add_argument("--category", help="cause subsystem (e.g. KV缓存, see `stats`) or neg_rejected / neg_blindspot / neg_appendix")
     s.add_argument("--pattern", help="fault pattern id (PAT-0042): only entries in that family")
     s.add_argument("--confidence", choices=["verified", "documented", "speculative"])
     s.add_argument("--topk", type=int, default=8)
@@ -42,7 +42,7 @@ def main(argv=None):
     s.add_argument("--no-rerank", action="store_true",
                    help="skip the cross-encoder stage (hybrid order only, ~2 s faster)")
 
-    l = sub.add_parser("lookup", help="exact id (INF-0044 / TRN-0001), old id (1.44 / HW.01), snake_name or alias")
+    l = sub.add_parser("lookup", help="exact id (INF-0044 / TRN-0001), snake_name or alias")
     l.add_argument("query")
 
     r = sub.add_parser("related", help="walk cross-reference links of an entry")

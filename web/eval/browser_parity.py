@@ -24,7 +24,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
 from check_web import SUITES, rank_with_js           # noqa: E402
-from eval.run_eval import evaluate_cases, load_cases, resolve_legacy_ids   # noqa: E402
+from eval.run_eval import evaluate_cases, load_cases   # noqa: E402
 
 MODEL_DIR = os.environ.get("FAULT_RAG_WEB_MODEL_DIR")
 
@@ -91,11 +91,6 @@ def main():
     args = ap.parse_args()
     from playwright.sync_api import sync_playwright
 
-    with open(os.path.join(args.dist, "data", "docs.json"), encoding="utf-8") as f:
-        docs = json.load(f)
-    keys = {(d["repo"], d["id"]) for d in docs}
-    legacy = {(d["repo"], o): (d["repo"], d["id"]) for d in docs for o in d["legacy_ids"] or []}
-
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(Handler, directory=args.dist))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -109,7 +104,7 @@ def main():
         page = browser.new_page()
         page.goto(base)
         for name, fname, _, _ in SUITES:
-            cases = resolve_legacy_ids(load_cases(os.path.join(ROOT, "eval", fname)), keys, legacy)
+            cases = load_cases(os.path.join(ROOT, "eval", fname))
             node = rank_with_js(args.dist, "hybrid", cases, [])["rankings"]
             web = page.evaluate(PAGE_SCRIPT, {"cases": [{"query": c["query"], "filters": c["filters"]}
                                                         for c in cases], "host": host})
