@@ -18,8 +18,10 @@ text = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"\{\s*\"ok\".*?\n\}", text, re.S)
 if m:
     d = json.loads(m.group(0))
+    short = f"（其中票数不足 {d['uncertain_short_fields']}）" if "uncertain_short_fields" in d else ""
+    void = f"；空票 {d['void_replies']}" if "void_replies" in d else ""
     print(f"审计 {d.get('audited', 0)} 条（评审团 {d.get('panel', 0)}）；纠正 {d.get('corrected_fields', 0)}、改写 {d.get('rewritten_fields', 0)}、"
-          f"未修复 {d.get('unfixed_fields', 0)}、不确定 {d.get('uncertain_fields', 0)} 个字段")
+          f"未修复 {d.get('unfixed_fields', 0)}、不确定 {d.get('uncertain_fields', 0)} 个字段{short}{void}")
 EOF
 )
   last=$(grep -E "Z (OK|FAILED|BLOCKED|nothing pending|no changes)" "$log" | tail -n 1 | sed -E 's/^[0-9T:-]+Z //')
