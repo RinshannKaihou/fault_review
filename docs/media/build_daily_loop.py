@@ -18,7 +18,7 @@ nodes = [
       desc=["推理 23:00 · 训练 00:30", "审计 02:00 UTC"]),
     N("legend", 0, 1, span=2, type="legend",
       items=[{"style": "solid", "text": "前进"}, {"style": "dashed", "text": "回环 · 重试/复议/次日"},
-             {"style": "dot", "text": "数据流过"}]),
+             {"style": "dot", "text": "当前进度"}]),
     N("status", 0, 3, span=2, type="note", label="", desc=[], icon="refresh-cw"),
     # rows 1-2: scan agent
     N("precheck", 1, 0, group="scan", type="diamond", label="Git 干净？", en="precheck"),
@@ -87,7 +87,7 @@ view = {
     "type": "view", "kind": "loop",
     "title": "故障模式库 · 每日自主增长 Loop",
     "subtitle": "推理 / 训练两库 · 每夜扫描 → 记录 → 审计 → 合入 · 人只在发布前拍板",
-    "period": 27, "cols": 5, "font": "sans",
+    "period": 45, "cols": 5, "font": "sans",
     "status": {"node": "status", "round": "每日 · 无人值守", "step": "当前 · {label}"},
     "groups": [
         {"id": "scan", "label": "① 每日扫描 · 搜索 + 记录", "sub": "扫描 agent", "hue": "blue"},
@@ -95,11 +95,13 @@ view = {
         {"id": "merge", "label": "③ 合入检索库", "sub": "human gate", "hue": "green"},
     ],
     "nodes": nodes, "edges": edges, "walks": [walk],
-    "motion": "ambient+walk", "ambientPeriod": 3.0,
+    # one moving dot only: the token, in step with the status dots. tokenOnly is applied by render_daily_loop.py
+    # (it drops the view's resident and background flow dots); the unpatched view ignores the key.
+    "motion": "walk", "tokenOnly": True,
 }
 cfg = {
     "meta": {"title": "fault-rag daily loop", "lang": "zh"},
-    "canvas": {"width": 1280, "height": 960, "duration": 27, "fps": 30},
+    "canvas": {"width": 1280, "height": 960, "duration": 45, "fps": 24},
     "theme": {"preset": theme, "titleFont": "smiley"},
     "titlebar": {"text": "~/fault_review/daily-loop — live-panel"},
     "credit": {"text": "流程：daily_scan.prompt.md · daily_audit.sh · catalog_audit.py · 数字：两编目 git log 与 SOURCES.txt（2026-10-26）· 节奏为示意",

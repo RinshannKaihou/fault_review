@@ -5,8 +5,13 @@
 
 Per theme: build_daily_loop.py -> config -> live-panel page rendered at deviceScaleFactor 2 (the skill's render.py
 is fixed at 1; a 1280 px render squeezed to 900 px and saved as lossy WebP is what made the first version blurry)
--> 12 fps PNG frames -> animated AVIF at 1800 px (README shows it at width 900, sharp on 2x screens) and a 900 px
-WebP fallback for browsers without animated AVIF. Needs Pillow with AVIF (>= 11.3), ffmpeg with libwebp, Chrome.
+-> 24 fps PNG frames -> animated AVIF at 1800 px (README shows it at width 900, sharp on 2x screens) and a 900 px,
+12 fps WebP fallback for browsers without animated AVIF.
+
+`tokenOnly` in the view config is applied here, by patching the loop view inlined into the page: it drops the
+resident dot on every edge and the background flow dots, so the walking token is the only moving dot and the
+status dots can be read against it. The live-panel skill itself stays untouched and ignores the key.
+Needs Pillow with AVIF (>= 11.3), ffmpeg with libwebp, Chrome.
 """
 import argparse
 import glob
@@ -17,14 +22,30 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 THEMES = {"dark": "terminal-dark", "light": "light-pastel"}
-FPS, AVIF_W, WEBP_W = 12, 1800, 900
+FPS, WEBP_FPS, AVIF_W, WEBP_W = 24, 12, 1800, 900
+# loop.js build() code that creates the resident dot / the background flow dots in walk mode
+TOKEN_ONLY = [("if(!amb){\n          var md = svg('circle'", "if(!amb && !e.tokenOnly){\n          var md = svg('circle'"),
+              ("if(!amb && !E.back && len >= u*14){", "if(!amb && !e.tokenOnly && !E.back && len >= u*14){")]
+
+
+def patch_token_only(cfg, page):
+    if not any(el.get("tokenOnly") for el in cfg.get("elements", [])):
+        return
+    html = Path(page).read_text(encoding="utf-8")
+    for old, new in TOKEN_ONLY:
+        if html.count(old) != 1:
+            sys.exit(f"tokenOnly: loop view code changed, cannot find {old!r}")
+        html = html.replace(old, new)
+    Path(page).write_text(html, encoding="utf-8")
 
 
 def render(skill, chrome, cfg, frames):
     sys.path.insert(0, str(Path(skill) / "scripts"))
     import livepanel as lp
     page = str(Path(frames).parent / (Path(frames).name + ".html"))
-    w, h, dur, _ = lp.canvas(lp.build_page(cfg, page, None))
+    built = lp.build_page(cfg, page, None)
+    patch_token_only(built, page)
+    w, h, dur, _ = lp.canvas(built)
     os.makedirs(frames, exist_ok=True)
     with lp.Chrome(lp.find_chrome(chrome), w, h) as br:
         br.cmd("Emulation.setDeviceMetricsOverride", {"width": w, "height": h, "deviceScaleFactor": 2, "mobile": False})
@@ -45,7 +66,7 @@ def to_avif(frames, out):
         im = Image.open(f).convert("RGB")
         return im.resize((AVIF_W, im.height * AVIF_W // im.width), Image.LANCZOS)
 
-    dur = [(83, 83, 84)[i % 3] for i in range(len(files))]   # 12 fps: exactly 250 ms per 3 frames, loop stays 27 s
+    dur = [(42, 42, 41)[i % 3] for i in range(len(files))]   # 24 fps: exactly 125 ms per 3 frames, loop length exact
     # 4:4:4 keeps coloured text crisp; q70 is visually indistinguishable from the PNG frames at 2x
     load(files[0]).save(out, save_all=True, append_images=(load(f) for f in files[1:]), duration=dur, loop=0,
                         quality=70, speed=7, subsampling="4:4:4")
@@ -53,7 +74,7 @@ def to_avif(frames, out):
 
 def to_webp(frames, out):
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-framerate", str(FPS), "-i", os.path.join(frames, "f_%04d.png"),
-                    "-vf", f"scale={WEBP_W}:-1:flags=lanczos", "-c:v", "libwebp_anim", "-loop", "0", "-lossless", "0",
+                    "-vf", f"fps={WEBP_FPS},scale={WEBP_W}:-1:flags=lanczos", "-c:v", "libwebp_anim", "-loop", "0", "-lossless", "0",
                     "-quality", "60", "-compression_level", "6", "-preset", "drawing", out], check=True)
 
 
