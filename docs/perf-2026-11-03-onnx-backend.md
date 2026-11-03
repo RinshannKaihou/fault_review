@@ -118,6 +118,7 @@ ONNX 后端下可省的只有导入+模型加载（~2–3 s/查询），5.3 s �
 - `fault_rag/embed.py`：`backend()`/`use_onnx()` 分发 + torch 2.15 mkldnn 兼容修复
 - `fault_rag/rerank.py`：按后端分发；`available()`/缺失提示兼容两种模型目录
 - `fault_rag/index.py`：`Index.mat` 惰性加载（词法路径免 embeddings.npy）；
+  `build(lexical=True)` / `reindex --lexical` 无模型构建词法索引（评审后补充）；
   `meta.json` 记录 `embed_backend`
 - `scripts/download_model.py`：新增 `bge-m3-onnx` / `bge-reranker-v2-m3-onnx`
 - `tests/test_onnx_backend.py`（新，7 项）：后端选择、惰性矩阵、稠密/重排等价（双模型齐备时）、

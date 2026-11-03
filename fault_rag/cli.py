@@ -51,6 +51,9 @@ def main(argv=None):
 
     ri = sub.add_parser("reindex", help="re-parse catalogs and re-embed changes")
     ri.add_argument("--full", action="store_true", help="re-embed everything")
+    ri.add_argument("--lexical", action="store_true",
+                    help="build entries.jsonl + bm25.pkl only (no models needed; "
+                         "dense search stays unavailable until a later reindex)")
 
     sub.add_parser("stats", help="index counts by repo/category/confidence")
     sub.add_parser("taxonomy", help="list categories with entry counts")
@@ -60,7 +63,7 @@ def main(argv=None):
     if args.cmd == "reindex":
         from . import index as index_mod
 
-        meta = index_mod.build(full=args.full)
+        meta = index_mod.build(full=args.full, lexical=args.lexical)
         _print(meta)
         return 0
 

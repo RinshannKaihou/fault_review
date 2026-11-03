@@ -66,8 +66,10 @@ python scripts/download_model.py bge-m3-onnx bge-reranker-v2-m3-onnx
 ```
 
 没有 torch 时后端自动选 ONNX；也可用 `FAULT_RAG_BACKEND=onnx|torch` 显式指定（默认 `auto`：
-两者都装了用 torch）。只需词法检索（`--mode bm25`、`lookup`、`related`、`stats`）时连模型都不用下，
-numpy + jieba + pyyaml 即可。
+两者都装了用 torch）。只需词法检索（`--mode bm25`、`lookup`、`related`、`stats`）时同样不用下载模型：
+`pip install "numpy>=1.24" "jieba>=0.42" "pyyaml>=6"` 后运行 `./fault-rag reindex --lexical`，
+只构建 `entries.jsonl` + `bm25.pkl`（不出向量）；以后要用稠密/混合检索，再按上面任一后端装好模型跑一次
+普通 `reindex` 补上向量即可。
 
 ## 查询
 

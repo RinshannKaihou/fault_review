@@ -5,14 +5,13 @@ bge-m3                        first stage, torch backend: dense query/entry vect
 bge-reranker-v2-m3            second stage, torch backend: cross-encoder reranking
 bge-m3-onnx                   ONNX Runtime backend (torch-free install), fp32
 bge-reranker-v2-m3-onnx       ONNX Runtime backend, fp32
+all                           all four (both backends)
 
-The torch models serve the default torch backend; a torch-free install runs fully
-on the two *-onnx models (FAULT_RAG_BACKEND selects; without torch installed it
-is chosen automatically). int8/quantized exports are deliberately not offered:
-reranker int8 flipped score order in 12/12 measured pools (eval/ACCEPTANCE.md,
-2026-11-03).
-
-Pass model names to fetch only some of them, e.g. `download_model.py bge-reranker-v2-m3`.
+No arguments downloads the default torch pair only — the two models the default
+(auto→torch) backend runs on. A torch-free install fetches the two *-onnx models
+by name (see README 精简安装); `all` is for machines that want to switch backends.
+int8/quantized exports are deliberately not offered: reranker int8 flipped score
+order in 12/12 measured pools (eval/ACCEPTANCE.md, 2026-11-03).
 """
 import os
 import sys
@@ -51,8 +50,12 @@ def fetch(name):
 
 
 if __name__ == "__main__":
-    for name in sys.argv[1:] or list(MODELS):
+    # default = the torch pair the auto backend runs on; `all` opts into both backends
+    requested = list(sys.argv[1:]) or ["bge-m3", "bge-reranker-v2-m3"]
+    if requested == ["all"]:
+        requested = list(MODELS)
+    for name in requested:
         if name not in MODELS:
-            raise SystemExit(f"unknown model {name!r}; choose from {sorted(MODELS)}")
+            raise SystemExit(f"unknown model {name!r}; choose from {sorted(MODELS)} or all")
         fetch(name)
     sys.exit(0)
