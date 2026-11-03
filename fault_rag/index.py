@@ -121,15 +121,46 @@ def _key(e):
     return f"{e['repo']}:{e['id']}"
 
 
+def _aligned_matrix_present(entries):
+    """True iff embeddings.npy exists and its rows still line up with the entry
+    sequence about to be written: one row per entry and the same embed_hash per
+    row. Uses the same fallback derivation as the incremental loader for
+    pre-embed_hash files."""
+    if not (os.path.exists(EMB_NPY) and os.path.exists(ENTRIES_JSONL)):
+        return False
+    if np.load(EMB_NPY, mmap_mode="r").shape[0] != len(entries):
+        return False
+    with open(ENTRIES_JSONL, encoding="utf-8") as f:
+        old_rows = [json.loads(line) for line in f]
+    if len(old_rows) != len(entries):
+        return False
+
+    def _hash(e):
+        h = e.get("embed_hash")
+        return h if h is not None else parse_mod.embedding_hash(e["embed_text"])
+
+    return all(_hash(o) == n["embed_hash"] for o, n in zip(old_rows, entries))
+
+
 def build(full=False, progress=True, lexical=False):
     """Build the index. lexical=True writes only entries.jsonl + bm25.pkl (no
     embeddings.npy, no model needed) — enough for mode=bm25 / lookup / related /
-    stats on a model-free install; a later plain `reindex` adds the vectors."""
+    stats on a model-free install; a later plain `reindex` adds the vectors.
+
+    A lexical build replaces entries.jsonl, which breaks the row alignment an
+    existing embeddings.npy depends on: row i belongs to whatever entry sat at
+    row i of the OLD file, and the incremental loader would then label stale
+    vectors with the new entries' hashes (silent wrong dense results that even
+    look fully cached). The matrix is therefore dropped unless the new entries
+    carry the exact same embed_hash sequence as the old file."""
     os.makedirs(DATA, exist_ok=True)
     t0 = time.time()
     entries = parse_mod.parse_all()
 
     if lexical:
+        kept_vectors = _aligned_matrix_present(entries)
+        if os.path.exists(EMB_NPY) and not kept_vectors:
+            os.remove(EMB_NPY)
         bm25 = BM25().fit([tokenize(bm25_text(e)) for e in entries])
         with open(ENTRIES_JSONL, "w", encoding="utf-8") as f:
             for e in entries:
@@ -142,7 +173,9 @@ def build(full=False, progress=True, lexical=False):
             "n_reembedded": 0,
             "model": None,
             "embed_backend": "none (lexical-only build)",
-            "dim": None,
+            "dim": (int(np.load(EMB_NPY, mmap_mode="r").shape[1])
+                    if kept_vectors else None),
+            "embeddings_kept": kept_vectors,
             "sources": {
                 "inference_entries": parse_mod.INFERENCE_ENTRIES,
                 "training_entries": parse_mod.TRAINING_ENTRIES,
@@ -157,9 +190,12 @@ def build(full=False, progress=True, lexical=False):
         with open(META_JSON, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=1)
         if progress:
-            print(f"index built (lexical only): {len(entries)} entries, "
-                  f"{time.time() - t0:.1f}s — run a plain `reindex` with models "
-                  f"present to add dense vectors")
+            msg = f"index built (lexical only): {len(entries)} entries, "
+            if kept_vectors:
+                msg += "embeddings.npy still aligned and kept"
+            else:
+                msg += "no embeddings (run a plain `reindex` with models present)"
+            print(msg + f", {time.time() - t0:.1f}s")
         return meta
 
     # load previous vectors for incremental reuse
