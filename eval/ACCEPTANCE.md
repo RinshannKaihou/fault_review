@@ -159,3 +159,42 @@ R@5 6 条变好、0 条变差；R@10 3 条变好、1 条变差（ho-049 9→19�
 两档门禁都通过。网页基准基线（`bench_bm25.json` / `bench_hybrid.json`）随过滤改写重写，独立集基线不动。语义档的变化（独立集 MRR −0.028 而 R@5 +1 条；留出 R@5 +2、R@10 −1）在该档已知的噪声幅度内（见 2026-10-23 节）。
 
 RAG 之外仍写旧编号、本次不处理的：上游两库的条目 YAML、正文与 daily 日报；`/workspace/inference_fault_injection/legacy_vllm_failure/queue/*.tsv`（约 160 行，08-03 后未更新）。换算用 `catalogs/<repo>/id_registry.tsv`；已合并的旧编号（如 `1.70`）不在登记表里，用上游 `tools/catalog_tool.py find`。
+
+## 2026-11-03 · ONNX 推理后端：torch-free 安装与本机提速
+
+快照：`f6bb540`（inference `1034f13` 2372 条 + training `b6addcb` 606 条，索引 2994 行）。测量机：Apple M5 Max（18 核 / 128 GB，macOS 25.5，Python 3.11.4）；torch 2.15.0 / transformers 5.22.1 / onnxruntime 1.31.1 / tokenizers 0.23.3。上游 2×48 核机器**未测**——auto 默认保持 torch 优先，换机结论见文末。完整数据与命令：`docs/perf-2026-11-03-onnx-backend.md`。
+
+**改动**：新增 `FAULT_RAG_BACKEND=auto|torch|onnx`（默认 auto：装了 torch 用 torch，行为与历史一致；否则用 ONNX，`fault_rag/onnx_backend.py`，模型 `models/bge-m3-onnx` + `models/bge-reranker-v2-m3-onnx`，fp32，`scripts/download_model.py` 新增对应名字）；`Index.mat` 改惰性加载，`--mode bm25` / `lookup` / `related` / `stats` 不再需要 `embeddings.npy` 与神经栈；顺手修了 torch 2.15 移除私有 `torch.ops.mkldnn._is_mkldnn_bf16_supported` 导致 search 直接崩溃的兼容问题（getattr 探测，无该 op 时回退 fp32，上游机器不受影响）。
+
+**等价证据**（逐位，不是"接近"）：
+
+| 层 | 证据 |
+|---|---|
+| 预处理 | `tokenizers` 与 transformers 的 input_ids / attention_mask / type_ids 完全一致（含 1024 截断与 only_second 配对、pad_id=1 差异修正） |
+| 稠密向量 | 130 条采样（100 语料 + 30 查询）余弦最小值 1.000000；全语料 2994 条 ONNX 重嵌入后，150 题的 dense top-10 / top-100 重叠率均为 1.0 |
+| 重排分数 | 12 题 × 30 对真实 rerank_text：logit 最大差 0.0，0/12 池换序 |
+| 端到端 | 两道门禁指标与 torch 基线**一字不差**：bench 1.0/1.0/0.9861/0.9875，indy 0.9683/0.9683/0.9053/0.9213，churn 相同（slipped 001/021/065） |
+
+因此**切换后端不失效缓存向量**（`meta.json` 的 `embed_backend` 仅作记录）；两后端 72 项单测全过。
+
+**延迟与体积**（新进程冷启动，三次中位）：
+
+| 场景 | torch | ONNX |
+|---|---|---|
+| hybrid + 重排 | 12.86 s | 7.78 s |
+| `--no-rerank` | 3.61 s | 1.06 s |
+| 轻量安装（无 torch，~480 MB 依赖 vs 4.8 GB） | — | 8.34 s |
+| 轻量安装 `--mode bm25` | — | 0.26 s |
+| 重排 30 对（热，8 线程） | 9.4 s | 5.3 s |
+
+本机瓶颈是重排前向（fp32 CPU，占查询时间 ~98%），ONNX 提到 1.6–1.75×；ORT 线程 8 最优（18 反而慢 0.9s，`FAULT_RAG_ORT_THREADS` 可调）。smoke 的"热单查询 <3s"档在本机两后端都不达（fp32 前向 5–8s），该阈值原为上游 AMX bf16 机器校准，属硬件差异非质量回归。
+
+**评估过并否决的方案**：
+
+- **重排 int8**（onnx-community `model_int8`）：12/12 池分数换序，logit 最大差 0.84；稠密 int8 向量余弦 0.973–0.986（与 2026-10-23 网页版结论一致）。不引入。
+- **重排 fp16**：本机反而更慢（8.95 s vs 7.18 s，ORT 内部回转 fp32），且 4/12 池换序。不引入。
+- **fastembed 0.9.1**：`TextEmbedding` 任何版本（0.3.6–0.9.1 实测）都不支持 bge-m3 稠密；其 `TextCrossEncoder` 的 fp32 路径在自带缓存布局下加载外部权重直接报错（"External data path escapes model directory"），且按模型 config 用 8192 联合截断而非本仓库的 1024/only_second。作为集成层否决，改为直接 onnxruntime + tokenizers 复刻预处理。
+- **BM25S 0.3.16**：`method="atire"+idf_method="lucene"`（k1=1.5、b=0.75、float64、查询词去重——bm25s 会把重复查询词计双倍）与手写打分**完全等价**（150 题最大分差 2.8e-14、零排名差异），打分 25.1ms→0.08ms（300×）。但单查询只省 ~25ms（占全程 <0.3%），不值得为此加依赖；结论留档，手写打分保留。
+- **常驻进程**：只能省导入+模型加载（ONNX 后端下约 2–3s），省不掉 5.3s 前向；代价是守护进程生命周期、reindex 后的索引失效、并发与 stdout JSON 契约的复用化改造。后端替换已拿到大部分收益，不采纳。
+
+**换机建议**：上游 2×48 核（AMX bf16）机器上 torch 重排约 2s，可能仍快于 ORT——auto 默认在那里不变。若要在该机切换，先跑 `FAULT_RAG_BACKEND=onnx` 下的两道门禁与本报告的等价性检查（数值应逐位一致，不一致即为模型导出更新，需重新验证）。
