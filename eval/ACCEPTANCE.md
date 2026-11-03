@@ -164,7 +164,7 @@ RAG 之外仍写旧编号、本次不处理的：上游两库的条目 YAML、�
 
 快照：`f6bb540`（inference `1034f13` 2372 条 + training `b6addcb` 606 条，索引 2994 行）。测量机：Apple M5 Max（18 核 / 128 GB，macOS 25.5，Python 3.11.4）；torch 2.15.0 / transformers 5.22.1 / onnxruntime 1.31.1 / tokenizers 0.23.3。上游 2×48 核机器**未测**——auto 默认保持 torch 优先，换机结论见文末。完整数据与命令：`docs/perf-2026-11-03-onnx-backend.md`。
 
-**改动**：新增 `FAULT_RAG_BACKEND=auto|torch|onnx`（默认 auto：装了 torch 用 torch，行为与历史一致；否则用 ONNX，`fault_rag/onnx_backend.py`，模型 `models/bge-m3-onnx` + `models/bge-reranker-v2-m3-onnx`，fp32，`scripts/download_model.py` 新增对应名字）；`Index.mat` 改惰性加载，`--mode bm25` / `lookup` / `related` / `stats` 不再需要 `embeddings.npy` 与神经栈；顺手修了 torch 2.15 移除私有 `torch.ops.mkldnn._is_mkldnn_bf16_supported` 导致 search 直接崩溃的兼容问题（getattr 探测，无该 op 时回退 fp32，上游机器不受影响）。
+**改动**：新增 `FAULT_RAG_BACKEND=auto|torch|onnx`（默认 auto：装了 torch 用 torch，行为与历史一致；否则用 ONNX，`fault_rag/onnx_backend.py`，模型 `models/bge-m3-onnx` + `models/bge-reranker-v2-m3-onnx`，fp32，`scripts/download_model.py` 按名字下载、无参默认仍是 torch 两个模型）；`Index.mat` 改惰性加载，`--mode bm25` / `lookup` / `related` / `stats` 不再需要 `embeddings.npy` 与神经栈，`reindex --lexical` 可在无模型环境构建词法索引；顺手修了 torch 2.15 移除私有 `torch.ops.mkldnn._is_mkldnn_bf16_supported` 导致 search 直接崩溃的兼容问题（getattr 探测，无该 op 时回退 fp32，上游机器不受影响）。
 
 **等价证据**（逐位，不是"接近"）：
 

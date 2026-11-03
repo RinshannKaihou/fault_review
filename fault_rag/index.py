@@ -121,10 +121,46 @@ def _key(e):
     return f"{e['repo']}:{e['id']}"
 
 
-def build(full=False, progress=True):
+def build(full=False, progress=True, lexical=False):
+    """Build the index. lexical=True writes only entries.jsonl + bm25.pkl (no
+    embeddings.npy, no model needed) — enough for mode=bm25 / lookup / related /
+    stats on a model-free install; a later plain `reindex` adds the vectors."""
     os.makedirs(DATA, exist_ok=True)
     t0 = time.time()
     entries = parse_mod.parse_all()
+
+    if lexical:
+        bm25 = BM25().fit([tokenize(bm25_text(e)) for e in entries])
+        with open(ENTRIES_JSONL, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        with open(BM25_PKL, "wb") as f:
+            pickle.dump(bm25, f)
+        meta = {
+            "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "n_entries": len(entries),
+            "n_reembedded": 0,
+            "model": None,
+            "embed_backend": "none (lexical-only build)",
+            "dim": None,
+            "sources": {
+                "inference_entries": parse_mod.INFERENCE_ENTRIES,
+                "training_entries": parse_mod.TRAINING_ENTRIES,
+                "inference_appendix_negatives": parse_mod.INFERENCE_MASTER,
+                "training_rejected": parse_mod.TRAINING_REJECTED,
+                "training_blindspots": parse_mod.TRAINING_BLINDSPOTS,
+            },
+            "by_repo": {r: sum(e["repo"] == r for e in entries)
+                        for r in ("inference", "training")},
+            "pending_audit": sum(e.get("status") == "pending_audit" for e in entries),
+        }
+        with open(META_JSON, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=1)
+        if progress:
+            print(f"index built (lexical only): {len(entries)} entries, "
+                  f"{time.time() - t0:.1f}s — run a plain `reindex` with models "
+                  f"present to add dense vectors")
+        return meta
 
     # load previous vectors for incremental reuse
     old, by_hash = {}, {}

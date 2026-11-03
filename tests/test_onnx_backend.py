@@ -5,6 +5,7 @@ Parity tests skip unless both model formats are downloaded and torch is importab
 the cheap guard for the torch-free path's riskiest assumption.
 """
 
+import contextlib
 import importlib.util
 import os
 import sys
@@ -19,9 +20,27 @@ from fault_rag import embed as E  # noqa: E402
 from fault_rag import index as I  # noqa: E402
 
 TORCH_OK = importlib.util.find_spec("torch") is not None
+TORCH_DENSE = TORCH_OK and os.path.exists(os.path.join(E.MODEL_DIR, "config.json"))
+TORCH_RERANK = os.path.exists(
+    os.path.join(E.ROOT, "models", "bge-reranker-v2-m3", "config.json"))
 ONNX_DENSE = os.path.exists(os.path.join(E.ROOT, "models", "bge-m3-onnx", "onnx", "model.onnx"))
 ONNX_RERANK = os.path.exists(
     os.path.join(E.ROOT, "models", "bge-reranker-v2-m3-onnx", "onnx", "model.onnx"))
+
+
+@contextlib.contextmanager
+def forced_backend(value):
+    """Pin FAULT_RAG_BACKEND and restore the caller's setting afterwards, so a
+    parity test never leaks its selection into later tests in the same run."""
+    old = os.environ.get("FAULT_RAG_BACKEND")
+    os.environ["FAULT_RAG_BACKEND"] = value
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("FAULT_RAG_BACKEND", None)
+        else:
+            os.environ["FAULT_RAG_BACKEND"] = old
 
 
 class BackendSelectionTests(unittest.TestCase):
@@ -75,7 +94,7 @@ class LazyMatrixTests(unittest.TestCase):
         self.assertIn("reindex", str(ctx.exception))
 
 
-@unittest.skipUnless(TORCH_OK and ONNX_DENSE, "needs torch + models/bge-m3-onnx")
+@unittest.skipUnless(TORCH_DENSE and ONNX_DENSE, "needs both bge-m3 formats")
 class DenseParityTests(unittest.TestCase):
     def test_vectors_match_torch_backend(self):
         from fault_rag import onnx_backend
@@ -83,26 +102,57 @@ class DenseParityTests(unittest.TestCase):
         texts = ["vllm prefix caching gibberish tokens",
                  "训练时 loss spike 但没有 crash，checkpoint 恢复后正常",
                  "x" * 3000]   # forces truncation at MAX_LEN
-        os.environ.pop("FAULT_RAG_BACKEND", None)
-        v_torch = E.embed(texts)
+        with forced_backend("torch"):
+            v_torch = E.embed(texts)
         v_onnx = onnx_backend.embed(texts)
         self.assertEqual(v_torch.shape, v_onnx.shape)
         cos = np.sum(v_torch * v_onnx, axis=1)
         self.assertGreaterEqual(float(cos.min()), 0.99999)
 
 
-@unittest.skipUnless(TORCH_OK and ONNX_RERANK, "needs torch + reranker onnx model")
+@unittest.skipUnless(TORCH_RERANK and ONNX_RERANK, "needs both reranker formats")
 class RerankParityTests(unittest.TestCase):
     def test_logits_match_torch_backend(self):
         from fault_rag import onnx_backend, rerank as R
 
         entries = I.get_index().entries[:8]
         q = "答案已经正确但模型认不出结束 token，持续重复直到 max_new_tokens"
-        os.environ.pop("FAULT_RAG_BACKEND", None)
-        s_torch = np.asarray(R.scores(q, entries))
+        with forced_backend("torch"):
+            s_torch = np.asarray(R.scores(q, entries))
         s_onnx = np.asarray(onnx_backend.rerank_scores(q, [R.rerank_text(e) for e in entries]))
         self.assertLessEqual(float(np.abs(s_torch - s_onnx).max()), 1e-4)
         self.assertTrue(np.array_equal(np.argsort(-s_torch), np.argsort(-s_onnx)))
+
+
+class LexicalBuildTests(unittest.TestCase):
+    """`reindex --lexical` must produce a usable index without any model files."""
+
+    def test_lexical_build_needs_no_models(self):
+        import tempfile
+
+        saved = {k: getattr(I, k) for k in
+                 ("DATA", "ENTRIES_JSONL", "EMB_NPY", "BM25_PKL", "META_JSON")}
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                I.DATA = td
+                I.ENTRIES_JSONL = os.path.join(td, "entries.jsonl")
+                I.EMB_NPY = os.path.join(td, "embeddings.npy")
+                I.BM25_PKL = os.path.join(td, "bm25.pkl")
+                I.META_JSON = os.path.join(td, "meta.json")
+                meta = I.build(lexical=True, progress=False)
+                self.assertEqual(meta["embed_backend"], "none (lexical-only build)")
+                self.assertTrue(os.path.exists(I.ENTRIES_JSONL))
+                self.assertTrue(os.path.exists(I.BM25_PKL))
+                self.assertFalse(os.path.exists(I.EMB_NPY))
+                I.reset()
+                from fault_rag import search as S
+
+                rows = S.search("loss spike 训练", topk=3, mode="bm25")
+                self.assertTrue(rows)
+            finally:
+                for k, v in saved.items():
+                    setattr(I, k, v)
+                I.reset()
 
 
 @unittest.skipUnless(ONNX_RERANK, "needs models/bge-reranker-v2-m3-onnx")

@@ -21,7 +21,8 @@ stdout 一律是 JSON。出错信息在 stderr。
 2026-11-03 实测逐位等价（稠密向量余弦 1.000000、重排 logit 最大差 0.0、12×30 对零换序，证据在
 `eval/ACCEPTANCE.md`），因此**切换后端不失效缓存向量**；`meta.json` 的 `embed_backend` 只是记录。
 int8 量化档不得引入：重排分数在 12/12 池换序。纯词法使用（`--mode bm25`、`lookup`、`related`、`stats`）
-不需要任何模型与 `embeddings.npy`。
+不需要任何模型与 `embeddings.npy`；无模型环境用 `reindex --lexical` 即可构建词法索引（不出向量，
+之后有模型再跑普通 `reindex` 补齐）。
 
 ## 什么时候用哪个命令
 
