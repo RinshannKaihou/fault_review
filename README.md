@@ -31,7 +31,7 @@ scripts/sync_catalogs.sh   维护者审查后手动运行：复制快照 → rei
    ▼
 catalogs/                  已提交的快照；catalogs/SOURCES.txt 记录对应的上游提交与条目数
    ▼      ./fault-rag reindex
-data/、models/               本机索引与模型（bge-m3、bge-reranker-v2-m3），不入 Git
+data/、models/               本机索引与模型（bge-m3、bge-reranker-v2-m3，或对应的 *-onnx 精简版），不入 Git
    ▼
 ./fault-rag search | lookup | related
 ```
@@ -53,6 +53,21 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
 ```
 
 无法直连 PyPI 或 Hugging Face 时，可用 `pip install -i <镜像地址>` 安装依赖，下载模型前设置 `export HF_ENDPOINT=https://hf-mirror.com`。检索只需 CPU。
+
+### 精简安装（无 torch，约 0.5 GB 依赖）
+
+不想装 4.8 GB 的 torch 栈时，用 ONNX Runtime 后端（向量与重排分数和 torch 后端逐位一致，见
+[docs/perf-2026-11-03-onnx-backend.md](docs/perf-2026-11-03-onnx-backend.md)）：
+
+```bash
+python -m pip install onnxruntime tokenizers "numpy>=1.24" "jieba>=0.42" "pyyaml>=6" tqdm "huggingface_hub>=1.24"
+python scripts/download_model.py bge-m3-onnx bge-reranker-v2-m3-onnx
+./fault-rag reindex --full
+```
+
+没有 torch 时后端自动选 ONNX；也可用 `FAULT_RAG_BACKEND=onnx|torch` 显式指定（默认 `auto`：
+两者都装了用 torch）。只需词法检索（`--mode bm25`、`lookup`、`related`、`stats`）时连模型都不用下，
+numpy + jieba + pyyaml 即可。
 
 ## 查询
 
@@ -132,7 +147,7 @@ python scripts/download_model.py             # 下载 bge-m3 与 bge-reranker-v2
 
 - **BM25**：中文用 jieba 分词，代码与英文用正则切词。索引文本包括编号、名称、原因子系统、标题，以及叙述字段（机制、行为、签名、触发面、复现、来源、回访记录）。
 - **向量**：`bge-m3` 只编码叙述原文（名称、原因子系统、机制、行为、签名、触发面）。
-- **重排**：hybrid 取融合后前 30 名，交给 `bge-reranker-v2-m3` 把查询和条目（标题、现象、叙述原文）放在一起读、重新打分，最终名次是混合名次与重排名次的 RRF。只按重排分数排会把只共享表面现象（如"乱码"）的条目顶到具体机制之前，所以保留混合名次。查询向量与重排用 bf16（CPU 原生支持），进程内隐藏 GPU，避免 CUDA 驱动探测白耗 3 秒。冷启动约 11 秒，`--no-rerank` 约 6 秒。依据见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) 2026-10-22。
+- **重排**：hybrid 取融合后前 30 名，交给 `bge-reranker-v2-m3` 把查询和条目（标题、现象、叙述原文）放在一起读、重新打分，最终名次是混合名次与重排名次的 RRF。只按重排分数排会把只共享表面现象（如"乱码"）的条目顶到具体机制之前，所以保留混合名次。进程内隐藏 GPU，避免 CUDA 驱动探测白耗 3 秒。冷启动延迟取决于硬件与后端（重排前向是大头）：上游 2×48 核机 torch 后端约 11 秒（查询向量与重排用 bf16，CPU 原生支持时自动启用），18 核笔记本 ONNX 后端实测 7.8 秒 / torch 12.9 秒，`--no-rerank` 约 1–6 秒。两个后端逐位等价（见 [docs/perf-2026-11-03-onnx-backend.md](docs/perf-2026-11-03-onnx-backend.md)）；重排依据见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) 2026-10-22。
 - **融合**：hybrid 模式用 RRF 合并两路名次。向量路会给每个合格条目排名，所以 hybrid 总有结果；`--mode bm25` 时如果没有任何关键词命中，会返回空列表。空列表不代表编目里没有相关故障，可以换 hybrid 或换个说法再查。
 
 `cause`、`effect` 等结构化字段刻意**没有**加进向量文本，也没有整批加进 BM25。在 63 条独立集上实测：加进向量文本后，向量偏向机制措辞，离用户的症状描述更远（R@10 0.984 → 0.968）；加进 BM25 后，主题相近的条目反超正确条目（R@5 0.952 → 0.937）。详见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)，以及 `fault_rag/parse.py:embed_text`、`fault_rag/index.py:bm25_text` 的注释。
@@ -305,6 +320,7 @@ python3 eval/run_eval.py --cases eval/indy_cases.jsonl --check eval/baseline_ind
 | 10-22 | 交叉编码器重排上线（前 30 名，bf16）；新写 50 条口语留出题 R@5 0.76→0.88，冷启动延迟与之前持平（约 11 秒） | [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) |
 | 10-23 | 取消 `family` / `trigger` / `trigger_review` / `trigger_note` 四个标签（研究期判定轴，issue/PR 给不出依据；扫描期 `family` 775 条有 774 条是 `infra_off`），`--trigger` 过滤与网页触发筛选随之下线；迁移条目的历史取值留在 `original.meta`。快照 2,141 + 387 条 | 上游 `catalog/SCHEMA.md` |
 | 10-26 | 每日审计：空票（调用失败、输出无法解析、标签不在词表）重试一次，仍空则记下原因与原始输出开头；"不确定"中单列"票数不足"，飞书摘要同步显示；`run --ids` 可重审已定稿条目并保留上一轮记录。当天因空票未能定稿的 TRN-0444 / TRN-0451 已重审。快照 2,187 + 451 条 | 上游 `tools/catalog_audit.py` |
+| 11-03 | RAG 侧：ONNX Runtime 推理后端上线（torch-free 安装约 0.5 GB 依赖，与 torch 后端逐位等价，冷启动 12.9→7.8 s）；BM25-only 路径不再依赖向量文件；快照 2,372 + 606 条 | [docs/perf-2026-11-03-onnx-backend.md](docs/perf-2026-11-03-onnx-backend.md) |
 
 后续计划按顺序进行：修复悬空的 `var` 关联 → 模式/实例分层（合并近重复条目）→ 补全改进措施 → 口语/模糊症状 query 的检索改进（诊断与 A/B 结论见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md) 2026-10-22 一节）。NPU 历史存量回扫已于 2026-10-21 完成，不再是待办（原方案见 [normalize/npu_backfill/PLAN.md](normalize/npu_backfill/PLAN.md)）。
 
@@ -334,7 +350,7 @@ normalize/       编目结构化迁移的工具与记录（见上）
 docs/media/      README 顶部的每日 Loop 动图（深 / 浅两版，AVIF 为主、WebP 兜底）及其生成与渲染脚本
 AGENTS.md        给 agent 的调用与引用约定
 LICENSE          Apache License 2.0 全文
-data/  models/   本机索引与模型（已被 gitignore）
+data/  models/   本机索引与模型（torch 版或 *-onnx 精简版；已被 gitignore）
 ```
 
 ## 排错

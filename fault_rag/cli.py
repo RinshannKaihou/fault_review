@@ -40,7 +40,7 @@ def main(argv=None):
     s.add_argument("--full", action="store_true",
                    help="include complete fields instead of summary")
     s.add_argument("--no-rerank", action="store_true",
-                   help="skip the cross-encoder stage (hybrid order only, ~2 s faster)")
+                   help="skip the cross-encoder stage (hybrid order only; several seconds faster)")
 
     l = sub.add_parser("lookup", help="exact id (INF-0044 / TRN-0001), snake_name or alias")
     l.add_argument("query")

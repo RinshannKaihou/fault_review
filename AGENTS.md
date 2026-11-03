@@ -36,8 +36,10 @@ int8 量化档不得引入：重排分数在 12/12 池换序。纯词法使用�
 ## search 要点
 
 - 默认 hybrid：BM25 + bge-m3 稠密向量 RRF 融合，再用交叉编码器（bge-reranker-v2-m3）重排前 30 名，
-  与混合名次再做一次 RRF。中英混排查询都支持。冷启动一次约 11 秒；`--no-rerank` 跳过重排（约 6 秒），
-  只在需要快速粗查时用。`rerank_rank`（0 起）是重排名次，`null` 表示没经过重排（`--no-rerank`、
+  与混合名次再做一次 RRF。中英混排查询都支持。冷启动随硬件与后端差异很大（重排前向是大头）：
+  上游 2×48 核机 torch 后端约 11 秒，18 核笔记本 ONNX 后端 7.8 秒 / torch 12.9 秒；
+  `--no-rerank` 跳过重排（约 1–6 秒），只在需要快速粗查时用。`rerank_rank`（0 起）是重排名次，
+  `null` 表示没经过重排（`--no-rerank`、
   `--mode bm25|dense`，或精排模型缺失——缺失时 stderr 会提示，输出的 `reranked` 为 false）。
 - 过滤：`--repo inference|training`、`--category <原因子系统，如 KV缓存；或负结果类型 neg_rejected 等，可选值见 stats>`、
   `--pattern PAT-INF-0035`（只看该故障模式这一族）、
