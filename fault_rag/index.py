@@ -186,6 +186,9 @@ def build(full=False, progress=True):
         "n_entries": len(entries),
         "n_reembedded": len(need),
         "model": "BAAI/bge-m3",
+        # diagnostic only: both backends produce identical vectors (onnx_backend.py),
+        # so a cached matrix is never invalidated by a backend switch
+        "embed_backend": embed_mod.backend(),
         "dim": int(mat.shape[1]),
         "sources": {
             "inference_entries": parse_mod.INFERENCE_ENTRIES,
@@ -221,12 +224,15 @@ def mark_name_collisions(entries):
 
 
 class Index:
-    """Lazy-loaded in-memory index used by search/lookup/related."""
+    """Lazy-loaded in-memory index used by search/lookup/related.
+
+    The dense matrix loads on first access so lexical-only work (mode=bm25, lookup,
+    related, stats) never needs embeddings.npy — or the embedding stack that built it."""
 
     def __init__(self):
         with open(ENTRIES_JSONL, encoding="utf-8") as f:
             self.entries = [json.loads(line) for line in f]
-        self.mat = np.load(EMB_NPY)
+        self._mat = None
         with open(BM25_PKL, "rb") as f:
             self.bm25 = pickle.load(f)
         self.tokens = [None] * len(self.entries)  # filled on demand if needed
@@ -238,6 +244,17 @@ class Index:
             for alias in e.get("aliases", []):
                 self.by_name.setdefault(alias, []).append(i)
         self.name_collisions = mark_name_collisions(self.entries)
+
+    @property
+    def mat(self):
+        if self._mat is None:
+            if not os.path.exists(EMB_NPY):
+                raise SystemExit(
+                    "fault-rag: dense search needs data/embeddings.npy — run "
+                    "`fault-rag reindex` (BM25-only mode works without it)"
+                )
+            self._mat = np.load(EMB_NPY)
+        return self._mat
 
 
 _INDEX = None

@@ -13,6 +13,16 @@
 
 stdout 一律是 JSON。出错信息在 stderr。
 
+## 推理后端
+
+神经部分（bge-m3 向量 + bge-reranker-v2-m3 重排）有两个等价运行时，`FAULT_RAG_BACKEND=auto|torch|onnx` 选择，
+默认 `auto`：装了 torch 就用 torch（行为与历史版本一致），否则落到 ONNX（`models/bge-m3-onnx` 与
+`models/bge-reranker-v2-m3-onnx`，torch-free 安装约 0.5 GB，见 `requirements.txt` 尾注）。两个后端
+2026-11-03 实测逐位等价（稠密向量余弦 1.000000、重排 logit 最大差 0.0、12×30 对零换序，证据在
+`eval/ACCEPTANCE.md`），因此**切换后端不失效缓存向量**；`meta.json` 的 `embed_backend` 只是记录。
+int8 量化档不得引入：重排分数在 12/12 池换序。纯词法使用（`--mode bm25`、`lookup`、`related`、`stats`）
+不需要任何模型与 `embeddings.npy`。
+
 ## 什么时候用哪个命令
 
 | 你要做什么 | 命令 |
