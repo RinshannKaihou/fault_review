@@ -7,6 +7,7 @@ the cheap guard for the torch-free path's riskiest assumption.
 
 import contextlib
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -21,7 +22,7 @@ from fault_rag import index as I  # noqa: E402
 
 TORCH_OK = importlib.util.find_spec("torch") is not None
 TORCH_DENSE = TORCH_OK and os.path.exists(os.path.join(E.MODEL_DIR, "config.json"))
-TORCH_RERANK = os.path.exists(
+TORCH_RERANK = TORCH_OK and os.path.exists(
     os.path.join(E.ROOT, "models", "bge-reranker-v2-m3", "config.json"))
 ONNX_DENSE = os.path.exists(os.path.join(E.ROOT, "models", "bge-m3-onnx", "onnx", "model.onnx"))
 ONNX_RERANK = os.path.exists(
@@ -125,30 +126,105 @@ class RerankParityTests(unittest.TestCase):
 
 
 class LexicalBuildTests(unittest.TestCase):
-    """`reindex --lexical` must produce a usable index without any model files."""
+    """`reindex --lexical` must produce a usable index without any model files,
+    and must never leave an embeddings.npy whose rows no longer match the entry
+    sequence it just wrote (misaligned vectors would be reused as if valid)."""
+
+    def _patched_data(self, td):
+        saved = {k: getattr(I, k) for k in
+                 ("DATA", "ENTRIES_JSONL", "EMB_NPY", "BM25_PKL", "META_JSON")}
+        I.DATA = td
+        I.ENTRIES_JSONL = os.path.join(td, "entries.jsonl")
+        I.EMB_NPY = os.path.join(td, "embeddings.npy")
+        I.BM25_PKL = os.path.join(td, "bm25.pkl")
+        I.META_JSON = os.path.join(td, "meta.json")
+        return saved
 
     def test_lexical_build_needs_no_models(self):
         import tempfile
 
-        saved = {k: getattr(I, k) for k in
-                 ("DATA", "ENTRIES_JSONL", "EMB_NPY", "BM25_PKL", "META_JSON")}
         with tempfile.TemporaryDirectory() as td:
             try:
-                I.DATA = td
-                I.ENTRIES_JSONL = os.path.join(td, "entries.jsonl")
-                I.EMB_NPY = os.path.join(td, "embeddings.npy")
-                I.BM25_PKL = os.path.join(td, "bm25.pkl")
-                I.META_JSON = os.path.join(td, "meta.json")
+                saved = self._patched_data(td)
                 meta = I.build(lexical=True, progress=False)
                 self.assertEqual(meta["embed_backend"], "none (lexical-only build)")
                 self.assertTrue(os.path.exists(I.ENTRIES_JSONL))
                 self.assertTrue(os.path.exists(I.BM25_PKL))
                 self.assertFalse(os.path.exists(I.EMB_NPY))
+                self.assertFalse(meta["embeddings_kept"])
                 I.reset()
                 from fault_rag import search as S
 
                 rows = S.search("loss spike 训练", topk=3, mode="bm25")
                 self.assertTrue(rows)
+            finally:
+                for k, v in saved.items():
+                    setattr(I, k, v)
+                I.reset()
+
+    def test_lexical_rebuild_drops_misaligned_matrix(self):
+        """Catalog change between builds: stale rows must be deleted, not left
+        for the incremental loader to relabel with the new entries' hashes."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                saved = self._patched_data(td)
+                I.build(lexical=True, progress=False)
+                # fabricate a matrix for an OLD corpus state: one row short
+                n_new = sum(1 for _ in open(I.ENTRIES_JSONL, encoding="utf-8"))
+                np.save(I.EMB_NPY, np.zeros((n_new - 1, 4), dtype=np.float32))
+                meta = I.build(lexical=True, progress=False)   # same catalogs, but the
+                # matrix no longer matches the file it was paired with
+                self.assertFalse(meta["embeddings_kept"])
+                self.assertFalse(os.path.exists(I.EMB_NPY))
+            finally:
+                for k, v in saved.items():
+                    setattr(I, k, v)
+                I.reset()
+
+    def test_lexical_rebuild_drops_matrix_for_changed_corpus(self):
+        """The reviewed corruption: matrix + entries.jsonl are a consistent pair
+        from an OLDER corpus; a lexical rebuild over changed catalogs must not
+        leave the stale vectors for the incremental loader to relabel."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                saved = self._patched_data(td)
+                I.build(lexical=True, progress=False)
+                # consistent old pair: full-length matrix + today's file, then age
+                # the file by one entry (as if the corpus changed since the pair)
+                rows = [json.loads(line) for line
+                        in open(I.ENTRIES_JSONL, encoding="utf-8")]
+                np.save(I.EMB_NPY, np.full((len(rows), 4), 0.5, dtype=np.float32))
+                rows[-1]["embed_hash"] = "deadbeefdeadbeef"
+                with open(I.ENTRIES_JSONL, "w", encoding="utf-8") as f:
+                    for e in rows:
+                        f.write(json.dumps(e, ensure_ascii=False) + "\n")
+                meta = I.build(lexical=True, progress=False)   # parses real catalogs
+                self.assertFalse(meta["embeddings_kept"])
+                self.assertFalse(os.path.exists(I.EMB_NPY))
+                self.assertIsNone(meta["dim"])
+            finally:
+                for k, v in saved.items():
+                    setattr(I, k, v)
+                I.reset()
+
+    def test_lexical_rebuild_keeps_aligned_matrix(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                saved = self._patched_data(td)
+                I.build(lexical=True, progress=False)
+                rows = [json.loads(line) for line
+                        in open(I.ENTRIES_JSONL, encoding="utf-8")]
+                np.save(I.EMB_NPY, np.full((len(rows), 4), 0.5, dtype=np.float32))
+                meta = I.build(lexical=True, progress=False)   # identical corpus
+                self.assertTrue(meta["embeddings_kept"])
+                self.assertTrue(os.path.exists(I.EMB_NPY))
+                self.assertEqual(meta["dim"], 4)
             finally:
                 for k, v in saved.items():
                     setattr(I, k, v)
