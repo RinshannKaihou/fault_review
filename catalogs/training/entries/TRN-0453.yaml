@@ -1,0 +1,56 @@
+id: TRN-0453
+legacy_ids: []
+slug: matmul_emu_split_weight_layout_mismatch
+aliases: []
+title: MatmulEmuSplitWeight 混合布局权重静默算错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnnMatmulEmuSplitWeight
+  behavior: 转置标志只从 wHigh 推导却同时决定 wLow 的读取方式；两权重内存布局不一致时 kernel 按列主序读连续的 wLow。两层形状校验只比较 view 形状，混合布局下仍相等，校验全过。
+effect:
+  objects:
+  - 数值结果
+  detail: wHigh 转置而 wLow 连续的合法输入下，y 与 fp64 参考最大相对误差 4.26（对照组 4.5e-8），两段接口返回 0；资料未声明两权重必须同布局。
+  visibility: 静默错误
+mitigation:
+  detect: wHigh/wLow 布局不一致负例对拍 fp64 参考；检查 strides 而非 view 形状
+  fix: 待定（建议从各自 strides 推导 layoutTag，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7392
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2194
+original:
+  mechanism: 'cann/ops-nn #7392（open，Ascend 910B3 8die/CANN 9.2.0，含三组对照复现）：aclnnMatmulEmuSplitWeight 在 wHigh 与 wLow 内存布局不一致时静默算错。原因链：op_api/aclnn_matmul_emu_split_weight.cpp:249 bool transposeW=IsTransposeLastTwoDims(wHigh) 只从 wHigh 推导；:272-279 wLow 复用同一 transposeW 分支做 CreateView 不判自身 strides；op_kernel/arch22:102 layoutTagB=bTran?ColumnMajor:RowMajor，wHigh/wLow 共用一个 layoutB。两层形状校验（op_api:157-222、op_tiling arch22:84-113）比较的都是 view 形状，混合布局下仍相等→校验全过、kernel 按列主序读连续 wLow。实测 x bf16[M,K]、权重 bf16[K,N]、y fp32，仅 wHigh 转置组与 fp64 参考 max rel err 4.26（对照组 4.5e-8），两段返回 0。资料『非连续』列全 √ 且写『支持非连续 Tensor 无需 contiguous』，未声明两权重须同布局。该算子为低比特权重仿真 matmul（wHigh/wLow 分裂承载，wLowScale=1/256），量化感知训练/仿真路径使用。推理库同源条目 INF-2194；训练侧按仿真训练路径收录并交叉关联。'
+  source: GitCode issue：https://gitcode.com/cann/ops-nn/issues/7392 （open，含源码锚点与三组对照实测）；推理库同源条目 INF-2194
+  behavior: 量化仿真训练用 MatmulEmuSplitWeight 做 matmul 时，若两个权重张量一个转置存储一个连续存储（view 形状完全相同、只有 strides 不同），输出 silently 错到最大相对误差 4.26 量级（正确应 ~1e-8），接口返回成功；因为形状校验只看 view 形状，调用侧无法察觉，表现为量化仿真路径 loss 异常但所有 shape 检查通过。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化

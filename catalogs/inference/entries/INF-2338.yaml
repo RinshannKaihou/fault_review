@@ -1,0 +1,57 @@
+id: INF-2338
+legacy_ids: []
+slug: ops_nn_index_omitted_tail_dim_misjudge_continuous
+aliases: []
+title: Index 省略尾维时分离高级索引被误判连续致静默错数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Index SIMT ComputeStrides
+  behavior: 四处 KernelIndex 实现访问下一项 mask 前边界判断不充分，读取不存在的第 5 项 mask，漏记 nonContinueNum 使分离索引被误判连续，用错误输出布局寻址。
+effect:
+  objects:
+  - 数值结果
+  detail: 5 维输入、尾维省略、分离索引时输出顺序/取值错误：最小例 CPU golden [0,2,1,3] 而 NPU [0,1,2,3]；Kernel DYN_GOLD 31.25%，ACLNN 各路径 25%~50%。ACL 查询/执行/同步均成功。
+  visibility: 静默错误
+mitigation:
+  detect: 构造尾维省略 + 分离索引的最小用例（x[:, i, :, j] 形态）与 CPU PyTorch 高级索引 binary 比对。
+  fix: 关联修复已合并（issue 正文含根因与修复描述，issue 状态 closed；修复是否随 CANN 版本发布未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7830
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #7830（2026-10-31，Ascend950PR arch35/CANN 9.3.0，closed）：输入 rank 大于 indexed_sizes 长度（尾维省略）且至少两组高级索引被非索引维分隔时，Index 的 SIMT 路径把分离索引误判为连续，用错误输出布局与寻址造成静默错数。根因（四处实现同源：KernelIndex::ComputeStrides、KernelIndexNoContiguous::ComputeParameter、KernelIndexBroadcast::ComputeStrides、KernelIndexNoConBroadcast::ComputeParameter）：if (i == tilingData.inputDimNum - 1 || (i > indexedSizesNum_) || !indexedDim_(i + 1)) —— 进入索引分支后已保证 i < indexedSizesNum_，因此 i > indexedSizesNum_ 无法保护 i+1；以 inputDimNum=5、indexedSizesNum_=4、i=3 为例旧逻辑读取逻辑上不存在的第 5 项 mask，若因此少记一次 nonContinueNum，indexContinue_ 保持 1，最终使用连续索引的输出布局。最小直观例：输入 (2,2,2,2,2)、indexed_sizes=[0,1,0,1]（语义 x[:, i, :, j]），CPU golden [0,2,1,3]，修复前 NPU [0,1,2,3]。修复前 Kernel DYN_GOLD 31.25%、ACLNN 连续非 broadcast 25%、非连续 25%、连续 broadcast 50%。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7830 （closed，2026-10-31 创建并关闭；含四处代码锚点、根因与最小用例）
+  behavior: 对 5 维张量做省略尾维的高级索引（如 x[:, i, :, j]，索引维被保留维分隔）时，NPU 输出的元素顺序或取值静默错误——最小例正确 [0,2,1,3] 被输出成 [0,1,2,3]，逐元素 binary 比对仅 25%~50% 正确。ACL 查询、执行、同步全部成功无任何报错；受影响布局含连续/非连续与 broadcast 四种组合。
+  trigger_surface: cann/ops-nn Index SIMT；输入 rank > indexed_sizes 长度（尾部维度省略）；至少两组高级索引被非索引维分隔；Ascend950PR arch35/CANN 9.3.0。
+  signature: 省略尾维+分离索引用例输出顺序错乱（广播索引维应前置）；DYN_GOLD 25%~31%。
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - 2026-11-01 回访 2026-11-01：源 ops-nn#7830 已 closed（10-31）；关闭原因未核实
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - original.notes

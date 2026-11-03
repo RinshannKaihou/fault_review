@@ -18,7 +18,7 @@ effect:
   visibility: 数值异常
 mitigation:
   detect: 首 step loss 断言有限；官方 example 作为冒烟金丝雀。
-  fix: 待定（issue open 2026-10-23；报告者请求告知修复 PR 后重验）
+  fix: 修复 MR !15015（merged 2026-10-31）：根因定位为 ACLNN eps(double) 与 op_def 注册 Float 类型错配——OP_ATTR 传 double 按 float 读位模式错误致 kernel 用异常 eps 输出 NaN。修复=入口 static_cast<float>(eps) 并统一 INFER_SHAPE/launcher 两处 + Torch C++ eps 改 double 对齐签名 + eps>0/空指针校验（非法返回 161002）。修复后官方 example 549.777222 与 Torch 一致，UT 20 项全过。发布版本未核实
 labels:
   stage:
   - pretrain
@@ -30,12 +30,16 @@ remarks: ''
 evidence:
 - url: https://gitcode.com/cann/ops-transformer/issues/6614
   kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15015
+  kind: gitcode_pr
 relations: []
 original:
   mechanism: CANN ops-transformer aclnnLightningIndexerKLLoss（attention/lightning_indexer_kl_loss）：仓内官方 example test_aclnn_lightning_indexer_kl_loss.cpp 在 Atlas A2（910B2）/CANN 9.2.0 上 result[0] 输出 nan。输入合法：targetScore=rand[0,2) shape (2,4,128) fp32、indexProbs 每行归一化 sum=1、eps=1e-9、weightType=logits、loss fp32[1] 初值 0。排除项全维度交叉验证：dtype fp16/bf16/fp32、K 1/2/4/8192、B 1/2/512、eps 1e-9/1.0、weightType logits/probs、ACL_OPT_DETERMINISTIC 0/1 全 nan；最小用例 y=[2.0]、Y=[1.0]、K=1、eps=1e-9/1.0 期望 (log(2/3)-log(2))*2≈-0.81 实测 nan；输出 buffer 预填 0 后读回 0x7fffffff 排除未初始化内存；所有浮点输入有限排除 clamp/log 边界。master 侧最近提交（2026-10-13）为接口文件规范整改，无针对 NaN 的修复。Lightning Indexer 是 Kimi K2 类 MoE 的深层稀疏索引器组件，KL loss 为其训练损失——训练侧收录依据。推理库 find 同 URL 为 0（2026-10-24 查），推理扫描同批次独立判定中，暂不建 cross。无训练框架受害报告（example 直跑即坏）。
   source: https://gitcode.com/cann/ops-transformer/issues/6614
   behavior: 在 A2 上训练带 Lightning Indexer 的模型（Kimi K2 类 MoE）：其 KL 损失算子一调用就返回 nan——连仓库自带的最小 example、单元素输入都能稳定复现，换 dtype、batch、eps、确定性开关都一样；训练第一步 loss 就是 nan，起步即失败，无任何报错日志指向原因。
   discovery: 2026-10-24 每日扫描
+  notes:
+  - 2026-11-01 回访 2026-11-01：根因闭环——MR !15015（merged）确认 NaN 根因为 ACLNN eps double 与 op_def Float 注册的类型错配（OP_ATTR 位模式错误），非未初始化内存；置信度可升 verified（源码定位+因果闭合）。推理库同 URL 未收（10-24 查 0），训练侧独立成立。
 migration:
   method: scan
   scanned: '2026-10-24'
@@ -51,3 +55,13 @@ migration:
     - qwen3.8-max
     uncertain:
     - detail
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - evidence
+  - date: '2026-11-01'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-01'
+    fields:
+    - original.notes

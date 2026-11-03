@@ -1,0 +1,54 @@
+id: INF-2366
+legacy_ids: []
+slug: vllm_ascend_fp8_block_tp_shard_offset_misresolve
+aliases: []
+title: vLLM-Ascend block-FP8 TP 分片反量化静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm-ascend
+    component: resolve_block_scales
+  behavior: 反量化函数假定分片行/列从全局块边界开始，TP 分片起点落在 block_n/block_k 块中间时给约半数行配错 scale
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: block-FP8 模型 TP 切分且每 rank 行数非 block_n 整数倍时（如 1536 行 TP=8 → 192），反量化权重静默错值，报告复现 66.6% 元素错，最大偏差 1.8，无任何报错或形状告警
+  visibility: 静默错误
+mitigation:
+  detect: 报告附 CPU-only 纯 torch 复现脚本（构造错位分片与整张量先 resolve 再切片对拍）
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20653 （open，未发布）：加 row_offset/col_offset 参数 + load 时校验分片形状直接拒绝（镜像上游 vLLM validate_fp8_block_shape）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20652
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/20653
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm_ascend/quantization/methods/w8a8/fp8_block.py 的 resolve_block_scales() 把 native block-wise FP8 checkpoint（float8_e4m3fn 权重 + 每 block_n×block_k 块一个 float32 weight_scale_inv）展开为稠密张量时，假定收到的 weight/scale_inv 起始于全局块边界——对整张未切分 checkpoint 成立。但 tensor-parallel 服务里 AscendFp8BlockLinearMethod.process_weights_after_loading 按 rank 调用该函数，输入是已 TP 切片的权重：若某 rank 的行范围起点落在全局 block_n 行块中间（列与 block_k 同理），函数无从得知，把分片本地第 0 行当新块起点，凡全局边界与本地块边界不重合的本地块约半数行配错 scale。现有形状一致性检查（scale_inv.shape == (cdiv(out,block_n), cdiv(in,block_k))）照样通过——分片行列计数与每块一行 scale 一致，只有值错。报告在 main commit d606456c4e、950DT、CANN 9.2.0.b080、vLLM 0.31.0 验证；缺陷为纯 Python/tensor 逻辑，附 CPU-only 无 NPU 复现（192 行分片起点全局行 96：max abs diff 1.80、66.6% 元素错）。修复 PR #20653 说明现有已发布模型在当前 TP 度下恰好都落在对齐边界（q_b_proj/o_proj/共享专家/dense MLP），MoE 按整专家划分不触发——即触发面尚无已发布模型，但配置空间真实存在。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/20652 ；修复 https://github.com/vllm-project/vllm-ascend/pull/20653
+  behavior: 对 block-FP8 量化模型做 tensor parallel 加载后，某些 TP 度下被切分的线性层权重反量化结果错误。报告者用纯 CPU 脚本复现：1536 行输出 TP=8（每 rank 192 行，非 block_n=128 整数倍）时该 rank 66.6% 的权重元素静默错值、最大偏差 1.8，而同一层 TP=4（384 行）对齐不触发。加载、形状校验、推理全程无报错无警告，输出在数值上偏离正确值但看似合理。
+  trigger_surface: vLLM-Ascend main（commit d606456c4e）/ vLLM 0.31.0；block-FP8 checkpoint；真实 TP 切分的 dense 线性层且每 rank 行/列数非 block_n(128)/block_k 整数倍（TP=8 切 1536 行输出为例）；报告说明当前已发布模型在用 TP 度下恰好不触发
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 数值结果
+        to: 模型权重

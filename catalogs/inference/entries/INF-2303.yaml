@@ -1,0 +1,52 @@
+id: INF-2303
+legacy_ids: []
+slug: sglang_retract_rebootstrap_multimodal_wrong_kv
+aliases: []
+title: SGLang retract 后 rebootstrap 重建 KV 静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: retract/rebootstrap 重建
+  behavior: PD rebootstrap 的 payload 只带 token ids：多模态/input_embeds/位置覆盖请求重算缺原始输入，以错误 KV 继续输出无报错；已流出 token 的本地 retract 重启后拼接错乱。
+effect:
+  objects:
+  - 输出内容
+  detail: '多模态/embed 请求被重算错误 KV、输出错且无报错（应 abort）；已流式输出的请求重启后新 token 拼接进旧流。PR #47521 改为 abort 503，open 未合入。'
+  visibility: 静默错误
+mitigation:
+  detect: 多模态/embeds 请求在 KV 压力触发 retract 后比对输出与无 retract 基线；监控 retract 后输出质量骤降。
+  fix: 修复 PR https://github.com/sgl-project/sglang/pull/47521 （open，未合入）：release_req 返回可恢复性，不可恢复（multimodal/embeds rebootstrap、已流出 token 的 reprefill）改为 abort 503；另收 /detokenize 越界 id 由静默 200 改 400。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/pull/47521
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'SGLang retract/rebootstrap 路径对不可恢复请求静默产出错误输出（PR #47521 描述）：(1) PD decode rebootstrap（pause_generation(mode=retract)、DeepSeek-V4 retract 经 backup_kv_cache）的 Req.build_rebootstrap_payload 只携带 token ids，多模态、input_embeds、positional_embed_overrides 请求重算时以缺失的原始输入重建 KV——错误 KV 继续生成错误输出且无任何错误信号；(2) 本地 re-prefill（非分离 retract）中 input_embeds 只覆盖 prompt，reset_for_retract 重启生成：重启在下发 token 流出前不可见，但一旦已流出（流式 token 或非流式过 SGLANG_FORCE_STREAM_INTERVAL flush），重启 token 被拼接进陈旧 send_token_offset 之后，输出前后错乱。修复：release_req 成为唯一判定点返回可恢复性，retract_all 返回不可恢复集合并以 503 abort；retract_decode 已按 False abort；每个 PD rebootstrap 保证至少一个输出 id。附带：/detokenize 对词表外 id 此前静默 200 丢弃（负数/超 u32 曾 500），现改 400。与 10-29 INF-2264（sglang#47245 retract 清零惩罚）同属 retract 域但机制不同（惩罚状态 vs 重建输入缺失），分别占号。'
+  source: GitHub PR https://github.com/sgl-project/sglang/pull/47521 （open，2026-10-30 创建；机制与行为变化描述完整）
+  behavior: KV 内存压力触发 retract/rebootstrap 时：多模态或使用自定义 embedding 的请求被安排「只凭 token ids 重新预填充」，原始图像/音频特征和位置信息没有跟着走，重建出来的 KV 是错的，请求继续输出看似正常实则错误的内容，无报错；已经流出过部分 token 的普通请求被本地 retract 重启后，新 token 会拼接在旧输出流的中段，客户端收到前后不连贯的文本。修复方向是判定不可恢复时直接 abort 返回 503，而不是硬着头皮算。
+  trigger_surface: SGLang PD 分离或单机；KV 压力触发 retract/rebootstrap；多模态/input_embeds/positional_embed_overrides 请求、或已流出 token 的请求。
+  signature: retract 后多模态请求输出质量骤降无报错；流式输出中段出现重启拼接痕迹。
+  repro: PR 描述机制与判定路径（未附独立复现脚本）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

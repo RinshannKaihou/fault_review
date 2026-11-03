@@ -1,0 +1,62 @@
+id: INF-2293
+legacy_ids: []
+slug: ops_nn_situ_glu_rank26_output_unwritten
+aliases: []
+title: aclnnSituGlu rank≥26 返回成功但输出完全未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: situ_glu rank 上限校验
+  behavior: op_host 侧无 rank 上限校验：rank≥26 时 tiling 未调起（ws=0、kernel 未启动），两段接口仍返回 ACLNN_SUCCESS，输出保持预填金丝雀未写；rank 9–25 超资料声明（1–8）却正常执行。
+effect:
+  objects:
+  - 数值结果
+  detail: rank=8/25 输出正常（ws=16MB、结果逐字节相同）；rank=26/28 两段 0/0、ws=0、出参首 8 字节保持 0x5A 金丝雀；26–34 一致。调用方按成功读取输出得到未初始化显存。
+  visibility: 静默错误
+mitigation:
+  detect: 出参预填金丝雀（0x5A）后调用断言被覆写；rank>8 用例应断言非 0 返回。
+  fix: 待定（未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7741
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2260
+pattern: PAT-INF-0198
+original:
+  mechanism: 'cann/ops-nn aclnnSituGlu 缺 rank 上限校验（issue #7741，910B2/CANN 9.2.0，master c46db05f 实测）：资料 activation/situ_glu/docs/aclnnSituGlu.md 参数表声明 x 维度 1-8，错误码表 561001 写明维度超范围应报错。实测同进程连续执行：rank=8（合法）与 rank=25（超声明）两段 0/0、ws=16777216、输出正常且与 rank=8 逐字节相同；rank=26/28（及 26–34）两段 0/0、ws=0、输出一个字节未写（保持预填金丝雀 0x5A5A5A5A5a5a5a5a）。ws=0 说明 tiling 未调起（正常固定 16MB）、kernel 未启动，但两段接口都返回 ACLNN_SUCCESS——op_host 侧完全没有 rank 上限校验。调用方以「返回 0 即成功」读取输出会拿到未初始化显存（上次残留或任意值）。与 10-29 INF-2260（GeluBackwardV2 rank26-30 输出未写）同型不同算子，各自独立提单。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7741 （open，2026-10-30 创建；含 rank=8/25/26/28 对照表与金丝雀复现脚本）
+  behavior: 对维度数（rank）达到 26 以上的张量调用 aclnnSituGlu：接口返回成功、workspace 为 0、kernel 根本没跑，输出缓冲区一个字节都没被写（预埋的 0x5A 哨兵原样保留）；而维度 9–25 虽超出资料声明的 1–8 却能算出正确结果。上层若相信返回码读输出，拿到的是上一次残留的显存内容，数值不可预测且无任何告警。
+  trigger_surface: cann/ops-nn situ_glu；rank≥26（26–34 一致）；末轴 4 的 fp32 输入；两段式 ACL 直调。
+  signature: ret=0 + ws=0 + 出参金丝雀未覆写；rank 25 与 26 之间行为突变。
+  repro: issue 附自包含 repro.cpp（Run(26,stream) 改参数覆盖 26–34）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - relations
+  - date: '2026-10-30'
+    fields:
+    - labels.coverage
+  - date: '2026-10-31'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

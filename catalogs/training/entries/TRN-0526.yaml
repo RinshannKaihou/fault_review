@@ -1,0 +1,53 @@
+id: TRN-0526
+legacy_ids: []
+slug: deepspeed_autoep_bf16_folding_rounds_fp32_before_accum
+aliases: []
+title: AutoEP BF16 折叠多一次舍入边界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: _update_hp_grad 折叠
+  behavior: BF16 折叠+FP32 累积下 _update_hp_grad 把 FP32 折叠结果先写回 BF16 再 cast 回 FP32 参与累积，插入可避免的 BF16 舍入边界
+effect:
+  objects:
+  - 梯度
+  - 优化器状态
+  detail: 首 router 梯度、FP32 master 权重与 Adam 矩与数值参考不一致（实测两 exact BF16 输入 1 与 1.0078125 应均值为 1.00390625，绝对误差 0.00390625）
+  visibility: 静默错误
+mitigation:
+  detect: 对比 BF16 折叠路径与纯 FP32 参考的首步 master 权重/矩；两 exact BF16 输入均值回归（abs err 0.00390625）
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8920（open，未合入）：折叠校正作用于临时 FP32 staging 直接累积，镜像值回写 BF16 梯度维持既有契约
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: '10-27 曾按 #8913（同路径精度报告）留观等量化影响；本轮修复 PR #8920 提供精确数值（abs err 0.00390625）与回归测试，且作者明确该路径在 FP32 累积策略下引入可避免舍入边界——按新证据改判收录（机制同 #8913 叙事，以 PR 为载体）'
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8920
+  kind: github_pr
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8913
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'DeepSpeed BF16_Optimizer._update_hp_grad 在 BF16 AutoEP/AutoTP 折叠 + FP32 梯度累积策略下，通过提升 FP32、执行 TP 校正、拷回 BF16 的 helper 归约低精度梯度，然后把舍入后的 BF16 结果 cast 回 FP32 参与累积——在 FP32 归约与 FP32 累积之间插入可避免的 BF16 舍入边界。TP2/EP2/ETP1 折叠 + FP32 累积下实测：输入与专家梯度匹配参考，但首 router 累积梯度、FP32 master 权重与 Adam 矩偏离。修复 PR #8920（open）：把既有折叠校正应用于临时 FP32 staging 并直接累积，镜像校正值进保留的 BF16 梯度以维持既有校正标记与边界 reducer 契约；BF16-only 累积不变。回归：两 exact BF16 输入 1 与 1.0078125 应在 FP32 均值为 1.00390625，上游 bf222a2a 上新双卡回归失败 abs err 0.00390625；修复后 13 项通过（2×RTX3090、torch 2.12.1+cu130、NCCL 2.29.7）。'
+  source: https://github.com/deepspeedai/DeepSpeed/pull/8920（问题叙事 https://github.com/deepspeedai/DeepSpeed/issues/8913）
+  behavior: DeepSpeed BF16 混精 + AutoEP/AutoTP 折叠 + FP32 梯度累积的训练中，每个折叠步的梯度都多一次 BF16 舍入，master 权重与 Adam 矩从首步就与数值参考不一致（单步绝对误差 3.9e-3 量级）且随训练累积；无报错无 NaN，长跑模型质量静默劣化
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

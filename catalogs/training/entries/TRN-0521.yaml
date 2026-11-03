@@ -1,0 +1,53 @@
+id: TRN-0521
+legacy_ids: []
+slug: aclnn_rsub_int64_alpha_int32_narrowing
+aliases: []
+title: CANN Rsub int64 alpha 窄化丢系数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnRsub IsScalarOne 判等
+  behavior: IsScalarOne 对整型 alpha 用 ToInt32()==1 判等，ACL_INT64 alpha 数值超 int32 范围但低 32 位恰为 1 时返回 true，算子走快路径丢弃 alpha，输出塌成 other-self
+effect:
+  objects:
+  - 数值结果
+  detail: 误差量级 self_i*(alpha-1)，实测 1.29e11；A2 910B2、CANN 9.2.0、ops-math 1b415030
+  visibility: 静默错误
+mitigation:
+  detect: int64 alpha 大值调用后与参考对比；扫描调用侧 alpha 来源
+  fix: '待定（issue open；同文件 #4247 Rsubs 变体同病，待修）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: 推理库 INF-2277 同根因已收（Rsub/Rsubs 双接口）；训练侧独立条目：rsub 作为 torch.rsub 底层算子用于损失/梯度表达式
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4254
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4247
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2277
+original:
+  mechanism: 'CANN ops-math aclnnRsub（math/sub/op_api/aclnn_rsub.cpp:149）的 alpha 判等函数 IsScalarOne 对整型 alpha 调用 alpha->ToInt32()==1。alpha 为 ACL_INT64 且数值超 int32 范围但低 32 位恰为 1 时（如 2^32+1=4294967297）判等返回 true，算子走 l0op::Sub(other,self) 快路径、丢弃 alpha，输出从 other-self*alpha 塌成 other-self；两段式接口均返回 0、无报错。误差量级=self_i*(alpha-1)，报告者实测 1.29e11。环境：Atlas A2 910B2、CANN 9.2.0、commit 1b415030、自包含 C++ 复现。同函数 aclnnRsubs（other 为标量）由 #4247 报告，共用同一 IsScalarOne 但分属不同接口与 promoteType 路径、需分别回归故分别建档。'
+  source: https://gitcode.com/cann/ops-math/issues/4254（标量变体 https://gitcode.com/cann/ops-math/issues/4247）
+  behavior: NPU 训练代码中 torch.rsub/alpha 参数为大 int64（≥2^32 且低 32 位为 1，如 4294967297）时，算子静默丢弃 alpha 把 other-self*alpha 算成 other-self，单元素误差可达 1.29e11 量级；返回码 0 无报错，损失/梯度被大规模错值污染
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

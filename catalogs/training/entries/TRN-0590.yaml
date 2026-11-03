@@ -1,0 +1,59 @@
+id: TRN-0590
+legacy_ids: []
+slug: swift_eval_loss_divided_by_accumulation
+aliases: []
+title: swift 评估 loss 被训练累积窗口相除
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: ms-swift
+    component: Trainer 评估路径
+  behavior: Trainer/RerankerTrainer/ScoringTrainer 的评估 loss 也被训练梯度累积窗口相除；num_items_in_batch 不能区分训练/评估调用，应仅对 training mode 施加缩放
+effect:
+  objects:
+  - 训练信号
+  - 指标/日志
+  detail: accumulation=8 时评估分类 loss 0.693147→0.086643；评估跟在完整/部分训练窗口后时除数变化，可反向影响 checkpoint 选择
+  visibility: 静默错误
+mitigation:
+  detect: 固定权重下比较 accumulation=1 与 8 的评估 loss 是否一致
+  fix: 修复 PR https://github.com/modelscope/ms-swift/pull/10487（open，未合入）：仅对 training mode 的模型施加累积缩放，附 CPU 复现与 36 项回归（原实现 9 项预期失败）（未核实合入）
+labels:
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10487
+  kind: github_pr
+relations: []
+original:
+  mechanism: modelscope/ms-swift !10487（2026-11-01 open，10-31 曾留观、本轮无维护者回应按计划收录）。Trainer/RerankerTrainer/ScoringTrainer 把评估 loss 也除以训练梯度累积窗口；近期 Transformers 的评估调用同样传 num_items_in_batch，该参数无法区分训练/评估。固定 BERT 权重 + 验证集（Transformers 5.17）下 accumulation=8 使分类 loss 从 0.693147 变为 0.086643；评估跟在完整与部分训练窗口后时除数不同，可能选出更差的 checkpoint。修复：仅当传入模型处于 training mode 才施加累积缩放，保留训练公式与 fallback 除数；36 项回归通过、原实现 9 项评估用例预期失败。10-31 留观理由（PR open 无 issue 载体、无维护者回应）本轮复核：comments=0，仍无回应，按当时计划转收录。
+  source: modelscope/ms-swift 修复 PR https://github.com/modelscope/ms-swift/pull/10487（open，未合入；代码检查发现+真实 trainer API 的 CPU 复现）
+  behavior: 评估/验证时打印的 loss 被训练的梯度累积步数除了：accumulation=8 时分类 loss 从 0.693 变 0.087。评估在不同累积窗口状态下除数还不一样，基于 eval loss 选 checkpoint 时可能选中更差的那个。训练本身和指标曲线都不报错。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 损失计算
+      effect:
+        from: 指标/日志
+        to: 训练信号

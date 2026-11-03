@@ -1,0 +1,59 @@
+id: INF-2223
+legacy_ids: []
+slug: vllm_offloading_connector_swa_stale_kv
+aliases: []
+title: OffloadingConnector 滑窗层加载从未写入的 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 滑窗层 chunk 对齐
+  behavior: 首个真数据 GPU 块不在 chunk 首块时，load 从未被 store 写过的 CPU slot 读 KV，请求 attend 全零或陈旧 KV。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 请求 attend 到全零或陈旧 KV，输出错误且无报错；CPU 设备（VLLM_TARGET_DEVICE=cpu）连接器单测助手与端到端引擎复现，机制代码设备无关。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue closed；修复落地与否未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63653
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm main 24324ef0（CPU 构建 VLLM_TARGET_DEVICE=cpu，macOS M5 Pro；涉及代码设备无关 Python）。条件：滑窗层模型 + offloaded chunk ≥2 GPU 块（kv_connector_extra_config block_size 大于 GPU block size 或 blocks_per_chunk>1）。链条（行号 @24324ef0）：① GPU 前缀命中把窗口前滑窗块填 null block（single_type_kv_cache_manager.py:1004-1037）；滑窗块在其 chunk 被 store 前释放也在连接器 block table 副本中置零（offloading/scheduler.py:1503-1522）；② 当首个含真数据的 GPU 块不在 chunk 首块时，load 读的 CPU slot 无 store 写过——请求 attend 全零或陈旧 KV，无任何报错。连接器单测助手 + 端到端引擎双复现。
+  source: https://github.com/vllm-project/vllm/issues/63653（closed；单测+e2e 双复现与逐步行号机制）
+  behavior: 带滑动窗口层的模型使用 OffloadingConnector（chunk 跨多 GPU 块）时，命中前缀缓存的请求会从 CPU 卸载层读到从未写入过的空/陈旧 KV 并照常注意力计算，输出悄悄变错，无任何错误或警告；关闭卸载或减小 chunk 即正常。
+  trigger_surface: vllm main 24324ef0+ + OffloadingConnector + 滑动窗口层模型 + offload chunk ≥2 GPU 块 + 前缀缓存命中；设备无关（CPU 复现）。
+  discovery: 2026-10-27 每日扫描
+  notes:
+  - 2026-10-28 回访 2026-10-28：vllm#63653 已 closed（closed_at 2026-10-26）；关闭原因与修复 commit 未核实
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - original.notes

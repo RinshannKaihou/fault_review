@@ -1,0 +1,62 @@
+id: INF-2308
+legacy_ids: []
+slug: ops_nn_bn3d_training_reduce_fp16_kahan_loss
+aliases: []
+title: BN3DTrainingReduce FP16 归约丢补偿量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: bn3d_training_reduce 归约
+  behavior: Ascend 950 上 FP16 短行平方和在 N≤64、R0=1 时直接累加无补偿；分核路径只传 FP32 部分和，补偿量在根核合并前丢失；仓内 Golden Promote 平方和另有独立参考累加误差。
+effect:
+  objects:
+  - 数值结果
+  detail: 短行 53×5 固定输入稳定超三方 L1 RMSE 比值（2.254/3.011/2.803→修复后 0.711/0.540/0.589）；跨核相消输入 NPU=-1 vs CPU/GPU=-0.998046875（比值 32/16/16→1）；修复 PR !13131 merged。
+  visibility: 静默错误
+mitigation:
+  detect: FP16 短行（N≤64、R0=1）与跨核相消输入对照 CPU/GPU；RMSE 比值门槛。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/13131 （merged；K=8+平方和双链保留跨核补偿，GEIR14/14、ST13/13；遗留 2 条 FP16 1-ULP 用例为既有算子问题未修）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7762
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13131
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0564
+original:
+  mechanism: 'cann/ops-nn BN3DTrainingReduce 在 Ascend 950（DAV3510）FP16 归约精度缺陷（issue #7762，参考原始报告 wangyueting/changwei_jiaoyiming#30；受测 18a86283）：(1) 短行分支 N≤64、R0=1 直接累加，53×5 固定输入（[-1000,-10] 均匀分布）稳定超三方 L1 RMSE 比值门槛；(2) 分核路径只传 FP32 部和，Kahan 类补偿量在根核合并前丢失，同 shape 相消输入（+65536 个 1 与 -65536 个 -1 加 2^-9）NPU 输出 -1 而 CPU/GPU -0.998046875；(3) 仓内 Golden Promote 平方和独立参考累加误差：[2047,1] 重复 5 次原 FP32 并行平方和 20951048，精确可表示值 20951050。修复 PR !13131（merged）：分核 FP16 改 K=8+平方和双链保留跨核主值/补偿量（修订后开销 -0.3%~+5%）；短行 N=53/64 增 0.66/0.71μs；三组短行 RMSE 2.254/3.011/2.803→0.711/0.540/0.589，三组相消 32/16/16→1；GEIR14/14、ST13/13、Host UT60/60。扩展 32 条中 2 条（(1,1,1048575)/(1,4,1048575) FP16 均匀正数）平方和 1 ULP 差异为既有算子问题，本 PR 未修、未放宽标准。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7762 （closed，2026-10-30 创建；含冻结输入复现、修复前后 RMSE 与验证矩阵）；修复 PR https://gitcode.com/cann/ops-nn/pull/13131 （merged）
+  behavior: 3D BatchNorm 训练归约算子在 950 上用 FP16：短行（行内元素≤64）求和/平方和精度明显差于 GPU（RMSE 比值 2~3 倍），跨多核的大形状相消输入（正负各半）求和差一个完整尾数级（-1 vs -0.998）；作为训练归约输入使 BN 统计偏离，训练曲线渐坏但无报错。修复后比值回到 ≤1；另有极长形状平方和仍差 1 ULP 的既有问题未修。
+  trigger_surface: cann/ops-nn bn3d_training_reduce；Ascend 950 arch35；FP16；短行 N≤64/R0=1 或跨核相消输入；GEIR/ST 路径。
+  signature: 短行 RMSE 比值>2；相消输入 NPU=-1 vs CPU/GPU=-0.998046875。
+  repro: issue 附冻结 CSV 用例与定向 numpy 构造输入。
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - '2026-10-31 2026-10-31 回访：issue #7762 已 closed（10-30，修复 !13131 此前已 merged）；关闭原因未逐条核实'
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - relations
+  - date: '2026-10-31'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

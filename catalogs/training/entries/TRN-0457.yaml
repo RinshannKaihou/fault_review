@@ -1,0 +1,64 @@
+id: TRN-0457
+legacy_ids: []
+slug: weightquant_bmm_v2_l1_budget_nondet
+aliases: []
+title: WeightQuantBatchMatmul tiling L1 缺陷非确定错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: WeightQuantBMM tiling
+  behavior: tiling 三处 L1 预算校验缺陷：A 预载未扣 WeightL1/bias 占用（预载越界踩 WeightL1 与 AIV 反量化竞态）；baseN 扩展检查无符号下溢误放行；A 全载准入低估占用。
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950 perchannel int4 转置权重 + bf16 输入下多组形状输出非确定性错误：同输入多次执行 rel_l2 在 0.2~1.4 漂移（阈值 3.9e-3），图模式限核与 eager 均可触发。
+  visibility: 不可复现
+mitigation:
+  detect: 同输入多次执行比对（非确定性特征）；限核 16/22 配置跑 rel_l2 回归
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/12304 （issue 注明；状态未核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7357
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/12304
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2215
+original:
+  mechanism: 'cann/ops-nn #7357（open，Ascend950/DAV3510，CANN 9.2.0）：WeightQuantBatchMatmulV2 adaptive split tiling 路径（perchannel + weight int4 转置 + x bf16 非转置）三处 host 侧 L1 预算校验缺陷（kernel 无问题）：1) SetPreLoad 判断 A 预载只用粗估 256KB，未扣 L1 A 区实际被 WeightL1（baseN×baseK×stepKb 双缓冲）与 bias（4KB 双缓冲）占用，kernel 按 host 下发 aPreloadSize（≈M×K/核数）预载时越界踩踏 WeightL1_P1，与 AIV 反量化写 Weight 竞态（16 核 baseN=352 溢出 32KB、22 核 baseN=384 溢出 12KB 实测）；2) CheckL1SizeAfterExtending 用无符号减法，al1Size=260KB>aL1MaxSize=256KB 时左侧下溢为巨大正数，baseN 扩展 256→288 误放行；3) OptimizeMatmulTiling 按 baseM×CeilAlign(K,32)×2B 估 255KB 放行，kernel 按 baseK 粒度实分（K=1632→1664 实 260KB）且未扣 WeightL1(288KB)，AL1+WeightL1=548KB>512KB。用例1 M=256,K=6144,N=6912 图模式限核 16/22 核 rel_l2 0.2~0.6 非确定；用例2 M=80,K=1632,N=9216 eager 原生配置 rel_l2 0.95~1.4 非确定；修复后分别 2.82e-03/2.80e-03 且逐 bit 确定。修复 PR !12304。'
+  source: GitCode issue：https://gitcode.com/cann/ops-nn/issues/7357 （open，含 torch 单算子复现形状、竞态根因三缺陷与修复前后 rel_l2 数据）；修复 PR https://gitcode.com/cann/ops-nn/pull/12304
+  behavior: 量化训练/推理走 WeightQuantBatchMatmulV2（int4 perchannel 转置权重）时，特定形状（如 M=80,K=1632,N=9216 eager；或图模式限核 16/22 核）下输出明显错误且每次执行结果都不一样（rel_l2 在 0.2~1.4 漂移，正常应 <3.9e-3），表现为同一 batch 反复前向 loss 抖动、无法用固定种子复现，掩盖为『随机噪声』而非算子错值；修复后同配置逐 bit 确定。
+  discovery: 2026-10-27 每日扫描
+  notes:
+  - '2026-10-28 2026-10-28 回访：issue #7357 已 closed（2026-10-27T03:28Z）、修复 MR !12304 merged——修复后状态更新。'
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - original.notes
+  - date: '2026-10-28'
+    fields:
+    - relations

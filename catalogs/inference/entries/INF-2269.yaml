@@ -1,0 +1,52 @@
+id: INF-2269
+legacy_ids: []
+slug: transformers_prompt_lookup_advances_stateful_processors
+aliases: []
+title: prompt-lookup 推进有状态 logits processor
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: transformers
+    component: prompt lookup processor
+  behavior: prompt lookup 把 draft token 也喂给有状态 logits processor（CFG、SynthID watermark），状态被 draft 推进，最终输出与不开 prompt lookup 的生成不同。
+effect:
+  objects:
+  - 输出内容
+  detail: do_sample=False 下 prompt lookup 应只改速度：plain greedy 与无状态 processor 一致；guidance_scale 或 SynthID watermark 设置时输出分歧；transformers 5.21.0/main 复现，CPU 即可。
+  visibility: 静默错误
+mitigation:
+  detect: 同参数开/不开 prompt lookup 的输出 diff（重点 guidance_scale / watermark）；SynthID 检测分数对比。
+  fix: 待定（issue 未附修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/50051
+  kind: github_issue
+relations: []
+original:
+  mechanism: transformers 的 prompt lookup decoding 与有状态 logits processor 交互缺陷：prompt lookup（从 prompt 中查找可复用 draft 的投机方法）在推进生成时把 draft token 一并喂给有状态 logits processor，CFG（guidance_scale）与 SynthID watermark 的状态被 draft token 推进，导致最终序列与不启用 prompt lookup 的同参数生成不一致。复现：transformers 5.21.0（main@494470d6 同），torch 2.11.0+cpu，Python 3.12，CPU；hf-internal-testing/tiny-random-LlamaForCausalLM；重复 prompt（a b c d 循环）使 lookup 命中 draft。do_sample=False 下 prompt lookup 本应只改变速度：plain greedy 与无状态 processor（repetition_penalty）确实一致，guidance_scale 或 SynthIDTextWatermarkingConfig 设置时输出分歧。水印场景后果实际是水印被 draft token 污染（检测分数/覆盖改变）。
+  source: GitHub issue https://github.com/huggingface/transformers/issues/50051 （open，2026-10-28，含完整复现脚本与环境）
+  behavior: 在 transformers generate 里启用 prompt lookup decoding（num_prompt_lookup_tokens 等）且同时使用 guidance_scale（CFG）或 SynthID 水印时，最终生成内容与不开 prompt lookup 的同参数运行不同——greedy 下也不一致；无状态惩罚（repetition_penalty）不受影响。意味着带 CFG/水印的推理输出不可复现地取决于投机路径，水印强度/可检测性被 draft token 改变，全程无告警。
+  trigger_surface: transformers 5.21.0+/main（494470d6）；generate + prompt lookup decoding + 有状态 logits processor（guidance_scale、SynthID watermarking_config）；CPU/GPU 均可复现。
+  signature: 开/不开 prompt lookup 的同参数输出 diff（仅在有状态 processor 时出现）。
+  repro: issue 含 20 行复现脚本（tiny-random 模型，CPU）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,54 @@
+id: INF-2329
+legacy_ids: []
+slug: ops_math_silent_check_val0_state_freeze
+aliases: []
+title: aclnnSilentCheck val=0.0 时状态冻结不更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: SilentCheckV2 状态更新
+  behavior: 实现在 val 精确等于 0.0（含 -0.0）时早退，完全不更新 sfdaRef 与 stepRef 但仍返回成功并写 result=0；资料要求正常情况必须更新 sfdaRef（历史 min/max）与 stepRef（每次加一）。
+effect:
+  objects:
+  - 指标/日志
+  detail: val=0 入参 sfdaRef=[70,70,400]/stepRef=7 出参原样返回（应为 [0,0,400]/8）；1e-45 次正规数与 -1 都正常更新，仅精确 0.0 冻结。历史 min 被高估，后续跳变检测（cCoeffL1 相对阈值）基准错误。
+  visibility: 静默错误
+mitigation:
+  detect: 注入 val=0 检查出参 sfdaRef/stepRef 是否未变；对照 1e-45 输入。
+  fix: 待定（issue open，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4367
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math issue #4367（2026-10-31，Atlas A2 910B3/CANN 9.2.0，master@0a6f2a72a）：aclnnSilentCheck 在 val 精确等于 0.0（含 -0.0）时完全不更新 sfdaRef 与 stepRef，但仍返回成功并写出 result=0。实测矩阵：val=0.0 入参 [70,70,400]/7 出参 [70,70,400]/7（均未变，应为 [0,0,400]/8）；val=1e-45（最小次正规）出参 [1.4e-45,1.4e-45,400]/8 正常；val=-1 出参 [-1,-1,400]/8 正常——证明是精确判零的早退而非步数或量级问题。文档证据：aclnnSilentCheck.md:32-33「若npuAsdDetect为3，则打印特征值；否则更新sfdaRef与stepRef后正常返回」「stepRef为检测次数，每次检测加一」「sfdaRef为[pre_val, min_val, max_val]」——val=0 属正常情况必须更新（min 应取 min(70,0)=0）。判定本身没错：cThreshL2=-1 时 val=0 仍能正确返回 result=2，问题只在状态更新被跳过。后果：历史 min 被高估（0 未被记录），后续基于 min/max 的相对跳变阈值（cCoeffL1）判定基准错误；stepRef 计数漏加。锚点：状态冻结发生在 AICPU kernel SilentCheckV2 内部（aclnn_silent_check.cpp:96-100 的空 tensor 早退只覆盖 IsEmpty()）。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4367 （open，2026-10-31 创建；含 0.0/1e-45/-1 三行对照表）
+  behavior: 用 aclnnSilentCheck 持续监控张量值：当某次输入恰好是 0.0（含 -0.0）时，接口返回成功但内部状态机不前进——历史最小值 sfdaRef 不记录这个 0（保持旧值如 70）、检测次数 stepRef 不加一。之后所有基于「历史最小值」的相对跳变告警阈值都被抬高，真实的骤降异常（如从正常值跌到 0 再到异常值）可能不再触发告警；除 0 外的任何值（哪怕 1e-45）都正常更新，可用对照输入定位。
+  trigger_surface: cann/ops-math silent_check；val 精确=0.0（含 -0.0）的正常帧；持续监控 + 相对跳变阈值（cCoeffL1）场景；910B3/CANN 9.2.0。
+  signature: val=0 出参 sfdaRef/stepRef 与入参相同；val=±1e-45/非零值正常更新。
+  repro: issue 附自包含 repro.cpp。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

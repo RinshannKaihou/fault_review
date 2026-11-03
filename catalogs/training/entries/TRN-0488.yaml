@@ -1,0 +1,57 @@
+id: TRN-0488
+legacy_ids: []
+slug: op_plugin_maxpool_indices_int8_wraparound
+aliases: []
+title: max_pool indices int8 三芯分裂环绕溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: max_pool1d/2d indices d。
+  behavior: max_pool1d/2d(return_indices=True) indices dtype 三芯分裂：CPU 契约 int64、950PR/2.9.1 int32、2.7.1 双芯 int8。
+effect:
+  objects:
+  - 数值结果
+  detail: 2.7.1 双芯 64×64 输入 kernel2 下负索引 512/8320（6.2%，双芯 log 逐字一致）；224×224 输入几乎全部索引损坏；indices 是公开契约输出，检测头反查/特征定位拿到负索引引发错位或越界读，全程无报错。
+  visibility: 静默错误
+mitigation:
+  detect: indices dtype 与 CPU 对照断言（int64）；大输入负索引计数
+  fix: 'A5 修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6104（open，2026-10-27）——Ascend950 max_pool1d/2d indices 改 int64（前向 values/indices/反向梯度与 CPU 一致验证）；A2/A3 维持 int32、2.7.1 int8 未覆盖；同源 A5 issue #647'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/652
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/issues/647
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6104
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2220
+original:
+  mechanism: 'Ascend/op-plugin #652（2026-10-27，三芯真机矩阵，log md5 逐字核验）+ 同源 #647（A5 int32 契约分歧）+ 修复 !6104（open）：max_pool1d/2d(return_indices=True) indices dtype 三芯分裂——CPU=torch 契约 int64、950PR/2.9.1=int32、2.7.1 双芯（classic910/910B3）=int8。int8 上限 127：池化输出空间尺寸 >11×11 即触环绕溢出为负。定量：64×64 输入 kernel 2 → 索引总数 8320、负索引 512（6.2%），双芯逐字一致；224×224 外推几乎全部损坏；1D 长度 64 暂安全（最大索引 62<127）。pool 数值主路径（max/avg/adaptive/NaN 契约）三芯全净，缺陷面仅在 indices dtype。修复方向=indices dtype 对齐 torch int64；同族 max_pool3d 在 2.7.1 已 int32 证明内核侧存在非 int8 路径。同日独立 issue #647（A5 int32 与社区语义不一致）与修复 PR !6104（Ascend950 改 int64，A2/A3 保持 int32）为同域。训练侧影响：检测头/特征定位类训练任务用 indices 反查输入位置，负索引导致错位读或越界，标签与样本错配静默进入训练。前置件：int8 溢出定量 512/8320 为执行侧双跑复证记录，probe_idx8_overflow.py 的输出 log 待归档；dtype 分裂本体是 log 直证。推理库 INF-2220 同源已收。'
+  source: https://gitcode.com/Ascend/op-plugin/issues/652 + https://gitcode.com/Ascend/op-plugin/issues/647 + 修复 https://gitcode.com/Ascend/op-plugin/merge_requests/6104（open）
+  behavior: torch_npu 上 max_pool2d(return_indices=True) 返回的 indices 在 2.7.1 芯片上是 int8：池化输出大于 11×11 即出现负索引（64×64 输入 6.2% 索引为负、224×224 几乎全坏），无任何报错；用 indices 反查输入位置的下游（检测头、特征定位、NMS 类）静默错位。950PR/2.9.1 返回 int32（与 int64 契约不一致但实用边界高），A5 修复 PR 亦未覆盖 A2/A3。
+  trigger_surface: torch_npu 2.7.1（classic910/910B3）max_pool1d/2d return_indices=True 且输出空间尺寸超过 11×11；2.9.1/950PR 为 int32 契约分歧；max_pool3d 不受影响
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,55 @@
+id: INF-2349
+legacy_ids: []
+slug: vllm_ascend_glm53_flash_mrv2_pcp_mixed_batch_kv_mismatch
+aliases: []
+title: GLM-5.3-Flash MRV2 PCP 混合批 KV 失配致错答
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: MRV2 PCP KPool/SFA 行数协调
+  behavior: 四处缺陷叠加：SFA 保留 padded NoPE 行而 KPool 裁剪致行数失配；decode-sharding 标志与 KPool 策略不一致；packed store 寻址错位；block table 预留不足。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: prefill/decode 混合批 SFA/indexer query 行失配或直接错答；W8A8+INT8 KV+TP1/PCP8/EP8+MTP5+4 并发复现，eager 与 FULL_DECODE_ONLY 均受影响，纯 prefill 不暴露。
+  visibility: 静默错误
+mitigation:
+  detect: PCP 混合批配置下对比纯 prefill/纯 decode 与混合批输出；监控 SFA query 行数与 KPool 输出 token 数一致性。
+  fix: 待定（issue open 2026-10-31，main@469c6c260 复现；报告给出四处根因与修复方向（对齐行数/replicated decode 判定/packed store 寻址/预留双 chunk），未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20510
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend issue #20510（2026-10-31，main@469c6c260，W8A8+INT8 KV+TP1/PCP8/DP1/EP8/DCP1+MTP5，4 并发请求）：GLM-5.3-Flash MRV2 PCP 在 prefill/decode 混合批下失败或给出错误答案，报告者定位四处根因：(1) #18744 之后 SFA 保留 padded NoPE PCP query 行，而 KPool 独立把 query/index 输出裁剪到实际 token 数，native attention 算子要求两者行数一致；(2) 上游 PCP manager 的 decode-sharding 标志可保持 true，而 Ascend 的 KPool 策略要求 replicated decode——实际输入切分与 attention metadata 不一致；(3) native PCP 预处理对 replicated decode KV 去重，但 deferred packed-cache store 使用原 rank-major slot mapping：PCP8、18 本地行+6 replicated 行时 gathered payload 102 行，按原 144 行 slot 布局切片无法正确寻址这些行（纯 prefill 不暴露）；(4) NoPE 的 persistent block table 只预留 max_num_seqs+1 请求行，而 PCP 可为每个 prefill 创建两个 local chunk：eager P batch 10 行超 9 行 buffer，copy 期 EZ1007（graph-bucket 容量可掩盖）。eager 执行与 FULL_DECODE_ONLY 都受影响。'
+  source: GitHub issue https://github.com/vllm-project/vllm-ascend/issues/20510 （open，2026-10-31 创建；含四处根因分析与复现配置）
+  behavior: 在 NPU 上用 MRV2 + PCP（如 TP1/PCP8/EP8）服务 GLM-5.3-Flash，当一个批里同时有 prefill 和 decode 请求（并发>=2 即可出现）时：要么因 SFA/indexer query 行数不匹配而报错，要么更糟——KV 装载布局错位后模型静默给出错误回答；MTP5 推测解码下错误进一步放大。纯 prefill 或纯 decode 批正常，eager 与图模式都中招，复现于 main@469c6c260。
+  trigger_surface: vllm-ascend MRV2 PCP；GLM-5.3-Flash（NoPE+SFA/indexer 结构）；prefill+decode 混合批；W8A8+INT8 KV+TP1/PCP8/DP1/EP8/DCP1+MTP5；4 并发请求复现。
+  signature: 混合批 SFA query 行数 != KPool 输出 token 数；packed store 102 行 payload 对 144 行 slot；NoPE block table EZ1007 溢出。
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - '2026-11-01 回访 2026-11-01：源 issue #20510 已 closed（09:08Z）；关闭原因未核实，closed≠已修复发布'
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - original.notes

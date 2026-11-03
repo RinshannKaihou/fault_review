@@ -1,0 +1,55 @@
+id: TRN-0525
+legacy_ids: []
+slug: deepspeed_zero12_boundary_drops_request_gradients
+aliases: []
+title: ZeRO-1/2 请求边界提前丢梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: stage_1_and_2 梯度生命周期
+  behavior: 非 offload 路径每个累积边界清空 all_grad_tensors 丢弃 step 前各请求梯度；offload 路径边界兼首 backward 不刷新 host 累积器混入上一步存量
+effect:
+  objects:
+  - 梯度
+  - 优化器状态
+  detail: 调用方对多个请求各设梯度累积边界、把 engine.step() 推迟到所有请求贡献完毕时，非 offload 路径更新静默缺少部分请求的梯度，offload 路径静默混入上一步存量梯度；权重更新方向错但 loss 无异常、无报错；标准单边界即 step 的用法不受影响
+  visibility: 静默错误
+mitigation:
+  detect: 多请求单 step 模式下对比单请求逐步 step 的权重轨迹；检查边界后梯度张量是否仍保留
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8949（open，未合入）：非 offload 保留累积张量到既有 step 清理点；offload 路径在每个边界首 backward 刷新 host 累积器
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: 源自 Snowflake Arctic-Platform PR 371 的移植；修复叙事完整但当前 open 未合入
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8949
+  kind: github_pr
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8749
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed stage_1_and_2.py：梯度累积边界不一定是优化器 step——调用方可以对多个请求各调 engine.set_gradient_accumulation_boundary(True) 而把 engine.step() 推迟到所有请求贡献完毕。两条路径均错：1) 非 offload 优化器在每个边界清空 all_grad_tensors，把 step 之前各请求的梯度丢弃；2) CPU offload + FP32 master 权重优化器在某个 step 的首个 backward 同时是边界时不刷新持久 host 累积器，后续请求会把上一步保存的存量梯度再加进去。修复 PR #8949（open，移植自 Snowflake-AI-Research/Arctic-Platform#371）：非 offload 把累积张量保留到既有 step 清理点（param.grad_accum 累积时保留重读行为防重入 checkpoint 阶段双计）；offload 在每个边界首 backward 刷新 host 累积器；不改默认配置、不加应用侧 workaround。'
+  source: https://github.com/deepspeedai/DeepSpeed/pull/8949（另见 https://github.com/deepspeedai/DeepSpeed/pull/8749）
+  behavior: ZeRO-1/2 多请求延迟 step 的训练（一个 optimizer step 聚合多个请求/微批的梯度再更新）中，非 offload 路径更新静默缺少部分请求的梯度、offload 路径静默混入上一步梯度：权重更新方向错但 loss 无异常、无报错；标准单边界即 step 的用法不受影响
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

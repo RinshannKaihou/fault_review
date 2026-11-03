@@ -1,0 +1,55 @@
+id: INF-2278
+legacy_ids: []
+slug: ttmetal_bh_sfpu_fp16_16bit_dest_garbage
+aliases: []
+title: BH SFPU 读 16-bit Dest 的 fp16 得垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU fp16 Dest load/store
+  behavior: Blackhole 一元 SFPU 算子操作数以 fp16 存 16-bit Dest（dest_acc=No）时在垃圾数据上计算；Wormhole 正确。疑似 SFPLOAD/SFPSTORE 的 fp16 load/store 格式。
+effect:
+  objects:
+  - 数值结果
+  detail: ULP 全量扫描（p100a/p150）：Float16 目标每 lane 回 NaN；读值算子错 1e8~1e9 步；仅 Abs/Neg/Identity 精确；bf16/fp32、dest_acc=Yes 不受影响。
+  visibility: 数值异常
+mitigation:
+  detect: tt_metal/tt-llk/tests/python_tests/test_unary_sfpu_ulp.py 一元 ULP 扫描；fp16 算子对拍 CPU 参考。
+  fix: 待定（定位 SFPLOAD/SFPSTORE 对 fp16 Dest 的格式路径；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62654
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal Blackhole SFPU 对 16-bit Dest 中 Float16 数据的读取缺陷：任何一元 SFPU 算子当操作数以 fp16 存在 16-bit Dest（dest_acc=No）时在垃圾数据上计算——涵盖 Float16 输入、或 Float32 输入经算子输出到 Float16 的场景；同一 cell 在 Wormhole 上正确。证据：tt_metal/tt-llk/tests/python_tests/test_unary_sfpu_ulp.py 穷举一元 ULP 扫描（p100a 2026-10-23 运行、p150 复现）：Float16 目标每 lane 回 NaN；Float16_b/Float32 目标下每个读值算子错 1e8~1e9 步（Square 1.2e9 步、Sign(Float16→Float32) 134242304 步）；只有符号位算子 Abs/Neg/Identity 精确。不受影响：Float16_b 与 Float32 在 16-bit Dest；任意格式 dest_acc=Yes；Float16_b→Float16 at dest_acc=No（TestConfig 提升为 32-bit Dest）。疑似区域：Blackhole 的 SFPLOAD/SFPSTORE 对 fp16 Dest 的 load/store 格式。186 cell 中 145（Float16→Float16）/143（Float32→Float16）在 dest_acc=No 不可测量。
+  source: GitHub issue https://github.com/tenstorrent/tt-metal/issues/62654 （open，2026-10-27，含 ULP 扫描量化数据）
+  behavior: 在 Blackhole（p100a/p150）上使用 fp16 精度且未开 32-bit Dest 累加的模型算子（一元激活/数学函数走 SFPU）时，输出是 NaN 或偏差 1e8-1e9 量级的垃圾值；同代码在 Wormhole 正确。端到端表现为 fp16 模型推理输出全面损坏（若该路径被选中），无报错；只有 Abs/Neg/Identity 幸免。规避：用 bf16/fp32 或 dest_acc=Yes。
+  trigger_surface: tt-metal Blackhole（p100a/p150）；Float16 输入或输出到 Float16 的一元 SFPU 算子；dest_acc=No（16-bit Dest）；Wormhole 不受影响。
+  signature: ULP 扫描：Float16 目标全 NaN，读值算子错 1e8-1e9 步；符号位算子精确。
+  repro: test_unary_sfpu_ulp.py 穷举扫描（p100a/p150 已跑）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - behavior

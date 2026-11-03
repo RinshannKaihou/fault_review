@@ -1,0 +1,57 @@
+id: INF-2342
+legacy_ids: []
+slug: ops_nn_logit_eps_narrowing_subnormal_clamp_flip
+aliases: []
+title: aclnnLogit eps 窄化丢次正规语义 clamp 分支翻转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn_logit eps 窄化
+  behavior: 原型声明 double eps 但实现入 launcher 前按 float32 窄化：负 double 次正规 eps 窄化为 -0.0F 使 clamp 判定错误翻转；LogitGrad 正次正规窄化使 x=0 输出 inf（应 0）。
+effect:
+  objects:
+  - 数值结果
+  detail: 负次正规 eps：clamp 语义静默翻转；正次正规 eps：x=0 输出 inf 违反资料（应 0）。修复在窄化前保留 eps 符号与次正规语义（负→-1.0F 哨兵、正→FLT_TRUE_MIN），float 网格可精确表示的 eps 行为不变；边界 ulp 级差异另案。
+  visibility: 静默错误
+mitigation:
+  detect: 对 ±次正规 eps（±1e-320）与 x=0/1 边界做前后对照；检查 clamp 分支是否随 eps 符号翻转。
+  fix: '修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13251 （merged 2026-10-31，refs issue #7163：A2 910B3 实测 3 dtype×24 组 eps×20 组输入正反向全过；是否随 CANN 发布未核实；float 非精确常规 eps 的 ulp 级差异不在该修复范围）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13251
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/ops-nn/issues/7163
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0374
+original:
+  mechanism: 'cann/ops-nn MR !13251（2026-10-31 merged，refs issue #7163）：aclnnLogit/aclnnLogitGrad 公开原型声明 double eps，但实现链路在入 launcher 前按 float32 窄化，对两类取值静默改写：(1) 负的 double 次正规 eps（如 -1e-320）窄化为 -0.0F，eps>=0 判定错误成立，算子被错误切到 clamp 模式；(2) LogitGrad 侧正的 double 次正规 eps（如 1e-320）窄化为 +0.0F，边界下界变为 0，x=0 落入有效桶输出 inf（资料应为 0）。修复：窄化前保留 eps 符号与次正规语义——aclnnLogit/LogitGrad 负 eps 映射为 float 无 clamp 哨兵 -1.0F；LogitGrad 正次正规 eps 映射为 FLT_TRUE_MIN（所有受支持输入均在 float 网格上，x>=FLT_TRUE_MIN 与 x>=eps binary64 逐例等价）。测试：A2（910B3/CANN 9.2.0）上板回归 3 dtype × 24 组 eps（含 ±次正规、ulp 级、近 1、NaN/Inf）× 20 组输入 × 正反向，含 strided/inplace/空 tensor/尾块，修复范围内用例全过、float 网格可精确表示 eps 输出与修复前逐位一致。float 非精确的常规 eps（ulp 级边界差异）不在本最小修复范围（#7163 对应复现项保持开放）。'
+  source: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13251 （merged 2026-10-31）refs issue https://gitcode.com/cann/ops-nn/issues/7163 （训练库 TRN-0374 同机制）
+  behavior: 调用 aclnnLogit/aclnnLogitGrad 并传入极小的 eps（次正规量级，如 1e-320）：负 eps 时算子静默按 clamp 模式计算（语义翻转），LogitGrad 正 eps 时边界 x=0 的输出从应有的 0 变成 inf。接口不报错、常规 eps 数值看不出差异，只有次正规区间和 x=0/1 边界暴露。修复已 merge（!13251），float 可精确表示的 eps 行为逐位不变。
+  trigger_surface: cann/ops-nn logit/logit_grad；eps 为 double 次正规（|eps|<FLT_TRUE_MIN 量级，如 ±1e-320）；x=0/1 边界；A2 910B3/CANN 9.2.0。
+  signature: 负次正规 eps 触发 clamp 分支；x=0 输出 inf 而非 0。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

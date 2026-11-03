@@ -1,0 +1,55 @@
+id: INF-2340
+legacy_ids: []
+slug: ops_nn_max_pool3d_grad_fp16_tiling_overwrite_oob
+aliases: []
+title: MaxPool3DGrad FP16 小 C 轴 tiling 越界 AIVEC
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: max_pool3d_grad tiling
+  behavior: NDHWC+FP16 且 cX<64、D/H/W 对齐切分不可行时，TrySplitAlignC 把已过 UB 校验的 cOutputInner 覆盖为 64，二分搜索下发未校验值，UB Buffer 放大致越界 AIVEC。
+effect:
+  objects:
+  - 可用性/进度
+  detail: cX=15 与 cX=2 两档复现（TilingKey=513）下训练/推理执行该算子即崩溃，报 EZ9999 AIVEC error 263（地址未对齐或越界）；崩溃前 UB 越界写有污染风险；FP32 或 C≥64 输入不受影响；TTK Dynamic/Const/Release 三模式。
+  visibility: 报错
+mitigation:
+  detect: FP16+NDHWC+cX<64 的 max_pool3d_grad 用例回归；host 侧检查下发 cOutputInner ≤ cX。
+  fix: 待定（issue open；issue 给出正确 tiling 兜底方案描述，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7806
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #7806（2026-10-31，Ascend950PR_958b arch35 AIV 64 核 ub_size=253952B/CANN 9.3.0）：MaxPool3DGrad 在 NDHWC+FP16、cX < moveDataNumCacheLine（FP16=64）且 D/H/W 对齐切分均不可行时，TrySplitAlignC() 把已通过 IsMeetUBSize 校验的 cOutputInner=cX 覆盖为 64；同时二分搜索 bestSplit 初值 1，最终下发未通过 UB 校验的 cOutputInner。DoBufferCalculate() 据此以 cAligned=64 放大所有 UB Buffer，Kernel 的 MTE2/Vector 访问越界触发 AIVEC（EZ9999 internal error, avec error code=263, 82, subErrType 0x4）。复现用例两档（TilingKey=513）：x=(16,26,26,22,15), grads=(16,3,2,4,15), k=[1,3,1,4,1], s=[1,11,19,5,1]（cX=15 small kernel）与 x=(2,149,2,1593,2)（cX=2 big kernel）。issue 给出修复方向：TrySplitAlignC 保留 cOutputInner=min(cX, moveDataNumCacheLine) 兜底、二分只允许用通过校验的候选更新、下发值不得大于 cX。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7806 （open，2026-10-31 创建；含两档复现 shape 与 AIVEC 日志）
+  behavior: FP16 NDHWC 输入且 C 通道数小于 64 的 MaxPool3DGrad 反向：host tiling 静默把输出内循环量放大到 64 再下发，设备端按放大后的缓冲区寻址越界，训练/推理在执行该算子时崩溃 EZ9999 AIVEC error 263（地址未对齐或越界）。崩溃前 UB 越界写有污染风险；FP32 或 C≥64 的输入不受影响。
+  trigger_surface: cann/ops-nn max_pool3d_grad；FP16/NDHWC；cX<64 且 D/H/W 对齐切分不可行；Ascend950PR_958b/CANN 9.3.0；TTK Dynamic/Const/Release 三模式。
+  signature: FP16+NDHWC+cX<64 用例 EZ9999/AIVEC 263；host 下发 cOutputInner=64 而 cX<64。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

@@ -1,0 +1,61 @@
+id: TRN-0504
+legacy_ids: []
+slug: megatron_expert_wgrad_overlap_ddp_stale_grad
+aliases: []
+title: Megatron 专家 wgrad overlap 下 DDP 旧梯度重复累加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: get_megatron_ddp_config
+  behavior: 专家 wgrad overlap 使 DDP 挂 autograd 钩子而非 backward_dw 钩子：专家 param.grad 永不清零，旧梯度下次迭代再累加进 main_grad。
+effect:
+  objects:
+  - 梯度
+  detail: Nemotron 3 Nano 2×GB200 EP8 HybridEP：开该选项后每次运行自第 2 迭代起 grad norm 都不同（该选项时才现）；旧梯度重复进 main_grad，专家权重梯度错。
+  visibility: 不可复现
+mitigation:
+  detect: 对比开/关该选项的逐步 grad_norm（第 1 迭代一致、第 2 迭代起分歧为指纹）；检查专家参数 param.grad 是否跨迭代残留
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/8613（open，2026-10-28）——DDP 在 backward_dw 处注册专家梯度钩子（对齐 --delay-wgrad-compute 既有机制）
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8613
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'NVIDIA/Megatron-LM #8613（2026-10-28，open PR 自带机制与实测）：--overlap-dispatch-backward-with-experts-wgrad 使 TE 分组专家线性层把权重梯度延迟到 backward_dw()：TEGroupedLinear.delay_wgrad_compute = config.delay_wgrad_compute or config.overlap_dispatch_backward_with_experts_wgrad；TE 对这些权重标 skip_backward_post_hook，backward_dw() 触发 register_wgrad_accumulation_and_reduce_hooks 注册的钩子。DistributedDataParallel.__init__ 只有在 ddp_config.delay_wgrad_compute 置位时才把梯度钩子挂到 module（从 backward_dw 触发），否则挂 autograd AccumulateGrad；get_megatron_ddp_config 只拷 --delay-wgrad-compute（两选项互斥），故单开 overlap 选项时 DDP 对专家权重挂了 autograd 钩子——param.grad 永不清零、旧梯度下次迭代再加进 main_grad（与 experts.py 中 fused 路径注释描述的失效一致）。实测症状：Nemotron 3 Nano（hybrid Mamba+MoE）、2 节点 GB200、EP8、HybridEP flex dispatcher，开该选项的每次运行自第 2 迭代起 grad norm 不同。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/8613
+  behavior: MoE 训练开启 --overlap-dispatch-backward-with-experts-wgrad（Megatron DDP 下）时，专家权重的梯度静默算错：上一次迭代的旧梯度不被清除、被再次累加进 main_grad。表现是指纹式的非确定性——同一配置每次运行从第 2 个迭代起 grad norm 各不相同（第 1 迭代正常），训练不报错；关闭该选项则恢复正常。长跑下专家权重按错误梯度更新。
+  trigger_surface: Megatron-LM DDP + MoE + --overlap-dispatch-backward-with-experts-wgrad（与 --delay-wgrad-compute 互斥）；TE 分组专家线性层；Nemotron 3 Nano EP8 HybridEP 实测
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：!8613 仍 open
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

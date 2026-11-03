@@ -1,0 +1,58 @@
+id: TRN-0498
+legacy_ids: []
+slug: trl_server_peft_last_chunk_unmerged_broadcast
+aliases: []
+title: TRL server 模式 LoRA 权重同步尾块未合并
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: 权重同步生成器
+  behavior: PEFT 权重同步在 yield 完后于生成器内 unmerge_adapter()（就地减 delta）；vLLM 尾块直到迭代器耗尽才 cat 读取视图，unmerge 先执行，尾块 LoRA 目标权重以未合并值发出。
+effect:
+  objects:
+  - 模型权重
+  - 训练信号
+  detail: vllm_mode=server+PEFT 下每次同步尾块发送未加 LoRA delta 的 base 权重（fp32 默认 dtype 必触发）；rollout 持续用接近原模型的权重生成，与 trainer 脱节，IS ratio/KL 静默失真。
+  visibility: 静默错误
+mitigation:
+  detect: server 侧抽样比对收到的权重与 trainer merge 后参数；监控 rollout logprob 与 train logprob 漂移
+  fix: 待定（issue open 2026-10-29，无修复 PR；colocate 模式不受影响；规避：增大 buffer_size_bytes 使尾块非耗尽触发或暂停 unmerge 时序）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 作者附 CPU 最小复现（真实 _iter_named_params）；另有次要 GPU 面：packing 在 side stream 而 merge 在当前流、无事件同步
+evidence:
+- url: https://github.com/huggingface/trl/issues/8003
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'huggingface/trl #8003（2026-10-29，open）：vllm_mode=server + PEFT（LoRA）时 sync_weights 后 vLLM server 收到的部分权重是未合并的 base 权重。VLLMClient.update_named_params 把 VLLMGeneration._iter_named_params() 流式送入 vLLM packed_nccl_broadcast_producer；_iter_named_params 执行 model.merge_adapter() → 逐参数 yield → model.unmerge_adapter()（就地 weight.data -= delta）。vLLM 的 pack_tensors（vllm/distributed/weight_transfer/packed_tensor.py）只收集 yield 张量的视图（.contiguous().view(-1).view(torch.uint8)，无拷贝），仅当 buffer 超 buffer_size_bytes（默认 1GB）或迭代器耗尽时才 torch.cat 读取。最后一块因迭代器耗尽而触发：生成器在最后一个 yield 后恢复、执行 unmerge_adapter()，然后 torch.cat 才读视图——尾块内每个 LoRA 目标权重都以未合并值发送。fp32 trainer 权重（GRPOTrainer 默认 dtype）下 Qwen3-0.6B 约 2.4GB、1.7B 约 8GB，1GB buffer 时尾块总是因耗尽而结束，每次 sync 都触发。colocate 模式同模型训练正确。作者附真实 _iter_named_params 的 CPU 最小复现。次要 GPU 面：packing 跑在 producer 的 side stream 上而 merge_adapter 在生成器首次恢复时的当前流，二者间无 event/stream 同步。'
+  source: https://github.com/huggingface/trl/issues/8003
+  behavior: GRPO/RL 训练用 vllm_mode=server + LoRA 时，权重同步后 vLLM 收到的最后一块参数是没有加上 LoRA 增量的原始 base 权重：rollout 生成持续用接近原模型的旧权重，而 trainer 侧继续训练，训推权重静默脱节。表现为采样质量不随训练改善、importance ratio/KL 等指标逐渐失真但无报错；colocate 模式正常可作对照。模型越大（fp32 默认 dtype）越必然触发。
+  trigger_surface: trl GRPOTrainer + vllm_mode=server + PEFT/LoRA + packed_nccl_broadcast 权重同步；fp32 默认 dtype（2.4GB+ 模型）必触发尾块耗尽路径
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：trl #8003 open 无修复 PR'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

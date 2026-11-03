@@ -1,0 +1,51 @@
+id: INF-2191
+legacy_ids: []
+slug: cann_fia_v5_bsnd_d512_partial_rows_unwritten
+aliases: []
+title: FIA V5 BSND D=512 中短序列只写前 32 行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FIA V5 BSND D=512 分支
+  behavior: D=512 且 BSND/BSH、32<S<64 时尾块/分核搬运只写前 32 行输出，其余行不写，两段返回 0
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: attentionOut 除前 32 行外保持调用前内存（金丝雀 3.0/-7.0 均保留），S=63 时 31432/32256 元素错、max_abs=5.24；BNSD 同内存对照正确
+  visibility: 静默错误
+mitigation:
+  detect: 输出张量预填金丝雀值检查未写区域；同数据 BNSD 布局对照（逐元素一致 max_abs≈1e-3）
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6738
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnFusedInferAttentionScoreV5（torch 侧入口 torch_npu.npu_fused_infer_attention_score）在 Ascend950PR / CANN 9.2.0-beta.2 上，attentionOut 为 D=512 + inputLayout=BSND（或 BSH）且 32<S<64 时只写出前 32 行，其余行保持调用前内存；两段式接口均返回 0。实测扫描确认触发域：布局 BSND/BSH（BNSD 正常）、D=512（D=64/128/256 正常；D=512 且 S 为 64 的倍数或 S>=64 正常）、32<S<64（S=33/47/61/62/63 只写 32 行；S=32/64/65/66 正常）。aclnn C 直调对照（attentionOut 预置 0 统计非零）：BSND S=63 → nz=16384（=32×512，只写 32 行）；BNSD → nz=32256（=63×512，全写）。输出金丝雀（预填 3.0/-7.0 两种有限值各自保留 ⇒ 未写）。N=1 时 BSND 与 BNSD 物理排布相同，同一份内存换 BNSD 结果正确（max_abs≈9.5e-4，fp16 容差内），证明是 BSND/BSH 的 D=512 分支尾块/分核搬运少写而非数值精度差异。来源 https://gitcode.com/cann/ops-transformer/issues/6738（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-transformer/issues/6738
+  behavior: 用 npu_fused_infer_attention_score 或 aclnnFusedInferAttentionScoreV5 做推理注意力计算，当 head_dim=512、布局 BSND/BSH、序列长度在 33~63 之间时，输出张量只有前 32 行被写入，其余行是调用前缓冲区残留的旧值（可能是 0、金丝雀值或上一步的中间结果），接口返回成功、无任何报错。S=63 实测 31432/32256 个元素错、max_abs=5.24，N=2 时 max_abs=514；把同一份数据换 BNSD 布局则完全正确。上层若复用缓冲区，会拿到部分行完全错误的注意力输出。
+  trigger_surface: aclnnFusedInferAttentionScoreV5 / torch_npu.npu_fused_infer_attention_score；D=512 + BSND/BSH + 32<S<64；Ascend950PR、CANN 9.2.0-beta.2、torch 2.14.0 + torch_npu 2.14.0 实测
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

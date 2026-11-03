@@ -1,0 +1,65 @@
+id: INF-2307
+legacy_ids: []
+slug: ops_math_amp_update_scale_fp16_growth_inf
+aliases: []
+title: aclnnAmpUpdateScale fp16 增长溢出输出 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: cann
+    component: amp_update_scale 增长
+  behavior: fp16 增长分支且 currentScale*growthFactor 超 fp16 范围时无溢出保护：资料要求保持当前 scale，实现直接乘出 inf。
+effect:
+  objects:
+  - 优化器状态
+  - 数值结果
+  detail: fp16 scale=32768 tracker=999 gi=1000 gf=2.0 实测 updatedScale=inf（应 32768）；阈值二分 ≤32752 正常、≥32768 一律 inf；fp32/bf16 同参 65536 正常。
+  visibility: 数值异常
+mitigation:
+  detect: fp16 scale≥32768 增长分支断言保持原值；对照 fp32/bf16。
+  fix: WIP MR https://gitcode.com/cann/ops-math/merge_requests/6903 （open：guard FP16 scale growth overflow，未合入未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4344
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6903
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0562
+original:
+  mechanism: 'cann/ops-math aclnnAmpUpdateScale fp16 通路增长溢出保护缺失（issue #4344，A3/910_9362，CANN 9.2.0-beta.2，master 1d0e7bab 实测）：growthTracker+1==growthInterval（增长分支）且 currentScale*growthFactor 超出 fp16 可表示范围时 updatedScale 输出 inf；资料「溢出保护」明确要求保持当前 scale 不变。实测 fp16 scale=32768、tracker=999、gi=1000、gf=2.0：updatedScale=inf（应 32768）、updatedGrowthTracker=0（与资料一致）。阈值二分：scale≤32752 时 scale*2 正常（32752→65504），scale≥32768 一律 inf。阴性对照：fp32/bf16 同参输出 65536 正常。关联 #4278（缺可运行 examples）为同算子不同根因。WIP 修复 MR !6903「amp_update_scale: guard FP16 scale growth overflow」方向一致，open 未合入未核实内容。AMP 训练中 scale 变 inf 后梯度反缩放全毁，属可级联的数值异常。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4344 （open，2026-10-30 创建；含阈值二分与三 dtype 对照、自包含 repro.cpp）；修复 MR https://gitcode.com/cann/ops-math/merge_requests/6903 （open WIP）
+  behavior: fp16 混合精度训练的 loss scale 更新算子：当当前 scale 已到 32768 且触发增长（间隔到点）时，新的 scale 直接变成 inf 而不是按资料要求保持 32768 不变；scale 在 32752 及以下时增长正常（翻倍到 65504）。scale 一旦 inf，后续所有梯度反缩放都是 inf/0，训练立刻崩坏；fp32/bf16 同参数完全正常，只有 fp16 通路有此问题。AMP 调试时表现为 loss 突然全 NaN 且难与溢出事件区分。
+  trigger_surface: cann/ops-math amp_update_scale；fp16；scale≥32768 且增长分支（tracker+1==interval）；AMP 训练回路。
+  signature: fp16 scale=32768 增长后 updatedScale=inf（fp32/bf16=65536）。
+  repro: issue 附自包含 repro.cpp（5 组含阴性对照）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 优化器
+      effect:
+        from: 数值结果
+        to: 优化器状态

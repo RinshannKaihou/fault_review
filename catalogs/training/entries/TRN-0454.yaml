@@ -1,0 +1,62 @@
+id: TRN-0454
+legacy_ids: []
+slug: groupnorm_fp32_illconditioned_rstd_nan
+aliases: []
+title: GroupNorm 族 fp32 病态输入 rstd 抵消致整块 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: GroupNorm/GroupNormSilu
+  behavior: fp32 下组内方差远小于均值平方时，方差计算灾难性抵消成负或 0，rstdOut 变 NaN 或 1/sqrt(eps)，out 整块 NaN，两段接口返回 0 无错误码。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 训练信号
+  detail: 合法 fp32 输入（如 x=1000±0.01，满足资料全部约束）下 GroupNorm/GroupNormSilu 输出整块 NaN 且无任何报错；同形状良态输入正常，激活分布漂移到病态区间即静默产出 NaN。
+  visibility: 数值异常
+mitigation:
+  detect: 监控 norm 层 mean²/var 比与输出 NaN；上游用例（50±0.001、1000±0.01）可作探针
+  fix: 待定（#7334/#7347 均 open，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7334
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7347
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2203
+original:
+  mechanism: 'CANN 9.2.0（Ascend 910B2/B3，Atlas A2 训练系列）上 aclnnGroupNormSilu 与 aclnnGroupNorm 在 fp32 合法输入下把 rstd 算成 NaN。ops-nn #7334：x=50±0.001（组内方差 3.5e-7）、x=1000±0.01（3.5e-5）时 rstdOut=NaN、out 128/128 NaN，meanOut 正常（50/1000），期望 rstd≈310.77/148.35；用例满足资料 rank 2-8、group 整除 C、eps>0、fp32 全部约束，属窄方差下方差公式（E[x²]−μ²]类）灾难性抵消。ops-nn #7347：均值远大于标准差（x≈1000±0.01）时 rstdOut 返回 NaN 或 1/sqrt(eps)=316.23（方差算成 0），out 256 元素中 128 个 NaN，fp64 参考应为 55.52/56.08；同形状均值≈0 良态输入与 fp64 参考误差 ~6e-8。两算子两段式接口均返回 0 无错误码。上游均附完整 C++ 单算子复现（repro.cpp 与编译命令、实测值）。机制为 norm 族方差估计非稳健（未用 Welford/双遍或未提升中间量精度），与已收 GroupNormSwishGrad 反向 tiling 失败（TRN-0344）不同缺陷面。推理库同源条目 INF-2203。'
+  source: GitCode issues：https://gitcode.com/cann/ops-nn/issues/7334 （GroupNormSilu 窄方差 rstd NaN，open，含复现代码）、https://gitcode.com/cann/ops-nn/issues/7347 （GroupNorm 病态输入 rstdOut NaN/1/sqrt(eps)，open，含复现代码）；推理库同源条目 INF-2203
+  behavior: 训练或单算子调用 GroupNorm/GroupNormSilu 时，若某组激活集中在远离 0 的大均值附近（如 1000±0.01），输出整块变 NaN 且接口返回成功，没有任何报错或错误码；同一网络在良态输入（均值≈0）下完全正常，因此问题只在激活分布漂移到病态区间时出现，表现为前向输出/loss 突然大量 NaN、而 meanOut 仍正确，难以定位到 norm 层。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+    uncertain:
+    - behavior

@@ -1,0 +1,49 @@
+id: TRN-0582
+legacy_ids: []
+slug: torchnpu_310p_kthvalue_fp16_quantized
+aliases: []
+title: 310P kthvalue 值路径走 fp16 内部表示
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: kthvalue
+  behavior: fp32 输入的 kthvalue 返回值不是输入中的元素，恰为真值的 fp16 舍入值（k=1/5/32 全命中）；索引路径 int64 正确；同族 sort/topk/median/min 同输入逐位干净
+effect:
+  objects:
+  - 数值结果
+  detail: 选择类算子返回不存在于输入中的数，310P3 独有（A3/910B3/950PR 三芯对照全干净）；量化面不限于 Cube/GEMM 路径
+  visibility: 静默错误
+mitigation:
+  detect: kthvalue 返回值与『输入在该索引处的真值』比对（索引正确可直接定位）；或与 fp16 舍入参照对拍
+  fix: 待定（issue open，未见修复）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5787
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2350
+original:
+  mechanism: 'Ascend/pytorch #5787（2026-11-01 open，310P3，CANN 9.2.1 + torch_npu 2.11.0rc1，seed 固定双跑逐位确定）。fp32 输入 (32,63) 的 torch.kthvalue 返回值不是输入张量中的元素而是真值的 fp16 舍入值：k=1/5/32 三档与 fp16 量化参照差均为 0.000e+00，而索引路径 int64 完全正确（逐位同 CPU）——值路径走了 fp16 内部表示。同族选择算子 sort/topk/median/min 同芯片同输入逐位干净，量化面呈严格选择性。跨芯对照：A3/910B3/950PR 三芯 kthvalue 三档全部逐位干净，值面 fp16 量化为 310P3 独有。另 indices 形状 (32,) 缺 keepdim 维度（CPU 契约 (32,1)）为四芯共性（适配层 shape 语义问题，与值面缺陷分层）。机理与 #5785（310P fp32 GEMM/conv 静默 fp16 输入路径，TRN-0565）同族但本案为选择类算子，说明该芯片量化面不限于 Cube 单元路径。'
+  source: 'Ascend/pytorch https://gitcode.com/Ascend/pytorch/issues/5787（open）；同族 #5785 已编 TRN-0565；推理库同机制 INF-2350'
+  behavior: 在 310P 上用 fp32 张量调 torch.kthvalue，返回的值不等于输入里真实存在的那个元素——是它的 fp16 舍入值（k=1/5/32 都命中，与 fp16 参照差恰好 0），索引倒是对的。sort/topk/median/min 全都逐位正确，只有 kthvalue 中招；A3/910B3/950PR 上 kthvalue 也全部干净。另外返回 indices 形状是 (32,) 少一维（应为 (32,1)），四芯都这样。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

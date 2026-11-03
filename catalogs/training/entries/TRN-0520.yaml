@@ -1,0 +1,61 @@
+id: TRN-0520
+legacy_ids: []
+slug: hccl_reduce_scatter_v_prod_missing_barrier
+aliases: []
+title: HCCL ReduceScatterV 缺 barrier 静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: ReduceScatterV AICPU 模板
+  behavior: ReduceScatterV 的 RDMA 写后仅 host 线程同步无 device DMA barrier，LocalReduce 可能读到未落盘 slot；非 V 版已修 V 版漏同步
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 多卡训练 ReduceScatterV 做 PROD 或 INT64/UINT64/FP64 归约时结果静默错误，梯度被污染致数值漂移，无报错无超时、随时序偶发；16 卡 INT32 PROD countSize=2097152 实测 exp:2147483647、act:-501334399
+  visibility: 静默错误
+mitigation:
+  detect: 规约结果与单卡参考对比；对 64 位/PROD 场景跑一致性自检
+  fix: 修复 PR https://gitcode.com/cann/hccl/merge_requests/3805（open，未合入）：与非 V 版 !154 对齐补 HcommBatchModeEnd+Start+HcommThreadJoin barrier 并补 UINT64/FP64 判断
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: 推理库 INF-2263 同 URL 已收（训练判定面：集合通信错值影响梯度归约与分布式训练数值）；训练侧独立条目
+evidence:
+- url: https://gitcode.com/cann/hccl/merge_requests/3805
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2263
+original:
+  mechanism: HCCL ReduceScatterV 算子（AICPU 模板 InsTempReduceScatterVMesh1D）的 KernelRun 通过 SendRecvWrite 向远端 hcclBuff 发起 RDMA write，随后 PostSyncInterThreads 只完成 host 侧线程同步，未保证 device 侧 DMA 写落盘；紧接的 PostCopy 从本地 hcclBuff 读取数据做 LocalReduce，可能读到尚未写入完成的 slot。PROD 规约受影响最重（走 aicpu_inlinereduce）。非 V 版 InsTempReduceScatterMesh1D 已在 PR !154（c24d9ecbda）为 INT64/UINT64/FP64/PROD 补齐 HcommBatchModeEnd+HcommBatchModeStart+HcommThreadJoin barrier，V 版从未同步该修复。复现：16 卡 INT32 reduce_op=PROD countSize=2097152，check_result host_buf 与 check_buf 不等，exp:2147483647, act:-501334399。修复 PR !3805（open）：补齐 device barrier 并修正 PostCopy 已有 barrier 的触发条件（补 UINT64/FP64）。
+  source: https://gitcode.com/cann/hccl/merge_requests/3805
+  behavior: 多卡 NPU 训练使用 ReduceScatterV 做 PROD 规约或 INT64/UINT64/FP64 类型归约时，部分卡读到未完成的远端写、规约结果静默错误（实测 16 卡 INT32 PROD 期望 2147483647 实得 -501334399）；梯度归约被污染后训练数值漂移，无报错无超时，随通信时序偶发
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - 2026-10-31 2026-10-31 回访：!3805 仍 open（批次快照 2026-10-30T03:58Z），无状态变化。
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - original.notes

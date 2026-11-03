@@ -1,0 +1,60 @@
+id: TRN-0459
+legacy_ids: []
+slug: acos_grad_tiling_dtype_check_and_wraparound
+aliases: []
+title: acos_grad tiling 混 dtype 错读与块参数回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: acos_grad tiling（arch35）
+  behavior: tiling 只校验输入 y 的 dtype，dy/z 一致性未校验，kernel 按 y 的模板类型解引用 dy/z，混合 dtype 错读；块参数先运算后窄化 uint32，超大 shape 回绕只覆盖前 512 元素。
+effect:
+  objects:
+  - 梯度
+  detail: y=fp32、dy=fp16 的 AcosGrad 被静默放行产出错梯度；元素总数 ~2^41 量级时只算前 512 个元素其余保持旧值，均无报错。同族 asin_grad 已正确校验且全程 int64 可对照。
+  visibility: 静默错误
+mitigation:
+  detect: 对 dy/z dtype 组合与超大 totalLength 构造负例校验 tiling 拒绝；对照 asin_grad
+  fix: 待定（建议对齐 asin_grad：校验 dtype 一致、块参数全程 int64 并校验值域，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4085
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4087
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6747
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2201
+original:
+  mechanism: 'cann/ops-math #4085+#4087（open，Ascend 950/arch35，CANN 9.3.0，源码级分析）：#4085 acos_grad tiling 层 GetShapeInfo 仅 GetInputDesc(0)(y) 参与 dtype 校验，dy 与输出 z 的 dtype 全链未校验；kernel（op_kernel/arch35/acos_grad.h）以 y 驱动的单一模板类型 T 直接解引用 dyGm_/zGm_ 无 Cast，y=FLOAT32 而 dy=FLOAT16 的混合组合被静默放行，kernel 按 fp32 步长读 fp16 缓冲产出无报错错误结果；同族 asin_grad（GetShapeAttrsInfo）已显式拒绝不一致组合、canndev 基线图级 IMPLEMENT_VERIFIER(CheckTwoInputDtypeSame) 拒绝。#4087 CalcBlockParams 存在 coreNum/blockFormerRaw/blockFormer/blockNum 四处 int64 先运算后窄化 uint32，totalLength 达 2^41-511 时 CeilDiv 结果越过 uint32 边界回绕、blockNum=1 只覆盖前 512 元素且返回 GRAPH_SUCCESS；比较与兜底位于窄化之后无法纠正；全链无 totalLength 上界校验；asin_grad tiling 参数全链 int64 无此问题。推理库同源条目 INF-2201（#4087 面已收）；训练侧 acos_grad 为激活反传算子，本条合并两缺陷面按训练范围收录。'
+  source: GitCode issues：https://gitcode.com/cann/ops-math/issues/4085 （dtype 一致性校验缺失，open）、https://gitcode.com/cann/ops-math/issues/4087 （块参数窄化回绕，open）；推理库同源条目 INF-2201
+  behavior: 训练反传经过 AcosGrad 时：若 dy 与 y dtype 不一致（如 fp32 y 配 fp16 dy），tiling 不报错，kernel 按错误步长读缓冲，产出无报错的错误梯度；若反向张量元素总数接近 2^41（超大 shape），tiling 回绕后只算前 512 个元素、其余保持旧值，接口仍返回成功。两种情况训练都不会崩，梯度悄悄错，同族 asin_grad 路径则正确拒绝。
+  discovery: 2026-10-27 每日扫描
+  notes:
+  - '2026-10-28 2026-10-28 回访：acos_grad 加固 MR !6747（open，updated 10-27T20:41Z）覆盖 tiling/Host 推理层输入校验补齐（dy/z dtype 一致性与块参数窄化相关整改）、错误码归位；issue #4085/#4087 仍 open。'
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - evidence
+    - original.notes

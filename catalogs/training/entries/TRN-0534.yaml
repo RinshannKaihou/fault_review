@@ -1,0 +1,53 @@
+id: TRN-0534
+legacy_ids: []
+slug: reduce_mean_leaves_vector_mask_register_dirty
+aliases: []
+title: ReduceMean 残留 VECTOR_MASK 污染后核
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ReduceMean high_precision
+  behavior: 4 个 high_precision aiv kernel 结束后不复位 VECTOR_MASK 寄存器（残留 1/16/0），后续复用该 core 的 kernel 其余 lane 被屏蔽
+effect:
+  objects:
+  - 数值结果
+  detail: 'msSanitizer memcheck 每个变体稳定检出（910B3、CANN 9.2.0、master ebc07f7b9）；同仓 #4223/#4201 同型已两单，疑族级问题'
+  visibility: 静默错误
+mitigation:
+  detect: msSanitizer memcheck 检出 VECTOR_MASK 未复位；对 mean 后接向量算子的输出对拍
+  fix: 待定（issue open；建议 kernel 结束前复位到默认全掩码并排查族级问题）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4259
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4223
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4201
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-math ReduceMean 的 aiv kernel（ops_legacy/reduce_mean 下 4 个不同 high_precision 二进制：1000500/82100900 mix_aiv 变体，aclnnMeanV2 与 aclnnMean 都走这批 kernel）执行结束后不复位 VECTOR_MASK 寄存器，msSanitizer memcheck 在每个变体稳定报告 VECTOR_MASK_0/1 未回到默认全 1（0xFFFFFFFFFFFFFFFF），实际残留 1（仅 lane 0 使能）、16（仅 lane 4）或 0；aiv(0)/aiv(1) 两个 block 都命中。VECTOR_MASK 是 AIV core 寄存器级状态、跨 kernel 共享；后续不自行重设 mask 的 kernel 复用该 core 时其余 lane 被意外屏蔽产生静默错算。同仓已有两单同型（#4223、#4201），本单第三个命中，报告者建议确认族级问题。环境：Ascend 910B3、CANN 9.2.0、master ebc07f7b9。训练影响面：mean 归约（loss 归一化、layernorm 前统计等）后接的向量算子可能被脏 mask 静默屏蔽部分 lane。
+  source: https://gitcode.com/cann/ops-math/issues/4259（同型 https://gitcode.com/cann/ops-math/issues/4223 https://gitcode.com/cann/ops-math/issues/4201）
+  behavior: NPU 训练中任何用到 mean 归约（loss 归一化、norm 层统计）的程序，其后的向量算子可能因残留 VECTOR_MASK 只对部分 lane 计算：输出静默错值且依赖 kernel 调度顺序、难以复现；msSanitizer memcheck 可稳定检出寄存器残留，普通精度对拍只在特定后继算子组合下暴露
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    issue_unfixed:
+    - behavior

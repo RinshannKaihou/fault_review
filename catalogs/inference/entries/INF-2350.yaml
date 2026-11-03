@@ -1,0 +1,59 @@
+id: INF-2350
+legacy_ids: []
+slug: kthvalue_310p_fp16_quantized_values
+aliases: []
+title: 310P kthvalue 值路径走 fp16 内部表示，返回不存在于输入中的数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: kthvalue 内核值路径
+  behavior: fp32 输入的 kthvalue 返回值按 fp16 舍入而非原值，返回不在输入张量中的数；索引路径正确，同族 sort/topk/median/min 干净
+effect:
+  objects:
+  - 数值结果
+  detail: 310P3 上 fp32 kthvalue 返回值与 fp16 量化参照差恰为 0（k=1/5/32 全中，raw_diff 最高 9.6e-4），选择算子返回不存在于输入的元素值；indices 形状缺 keepdim 维（四芯共性适配层问题）
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；可用 sort/topk/median/min 规避——同芯片同输入逐位干净）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5787
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2323
+- kind: cross
+  target: TRN-0582
+pattern: PAT-INF-0199
+original:
+  mechanism: 'Atlas 310P3 上 torch.kthvalue 的返回值不是输入张量中的元素：恰为真值的 fp16 舍入（与 fp16 量化参照差 0.000e+00），索引路径正确（int64、逐位同 CPU）。k=1/5/32 三档全中，双跑逐位确定。同族选择算子 sort/topk/median/min 在同芯片同输入逐位干净（raw_diff=0），量化面严格选择 kthvalue。跨芯对照（同探针同 seed）：A3/910B3/950PR 三档全 CLEAN，值面 fp16 量化为 310P3 独有。另 indices 形状 (32,) 而非 CPU 契约 (32,1)（keepdim 缺维，四芯共性，属适配层 shape 语义问题，会让依赖形状的下游如 gather 报错）——一案两层。机理与 #5785（310P fp32 GEMM/conv 静默 fp16 输入路径，已收 INF-2323）同族 fp16 内部表示，但本案为选择类算子，证明该量化面不限于 Cube/GEMM 路径（#5785 正文的「降级仅发生在 Cube 单元路径」边界表述需据本案修正）。版本：CANN 9.2.1 社区版、torch 2.11.0 + torch_npu 2.11.0rc1，seed=20261031 双跑逐位同值，独立子进程隔离 + CPU 同码对照。来源 https://gitcode.com/Ascend/pytorch/issues/5787（open）。'
+  source: 2026-11-01 每日扫描。https://gitcode.com/Ascend/pytorch/issues/5787
+  behavior: 在 310P3 上对 fp32 张量调 torch.kthvalue：返回的值不等于输入里任何元素，而是真值的 fp16 舍入（如 -1.567995 返回 -1.568359），k=1/5/32 都一样错，误差最大 9.6e-4；索引是对的，sort/topk/median/min 同芯片也全对。换 A3/910B3/950PR 同代码全干净。另 indices 形状少一维（(32,) vs 契约 (32,1)），下游 gather 会直接报错。
+  trigger_surface: Atlas 310P3（A3/910B3/950PR 不复现）；CANN 9.2.1 + torch_npu 2.11.0rc1；fp32 输入的 torch.kthvalue 值路径；indices keepdim 缺维为四芯共性
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-02'
+    fields:
+    - relations
+  - date: '2026-11-02'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

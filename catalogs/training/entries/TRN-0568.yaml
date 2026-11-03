@@ -1,0 +1,60 @@
+id: TRN-0568
+legacy_ids: []
+slug: ops_math_reduce_log_sum_empty_zero_not_neginf
+aliases: []
+title: aclnnReduceLogSum 空输入输出 0 而非 -inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: reduce_log_sum 空输入早退
+  behavior: 空 tensor（numel=0）早退分支 FillScalar(reduce, 0.0f) 把 sum 的零元当最终结果写出、跳过 log；数学语义应为 log(0)=-inf，同仓 aclnnLogSumExp 填 -INFINITY。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B2 实测：data=fp32[0,3]、axes=[0] 期望 [-inf,-inf,-inf] 实得 [0,0,0]，两段均返回 0 无告警；非空输入逐位正确；master a6d37f00 复核仍在。
+  visibility: 静默错误
+mitigation:
+  detect: 空 batch/空归约轴场景与 torch.log(torch.zeros(n)) 参照对拍；同族 LogSumExp 对照。
+  fix: 待定（issue open：期望空输入填 -inf 与 aclnnLogSumExp 统一，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-01'
+remarks: 训练面：空 batch（最后一批不足/过滤后为空）经 log-sum 类 loss/归约时静默得 0 而非 -inf，下游把「无数据」当「log-sum=0」。cross INF-2332 为推理库同 URL 条目。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4366
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0552
+- kind: cross
+  target: INF-2332
+pattern: PAT-TRN-0061
+original:
+  mechanism: 'cann/ops-math #4366（2026-10-31，open；Ascend910B2/CANN 9.2.0、C++ 两段式直调）：aclnnReduceLogSum 语义为 log(sum(data,axes))，空 tensor 归约和为 0 应输出 log(0)=-inf；实现走 op_api/aclnn_reduce_log_sum.cpp:163-171 早退分支直接 FillScalar(reduce, 0.0f) 写 0 跳过 log。实测 data=fp32[0,3]、axes=[0]、reduce=[3] 期望 [-inf,-inf,-inf] 实得 phase1=0、phase2=0、[0,0,0]；data=fp32[0] 标量同形态；非空对照 [4,2] 逐位一致。同仓 aclnnLogSumExp（aclnn_logsumexp.cpp:213-215）对空 tensor FillScalar(out, -INFINITY) 且注释「空tensor填充-INFINITY」，两算子数学语义一致（空归约→-inf）却一处 -inf 一处 0。源码基线 master a6d37f00 复核缺陷仍在。'
+  source: https://gitcode.com/cann/ops-math/issues/4366 （open，2026-10-31；含 C++ 复现脚本、对照表与源码锚点）
+  behavior: NPU 上对空输入（空 batch、空归约轴，如过滤后数据集为空）调用 ReduceLogSum：接口返回成功、输出全 0 而非 -inf，无任何告警；下游把「无数据」当成 log-sum=0 继续算（如 loss/归一化因子），数值静默偏离正确语义；同场景 LogSumExp 又正确给 -inf，行为不一致难以预期。
+  trigger_surface: Ascend 910B2 + CANN 9.2.0；aclnnReduceLogSum 空 tensor 输入（numel=0）；空 batch/空切片的 loss/归约路径。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  - date: '2026-11-01'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,58 @@
+id: TRN-0455
+legacy_ids: []
+slug: batchnorm_extreme_numeric_accuracy
+aliases: []
+title: BatchNormExt2/BN3D 极端数值三精度缺陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BatchNormExt2、BN3DUpdate
+  behavior: 三缺陷：rstd 中间量 v∈(8.5e37,3.4e38] 下 denormal 被 FTZ 清零；Welford 归约 x 与 mean 相等（含 ±inf）时 NaN 污染累加；BN3D 方差直接相减量级接近时抵消放大。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 训练信号
+  detail: 极端数值输入下 BN 前向/训练更新精度崩坏：rstd 清零后输出 y 精确等于 offset；inf 输入把 NaN 写进滚动统计扩散到后续 batch；方差抵消使更新结果与 golden 不一致。无报错。
+  visibility: 静默错误
+mitigation:
+  detect: BN 输出 golden 对拍覆盖 var+eps∈(8.5e37,3.4e38]、x==mean（含 ±inf）、square_sum≈(sum/num)² 三类输入
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/pull/12611 已 merged（2026-10-26，随 ops-nn 后续发布，版本未核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7314
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/12611
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn #7314（closed，Ascend 950/DAV3510）：BatchNormExt2 计算 rstd=1/sqrt(var+eps) 时中间量 1/v 与 rstd² 在 v 落入 (8.507e37, 3.4e38] 区间下溢为 denormal 并被 FTZ 清零，rstd 退化为 0、输出 y 精确等于 offset；Welford 类归约在 x 与 mean 相等（含同为 ±inf）时 −inf−(−inf) 产生 NaN 并持续污染后续均值累加；BN3DTrainingUpdate 通道折叠中方差按 E[x²]−μ² 直接相减，square_sum 与 (sum/num)² 量级接近时存在严重抵消放大误差。三条均有构造性复现步骤（构造 var+eps 区间输入、x/mean 同 ±inf、量级接近的平方和），golden 对齐与精度修复 diff 见关联 PR !12611（batch_norm_ext2/bn3_d_training_update tests golden 运算顺序对齐），该 MR 已于 2026-10-26 merged。'
+  source: GitCode issue：https://gitcode.com/cann/ops-nn/issues/7314 （closed）；修复 MR https://gitcode.com/cann/ops-nn/pull/12611 （merged 2026-10-26）
+  behavior: 使用 BatchNormExt2 或 BN3DTrainingUpdate 的训练/推理在前向遇到大方差（var+eps 接近 fp32 上限）、输入与均值同为 ±inf、或平方和与均值平方量级接近的通道时，BN 输出/方差更新结果错误但无报错：rstd 清零后整块输出退化为 offset 偏置，inf 输入路径把 NaN 写进滚动统计并扩散到后续 batch 的均值，训练曲线出现无法归因的精度劣化或突发 NaN。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果

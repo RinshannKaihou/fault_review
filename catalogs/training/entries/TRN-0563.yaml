@@ -1,0 +1,73 @@
+id: TRN-0563
+legacy_ids: []
+slug: opstransformer_compressor_autograd_grad_all_garbage
+aliases: []
+title: compressor 公开入口反向梯度全错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: compressor autograd 中间量
+  behavior: autograd.Function.forward 内 is_grad_enabled() 恒 False，判据结构性恒 False → kernel 不写 softmax_score/kv 中间量 → backward 消费未初始化显存
+effect:
+  objects:
+  - 梯度
+  detail: 经公开入口训练态梯度为垃圾值/NaN（实测 rel 1.1~2.8 或大形状 nan；直调内部 op rel 2.5e-3~3.5e-3 正常）；引入于 MR !13855；A3/910_93 bf16
+  visibility: 静默错误
+mitigation:
+  detect: 公开入口 vs 内部 op 双调用梯度对拍；backward 输出有限性断言
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/15041 （merged 2026-11-02，双缺陷同笔修复：Python grad_enabled 判据 + arch35/92 tiling GRAD_ENABLED 位）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6962
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15041
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2316
+original:
+  mechanism: 'cann/ops-transformer #6962（2026-10-30）：attention/compressor/torch_extension/compressor.py:368（引入提交 fa4364547 / MR !13855）把 compressor 公开入口包成 _CompressorFunction 后，forward 内部 torch.autograd.Function 强制 no_grad，grad_enabled = torch.is_grad_enabled() and any(t.requires_grad...) 结构性恒 False → kernel 不写 softmax_score/kv 中间量 → backward 消费未初始化显存 → 经 cann_ops_transformer.compressor() 训练态梯度垃圾值/nan、无报错。改动前（父提交 3d40e5645）公开入口是普通函数、判据 x.requires_grad，行为正确。验证（910_93，B=1/S=1024 与 131072、H=5120、D=512、cmp_ratio=2、bf16）：直调 _compressor_forward(grad_enabled=True)+_compressor_backward 三梯度 rel 2.5e-3~3.5e-3（=权重 bf16 量化噪声，正常）；走公开入口 rel 1.1~2.8 / 大形状 nan；打一行补丁后公开入口两形状全绿。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6962
+  behavior: NPU 训练经 cann_ops_transformer.compressor() 公开 Python 入口（长上下文压缩注意力）做前反向时：backward 返回的三个梯度是垃圾值或 NaN（相对误差 1.1~2.8 甚至 nan，正常应为 1e-3 量化噪声级），无任何报错；改回直调内部 op 就正常，一行补丁可修——训练在错误梯度上持续更新。
+  trigger_surface: cann_ops_transformer.compressor() 公开入口（MR !13855 起）+ 训练态 backward；A3/910_93 bf16 实测
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - 2026-11-01 回访 2026-11-01：修复 MR !15041（open）到位且深读揭示第二缺陷——arch35/arch92 compressor tiling GenTilingKey 判 gradEnabled 指针非空（OPTIONAL.Bool 恒非空）→ GRAD_ENABLED 位恒 1，属性完全失效（推理态白写 ~536MB 中间量）；两缺陷互相掩盖（950PR 上 tiling 恒 1 使 Python 判据缺陷表现为不复现），必须同一笔修复。PR 实测修复后公开入口 vs 直调梯度 max_abs_diff=0。
+  - 2026-11-03 2026-11-03 回访：修复 MR !15041 已 merged（批次快照 2026-11-02T13:47）
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - evidence
+  - date: '2026-11-01'
+    fields:
+    - original.notes
+  - date: '2026-11-03'
+    fields:
+    - original.notes
+  - date: '2026-11-03'
+    fields:
+    - mitigation.fix

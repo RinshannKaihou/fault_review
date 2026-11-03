@@ -1,0 +1,61 @@
+id: INF-2317
+legacy_ids: []
+slug: vllm_ascend_mrv2_eplb_default_policy_noop
+aliases: []
+title: vllm-ascend MRv2 EPLB default 静默永不重排
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: eplb_state rearrange 门控
+  behavior: _has_fresh_recorded_load 在 __init__ 无条件置 False，门控恒 armed；唯一置 True 写点在早退之后，default policy 下标志终身 False，rearrange 恒返 None。
+effect:
+  objects:
+  - 性能/资源
+  detail: 同镜像同负载：stair 100 prompts 3 次 cycle、default 400 prompts 0 次；一行修复后同负载 11 次。无报错无日志，专家永不迁移。
+  visibility: 性能退化
+mitigation:
+  detect: 统计 'Ascend async EPLB cycle committed' 日志行数 vs prompts 数；对比 stair policy 行为。
+  fix: 待定（issue 给出一行修复并自证 11 cycles；默认被 _patch_eplb_policy_config 翻成 stair，仅显式 default 可达）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20362
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend MRv2 + --enable-eplb 且 --eplb-config.policy default 时 EPLB 完全 no-op（issue #20362，v0.30.0rc2.dev157）：EplbState.rearrange 的 should_gate 门控里 hasattr(self,''_has_fresh_recorded_load'') 本意查「Ascend 负载跟踪是否安装」，但 __init__（eplb_state.py:165）无条件设该属性 → 门控恒 armed；唯一置 True 的写点（worker/v2/eplb.py:106）在 `if not state.uses_custom_load_stats: prepare_forward(...); return` 早退之后，而 uses_custom_load_stats 仅当 policy 实现 prepare_local_load_stats——只有 StairEplbPolicy 实现（policy/stair.py:286）。因此 default policy 下标志终身 False，_has_global_fresh_recorded_load 的 all-reduce 返回 0，rearrange() 每次 return None。证据：同镜像同 checkpoint 同 flags 仅 policy 不同，stair 100 prompts 3 次 cycle、default 400 prompts 0 次；打一行修复后同 400 prompts 11 次 cycle。未被察觉的原因：_patch_eplb_policy_config 把 Ascend 默认翻成 stair（仅显式 default 可达），现有 rearrange 单测传 rank_mapping={0:0} 禁用门控，四卡 e2e 从不设 policy。'
+  source: GitHub issue https://github.com/vllm-project/vllm-ascend/issues/20362 （open，2026-10-30 创建；含三组对照实验与源码行定位）
+  behavior: 在 MRv2 上开 --enable-eplb 并显式选 default 策略：功能自报已启用、无任何报错或日志，但专家负载均衡一次都不执行——4 倍负载量下重排 cycle 仍为 0（stair 策略同负载 3 次、打一行修复后 11 次）。纯静默失效：不产生错误输出，只是配置的资源策略从不生效，负载不均的专家分布长期保持，吞吐受损且无任何线索指向 EPLB。
+  trigger_surface: vllm-ascend MRv2；--enable-eplb + eplb_config.policy='default'（显式）；Ascend 补丁默认翻 stair 故默认路径不触发。
+  signature: '''Rearranging experts (async)'' 仅 startup profile 两次，之后任意负载无 cycle committed 日志。'
+  repro: issue 附同镜像 policy 对照表与一行修复验证（3 vs 0 vs 11 cycles）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: MoE路由
+      visibility:
+        from: 静默错误
+        to: 性能退化
+    uncertain:
+    - detail

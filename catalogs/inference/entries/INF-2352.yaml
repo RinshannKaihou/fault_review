@@ -1,0 +1,62 @@
+id: INF-2352
+legacy_ids: []
+slug: torchnpu_inner_abort_poisons_process
+aliases: []
+title: 310P INNER-ABORT 后同进程 NPU 算子静默返回垃圾值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: error-manager 内错中止后的设备上下文
+  behavior: fp64/bf16 等不支持的算子触发 CANN error-manager INNER-ABORT 后进程未退出，设备上下文已死但后续算子继续在毒化态上执行，静默返回未初始化显存值
+effect:
+  objects:
+  - 数值结果
+  detail: fp64/bf16 等语句触发 INNER-ABORT 后，同进程后续 NPU 计算静默返回未初始化垃圾值，无异常告警：fp32 matmul 相对误差 8.06e+17（16384/16384 全有限），matmul/conv 1e24~1e36、addmm 全零、LayerNorm NaN
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；规避：不支持的 dtype/模式调用前显式检查，或 abort 后立即重启进程——A3 上同类调用为干净 RuntimeError 且不毒化）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5789
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/issues/5788
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0581
+original:
+  mechanism: 'Atlas 310P3 上，进程内出现一条 fp64 语句（如 float64 matmul）即触发 CANN error-manager 内错中止（The Inner error is reported as above... current working operator name is MatMul）。该语句抛出异常后进程继续运行，但同进程此后所有 NPU 计算静默返回未初始化垃圾：无异常、无告警。两语句最小复现：语句① fp64 matmul 触发 INNER-ABORT；语句② 普通 fp32 matmul 相对误差 8.064e+17（干净进程 3.0e-4），16384/16384 全有限=最危险的静默错值形态。扩谱取证：abort 后同进程 17 案全部垃圾（matmul/conv 系 1e24~1e36 未初始化 HBM 值、addmm 系全零、LayerNorm 系 NaN），同场独立对照组全净，证明是进程态毒化而非算子本身。触发面不止 fp64：7 格 INNER-ABORT（fp64 matmul/addmm/bmm/conv/LayerNorm + bf16 conv/LayerNorm）均同等毒化。对照：A3 上同版本同代码 fp64 matmul 为干净的 op-plugin RuntimeError 且不毒化。版本：CANN 9.2.1（社区版）、310P3、驱动 26.0.rc1、torch 2.11.0 + torch_npu 2.11.0rc1（pip），seed 固定双跑一致，独立子进程隔离取证。来源 https://gitcode.com/Ascend/pytorch/issues/5789（open）。关联 #5642（to_copy 不支持 Double 簇）、#5602（fp64 golden 静默退化）、#5785（310P fp32 静默降级，机制不同）。同日另案 bicubic interpolate（#5788）撞同一毒化机制（ResizeD INNER-ABORT 后毒化，grid_sample 1.2e-7→2.138）。'
+  source: 2026-11-01 每日扫描。https://gitcode.com/Ascend/pytorch/issues/5789 （另证：https://gitcode.com/Ascend/pytorch/issues/5788 bicubic interpolate ResizeD INNER-ABORT 后同进程毒化，tanh 1.2e-7→0.999、silu→3.479、gelu→3.890，双跑 2/2 同签名）
+  behavior: 在 310P3 上跑含不支持的 dtype/模式的脚本：第一条 fp64（或 bicubic interpolate 等）语句报 INNER-ABORT 异常后，若继续用同一进程做任何 NPU 计算，结果全是未初始化垃圾值——fp32 matmul 相对误差从正常的 3e-4 变成 8e+17 量级、tanh/silu/gelu 输出 O(1) 垃圾、addmm 全零，但全程无任何新告警、无 NaN，程序照常往下跑。一个 batch 混入一条 fp64 语句，之后的 loss/精度全线静默失真且用户无从察觉。
+  trigger_surface: Atlas 310P3；CANN 9.2.1 社区版 + torch_npu 2.11.0rc1；进程内先出现一次 INNER-ABORT（fp64 matmul/addmm/bmm/conv/LayerNorm、bf16 conv/LayerNorm、bicubic interpolate ResizeD 共 8 格实测）后继续同进程执行任何 NPU 算子；A3 不复现（干净 RuntimeError 不毒化）
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-02'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

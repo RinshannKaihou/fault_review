@@ -1,0 +1,63 @@
+id: TRN-0499
+legacy_ids: []
+slug: trl_fsdp2_ref_model_zero_shards
+aliases: []
+title: TRL FSDP2 参考模型非 rank0 分片全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: trl
+    component: prepare_fsdp
+  behavior: cpu_ram_efficient_loading 下其余 rank 填零并期待 broadcast；TRL prepare_fsdp 只调 fully_shard（无 broadcast），非本地 rank0 分片保留零。
+effect:
+  objects:
+  - 模型权重
+  - 训练信号
+  detail: FSDP2+cpu_ram_efficient_loading 时 DPO/KTO/RLOO/GRPO(beta>0) 参考模型与 SDFT/SDPO 教师在非 rank0 分片全零：ref logprob/KL 按错误参考计算，静默产出偏置 loss；无 crash。
+  visibility: 静默错误
+mitigation:
+  detect: 加载后比对 ref 模型 full_tensor() 与 checkpoint 权重（issue 附最小复现断言）；对比 FSDP1 同配置 ref logprob
+  fix: 待定（issue open 2026-10-28；FSDP1 的 sync_module_states 不受影响；需 TRL 在 FSDP2 包装前 broadcast 或等 transformers#45649 meta 方案配套）
+labels:
+  stage:
+  - rl
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 受影响模型在 full fine-tuning + FSDP2 + cpu_ram_efficient_loading（trl/accelerate_configs/fsdp2.yaml 内置开启）
+evidence:
+- url: https://github.com/huggingface/trl/issues/7993
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'huggingface/trl #7993（2026-10-28，open）：FSDP2 + fsdp_cpu_ram_efficient_loading: true（trl/accelerate_configs/fsdp2.yaml 内置配置）时，transformers 只在各节点本地 rank0 保留检查点权重、其余 rank 填零，期待后续 broadcast。accelerate 在 prepare policy 时执行该 broadcast（fsdp2_prepare_model），但 TRL 的 prepare_fsdp 只调用 fully_shard——fully_shard 无 broadcast 语义（FSDP1 的 sync_module_states 有）。于是 TRL 包装的每个模型在非本地 rank0 分片保留零：DPO/KTO/RLOO/在线 DPO 的参考模型（full fine-tuning，含 FSDP 下 precompute 模型）、GRPO beta>0 的参考、SDFT/SDPO 教师模型。transformers#45050 把未初始化值改为零填充后不再 crash，训练静默跑在错误参考上。作者附最小复现：accelerate launch --config_file fsdp2.yaml 2 进程加载 tiny-Qwen2ForCausalLM，取 ref 模型某层 full_tensor() 与 safetensors checkpoint 对比。FSDP1 不受影响。'
+  source: https://github.com/huggingface/trl/issues/7993
+  behavior: 开 FSDP2 与 cpu_ram_efficient_loading 做 DPO/KTO/RLOO/GRPO（beta>0）/蒸馏训练时，参考模型或教师模型在每个节点除 rank0 外的分片是全零：参考 logprob、KL 惩罚、蒸馏目标都按错误参考计算，训练不报错、指标不直接显示参考错了（GRPO 里 ref logprob 项整体偏移），最终策略被静默拉偏。单机多卡或多机 FSDP2 配置下复现；同配置 FSDP1 正常可作对照。
+  trigger_surface: trl FSDP2 路径 + fsdp_cpu_ram_efficient_loading（官方 fsdp2.yaml 默认开）+ 需要第二模型的角色（ref/teacher）；full fine-tuning
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：trl #7993 open（2 评论）；修复 PR #7997/#7998/#8002 均 closed 未合入（merged_at=None）；#8002 最新 closed。fix 维持待定'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 并行切分
+        to: 权重/检查点
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

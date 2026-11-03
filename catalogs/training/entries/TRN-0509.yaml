@@ -1,0 +1,61 @@
+id: TRN-0509
+legacy_ids: []
+slug: openrlhf_group_norm_uniform_reward_noise_advantage
+aliases: []
+title: OpenRLHF 同酬组 group_norm 噪声 advantage
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: group_norm 除以 std+1e-9
+  behavior: group_norm 分支除以 std+1e-9：fp32 下相同值组的 std≈3.1e-8 而非 0，epsilon 压不住比值，同酬组每响应得 ±0.9 量级舍入噪声 advantage。
+effect:
+  objects:
+  - 训练信号
+  detail: 全等酬赏组（部分得分/可验证酬赏常见）advantage 应全零，实测组 8/16/64 下 max|adv| 0.907/0.938/0.960（酬赏 0.3）；噪声信号驱动无效更新，方向由舍入决定。
+  visibility: 静默错误
+mitigation:
+  detect: 对全等酬赏组断言 advantage 全零；监控同酬组 advantage 分布
+  fix: 修复 PR https://github.com/OpenRLHF/OpenRLHF/pull/1383（open，2026-10-25）——归一化前求组 max/min，max==min 的组事后置零（NaN 组不受影响）；新增 tests/test_group_norm_advantage.py 10 用例修复前全失败
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 与 TRN-0025（DeepSpeed 无效组范数哨兵）同属组统计失效族但机制不同：本条是 fp32 同值组 std 残差噪声，非哨兵值污染
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1383
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'OpenRLHF/OpenRLHF #1383（2026-10-25，open PR）：--advantage_estimator group_norm 下全等酬赏组应得精确零 advantage（组内无学习信号），实际得到接近 ±1。RemoteExperienceMaker.compute_advantages_and_returns 的 group_norm 分支除以 std+1e-9：fp32 下相同值的 mean/std 不精确，0.3 酬赏组 std≈3.1e-8 而非 0，中心化酬赏同量级，1e-9 epsilon 压不住比值——全等组每响应 advantage ≈±0.9 纯舍入噪声。实测（单组全等酬赏）：酬赏 0.3/组 8→0.907、组 16→0.938、组 64→0.960；0.6/0.9 同量级。触发场景：部分得分或可验证酬赏给一组样本相同分数且开 group_norm。修复：归一化前算组 max/min、max==min 组事后置零（NaN≠自身、NaN 组不触）；非均匀组算术不变；10 用例修复前全失败。'
+  source: https://github.com/OpenRLHF/OpenRLHF/pull/1383
+  behavior: GRPO/PPO 类训练用 group_norm advantage 且酬赏函数给某 prompt 组内全部样本相同分数（部分得分、格式全对/全错等可验证酬赏常见）时，该组 advantage 不是零而是 ±0.9 量级的浮点舍入噪声：组内响应按噪声方向被无差别推高/压低，训练在无学习信号的组上做无效甚至有害更新。无报错，loss/指标正常显示，只有检查同酬组 advantage 才能发现。
+  trigger_surface: OpenRLHF --advantage_estimator group_norm + 全等酬赏组（部分得分/可验证酬赏）；fp32 组统计
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：OpenRLHF #1383 仍 open'
+  - 2026-10-31 2026-10-31 回访：#1383 仍 open 无变化。
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  - date: '2026-10-31'
+    fields:
+    - original.notes

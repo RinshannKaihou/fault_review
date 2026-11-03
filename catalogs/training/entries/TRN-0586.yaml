@@ -1,0 +1,54 @@
+id: TRN-0586
+legacy_ids: []
+slug: torchnpu_maxpool2d_indices_contract_split
+aliases: []
+title: max_pool2d indices 契约四芯四态分裂
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: max_pool2d indices
+  behavior: indices 四芯四态：310P3 float32、形状错、池化值与 CPU 不一致；A3/910B3 int8、形状错（A3 2048 元素 vs 期望 1024）；950PR int32、形状值面正确但 dtype 仍非 int64。
+effect:
+  objects:
+  - 数值结果
+  detail: indices 无法用于 gather/scatter（直接报错或错位），跨芯代码无统一行为可依赖；310P3 上纯选择算子的池化值也与 CPU 不一致
+  visibility: 静默错误
+mitigation:
+  detect: 对 indices 断言 dtype==int64 且 shape==输出空间形状；池化值与 CPU 同码对照（310P3）
+  fix: 待定（issue open，未见修复）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5791
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2357
+original:
+  mechanism: 'Ascend/pytorch #5791（2026-11-01 open，CANN 9.2.1 + torch_npu 2.11.0rc1，四芯线 310P3/A3/910B3/950PR 全列取证，每案独立子进程 + CPU 同码对照，310P3 双跑确定）。F.max_pool2d(return_indices=True) 的 indices 返回契约四芯四态，与 CPU 契约（int64、形状=输出空间形状）无一相符：310P3 返回 float32 且形状 (2,8,4,5) 错误、池化值面同时与 CPU DIVERGE（maxpool 纯选择无累加应逐位一致，失真与 #5785 310P fp32 降级带同域）；A3 返回 int8 形状 (2,8,4,160)（2048 元素 vs 期望 1024）；910B3 int8 形状错误；950PR int32 形状与值面正确（最接近可用但 dtype 仍非契约）。int8 对 16×16 窗口寻址 0~255 语义不成立，float32 indices 无法用于任何索引场景。平局打破有实现定义空间，但 dtype/形状/值面三个硬契约破裂与平局语义无关。'
+  source: Ascend/pytorch https://gitcode.com/Ascend/pytorch/issues/5791（open）；推理库同机制 INF-2357
+  behavior: 调 F.max_pool2d(..., return_indices=True) 拿到的 indices 在不同昇腾芯片上形态完全不同：310P3 返回 float32 索引且形状错、池化值本身也和 CPU 对不上；A3/910B3 返回 int8 且形状翻倍错位（gather 直接用不了）；950PR 是 int32、形状值面正确但仍不是契约的 int64。同一份代码换个芯片线行为全变，没有任何可依赖的统一契约。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

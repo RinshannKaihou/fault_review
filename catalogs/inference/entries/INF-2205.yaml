@@ -1,0 +1,58 @@
+id: INF-2205
+legacy_ids: []
+slug: cann_remainder_fp32_large_input_zero_collapse
+aliases: []
+title: Remainder fp32 大数值取模结果整片塌 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Remainder 标量取模实现
+  behavior: fp32/bf16 在 |self|≳2^24 后取模结果整片塌 0；other 极小时返回 ±inf；int32/fp64 路径正确，资料无 fp32 衰减声明
+effect:
+  objects:
+  - 数值结果
+  detail: other=3、fp32 2^25~2^28 全为 0（期望 2/1/2/1）；fp32 边界 16777228→0（应 1）、33554432→0（应 2）；bf16 2^25/2^26 同为 0；x=1e30、other=1e-20→-inf，违反|out|<|other|；接口返回成功、无告警
+  visibility: 静默错误
+mitigation:
+  detect: 与 CPU torch.remainder 对照（2 的幂输入组）；检查输出是否违反 |out|<|other| 不变量
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4006
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6937
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: aclnnInplaceRemainderTensorScalar 在 selfRef=fp32 且 |selfRef| 超过 2^24 附近后，取模结果整片塌成 0；同输入的 int32、fp64 路径结果正确。other 极小时（商溢出）甚至返回 ±inf，违反资料写明的不变量 |out|<|other|。实测（other=3，输入取精确可表示的 2 的幂）：fp32 2^25/2^26/2^27/2^28 全部输出 0（期望 2/1/2/1）；bf16 2^25/2^26 同样为 0；fp64/int32 正确。边界扫描（fp32, other=3）：16777216→1（对）、16777220→2（对）、16777228→0（应 1）、33554432→0（应 2）。另一形态：x=1e30、other=1e-20 → 实测 -inf（CPU 为 7.85e-21）。资料「约束说明」只对 INT32 写了「优先保障 [-2^24, 2^24] 范围内的功能和精度」，对 fp32/bf16 无任何精度衰减声明；同算子 int32/fp64 路径正确说明不是数学取舍。环境：Ascend 910B2（资料声明支持）、CANN 9.2.0；该 SoC 走 CANN 内置 ops_legacy 实现（仓库 math/floor_mod 的 SUPPORT_COMPUTE_UNIT 不含 ascend910b），复现不依赖仓库源码版本。带完整 C++ 复现脚本。来源 https://gitcode.com/cann/ops-math/issues/4006（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-math/issues/4006
+  behavior: 对 fp32 或 bf16 张量做标量取模（remainder），当数值较大（约 2^24=1677 万以上）时，输出整片变成 0 而不是正确的余数；例如 33554432 mod 3 应为 2，实测 0； divisor 极小时（如 1e30 mod 1e-20）输出 -inf。接口返回成功、无任何告警。同输入换成 int32 或 fp64 则结果正确。任何用 remainder 做大数值循环对齐、哈希、桶分配的上层逻辑会静默拿到全 0，只有与 CPU 对照才能发现。
+  trigger_surface: aclnnInplaceRemainderTensorScalar（及同实现 floor_mod 族）；fp32/bf16 输入 |x|≳2^24；Ascend 910B2、CANN 9.2.0 实测（内置 ops_legacy 路径）；仓库 ascend950/350/960 分支未实测
+  discovery: 2026-10-26 每日扫描
+  notes:
+  - 2026-10-31 2026-10-31：修复 MR !6937（open）补 A2 fp32/bf16 大值域覆盖——仅对 |x|>=2^24 与极小除数不安全 lane IEEE-754 位级重算，A2 真机大数用例逐元素精确通过（16777228 mod 3=1）；带检测开销 1M 元素 15.5→67.7us；A5 原有高精度实现不变
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - evidence
+    - original.notes

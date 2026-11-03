@@ -1,0 +1,62 @@
+id: TRN-0487
+legacy_ids: []
+slug: op_plugin_oob_index_family_no_indexerror
+aliases: []
+title: op-plugin 越界索引族无 IndexError 静默丢/污染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: index_put_/embedding/ga。
+  behavior: 越界索引在 torch 语义应抛 IndexError；NPU 全芯全族无一例同型抛错——写侧 index_put_(idx=99) 在 950PR/2.9.1 无异常且载荷凭空消失（哨兵 20/20 未触）
+effect:
+  objects:
+  - 数值结果
+  - 训练样本流
+  detail: 用户常见笔误（索引越界）在 2.9.1（950PR）上=写侧载荷静默丢失，读侧=静默读回表外内存实值/静默零/张量内错位值；2.7.1 附加 index_select 设备死；embedding 越界三芯一致 NO-RAISED 返回表外实值；语法糖路径不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 数据管线入口对 index 做 min/max 断言（CPU/NPU 行为分叉）；embedding 输出抽样与权重行对照
+  fix: 待定（issue open 2026-10-27，三芯×六变体证据矩阵；修复方向=API 路径对齐语法糖的边界检查）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/651
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2219
+original:
+  mechanism: 'Ascend/op-plugin #651（2026-10-27，三芯真机实测：950PR/2.9.1（901150）、classic910/2.7.1（099723）、910B3/2.7.1（257835），log md5 逐字核验）：越界索引全族无一处 CPU 级 IndexError。写侧 C5：index_put_ 六变体（v1 1D 正越界 idx=99 put 在 950PR/2.9.1 NO-RAISED+哨兵 untouched=20/20 hits=0 载荷凭空消失；v2-v6 负越界/双维/scatter_/index_copy_/index_select 为延迟抛 507035 级联）；语法糖 x[99]=v 三芯全部干净抛 IndexError——同一越界写语义语法糖路径有检查、index_put_ API 路径静默丢。读侧 C6/C12：embedding OOB（idx=99 ∈ 词表 8）三芯一致 NO-RAISED 返回表外内存实值；gather OOB 静默读零（2.9.1）/静默读表外实值（2.7.1）；index_select OOB 2.7.1 设备死（abort）、2.9.1 静默全 0；take OOB 2.7.1 返回张量内 x[9] 值（与 clamp 合法对照逐位同——最隐蔽）、2.9.1 静默零。证据三柱 log 在档（index_sem/oobread/setitem 三族）。训练侧影响：数据/标签索引笔误（越界）不再被 RuntimeError/IndexError 拦截，坏样本静默进训练流；embedding 越界 id 静默读回任意实值参与前向。推理库 INF-2219 同源已收；本条按训练侧收录。'
+  source: https://gitcode.com/Ascend/op-plugin/issues/651
+  behavior: NPU 上训练代码出现索引越界笔误（写侧 index_put_/setitem API、读侧 embedding/gather/index_select/take）时不再像 CPU 那样抛 IndexError：2.9.1 上写入的载荷凭空消失（无异常、synchronize 干净）、读回的越界值是表外内存实值或全零、take 返回张量内错位值；2.7.1 上 index_select 直接设备死。训练不报错但数据已坏/已丢，极难发现。
+  trigger_surface: torch_npu 2.9.1（950PR）与 2.7.1（classic910/910B3）；index_put_ v1 正越界写 / embedding·gather·take 越界读；语法糖路径不受影响
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 训练样本流
+        to: 数值结果
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

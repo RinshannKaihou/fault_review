@@ -1,0 +1,71 @@
+id: TRN-0528
+legacy_ids: []
+slug: sparse_apply_proximal_adagrad_extreme_param_false_inf
+aliases: []
+title: SparseProximalAdagrad 极值虚假 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: cann
+    component: sparse_proximal_adagrad
+  behavior: var 更新链按未缩放次序计算 f32 中间量：accum 处于下界（~1e-6）且 lr 位于 f32 上限邻域（~3.4e38）时 lr/sqrt(accum) 远超 1，grad 乘积越过 f32 上限输出虚假 ±inf
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  detail: lr 位于 f32 上限邻域（~3.4e38）、accum 接近下界（~1e-6）时 var 通道成规模元素输出 ±inf（单用例数百元素），golden f64 真值有限；常规参数域不受影响，TTK e2e 比对可检出但训练日志无异常
+  visibility: 数值异常
+mitigation:
+  detect: TTK e2e 精度比对（eager 与 graph static 均可检出）；对极值参数域跑 f64 参考对比
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/13028（open）：var 更新链极值域虚假 ±inf 消除
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7682
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13028
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: CANN ops-nn SparseApplyProximalAdagrad（Ascend950 arch35 SIMT 路径，CANN 9.3.0）的 var 更新链 f32 中间量按未缩放次序计算：lr1=lr/sqrt(accum_new) 在 accum 处于下界（~1e-6）且 lr 位于 f32 上限邻域（~3.4e38）时远超 1，grad*lr1 乘积越过 f32 上限输出 ±inf；而同输入下 faithful f32 计算（先取 sign(grad)*sqrt(grad²/accum_new) 比例，|比例|≤1 恒成立，再乘 lr）输出有限值（≈f32_max 或 -0.0）。TTK e2e 精度比对中 SparseApplyProximalAdagrad_L0_tolerance_c_s_001/c_s_024 类用例（f32，e2e TF 通路）Output 0（var）在 eager 与 graph static 两模式均 FAIL，Output 1（accum）PASS；var 通道出现成规模元素 ±inf（单用例数百元素量级），golden（f64 真值）与 TF f32 reference oracle 均为有限值。修复 PR !13028（open）。
+  source: https://gitcode.com/cann/ops-nn/issues/7682 + 修复 https://gitcode.com/cann/ops-nn/pull/13028
+  behavior: NPU 上用 ProximalAdagrad 稀疏优化器、学习率极大（~3.4e38 邻域）且累积量初值极小（~1e-6）时，var 参数更新输出成片 ±inf（数学真值有限），嵌入/推荐类稀疏训练的参数静默变 inf；常规参数域不受影响，TTK e2e 比对可检出但训练日志无异常
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - 2026-10-31 2026-10-31 回访：#7682/!13028 仍 open，无状态变化。
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 优化器状态
+        to: 模型权重
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - behavior
+    - detail
+    uncertain:
+    - subsystem
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - original.notes

@@ -1,0 +1,49 @@
+id: INF-2299
+legacy_ids: []
+slug: ops_transformer_prompt_fa_fp16_numerator_overflow
+aliases: []
+title: PromptFA fp16 退化输入分子溢出 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: PromptFA fp16 累加
+  behavior: fp16+HighPerformance 下 softmax PxV 分子用 fp16 累加，Q/K 全零时 softmax_exp=1，分子 (i+1)*V 随序列线性增长超 65504 溢出 inf。
+effect:
+  objects:
+  - 数值结果
+  detail: 退化输入（Q/K 全零+causal+大 V 长序列）输出连续 inf；修复 MR !14989 将 fp16 强制切 HighPrecision（fp32 累加），V∈{1000..16} 8 组全部恢复为 V。
+  visibility: 数值异常
+mitigation:
+  detect: Q/K 全零 + 大 |V| 长序列用例断言输出=V；fp16 HighPerformance 模式扫描累加上限。
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14989 （open，未合入未发布）：tiling 层将 fp16 输入强制切到 HighPrecision（fp32 累加），8 组 V 值验证全部恢复。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14989
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer PromptFlashAttention 在 fp16 + HighPerformance 模式下 softmax 的 PxV 分子用 fp16 累加存储（MR !14989 描述）：当 Q/K 全零（logits≈0、softmax 均匀、softmax_exp=1）时，分子等于 (i+1)*V，随序列长度线性增长，一旦超过 fp16 上限 65504 即溢出为 inf，输出出现连续 inf。修复：tiling 层将 fp16 输入强制切到 HighPrecision（fp32 累加），这是 flash attention 的标准做法，从根上避免分子溢出。验证：退化输入（Q/K 全零 + causal mask + 大 V 长序列），V∈{1000,256,128,64,35,32,30,16} 全部无 inf，输出恢复为正确值 V。触发依赖「V 本身较大 + 序列长度使累加和越过 65504」的组合，正常数据 softmax_exp 远小于 1 不易触发，退化/边界输入（全零注意力、常值 V）下必现。
+  source: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14989 （open，2026-10-30 创建；问题/根因/修复/验证四段完整）
+  behavior: 对 fp16 输入用 PromptFlashAttention 的 HighPerformance 模式：当 Q、K 全零（或等价地 softmax 接近均匀）且 V 值较大、序列较长时，softmax 分子在 fp16 里累加超过 65504 溢出，输出整段变成 inf；同样输入切 HighPrecision 模式或 fp32 累加就正常。输出是显式 inf 而非静默小偏差，但无错误码，下游若不做 NaN/Inf 检查会把 inf 继续传下去。
+  trigger_surface: cann/ops-transformer prompt_flash_attention；fp16；HighPerformance 模式；Q/K 全零或 softmax 均匀 + |V| 大 + 长序列（累加和>65504）。
+  signature: Q/K 全零 + causal + V=1000 长序列：输出连续 inf，修复后输出=V。
+  repro: MR !14989 附 8 组 V 值验证（全部恢复正确值 V）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,61 @@
+id: TRN-0572
+legacy_ids: []
+slug: ops_nn_scatter_nd_update_shape_unvalidated
+aliases: []
+title: aclnnScatterNdUpdate 形状约束不校验越界读静默写入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: scatter_nd_update 约束校验缺失
+  behavior: 对资料明写的 updates 形状与索引深度 a≤rank 两条约束不做任何校验：updates 偏小时把越界读到的值写进 varRef（静默脏写），a 超限下沉为执行期 507057。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  detail: 910B3 实测：updates 合法时正确；[2]（偏小）时 varRef 被写入越界读到的值（静默脏写）；indices [3,2]（a=2>rank=1）两段返回 0 直到流同步才 507057。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前手动断言 updates.shape 与 indices/varRef 推导一致；写后读回与 CPU scatter_nd 参照对拍。
+  fix: 待定（issue open：期望第一段 161002 拒绝，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-01'
+remarks: TRN-0524 族（out 参数契约缺失静默错值）的 scatter 侧实例：约束不校验→越界读的值被写进目标参数。训练面：scatter 更新常用于权重/优化器状态/数据管线就地写，脏写直达持久状态。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7858
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0524
+- kind: cross
+  target: INF-2331
+pattern: PAT-TRN-0058
+original:
+  mechanism: 'cann/ops-nn #7858（2026-10-31，open；Ascend 910B3、CANN 9.2.0、ACLNN 两段式直调、master 稀疏检出 index/scatter_nd_update）：aclnnScatterNdUpdate 第一段 GetWorkspaceSize 对资料明写的「updates 形状必须等于 indices.shape[:-1] + varRef.shape[a:]」与「a ≤ varRef.rank」两条约束不校验。实测：varRef=FP32[7]（1..7）、indices=INT64[3,1]={0,1,2}——updates=[3] 合法正确；[19]（偏大）与 [2]（偏小）两段均返回 0；偏小场景把越界读到的值静默写进 varRef（updates 数据被错误解释，varRef 内容变成非预期脏值，无任何错误码）；indices=INT64[3,2]（a=2 > varRef.rank=1）两段返回 0 直到流同步才暴露设备侧 507057。'
+  source: https://gitcode.com/cann/ops-nn/issues/7858 （open，2026-10-31；含自包含 C++ 探针与三种 updates 形状对照）
+  behavior: NPU 训练用 ScatterNdUpdate 就地更新（参数/优化器状态/数据散写）时，若 updates 形状与约束不符（如偏小），接口返回成功、目标张量被写入从越界地址读到的脏值——持久状态被静默污染，无报错无 NaN；索引深度超限则拖到流同步才报 507057。同代码 CPU 会在校验层拒绝。
+  trigger_surface: Ascend 910B3 + CANN 9.2.0；aclnnScatterNdUpdate updates/indices 形状违约；就地散写更新路径。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

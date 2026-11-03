@@ -1,0 +1,59 @@
+id: TRN-0463
+legacy_ids: []
+slug: trl_orpo_cpo_prompt_fills_maxlen_nan
+aliases: []
+title: ORPO/CPO 满长 prompt 除零写 NaN 入参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: trl
+    component: ORPO/CPO 平均 logprob
+  behavior: prompt 独自达到 max_length 时 completion 截成 0 token；平均 logprob 0/0 得 NaN（ORPO/CPO simpo/ipo），NaN 梯度写进参数；sigmoid 变体静默记 0。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  - 训练信号
+  detail: 数据集中存在 prompt≥max_length 的行时，ORPO/CPO(simpo/ipo) 单步把 NaN 写入全部参数；CPO sigmoid 变体静默按 logprob 0 打分空 completion。#6588 只交付截断+警告，未交付丢弃满 prompt 行。
+  visibility: 数值异常
+mitigation:
+  detect: 训练前统计 tokenized prompt≥max_length 行数；逐步参数 NaN 检查
+  fix: '待定（#6548 计划的丢弃满 prompt 行未随 #6588 交付，issue open）'
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7912
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'trl #7912（open，2026-10-26）：tokenized prompt 单独达到 max_length 时 ORPOTrainer（orpo_trainer.py:532-544）与 CPOTrainer（cpo_trainer.py:550-562）保留整个 prompt、把 completion 截成 0 token——该行长于 max_length、无 completion token 仍被保留。平均 logprob 随后 0/0：ORPO :741、CPO :788（ORPO 恒平均；CPO 对 simpo/ipo 平均），NaN 梯度经优化器写进每个参数。CPO sigmoid 求和变体不除零，转而静默把空 completion 记为 logprob 0 继续训练。#6548 规划两个修复（按 completion 自身预算截断 + 丢弃 prompt 占满行，同 DPO/SFT），#6588 只交付前者与警告。附三变体复现（tiny-Qwen2.5，max_length=32，长 prompt 行），实测 nan_params 计数与 CPO sigmoid 静默 0 分支。'
+  source: GitHub issue：https://github.com/huggingface/trl/issues/7912 （open，含代码行锚点、三变体复现脚本）
+  behavior: ORPO/CPO 偏好训练里若有一条样本的 prompt 分词后就把 max_length 占满，该 batch 的梯度变 NaN 并被优化器一步写进所有参数（模型彻底毁掉且 loss 显示可能只是异常一步）；CPO sigmoid 配置更隐蔽：不 NaN，而是把这条空 completion 当 logprob=0 正常打分训练。两种都无显式错误，长 prompt 数据集（RAG/长上下文）极易踩中。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: 数据管线
+      effect:
+        from: 模型权重
+        to: 梯度

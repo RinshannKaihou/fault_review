@@ -1,0 +1,49 @@
+id: INF-2256
+legacy_ids: []
+slug: fastgelu_fp16_exp_intermediate_overflow
+aliases: []
+title: FastGelu fp16 负区间 exp 中间量溢出返回 -0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: fast_gelu fp16 kernel
+  behavior: fp16 实现把 exp(-1.702x) 中间量约束在 fp16 值域，x<-6.5158 时上溢 inf，x/inf=-0，而正确输出为非零小负数（多为正规数区间）。
+effect:
+  objects:
+  - 数值结果
+  detail: fp16 x∈(-∞,-6.5158) 整段输出 -0（x=-6.6 应 -8.71e-05，为最小正规数 1.43 倍）；实测归零界与理论界差 0.54 ULP；45 点逐点一致；同机 bf16 全对。
+  visibility: 静默错误
+mitigation:
+  detect: fp16 输入 x<-6.5158 区间输出恒 -0 而正确值非零（位模式判 0 即错）；bf16 对照正确。
+  fix: 待定（issue 给出期望：中间量按 fp32 或等价方式计算；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7642
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn 的 aclnnFastGelu 在 Ascend 910B3（Atlas A2，8 die）、CANN 9.2.0 内置实现（复现不依赖仓库源码版本）上的 fp16 精度缺陷。FastGelu(x)=x/(1+exp(-1.702x))，当前 fp16 实现把 exp(-1.702x) 的中间结果约束在 fp16 值域（max 65504）内，x<-6.5158 时中间量上溢为 inf，x/inf=-0。三重反证均实测：1) 实测「最小非零输出」x=-6.513672 与理论解 exp(-1.702x)=65504 的 x=-6.515785 偏差 0.002113=0.54 个 fp16 ULP；2) x∈[-7.6,-5.4] 步长 0.05 共 45 点，「中间量是否上溢」与「实测是否为 0」逐点全部一致；3) bf16 对照（bf16 max≈3.39e38，x=-11 时 exp 仅 2.1e8 不上溢）同批输入全部正确，正方向与近零输入九点全部正常。正确输出 x=-6.6→-8.709e-05 是 fp16 最小正规数（6.10e-05）的 1.43 倍，完全在正常表示范围内仍被归零。issue 含自包含 repro.cpp（位模式级构造输入与判读）与完整实测表。
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7642 （open，2026-10-29，含 45 点逐点一致性验证与 bf16 对照）
+  behavior: fp16 模型/张量经过 FastGelu 激活时，所有小于 -6.5158 的输入输出一律为 -0，而正确值应为 -8.7e-05 到 -1.8e-05 等非零小负数（多数还是正规数）；整段负区间激活值被静默清零，无报错无 NaN；同一颗芯片上 bf16 同输入全部正确，可用 dtype 切换绕过。
+  trigger_surface: Ascend 910B3（CANN 9.2.0 内置 kernel）；fp16 输入 x<-6.5158；FastGelu 激活（GPT 类模型常用）；端到端影响未实测，单算子判据「输出精确为 0 而正确输出非 0」不依赖容差。
+  signature: fp16 输入 x<-6.5158 输出位模式为 0（-0），bf16 同输入正确。
+  repro: issue 含自包含 repro.cpp 与位模式级对照表。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

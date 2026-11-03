@@ -1,0 +1,62 @@
+id: INF-2362
+legacy_ids: []
+slug: lightning_indexer_mte3_mte2_race
+aliases: []
+title: lightning_indexer top-k 回读竞态读陈旧值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: lightning_indexer 同步
+  behavior: ProcessVec 写部分 top-k 结果到 vec1ResGm 后仅对 MTE3_V 排序；ProcessLD 经 DataCopyPad 用 MTE2 读同一 GM 却只等 V_MTE2/S_MTE2，缺 MTE3→MTE2 依赖
+effect:
+  objects:
+  - 数值结果
+  detail: MTE2 读可在前一 MTE3 写完成前消费陈旧 workspace，损坏归约后的 top-k 索引与值（DSA lightning indexer 路径）；无报错
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/15092（open，2026-11-01）Fix MTE3 to MTE2 ordering before arch22 top-k readback；未发布
+labels:
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7004
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15092
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0584
+original:
+  mechanism: ops-transformer lightning_indexer arch22 内核：ProcessVec 在 op_kernel/arch22/lightning_indexer_kernel_arch22.h:487 用 LIServiceVec::CopyOut 把部分 top-k 结果写入 vec1ResGm，:488 只对 MTE3_V 下单；ProcessDecode 调 SyncAll() 后（:681-683）ProcessLD 在 :586/:605 用 MTE2 DataCopyPad 读同一 GM，但 :584-585/:603-604 只等 V_MTE2 和 S_MTE2——没有 MTE3→MTE2 依赖，MTE2 读可能在前一 MTE3 写完成前消费陈旧 workspace，损坏归约后的 top-k 索引与值。issue 给出精确行号定位（源码级机制闭合）。修复 MR !15092（open）补 MTE3→MTE2 排序。来源 https://gitcode.com/cann/ops-transformer/issues/7004（open，2026-11-01）。
+  source: 2026-11-01 每日扫描。https://gitcode.com/cann/ops-transformer/issues/7004 ；修复 https://gitcode.com/cann/ops-transformer/merge_requests/15092
+  behavior: 使用含 lightning indexer（DSA 稀疏注意力索引）的模型推理：arch22 内核多核协作时 top-k 归约阶段偶发读到还没写完的 workspace，输出的 top-k 索引和值被污染（注意力选错 KV 块），无任何报错；因是内存引擎同步窗口内的竞态，出错与否随调度时序变化，复现不稳定。
+  trigger_surface: ops-transformer lightning_indexer arch22 内核（Ascend 910C 类 A2/arch22 平台）；DSA/lightning indexer top-k 归约路径；SyncAll 后 ProcessVec 写与 ProcessLD 读交叠窗口
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-02'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现

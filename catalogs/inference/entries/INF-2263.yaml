@@ -1,0 +1,59 @@
+id: INF-2263
+legacy_ids: []
+slug: hccl_reducescatterv_prod_64bit_missing_barrier
+aliases: []
+title: HCCL ReduceScatterV PROD/64位缺 barrier
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: ReduceScatterV AICPU 模板
+  behavior: SendRecvWrite 发起 RDMA write 后仅做 host 线程同步，未保证 device DMA 落盘，PostCopy 即从本地 hcclBuff 读取做 LocalReduce，可能读到未写完的 slot。
+effect:
+  objects:
+  - 数值结果
+  detail: 16 卡 INT32 PROD countSize=2097152 复现：check_result 不等，exp:2147483647, act:-501334399，非确定性脏读；非 V 版同场景 !154 已修，V 版从未同步。
+  visibility: 不可复现
+mitigation:
+  detect: 16 卡 PROD INT32 大 count 校验（check_result 比对）；非确定结果/重跑变化是脏读特征。
+  fix: 修复 PR https://gitcode.com/cann/hccl/merge_requests/3805 （open，2026-10-29：KernelRun 补齐 HcommBatchModeEnd+Start+Join barrier（INT64/UINT64/FP64/PROD），PostCopy 修正触发条件补 UINT64/FP64；host/device 增量编译与 pre-commit 已过，16 卡上板验证未完成）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/merge_requests/3805
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0520
+original:
+  mechanism: cann/hccl 的 ReduceScatterV 算子在 PROD 规约与 64 位类型（INT64/UINT64/FP64）下的 device 级同步缺失：KernelRun 中 RunReduceScatterV 通过 SendRecvWrite 向远端 hcclBuff 发起 RDMA write，随后 PostSyncInterThreads 仅完成 host 侧线程同步、未保证 device 侧 DMA 写操作落盘，紧接着 PostCopy 从本地 hcclBuff 读取数据做 LocalReduce，可能读到尚未写入完成的 slot，PROD 受影响致命（走 aicpu_inlinereduce）。非 V 版 InsTempReduceScatterMesh1D 已在 PR !154（c24d9ecbda）为 INT64/UINT64/FP64/PROD 场景补齐 HcommBatchModeEnd+HcommBatchModeStart+HcommThreadJoin barrier，V 版从未同步该修复至今停留在 bug 状态。复现条件：16 卡、INT32、reduce_op=PROD、countSize=2097152，现象 check_result host_buf and check_buf are not equal（exp:2147483647, act:-501334399）。修复 PR !3805 补齐与非 V 版一致的 device barrier 并修正 PostCopy 触发条件；host 侧与 device 侧增量编译、pre-commit 已过，16 卡 PROD INT32 上板验证尚未完成。
+  source: GitCode PR https://gitcode.com/cann/hccl/merge_requests/3805 （open，2026-10-29，含根因分析、非 V 版对照与复现条件）
+  behavior: 多卡（16 卡复现）执行 ReduceScatterV 且 reduce_op=PROD（或 64 位类型）时，通信不报错但结果校验失败：期望 2147483647 实得 -501334399 之类的脏值，重跑结果可能不同（读到未完成 DMA 的时序相关）；对依赖 PROD 归约的并行计算（如概率连乘类）静默产出错误数值。
+  trigger_surface: HCCL ReduceScatterV；reduce_op=PROD 或 INT64/UINT64/FP64；多卡大 count（16 卡 INT32 countSize=2097152 复现）；非 V 版已修（!154），V 版未修。
+  signature: PROD 归约结果非确定错值，check_result 不等，重跑漂移。
+  repro: PR 描述含 16 卡 INT32 PROD countSize=2097152 复现命令与实测输出。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现

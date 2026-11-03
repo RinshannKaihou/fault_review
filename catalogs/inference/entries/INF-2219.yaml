@@ -1,0 +1,56 @@
+id: INF-2219
+legacy_ids: []
+slug: opplugin_index_oob_family_no_error
+aliases: []
+title: op-plugin 越界索引族无 IndexError：写侧静默丢读侧静默污染
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: 索引算子边界检查
+  behavior: 越界索引无一同型抛 IndexError：写侧 index_put_ 静默丢数据、读侧静默污染；语法糖路径有检查——API 路径选择性缺检查。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: index_put_ 正越界写载荷消失、不报错；scatter_/index_copy_ 延迟抛 sync RuntimeError；三芯读侧 embedding/gather/index_select/take 越界静默返回越界内存或零，2.7.1 index_select 设备死（abort）
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/651
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0487
+original:
+  mechanism: 三芯矩阵实测（950PR/2.9.1=901150、classic910/2.7.1=099723、910B3/2.7.1=257835，探针 probe_index_sem.py v9 六变体 + probe_oobread_sem.py 四算子 + probe_setitem_sem.py 语法糖对照，在档 log 锚点 index_sem_901.log L15 等）。写侧 C5：v1 1D 正越界 idx=99 put 在 2.9.1/950PR NO-RAISED+哨兵 untouched=20/20 hits=0（载荷凭空消失，双跑稳定）；v2 负越界/v3 双维/v4 scatter_/v5 index_copy_ 延迟抛 sync RuntimeError/507035 级联。读侧 C6：embedding/gather/index_select/take 越界静默返回越界内存内容或零（三芯）；2.7.1 index_select 越界=设备死（abort）。语法糖对照 S36：x[99]=v、x[99] 读三芯全部干净抛 IndexError（与 CPU 逐字一致）——同语义语法糖路径有边界检查、index_put_ API 路径选择性缺检查。三机 setitem log md5 逐字相同。
+  source: https://gitcode.com/Ascend/op-plugin/issues/651（三芯×形态证据矩阵 + 在档 log 锚点 + 语法糖对照判读）
+  behavior: 用 index_put_ 写越界位置（如 idx=99）时数据凭空消失、不报任何错；用 embedding/gather/take 读越界索引时静默拿到越界内存的内容或 0；同样的越界用 x[99] 语法糖则正确抛 IndexError——只有 API 路径静默。2.7.1 的 index_select 越界则直接把设备打死。下游检测头、特征定位、NMS 类消费端拿到错位数据。
+  trigger_surface: torch_npu 2.7.1/2.9.1/950PR 三线 + index_put_/embedding/gather/index_select/take + 越界索引（正/负/环绕）；静默面集中在 2.9.1/950PR 写侧与三芯读侧。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

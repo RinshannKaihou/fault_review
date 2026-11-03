@@ -1,0 +1,51 @@
+id: INF-2230
+legacy_ids: []
+slug: ttmetal_dfb_overlap_shared_core_corruption
+aliases: []
+title: tt-metal DFB 程序本地 L1 分配重叠改写内存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: tt-metal
+    component: allocate_dfb 分配算法
+  behavior: DFB 分配只看自身 CoreRange waterline，共享核上两个 DFB 可完全重叠互相覆写；校验只查 L1 上限不查互相重叠。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 共享核上重叠 DFB 互相覆写（内存损坏）；scratchpad 用另一套正确算法，程序本地 L1 由两套不同算法放置。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62451
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal bf20a2e61f。程序本地 L1 的 DFB 分配（program_allocation_support.hpp allocate_dfb）：每个 CoreRange 一个 LockstepAllocationRegion 跟踪 waterline；循环里 addr=align(max(end(r) for r in dfb.core_ranges)) 只取 DFB 自己的 ranges，对相交 range 的检查只看起点不看终点。反例（两核 A=(0,0)、B=(1,0)）：d_a 1024B on A 落 [0,1024)（A=A–B=1024）；d_b 2048B on B 落 [0,2048)（B=2048，A–B 被跳过仍是 1024）；d_ab 1024B on A–B 取过期 A–B waterline 落 [1024,2048)——在核 B 上 d_ab 整体落在 d_b 内。validate_dataflow_buffer_region 只对 L1 size 与 L1 buffers 检查，不查 DFB 互相重叠。后果：① 共享核上重叠 DFB 互相覆写；② scratchpad 走 allocate_scratchpad 另一套正确算法，程序本地 L1 由两套算法放置；③ 还能引发虚假的 'Local buffer address <A> has to append to last L1 region' 分配失败。
+  source: https://github.com/tenstorrent/tt-metal/issues/62451（伪代码 + 三 DFB 反例表 + 校验缺口）
+  behavior: kernel 在多个核范围上声明 dataflow buffer 且范围部分重叠时，共享核上的两个缓冲会分配到同一地址互相覆写——数值随机损坏且无任何告警；另一部分程序则因 waterline 假设被破坏而报莫名的本地缓冲分配错误。
+  trigger_surface: tt-metal + 多核 Range 部分重叠的 DFB 声明（一个 DFB 的 core range 覆盖另一个的核子集）；伪代码级证明，具体版本 bf20a2e61f。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

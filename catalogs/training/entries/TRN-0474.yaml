@@ -1,0 +1,55 @@
+id: TRN-0474
+legacy_ids: []
+slug: ascend_pytorch_scatter_add_race_loss
+aliases: []
+title: aclnnScatterAdd 多对一累加偶发丢失贡献
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: aclnnScatterAdd 多对一累加
+  behavior: NPU 上 Tensor.scatter_add_（aclnnScatterAdd）在多对一冲突写时偶发输出错误：固定种子输入多数运行通过、偶发失败（66519 用例 1 次）；根因为推断，竞态类最可能、设备级偶发计算错误次之，待复现确认。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: Embedding grad_sample 偶发整行 15 维偏差 0.0405，超容差约 400 倍，远超 ~1e-6 的累加顺序差；算子日志无 ERROR。触发：A3/CANN 9.2.0/torch_npu 77169f23 的 scatter_add_ 多对一冲突写，并发关联未证实。
+  visibility: 不可复现
+mitigation:
+  detect: 固定种子循环跑 per-sample 梯度对照（batch=1 循环 vs 整 batch）统计失败率；线上可对 embedding 梯度行做和校验
+  fix: 待定（issue open 2026-10-27；CI 偶发 1/66519，未定位到算子提交）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5667
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5667（2026-10-27，CRCR，PyTorch CI run 40420199961）：test_expanded_weights.py::test_embedding_model_npu 失败——66519 用例中 1 个失败（core-1 分片）。失败张量为 Embedding.weight 的 grad_sample（32×16×15），由 `grad_sample.scatter_add_(1, index, grad_output.reshape(...))` 计算；NPU 路径 Tensor.scatter_add_ → op-plugin ScatterAddKernelNpuOpApi.cpp → EXEC_NPU_CMD(aclnnScatterAdd)。数值指纹：不匹配元素 15=embedding_dim（一次 token 贡献是一整行 15 维向量）；两个极值同在样本 10 行 7（多对一冲突热点行）；差值 0.0405 与单次 token 贡献理论量级一致，远超浮点累加顺序差的 ~1e-6。环境：pytorch c46cb2a1、torch_npu 77169f23（op-plugin abd59937b）、CANN 9.2.0、A3 runner。历史对照：相邻两 run torch_npu 相同、pytorch 只差 1 个 dynamo commit（不涉 embedding/nn）、输入逐比特相同，一失败一通过，排除代码回归指向执行层偶发非确定性；失败时刻同机有并发流水线（224 进程峰值），并发负载与本失败因果关联未经证实，仅在假设竞态的前提下可能放大触发概率。CANN plog 无任何 ScatterAdd 相关 ERROR（算子执行成功但输出错）。报告者明确：根因为推断（竞态类缺陷最可能、设备级偶发计算错误次之），需复现实验确认；区别于 #2664（scatter_add backward bf16 截断的确定性精度损失）。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5667
+  behavior: PyTorch/NPU CI 或训练中 expanded-weights per-sample 梯度断言偶发失败：同一固定种子输入多数运行通过、偶发失败，失败时 Embedding.grad_sample 有整行（15 维）数值偏差约 0.04，超容差 400 倍；算子日志无任何错误痕迹，只能靠数值断言暴露。频率量级：66519 用例 1 次。
+  trigger_surface: torch_npu 77169f2（CANN 9.2.0、A3）；Tensor.scatter_add_ 多对一冲突写（embedding grad_sample 等场景）；偶发、与并发负载可能相关（未证实）
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    - detail

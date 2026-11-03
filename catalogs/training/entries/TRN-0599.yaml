@@ -1,0 +1,55 @@
+id: TRN-0599
+legacy_ids: []
+slug: deepspeed_deepnvme_silent_io_failure
+aliases: []
+title: DeepNVMe 未检 I/O 结果：错位缓冲失败仍报成功
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: deepspeed
+    component: DeepNVMe async I/O
+  behavior: DeepNVMe 不检查 I/O 请求结果，内核失败的请求报为完成；ZeRO-Infinity 在非对齐偏移读写 view，O_DIRECT 在 md RAID/LVM/老内核拒绝——swap-in 留陈旧数据、swap-out 零写入
+effect:
+  objects:
+  - 模型权重
+  - 梯度
+  detail: GH200 md RAID0 实测：非对齐偏移 I/O 零移动报成功；ZeRO-3 参数 offload 290 参数中 60 个错→修复后 0、首 loss 恢复基线；优化器 offload loss 第 2 步分叉→修复后一致
+  visibility: 静默错误
+mitigation:
+  detect: ZeRO-Infinity NVMe offload 与 CPU offload 的首步 loss/参数 checksum 对比；strace 检查 O_DIRECT 短读；非对齐偏移探针
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8985（open）：每个完成请求检查结果、失败使 wait()/sync_pread()/sync_pwrite() 抛 RuntimeError；非连续/未对齐张量走 bounce buffer；快初始化经 padding staging 张量；io_submit 错误不再 assert、io_pgetevents EINTR 重试、io_queue_init 失败抛错
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8985
+  kind: github_pr
+relations: []
+original:
+  mechanism: DeepSpeed !8985（2026-11-02 open 修复载体）。DeepNVMe async I/O 不检查完成请求的结果：内核失败的请求（EIO 等）被报为已完成。触发面：ZeRO-Infinity 在 flat buffer 偏移读写 view，偏移常非 512B 对齐；O_DIRECT 在 md RAID、LVM、Linux<6.0 所有块设备上拒绝未对齐请求→swap-in 留 stale data、swap-out 零写入。修复：completed request 全检、失败在其余 op 完成后于 wait()/sync_pread()/sync_pwrite() 抛 RuntimeError；非连续或未对齐（statx 否则 512）走既有 bounce buffer；快初始化分区未对齐长度经 padded staging；io_submit 错误去 assert、io_pgetevents EINTR 重试、io_queue_init 失败抛错。五种 GH200 md-RAID0 实测对照（见 effect.detail）。该缺陷属 I/O 层静默失败→权重/梯度损毁路径，与 TRN-0525（offload stale host sum）同为 ZeRO offload 正确性域但层次不同（块 I/O 结果检查 vs 梯度累积窗口）。
+  source: deepspeedai/DeepSpeed https://github.com/deepspeedai/DeepSpeed/pull/8985（open 修复载体）
+  behavior: ZeRO-Infinity NVMe offload（参数或优化器 offload）跑在 md RAID/LVM 或老内核盘上时，部分 swap-in/swap-out I/O 实际失败但报成功：读回来的是上次残留数据、写盘的内容根本没落盘，训练全程无报错地用被损毁的权重和梯度继续。实测 ZeRO-3 参数 offload 初始化后 290 个参数里 60 个是错的、首 loss 偏离 CPU offload 基线；优化器 offload 从第 2 步起 loss 分叉。修复后所有对照恢复一致。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 重计算/卸载

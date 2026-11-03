@@ -1,0 +1,52 @@
+id: TRN-0592
+legacy_ids: []
+slug: trl_grpo_tp_ranks_different_completions
+aliases: []
+title: GRPO 张量并行各 rank 采样不同 completions
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: GRPOTrainer TP 种子
+  behavior: GRPOTrainer 用 set_seed(seed, device_specific=True)（加进程索引）重播种，但 TP 组各 rank 本应共用同一模型/同一 batch，组内各 rank 因此各自采样 completions
+effect:
+  objects:
+  - 训练信号
+  - 训练样本流
+  detail: TP>1 时同组 rank 的 completions 不一致（all_gather 实测 agreement=False），reward/advantage 组统计建立在互相矛盾的样本视图上
+  visibility: 静默错误
+mitigation:
+  detect: TP 组内 all_gather_object 比对 completions 是否一致（issue 附探针 reward 函数）
+  fix: 待定（issue open，未见修复 PR）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/8056
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'huggingface/trl #8056（2026-11-01 open，torchrun 2 卡 TP=2 复现）。张量并行下 TP 组各 rank 共持一个模型、accelerate 给同组相同 batch，但 GRPOTrainer.__init__ 调 set_seed(args.seed, device_specific=True)（种子加全局进程索引）重播种，导致同组各 rank 各自采样自己的 completions。复现中 reward 函数对 TP=2 组两 rank 的 completions 做 all_gather_object 比对，agreement 为 False。GRPO/RLOO 组统计（advantage 归一化、组内对比）因此建立在各 rank 互相矛盾的样本视图上。另提到 prompt sampler 按每进程尺寸的问题。'
+  source: huggingface/trl https://github.com/huggingface/trl/issues/8056（open，含 TP=2 复现脚本）
+  behavior: GRPO/RLOO 开张量并行（TP>1）训练时，同一个 TP 组里每个 rank 都各自采样出不一样的 completions——用 all_gather 把组内 completions 拉到一起比对直接不相等。训练不报错，但 reward 和 advantage 的组统计是在各 rank 互相矛盾的样本上算的。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 训练样本流
+        to: 训练信号

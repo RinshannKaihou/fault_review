@@ -1,0 +1,53 @@
+id: TRN-0517
+legacy_ids: []
+slug: meg_te_fused_mlp_ignores_clamp_options
+aliases: []
+title: Megatron TE 融合 MLP 静默忽略 SwiGLU clamp 配置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: megatron-lm
+    component: TEFusedMLP 系激活构造
+  behavior: TEFusedMLP/GroupedLinear/FusedSharedExpertMLP 构造激活时不读 clamp 选项，配置了 clamp 也静默按普通 SwiGLU 运行
+effect:
+  objects:
+  - 数值结果
+  - 训练轨迹
+  detail: DeepSeek-V4（clamp=c 的 silu(min(g,c))*clamp(u,±c)）与 Kimi-K3 SiTU-GLU 配置在三个融合类下输出与参考实现不同，模型 MoE/MLP 输出错且训练不报错；routed experts 路径行为正确
+  visibility: 静默错误
+mitigation:
+  detect: 对融合与非融合路径做同权重数值对比；检查模型输出 vs transformers 参考实现
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/8640（open，未合入）：TEFusedMLP/GroupedLinear 用 TE clamped SwiGLU 算子，三类对 SiTU-GLU 显式 raise ValueError
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8640
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'Megatron MLP/SharedExpertMLP/routed experts 支持 FC1 输出的两个可选 clamp：activation_func_clamp_value=c（DeepSeek-V4：silu(min(g,c))*clamp(u,-c,c)）与 activation_func_tanh_clamp_scale（Kimi-K3 SiTU-GLU：s_g*tanh(g/s_g)*sigmoid(g) * s_l*tanh(u/s_l)，#7003）。三个融合类构造激活时不读这些选项：TEFusedMLP（use_transformer_engine_op_fuser=True）的 _make_te_ops_activation 把 (F.silu, gated) 无条件映射到 te.pytorch.ops.SwiGLU；TEFusedMLPWithGroupedLinear（use_grouped_gemm_for_dense_mlp=True）恒加 ScaledSwiGLU(glu_interleave_size=32)；FusedSharedExpertMLP（use_grouped_gemm_for_shared_expert=True）实现了 clamp_value 但从不检查 tanh_clamp_scale，SiTU-GLU 配置跑普通 SwiGLU。均不报错不警告。routed experts 已正确处理（TEGroupedMLP._is_fused_impl_supported 用 ScaledClampedQGeGLU、对 SiTU-GLU 返回 False）。修复 PR #8640（open）：TEFusedMLP/GroupedLinear 改用 TE clamped SwiGLU，三个类对 SiTU-GLU raise ValueError。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/8640
+  behavior: 训练 DeepSeek-V4（swiglu clamp）或 Kimi-K3（SiTU-GLU）且开启 TE 融合 MLP（use_transformer_engine_op_fuser / use_grouped_gemm_for_dense_mlp / use_grouped_gemm_for_shared_expert）时，配置的 clamp 生效条件静默失效，dense MLP/共享专家跑普通 SwiGLU，输出与参考实现/非融合路径不同；训练全程无报错，损失与生成质量偏离预期且难定位
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

@@ -1,0 +1,55 @@
+id: INF-2273
+legacy_ids: []
+slug: vllm_ascend_ec_memcache_config_width_reshape
+aliases: []
+title: vllm-ascend EC memcache 按配置宽度重排多模态缓存错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: ECMemcacheConnector
+  behavior: ECMemcacheConnector 未跟随上游按模态实测编码宽度，仍从模型 config 推导单一宽度并 reinterpret 每个加载值：宽度不同的值被静默 reshape 或丢弃（not aligned 日志）。
+effect:
+  objects:
+  - 输入编码
+  - 性能/资源
+  detail: Qwen3-Omni 视觉 DeepStack 输出 8192 宽、音频 2048，在上游 vllm#57904 之后的版本用 EC memcache 连接器加载时：宽度不符的条目一部分以错误 token 数静默进入模型，另一部分被丢弃并重新编码（延迟上升），仅一条 not aligned 日志。
+  visibility: 静默错误
+mitigation:
+  detect: 多模态（视觉/音频宽度不同）模型 + EC memcache：比对加载条目 reshape 后 token 数与请求实际编码数；日志中 not aligned 计数。
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20243 （open，2026-10-29：调度器记录每个 mm_hash 的编码数，worker 按字节大小+行数推导宽度 reshape，全部按字节计算；22 UT 通过）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/20243
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend 的 ECMemcacheConnector（外部编码缓存）宽度推导缺陷：上游 vllm-project/vllm#57904 停止从 HF config 推断编码输出宽度（会漏掉没有顶层 vision_config 的 Qwen3-Omni、Granite4-Vision、MOSS-Audio），改为启动期逐模态实测；ECMemcacheConnector 未被该变更覆盖，仍从模型 config 推导一个宽度并 reinterpret 每个加载值。Qwen3-Omni 为动机案例：视觉 DeepStack 输出 8192 宽（out_hidden_size 2048×(1+3 DeepStack 层)）、音频 2048，真实宽度与假定不符的值被静默 reshape（字节数恰好整除时）成错误行数进入模型，或被丢弃并记 not aligned with the encoder hidden dimension 日志（触发静默重编码）。修复 PR #20243：调度器为每个 mm_hash 记录编码 embedding 数（request.get_num_encoder_embeds），mm_hashes_need_loads 从 list 变 dict[str,int]；worker 按字节大小与行数推导每个值的宽度并 reshape；batching、偏移、容量与超大值路径全部按字节计算，不同宽度可共享接收缓冲；config 宽度只用于持久接收缓冲（低估只走既有 oversized 路径，不再错误 reshape）。测试：CI 钉住 vLLM 544f182d，tests/ut/distributed/test_ec_memcache_connector.py 22 passed（18 存量+4 新增覆盖混合宽度共享缓冲、字节数不匹配、调度器记录行数、start_load_caches 转发）。'
+  source: GitHub PR https://github.com/vllm-project/vllm-ascend/pull/20243 （open，2026-10-29，含根因、修复与 UT）
+  behavior: 用 Qwen3-Omni 等视觉/音频编码输出宽度不同的多模态模型 + EC memcache 连接器时，从 memcache 加载的多模态缓存条目被按模型 config 的单一宽度重塑：一部分条目以错误的 token 数静默进入模型（内容错位），另一部分被静默丢弃并重新编码（延迟上升、缓存形同虚设）；除一条 not aligned 日志外无报错，模型输出质量下降难以归因。
+  trigger_surface: vllm-ascend + ECMemcacheConnector；编码输出宽度 ≠ LM embedding 宽度且各模态不同的模型（Qwen3-Omni DeepStack 8192/音频 2048、Granite4-Vision、MOSS-Audio）；上游 vllm#57904 之后版本。
+  signature: memcache 加载条目 reshape 后行数与请求实际编码数不符；not aligned 日志条目。
+  repro: PR 附单测（22 用例含混合宽度共享缓冲）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

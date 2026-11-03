@@ -1,0 +1,49 @@
+id: TRN-0579
+legacy_ids: []
+slug: opsnn_mhc_pre_sinkhorn_premix_grad_dropped
+aliases: []
+title: MhcPreSinkhorn 无 premix 时 h_pre 梯度被丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MhcPreSinkhornPremix
+  behavior: backward 在保存的 premix 为 None 时把 grad_pre 置 None，外部经 h_pre 回传的下游梯度被静默丢弃；no-premix 路径只归约内部 dPre，无法合并下游贡献
+effect:
+  objects:
+  - 梯度
+  detail: 两次调用链（首次 premix=None、下次消费其 h_pre）中 x/phi/alpha/bias 梯度不完整，训练静默错梯度
+  visibility: 静默错误
+mitigation:
+  detect: 构造两次调用链仅从第二次的 h_in 反传，与纯 PyTorch 参考实现比对首次调用的梯度
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/15097（open，未合入）：premix 缺省且有 grad_h_pre 时反向改用保存的 h_pre 作为 preMix 并把内部 dPre 以 float32 加回 gradPre，附回归用例与 PyTorch 参考比对（未核实合入）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7006
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15097
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #7006（2026-11-01 open）+ 修复 !15097（open）。MhcPreSinkhornPremixFunction.forward 在第 68 行把 h_pre 作为可微输出返回，docstring（37-40 行）声明 h_pre 可作为下次调用的 premix 输入且 gradPre 会经 autograd 图回传；但 backward 的 126-131 行在保存的 premix 为 None 时直接把 grad_pre 置 None，外部提供的 grad_h_pre 被静默丢弃。backward 算子的 no-premix 路径只计算内部 dPre = reduce(grad_hin.unsqueeze(-2) * x, dim=-1)，无法包含 grad_h_pre 代表的下游贡献。因此『首次调用 premix=None、下次调用消费其 h_pre』的正常链式用法里 x、phi、alpha、bias 的梯度错误。源码行号定位明确（issue 自带 forward/backward 行号与机制），修复 MR 含回归用例：构造两次调用链只经第二次 h_in 反传，与纯 PyTorch 参考比较首次调用的梯度。'
+  source: cann/ops-transformer https://gitcode.com/cann/ops-transformer/issues/7006 + 修复 https://gitcode.com/cann/ops-transformer/merge_requests/15097（open）
+  behavior: 把 MhcPreSinkhornPremix 的 h_pre 输出接到下一次调用当 premix 用并正常反传时，第一次调用的 x/phi/alpha/bias 梯度是错的——下游经 h_pre 回传的那部分梯度被直接丢掉，全程无报错无 NaN，loss 正常下降但梯度不完整。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

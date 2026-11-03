@@ -1,0 +1,69 @@
+id: INF-2361
+legacy_ids: []
+slug: vllm_ascend_retention_interval_dead_env
+aliases: []
+title: Ascend 混合 KV retention_interval 配置失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV 协调器初始化与转发
+  behavior: 协调器读 0.29 清理中已删除的 env 恒得 None，不调 super().__init__()，覆写的 find_longest_cache_hit 也不转发 retention_interval，三处断裂使配置失效
+effect:
+  objects:
+  - 性能/资源
+  - KV状态
+  detail: DeepSeek-V4/V4.1 上设 --prefix-cache-retention-interval 无任何效果；非法值 4097（非 block-size 32 倍数）被静默接受，四 DP 引擎正常初始化、日志无错误，上游 must be a multiple 校验从未出现
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: '修复 PR https://github.com/vllm-project/vllm-ascend/pull/20546（open，2026-11-01）：改读 CacheConfig 字段、补校验与转发；未发布。历史：#17480 修过 env 读取但 2026-10-09 被 #18029 整体回退'
+labels:
+  stage: N/A
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20537
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/20546
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm_ascend/patch/platform/patch_kv_cache_coordinator.py 中 AscendHybridKVCacheCoordinator 三处独立断裂使 prefix_cache_retention_interval 完全无效：① __init__ 用 getattr(envs_vllm, VLLM_PREFIX_CACHE_RETENTION_INTERVAL, None) 读 env，但 vLLM #52216 已把该设置升为 CacheConfig 字段、#55353 在 0.29 清理中从 vllm.envs 删除，查找恒得 None；② 该 None 使 if self.retention_interval is not None 校验门恒假，_validate_prefix_cache_retention_interval 从不执行，非法值静默通过；③ 覆写的 find_longest_cache_hit 调 manager_cls.find_longest_cache_hit 不带 retention_interval，extra_mgr_kwargs 也不带，且 __init__ 不调 super().__init__()，上游赋值与校验均不可达。同一死 env 还在 ascend_store/pool_scheduler.py:118 与 pool_worker.py:929 被读。运行时证据：--block-size 32 --prefix-cache-retention-interval 4097 正常启动，args 已解析出 4097，四个 DP 引擎初始化、/metrics 服务、日志无任何错误；上游 kv_cache_coordinator.py 的校验（必须非负且为 scheduler_block_size 倍数）有两个 raise，4097 必触发其一，「完全无错误」即判定生效路径未执行。issue 定位到具体行号（:140/:146/:424-432/:175-176）并给出 #17480 修复（2026-09-29）被 #18029（2026-10-09）整体回退、且 #17480 从未覆盖转发项、其单测只断言 coordinator.retention_interval == value 故「看似已修实际无效」的历史。来源 https://github.com/vllm-project/vllm-ascend/issues/20537（open，2026-11-01）；修复 PR #20546（open）。环境：Atlas 800 A3、vllm-ascend v0.30.0rc2-a3、vLLM 0.30.0rc2、DeepSeek-V4.1-Flash-1017-w8a8-mtp、DP4/TP4/EP16、--block-size 32、--enable-prefix-caching。'
+  source: 2026-11-01 每日扫描。https://github.com/vllm-project/vllm-ascend/issues/20537 ；修复 https://github.com/vllm-project/vllm-ascend/pull/20546
+  behavior: 在 Ascend A3 上部署 DeepSeek-V4.1-Flash 并设 --prefix-cache-retention-interval：无论传什么值（包括明显非法的 4097，不是 block-size 32 的倍数），服务都正常启动、四组 DP 引擎正常初始化、监控指标正常输出，日志里一条错都没有——但该配置对 KV 前缀缓存保留行为毫无作用，用户以为 retention 策略已生效实际完全没生效，上游本应报的 must be a multiple 校验也从未出现。
+  trigger_surface: vllm-ascend v0.30.0rc2（Ascend 混合 KV cache 路径，DeepSeek-V4/V4.1）；任何 --prefix-cache-retention-interval 值；#18029 回退后版本
+  discovery: 2026-11-01 每日扫描
+  notes:
+  - '2026-11-02 2026-11-02 回访：修复 PR #20546 仍 open（11-02 12:57Z 更新），未合入'
+  - '2026-11-02 2026-11-02 回访：修复 PR #20546 仍 open（11-02 12:57Z 更新），未合入'
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: KV状态
+        to: 性能/资源
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-02'
+    fields:
+    - original.notes
+  - date: '2026-11-02'
+    fields:
+    - original.notes

@@ -1,0 +1,67 @@
+id: INF-2242
+legacy_ids: []
+slug: cann_dynamic_quant_v2_bf16_extreme_scale_inf
+aliases: []
+title: CANN DynamicQuantV2 bf16 极值量化全饱和
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: dynamic_quant_v2 极差计算
+  behavior: aclnnDynamicQuantV2 行极差在 fp32 中计算，|x|>1.70e38 时溢出为 inf，scale=inf、yOut 全饱和 +127（含负值），返回 0 无报错。
+effect:
+  objects:
+  - 数值结果
+  detail: bf16 行内同时含 ±3.3895e38 时返回码全 0、无告警，scaleOut=inf、offsetOut=127、yOut 整行饱和 +127，符号与数值全丢；1e38 正确、2e38 起全错，边界 2|x|>3.4028e38；fp16 量程不可达不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 检查 scaleOut 是否 inf / yOut 是否整行 ±127 饱和可检出
+  fix: 待定（issue open；报告者建议极差改 fp64 计算或对 scale 做 inf 保护，并建议同族 aclnnRmsNormDynamicQuant/aclnnDynamicQuant 一并核查，均未实施）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7533
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7722
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0196
+original:
+  mechanism: 'cann/ops-nn issue #7533（2026-10-28，open）：aclnnDynamicQuantV2（ops-nn quant/dynamic_quant_v2）按资料公式 scale=(row_max-row_min)/255 做非对称量化，极差在 fp32 中计算；bf16 输入行内同时含 ±bf16_max（3.3895e38）时极差 6.78e38 超 fp32 上限 3.4028e38 溢出为 inf，随后 scale=inf、offset=127、yOut 全饱和 +127。实测（Ascend910B2 与 910B3 均复现，CANN 9.2.0，npu-smi 26.1.1，两段式 C 直调）：控制组 ±1e38 输出 127/-128 交替正确；缺陷组 ±3.3895e38 得 scale=inf、offset=127、y 全 127；阈值扫描 1e38 正确、2e38/3e38/3.3895e38 全错，边界恰在 2|x|>3.4028e38。资料未对 x 取值域做限制，属合法输入。含完整 C++ 复现脚本。'
+  source: https://gitcode.com/cann/ops-nn/issues/7533
+  behavior: 用 bf16 极值（行内同时有约 +3.39e38 和 -3.39e38，即 |x|>1.70e38）调 aclnnDynamicQuantV2 时，返回码全 0、无告警，但 scaleOut 变成 inf、offsetOut=127、整行量化结果 yOut 全部饱和成 +127，负值也成正的，符号与数值信息全部丢失；幅值降到 1e38 量级则完全正常。做 per-token 动态量化并在上游产生 bf16 极值激活的管线会在无感知下拿到全饱和的 int8。
+  trigger_surface: Ascend 910B2/910B3 + CANN 9.2.0 + aclnnDynamicQuantV2 + bf16 输入 + 行内极差 >fp32 上限（|x|>1.70e38）；fp16 因量程不可达不触发。
+  discovery: 2026-10-28 每日扫描
+  notes:
+  - 2026-10-29 2026-10-29 回访：A2 修复 PR !13078 已 closed（guard 范式完整验证矩阵）；arch35 向量路径与 update_scatter_v2 同根因变体另立 INF-2255（范围扩展：950PR/950DT/A3）
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - visibility
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-10-30'
+    fields:
+    - pattern

@@ -1,0 +1,48 @@
+id: TRN-0480
+legacy_ids: []
+slug: opsmath_pdist_p_inf_all_nan_legacy_tbe
+aliases: []
+title: 'aclnnPdist p=+inf 返回 0 输出全 NaN（legacy '
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: pdist legacy TBE 内核
+  behavior: A2+CANN 9.2.0 只带 ops_legacy/pdist 旧 TBE 实现：pdist_sum_process 用 ln(sum)*(1/p) 收尾，p=+inf 时 1/inf=0、ln(sum)=inf
+effect:
+  objects:
+  - 数值结果
+  detail: p=+inf（切比雪夫距离，资料声明值域 [0,+∞] 内的合法语义）时 out 全 NaN、两段返回 0 无任何报错/日志；同输入 p=2 结果正确。NaN 向聚类/异常检测/loss 下游扩散。
+  visibility: 数值异常
+mitigation:
+  detect: p=inf 调用后对 out 做 NaN 断言；torch_npu 2.14 交叉验证同现象
+  fix: 待定（master AscendC 内核 ReduceMax 分档已存在，未随 9.2.0 发布到 A2；issue open 2026-10-27）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4104
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math #4104（2026-10-27，Atlas A2 910B2 训练系列 8 die、CANN 9.2.0 发布包、g++13、torch_npu 2.14 交叉验证同现象）：aclnnPdist 在 p=+inf 时两段都返回 0、输出全 NaN。实测内核为 ascend910b/ops_legacy/pdist（旧 TBE，Pdist_fp32/fp16_high_performance.o），其 pdist_sum_process 用 ln(sum)*(1/p) 收尾：1/inf=0、ln(sum)=inf、inf*0=NaN。契约三柱：①资料 math/pdist/docs/aclnnPdist.md 参数表 p 值域 [0,+∞]；②master 的 experimental/math/pdist/op_host/pdist_tiling.cpp 已有 std::isinf(pValue)→tilingKey=2（ReduceMax 分支），即 p=inf 是设计内语义；③第一段校验 math/pdist/op_api/aclnn_pdist.cpp 只挡 p<0||isnan(p)，inf 放行。master 新 AscendC 内核未随 9.2.0 发布到 A2，故发布包上走了 legacy NaN 路径。报告者带单文件 C++ 探针（CTRL p=2 vs DEFECT p=inf）与 DEV_ID 选择说明。'
+  source: https://gitcode.com/cann/ops-math/issues/4104
+  behavior: A2 训练/数据处理链路里用 pdist(p=float('inf')) 取切比雪夫距离（如聚类、异常检测、对比 loss 的样本间距）时，算子返回成功但输出整块 NaN，无报错无日志；p=2 同输入正常。NaN 传播进下游 loss/聚类中心，训练出现 NaN 或聚类结果报废，需逐层排查才能定位到 pdist。
+  trigger_surface: CANN 9.2.0 发布包（Atlas A2 910B2 实测）legacy TBE pdist；p=+inf（含 torch_npu 2.14 路径）；master AscendC 内核不受影响但未发布到 A2
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

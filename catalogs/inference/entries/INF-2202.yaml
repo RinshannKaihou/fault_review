@@ -1,0 +1,50 @@
+id: INF-2202
+legacy_ids: []
+slug: cann_layernorm_quant_gamma_row0_silent_truncate
+aliases: []
+title: LayerNormQuant 非法 gamma 形状静默截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnnLayerNormQuant
+  behavior: 未校验 gamma 第一维（须为 1）与 zeroPoints 长度（须 1），非法形状两段返回 0，只读 gamma 第 0 行、zeroPoints 第 0 个
+effect:
+  objects:
+  - 数值结果
+  detail: 非法形状被静默接受，第 1 行 gamma 与多余 zeroPoints 数据被丢弃，输出按第 0 行算出；资料错误码表 161002 明列该场景应拒绝
+  visibility: 静默错误
+mitigation:
+  detect: gamma 第一维与 zeroPoints 长度显式断言；与合法 [1,4]/[1] 基线对照
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7378
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnLayerNormQuant 首段接口 GetWorkspaceSize 的 CheckShape 未按资料约束校验 gamma 第一维与 zeroPointsOptional 长度：资料声明 quantMode=0 时 gamma 支持 2 维且第一维为 1、zeroPointsOptional shape 需与 scale 一致（[1]），错误码表 161002 明列「zeroPointsOptional、scale 的 shape 不相同」。实测 gamma=[2,4]（第 0 行全 1、第 1 行全 2）与 zeroPoints=[5] 两段均返回 0，且实现只读 gamma 第 0 行、zeroPoints 第 0 个元素，其余数据被静默丢弃——调用方以为传入的整组缩放/零点生效，实际只用第 0 行。环境：Atlas A2（910B2）、CANN 9.2.0；目标文件 norm/layer_norm_quant/op_host/op_api/aclnn_layer_norm_quant.cpp；自包含 C++ 复现。来源 https://gitcode.com/cann/ops-nn/issues/7378（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-nn/issues/7378
+  behavior: 调用 LayerNorm 量化融合算子时，把 gamma 传成多行（如 [2,4]）或 zeroPoints 传成长度大于 1 的数组（如 [5] 个元素），接口不报资料声明的 161002 错误，而是静默成功，且只使用第 0 行 gamma 与第 0 个 zeroPoint，其余数据全部忽略。若上层因批量/分组逻辑天然产生多行缩放参数并直接传入，量化结果会按错误（只第一行）的缩放系数计算，输出整体偏差，且无任何告警。
+  trigger_surface: aclnnLayerNormQuant；gamma 第一维>1 或 zeroPointsOptional 长度>1（资料声明非法的形态）；Ascend 910B2、CANN 9.2.0 实测
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

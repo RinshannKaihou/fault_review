@@ -1,0 +1,53 @@
+id: TRN-0477
+legacy_ids: []
+slug: mindformers_static_batch_resume_epoch_repeat
+aliases: []
+title: MindFormers 静态 batch 恢复后跨 epoch 重复数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindformers
+    component: Trainer 恢复偏移清除
+  behavior: PyNative Trainer 从 checkpoint 恢复时设置的初始跳过步数在静态 batch 路径 epoch 耗尽重建迭代器前不清除（只在 dynamic_batch 时 set_init_step(0)）
+effect:
+  objects:
+  - 训练样本流
+  detail: 恢复训练后第 2 个 epoch 再次从 checkpoint 位置读起：10 条 batch2 偏移 3 复现实际 [6,7][8,9][6,7][8,9]（期望含 [0,1]）；8040 样本实测 epoch 边界重复恢复后首微批。
+  visibility: 静默错误
+mitigation:
+  detect: 恢复训练后检查第二个 epoch 首 batch 是否等于恢复后首 batch；样本 id 日志对比
+  fix: 修复 PR https://atomgit.com/mindspore/mindformers/merge_requests/8886（open，2026-10-27）——首个 epoch 结束时清除一次性偏移；独立候选 7c1cf12a 回归 2 passed、集成后 11 passed
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://atomgit.com/mindspore/mindformers/issues/2618
+  kind: gitcode_issue
+- url: https://atomgit.com/mindspore/mindformers/merge_requests/8886
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'mindspore/mindformers #2618（2026-10-27，MindFormers 7e616b80（master 902de5f0 上叠加）、MindSpore 2.12.0、PyNative CPU 复现）：PyNative Trainer 从 checkpoint 恢复普通数据集时设置初始跳过步数；当前 epoch 耗尽后静态 batch 路径重新创建迭代器前没有清除该恢复偏移，新 epoch 再次从 checkpoint 对应位置开始。根因：恢复逻辑对数据集 set_init_step 后，Trainer._next_batch_unchecked 遇 StopIteration 只在 resumed 且 dynamic_batch_enabled 时执行 set_init_step(0)；普通静态 batch 也需要在首次 epoch 结束时清除此一次性偏移；balanced source 有独立逻辑不在范围。复现：10 条顺序 int32、batch 2、初始偏移 3——期望 [6,7][8,9][0,1][2,3]，实际旧实现 [6,7][8,9][6,7][8,9]；fresh 与 dynamic 恢复路径回归无此重复。真实数据合同检查：8040 样本 set_init_step(64000)，恢复后第 320 微批是原 epoch 尾、下一微批重复恢复后首微批而非 fresh 首微批。修复 PR !8886（open）：首次 epoch 结束清除一次性偏移；独立候选 7c1cf12a 直接跑生产测试 2 passed、集成 ce07863 后 11 passed。issue 声明：以上是数据方法与 CPU 测试证据，未宣称真实 checkpoint 恢复训练或 1000 步验收通过。'
+  source: https://atomgit.com/mindspore/mindformers/issues/2618 + 修复 PR https://atomgit.com/mindspore/mindformers/merge_requests/8886（open）
+  behavior: PyNative 模式从 checkpoint 恢复训练（普通数据集、静态 batch）后，第一个 epoch 正常读到尾部，第二个 epoch 不从头开始而是再次跳到 checkpoint 位置重读同一段数据：该段样本每 epoch 重复、数据集头部样本被跳过。训练无报错、loss 无异常标志，数据审计（样本 id 对比）才能发现。
+  trigger_surface: MindFormers PyNative Trainer（7e616b80/master 附近）+ MindSpore 2.12.0；checkpoint 恢复 + 普通数据集 + 静态 batch（非 dynamic、非 balanced）
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,58 @@
+id: TRN-0549
+legacy_ids: []
+slug: trl_parse_response_qwen35_unclosed_think_region
+aliases: []
+title: TRL parse_response 未闭合 think 吞工具调用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: trl
+    component: parse_response 前缀区解析
+  behavior: Qwen3.5 模板预填 <think>\n；模型跳过思考直接输出正文+<tool_call> 且不闭合 </think> 时整段留在 reasoning_content：无 tool_calls、不抛异常
+effect:
+  objects:
+  - 输出内容
+  - 训练信号
+  detail: GRPO/agent RL 训练中，模型某轮跳过思考时 rollout 解析出的消息 tool_calls 为空，reward 按无工具调用给分，该批样本训练信号静默错误；解析不报错，需抽查解析结果才能发现；早期轮次无思考的对话常见（OpenAI 客户端回传历史时剥 reasoning）
+  visibility: 静默错误
+mitigation:
+  detect: 对含预填 <think> 前缀的样本断言解析结果 reasoning_content 为空或闭合；统计无 tool_calls 比例突变
+  fix: 待定（issue open：需解析器在 completion 未闭合 region 时按正文处理或报错）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/8050
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'TRL #8050（2026-10-30，open）：Qwen3.5 chat 模板（qwen3_5_think.jinja/qwen3_6.jinja 及训练变体）默认为每条生成 prompt 预填 <think>\n（enable_thinking=False 除外）。历史助手轮无思考时模板渲染 <think>\n\n</think>，模型常在新轮跳过思考：直接写正文与 <tool_call> 并以 <|im_end|> 结束、从不输出 </think>。parse_response(tokenizer, ids, prefix=prompt_ids) 从 prefix 读入预填的 <think>\n，reasoning_content 区在 completion 开始时就已打开且永不闭合，解析器把全部内容（含 tool call）留在 reasoning_content 并在序列末尾闭合，返回消息没有 tool_calls；无异常抛出故 plain-text fallback 也不适用。早期轮次无思考的对话常见（OpenAI Chat Completions 客户端回传历史时剥 reasoning，如 Strands OpenAIModel）。'
+  source: https://github.com/huggingface/trl/issues/8050
+  behavior: Qwen3.5/Qwen3.6 系列 GRPO 或 agent RL 训练中，模型某轮跳过思考（预填 <think> 后直接给正文和工具调用）时：rollout 解析出的消息 reasoning_content 吞掉整个回复、tool_calls 字段为空，reward 函数按没有工具调用给分，该批样本训练信号静默错误；解析不报错，只有抽查解析结果才能发现。
+  trigger_surface: TRL parse_response + Qwen3.5/3.6 think 模板预填 <think>\n + 模型跳过思考（历史轮无思考时更常见）
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 训练信号
+        to: 输出内容
+    rewritten:
+    - detail

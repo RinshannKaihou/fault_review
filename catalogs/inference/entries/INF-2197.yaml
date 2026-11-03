@@ -1,0 +1,60 @@
+id: INF-2197
+legacy_ids: []
+slug: cann_block_sparse_attention_u32_offset_wraparound
+aliases: []
+title: BlockSparseAttention 超大掩码偏移 uint32 回绕错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: block_sparse_attention 偏移
+  behavior: 展平偏移（kvseqlen×blockShape 乘加）用 uint32 承载，超 2^32 回绕，寻址错位产生精度问题
+effect:
+  objects:
+  - 数值结果
+  detail: kvseqlen=10M、blockShape=128 时（展平偏移 ~1.28e9×块数超 2^32）ATK 双标杆精度不通过；修复 PR 将偏移计算提升为 uint64_t 后转换
+  visibility: 静默错误
+mitigation:
+  detect: 超大 kvseqlen×blockShape 用例与 ATK 双标杆对照
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14632 （open，未发布）：计算相关偏移时数据类型提升为 uint64_t，确保乘法前完成类型转换
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: issue 正文较简（构造超大用例 kvseqlen=10M、blockShape=128、ATK 双标杆失败），机制由修复 PR !14632 描述（uint32 展平偏移回绕、提升 uint64 修复）交叉证实；判为 documented
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6766
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14632
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0458
+original:
+  mechanism: BSA（block_sparse_attention）算子在大规模稀疏 blockSparseMask 下，展平偏移（kvseqlen 与 blockShape 相关的乘加）计算使用 uint32 类型，数值超过 uint32 范围（2^32）时地址回绕，造成精度问题。issue 报告：构造超大用例 kvseqlen=10M、blockShape 大小 128 时精度不通过（ATK 双标杆测试失败）；不区分环境。修复 PR !14632（open）明确机制：计算相关偏移时数据类型提升为 uint64_t，确保乘法前完成类型转换——证实原实现乘法在 uint32 域内发生回绕。来源 https://gitcode.com/cann/ops-transformer/issues/6766（open）+ 修复 PR !14632（open，未发布）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-transformer/issues/6766 https://gitcode.com/cann/ops-transformer/merge_requests/14632
+  behavior: 使用 block_sparse_attention 做超长上下文（kvseqlen 达千万级）+ 大 blockShape（128）的稀疏注意力计算时，输出精度不通过双标杆测试——掩码展开偏移在 uint32 范围内回绕，寻址错位后拿到错误的数据参与计算。接口无报错，错误随规模增长在阈值附近首次出现；常规短序列规模不触发。长上下文稀疏注意力场景会静默产出错误结果。
+  trigger_surface: block_sparse_attention / aclnnGenericBlockSparseAttention 族；超大 blockSparseMask（kvseqlen~10M、blockShape=128 实测，展平偏移超 2^32）；硬件不区分（issue 声明）
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

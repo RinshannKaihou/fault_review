@@ -1,0 +1,59 @@
+id: INF-2300
+legacy_ids: []
+slug: ops_transformer_moe_gating_topk_sigmoid_ulp_route_flip
+aliases: []
+title: MoeGatingTopK sigmoid 1ULP 差翻转 top-k 路由
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: MoeGatingTopK sigmoid
+  behavior: 融合算子 FP32 sigmoid 与 aclnnSigmoid 小算子差 1 ULP，元素恰在 top-10 边界时打破平局，第 10 个 expert 从 122 翻转为 472。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 实测 reference_ids 第 10 位=122、fused=472，ids/scores bitwise 不等；selected_weight_sum 差 0.075、proxy_grad_norm 0.0797→0.136；整网 grad_norm 误差放大。950PR。
+  visibility: 静默错误
+mitigation:
+  detect: 融合 vs 小算子（sigmoid+bias+topk+gather）bitwise 对比扫描；关注 top-k 边界元素。
+  fix: 待定（未见修复 MR；issue 要求融合算子与小算子一致）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6944
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer MoeGatingTopk 融合算子接入后模型训练首步 grad_norm 误差变大（issue #6944，950PR/CANN 9.2.0）：报告者从整网收集该 case 算子输入构造融合 vs 小算子对比，初步分析为融合算子内 sigmoid 计算与 aclnnSigmoid 小算子存在 1 ULP 差异。实测数据（torch 2.13.0+cpu/torch_npu 2.13.0、input (1,512) fp32、top_k=10）：某元素融合 norm_out=0.9126850367 而 torch.sigmoid=0.9126850963（差 5.96e-08=1 ULP），该元素恰位于 top-10 边界，1 ULP 差异打破平局使第 10 个 expert 从 122 翻转为 472：reference_ids=[0..8,122] vs fused_ids=[0..8,472]，ids_bitwise_equal=False、scores_bitwise_equal=False（differing_scores=1）；selected_weight_sum 9.9122762680 vs 9.8369836807（abs_diff 0.0753）；proxy_grad_norm 0.0797 vs 0.1362。路由变化随后放大为不同的 expert dispatch、路由权重、前向结果和反向梯度——MoE top-k 是离散决策，一般连续计算的 1 ULP 通常无害，但边界元素上误差被离散化放大至整网。融合算子与 torch.sigmoid+bias+topk+gather 路径非 bitwise 等价。'
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6944 （open，2026-10-30 创建；附完整对比数值表）
+  behavior: 用 npu_moe_gating_top_k 融合算子替换 sigmoid+bias+topk 小算子组合后：融合版对某元素算出的 sigmoid 比小算子小 1 ULP，若该元素正好卡在 top-k 边界，选中的第 10 个专家就从 122 变成 472，路由权重总和差 0.075、代理梯度范数几乎翻倍（0.08→0.14），整网 grad_norm 首步即可见偏差。单看算子输出几乎无差异（1 个元素 1 ULP），但离散路由把微小数值差放大成完全不同的计算图路径，训练/推理结果静默改变。
+  trigger_surface: cann/ops-transformer MoeGatingTopK；FP32；sigmoid 结果恰在 top-k 边界的元素（平局阈值附近）；MoE 门控路径。
+  signature: fused vs ref ids bitwise 不等且差异集中在边界元素；sigmoid 差 1 ULP（5.96e-08）。
+  repro: issue 附实测数值表（reference_ids/fused_ids/scores/grad_norm 对照）。
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - '2026-10-31 2026-10-31 回访：批次快照显示 issue #6944 已 closed（10-31）；closed 不自动证明修复已发布，关闭原因未核实'
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - original.notes

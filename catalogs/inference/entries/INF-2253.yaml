@@ -1,0 +1,58 @@
+id: INF-2253
+legacy_ids: []
+slug: sglang_diffusion_quant_layer_correctness_batch
+aliases: []
+title: SGLang 扩散量化层 11 处正确性缺陷批次
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: multimodal_gen 量化层
+  behavior: multimodal_gen 量化层代码审查发现 11 处缺陷：ModelSlim 双 scale 键名错（必崩）；smooth-quant scale 静默丢弃；ROCm FP8 漏 fnuz；MXFP4 恒分配 bf16 等静默错值。
+effect:
+  objects:
+  - 输出内容
+  - 数值结果
+  - 模型权重
+  detail: 静默类：smooth-quant scale 不加载、fnuz 不转换、布局/展平错配、scale patch 静默跳过——输出错值无报错；崩溃类：dual-scale AttributeError 每层必崩（fail-loud）。影响扩散模型多模态生成量化部署。
+  visibility: 静默错误
+mitigation:
+  detect: 与未量化/参考后端对照生成质量可检出静默类；崩溃类自然暴露
+  fix: 待定（issue open 2026-10-24，代码审查报告，未附修复 PR；逐项文件行号已列）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/46314
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'sgl-project/sglang issue #46314（2026-10-24，open）：python/sglang/multimodal_gen/runtime/layers/quantization/ 代码审查（code review，非运行时复现）发现 11 处正确性缺陷：1) modelslim_mxfp4_scheme.py:65 读 self.is_dual_scale_key，实际属性名 dual_scale_key——每个 W4A4_MXFP4_DUALSCALE checkpoint 每层 AttributeError。2) :53-56 has_mul_scale 要求同时存在 .div.mul_scale 与 .mul_scale，tools/wan_repack.py 把前者改名成后者，repacked checkpoint 永不同时有两键——smooth-quant scale 静默丢弃。3) fp8.py per_channel_serialized 路径只转置权重，跳过同文件 block_quant 路径已有的 e4m3fn→fnuz 转换（ROCm）。4) gfx1250 在线 FP8 Triton tile 拒绝时把行主序 [K,N] 直接传 torch._scaled_mm（要求列主序 mat2）。5) mxfp4.py create_weights 无视 is_checkpoint_mxfp4_serialized 恒分配 bf16。6) mxfp4.py 只展平 3D 输入，4D 视频输入直达 GEMM。7) modelopt_quant.py(NVFP4)、modelopt_fp8.py/weight_only_fp8.py 的 apply_fp8_linear 调用缺 fp8.py 已有的 .contiguous() 守卫。8) kitchen_w4a4_config.py 对非 LinearBase 返回 None 而非像 W4A8/NVFP4 把 VocabParallelEmbedding 路由到 ComfyInt8EmbeddingMethod——INT8 embedding 伴生物丢失。9) nunchaku_config.py skip 规则对 LinearBase 返回 None（应为 UnquantizedLinearMethod()）、大小写不敏感匹配与 AWQ/SVDQ 大小写敏感不一致、_patch_nunchaku_scales 静默跳过多重 scale。'
+  source: https://github.com/sgl-project/sglang/issues/46314
+  behavior: SGLang 扩散/多模态生成量化部署中：ModelSlim 双 scale checkpoint 每层直接报 AttributeError；repacked checkpoint 的 smooth-quant scale 静默不加载、ROCm rowwise FP8 权重不做 fnuz 转换、gfx1250 回退路径布局错配、MXFP4 预量化权重按 bf16 分配、4D 视频输入不展平、Nunchaku scale 静默跳过——这些静默项全部导致生成结果错误但无报错，生成质量肉眼可劣化却无日志线索；NVFP4/weight-only 非连续输入无守卫则可能错值或崩溃。
+  trigger_surface: SGLang multimodal_gen 量化层（2026-10-24 时点 main）+ ModelSlim MXFP4 双 scale/repacked checkpoint、ROCm rowwise FP8 per_channel_serialized、gfx1250 在线 FP8 回退、MXFP4 ROCm 预量化 checkpoint、4D 视频输入、KitchenW4A4 embedding、Nunchaku；代码审查发现，各缺陷独立触发。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 输出内容
+    uncertain:
+    - visibility

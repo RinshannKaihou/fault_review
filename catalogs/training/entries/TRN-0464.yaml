@@ -1,0 +1,55 @@
+id: TRN-0464
+legacy_ids: []
+slug: trl_dpo_stale_ref_scores_collator_limit
+aliases: []
+title: DPO 复用陈旧参考分数缓存致梯度错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: precompute_ref 缓存键
+  behavior: precompute_ref_log_probs=True 时参考分缓存以数据集目录为键、不含 collator 截断长度；collator 限制改变后模型分数对新序列计算、参考分数仍来自旧序列，不同序列的分数进入同一 DPO loss。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 缓存目录存在旧参考分且 collator 截断长度改变时，初始 loss/梯度即错且依赖缓存历史：同配置同数据，仅因是否命中旧缓存目录，初始 loss/梯度不同；静默无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 清理缓存目录对比初始 loss/梯度是否变化；缓存键纳入 collator 截断参数指纹
+  fix: 待定（issue open）
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7897
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'trl #7897（open，2026-10-26）：DPOTrainer precompute_ref_log_probs=True 时参考分缓存按数据集目录存取，不感知用户自定义 collator 的序列限制。作者设计对照实验：先以 40 token 限制填充缓存，再比较两个同为 8 token 限制的 trainer——一个指向同一数据集目录（命中旧缓存）、一个加载全新拷贝；两者相同初始权重、相同数据与 collator 设置，初始 loss 与梯度本应一致，实测不同。根因：DPOConfig(max_length=None, truncation_mode=keep_start) 下截断由 DataCollatorForPreference(max_length=...) 负责，缓存键不含该参数；模型分数对 8 token 序列计算、参考分数来自 40 token 序列，不同序列的分数进入同一 DPO 损失。复现纯 CPU、6.2 秒、本地随机 tiny-Qwen2 权重。#6548 系列修复未覆盖此缓存键面。'
+  source: GitHub issue：https://github.com/huggingface/trl/issues/7897 （open，含完整 CPU 复现脚本与 40→8 token 缓存历史隔离实验）
+  behavior: DPO 训练开 precompute_ref_log_probs 并用自定义 collator 控制截断长度时，只要参考分缓存目录里存着按旧截断长度算的分数（比如之前跑过一遍更长/更短的配置），本次训练的 loss 和梯度就悄悄错掉：模型分数与参考分数来自不同 token 序列。同代码同数据换个干净的缓存目录结果就不同，问题随缓存历史出现/消失，极难归因；全程无告警。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 数据管线
+        to: RL训练回路

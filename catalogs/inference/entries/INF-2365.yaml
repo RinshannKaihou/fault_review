@@ -1,0 +1,47 @@
+id: INF-2365
+legacy_ids: []
+slug: sgl_kernel_npu_compressor_accum_order
+aliases: []
+title: sgl compressor 小 batch 累加序漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: compressor K-loop 偏移
+  behavior: arch22 compressor 对小 batch 改变 D tile 宽度，MM1 K-loop 偏移依赖 core 索引与 D tile 数，同一输出列在 prefill 与短验证调用间以不同顺序累加 K 块
+effect:
+  objects:
+  - 数值结果
+  detail: DeepSeek-V4-Flash BF16 实测第 360 列 prefill 0.56640625 vs 验证 0.5625（FP64 舍入参考为 0.56640625）；同 token 新状态也不一致——P/D 或推测解码下 prefill/verify 路径结果漂移
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://github.com/sgl-project/sgl-kernel-npu/pull/922（open，2026-11-01）：K-loop 偏移改由固定 64 列输出块导出；Ascend 910C 上 512 压缩输出值全部匹配 FP64 舍入参考、1/6/16/17/32/64/128/129/255/256/257/511/512/513 token 混合扫描 + 24 例 BF16/FP16（C4/C128、head 128/512）+ graph replay 通过；未发布
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sgl-kernel-npu/pull/922
+  kind: github_pr
+relations: []
+original:
+  mechanism: sgl-kernel-npu arch22 compressor 对小 batch 改变 D tile 宽度。MM1 K-loop 偏移当前依赖 core 索引与 D tile 数，因此同一输出列在 prefill 与短验证调用（verification）之间以不同顺序累加 K 块，浮点结果随之不同。实测捕获的 DeepSeek-V4-Flash BF16 案例：第 360 列 prefill 为 0.56640625、验证时 0.5625；修复（由固定 64 列输出块导出偏移，保留 64 列路径、窄 tile 同序累加）后两者均为 0.56640625、匹配 FP64 舍入参考，同 token 新状态也精确一致。验证：Ascend 910C 捕获回放全 512 值匹配、13 档 token 数混合输入扫描、24 例 BF16/FP16（C4/C128、head 128/512）、NPU graph replay 变输入。PR 明确只修 compressor 累加序、不宣称整模型 batch 不变性。来源 https://github.com/sgl-project/sgl-kernel-npu/pull/922（open，2026-11-01）。注意：BF16 下不同合法累加序本可有 ULP 级差异（预期 dtype/舍入差不自动入故障库），本案列为故障的依据是同输入同模型在 prefill/verify 两条路径产生可捕获的不同状态（0.56640625 vs 0.5625，超 1 ULP 且影响后续状态），且修复方明确按缺陷处理并以序一致为目标。
+  source: 2026-11-01 每日扫描。https://github.com/sgl-project/sgl-kernel-npu/pull/922
+  behavior: 在 Ascend 910C 上跑 DeepSeek-V4-Flash（mHC compressor 路径）P/D 或推测解码：同一段输入走长 prefill 和短验证（verify）两条调用路径时，compressor 输出与递归状态出现不一致（实测第 360 列 0.56640625 vs 0.5625，后续状态也随之漂移），表现为「重算/校验时对不上」、跨调用结果不可复现，但每次各自运行都正常无报错。
+  trigger_surface: Ascend 910C（arch22）；sgl-kernel-npu compressor；小 batch（验证/decode 步）改变 D tile 宽度的场景；DeepSeek-V4-Flash BF16 捕获案例实测
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

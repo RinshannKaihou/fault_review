@@ -1,0 +1,53 @@
+id: TRN-0548
+legacy_ids: []
+slug: msswift_disabled_augment_still_consumes_rng
+aliases: []
+title: ms-swift 关闭增强仍消耗共享 RNG
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: load_dataset 种子消耗时序
+  behavior: load_dataset 在 init_decision_augment 前先求值 get_seed：增强关闭（config=None 立即返回）时也推进共享 NumPy RandomState，下游切分/shuffle 被改变
+effect:
+  objects:
+  - 训练样本流
+  detail: 关闭数据增强时 train/valid 切分顺序与后续 shuffle 行为被静默改变（相对不调用 load_dataset 种子路径的期望），可复现性破坏；修复把种子抽取移入 enabled 分支
+  visibility: 静默错误
+mitigation:
+  detect: 对同一数据集配置两次加载断言切分行序一致；固定全部 RNG 种子做回归
+  fix: 修复 PR https://github.com/modelscope/ms-swift/pull/10468（open，仅 decision_augment_config 非 None 时初始化并抽种子，未合入）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10468
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'ms-swift PR #10468（2026-10-30，open，修复 #10466）：load_dataset 在调用 init_decision_augment 之前求值 get_seed(seed)，即使 decision_augment_config 为 None（增强关闭、初始化器立即返回）也推进共享 NumPy RandomState，改变下游 split/shuffle 行为。修复：仅在 decision_augment_config is not None 时初始化 decision augmentation 并抽种子，enabled 路径不变。回归覆盖本地 JSONL 的 train/validation 行序与后续 RNG 抽取（split/no-split × shuffle/no-shuffle + enabled JevPreprocessor 对照）；CPU（Python 3.12.7）验证。'
+  source: 'https://github.com/modelscope/ms-swift/pull/10468（修复 issue #10466）'
+  behavior: ms-swift 训练未启用 decision augment（decision_augment_config 为空）时，load_dataset 仍悄悄消耗一次共享随机数：同一份数据、同一种子下 train/valid 切分行序和 shuffle 结果与预期不同，两次实验之间样本流静默漂移、训练不可复现，无任何报错；排查只能靠逐行比对切分结果。
+  trigger_surface: ms-swift load_dataset + decision_augment_config=None（增强关闭）+ 依赖共享 NumPy RandomState 的下游切分/shuffle
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

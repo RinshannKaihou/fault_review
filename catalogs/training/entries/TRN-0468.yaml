@@ -1,0 +1,54 @@
+id: TRN-0468
+legacy_ids: []
+slug: mindspeed_cp_eod_zigzag_layout_mismatch
+aliases: []
+title: MindSpeed CP EOD zigzag 切分布局不一致致 loss/
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: mindspeed
+    component: CP KV all-gather 切分
+  behavior: reset-attention-mask+causal+all_gather+CP>1 组合下 batch 路径用 zigzag 切分，而 TENPU THD all-gather 要求各 rank 持连续分片。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: loss 与梯度偏差，部分数据下 grad_norm 接近 CP=1 基线的一半；无报错，训练持续运行。
+  visibility: 静默错误
+mitigation:
+  detect: CP>1 与 CP=1 基线对比 loss/grad_norm；EOD 多文档数据下 grad_norm 偏差可观察
+  fix: 已修复：https://gitcode.com/Ascend/MindSpeed/merge_requests/4109（merged，2026-10-27）+ !4110（26.2.0 分支）——该组合回退顺序切分，同步处理 tokens/labels/loss_mask/position_ids；修复后 CP=4 vs CP=1 连续 50 步 loss 最大绝对差 6.8e-4、grad_norm 最大相对差 0.169%
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/merge_requests/4109
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: MindSpeed 修复 MR !4109（merged）自述：开启 EOD 时 KVallgather CP 输入切分布局与 TENPU attention 预期不一致。在 reset-attention-mask + causal + all_gather + CP>1 组合下，原 batch 路径采用 zigzag 切分，而对应 TENPU THD all-gather 路径要求各 rank 持有连续的序列分片。布局不一致破坏 token 顺序与 EOD 边界、causal attention 的对应关系，导致 loss 和梯度偏差，部分数据下表现为 grad_norm 接近 CP=1 基线的一半。修复将该组合回退为顺序切分，同步处理 tokens、labels、loss_mask 和 position_ids，保留全局 EOD 边界信息；非 EOD、CP=1、P2P、A2A 和原生动态 CP 等场景保持原有路径。验证：NPU 服务器 CP=4 vs CP=1 连续 50 步 loss 最大绝对差 6.8e-4、grad_norm 最大相对差约 0.169%；26.2.0_core_r0.18.0 分支 10 步 grad_norm 相对差约 0.0454%；覆盖 CP=2/4、PP=2、按 token 归一化、reset-position-ids 开关、BF16/FP16、MHA/GQA/MQA 及不同 EOD 边界。修复 MR：https://gitcode.com/Ascend/MindSpeed/merge_requests/4109（merged）与 !4110（core_r0.18.0 分支同步）。
+  source: 修复 MR https://gitcode.com/Ascend/MindSpeed/merge_requests/4109（merged）+ !4110；issue 未见独立编号，修复自述触发组合与量级
+  behavior: 多文档（含 EOD）数据、reset-attention-mask + causal + all_gather 且 CP>1 的训练中，loss/grad_norm 与 CP=1 基线出现无报错偏差，部分数据下 grad_norm 约为基线一半；曲线看似正常但收敛质量已偏离。修复后同配置 50 步 loss 最大绝对差回到 6.8e-4 量级。
+  trigger_surface: MindSpeed core_r0.18.0 / 26.2.0；reset-attention-mask+causal+all_gather+CP>1+开启 EOD；tokens/labels/loss_mask/position_ids 全链路受影响
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

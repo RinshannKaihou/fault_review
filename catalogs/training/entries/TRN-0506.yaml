@@ -1,0 +1,61 @@
+id: TRN-0506
+legacy_ids: []
+slug: opsmath_fake_quant_cachemask_int32_wraparound
+aliases: []
+title: FakeQuant Cachemask 越界值 int32 回绕错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: Cachemask int32 落地
+  behavior: 资料声明 quantMin/quantMax 为 INT64，实现 kernel 侧 static_cast<int32_t>，越界合法取值静默回绕，夹取区间整体负移。
+effect:
+  objects:
+  - 数值结果
+  detail: quantMin=3000000000/quantMax=3000000100 时 out=(clamp(qval)-zp)*scale 输出 -1.29497e9 而非 +3.0e9（符号反、量级近似）；两段接口返回 0；#2988 同点曾登记 2026-06 关闭后 master 仍可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 对大数值 quant 边界（>INT32）输入与 CPU 参考对照；静态审查 tiling→kernel 的 quantMin/quantMax 位宽
+  fix: 待定（issue open 2026-10-28；910B2+CANN 9.2.0 实测，master a2b7042）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 训练侧 QAT/pseudo-quant 路径若传入大范围量化边界即触发；INT32 内常规范围不受影响
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7550
+  kind: gitcode_issue
+relations: []
+pattern: PAT-TRN-0057
+original:
+  mechanism: 'cann/ops-nn #7550（2026-10-28，Ascend 910B2 + CANN 9.2.0，master a2b7042257 拉取核对）：aclnnFakeQuantPerChannelAffineCachemask 的资料把 quantMin/quantMax 声明为 INT64、唯一约束 quantMin<=quantMax；实现把两值按 int32 落地。落地点 1：op_host/fake_quant_affine_cachemask_tiling.cpp:136-138 读 int64 后 set_quantMin；落地点 2：op_kernel/fake_quant_affine_cachemask_base.h:38-39 kernel 侧 static_cast<int32_t>。quantMin=3000000000 回绕 -1294967296、quantMax=3000000100 回绕 -1294967196，夹取区间整体负移，out=(clamp(qval)-zp)*scale 输出 -1.29497e9 而非 +3.0e9；两段返回 0。作者附 C++ 对照复现（先 quantMin=0/quantMax=255 对照组再缺陷组）。同类问题在 #2988 R3 已登记（2026-06-01 关闭）但当前 master 仍可复现。'
+  source: https://gitcode.com/cann/ops-nn/issues/7550
+  behavior: QAT/pseudo-quant 训练用 FakeQuantPerChannelAffineCachemask 且量化边界取值越过 INT32（如 30 亿）时，越界值被静默回绕成符号相反的数：量化夹取区间整体落到负数侧，输出为符号翻转、量级相近的错值（-1.29e9 而非 +3.0e9），接口返回成功。同算子常规 INT32 内范围正常；只有大边界输入或与 CPU 对照才能发现。
+  trigger_surface: Ascend 910B2 + CANN 9.2.0（master 仍可复现）；aclnnFakeQuantPerChannelAffineCachemask；quantMin/quantMax 超出 INT32 的合法取值
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：vllm-ascend !20146 仍 open
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - pattern
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

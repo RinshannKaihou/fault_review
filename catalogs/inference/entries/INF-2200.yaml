@@ -1,0 +1,52 @@
+id: INF-2200
+legacy_ids: []
+slug: vllm_ascend_finegrained_tp_pp_group_mix_hang
+aliases: []
+title: 细粒度 TP 组 rank 布局与 PP 混排静默挂起
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: torch_npu
+    component: vllm_ascend rank_grid
+  behavior: rank_grid reshape(pp,dp,tp) 与实际布局 (ext_dp,dp,pp,pcp,tp) 不符，pp>1 时组内混入不同流水线阶段 rank；无 pp 前置检查
+effect:
+  objects:
+  - 可用性/进度
+  detail: dp=2,pp=2,tp=1 时实际 DP 组应为 {0,2}/{1,3}，却构建出 {0,1}/{2,3}（各混 PP 两阶段）；首个跨 DP 交换静默挂起；仅 pp==1 且 pcp==1 时 reshape 恰好匹配，故已支持部署正常（隐含假设 pcp==1）
+  visibility: 挂起
+mitigation:
+  detect: 静态审查（本条目即静态分析发现，无硬件复现）；对照 all_ranks 的 (external_dp,dp,pp,pcp,tp) reshape
+  fix: '指南 #17968 已记录「四个旋钮暂不能与 PP 组合」；issue 期望最低修复为 config 加载时拒绝 pp>1 fail-fast'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: 静态分析发现（#17968 对抗审查，无硬件复现）；挂起域收录面：配置加载静默通过 + 首个集合通信交换挂起，违反 fail-fast 契约
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/18209
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend（main @ 91db8b306，vLLM v0.30.0 线）的细粒度 TP 进程组构建：vllm_ascend/distributed/parallel_state.py 的 _create_or_get_group（~152 行）用 rank_grid = torch.arange(world_size).reshape(global_pp_size, global_dp_size, global_tp_size)，假设布局为 (pp, dp, tp)；实际上游布局（vllm/distributed/parallel_state.py ~2052 与同 Ascend 文件 all_ranks 的 reshape）是 (external_dp, dp, pp, pcp, tp)——DP 在 PP 之前且存在 PCP 维。反例（dp=2, pp=2, tp=1, world=4）：实际 r0=(dp0,pp0), r1=(dp0,pp1), r2=(dp1,pp0), r3=(dp1,pp1)，真实 DP 轴组为 {0,2}/{1,3}；reshape(2,2,1) 读行 [0,1]/[2,3]，构建出 {0,1}/{2,3}——每组混入 PP stage0 与 stage1（不同层、不同 microbatch）。pp==1（且 pcp==1）时 reshape 恰好匹配，这是已支持部署正常的原因。FinegrainedTPConfig._validate_preconditions 无 pp 检查，embedding_tensor_parallel_size>1 + pp>1 通过配置加载并在首个跨 DP 交换挂起而非 fail-fast。该 reshape 还隐含假设 pcp==1。静态分析发现（#17968 文档对抗审查，无硬件复现）。来源 https://github.com/vllm-project/vllm-ascend/issues/18209（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://github.com/vllm-project/vllm-ascend/issues/18209
+  behavior: 在 vLLM-Ascend 上同时启用细粒度 TP（如 embedding_tensor_parallel_size>1）与 pipeline_parallel_size>1 时，配置加载成功、服务正常启动，然后在第一次跨 DP 数据交换时全体静默挂起（无报错、无超时提示）。原因是细粒度 TP 的进程组把不同流水线阶段的 rank 错误分到同一组，集合通信语义从根上错位。pp=1 的常规部署不受影响。表现为服务起得来但永远不开始出 token，排障时容易误判为通信或调度问题。
+  trigger_surface: vllm-ascend main（v0.30.0 线）；finegrained_tp_config 任一 size>1 且 pipeline_parallel_size>1；静态分析发现，未硬件复现；pcp>1 路径另被 PCP 权重分片不兼容挡住
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

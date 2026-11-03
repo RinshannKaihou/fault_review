@@ -1,0 +1,49 @@
+id: INF-2270
+legacy_ids: []
+slug: vllm_delegating_parser_ignores_token_ids
+aliases: []
+title: vLLM DelegatingParser 忽略 token ids
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: DelegatingParser.parse
+  behavior: DelegatingParser.parse() 收到 model_output_token_ids 但从不使用，仅在解码文本上匹配 </think>/<tool_call>：普通 token 写出的相同字符串被当作结构边界解析。
+effect:
+  objects:
+  - 输出内容
+  detail: 非流式 chat completions 中 prompt 含 </think> 或模型复述工具调用文本时被错误切分；同输出 stream true/false 解析不同；影响 glm45/glm47、qwen3、deepseek_v4、kimi_k2 等引擎；CPU 复现。
+  visibility: 静默错误
+mitigation:
+  detect: 构造含字面 </think>/<tool_call> 普通文本的输出对拍 stream true/false 解析结果；repro 脚本已在 issue。
+  fix: 待定（流式路径已正确使用 ids；非流式未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/64326
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 非流式输出解析缺陷：DelegatingParser.parse() 收到 model_output_token_ids 但从不使用，extract_reasoning() 与 _extract_tool_calls() 只在解码文本上按字符串匹配 </think>、<tool_call> 等标记。模型用普通 token 写出的相同字符串（例如引用/展示一个工具调用、或用户 prompt 里包含 </think> 被复述）与特殊 token 的解码结果不可区分，被错误解析为结构边界。流式路径把 ids 喂给同一引擎并正确处理，因此同一输出随 stream 参数解析不同。首次观察到 GLM-5.3-Flash + --reasoning-parser glm45 --tool-call-parser glm47；复现于 vLLM main ee9ba371，CPU 无需 GPU/权重，仅 tokenizer（默认 zai-org/GLM-4.5-Air，与 GLM-5.3-Flash 同标记）；普通 token id 通过把标记首字符与其余分开编码构造。影响所有经 reasoning/tool 适配器服务的 parser 引擎（glm45/glm47、qwen3、deepseek_v4、kimi_k2、minimax_m2 等）的非流式 chat completions。
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/64326 （open，2026-10-28，含 CPU 级 repro_delegating_parse.py）
+  behavior: 非流式请求下，只要模型输出里以普通文本出现 </think> 或 <tool_call> 样式的字符串（如用户要求展示工具调用示例、prompt 中含这些字面量被复述），服务就会把这段普通文本当成思考结束或工具调用边界：内容被错误切进 reasoning 字段或解析出不存在的 tool call（参数还是被截断的文本）；同一输出用流式接口返回的结构却不同。影响 GLM/Qwen/DeepSeek/Kimi/MiniMax 等主流 parser 组合，无任何报错。
+  trigger_surface: vLLM main（ee9ba371 复现）；非流式 chat completions；任一 reasoning/tool parser 适配引擎（glm45/glm47、qwen3、deepseek_v4、kimi_k2、minimax_m2 等）；输出或 prompt 含字面 </think>/<tool_call> 文本。
+  signature: 同输出 stream=true/false 结构不同；普通 token 构造的标记被当结构边界。
+  repro: issue 含 repro_delegating_parse.py（CPU + 公开 tokenizer）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

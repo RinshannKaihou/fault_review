@@ -1,0 +1,55 @@
+id: TRN-0558
+legacy_ids: []
+slug: opstransformer_prompt_fa_fp16_softmax_numerator_inf
+aliases: []
+title: PromptFA fp16 softmax 分子溢出 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: PromptFA fp16 分子累加
+  behavior: fp16 + HighPerformance 模式 softmax PxV 分子用 fp16 累加存储：Q/K 全零（logits≈0、softmax 均匀、exp=1）时分子=(i+1)*V 随序列长线性增长，超 65504 溢出 inf
+effect:
+  objects:
+  - 数值结果
+  detail: 退化输入（Q/K 全零+causal+长 V 序列）输出连续 inf；修复 MR 验证 V∈{1000..16} 8 档全恢复正确值；与 TRN-0535（310P 归一化前溢出）同面不同根因
+  visibility: 数值异常
+mitigation:
+  detect: Q/K 全零退化用例回归；输出有限性断言
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14989（open：tiling 层把 fp16 输入强制切 HighPrecision fp32 累加，V 8 档验证无 inf）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14989
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0535
+pattern: PAT-TRN-0059
+original:
+  mechanism: cann/ops-transformer MR !14989（2026-10-30，open）：PromptFlashAttention fp16 + HighPerformance 模式下 softmax 的 PxV 分子用 fp16 累加存储；Q/K 全零（logits≈0、softmax 均匀、softmax_exp=1）时分子等于 (i+1)*V，随序列长线性增长，超 fp16 上限 65504 溢出 inf、输出连续 inf。修复：tiling 层将 fp16 输入强制切到 HighPrecision（fp32 累加，flash attention 标准做法）。验证：退化输入（Q/K 全零+causal+大 V 长序列）V∈{1000,256,128,64,35,32,30,16} 全部无 inf、输出恢复正确值 V。与 TRN-0535（!14827，310P fp16 先 cast 再归一化致 O=65520 溢出）同属 PromptFA fp16 溢出面，但根因位置不同：本条是 PxV 分子 fp16 累加、TRN-0535 是归一化前 cast，修复 PR 亦不同。
+  source: https://gitcode.com/cann/ops-transformer/merge_requests/14989
+  behavior: NPU fp16 prefill 注意力（PromptFlashAttention HighPerformance 模式）遇到退化输入——Q/K 全零或 logits 均匀（如全 padding、极端温度）且序列较长时：softmax 分子按位置数线性累加，超过 65504 后输出整片 inf；短序列正常、无报错，长序列 loss 立刻变 inf/NaN，属于延迟可见的数值爆炸。
+  trigger_surface: CANN PromptFlashAttention + fp16 + HighPerformance + 退化输入（Q/K 全零/均匀 softmax）+ 长序列（(i+1)*V>65504）
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

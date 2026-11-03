@@ -1,0 +1,72 @@
+id: TRN-0562
+legacy_ids: []
+slug: opsmath_amp_update_scale_fp16_growth_overflow_inf
+aliases: []
+title: AmpUpdateScale fp16 增长溢出输出 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: amp_update_scale fp16 溢出
+  behavior: fp16 增长分支（tracker+1==interval）currentScale*growthFactor 超 fp16 范围时 updatedScale 输出 inf；资料要求保持当前 scale（≥32768 一律 inf）
+effect:
+  objects:
+  - 数值结果
+  - 优化器状态
+  - 训练轨迹
+  detail: fp16 currentScale≥32768 且 tracker+1==interval 时 updatedScale 输出 inf，此后每步 scale 判定与梯度 skip 都在 inf scale 下运行，训练突然大面积丢梯度/回退且无明确报错，日志仅 scale 数值异常（A3 实测）
+  visibility: 数值异常
+mitigation:
+  detect: 监控 updatedScale 有限性；growth 分支断言输出≠inf
+  fix: 修复 MR https://gitcode.com/cann/ops-math/merge_requests/6903（open WIP：对存储用 half 转换后检查 finiteness，CPU 差分 6 用例通过、NPU 资格待做）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4344
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6903
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2307
+original:
+  mechanism: 'cann/ops-math #4344（2026-10-30，Atlas A3 910_9362、CANN 9.2.0-beta.2 V100R001C12B086、master 1d0e7bab7a0a）：aclnnAmpUpdateScale fp16 输入、growthTracker+1==growthInterval（增长分支）且 currentScale*growthFactor 超 fp16 表示范围时，updatedScale 输出 inf；资料「溢出保护」要求保持当前 scale。实测 fp16 scale=32768/tracker=999/gi=1000/gf=2.0 → updatedScale=inf（应 32768）；阈值二分 scale≤32752 时 scale*2 正常、≥32768 一律 inf；fp32/bf16 同参输出 65536（阴性对照）。issue 含完整 C++ 复现脚本。修复 MR !6903（open WIP）：FP16 特化在存储用 half 转换后与 FP32 中间量检查 finiteness，尊重转换舍入；6 个 CPU 差分算例通过（基线挂 2 个 FP16 溢出用例），4 个 SDK CPU-kernel 模拟回归覆盖；NPU 资格与 CI 待完成。同算子 #4345（输出 shape 全未校验）与 #4278（缺 examples）为不同根因。'
+  source: https://gitcode.com/cann/ops-math/issues/4344 + 修复 MR https://gitcode.com/cann/ops-math/merge_requests/6903（open WIP）
+  behavior: NPU 上 fp16 混精训练 AMP loss scale 增长到 fp16 上界附近（32768×2 溢出）时，amp_update_scale 的 updatedScale 输出 inf 而非按资料保持当前值：之后每一步 scale 判定与梯度 skip 逻辑都在 inf scale 下运行，表现为训练突然大面积丢梯度/回退且无明确报错，日志只有 scale 数值异常可查。
+  trigger_surface: CANN aclnnAmpUpdateScale + fp16 currentScale ≥32768 + growth 分支（tracker+1==interval）；A3 实测，ops-math master 1d0e7bab
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - '2026-11-01 回访 2026-11-01：修复 MR !6903（[WIP]fix(amp_update_scale): guard FP16 scale growth overflow）仍 open（批次快照 2026-10-31T07:16Z）；issue #4344 open。无变化。'
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 优化器
+        to: 算子/内核
+      effect:
+        from: 优化器状态
+        to: 数值结果
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - original.notes

@@ -1,0 +1,55 @@
+id: TRN-0602
+legacy_ids: []
+slug: deepspeed_nvme_offload_resume_no_optimizer_state
+aliases: []
+title: ZeRO-3 NVMe offload resume 丢失优化器状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: deepspeed
+    component: ZeRO ckpt load (NVMe)
+  behavior: '#7613 起 load_checkpoint 跳过 ZeRO 优化器 ckpt，NVMe offload resume 丢 Adam 状态/lr/scale/小子组权重；根因是换出子组状态存为空张量、swapper 不读回'
+effect:
+  objects:
+  - 优化器状态
+  - 模型权重
+  detail: NVMe 优化器 offload 下断点续训：加载无报错但 Adam 动量/variance 从零开始、lr 调度重置、loss scale 重置、小子组权重丢失——恢复后的训练轨迹与断点前不可衔接，静默偏离
+  visibility: 静默错误
+mitigation:
+  detect: NVMe offload resume 前后对比优化器状态 checksum（exp_avg/exp_avg_sq/lr/scale）；空张量状态探针
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8984（open）：重新加载 ZeRO ckpt（在 swap 文件拷贝后）；swap-in 前每个空状态按子组大小恢复 size（不分配内存），swapper 从 swap 文件读回；Muon 内存 buffer 载入既有 buffer
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8984
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed !8984（2026-11-02 open 修复载体）。NVMe optimizer offload 下 load_checkpoint 自 #7613 起跳过 ZeRO 优化器 ckpt（当时为规避 #7549 加载崩溃）：resume 丢 Adam state、lr、fp16 loss scale、以及小于 swap 最小尺寸不换出子组的权重。#7549 崩溃根因：换出子组的优化器状态保存为空张量，swapper 只换超过最小 size 的张量故未读回，CPU Adam 对空张量步进。修复：swap 文件拷贝后重新加载 ZeRO ckpt；swap-in 前空状态不分配内存地恢复子组 size，swapper 从 swap 文件读回；save_muon_momentum_buffer_in_memory 的 Muon 动量载入既有 buffer。'
+  source: deepspeedai/DeepSpeed https://github.com/deepspeedai/DeepSpeed/pull/8984（open 修复载体）
+  behavior: ZeRO-3 + NVMe 优化器 offload 的训练断点续训时，load_checkpoint 表面成功，但优化器状态整个没加载：Adam 动量/二阶矩从零开始、学习率回到初始调度、fp16 loss scale 重置、部分小子组权重也没恢复。训练继续跑、无报错，但从 resume 第一步起优化轨迹就与断点前不一致——等价于用旧权重重新热身，长跑任务的收敛进度静默回退。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 重计算/卸载

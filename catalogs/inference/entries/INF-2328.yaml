@@ -1,0 +1,64 @@
+id: INF-2328
+legacy_ids: []
+slug: ops_math_silent_check_step0_skip_threshold
+aliases: []
+title: aclnnSilentCheck stepRef=0 跳过全部阈值判定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SilentCheckV2 判定逻辑
+  behavior: 实现在 stepRef==0 时跳过全部阈值判定把 val 一律判正常返回成功；V1 资料判定条件对 stepRef 无门控（该分支语义属 V2）；且把 sfdaRef 重置为 [val,val,val] 抹平历史 min/max。
+effect:
+  objects:
+  - 指标/日志
+  detail: stepRef=0 时 val=5000/cThreshL1=1000 应报 L1 却返回 0，inf/-inf/nan 同样放行；121 条 stepRef=0 用例 16 条与资料不符，stepRef>=1 的 664 条无一不符。首步异常全部漏检。
+  visibility: 静默错误
+mitigation:
+  detect: 首步（stepRef=0）注入已知超阈/NaN 值检查 result 是否仍为 0；对比 stepRef=1 同输入。
+  fix: 待定（issue open；该分支语义属 V2 资料的 stepRef==0 分支被错误下沉到 V1 kernel，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4364
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0571
+original:
+  mechanism: 'cann/ops-math issue #4364（2026-10-31，Atlas A2 910B3/CANN 9.2.0，master@0a6f2a72a）：aclnnSilentCheck 在 stepRef==0 时跳过全部阈值判定，val 一律判正常（result=0）返回成功；同一输入只把 stepRef 从 0 改成 1，判定立刻恢复（val=5000/cThreshL1=1000 返回 L1；500/1000 返回 L2；inf/-inf/nan 返回 L1）。文档证据：docs/aclnnSilentCheck.md:30-33 判定条件未对 stepRef 设任何门控（「如果当前输入 val 为 inf/nan，或 val 超过绝对阈值 cThreshL1，或跳变超过相对阈值 cCoeffL1，则识别为 L1 故障」），stepRef 只是「检测次数，每次检测加一」；「如果stepRef==0:」分支语义写在 V2 资料（silent_check_v2/docs/aclnnSilentCheckV2.md:30）里，V1 资料没有。用例矩阵：stepRef=0 的 121 条合法用例 16 条与资料不符，stepRef>=1 的 664 条无一不符。附带缺陷：该分支还把 sfdaRef 重置成 [val,val,val]（入参 [70,200,400]+val=5000 → 出参 [5000,5000,5000]），历史 min/max 被抹平；stepRef=1 同输入为 [5000,70,5000]。实现锚点：判定逻辑在 AICPU kernel SilentCheckV2（libcpu_kernels.so），经 ADD_TO_LAUNCHER_LIST_AICPU 下沉。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4364 （open，2026-10-31 创建；含 stepRef 0/1 对照表与 121+664 条用例矩阵）
+  behavior: 用 aclnnSilentCheck 做静默数据损坏检测时，第一次调用（stepRef=0，即训练/推理任务首步）无论输入多异常都不报警：val=5000 阈值 1000 返回正常，inf/nan/超阈值一律 result=0，监控首步等于全盲；同时历史参考状态 sfdaRef 被抹成当前值，min/max 记忆丢失。第二步起同输入恢复报警。依赖首步检测告警的流水线会静默放过首轮异常。
+  trigger_surface: cann/ops-math silent_check（aclnnSilentCheck V1 接口）；stepRef=0 的首次调用；910B3/CANN 9.2.0；含 inf/nan/超阈值的首步输入。
+  signature: stepRef=0 时任意 val 返回 result=0 且 sfdaRef=[val,val,val]；stepRef=1 同输入恢复正常判定。
+  repro: issue 附自包含 repro.cpp（g++ 编译，对照组 3 行输出差异）。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 算子/内核
+    uncertain:
+    - effect

@@ -1,0 +1,53 @@
+id: TRN-0461
+legacy_ids: []
+slug: trl_cispo_epsilon_high_default_clip
+aliases: []
+title: TRL cispo 默认 epsilon_high 截死全部权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: GRPO cispo 默认参数
+  behavior: CISPO 用绝对上界 clamp(coef_1, max=epsilon_high)；epsilon_high 未设置时回退 0.2（对绝对界无意义），on-policy coef_1=1 也被截到 0.2；推荐值 5.0 无代码生效。
+effect:
+  objects:
+  - 梯度
+  - 训练信号
+  detail: loss_type=cispo 未显式设 epsilon_high 时梯度比预期小 5 倍（实测 grad_norm 0.054 vs 0.269），cispo_clip_ratio 把每个正 advantage token 报为 clipped；静默减速无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 监控 cispo_clip_ratio 是否恒 ≈1；检查 epsilon_high 是否显式设置
+  fix: 待定（作者建议未设置时默认 5.0 或报错，issue open）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7916
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'trl #7916（open，2026-10-26，审计 Unsloth 内 TRL patch 时发现）：GRPO loss_type=cispo 时重要性权重用绝对界 clamp(coef_1, max=epsilon_high)（grpo_trainer.py:3156-3158）；epsilon_high 未设置时回退 epsilon=0.2（grpo_config.py:993）。0.2 对其它 loss 的 1+epsilon_high 型界合理，对 CISPO 的绝对界意味着 on-policy coef_1=1 也被截到 0.2——每个权重都缩到 1/5。epsilon_high docstring（grpo_config.py:704-712）明确推荐 CISPO 用 5.0，但无代码路径应用。实测对照（tiny-Qwen2.5，zen 数据）：epsilon_high=None 时 grad_norm 0.0539/0.0587、cispo_clip_ratio 0.375/0.500；显式 5.0 时 grad_norm 0.2693/0.2934、clip_ratio 0.000——梯度差 5 倍。附完整复现脚本。属默认参数语义错误：非崩溃、非 NaN，仅静默梯度缩水。'
+  source: GitHub issue：https://github.com/huggingface/trl/issues/7916 （open，含代码行锚点与双组实测 grad_norm/clip_ratio）
+  behavior: GRPO 训练选 loss_type=cispo 且没显式配 epsilon_high（多数用户）时，所有重要性权重被默认 0.2 截断：梯度规模比正确配置（推荐 5.0）小约 5 倍，cispo_clip_ratio 指标显示每个正 advantage token 都被裁剪。训练不报错、不 NaN，只是学得明显更慢/更差，用户只会觉得 CISPO 效果不如论文，不会想到是默认参数把梯度砍了 80%。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

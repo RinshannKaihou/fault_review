@@ -1,0 +1,54 @@
+id: TRN-0587
+legacy_ids: []
+slug: hcomm_rtsqa5_stale_sqtail_cross_engine_regression
+aliases: []
+title: RtsqA5 陈旧 sqTail_ 镜像回退硬件 SQ tail
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: RtsqA5 SQ 提交
+  behavior: 共享线程有第二提交者时，RtsqA5 用未同步 sqTail_ 镜像写 SQE 并把硬件 tail 从 9 回退到 7，形成 head>tail 非法环形队列态，硬件取未写 slot 报 errorType:9
+effect:
+  objects:
+  - 可用性/进度
+  detail: 950/960 平台上 POD 引擎与 RtsqA5 共用通信域线程时，第一次 collective 提交即报 errorType:9 失败；日志可见 ConfigSqTail 把硬件 tail 从 9 拉回 7 的回退动作；禁用第二提交者后一切正常，二分可稳定定位。
+  visibility: 报错
+mitigation:
+  detect: 二分法禁用第二提交者对照；hcomm 侧日志出现 CopySqeBufToSq 后硬件快照 sqHead>sqTail 即命中
+  fix: 修复 MR https://gitcode.com/cann/hcomm/merge_requests/6402（open，未合入）：LaunchTask/TryLaunchTask 前用 QuerySqTail() 读回硬件 tail，镜像不一致时采纳硬件值（未核实合入）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/1188
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/hcomm/merge_requests/6402
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/hcomm #1188（2026-11-01 open）+ 修复 !6402（open）。同一通信域线程被两个 SQ 提交者共享时（第二提交者为 asccomm POD 引擎），RtsqA5 可用陈旧的本地 sqTail_ 镜像发起工作并把硬件 SQ tail 回退：混合序列中第二提交者发 9 个 SQE 推进硬件 tail 到 9（已全部完成 head=9），RtsqA5 未被告知、镜像仍是初始 (0,0)；CopySqeBufToSq 从 slot 0 放 7 个 SQE 后 ConfigSqTail(7) 把硬件 tail 从 9 回退到 7。硬件观察到 head 9 > tail 7 的不可能环形队列态，把回绕区当 pending work，取到从未写入的全零 slot 9，报 errorType:9。证据链：第二写者二分（禁用后 RtsqA5 静默通过）、hcomm 日志在硬件 sqHead:9/sqTail:7 前记录 CopySqeBufToSq cur head:0 cur tail:0、三套未同步账本（POD 上下文/RtsqA5 对象/硬件寄存器）。RtsqA5 只在自身 launch 后更新 sqTail_（单写者足够，跨引擎不安全）。修复 !6402 在写 SQE 与配置硬件 tail 前读回硬件 SQ tail 并在镜像不一致时采纳。与 TRN-0577（hcomm hcclGroupMap 无锁竞态）不同机制（该条是建链并发、本案是运行期 SQ 队列状态）。950/960 平台。'
+  source: cann/hcomm https://gitcode.com/cann/hcomm/issues/1188 + 修复 https://gitcode.com/cann/hcomm/merge_requests/6402（open）
+  behavior: 950/960 上 POD 引擎与 RtsqA5 共用通信域线程时，第一次 collective 提交就报 errorType:9 失败；日志里能看到 ConfigSqTail 把硬件 tail 从 9 拉回 7 的回退动作。禁用第二提交者后一切正常，二分可稳定定位。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

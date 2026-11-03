@@ -1,0 +1,56 @@
+id: TRN-0467
+legacy_ids: []
+slug: torchnpu_910_pageable_d2h_sync_contract_break
+aliases: []
+title: 经典 910 pageable D2H 同步契约失效读垃圾值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: pageable D2H copy_ 同步
+  behavior: copy_(npu, non_blocking=False) 的同步契约（返回即数据完整）在进程此前执行过 pinned 分配与 Event/Stream 序列后失效：返回即读 pageable 目标拿到未就绪垃圾值；上下文依赖。
+effect:
+  objects:
+  - 数值结果
+  detail: 经典 910（CANN 9.1.0/torch_npu 2.7.1）上嵌入 pin/event 序列后的 D2H copy_ 即读得 -1.05e-21 级垃圾值；950PR（torch_npu 2.9.1）同探针 0 发现。训练 host 读 loss/指标/权重快照可能拿到部分传输值。
+  visibility: 静默错误
+mitigation:
+  detect: 关键 D2H 读数前显式 torch.npu.synchronize() 对比；pageable 读回值做 sanity 校验
+  fix: 待定（issue 期望契约不因进程历史失效或文档明示需显式 synchronize；源码定位未给出，open）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/644
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/op-plugin #644（open，2026-10-26，经典 910/CANN 9.1.0/torch_npu 2.7.1/aarch64）：Tensor.copy_(npu_tensor, non_blocking=False) 契约为同步阻塞（返回即数据完整落 host）。探针电池（probe_pinned_sem.py）中 b01-b06 的 pin_memory 分配/H2D 非阻塞/Event 记录同步序列之后，b07 的 24 元素 NPU 张量→pageable host copy_ 返回后立即读取拿到未就绪数据（-1.05e-21 垃圾值，期望 0.36…）；隔离的最小循环（30 次纯 copy_ 即读）全部通过——缺陷上下文依赖，疑似此前 Event/Stream 池状态影响 D2H 同步路径。950PR（torch_npu 2.9.1）同探针 b07 findings=0，经典 910 特有。垃圾值形态为非旧值非全零的部分传输数据。源码级根因未定位（issue 为探针报告）；期望契约不因进程内历史失效，或文档明示该场景需显式 torch.npu.synchronize()。'
+  source: GitCode issue：https://gitcode.com/Ascend/op-plugin/issues/644 （open，含探针电池路径、b07 复现代码与 30/30 阴性对照）
+  behavior: 在经典 910 上做 NPU→CPU 张量拷贝（non_blocking=False）时，只要这个进程先前做过 pinned memory 分配和 Event/Stream 操作（训练脚本常见：DataLoader pin_memory + 事件计时），copy_ 返回后马上读 host 张量会读到没传完的垃圾值（如 -1.05e-21），而不是刚算出来的数。训练里所有『拷回 host 打印 loss/存指标/取权重快照』的读数都可能悄悄错；单独跑拷贝循环则完全正常，极难复现定位。
+  discovery: 2026-10-27 每日扫描
+  notes:
+  - '2026-10-28 2026-10-28 回访：op-plugin #644 仍 open（updated 2026-10-27T17:41Z），无状态变化。'
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - original.notes

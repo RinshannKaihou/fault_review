@@ -1,0 +1,59 @@
+id: INF-2330
+legacy_ids: []
+slug: ops_nn_index_int_indices_out_shape_unchecked
+aliases: []
+title: aclnnIndex 整型索引不校验 out 形状，偏小静默截断偏大未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn_index CheckShape 缺失
+  behavior: indices 为整型（int64/int32）时完全不校验 out 形状：CheckShape 只对输入做日志级提示（void 返回被丢弃），从头到尾没有检查 out。
+effect:
+  objects:
+  - 数值结果
+  detail: out 偏小（(1,4) vs 真实 (3,4)）两段返回 0、写出 4 元素后静默截断（self[1]/self[2] 丢弃）；out 偏大返回 0、尾部元素保持未初始化；out 零元素或末维失配同样返回 0 放行。资料要求应返回 161002。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前自行校验 out.numel() 与 indices 推导形状一致；用已知 self 检查读回元素是否完整。
+  fix: 待定（issue open，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7853
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0569
+original:
+  mechanism: 'cann/ops-nn issue #7853（2026-10-31，Atlas A2 910B/CANN 9.2.0-beta.2 + torch_npu 2.12.0）：aclnnIndex 在 indices 为整型时完全不校验 out 形状。源码锚点 index/index/op_api/aclnn_index.cpp:164 的 static void CheckShape 只检查 indices 个数（selfDimNum==0 时 indicesSize>1、indicesSize>selfDimNum 两情形），且只有 OP_LOGW 日志级提示、无 CHECK_RET 返回值被丢弃；从头到尾没有检查 out。实测：self=fp32[6,4]、indices=int64[3]={0,1,2}、out=fp32[1,4] 时 GetWorkspaceSize/aclnnIndex/aclrtSynchronizeStream 全 0，读回 out=(1,4) 内容=self[0]，self[1]/self[2] 被静默丢弃；out=(6,4) 偏大返回 0 尾部未初始化；out=(0,4) 与末维 (3,5) 失配同样返回 0。资料要求 out 形状与 indices 推导不一致时应返回 161002 参数非法。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7853 （open，2026-10-31 创建；含源码锚点与四种失配实测）
+  behavior: 用 aclnnIndex 做整型高级索引且 out 张量尺寸传错时接口不报错：out 比应得结果小时只写入前几个元素、剩余索引结果被静默丢弃（数据丢失）；out 偏大时多出来的尾部元素是未初始化的显存脏值；out 给成零元素也照样返回成功。调用方拿到返回码 0 以为成功，后续读到的是残缺或脏数据。
+  trigger_surface: cann/ops-nn aclnnIndex；indices=int64/int32；out 形状与推导不符（偏小/偏大/零元素/末维失配）；910B/CANN 9.2.0-beta.2。
+  signature: out 失配仍返回 0；读回内容缺失或含未初始化值。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - component

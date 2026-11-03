@@ -1,0 +1,55 @@
+id: TRN-0565
+legacy_ids: []
+slug: ascend_310p_fp32_gemm_silent_fp16_input_path
+aliases: []
+title: 310P fp32 GEMM/conv 静默按 fp16 输入精度计算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: 310P Cube 路径 fp32 精度降级
+  behavior: 310P3 上 fp32 声明的 matmul/addmm/linear/einsum/conv2d 在 Cube 路径被降为 fp16 输入+fp32 累加；allow_hf32=False 确认生效后输出逐位不变，无警告。
+effect:
+  objects:
+  - 数值结果
+  detail: 310P3：fp32 matmul/addmm/linear/conv2d 对真 fp32 参照误差 1.995e-4~4.215e-4，超容差 4~6 倍且无报错；matmul vs fp16in 参照仅 1.471e-7，余者同形态；einsum 13/16 超差 1.9e-3~8.0e-3。
+  visibility: 静默错误
+mitigation:
+  detect: fp32 GEMM 与 CPU 真 fp32 参照对拍（fp16in 参照=输入降 fp16 再升回 fp32 精算）；观察输出是否恰为 fp16 舍入值。
+  fix: 待定（issue open：无修复 MR；A3 上 allow_hf32 开关有效、310P 失效，用户侧无规避手段）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: 训练面：310P3 常用作微调/小规模训练卡；fp32 GEMM 精度静默降级无告警无开关，梯度/数值面影响（训练侧重判定，cross→INF-2323 推理主路径）。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5785
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2323
+original:
+  mechanism: 'Ascend/pytorch #5785（2026-10-31，open；Atlas 310P3、CANN 9.2.1 社区版 + torch_npu 2.11.0rc1、torch 2.11.0）：fp32 声明输入的 GEMM/conv 类算子（matmul/addmm/F.linear/einsum/conv2d）在 310P3 Cube 路径上静默按「输入先量化到 fp16、再 fp32 累加」计算。证据：每算子独立子进程隔离 + CPU 三参照（真 fp32 / bf16 / fp16in）判读，固定 seed=20261031、双跑逐字节复现：matmul vs 真 fp32 误差 1.995e-4 但 vs fp16in 参照仅 1.471e-7（吻合 fp16in）；addmm 4.215e-4/6.737e-5、linear 2.628e-4/2.093e-5、conv2d 2.935e-4/5.652e-6 同形态；einsum 13/16 案超容差（DIVERGE 1.9e-3~8.0e-3）。决定性实验：torch.npu.matmul.allow_hf32 默认 False、显式置 False 并 readback 确认后，三态（默认/False/True）输出逐位相同（翻转对用例输出 4.501953125 恰为 fp16 舍入值，真 fp32=4.501708984375）；conv.allow_hf32=False 同样无效。负对照：同芯片 softmax(1.5e-8)/layer_norm(8.9e-8)/cumsum(7.5e-8) 为真 fp32 带；A3 同版本同代码三算子真 fp32（2.2e-7 级）且 allow_hf32 开关生效（True 后 1.4e-4、False 后恢复 1.66e-7），说明 310P3 是开关失效的硬降级、两芯语义分裂。72 格探针无一捕获精度 warning。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5785 （open，2026-10-31；含判读方法、逐算子误差表、最小复现脚本、A3 对照实验）
+  behavior: 在 Atlas 310P3 上跑 fp32 的 matmul/linear/conv（如 CPU 参照对拍或迁移自 GPU 的数值校验）时，输出与真 fp32 参照误差 4~6 倍超容差（1.995e-4 量级）却无任何报错或警告；显式设置 torch.npu.matmul.allow_hf32=False 并确认生效后结果逐位不变，没有任何用户侧 API 能恢复 fp32 精度或察觉降级；同芯片 softmax/layernorm/cumsum 又是真 fp32，只有 Cube 路径的 GEMM/conv 系错，肉眼与单点测试都难定位。
+  trigger_surface: Atlas 310P3 + CANN 9.2.1 + torch_npu 2.11.0rc1；fp32 GEMM/conv 类算子（matmul/addmm/linear/einsum/conv2d）；310P3 上的训练/微调数值路径。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

@@ -1,0 +1,54 @@
+id: INF-2264
+legacy_ids: []
+slug: sglang_retract_resets_penalty_accumulators
+aliases: []
+title: SGLang 重牵引后采样惩罚历史清零输出悄然改变
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: retract 后重预填的惩罚累加器
+  behavior: retract 请求并重新 prefill 时，采样惩罚累加器（frequency/presence/repetition penalty）与 min_new_tokens 计数被清零，重牵引点之后按未生成过 token 惩罚，输出改变。
+effect:
+  objects:
+  - 输出内容
+  detail: retract 无需 opt-in：KV 压力下 check_decode_mem() 失败自动触发（scheduler.py:4472），优先级抢占与 /pause_generation retract 也触发；greedy 默认配置相同输入输出不同，min_new_tokens 超长生成。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 KV 压力触发 retract 的对照：同请求有/无重牵引的 greedy 输出 diff；日志 retract_decode 计数与输出变化对齐。
+  fix: 待定（issue 定位至 managers/scheduler.py:4472-4488、schedule_batch.py:2072-2123、sampling_batch_info.py:276-285；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/47245
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang 调度器重牵引（retraction）语义缺陷：当调度器 retract 运行中请求并稍后重新 prefill 时，请求的采样惩罚累加器（frequency_penalty、presence_penalty、repetition_penalty）与 min_new_tokens 计数器被重置为零，从重牵引点起按未生成过任何 token 惩罚，后续 token 与同一请求不 retract 时的输出不同（min_new_tokens 请求还会超长生成），完全静默（无错误、文本看似合理、相同输入、greedy、默认配置）。retraction 无需 opt-in：decode 循环在 check_decode_mem() 失败时自动调用 retract_decode（managers/scheduler.py:4472-4488，KV-cache 压力下自动发生），优先级抢占和文档化的 /pause_generation {"mode":"retract"} 也触发。reset_for_retract 保留已生成的 output_ids（managers/schedule_batch.py:2072-2123），但重 prefill 构建 fresh BatchedPenalizerOrchestrator（sampling/sampling_batch_info.py:276-285），历史计数丢失。
+  source: GitHub issue https://github.com/sgl-project/sglang/issues/47245 （open，2026-10-29，含代码行号定位）
+  behavior: 在线服务 KV cache 吃紧时（或优先级抢占、/pause_generation retract），被重牵引再续跑的请求会忘记自己已经生成过哪些 token：带 repetition/frequency/presence penalty 的请求从续跑点起惩罚完全失效（相当于没开），同一请求与不重牵引版本在 greedy 下输出直接不同；设了 min_new_tokens 的请求会超长输出。全程无报错、日志默认无区分，输出内容看起来仍然合理。
+  trigger_surface: SGLang 服务；decode KV 压力触发自动 retract、优先级抢占或显式 /pause_generation retract；使用任意 sampling penalty 或 min_new_tokens 的请求。
+  signature: 同请求 retract/不 retract 的 greedy 输出 diff；retract 后惩罚项效果消失。
+  repro: issue 正文含触发路径与代码行号；端到端复现步骤依赖 KV 压力构造。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

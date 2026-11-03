@@ -1,0 +1,53 @@
+id: INF-2343
+legacy_ids: []
+slug: vllm_ptbin_tied_lm_head_silently_dropped
+aliases: []
+title: vLLM tied 配置下静默丢弃 .bin 独立 lm_head 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: .bin loader tied 处理
+  behavior: config.json 声明 tie_word_embeddings=true 而 .bin 物理存有数值独立 lm_head.weight 时，加载器静默丢弃该权重，lm_head 与 embedding 共享存储算 logits。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 复现（Qwen3ForCausalLM+.bin 双进程对照）：目标与 untied 对照的 head 哈希、logits/softmax SHA、argmax 全不同（63 vs 0）；检查点两张量 SHA-256 各异数值独立。服务正常出话但语义错乱。
+  visibility: 静默错误
+mitigation:
+  detect: 加载后对 lm_head.weight 与 embed_tokens.weight 做 data_ptr/哈希比对；tied 配置但检查点含独立 lm_head.weight 时告警。
+  fix: 待定（issue open 2026-10-30，vLLM 0.32.0；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/64704
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm issue #64704（2026-10-30，vLLM 0.32.0，L40S）：config.json 写 tie_word_embeddings=true 而 .bin 检查点物理存储了数值独立的 input embedding 与 output head 时，vLLM 静默丢弃 lm_head.weight，lm_head 与 embedding 共享存储。复现（Qwen3ForCausalLM + 未分片 pytorch_model.bin，双进程 target/control 只差 config override 一个 bool）：checkpoint 内 model.embed_tokens.weight 与 lm_head.weight 的 FP32 SHA-256 不同（数值独立）；正常加载（tied=true）后 embedding 与 head 哈希相同（e9202fd0...）、untied 对照加载存盘的头哈希（186f7f9f...）；同一确定性 hidden state 经真实 Qwen3ForCausalLM.compute_logits() 的 logits SHA/softmax SHA/argmax 均不同（argmax 63 vs 0），bug_reproduced=true。附带 repro.py/repro.log 与 fixtures 再生脚本 tools/generate_weight_tying_probes.py。与 INF-1127（复合 VLM 顶层 config 层级解析错误丢弃 lm_head）不同机制：本条是单模型 .bin 格式下 tied 标志与检查点物理内容矛盾时加载器优先相信标志、静默弃权重。'
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/64704 （open，2026-10-30 创建；含双进程对照复现与机器可读判定输出）
+  behavior: 模型目录的 config.json 写着 tie_word_embeddings=true，但权重文件里实际存了一份和 embedding 不一样的独立 lm_head.weight（常见于转换/微调产物）：vLLM 加载时不报缺权重、不报形状错，服务正常启动、正常出话，但 logits 全程用 embedding 矩阵计算——同一 hidden state 的 argmax 从 0（正确头）变 63（错误头），输出语义整体错乱且无从察觉。把 config 改成 false 同文件加载即恢复，可作定位对照。
+  trigger_surface: vllm .bin 检查点加载；config tie_word_embeddings=true 与检查点物理独立 lm_head.weight 矛盾；未分片 pytorch_model.bin；0.32.0 复现。
+  signature: 加载后 lm_head 与 embedding data_ptr 相同但检查点内两权重哈希不同；untied override 后 logits 变化。
+  repro: issue 附 repro.py + fixtures + 再生脚本，双进程 target/counterfactual 对照。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

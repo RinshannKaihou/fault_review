@@ -1,0 +1,65 @@
+id: INF-2346
+legacy_ids: []
+slug: triton_ascend_workspace_block_count_uint32_wraparound
+aliases: []
+title: triton-ascend workspace program 数 32 位回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: driver.py workspace 计价
+  behavior: totalWorkSpaceSize 按 per-program size×program 总数计价，blockNum4Workspace=gridX*gridY*gridZ 赋值时按 32 位回绕，乘积达 2^32 时算得 0 字节。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 'grid 乘积恰好 2^32 的形态回绕为 0（main-dev 已由 #2875 修复同源缺陷，release/3.2.2 旧 driver.py 路径未覆盖——#2834 修复不完整）；只放宽 workspace 侧，block_dim 形参仍须 32 位（语义不同）。'
+  visibility: 报错
+mitigation:
+  detect: 大 grid（乘积超 2^32）kernel 的 workspace 字节数断言 >0；对照 main-dev 行为。
+  fix: '修复 PR https://github.com/triton-lang/triton-ascend/pull/2903 （open 2026-10-31：两条 launch 路径乘法前加宽到 64 位；关联 issue #2797；未合入未发布）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/pull/2903
+  kind: github_pr
+- url: https://github.com/triton-lang/triton-ascend/issues/2797
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'triton-ascend PR #2903（2026-10-31 open，修复 issue #2797 在 release/3.2.2 分支的同源缺陷）：该分支 launcher 仍是 third_party/ascend/backend/driver.py 生成 C++ 的旧路径（main-dev 已重构为 launcher_src/ 共享运行时，修复见 #2875）。溢出根因：workspace 按 per-program workspace_size × program 总数计价，blockNum4Workspace = gridX*gridY*gridZ 在赋值时已按 32 位回绕；grid=(262144,16384,1) 时乘积 2^32 回绕成 0 → totalWorkSpaceSize=0 字节 → workspace 申请失败或 kernel 越界。grid=(256,64,1)（乘积 16384 未溢出）时 262144*16384=2^32 靠已有 uint64_t 强转仍正确——只有因子本身溢出才出错，正是 #2834 修复不完整之处。设计约束：同模板另一表达式 blockNum（aclrtLaunchKernelWithHostArgs 的 block_dim 形参）必须保持 32 位（auto-blockify 时折叠到物理核数），因此只放宽 workspace 侧。两条 launch 路径（triton_launch_kernel 与 _launch）同步修复。'
+  source: '修复 PR https://github.com/triton-lang/triton-ascend/pull/2903 （open 2026-10-31）关联 issue https://github.com/triton-lang/triton-ascend/issues/2797 ；main-dev 同源修复 #2875'
+  behavior: '在 NPU 上用 triton-ascend release/3.2.2 跑大网格 kernel（grid 三维乘积超过 2^32，如 262144×16384）：按每 program workspace 大小乘 program 总数计算的总 workspace 字节数回绕成 0——运行时按 0 字节申请，随后 kernel 写 workspace 时越界或直接失败；较小 grid（乘积不溢出）不受影响。main-dev 分支已修复（#2875），3.2.2 分支需等 #2903 合入。'
+  trigger_surface: triton-ascend release/3.2.2；gridX*gridY*gridZ ≥ 2^32 的大网格 kernel；需 workspace 的 kernel；NPU。
+  signature: 大 grid 下 totalWorkSpaceSize=0；申请失败或越界写。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 可用性/进度
+      visibility:
+        from: 静默错误
+        to: 报错
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

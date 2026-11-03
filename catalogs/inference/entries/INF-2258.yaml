@@ -1,0 +1,53 @@
+id: INF-2258
+legacy_ids: []
+slug: dense_lightning_indexer_softmax_lse_v2_s2_gt16_wrong
+aliases: []
+title: IndexerSoftmaxLseV2 S2>16 输出错误 lse 返回 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: indexer_softmax_lse_v2
+  behavior: S2>16 合法输入两段返回 0 但 softmaxLseOut 与资料公式不符：S2=17~31 输出恒 128+log16 与 S2 无关，S2≥32 再叠加约 8 倍 res 错误，偏差随 S2 增大。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: 全 1 输入 S2=32 实测 1026.77（公式 131.47，偏差 895）；仓库示例（S2=256）输出 46.37（应 5.65）；S2≤16 正确。
+  visibility: 静默错误
+mitigation:
+  detect: 全 1 输入扫描 S2：S2=17~31 输出恒 128+log16、S2≥32 偏差骤增，与公式 lse=128+log(S2) 对照即可检出。
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6870
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer 的 aclnnDenseLightningIndexerSoftmaxLseV2 输出错误。资料 docs/aclnnDenseLightningIndexerSoftmaxLseV2.md 定义 res[b,s1,s2]=Σ_n W[b,s1,n]*ReLU(Q·K)、lse[b,s1]=max_{s2}(res)+log(Σ exp(res-max))。实测（Ascend950PR Ascend950PR_9579 NPU 7，CANN 9.2.0-beta.2，仓 master f3f3135a61043353c37a380620b1e33007c523a5，libopapi.so 内含该符号）：全 1 输入（q=k=w=1.0、N1=1、D=128、maskMode=0、cmpRatio=1）时 S2=1 输出 128.0000 正确；S2=2/4/8/16 正确；S2=17~31 恒为 130.7726（=128+log16，与 S2 无关）；S2=32 实测 1026.7726（公式 131.4657，偏差 895.3068，约 8 倍 res 叠加）；N1=128 时 S2=64 恢复正确（16388.1582）。仓库自带示例（B=2、S1=128、S2=256、N1=8、q=0.2、k=0.1、w=0.005）返回 0、输出 46.3716（公式 5.6476）。两段接口均返回 0。S2 分档行为（≤16 正确、17-31 恒定、≥32 叠加）提示实现内部按 16 分块处理 lse 归约时漏计/错计后续块。issue 含完整自包含 repro.cpp（ACLNN C++ 客户端，含编译命令）。
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6870 （open，2026-10-29，含对照组/缺陷组完整复现脚本与实测数据）
+  behavior: 调用该 DSA indexer 相关算子计算 softmax lse 时，当序列第二维 S2 超过 16 后输出错误：S2=17~31 的输出与 S2 无关恒为 128+log16；S2=32 输出 1026.77（应为 131.47）；官方仓库自带示例也返回错误值 46.37（应为 5.65）。接口两段返回码都是 0，无任何报错，错误随 S2 增大而放大，直接影响依赖 lse 的 lightning indexer 注意力计算。
+  trigger_surface: Ascend950PR；CANN 9.2.0-beta.2；S2>16 的合法输入（含仓库自带示例形状 B=2/S1=128/S2=256/N1=8）；DeepSeek 类 lightning indexer 注意力路径使用该算子时受影响。
+  signature: 全 1 输入下 lse 输出与 128+log(S2) 公式的偏差在 S2=17 处出现跳变、S2≥32 偏差约 8 倍 res。
+  repro: issue 含 79 行自包含 repro.cpp 与 g++ 编译命令。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

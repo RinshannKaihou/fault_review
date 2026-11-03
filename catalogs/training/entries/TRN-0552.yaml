@@ -1,0 +1,66 @@
+id: TRN-0552
+legacy_ids: []
+slug: opsmath_kldiv_empty_input_none_out_unwritten
+aliases: []
+title: KlDiv 空输入 none 模式 out 未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn_kl_div 空输入早退分支
+  behavior: 输入为空 tensor 且 reduction=none 时走 aclnn_kl_div.cpp:190 早退分支，整段跳过 out 形状校验（仅存在于非空路径 :264），两段均返回 0 而 out 一个元素都不写
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: 调用方按「返回 0 即成功」读 out 拿到未初始化/上次残留 device 内存（非 0 非 NaN 的任意值）；空 batch（尾批、动态切片）常见边界；非空对照正确返回 161002
+  visibility: 静默错误
+mitigation:
+  detect: 空 batch 用例读回 out 并断言全零/与 CPU 一致；监控空批次后 loss 突变
+  fix: 待定（issue open：早退分支应同样校验 out 形状或显式写零）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4331
+  kind: gitcode_issue
+relations: []
+pattern: PAT-TRN-0061
+original:
+  mechanism: 'cann/ops-math #4331（2026-10-30，Ascend 910B2、CANN 9.2.0）：aclnnKlDivGetWorkspaceSize 在输入为空 tensor 且 reduction=none(0) 时走 aclnn_kl_div.cpp:190 早退分支，整段跳过 out 形状校验（仅存在于非空路径 :264），第一段返回 ACLNN_SUCCESS、第二段也返回 0、out 一个元素都没写。实测 self=target=[0,4]、out=[2,4]（不可广播）应 161002，实际 phase1=0/phase2=0、out 8 元素全保持预填值；out=[1,4] 同样未写；非空对照（[3,2]/[6]）正确 161002；reduction=mean 时空输入被拒（561103）。影响：调用方以返回 0 为成功读 out，拿到未初始化/上次残留 device 内存；空 batch（尾批为空、动态切片为空）是训练与推理常见边界。'
+  source: https://gitcode.com/cann/ops-math/issues/4331
+  behavior: NPU 训练 KL 散度 loss 在空 batch（最后一批不足、动态切出 0 样本）且 reduction=none 时：接口返回成功但输出张量根本没写，读到的是上次 kernel 留在显存里的残留值——loss 是任意垃圾数而非 0 或 NaN，无报错；同一计算非空 batch 完全正常，偶发空批时 loss 出现无法解释的跳变。
+  trigger_surface: CANN aclnnKlDiv + 空 tensor 输入 + reduction=none；910B2/CANN 9.2.0
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: 算子/内核
+      effect:
+        from: 训练信号
+        to: 数值结果
+    rewritten:
+    - behavior
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - pattern

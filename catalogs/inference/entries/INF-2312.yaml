@@ -1,0 +1,51 @@
+id: INF-2312
+legacy_ids: []
+slug: ops_transformer_fa_tnd_empty_kv_dirty_output
+aliases: []
+title: FA TND 空 KV batch 输出残留脏数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: arch35 FA noquant 清零
+  behavior: InitGlobalBuffer 清零按 coreNum*2 worker 切分，A6/CV_RATIO=1 实际只有 coreNum 个 AIV，被跳过 batch 约一半行未清零；dropMask 场景另有 OOB 清零写。
+effect:
+  objects:
+  - 数值结果
+  detail: TND 布局 S_q>0 且 S_kv=0 的 batch 被跳过计算，attentionOut/softmaxMax/softmaxSum 对应行残留未写脏数据；修复 MR !14970（open）：按实际 vec 核数分段清零。
+  visibility: 静默错误
+mitigation:
+  detect: 构造空 KV batch（S_kv=0）用例断言输出为 0；TND 布局 + 可变 batch KV 长度扫描。
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14970 （open，未合入未发布）：负数 qlen 归一化为 T 轴剩余长度，清零按实际 vec 核数切分，超出 vecCoreNum 的核跳过清零仅参与同步。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6939
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14970
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-transformer flash_attention_score（arch35 训练路径）在 TND 布局下空 KV batch（S_q>0 且 S_kv=0）被 kernel 跳过计算（SkipEmptyKvBatches/CalS1OuterSize），但 vec 启动阶段对这些 batch 的输出清零存在缺陷（issue #6939 根因，报告者给出源码级定位）：op_kernel/arch35/flash_attention_noquant_kernel_base.h 的 InitGlobalBuffer：(1) 清零分段按 coreNum*2 个 worker 切分，DAV_9201/A6（CV_RATIO=1，MIX_AIC_1_1）实际只有 coreNum 个 AIV，被跳过 batch 约一半行未清零（脏数据直接来源）；(2) 正数 qlen 的空 KV batch 未分段，全部 AIV 重复整段清零；(3) actualS1Len<0 && accumSize==0（单 batch 负数长度约定）时负数长度直接传入 AscendC::Fill；(4) dropMask 场景 grid 启动全部 AIV，超出 coreNum*2 的核按旧公式计算越界偏移，造成 OOB 清零写。结果：attentionOut/softmaxMax/softmaxSum 对应行残留未写入的脏数据。修复 MR !14970（open）：负数 qlen 统一归一化为 s1Size−accumSize，清零按实际 vec 核数（coreNum*CV_RATIO）切分每核只清自己段，aivIdx 超 vecCoreNum 的核跳过清零仅 SyncAll。'
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6939 （open，2026-10-30）与修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14970 （open 未合入）
+  behavior: 在 TND 布局的 flash_attention_score 里混入空 KV 的 batch（该 batch 有 query 但 KV 长度为 0）：这些 batch 被跳过计算，但输出清零逻辑在部分芯片形态（A6/9201 类单 AIV 配比）下只清了一半行，attentionOut/softmaxMax/softmaxSum 对应行保留上一次 kernel 写入的残留值；空查询 batch 本应输出全 0，实际拿到脏数据参与后续计算，且 dropMask 场景还存在越界清零写。无报错，变长 batch 组batch 推理/训练下输出难解释地错。
+  trigger_surface: cann/ops-transformer flash_attention_score；arch35；TND 布局；batch 内 S_kv=0 且 S_q>0（含负数长度约定）；DAV_9201/A6 CV_RATIO=1 形态最重。
+  signature: 空 KV batch 行输出非 0 残留；softmaxSum/Max 与 attentionOut 同段脏。
+  repro: issue 给出根因定位与修复方案；MR !14970 附修复验证（未单独附复现脚本，机制由源码定位支撑）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

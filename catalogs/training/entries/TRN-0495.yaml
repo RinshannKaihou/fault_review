@@ -1,0 +1,66 @@
+id: TRN-0495
+legacy_ids: []
+slug: mindspeed_mtp_packed_first_segment_no_shift
+aliases: []
+title: MindSpeed MTP packed 边界语义错配致首段标签未左移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: mindspeed
+    component: PackedSeqParams 边界构造
+  behavior: MindSpeed 的 actual_seq_len 是不含起始 0 的结束位置列表，未转换直接写入 PackedSeqParams.cu_seqlens_q；Megatron MTP packed Roll 按相邻边界处理区间，首段漏。
+effect:
+  objects:
+  - 训练信号
+  - 训练样本流
+  detail: 开启 MTP + reset-attention-mask + packing 时第一个子序列的 MTP 输入/标签/loss mask 不移位：每个位置预测目标仍是自身 token，段尾未清零，有效 token 数与 loss 归一化错；训练无报错继续跑。
+  visibility: 静默错误
+mitigation:
+  detect: 在 process_mtp_loss 打印首段移位结果对照（issue 附最小打印验证）；对比首段与后续段的标签移位一致性
+  fix: '修复 PR https://gitcode.com/Ascend/MindSpeed/merge_requests/4115（open，2026-10-28）——创建 PackedSeqParams 时标记 MindSpeed 结束位置格式并在 CP=1 packed Roll 内局部补起始 0，附参数化回归 UT（修复前失败、修复后通过）；FB overlap 变体修复 !4123（open）——分段移位并清零段尾；issue #369 同时披露 012/016 版本边界语义不匹配与 FB overlap 适配缺失'
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 修复提交 dbbb8790 本地 fork 前后对照完成 CP=1 局部正确性验证；CP>1 不在验证范围
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/issues/369
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/MindSpeed/merge_requests/4115
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/MindSpeed #369（2026-10-28，MindSpeed core_r0.18.0 + Megatron-LM core_r0.18.0）：MindSpeed _get_ltor_masks_and_position_ids() 按 EOD 生成各段结束位置（eod_index+1，如 [128,256,...,4096]，无起始 0），经 collate_wrapper/get_batch_on_this_tp_rank/set_actual_seq_len 传入 gpt_forward_wrapper() 后直接写入 PackedSeqParams(cu_seqlens_q=actual_seq_len)。Megatron Core 0.18 的 MTP packed Roll 要求含起始 0 的完整累计边界 [0,128,256,...]，对相邻边界对 [cu[i],cu[i+1]) 逐段 roll(-1) 并清零段尾；收到结束位置列表时第一个处理区间为 [128,256)，输出由 tensor.clone() 创建故首段保持原样。报告者区分了三类情况：012 原生不支持 packed MTP（断言拒绝、已声明限制非 bug）；012+MindSpeed FB overlap 替换 MTP Layer 后绕过禁止断言但仍整条序列移位、内部段尾不清零（适配缺失，修复 !4123 增加专用 forward 分段移位）；016/018 为结束位置与完整累计边界语义错配（修复 !4115 在 CP=1 Roll 内补起始 0，覆盖单段场景，附修复前失败/修复后通过的回归 UT）。报告者本地 fork 修复前 e753d2fe、修复后 dbbb8790 已完成 CP=1、micro-batch-size=1、MTP 深度 1 的局部正确性验证；CP>1 不在修复及验证范围。016 还有 FB overlap 补丁与新 Megatron 的参数数量/名称不匹配（可能先于移位计算报错）。'
+  source: https://gitcode.com/Ascend/MindSpeed/issues/369 + 修复 PR https://gitcode.com/Ascend/MindSpeed/merge_requests/4115（open）与 !4123（open，FB overlap 变体）
+  behavior: 预训练开启 MTP 与 reset-attention-mask（packed 序列、多文档拼接）时，每个输入序列第一个子序列的 MTP 训练信号是错的：模型在每个位置以自身 token 作为预测目标（标签未左移一位），段尾位置未按约定清零，MTP loss 的有效 token 计数与归一化随之偏差。训练正常跑、loss 正常显示，无任何报错或 NaN 提示；只有对照首段与后续段的学习信号或插入诊断打印才能发现。影响所有含首个子段的 packed batch。
+  trigger_surface: MindSpeed core_r0.18.0 + Megatron Core 0.18（016 同类）；--mtp-num-layers ≥1 + --reset-attention-mask + packed（自然 EOD 分段或 fix-sub-seq-length）；CP=1 已验证，CP>1 未验证；FB overlap 变体另涉 012
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：修复 !4115 仍 open；FB overlap 变体修复 !4123 已 closed（批次快照 2026-10-29T11:44Z，未见 merge 记录）—— MindSpeed #369 updated 停在 10-28T09:42Z 无新评论'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 训练样本流
+        to: 训练信号
+    rewritten:
+    - title
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

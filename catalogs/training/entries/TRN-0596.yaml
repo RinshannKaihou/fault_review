@@ -1,0 +1,52 @@
+id: TRN-0596
+legacy_ids: []
+slug: opsnn_foreach_div_scalar_double_demote_zero
+aliases: []
+title: ForeachDivScalarV2 fp16+DOUBLE 标量降精度全 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnForeachDivScalarV2
+  behavior: x=FLOAT16 + scalar=DOUBLE 时标量被降成 fp16 下发，70000 超 fp16 上限变 inf，输出全 0；资料明确允许该组合，bf16 显式提升 FLOAT 正确、fp32 正确，唯 fp16 落入降精度空档
+effect:
+  objects:
+  - 数值结果
+  detail: foreach 除以大 DOUBLE 标量时 fp16 张量输出位模式全 0000（正确值 x/70000≈2.14e-5 为 fp16 可表示次正规值），无错误码无警告；torch._foreach_div 路径可直接触达
+  visibility: 静默错误
+mitigation:
+  detect: x=fp16 + scalar=DOUBLE(70000) 组合探针；输出预填哨兵后检查全 0
+  fix: 待定（issue open，无修复 PR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7954
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2371
+original:
+  mechanism: 'cann/ops-nn #7954（2026-11-02 open，Atlas A2 910B2，CANN 9.2.0，repo 7044c832）。aclnnForeachDivScalarV2 在 x=FLOAT16 + scalar=DOUBLE 时把 DOUBLE 标量降成 fp16 再下发：scalar=70000.0 超出 fp16 上限 65504 变 inf，x/inf 全 0。资料 docs/aclnnForeachDivScalarV2.md 参数表原文『当 x 的数据类型为 FLOAT16 时，数据类型支持 FLOAT16、DOUBLE』——声明支持却降精度。同程序对照：fp32 路径正确（2.14e-5）、bf16 路径显式提升 FLOAT 正确。复现：两段 API 均 RET=0 接受组合，OUT_BITS 全 0000。C++ 复现脚本完整（aclCreateScalar(&s, ACL_DOUBLE)）。另注意同日 PR !13432 修 Foreach 系列标量提升规则（FLOAT16 输入下 DOUBLE/FLOAT 标量被降精度），为同族修复方向。'
+  source: cann/ops-nn https://gitcode.com/cann/ops-nn/issues/7954（open）
+  behavior: 用 aclnnForeachDivScalarV2（或 torch._foreach_div 标量路径）对 fp16 张量除以一个大的 DOUBLE 标量（如 70000）时，接口返回成功但整张输出全 0——正确值约 2.14e-5 是 fp16 可表示的次正规值，却被算成 x/inf=0。fp32、bf16 输入同样调用返回正确值，唯独 fp16+DOUBLE 组合静默全 0，无错误码。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

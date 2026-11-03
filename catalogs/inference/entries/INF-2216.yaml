@@ -1,0 +1,50 @@
+id: INF-2216
+legacy_ids: []
+slug: torchnpu_rsplit_partial_workspace_oob_write
+aliases: []
+title: triton_experimental rsplit 工作区越界改写相邻张量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: rsplit 工作区 store
+  behavior: else 支路无条件工作区 store，rsplit_id 无上界；真实并发超核内 total_thread 时越过工作区写进相邻张量。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: squeezenet 反向两个大 reduction 用例 item[0] 64/64 全错、最大差 49 万，item[1] 精确；作为输入的相邻掩码张量被静默改写成 0，严重时进程挂死；错误首次 .item() 同步才暴露，平时无报错；910B2/910B4 均复现。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；建议 mask=(rsplit_id < rsplit_nsplit)，放大工作区 3072→2e8 可恢复正确——定位佐证非发布修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5371
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu 2.15.0.dev20260917+gitec69335（源码 @ec69335）+ 910B2/910B4。test_combo_kernel_split_large_reductions_npu（squeezenet 反向两个大 reduction，numel=64 rnumel=1548800）失败：rsplit partial kernel 的 else 支路 tl.store(ws_ptr + rsplit_id*x_total + x0, val) 无 rsplit_id 上界（triton.py:4106），真实并发度 1548800 超核内 total_thread 48（launcher 字面 grid_0=48）时越界。三条可复算证据：① 越界量 (1548800-48)*64=99120128 与实测逐字相同且恰等于掩码 m61 规模 99123200 量级；② launcher 字面 grid=48 vs 实际并发 1548800；③ 同 body 只放大工作区（3072→200000000）r0 恢复正确、输入不再被改写。已证否 stride padding/分配器复用/reset_to_zero_args/full_0 写落点/grid 超核数假设。item[0] 64/64 全错、item[1] 精确；首次 .item() 同步才暴露，严重时挂死。
+  source: https://gitcode.com/Ascend/pytorch/issues/5371（三条可复算证据 + 逐条证否 + 修改方向）
+  behavior: 在 NPU 上跑含大 reduction 拆分（rsplit partial kernel）的 torch.compile 组合内核时，归约结果整块算错（64/64 元素错、最大差 49 万）、作为输入的相邻张量（掩码）被静默改写成 0，严重时进程挂死；错误在首次同步才暴露，平时无报错。
+  trigger_surface: torch_npu 2.15 dev + triton_experimental 后端 + 组合内核大 reduction 拆分（真实并发度超核内 total_thread）+ 910B2/910B4（与型号无关，host 侧 codegen 缺陷）。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

@@ -1,0 +1,65 @@
+id: INF-2244
+legacy_ids: []
+slug: vllm_gdn_fp16_overflow_xpu_unfixed_paths
+aliases: []
+title: vLLM GDN fp16 溢出在 XPU 路径未修复复现
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: GDN XPU 路径状态 dtype
+  behavior: GDN fp16 溢出族在 Intel XPU 复现：core_attn_out 缓冲 5 处按 activation dtype 分配（含 XPU），两修复均门 float32，fp16 状态不覆盖。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: Intel Arc Pro B70 + Holo4-27B（Qwen3.5 系架构）：4.7K/18.7K/37.4K token needle 检索 0/9，短 prompt 完全正常；vLLM 0.27.2rc1.dev77 实测。
+  visibility: 静默错误
+mitigation:
+  detect: 长上下文 needle 检索测试可检出（短 prompt 测不出）；无运行时检测（未评估）
+  fix: 上游修复不完整：#54146/#62119 均未覆盖 XPU 路径（issue 正文逐 call site 列出 qwen_gdn_linear_attn.py:974/898/934/851/1029）；fp16 状态缓存配置不受 float32 门保护；issue open，未见针对性修复 PR
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/62781
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1446
+pattern: PAT-INF-0157
+original:
+  mechanism: 'vllm/vllm issue #62781（2026-10-21，open）：GDN（gated delta net）线性注意力 fp16 溢出族在 Intel XPU 的复现与修复缺口。1) XPU 对 prefill 与 decode 都走 Triton GDN 路径，此前报告（#54146 AMD MI50、#62116 NVIDIA L40S）均未提 XPU。2) #62119 自述『Known gap』：库级修复被绕过，因 qwen_gdn_linear_attn.py 在 5 处无条件按 activation dtype 分配 core_attn_out 并就地传入 chunk 路径（:974 forward_xpu、:898 fused CUDA decode、:934 generic CUDA、:851 ROCm AITER、:1029 CPU）——v0.27.2 实测核实。3) 两个待合修复都门在 initial_state.dtype==torch.float32；Intel 官方 Holo4-27B 指南的 XPU 配方用 --mamba-ssm-cache-dtype float16，循环状态本身 fp16，未归一化累加器在状态内即饱和 65504，不在门内。实测：Intel Arc Pro B70（Xe2/Battlemage 32GB）+ arcitech-psp/Holo4-27B-AutoRound-W4A16（Qwen3.5 系 64 层、24×linear+4×full_attention/块）+ vLLM 0.27.2rc1.dev77（ac7509e2b）+ vllm-xpu-kernels 0.1.12.3 + oneAPI 2026.2 + NEO 26.27.39122.11；4.7K/18.7K/37.4K token needle 检索 0/9（多语 token soup），短 prompt 完美。含本地 SYCL GDN kernel 补丁（复现用途）。与 INF-1446（GDN chunk prefill fp32 状态降 fp16 溢出）同一『GDN 状态/读出经 fp16 物化溢出』机制，差异：XPU 平台 + 修复缺口（float32 门与 5 处 activation-dtype 分配点未覆盖）+ fp16 状态缓存配置。'
+  source: https://github.com/vllm-project/vllm/issues/62781
+  behavior: '在 Intel Arc Pro B70 上用 vLLM 服务 Qwen3.5 系 GDN 架构模型（如 Holo4-27B W4A16）时，短问题回答完全正常，但长上下文大海捞针检索 4.7K/18.7K/37.4K token 全部 0/9 找不到；无报错无 NaN，输出读起来正常。即使上游 #54146/#62119 修复合入也不覆盖 XPU 路径与 fp16 状态缓存配置（--mamba-ssm-cache-dtype float16），照官方 XPU 指南配置即中招。'
+  trigger_surface: Intel XPU（Arc Pro B70/Xe2）+ vLLM ≥0.27.2 Triton GDN 路径 + Qwen3.5 系 GDN 模型 + 长上下文；--mamba-ssm-cache-dtype float16（Intel 官方指南配方）额外使循环状态本身 fp16 饱和。短 prompt 不触发。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+      visibility:
+        from: 质量退化
+        to: 静默错误

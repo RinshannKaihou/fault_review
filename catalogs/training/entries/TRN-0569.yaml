@@ -1,0 +1,66 @@
+id: TRN-0569
+legacy_ids: []
+slug: ops_nn_index_int_out_shape_unvalidated
+aliases: []
+title: aclnnIndex 整型索引不校验 out 形状
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnIndex out 形状校验缺失
+  behavior: 整型 indices 下 CheckShape 只对输入做 OP_LOGW 日志级提示（void 返回值被丢弃），从头到尾不校验 out 形状；out 偏小写出后静默截断，偏大返回未初始化，全部返回 0。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 910B 实测：3 索引真实输出 (3,4)，out 给 (0,4)/(1,4)/(2,4)/(3,5) 两段均返回 0——偏小丢行、偏大尾部未初始化；对照同一 self 的 BOOL 索引（3 个 True）在 out 失配时同样返回 0，但流同步报 507018，整型通路无任何暴露。
+  visibility: 静默错误
+mitigation:
+  detect: 调用后断言 out.shape 与按 indices 推导的真实形状一致；与 BOOL 索引通路或 CPU 参照对拍。
+  fix: 待定（issue open：期望第一段返回 161002；源码锚点 index/index/op_api/aclnn_index.cpp:164，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-01'
+remarks: TRN-0524 族=NPU 算子 out 契约缺失（GeluMul 非连续 out 静默错写）；本案为 aclnnIndex 整型通路的 out 形状契约缺失，共享「out 参数不校验、静默错值」机制。cross INF-2330 同 URL。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7853
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0524
+- kind: cross
+  target: INF-2330
+pattern: PAT-TRN-0058
+original:
+  mechanism: 'cann/ops-nn #7853（2026-10-31，open；Atlas A2/Ascend910B、CANN 9.2.0-beta.2、torch_npu 2.12.0）：aclnnIndex 在 indices 为整型（int64/int32）时完全不校验 out 形状。源码 index/index/op_api/aclnn_index.cpp:164 的 CheckShape 只检查 indices 个数且为 void+OP_LOGW（返回值被丢弃），无一处检查 out。实测矩阵：self=fp32[6,4]、indices=int64[3]={0,1,2}（真实输出 (3,4)），out=(0,4) 全丢、(1,4) 只写 self[0] 丢 2 行、(2,4) 写前 2 行、(4,4)/(6,4) 尾部未初始化、(3,5) 末维错仍放行——两段接口全部返回 0；1 维同形态。对照：同一 self、BOOL 索引（3 个 True）在 out 失配时两段返回 0 后流同步报 507018（有设备侧暴露），整型通路无任何暴露，校验强度不一致。'
+  source: https://gitcode.com/cann/ops-nn/issues/7853 （open，2026-10-31；含 7×out 形状矩阵、BOOL 通路对照与源码行号）
+  behavior: NPU 训练/数据管线用整型索引调 aclnnIndex 并复用/预算 out 缓冲时：out 比真实小就静默丢行（数据丢失），比真实大就尾部保留未初始化垃圾值，接口始终返回成功、synchronize 无异常；同样输入走 BOOL 索引反而会在流同步报错。下游拿到「合法但缺失/含垃圾」的索引结果继续训练，无报错可循。
+  trigger_surface: Ascend 910B + CANN 9.2.0；aclnnIndex 整型 indices + 显式 out（torch.out 变体/复用缓冲）；训练数据索引路径。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  - date: '2026-11-01'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

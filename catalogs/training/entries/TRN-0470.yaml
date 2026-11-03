@@ -1,0 +1,58 @@
+id: TRN-0470
+legacy_ids: []
+slug: trl_asyncgrpo_minp_is_bias
+aliases: []
+title: trl AsyncGRPO min_p 单独开启时 IS ratio 偏低偏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: AsyncGRPO rollout 候选集请求
+  behavior: AsyncGRPOTrainer 的 rollout worker 只为 top_p/top_k 请求候选集；min_p 单独开启时请求不带采样掩码，vLLM 按 min_p 截断后词表归一化 logprob
+effect:
+  objects:
+  - 训练信号
+  detail: min_p 采样下 IS 修正权重整体偏低，on-policy 偏置进入每个 completion 的梯度；无报错。
+  visibility: 静默错误
+mitigation:
+  detect: min_p>0 时对比 sampling_logp_difference/importance_sampling_ratio 指标是否系统性 <1
+  fix: '待定（#7866 修复不覆盖 min_p；issue open 2026-10-27，由 qgallouedec 在 #7866 review 中报告）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7936
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0229
+pattern: PAT-TRN-0041
+original:
+  mechanism: 'trl #7936（2026-10-27）：`min_p > 0` 且默认 `top_p=1.0`、`top_k=0` 时，AsyncGRPOTrainer 在全词表上归一化 trainer 侧 log-prob，而 vLLM 在 min_p 保留的 token 上归一化，IS ratio 随之偏低——与 #7865/#7866 修复前 top_p/top_k 的偏置同机制。代码证据：rollout worker 只为 top_p/top_k 请求候选集（async_rollout_worker.py:443），min_p 单独时向 /v1/completions 发送 min_p 而无采样掩码（async_rollout_worker.py:1187-1189）；AsyncGRPOConfig 的候选集有界检查只覆盖 top_p（async_grpo_config.py:446-450）。由 @qgallouedec 在 #7866 review 中报告。#7866 的候选集重归一化修复不覆盖 min_p。'
+  source: https://github.com/huggingface/trl/issues/7936
+  behavior: 'AsyncGRPO 配 min_p（如 min_p=0.05）单独采样时，importance_sampling_ratio 指标系统性低于 1，梯度持续带 on-policy 偏置；无报错，训练照常进行，与不开 min_p 的结果不可比。与 GRPOTrainer 侧 #7865（已收 TRN-0229）同机制、不同 trainer 与触发参数。'
+  trigger_surface: trl AsyncGRPOTrainer（experimental）；min_p>0 且 top_p=1.0、top_k=0 默认值；vLLM rollout
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

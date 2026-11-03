@@ -1,0 +1,49 @@
+id: INF-2333
+legacy_ids: []
+slug: msmodelslim_w8a8_per_group_dequant_layout_missing_transpose
+aliases: []
+title: W8A8 per-group 反量化缺转置伪量化整组错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: per-group 反量化布局
+  behavior: W8A8DynamicPerGroupFakeQuantLinear 的 per-group 权重反量化按错误布局寻址（缺转置），把 per-group scale 应用到错误的元素分组上。
+effect:
+  objects:
+  - 数值结果
+  detail: 同一 int8 权重、group_size=2 与 scale 下，W8A8 动态 IR 伪量化返回 [16,16,20,20]，W8A16 正确 per-group 反量化返回 [6,14,22,30]；激活量化本身精确（输入全 1 时），差异全部来自权重反量化布局。
+  visibility: 静默错误
+mitigation:
+  detect: 固定权重与 scale，比对 W8A8 与 W8A16 per-group 伪量化输出（两者应一致）；全 1 激活下输出应等于反量化权重行和。
+  fix: 待定（issue open，未见修复；默认配方未必用 (int8_per_token, int8_per_group) 组合，默认一键量化是否受影响未确认）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/666
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/msmodelslim issue #666（2026-10-31，commit db54eedb）：W8A8DynamicPerGroupFakeQuantLinear（msmodelslim/ir/w8a8_dynamic.py#L90）已注册 (int8_per_token, int8_per_group) 组合且 GPTQ 文档明确支持 per_group，但其 forward 调用的 int_per_group_dequantize（msmodelslim/ir/api/impl/int_quantization.py#L203）在反量化权重时缺少转置，per-group scale/offset 被应用到错误的元素分组。实测：同一 int8 权重、group_size=2 与 scale，W8A8 动态 IR 返回 [16,16,20,20]，W8A16 正确 per-group 反量化返回 [6,14,22,30]；输入全 1 的逐 token 激活量化精确，差异全部来自权重反量化布局。与 !883 的激活 reduce 轴问题不同机制。报告者注明：默认配方未必使用这一组合，不能断言默认一键量化受影响。'
+  source: GitCode issue https://gitcode.com/Ascend/msmodelslim/issues/666 （open，2026-10-31 创建；含完整复现脚本与两个代码锚点）
+  behavior: 用 msmodelslim W8A8 动态伪量化（per-group 权重）跑含权重的线性层：输出整组错值——固定用例下正确结果 [6,14,22,30] 被算成 [16,16,20,20]，错误随权重模式系统性出现。基于该伪量化做的 W8A8 精度评估、量化配置选型结论失真；换 W8A16 伪量化则正常，可作对照定位。
+  trigger_surface: Ascend/msmodelslim ir/w8a8_dynamic.py W8A8DynamicPerGroupFakeQuantLinear + int_quantization.py int_per_group_dequantize；(int8_per_token, int8_per_group) 组合；GPTQ per-group 权重伪量化评估。
+  signature: 同权重同 scale 下 W8A8 与 W8A16 per-group 伪量化输出显著不一致（分组值被抹平/错位）。
+  repro: issue 附仓库根目录完整复现脚本。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

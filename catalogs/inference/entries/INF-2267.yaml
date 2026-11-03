@@ -1,0 +1,51 @@
+id: INF-2267
+legacy_ids: []
+slug: ttmetal_bh_2d_multicast_dram_sharded_in1_grid_mismatch
+aliases: []
+title: BH 2D 组播 matmul DRAM 分片 in1 网格失配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: 2D multicast matmul in1
+  behavior: MatmulMultiCast 配置且 in1 权重按 8 个 DRAM bank 宽分片时，compute grid 列数≠8 即返回静默错误结果；无异常无断言，退出码 0。
+effect:
+  objects:
+  - 数值结果
+  detail: PCC 从 ≈0.9999 跌至 0.002-0.07；同网格 interleaved in1 正确。tt_transformers find_prefill_grid 仍硬顶 8×8 留 TODO，放宽到 BH 13 列即踩中；v0.80.0，p150a 实测。
+  visibility: 静默错误
+mitigation:
+  detect: DRAM-sharded in1 + 2D 组播 matmul 对拍 torch fp32 参考（PCC）；网格宽度≠8 时必测。
+  fix: 待定（规避：保持 compute_with_storage_grid_size[0]=8 或用 interleaved in1；上游未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/63257
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal Blackhole 2D 组播 matmul 与 DRAM 宽分片权重的网格约定缺陷：ttnn.matmul 用 MatmulMultiCoreReuseMultiCastProgramConfig（prefill 常用）且 in1 权重经 ModelArgs.create_dram_sharded_mem_config(k,n) 按 8 个 DRAM bank 宽分片时，若 compute_with_storage_grid_size[0]≠8，返回静默错误结果——PCC 对 torch fp32 参考从 ≈0.9999 降至 0.002-0.07，无异常无断言退出码 0；同网格配 interleaved in1 正确。风险面：tt_transformers 的 find_prefill_grid（models/tt_transformers/tt/model_config.py:3904，v0.82.0-dev20261028）仍硬顶 prefill 网格 8×8 并留有「BH 用更高核心网格」TODO，任何人按 TODO 把网格放宽到 Blackhole 13 列都会在 DRAM 分片权重上静默出错。环境：tt-metal v0.80.0（978f93b），Blackhole p150a（13×10 grid、8 DRAM banks），单设备。
+  source: GitHub issue https://github.com/tenstorrent/tt-metal/issues/63257 （open，2026-10-28，含 PCC 实测与 find_prefill_grid TODO 风险定位）
+  behavior: 在 Blackhole 上跑带 DRAM 宽分片权重（8 bank）的 2D 组播 matmul（tt_transformers prefill 路径的典型配置）时，只要计算网格列数不是 8（例如按 TODO 放宽到 13 列），输出就静默错到 PCC≈0.002-0.07（基本全错），无报错、退出码 0；换 interleaved 布局或网格保持 8 列则正确。模型输出会整体崩坏但服务侧看不到任何异常。
+  trigger_surface: tt-metal v0.80.0+/Blackhole p150a；MatmulMultiCastProgramConfig + in1 DRAM width-sharded（8 banks）；compute_with_storage_grid_size[0]≠8；tt_transformers prefill 网格放宽时高概率踩中。
+  signature: PCC 0.002-0.07 vs 参考 ≈0.9999；网格[0]=8 时恢复。
+  repro: issue 含复现配置（create_dram_sharded_mem_config + 放宽网格）与 PCC 数据。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

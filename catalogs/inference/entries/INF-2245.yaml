@@ -1,0 +1,63 @@
+id: INF-2245
+legacy_ids: []
+slug: vllm_hisparse_nan_logits_gumbel_sampler_repeats_token
+aliases: []
+title: vLLM Gumbel 采样器把全 NaN logits 变成固定 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: V2 Gumbel sampler NaN 处理
+  behavior: V2 Gumbel sampler 对全 NaN logits 按 1024 列块 argmax 再跨块 argmax，确定性返回 0*1024+1023=1023；全 NaN logits 被静默采样成固定 token，无任何报错。
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: GLM-5.3 ~116K prompt 长请求：~16K token 连贯推理后突然截断，随后数字乱码，再持续输出 token 1023（'lock'）直至客户端取消；同 pod 其他请求不受影响。closed（2026-10-28）但首个 NaN 来源未闭环。
+  visibility: 静默错误
+mitigation:
+  detect: issue 建议：默认开启 VLLM_COMPUTE_NANS_IN_LOGITS 类统计或加廉价 NaN guard，把全 NaN logits 变成报错（未实施，未评估）
+  fix: issue closed（2026-10-28）；关闭原因与修复 commit 未核实；首个 NaN 来源未定位（HiSparse/NIXL 传输路径存疑）；建议中的 sampler NaN guard 未见合入
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63811
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm/vllm issue #63811（2026-10-26 报，closed 2026-10-28）：vLLM 371745ebd6（2026-10-18）+ cherry-pick #62401/#61680，V2 model runner，GLM-5.3 FP8 + MTP(3) + fp8 KV + prefix caching，P/D 分离，decode pod 8×H100 TP8+EP CUDA graphs on，KV 传输 MultiConnector[NixlConsumer, HiSparseConnector(host_pool 1024GiB)]。症状链：长请求中某步起每步 forward 产生全 NaN logits；V2 Gumbel sampler 对全 NaN logits 按 1024 列块 argmax+跨块 argmax 确定性返回 0*1024+1023=1023（GLM-5.3 词表 154880，token 1023=''lock''；temperature 0.0/1.0 同结果；全 inf 返回 0），采样器把 NaN 静默变成可读 token，掩盖了故障；该 token 写回的 KV 为 NaN，近期位置几乎每步被选中，请求持续中毒且其他请求不受影响。首个 NaN 来源未定位：单机 8×H200 复现尝试（HiSparse 无 NIXL、本地 prefill、96% hot-buffer、TB 级 host→device、含抢占）约 25 请求未复现。issue 同时指出 sampler 静默吞 NaN 使问题难察觉，建议默认 NaN 计数/guard。closed 但 issue 内无根因结论。'
+  source: https://github.com/vllm-project/vllm/issues/63811
+  behavior: P/D 分离部署（HiSparse+NIXL）下，偶发长请求在长上下文中途输出突然截断，随后是几十个字符的数字乱码，然后无限重复同一个词（GLM-5.3 上是 'lock'，token id 1023）直到客户端超时取消；期间服务不报错、其他请求正常、同会话下一轮也正常。根因是该请求从某步起每步 logits 全 NaN，而 Gumbel 采样器把全 NaN 确定性映射成 token 1023 并继续产出看似正常的文本，监控完全无感知。
+  trigger_surface: vLLM V2 runner + P/D 分离 + MultiConnector[HiSparse+NIXL] + 长上下文（~116K prompt）+ GLM-5.3 FP8/MTP/fp8 KV；罕见（fleet 中偶发单请求）。采样器行为本身平台无关：任何来源的全 NaN logits 都会被映射为固定 token。
+  discovery: 2026-10-28 每日扫描
+  notes:
+  - 2026-10-29 2026-10-29 回访：vllm#63811 已 closed（2026-10-28）——closed 不自动证明已修复，关闭原因与修复 commit 未核实
+  - 2026-10-30 2026-10-30 回访：vllm#63811 保持 closed（10-28 关闭）；closed 不自动证明修复，关闭原因与修复 commit 仍未核实（core API 快照）。
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - original.notes
+  - date: '2026-10-30'
+    fields:
+    - original.notes

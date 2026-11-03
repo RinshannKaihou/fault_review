@@ -1,0 +1,55 @@
+id: TRN-0598
+legacy_ids: []
+slug: deepspeed_fp16_hysteresis0_scale_never_lowers
+aliases: []
+title: DeepSpeed fp16 hysteresis=0 时 scale 永不下降
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: DynamicLossScaler
+  behavior: update_scale 仅在 cur_hysteresis==1 时降 scale，hysteresis 从 0/负数起步时计数只向远离 1 方向走，降 scale 永不触发；config 无校验、stage 0 优化器对 0 语义相反
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  detail: fp16.hysteresis=0 或负数 + 动态 loss scale 时，每次溢出后 scale 停在初始值（如 2^16）不降，该步被跳过且『scale 已到最低』退出条件永不满足——从首个溢出起每个溢出步都被跳过直到训练结束，无最小值退出保护
+  visibility: 静默错误
+mitigation:
+  detect: fp16+hysteresis<=0 配置探针：连续 40 次溢出后检查 cur_scale 是否仍为 65536；对照 hysteresis=1（降到 1.0）
+  fix: '修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8983（open，Fixes #8982）：两处比较改 <=1，0/负数视为无延迟（对齐 stage 0 语义）；附带单测（main 上 2 failed/1 passed → 修复后 3 passed）。相关未合 #7856（config 解析时拒绝 <1）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8982
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8983
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed #8982 + 修复 !8983（2026-11-02，均 open）。fp16.hysteresis=0 或负数时 DynamicLossScaler.update_scale 的 `delayed_shift == 1 or cur_hysteresis == 1` 条件永不满足（cur_hysteresis 起步 0 只会递减远离 1），scale 永不下降；每个溢出步被跳过且达不到 min_scale 的退出条件。DeepSpeedFP16Config.hysteresis 无 validator（#7856 曾提议拒绝 <1 未合）。CPU 可复现（loss_scaler.py 独立加载，stand-in 模块）：hysteresis=1 时 40 次溢出后 scale=1.0，hysteresis=0 时仍 65536。stage 0 fused/unfused 已用 cur_hysteresis>1（0 视为无延迟），两个路径对 0 的语义分歧自 #8647 起。与 TRN-0013（scaler 把 SDC inf 当普通溢出静默跳过）同在 loss scaler 域但机制不同：本条是配置参数使降 scale 机制本身失效，非溢出信号被吞。'
+  source: deepspeedai/DeepSpeed https://github.com/deepspeedai/DeepSpeed/issues/8982（open）+ 修复 https://github.com/deepspeedai/DeepSpeed/pull/8983（open）
+  behavior: ZeRO 1/2/3 fp16 训练把 fp16.hysteresis 配成 0（或负数）时，动态 loss scale 在首次溢出后再也不会下调——所有溢出步被永久跳过，且因 scale 到不了最低值、『已到最低』的退出保护也永不触发。配置加载无任何告警（默认 2 不受影响），训练表面正常进行，实际从首个溢出起优化器很少真正更新权重，loss 曲线缓慢停滞。CPU 脚本即可复现：40 次溢出后 scale 仍 65536（期望 <65536）。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

@@ -1,0 +1,63 @@
+id: TRN-0561
+legacy_ids: []
+slug: opsnn_fakequant_perchannel_inverted_equal_channel_semantics
+aliases: []
+title: FakeQuantPerChannel 倒置/相等通道语义异于 TF
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: FakeQuantPerChannel 通道语义
+  behavior: 倒置通道（min>max）clamp 顺序与 TF 相反；相等通道（min==max≠0）kernel 输 0 而 TF 为 NaN（inv_scale=inf→0×inf）；round 0.5 边界 ±1 量化级失配
+effect:
+  objects:
+  - 数值结果
+  detail: TTK geir L0 精度比对 22 例 FAIL（matched_ratio≈0.48 起步，倒置域偏差达量程全跨度如 max_abs_error≈200）；Ascend950PR、cann/golden/ttk 20261013；训练 QAT 伪量化激活偏离 TF 参考实现
+  visibility: 静默错误
+mitigation:
+  detect: 含倒置/相等通道的 per-channel QAT 用例与 TF 参考对拍；min==max 通道输出 NaN 断言
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13097（open：精度/健壮性修复 + ascend350 适配）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7791
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13097
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2309
+original:
+  mechanism: 'cann/ops-nn #7791（2026-10-30，open）+ 修复 MR !13097（open，2026-10-30 更新）：FakeQuantWithMinMaxVarsPerChannel 在 TTK geir 通路 L0 精度用例 22 例 FAIL（Ascend950PR，cann/golden/ttk 20261013，fp32 absolute_precision 1e-08）。三类问题：1) 倒置通道（min>max，per-channel 三输入独立采样必然出现）：NPU/golden 链 clamp 顺序（先 max 后 min）与 TF 原生 functor（先 min 后 max）在倒置域相反，域偏差达量程全跨度（max_abs_error≈200）；2) 相等通道（min==max≠0）：kernel 退化清零输出 0，TF 语义 NaN（Nudge inv_scale=qRange/(max-min)=inf → 0×inf=NaN），比对呈 Expected: nan/Actual: 0.0；3) round 0.5 边界：golden inv_scale 两步舍入与 IEEE 单步差 1 ULP，±1 量化级失配超门限。训练侧 QAT 伪量化（FakeQuantWithMinMaxVars 系）在含倒置/相等通道校准数据下激活偏离 TF 参考实现。'
+  source: https://gitcode.com/cann/ops-nn/issues/7791 + 修复 MR https://gitcode.com/cann/ops-nn/pull/13097（open）
+  behavior: NPU QAT 训练用 FakeQuantWithMinMaxVarsPerChannel 伪量化、校准统计出现倒置通道（min>max）或相等通道（min==max≠0，常见于死亡通道/极端裁剪）时：伪量化输出与 TF 参考实现语义相反/输出 0 而非 NaN——QAT 模拟的量化噪声全错，训练仍正常跑完，最终量化模型精度劣化且难以归因。
+  trigger_surface: CANN FakeQuantWithMinMaxVarsPerChannel + 倒置通道（min>max）或相等通道（min==max≠0）+ QAT 训练；950PR 实测
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - '2026-11-01 回访 2026-11-01：修复 MR !13097（fix(fake_quant_with_min_max_vars_per_channel)：修复精度/健壮性问题并新增 ascend350 平台）已 merged（批次快照 2026-10-31T06:25Z），issue #7791 已 closed。发布版本未核实。'
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - original.notes

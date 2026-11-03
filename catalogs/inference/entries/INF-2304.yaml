@@ -1,0 +1,53 @@
+id: INF-2304
+legacy_ids: []
+slug: flashinfer_mxfp4_extreme_scale_inf_weight_dot
+aliases: []
+title: FlashInfer MXFP4 极值 scale 物化 inf 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: flashinfer
+    component: MXFP4 FFMA 顺序
+  behavior: E8M0 scale 字节 253/254 时先应用 scale 的操作顺序使 FP32 权重先溢出为 inf，即使小/零激活本应得有限结果。
+effect:
+  objects:
+  - 数值结果
+  detail: 极端 scale 下权重 inf、dot 输出 inf/NaN；修复改检测溢出 scale、以 activation×unscaled E2M1+scaled FMA 重算受影响行，55 组回归；PR open Draft 未合入。
+  visibility: 数值异常
+mitigation:
+  detect: 构造 scale 字节 253/254 的 MXFP4 矩阵与零/小激活对照 FP64 参考；55 组回归用例在 PR 内。
+  fix: '修复 PR https://github.com/flashinfer-ai/flashinfer/pull/7847 （open Draft 未合入；main 集成与目标 correctness 已完成，等待正式批准）；前驱 #7845/#7838 已 merge 为独立修复。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/pull/7847
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'FlashInfer MXFP4 weight-only FFMA 在 E8M0 scale 字节为 253/254 时可物化无限 FP32 权重（PR #7847，Frost audit finding 7）：即使乘以小或零激活应得有限结果，先应用 scale 的操作顺序使权重先溢出为 inf，dot 随之 inf/NaN。修复：累加时检测这些 scale，丢弃私有溢出累加器，对受影响的单路由 FC1/FC2 行以 activation×unscaled E2M1 再 scaled FP32 FMA 的安全顺序重算；grouped FC1 直接采用安全顺序；普通 scale 保留原操作顺序与类型化舍入边界。验证：55 组参数化回归（finite dots、cancellation、zeros、mixed rows/gates、CUDA Graph 下 live scale 变化），FP64 参考先构成期望有限 dot 再套现有 BF16 边界；仍为 FP32 累加，非对累加溢出的通用保证。PR 目标 main@0dfc25b6；前驱 #7845（原生宽 FP4 解码修复）与 #7838（MX 激活解码/无效路由）已 merge。PR open Draft 未合入，等待正式 head 批准与 correctness-cost tradeoff 接受。'
+  source: GitHub PR https://github.com/flashinfer-ai/flashinfer/pull/7847 （open Draft，2026-10-29 创建；含 55 组回归与操作顺序分析）
+  behavior: MXFP4 权重只有量化模型里出现极端缩放字节（253/254，接近 E8M0 上限）时：解量化先把权重放大成 inf，再与哪怕全零/极小的激活相乘，点积直接输出 inf 或 NaN——数学上「零激活乘任何有限权重得零」的保证被破坏。推理输出出现离谱大值或 NaN 且无报错，普通 scale 的权重完全正常，问题只在含极端 scale 字节的权重块上触发，属于量化部署里难归因的静默错值。
+  trigger_surface: FlashInfer MXFP4 weight-only FFMA 路径；权重含 E8M0 scale 字节 253/254；FC1/FC2（含 grouped）；单卡 GPU。
+  signature: 极端 scale 权重块输出 inf/NaN 而零激活对照非零。
+  repro: PR 附 55 组参数化回归（FP64 参考 + 现有 BF16 边界）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常

@@ -1,0 +1,58 @@
+id: INF-2311
+legacy_ids: []
+slug: ops_nn_swiglu_quant_smooth_g_dynamic_oob_read
+aliases: []
+title: aclnnSwiGluQuant 动态量化 [G] smooth 越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: SmoothCopyIn
+  behavior: tiling 仅以 scaleDimNum==1 判定静态 per_tensor，未限制 [G] 只用于静态；kernel 每组固定搬 basicColLen 个 float，动态+[G] 被放行但按 [G,N] 寻址。
+effect:
+  objects:
+  - 数值结果
+  detail: quantMode=dynamic + smoothScales=fp32[2]（资料声明支持）两段返回 0，msSanitizer 报 illegal read 120B/128B；改 smooth 值后 yOut digest 变化（相邻内存改变输出）；对照 [2x32] 无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 动态量化 + [G] smooth 用例跑 msSanitizer memcheck；改 smooth 值看输出 digest 是否漂移。
+  fix: 待定（未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7770
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0557
+original:
+  mechanism: 'cann/ops-nn aclnnSwiGluQuant 在 quantMode=dynamic 且 smoothScalesOptional 传一维 [G] 时 kernel GM 越界读（issue #7770，910B3/CANN 9.2.0 实测）：资料 L119 声明 smoothScales 支持 [G,N] 与 [G] 两种形状，实测 [G] 在动态量化下被放行（两段返回 0）但 kernel 仍按 [G,N] 寻址。msSanitizer memcheck 原始日志：illegal read of size 120（block aiv0-15）与 128（block aiv8-15），kernel 为 SwiGluQuant_float16_int8_high_performance_106；同 shape 控制组 smoothScales=fp32[2x32] 无告警（排除造数与工具误报）。源码定位（ops-nn master）：op_kernel/swi_glu_quant.h:122 SmoothCopyIn 每组固定搬运 basicColLen 个 float；op_host/swi_glu_quant_tiling_utils.h:237 仅用 scaleDimNum==1 判定「静态 per_tensor」，未限制 [G] 只能用于静态。影响：读到的相邻内存直接改变输出（同输入仅改 smooth 值，yOut digest 变化），MoE 场景存在静默错误与崩溃风险。备注：[G]+static_per_tensor 组合正常（per_tensor 分支按 groupLen 搬运），问题只在动态路径；同轮 #7772 记录 groupIndex 校验缺失（另单）。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7770 （open，2026-10-30 创建；含 msSanitizer 原始日志、源码行定位与契约探针）
+  behavior: 调用 aclnnSwiGluQuant 做动态量化并按资料给一维 [G] 的 smoothScales：接口返回成功，但 kernel 会越过 smoothScales 缓冲区多读 120/128 字节的相邻显存（memcheck 抓到非法读），读进来的值参与运算——只改 smooth 数值、输入不变时输出摘要也跟着变，量化结果被相邻内存内容污染。改成资料同样支持的 [G,N] 二维形状则完全正常。量化输出静默错值，MoE 部署中有难定位的错误输出风险。
+  trigger_surface: cann/ops-nn swi_glu_quant；quantMode=dynamic；smoothScales=[G] 一维；910B3/CANN 9.2.0。
+  signature: dynamic+[G] 组合 memcheck illegal_read 120/128B；smooth 值变化引起 yOut digest 变化。
+  repro: issue 附用例参数、mssanitizer 命令与对照矩阵。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

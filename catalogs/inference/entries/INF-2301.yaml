@@ -1,0 +1,54 @@
+id: INF-2301
+legacy_ids: []
+slug: vllm_ascend_pd_stash_overwrite_gqa_draft_kv
+aliases: []
+title: vllm-ascend PD stash 覆盖致 GQA draft KV 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: mooncake_connector stash
+  behavior: _stash_pending_reformat 对每 (request_id,shard_idx) 整体赋值，同 shard 分组在不同 pull task 完成时后到覆盖先前，被丢分组以未 reformat 布局被 decode 消费。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: decode TP<prefill TP 时 GQA 组（draft KV，8 KV heads）被丢；目标模型 MLA/indexer 1 KV head 不受影响——损坏对输出监控不可见，仅推测接受长度坍缩。GLM+DSPark 双节点端到端复现。
+  visibility: 性能退化
+mitigation:
+  detect: 监控推测解码接受长度（accept length）按 shard/组拆分；对比 decode TP=prefill TP 基线；检查 stash 覆盖前后 group 数。
+  fix: 待定（issue 结构性分析给出合并语义修复方向：stash 按 group 追加合并；main/v0.26rc/v0.30/v0.31.0rc @0bbf9248 均带缺陷）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20367
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend PD disaggregation + mooncake p2p connector 在 decode TP 小于 prefill TP 时静默损坏 GQA draft KV（issue #20367，两套独立双节点 A2 PD 集群端到端复现 v0.26.0/v0.30.0，缺陷代码 main@0bbf9248、releases/v0.26.0rc、v0.30.0、v0.31.0rc 均在）：KVCacheRecvingThread._stash_pending_reformat（mooncake_connector.py L1091-1098）对 per-(request_id, shard_idx) 的 pending reformat stash 整体赋值，同 shard 的 attention group 在不同 pull task 中变为 ready 时 stash 被多次调用，后到调用静默丢弃先前 group；被丢 group 不经 _reformat_pending_kv_caches 重排，其 KV 以跨 rank 交错布局被 decode 消费。实践中被丢的总是多 KV head 的 GQA 传输组——GLM 家族目标模型（MLA+SFA indexer，1 KV head 组，不需 reformat）输出不受影响，损坏的是 DSpark 投测 draft 模型 KV（3 层 GQA、8 KV heads、sliding window 2048、k=7）。因此损坏对输出正确性监控不可见，只表现为推测解码接受长度坍缩。引入于 stash 机制本身（随该机制合入）。'
+  source: GitHub issue https://github.com/vllm-project/vllm-ascend/issues/20367 （open，2026-10-30 创建；含源码行定位、版本矩阵与双集群端到端复现）
+  behavior: PD 分离部署且 decode 侧 TP 比 prefill 侧小时（如 prefill TP8、decode TP2/1）：带推测解码的请求 KV 传输中，同一 shard 的 KV 分组在不同拉取任务里完成，后完成的会覆盖掉先前暂存的待重排分组，被覆盖分组的 KV 不做跨 rank 重排就被 decode 使用。目标模型输出正常、文本看不出异常，唯一外部表现是推测解码接受长度明显坍缩（draft KV 布局错乱导致 draft 预测不可用），吞吐同步下降；输出正确性监控完全看不到该损坏。
+  trigger_surface: vllm-ascend PD disaggregation；mooncake p2p connector；decode TP < prefill TP；GQA 多 KV head 传输组（DSPark draft 类）；v0.26~v0.31rc。
+  signature: decode TP<prefill TP 时推测接受长度坍缩而目标输出正常；stash 覆盖可从 connector 日志分组序列核对。
+  repro: issue 附复现环境（1P1D 双节点、prefill TP8、decode TP 8/2/1 变量实验）与结构分析。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 性能退化

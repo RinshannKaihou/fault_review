@@ -1,0 +1,55 @@
+id: TRN-0519
+legacy_ids: []
+slug: fast_gelu_grad_fp32_large_input_nan
+aliases: []
+title: CANN FastGeluGrad fp32 大有限输入返回 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: fast_gelu_grad arch35
+  behavior: arch35 反向实现先算 -1.702*x 再乘 sigmoid(x)-1，有限 fp32 输入接近最大值时中间量上溢 ±Inf，0*Inf 得 NaN，而该处导数数学上仍有限可表示
+effect:
+  objects:
+  - 梯度
+  detail: x=±finfo(float32).max、dy=1 时输出 NaN（参考值 1/0）；331 元素实测 150 个数值不符；训练梯度被 NaN 污染
+  visibility: 数值异常
+mitigation:
+  detect: 对激活值大的样本监控梯度 NaN；golden 对拍（golden.py 同样运算顺序会漏检，需修 golden）
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/13091（open）：先形成有界乘积 s*(s-1) 再乘有限 x 和 -1.702，并同步修 golden 与 UT 生成顺序；修复树 96 用例通过（报告者验证）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7727
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13091
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: CANN ops-nn FastGeluGrad 的 arch35 反向实现先计算 -1.702*x，随后把该中间量与 sigmoid(x)-1 相乘。有限 FP32 输入接近最大值时，缩放中间量上溢为 ±Inf，再参与 0*Inf 最终输出 NaN，而对应导数数学上仍有限。报告者在 master 575953ec、真实 Ascend950PR、CANN 9.1.0 完整构建源码暂存 vendor 上验证：x=3.40282346639e38、dy=1 实际 NaN（独立 long-double 参考 1）；x=-3.40282346639e38、dy=1 实际 NaN（参考 0）；x=0/1/-1 及常规梯度正常。同一 ACLNN 客户端 3 个张量共 331 个输出元素中 150 个数值不符、181 个控制通过；SDK debug 确认加载本轮源码 vendor。golden.py 与 kernel 用同一不稳定运算顺序，测试 golden 也会漏检。修复 PR !13091（open）：s=1/(1+exp(-1.702*x)) 先形成有界乘积 s*(s-1)，再乘原始有限 x 和 -1.702，最后加 s、乘 dy；96 个子场景修复树全部通过（原版 48 失败）。
+  source: https://gitcode.com/cann/ops-nn/issues/7727 + 修复 https://gitcode.com/cann/ops-nn/pull/13091
+  behavior: NPU 训练中 FastGelu 激活的反向在激活值极大的样本上梯度变 NaN（如 x=±3.4e38 时 dy/dx 应为 1/0 却返回 NaN），训练 loss 突然 NaN 或被 NaN 污染；常规数值域正常，只有大有限值触发，331 元素实测 150 个不符，且自带 golden 因同样运算顺序漏检，常规 UT 防不住
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - 2026-10-31 2026-10-31 回访：#7727/!13091 仍 open，无状态变化。
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - original.notes

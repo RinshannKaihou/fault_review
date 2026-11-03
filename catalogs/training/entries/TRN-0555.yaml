@@ -1,0 +1,57 @@
+id: TRN-0555
+legacy_ids: []
+slug: opsnn_scewithlogits_mismatch_labels_oob_write
+aliases: []
+title: SCEWithLogits labels 不一致越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SCEWithLogits 入参校验
+  behavior: features/labels 形状不一致时两段接口均返回 0（非法入参被接受），内核按 labels 的行数计算，向按 features 分配的 loss/backprop 缓冲越界写
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: labels=fp32[109x1]、features=fp32[1x47] 时向 4B/188B 的 loss/backprop buffer 越界写，msSanitizer 报 72 处 illegal_write（最大 564B）（P0）；相邻内存（其他张量）被静默破坏
+  visibility: 静默错误
+mitigation:
+  detect: msSanitizer memcheck；对 labels/features shape 断言一致
+  fix: 待定（issue open，P0；期望第一段返回 161002）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7747
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2298
+original:
+  mechanism: 'cann/ops-nn #7747（2026-10-30，P0，Ascend 910B2、CANN 9.2.0、master c46db05f5bb5）：aclnnSoftmaxCrossEntropyWithLogits 在 features=fp32[1x47]、labels=fp32[109x1]、loss=fp32[1]、backprop=fp32[1x47] 下两段接口均返回 0（非法入参被接受）；内核按 labels 的 109 行计算，向只有 4B/188B 的 loss/backprop buffer 写出界，msSanitizer memcheck 报 72 处 illegal_write（started_count=3、sizes 最大 564B）。资料要求 labels shape 与 features 一致、loss/backprop 由调用方按 features 分配。含完整 C++ 复现脚本。'
+  source: https://gitcode.com/cann/ops-nn/issues/7747
+  behavior: NPU 训练用 SoftmaxCrossEntropyWithLogits 且 labels 与 features 形状不一致（如广播/对齐错误导致 labels 行数更多）时：接口返回成功，内核越界写 loss/backprop 缓冲（实测 72 处 illegal write），相邻显存里其他张量被悄悄改坏——后续 loss/梯度无源头发错，无任何报错，只有 sanitizer 或对拍才能定位。
+  trigger_surface: CANN aclnnSoftmaxCrossEntropyWithLogits + labels 行数 > features 行数；910B2/CANN 9.2.0/master c46db05f
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: 算子/内核
+    rewritten:
+    - behavior

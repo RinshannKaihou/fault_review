@@ -1,0 +1,55 @@
+id: INF-2360
+legacy_ids: []
+slug: modernbert_mean_pool_fp16_overflow
+aliases: []
+title: ModernBERT mean pooling fp16 求和溢出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: transformers
+    component: ModernBERT mean pooling
+  behavior: mean pooling 先对全部 token 的 last_hidden_state 求和再除以 token 数，fp16 下乘积与求和均为 fp16 张量，和超 65504 即 inf，经分类头变 NaN
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 四个默认 classifier_pooling=mean 的 checkpoint 在 8192 token 内即溢出（mmBERT-small 通道均值 27~29、和达 23.8 万）；NaN logits；CUDA autocast 对 sum 走 fp32 理论不触发（未测 CUDA）
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；规避：fp32 求和后除法或 fp32/bf16 运行）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/50216
+  kind: github_issue
+relations: []
+original:
+  mechanism: transformers 5.22.1 ModernBertForSequenceClassification 在 classifier_pooling=mean 时对 last_hidden_state 乘 mask 后 sum(dim=1) 再除以 token 数（modular_modernbert.py:654-661）。fp16（dtype=torch.float16 或 .half()）下乘积与和都是 fp16，某通道的和超 fp16 上限 65504 即变 inf，分类头输出 NaN logits。CUDA autocast 将 sum/layer_norm 列入 fp32 运算表，混合精度 autocast 理论上不触发（报告者未测 CUDA，实测为 CPU fp16）。四个 checkpoint 在 8192 token 上下文内可达上限：jhu-clsp/mmBERT-small 通道 265 均值 27~29/token（和 218884~238179）、mmBERT-base 530（127156~135256）、answerdotai/ModernBERT-base 251（-86573~-95960）、ModernBERT-large 379（-83995~-89285），且都默认 mean pooling。短输入也可能触发：mmBERT-small 1024 token 时均值约 34，2048 token 即溢出。报告者在 macOS M5 Pro CPU、torch 2.15.0 复现，同权重 fp16 vs fp32 对照并以 fp32 求和重算验证归因。来源 https://github.com/huggingface/transformers/issues/50216（open，2026-11-01）。
+  source: 2026-11-01 每日扫描。https://github.com/huggingface/transformers/issues/50216
+  behavior: 用 fp16 跑 ModernBERT 序列分类（mean pooling，社区与官方四个 checkpoint 默认即此配置）：输入超过一两千 token 后分类 logits 变成 NaN，模型完全不可用；同权重 fp32 正常。原因是对全 token 求和在 fp16 里先溢出成 inf。任务影响直接（分类输出 NaN），但注意是显式 NaN（非静默错值），且 CUDA autocast 路径按 op 表应走 fp32 求和。
+  trigger_surface: transformers 5.22.1；ModernBertForSequenceClassification classifier_pooling=mean（mmBERT-small/base、ModernBERT-base/large 默认）；显式 fp16/.half()；长输入（mmBERT-small 2048 token 起、四 checkpoint 8192 内必溢出）；CPU 实测，CUDA autocast 理论不触发（未测）
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 输出分布

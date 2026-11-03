@@ -1,0 +1,52 @@
+id: INF-2271
+legacy_ids: []
+slug: vllm_tool_parsers_json_decode_nonplain_string_schema
+aliases: []
+title: vLLM 三工具解析器对非纯 string schema 参数做 JSON 解码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: vllm
+    component: muse/minicpm5/poolside
+  behavior: muse、minicpm5、poolside_v1 解析器只在 schema 恰为纯 string 时保留原文，其他字符串 schema（如 Optional[str]）一律 JSON 解码，字符串参数被改型。
+effect:
+  objects:
+  - 输出内容
+  detail: str|None 参数 "1.10"→1.1、"1984"→1984、JSON 文本→对象；Rust 前端 Muse parser 同 bug；纯 parser 层最小 repro 无需 GPU；vLLM 0.33.0rc1/main（B200 实测）。
+  visibility: 静默错误
+mitigation:
+  detect: issue 附无 GPU 最小 repro（ChatCompletionRequest + 各 parser extract_tool_calls）；对 Optional[str] schema 传 "1.10" 断言参数类型仍为 str。
+  fix: 待定（未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/64517
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 工具解析器的字符串参数类型判定缺陷：muse、minicpm5、poolside_v1 三个 tool parser 仅当参数 schema 恰为 {"type":"string"} 时保留原始文本，其他任何字符串 schema（pydantic Optional[str] 生成 {"anyOf":[{"type":"string"},{"type":"null"}]} 等）都会把参数文本按 JSON 解码，MiniCPM5 与 Poolside V1 还回退 ast.literal_eval。结果 str|None 参数 "1.10"→1.1、"1984"→1984、JSON 文件正文→对象。Rust 前端（vllm-rs）的 Muse parser 同 bug。解析器在 API server 进程内运行，与 GPU/TP 无关。实测：vLLM 0.33.0rc1.dev229+g3966924d5（nightly 镜像），main fa1cf1d436 不变；B200 上 Muse-Spark-Open-816B、MiniCPM5-2B、Laguna-XS.2 三模型配置；Muse bug 首见于 H200 nightly-5d35ce39。issue 附无 GPU 最小 repro（构造 ChatCompletionRequest + parser extract_tool_calls，对比两种 schema 的输出）。
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/64517 （open，2026-10-29，含三模型服务配置与纯 parser 层最小 repro）
+  behavior: 用 muse/minicpm5/poolside_v1 任一 tool-call parser 服务模型（如 Muse-Spark、MiniCPM5、Laguna）时，工具参数里声明为 Optional[str] 等非纯 string 类型的字符串值会被静默改型：带前导零或形似数字的字符串（"0017"、"1.10"、"1984"）变成整数/浮点，JSON 文本变成对象，下游拿到的是损坏的参数值；调用方无任何报错，仅表现为工具执行结果异常。
+  trigger_surface: vLLM 0.33.0rc1/main（fa1cf1d436）；--tool-call-parser muse|minicpm5|poolside_v1（含 Rust 前端 Muse）；工具 schema 含 anyOf/Optional 等非纯 string 的字符串参数。
+  signature: Optional[str] 参数 "1.10" 经解析后类型为 float。
+  repro: issue 附纯 parser 层最小 repro（无需 GPU/模型）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

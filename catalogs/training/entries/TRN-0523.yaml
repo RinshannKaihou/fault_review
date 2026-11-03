@@ -1,0 +1,64 @@
+id: TRN-0523
+legacy_ids: []
+slug: dynamic_quant_arch35_bf16_range_overflow
+aliases: []
+title: DynamicQuant arch35 bf16 极差溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: dynamic_quant arch35 极差
+  behavior: 'arch35 向量寄存器路径上非对称量化行极差 (max-min) 在 fp32 中间量溢出为 inf，scaleOut=inf、yOut 全饱和；与 A2 标量路径 #7533 同根因，未随 !13078 修复'
+effect:
+  objects:
+  - 数值结果
+  detail: 950/A3 上 bf16 行内交替 ±极值（|x|>1.70e38）时 scale=inf、y 全饱和且两段返回 0；6-8 处 regbase 模板同病
+  visibility: 数值异常
+mitigation:
+  detect: 量化输出对拍 fp32 参考；检查 scaleOut 是否 inf
+  fix: A2 标量路径修复 https://gitcode.com/cann/ops-nn/pull/13078（closed，注明未覆盖 arch35）；arch35 向量级 guard（Select/Greater 组合改两端分别除）待单独立项，issue open 无修复 PR
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: '推理库 INF-2255 同 URL 已收；训练判定面：动态量化广泛用于训练侧量化感知/MoE 量化路径。A2 路径根因条目为 #7533（推理库 INF-2242），本条为 arch35 向量路径训练侧实例'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7721
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7533
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2255
+original:
+  mechanism: 'CANN ops-nn aclnnDynamicQuant 系列（950PR/950DT/A3 arch35 向量寄存器路径）的 quant/dynamic_quant/op_kernel/arch35/dynamic_quant_regbase_full_load.h 中 Sub(vregMaxSubMin,...)+Muls(...) 向量序列（约 L358-363）计算非对称量化行极差 (max-min) 时 fp32 中间量溢出为 inf，导致 scale=inf、y 全饱和且静默返回 0；moe_full_load/large_shape_db/pertoken_large_multicore/perchannel_* 等 regbase 模板同款序列（约 6-8 处需逐模板排查）。与 A2（910B）标量路径 #7533 同根因；#7533 的修复 PR !13078（closed）用标量 guard 范式，arch35 侧极差在向量寄存器级计算、需向量级 Select/Greater 组合 guard（改为溢出时两端分别除以量化粒度再作差），改动面大未随 A2 修复一并处理、单独立项。复现：x bf16 行内交替 ±bf16 最大值（|x|>FLT_MAX/2≈1.70e38），非对称量化（dstType=2/29 等）在 950/A3 上执行，scaleOut=inf、yOut 全饱和。'
+  source: https://gitcode.com/cann/ops-nn/issues/7721（根因同 https://gitcode.com/cann/ops-nn/issues/7533）
+  behavior: 950/A3 系列 NPU 上训练含动态量化的模型（MoE 量化、QAT 路径）时，若某行内同时存在 ±bf16 极值（极差 >3.4e38），量化 scale 变 inf、整行输出饱和为 127（负值也变正、符号丢失），两段接口返回 0 无报错；scale/offset 与反量化结果全错，下游梯度也随之错
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - 2026-10-31 2026-10-31 回访：#7721 open；arch35 修复 !13078 closed（未见 merged，2026-10-29T14:08Z），无实质变化。
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - original.notes

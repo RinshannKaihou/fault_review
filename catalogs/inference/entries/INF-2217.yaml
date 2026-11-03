@@ -1,0 +1,58 @@
+id: INF-2217
+legacy_ids: []
+slug: cann_clampmax_scalar_wraparound
+aliases: []
+title: ClampMax 标量越界按位环绕静默改写输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnClampCommon 标量转换
+  behavior: A2 分支标量转 promoteType 无范围校验无饱和，整数越界按补码截断（1000→-24），错值当上界参与 min 计算。
+effect:
+  objects:
+  - 数值结果
+  detail: int8 x 配 clip=1000 输出 -24×5（期望原值）、clip=-200 原样返回（期望 -200×5）、语义完全相反；InplaceClampMax 更原地覆盖调用方输入缓冲；两段接口返回 0。PyTorch 同调用直接拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；同修复点 aclnnClampCommon，两个入口需各自回归）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: 训练库 TRN-0394 已收录同 issue 同机制；本条为推理库范围收录，cross 关系见 relations。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3849
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/3850
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0394
+original:
+  mechanism: Atlas A2（910B2）+ CANN 9.2.0 + ops-math master efff3523。aclnnClampMax/aclnnInplaceClampMax 共用 aclnnClampCommon：IsRegBase 分支 ClampPromoteType 推导，A2 分支（:348）promoteType=out dtype；:352 NormalizeMaxScalar 仅 nullptr 时给默认上界、非空原样返回；:362 ScalarToTensor ConvertToTensor 到 promoteType 无范围校验无饱和——整数越界按补码截断（1000→0xE8→-24、100000→-31072、300→44）。实测：int8 [-2..2] clip=1000 → -24×5（期望原值）；clip=-200 → 原样返回（期望 -200×5）；uint8 [0,100,200] clip=300 → [0,44,44]。InplaceClampMax（:630 out 指 selfRef）原地覆盖调用方缓冲。PyTorch 对照 torch.clamp_max(int8,1000) 直接 RuntimeError 拒绝。资料参数表允许 clipValueMax INT32/INT64 与窄 dtype self 组合（文档声明支持形态）。
+  source: https://gitcode.com/cann/ops-math/issues/3849 与 https://gitcode.com/cann/ops-math/issues/3850（源码行号定位 + 四组实测 + PyTorch 对照；后者为原地入口独立 issue）
+  behavior: 对 int8/int16/uint8 张量做 clamp_max 且标量超出 dtype 表示范围时（如 int8 配 1000 或 -200），NPU 算子不报错返回成功，输出却是被按位环绕后的错值——正向越界把整块输出改写成 -24 这类小负数、反向越界则原样返回输入，语义完全颠倒；原地版本还会把调用方的输入缓冲直接覆盖成错值。
+  trigger_surface: CANN 9.2.0 A2 + aclnnClampMax/aclnnInplaceClampMax + 整型 self（INT8/UINT8/INT16）+ clipValueMax 超出 self dtype 范围（资料声明支持的组合）；量化链路把 clip 当安全上界使用时风险最高。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

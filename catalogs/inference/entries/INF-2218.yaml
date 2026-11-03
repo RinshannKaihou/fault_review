@@ -1,0 +1,54 @@
+id: INF-2218
+legacy_ids: []
+slug: cann_inplacesub_ge_graph_negative_index_semantics
+aliases: []
+title: InplaceSub GE 图转换丢负索引与环绕索引取模语义
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: InplaceSub 旧融合规则（GE 图模式）
+  behavior: GE 图模式把 InplaceSub 转 TensorMove+ScatterSub，旧路径跳过超范围索引，丢原生取模更新语义；跨架构编译目标还可能误跳过 A2/A3 转换。
+effect:
+  objects:
+  - 数值结果
+  detail: indices=[-1,-2,-3] 或 [3,4,5] 时输出与原生 InplaceSub 不一致：负索引/环绕索引的行不被更新；静态图与动态图行为分叉。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/12445（issue closed；950 Host 39/39、Graph 19/19，910B Host 5/5、Graph 19/19；发布未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7009
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend950PR_9579 + 独立 CANN 环境 + PR 受测提交 bff492c5（官方 master 基线 767c5fec）。InplaceSub 在 950PR&950DT 的 GE 图模式被旧融合规则转为 TensorMove+ScatterSub：负索引及环绕索引被跳过，与原生 InplaceSub 的取模更新语义不一致；且图编译目标与本机 runtime 架构不同时用本机架构判断，可能错误跳过 A2/A3 目标原有转换。复现：x/v [3,16]，indices [-1,-2,-3] 或 [3,4,5]，静态图 vs 动态图输出比较。修复保留 950 原生 InplaceSub、平台判断改为按图编译目标；12 条负索引+3 条环绕索引逐条核对通过，GEIR 8 用例 32/32。
+  source: https://gitcode.com/cann/ops-nn/issues/7009（PR 受测提交流程单，含双平台 CI 计数与逐条索引核对）
+  behavior: 在 950PR/950DT 上以图模式跑 InplaceSub 且索引含负数或越界环绕值时，对应行静默不被更新，结果与 eager 及 CPU 语义不一致；图编译目标跨架构（如为 A2/A3 编译）时还可能丢失应有的转换，行为进一步分叉。
+  trigger_surface: Ascend950PR/950DT + GE 图模式 + InplaceSub 负索引/环绕索引；或图编译目标与本机架构不一致的部署。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 编译器

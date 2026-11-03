@@ -1,0 +1,52 @@
+id: INF-2364
+legacy_ids: []
+slug: apply_adam_w_quant_fixed_4096_oob
+aliases: []
+title: aclnnApplyAdamWQuant 固定 4096 元素读写越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ApplyAdamWQuant kernel 边界
+  behavior: kernel 固定按 singleSize=4096 元素读写 var/grad/m/v/absmax，与实际 numel 无关；numel=256（官方示例规模）时越界量=4096−numel
+effect:
+  objects:
+  - 数值结果
+  detail: mssanitizer memcheck 稳定 14 条 illegal read/write（mRef 越界读 3808B、varRef 7104B 读+写）；numel=4096 时 0 条；每 tensor +8KB 后 0 条（slack 吸收=静默腐蚀邻接内存）；fp16/fp32 均复现
+  visibility: 静默错误
+mitigation:
+  detect: mssanitizer --tool memcheck 可稳定捕获（14 条 illegal read/write）
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7888
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnApplyAdamWQuant 在 mRef/vRef 元素数 256（官方示例规模）时，kernel 固定按 singleSize=4096 元素读写 var/grad/m/v/absmax，越界读写相邻显存；numel=4096 时不报，说明越界量 = 4096 − numel。自包含直调 + 精确分配后跑 mssanitizer memcheck 稳定 14 条：mRef 基址（申请 256B）illegal read 3808B、varRef 基址（申请 512B）illegal read/write 7104B、mRef/vRef illegal write 3808B。对照：numel=4096 时 0 条；每个 tensor 多申请 8KB 后 0 条（越界量被 slack 吸收——即正常分配下静默腐蚀邻接内存）；fp16/fp32/尾块 300 均复现。资料《aclnnApplyAdamWQuant》：blockSize「固定为 256」、absmaxMRef shape=ceil(mRef.size/blockSize)，接口按 block 独立处理，无「numel 须为 4096 整数倍」要求，官方调用示例即 [1,256]。环境：Atlas A2（910B3）、CANN 9.2.0、ops-nn master a61e016a71f4，2026-11-01 复现。来源 https://gitcode.com/cann/ops-nn/issues/7888（open，2026-11-01）。
+  source: 2026-11-01 每日扫描。https://gitcode.com/cann/ops-nn/issues/7888
+  behavior: 对 256 元素张量调 aclnnApplyAdamWQuant（官方示例规模）：接口返回成功、输出数值看起来正常，但 kernel 实际按 4096 元素读写，越界读写相邻显存（申请 256B 的 mRef 被越界读 3808B、varRef 被越界读写 7104B）——同进程其他张量的数据被静默改写。分配余量足够大时（每 tensor +8KB）不发作，普通分配下就是无声的邻接内存腐蚀；只有 mssanitizer memcheck 能看到 14 条非法访问。
+  trigger_surface: Atlas A2（910B3）；CANN 9.2.0 / ops-nn a61e016a71f4；aclnnApplyAdamWQuant numel<4096（含官方示例 [1,256]）；fp16/fp32、尾块 300 均触发
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

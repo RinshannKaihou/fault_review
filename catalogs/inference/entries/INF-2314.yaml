@@ -1,0 +1,60 @@
+id: INF-2314
+legacy_ids: []
+slug: vllm_kimi_k3_flashkda_nan_cross_request_spread
+aliases: []
+title: vLLM Kimi-K3 FlashKDA NaN 跨请求扩散 token 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flash-attention
+    component: FlashKDA prefill 尾块跨序列读
+  behavior: FlashKDA 以 16 行块处理序列，最后不完整块把序列结束后的 beta/v 行（属同 batch 下一序列）读入并以乘零消除，0*NaN=NaN 使一个请求的 NaN 进入另一请求的输出与循环状态。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  detail: 负载下 Kimi-K3 请求成组输出 token 0（!）至 max_tokens，logprob=null；AIME25 0.883→0.700（56/516 坏）；注入 1 NaN 使 240 个其他 decode 中 96 个坏。首 NaN 疑似 FlashMLA PDL 竞态（未证实）。
+  visibility: 静默错误
+mitigation:
+  detect: 监控输出中连续 token 0 / logprob=null；对 KDA prefill kernel 跑 issue 附单 GPU 秒级 NaN 泄漏复现（lens=[1,700] 等）。
+  fix: 修复 PR https://github.com/vllm-project/FlashKDA/pull/16 （open；序列尾后行选 0，三用例全清）与 https://github.com/vllm-project/FlashMLA/pull/41 （open；vLLM 侧 stopgap 为 kernel 间插普通 kernel）；vLLM 需 bump pin，未合入未发布。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/64758
+  kind: github_issue
+- url: https://github.com/vllm-project/FlashKDA/pull/16
+  kind: github_pr
+- url: https://github.com/vllm-project/FlashMLA/pull/41
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vLLM 服务 Kimi-K3 高负载下部分请求停更文本、持续输出 token id 0（!）直至 max_tokens（issue #64758，2×8 H200 TP8×PP2，vLLM PR #61867 head 063c0c6，FlashKDA 17a037d、FlashMLA 5dceadb）：每个坏 token 背后是 NaN logit。扩散机制（已证实）：FlashKDA prefill 以 16 行块处理序列，最后不完整块读入序列结束后的 beta/v 行（属同 batch 下一序列）并以乘零消除，0*NaN=NaN，csrc/smxx/fwd_kernel2.cuh:705-706 对全部 16 行执行 u=(v-k@S)*beta；单 GPU 秒级复现：lens=[1,700] 时 seq0 的 NaN beta 使 seq1 rows 688-699 及 final state 变 NaN（lens=[1,704] 即 16 倍数时免疫）；V2 混合步把 decode 行与 prefill 一起送该 kernel，一个 NaN 请求每步可波及至多 15 个 decode+1 个 prefill。注入实验：stock 下 1 个 NaN 使 240 个其他 decode 中 96 个变坏，FlashKDA 修复后 0。首 NaN 来源（强嫌疑未证实）：FlashMLA SM90 decode kernel 以 PDL 启动不等待前序 kernel，可读到未写完的 query buffer（torch.empty 陈旧字节/NaN），强制竞态 stock 49/50 次 NaN、修复后 0/50；也有注意力输出之后才出现的自然事件是该机制解释不了的。评测影响：KV 95-99% 10 分钟后 AIME25 0.883→0.700、GPQA 0.919→0.838，56/516 输出坏；两修复联打后 burst 复现 0 坏请求、性能无可测损失。'
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/64758 （open，2026-10-30 创建；含单 GPU 泄漏复现、自然 burst 复现、注入实验与评测影响）；修复 https://github.com/vllm-project/FlashKDA/pull/16 、https://github.com/vllm-project/FlashMLA/pull/41 （均 open）
+  behavior: 高负载（KV 打到 95%+、大量排队/取消）下服务 Kimi-K3：一些请求中途开始整段输出 '!!!!'（token id 0）直到长度上限，开启 logprobs 可见 logprob=null（NaN）；坏请求成组出现（同 scheduler step 进入的 13 个 GPQA 请求一起坏）。一次评测 516 个推理输出坏 56 个，AIME25 从 0.883 掉到 0.700。请求本身无报错，看起来像模型「卡住复读感叹号」，实际是 KDA 前处理 kernel 把一个请求的单步 NaN 复制进同 batch 其他请求并在循环状态中长期滞留。
+  trigger_surface: vLLM V2 model runner 服务 Kimi-K3（FlashKDA/FlashMLA backend）；高负载 KV 高占用+队列 churn；变长混合步（decode+prefill 同 kernel）；H200 实测（GPU 通用机制）。
+  signature: 输出连续 token 0 / logprob=null；单 GPU repro_flashkda_tail.py lens=[1,700] 泄漏、[1,704] 免疫（16 行块边界）。
+  repro: issue 附 repro_flashkda_tail.py（秒级单卡）与 repro_natural_burst.py（全模型分钟级）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect
+    - visibility

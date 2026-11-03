@@ -1,0 +1,66 @@
+id: TRN-0505
+legacy_ids: []
+slug: vllm_ascend_v1_sampler_logprobs_mode_rl
+aliases: []
+title: vllm-ascend V1 runner 不透传 logprobs 模式
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: V1 runner 构造采样器
+  behavior: V1 runner 构造 AscendSampler 时不转发 logprobs_mode，配置 processed 等模式的引擎仍以默认 raw 模式初始化采样器。
+effect:
+  objects:
+  - 输出分布
+  - 训练信号
+  detail: V1 runner 下配置 processed_logprobs 等非 raw_logprobs 模式时，Ascend 采样器静默以默认 raw 口径工作，rollout 侧报告的概率/logit 语义与配置不符，RL 训推一致性度量（MiniMax-M3.1-Flash）随之漂移；无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 断言 AscendSampler 的模式字段与 model_config.logprobs_mode 一致；比对训练侧与 rollout 侧 logprob 口径
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20146（open，2026-10-28）——runner→sampler 边缘转发模式；构造回归覆盖四模式+缺省回退（未修复代码四断言全失败）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 推理库同 URL 已收 INF-2250（vllm_ascend_sampler_logprobs_mode_not_forwarded）；本条为训练侧 RL 训推一致性影响独立条目，回显标题已核对
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/20146
+  kind: github_pr
+relations:
+- kind: cross
+  target: INF-2250
+original:
+  mechanism: 'vllm-project/vllm-ascend #20146（2026-10-28，open）：V1 runner 构造 AscendSampler 时不转发 model_config.logprobs_mode，配置为 processed logprobs 的引擎仍以默认 raw 模式初始化采样器。动机负载是 MiniMax-M3.1-Flash RL：用不同处理口径的概率比较时训练/rollout 一致性度量改变。属通用 V1 配置缺陷，不限 MiniMax；默认 raw 模式与 MRv2 不变。内层采样器已把收到的模式转发给 AscendTopKTopPSampler（current main）；相关 #8643 是内层 callsite，本 PR 修 runner→sampler 这条独立边缘。作者做了构造函数回归（从完整 runner 源码提取真实赋值，覆盖四模式、缺省 raw 回退与安装的 sampler 对象）：修复代码通过，未改代码四模式断言全失败。CPU 隔离测试，未初始化完整 runner 或 NPU 后端。'
+  source: https://github.com/vllm-project/vllm-ascend/pull/20146
+  behavior: RL 训练（如 MiniMax-M3.1-Flash）用 vllm-ascend V1 runner 并配置 processed_logprobs/processed_logits/raw_logits 模式时，Ascend sampler 静默以默认 raw_logprobs 口径工作：rollout 侧报告的概率/logit 语义与配置不符，训推一致性度量（train/rollout logprob 对比）随之漂移——用户看到的是「一致性指标异常」而非配置未生效；无报错。修复后四种模式正确到达 sampler。
+  trigger_surface: vllm-ascend V1 runner + model_config.logprobs_mode 非 raw_logprobs 配置 + RL 训推一致性度量负载（MiniMax-M3.1-Flash 实测动机）
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：ops-nn #7550 open；同 PR !13097（fake_quant_with_min_max_vars_per_channel 修复）open'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: RL训练回路
+        to: 解码/采样
+      effect:
+        from: 训练信号
+        to: 输出分布
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

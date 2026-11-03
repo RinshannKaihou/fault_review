@@ -1,0 +1,65 @@
+id: TRN-0593
+legacy_ids: []
+slug: deepspeed_zero_partial_offload_backup_optimizer
+aliases: []
+title: ZeRO-3 部分卸载设备子组优化器五项静默错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: deepspeed
+    component: backup_optimizer 设备子组
+  behavior: ratio<1时设备子组由独立torch优化器步进：忽略LR调度与超参变更、ckpt不含设备子组Adam状态、ckpt加载后param group共享致设备步多更新CPU子组、关adam_w_mode时用解耦weight decay
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  - 训练轨迹
+  detail: 无报错改变训练结果：首步 lr=0 权重仍移动 3.0e-3、resume 一步后偏 4.9e-3、每步多更新 3.0e-3、4 步偏 2.4e-2
+  visibility: 静默错误
+mitigation:
+  detect: ratio<1 时对设备子组核对 lr/超参是否随调度生效；resume 后与连续运行对拍
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8973（open，未合入）：每步前拷贝超参、保存设备子组 Adam 状态、param group 独立 dict、改用 torch.optim.Adam 语义（未核实合入）
+labels:
+  stage:
+  - pretrain
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8973
+  kind: github_pr
+relations: []
+original:
+  mechanism: deepspeedai/DeepSpeed !8973（2026-11-01 open PR，自带最小数值复现）。offload_optimizer.ratio<1 时 ZeRO-3 把部分子组留在设备上、用独立 torch optimizer（backup_optimizer）步进，该 optimizer 有多项改变训练结果而不报错的缺陷：1) 设备子组忽略 LR 调度与 set_lr() 及 betas/eps/weight_decay 变更——首步 lr=0 时权重仍移动 3.0e-3；2) checkpoint 不含设备子组 Adam 状态——resume 一步后偏 4.9e-3；3) checkpoint 加载后每个设备步同时更新 param group 1+ 的 CPU 子组（dict 与主 optimizer 共享）——lr 3e-3 时每步多 3.0e-3；4) safe_get/set_full_optimizer_state 与 ds_to_universal 对设备子组 KeyError；5) adam_w_mode=false 时设备子组用解耦 weight decay——4 步后偏 2.4e-2。SuperOffload 用同一 optimizer 管理设备子组。修复 PR 逐项修复并声明 resume bit-identical、跨 ratio 加载一致。
+  source: deepspeedai/DeepSpeed 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8973（open，未合入）
+  behavior: ZeRO-3 开 offload_optimizer.ratio<1（部分参数留在 GPU）时，训练全程无报错但结果是错的：学习率调度对留在设备上的参数不生效（lr=0 首步权重仍动 3e-3）、断点恢复后偏差 4.9e-3 起步、每步还额外多更新一次 CPU 上的参数组、关 adam_w_mode 时 weight decay 语义用反（4 步偏 2.4e-2）。loss 曲线看不出明显异常，只有与连续运行对拍才能发现。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 优化器
+        to: 重计算/卸载
+      effect:
+        from: 优化器状态
+        to: 模型权重
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

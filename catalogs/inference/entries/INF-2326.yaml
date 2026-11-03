@@ -1,0 +1,50 @@
+id: INF-2326
+legacy_ids: []
+slug: msmodelslim_fp8_e4m3_fake_quant_trunc_no_round
+aliases: []
+title: FP8 E4M3 伪量化只截断不舍入精度评估失真
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: fp8_quantize 舍入逻辑
+  behavior: fp8_quantize 对 E4M3 只做缩放与范围截断后直接转存储类型，不做尾数舍入到最近可表示值，反量化后不等于最近邻 E4M3 格点。
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: scale=1 时 1.1 量化反量化后仍是 1.100000023841858，而 PyTorch float8_e4m3fn 返回 1.125（正确最近邻格点）；伪量化精度评估系统性偏离实际 FP8 部署精度，量化方案选型与精度验收基于错误基准。
+  visibility: 静默错误
+mitigation:
+  detect: 对已知格点间值（如 1.1）比对 msmodelslim 反量化结果与 torch float8_e4m3fn 结果；两者不一致即命中。
+  fix: 待定（issue open，未见修复；报告于 macOS/PyTorch 2.8 CPU 环境最小复现，NPU 端到端部署未验证）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/664
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/msmodelslim issue #664（2026-10-31，commit db54eedb）：fp8_quantize（msmodelslim/ir/api/impl/fp_quantization.py#L59）对输入做 scale 缩放和范围截断后直接转换存储类型，缺少尾数舍入（round-to-nearest）步骤。实测 scale=1 对 [1.1, 1.0] 量化再反量化返回 [1.100000023841858, 1.0]，而 PyTorch x.to(torch.float8_e4m3fn).float() 返回 [1.125, 1.0]（1.1 的最近 E4M3 格点是 1.125）。环境：macOS Python 3.9.6 + PyTorch 2.8.0 CPU，源码 commit db54eedbd05128cad5f1e0a7302c624b0abb3223，最小复现必现；NPU 与端到端部署未验证。影响域：QAL 伪量化精度评估链路——用该伪量化评估出的 FP8 精度与实际 FP8 部署精度系统性不一致。'
+  source: GitCode issue https://gitcode.com/Ascend/msmodelslim/issues/664 （open，2026-10-31 创建；含 PYTHONPATH 最小复现脚本与代码行锚点）
+  behavior: 用 msmodelslim 的 FP8 E4M3 伪量化评估模型精度：输入 1.1 量化再反量化得到 1.1 本身（未落到 E4M3 格点），而真实 FP8（PyTorch float8_e4m3fn）会舍入到 1.125。整个伪量化评估因此系统性低估/偏离真实 FP8 部署误差——依据它选定的量化方案、验收的精度结论与实际部署效果不匹配，且全程无告警。
+  trigger_surface: Ascend/msmodelslim ir/api/impl/fp_quantization.py 的 fp8_quantize/fp8_dequantize（QDType.FP8_E4M3）；scale=1 附近格点间值；伪量化精度评估与量化方案选型流程。
+  signature: fp8 量化反量化往返不落格点（1.1→1.1 而非 1.125）；与 torch float8_e4m3fn 结果不一致。
+  repro: issue 附 PYTHONPATH=. 完整复现脚本与实测输出对照。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

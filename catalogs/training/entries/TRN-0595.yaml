@@ -1,0 +1,56 @@
+id: TRN-0595
+legacy_ids: []
+slug: deepspeed_zero3_unused_param_stale_grad
+aliases: []
+title: ZeRO-3 未用参数梯度分区驻留：旧梯度被重复施加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: ZeRO-3 gradient partition
+  behavior: ZeRO-3 梯度分区跨步驻留、仅 micro-step 0 覆写；某步无梯度的参数（跳过分支、未用 expert）保留上一步梯度被 optimizer 再次施加，ZeRO-1/2 对同参数给零梯度
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: GH200 1 rank 实测：无梯度参数按过期方向持续更新，单参数最大错误权重变化 2.4e-2；梯度累积窗口叠加错误；offload 场景梯度范数本应 0.17 却为 0；fp16 残留 inf 使之后每步被当溢出跳过，训练无报错，loss 缓慢或停滞
+  visibility: 静默错误
+mitigation:
+  detect: 构造部分参数单步无梯度的 ZeRO-3 步进、对比 ZeRO-1/2 与 CPU 参考的权重更新量；检查未用 expert 参数的更新范数
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8981（open）：step()/zero_grad() 后首个梯度覆写分区；累积边界处无梯度分区清零；offload 时未收到的分区显式拷贝给优化器
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8981
+  kind: github_pr
+relations: []
+original:
+  mechanism: DeepSpeed !8981（2026-11-02 open 修复载体）。ZeRO-3 keeps each param's gradient partition across steps and overwrites it only in micro-step 0；无梯度参数（skipped branch、unused expert）保留 last gradient 且被 optimizer 再次施加；ZeRO-1/2 给零梯度（行为分歧）。修复：param 首个梯度 after step()/zero_grad() 覆写其分区；累积边界无梯度分区清零；offload 下每个优化器未收到的分区拷贝给它。实测 GH200 1 rank（base 2d80cedd2）五种场景数值对照（见 effect.detail）。与 !8964（ZeRO-1/2 请求级梯度保留，TRN-0525 supersede 面）相邻但对象不同：本条是 ZeRO-3 梯度分区跨步驻留，非请求窗口丢失。
+  source: deepspeedai/DeepSpeed https://github.com/deepspeedai/DeepSpeed/pull/8981（open 修复载体）
+  behavior: ZeRO-3 训练里只要存在『某些步拿不到梯度的参数』——条件分支跳过的层、MoE 未激活的 expert、梯度累积中后半段才用到的参数——这些参数的梯度分区会保留上一步的旧值并被优化器反复施加：权重按过期方向持续更新、累积窗口的梯度叠加错误、fp16 时残留的 inf 让之后每一步都被当溢出跳过。训练无任何报错，loss 表现异常缓慢或停滞；实测单参数最大错误权重变化 2.4e-2，offload 场景梯度范数本应 0.17 却为 0。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+    - visibility

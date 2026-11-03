@@ -1,0 +1,54 @@
+id: INF-2325
+legacy_ids: []
+slug: ops_math_sign_bits_unpack_oob_write_32b
+aliases: []
+title: aclnnSignBitsUnpack 小 out 越界写 32 字节
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: sign_bits_unpack TBE 搬运
+  behavior: out 元素数小于 256（fp32 时 out 字节数 <1024）时，算子向 out 之后恒多搬一块对齐数据，越界写恒定 32 字节；out ≥1024 字节后归零。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 越界内容为 8 个 -1.0f（约 32 字节），踩坏按 out 精确尺寸申请的相邻 tensor；40 组 n 扫描零反例（n≤31 恒 32 字节、n≥32 恒 0），fp16 同形态（n≤31 越界 16~32 字节）；同机 aclnnAbs 相同哨兵 7 组全 0 越界可排除环境因素。
+  visibility: 静默错误
+mitigation:
+  detect: out 之后布置哨兵缓冲区逐位检查（issue 方法）；小 out 场景按 32 字节对齐冗余申请可缓解。
+  fix: 待定（issue open，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4356
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math issue #4356（2026-10-31，Atlas A2 910B2/CANN 9.2.0，master@5eaca2328）：aclnnSignBitsUnpack 在 out 元素数 <256（ACL_FLOAT，out 字节数 <1024）时向 out 之后越界写恒定 32 字节；越界内容为 8 个 -1.0f，与本用例真实输出无关，属多搬一块对齐数据。边界矩阵：n=1..31 越界 32 字节、n=32（1024B）起归零，40 组 n（1..39、48、63..129、256）扫描零反例；out=ACL_FLOAT16 同形态（n≤31 越界 16~32B，≥512B 归零）。对照实验：同机同法 aclnnAbs 7 组尺寸（1/8/17/33/64/129/256）全部 0 越界，排除「本机驱动就是这样搬」与「哨兵检测偏差」。A2 走 ops_legacy TBE 实现，aclnn 报错行号与 experimental/math/sign_bits_unpack/op_api 逐行对应。调用方若按 out 精确尺寸申请显存，相邻 tensor 即被踩坏。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4356 （open，2026-10-31 创建；含 40 组 n 扫描矩阵与自包含 repro_oob.cpp）
+  behavior: 用 aclnnSignBitsUnpack 解包符号位且输出张量很小（fp32 元素数 <256 或 fp16 <512 字节量级）时，算子会在输出缓冲区结尾之外多写固定 32 字节的 -1.0 值：紧随其后分配的另一个张量（权重、激活均可）的头部 8 个元素被静默改成 -1.0，接口返回成功、无任何报错。输出足够大（≥1024 字节）时问题消失。
+  trigger_surface: cann/ops-math sign_bits_unpack；ACL_FLOAT out 元素数 <256（或 FP16 对应阈值）；按 out 精确尺寸申请显存的调用方；A2 910B2/CANN 9.2.0。
+  signature: out 后 32 字节出现 8 个 -1.0f；仅小 out 尺寸触发；同法 Abs 无越界。
+  repro: issue 附 repro_oob.cpp（g++ 编译运行，退出码 1 即复现：n=1/8/16/31 四组越界、后三组 0）。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: 数值结果

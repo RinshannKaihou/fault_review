@@ -1,0 +1,52 @@
+id: INF-2369
+legacy_ids: []
+slug: quasar_sfpcast_float_int_rounding_truncation
+aliases: []
+title: Quasar SFPCAST typecast 8 位尾数截断错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: Quasar SFPU typecast
+  behavior: float→int 转换先走 sign-magnitude int32 的 SFPCAST mode 4，该模式只保留 8 位小数再舍入，小数落在 (0.5, 0.5+1/256) 且上文为偶数的值看似精确平手被向下舍
+effect:
+  objects:
+  - 数值结果
+  detail: Float32→Int8 全域 327,552 个输入错 1（Int16 另有 2.68e8 量级 wrap 不饱和）；均匀分数分布下约 1/512 元素受影响，全部为差一错误，RTL 仿真逐输入证实与硬件一致
+  visibility: 静默错误
+mitigation:
+  detect: 报告者跑遍 2^32 全部 fp32 输入（NaN 除外）对照 round-to-nearest-even+饱和，RTL 仿真验证
+  fix: 修复方案已给：窄格式用单条 SFP_STOCH_RND 指令（mode 2/3/6/7）直接舍入+饱和，对每个输入精确且同速或更快；单测尚无修复 PR 链接（正文向维护者征询旧注释出处）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/63867
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt_metal/hw/ckernels/quasar/metal/llk_api/llk_sfpu/ckernel_sfpu_typecast.h（#47700 引入）的 float→整数转换先经 sign-magnitude int32：convert<vSMag>(value, NearestEven)（SFPCAST mode 4），再 int32_to_int8（mode 13）/int32_to_uint8（mode 12）或 16 位 narrowing store。SFPCAST mode 4 不舍入完整浮点：只保留 8 位小数位再 round-to-nearest-even，小数落在 (0.5, 0.5+1/256) 且上文为偶数的值看似精确平手被向下舍：2.503→2（应 3）、10.501→10、0.50000006→0、126.500008→126、32766.502→32766。报告者在 Quasar SFPU RTL 仿真跑 Int8 平手邻域全序列与随机化验证，与硬件逐输入一致（非建模伪影）。全域统计（2^32 fp32，NaN 除外，对照 RTE+饱和）：Int8 327,552 错（全差一）、UInt8 180,096、Int16 557,056 差一外加 268,431,870 个 ≥32767.5 wrap（40000→7232）、UInt16 278,528 差一 + 125,828,351 wrap、Int32 557,056 差一。Float32 均匀分数分布下 1/512 元素受影响（[-100,100) 均匀 1e8 中 195,201 错）。Float16_b/bf16 不受影响（尾数不深于 1/256）；Float16 有 16 个受影响值。修复：四个窄格式各用一条 SFP_STOCH_RND（mode 2/3/6/7）直接转换即可逐输入精确且更快（-23%~-19% cycles），Int32 需序列；内核注释称直接转换模式返回全零的说法在仿真器与 RTL 均不成立（正文向维护者求证出处）。
+  source: https://github.com/tenstorrent/tt-metal/issues/63867
+  behavior: 在 Quasar 上做 float→int typecast（如量化、索引生成场景）时，小数部分恰在 0.5 到 0.5+1/256 之间的值被错误向下舍入差一（2.503→2 应为 3），Int16/UInt16 大值不饱和而是回绕（40000.0→7232）。Float32 均匀数据约每 512 个元素错 1 个，无报错、结果看似合理；累计到下游即为静默数值偏差。
+  trigger_surface: tt-metal Quasar SFPU ckernel_sfpu_typecast.h（#47700 起）；float32 源 + Int8/UInt8/Int16/UInt16/Int32 目标；小数 ∈ (0.5, 0.5+1/256) 且上文偶数时差一；≥32767.5/65535.5 的 Int16/UInt16 wrap；RTL 仿真与 ttsim 验证（非实机）
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

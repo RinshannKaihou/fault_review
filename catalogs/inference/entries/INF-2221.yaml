@@ -1,0 +1,62 @@
+id: INF-2221
+legacy_ids: []
+slug: cann_block_attn_res_prepare_subnormal_eps_nan
+aliases: []
+title: BlockAttnResPrepare eps 次正规数输出全 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: eps 校验与计算
+  behavior: eps 只按 double 判有限正数，fp32 次正规值过校验后 kernel 输出全 NaN；两段返回 0。
+effect:
+  objects:
+  - 数值结果
+  detail: blockRes 全 0（合法输入）+ 0<eps<1.17549435e-38 时三输出全 NaN、两段返回 0；NaN 沿下游 softmax/残差扩散，调用方拿到 ACLNN_SUCCESS 无从感知。分界实测 1.2e-38 正常 / 1.1e-38 NaN。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6785
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0475
+original:
+  mechanism: Ascend950PR（DAV_3510）+ CANN 9.2.0-beta.2 + ops-transformer master（attention/block_attn_res_prepare，目录最近改动 2026-10-23）。aclnn 两段式 C 直调（不经 torch_npu/图模式）。第一段 op_api/aclnn_block_attn_res_prepare.cpp 仅 if(!std::isfinite(eps)||eps<=0.0) 拒绝——资料约束为「必选，必须为有限正数」，1e-40 满足且过校验。实测分界表：1e-6/1e-37/1.2e-38（正规）→ 正常；1.1e-38/1e-40/1e-45（次正规）→ numerator/logitMax/expSum 全 NaN、两段 rc=0；1e-46（收窄为 0）→ 第一段 rc=0 且 ws=0、第二段 561103；eps=0 → 161002。触发输入 blockRes 全 0（资料未禁止）。
+  source: https://gitcode.com/cann/ops-transformer/issues/6785（8 档 eps 分界实测表 + 自包含 C++ 复现）
+  behavior: 调用 BlockAttnResPrepare 时若 eps 取 1e-40 这类 fp32 次正规数（满足资料「有限正数」约束、校验通过），三个输出全部变成 NaN 而接口返回成功；NaN 向下游 softmax/残差扩散污染整张图。eps 更小收窄为 0 时不报参数错误而是第二段抛内部 561103。
+  trigger_surface: CANN 9.2.0-beta.2 950PR + aclnnBlockAttnResPrepare + 0<eps<1.17549435e-38（fp32 次正规）且 blockRes 全 0。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    uncertain:
+    - detail

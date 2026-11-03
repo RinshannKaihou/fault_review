@@ -1,0 +1,78 @@
+id: INF-2255
+legacy_ids: []
+slug: dynamic_quant_arch35_bf16_range_overflow_variant
+aliases: []
+title: DynamicQuant 系 arch35 向量路径 bf16 极值极差溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: dynamic_quant arch35 模板
+  behavior: arch35（950/A3）向量寄存器路径的非对称量化行极差 (max-min) 在 fp32 中间量计算，bf16 极值（|x|>FLT_MAX/2）下溢出 inf，scale=inf、y 全饱和且静默返回 0。
+effect:
+  objects:
+  - 数值结果
+  detail: x bf16 行内交替 ±bf16 最大值（|x|>1.70e38）时，950PR/950DT/A3 上执行非对称量化（dstType=2/29 等），scaleOut=inf、yOut 全饱和为 +127（符号信息全丢），接口两段返回 0 完全静默；arch35 路径截至报告日仍未修复。
+  visibility: 数值异常
+mitigation:
+  detect: bf16 行内交替 ±bf16max 输入，检查 scaleOut 是否为 inf。
+  fix: A2 标量路径已由 https://gitcode.com/cann/ops-nn/pull/13078 （closed 2026-10-29，guard 范式：仅极差溢出时改用 max/粒度-min/粒度）修复；arch35 向量路径需向量级 guard（Select/Greater 组合），issue 明确单独立项，尚未修复
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7721
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7533
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13078
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/ops-nn/issues/7722
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2242
+- kind: cross
+  target: TRN-0523
+pattern: PAT-INF-0196
+original:
+  mechanism: '与 #7533（INF-2242，A2 标量路径）同根因的 arch35 变体：非对称量化行极差 (max-min) 在 fp32 中间量上计算，bf16 极值输入（|x| > FLT_MAX/2 ≈ 1.70e38）下 (max-min) 溢出为 inf，导致 scale=inf、输出饱和且两段式静默返回 0。缺陷位于 quant/dynamic_quant/op_kernel/arch35/dynamic_quant_regbase_full_load.h 的 Sub(vregMaxSubMin,...)+Muls(...) 向量序列（约 L358-363），以及 moe_full_load / large_shape_db / pertoken_large_multicore / perchannel_* 等 regbase 模板中的同款极差计算序列（需逐模板排查，约 6-8 处）。与 A2 标量路径不同，arch35 侧极差在向量寄存器级计算，需要向量级 guard（Select/Greater 等向量算子组合实现「溢出时改用两端分别除以量化粒度再作差」），改动面较大，故未随 #7533 的 A2 修复（PR !13078，guard 范式可参照）一并处理，单独立项。环境：950PR/950DT/A3 系列（arch35）；A2（910B）标量路径已由 !13078 修复（该 PR 2026-10-29 closed，A2 完整验证矩阵：修复后 scale=2.658456e+36、offset=-0.5、y 交替 +127/-128，回归比特级不变）。'
+  source: 'GitCode issue https://gitcode.com/cann/ops-nn/issues/7721 （open，2026-10-29）；同根因 A2 原始 issue https://gitcode.com/cann/ops-nn/issues/7533 与修复 https://gitcode.com/cann/ops-nn/pull/13078 （closed）；同族 scatter 变体 https://gitcode.com/cann/ops-nn/issues/7722 '
+  behavior: 在 Ascend 950/A3 系列上对含 bf16 极值（行内同时出现 ±bf16 最大值，即绝对值超过 1.70e38）的张量执行 aclnnDynamicQuant 系列非对称量化（dstType=2/29 等）时，scaleOut 输出 inf、yOut 全部饱和为 +127（符号信息全丢），接口两段返回 0 完全静默；同样输入在 910B（A2）上修复前也有同款行为、修复后恢复正常，arch35 路径截至报告日仍未修复。
+  trigger_surface: Ascend 950PR/950DT/A3（arch35 向量寄存器路径）；bf16 输入行内极差超过 FLT_MAX（|x|>1.70e38）；非对称量化 dstType=2/29 等；涉及 dynamic_quant regbase 全系模板（moe_full_load、large_shape_db、pertoken_large_multicore、perchannel_*）。
+  signature: bf16 行内交替 ±bf16max：scaleOut=inf、yOut 全饱和 +127、rc=0。
+  repro: '同 #7533 复现步骤：x bf16 行内交替 ±bf16max，观察 scaleOut=inf。'
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - relations
+  - date: '2026-10-30'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail
+    uncertain:
+    - behavior

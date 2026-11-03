@@ -1,0 +1,62 @@
+id: INF-2335
+legacy_ids: []
+slug: ops_nn_normalize_bbox_fp16_large_hw_zero_and_cross_check_blind
+aliases: []
+title: NormalizeBBox FP16 大高宽溢出输出 0 参考同步误判
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: normalize_bbox FP16 转换顺序
+  behavior: 高宽为合法 INT32（如 65536）时旧实现先把它转成 FP16，超过 FP16 最大有限值溢出为 inf 后再相除，输出全 0；测试 GPU 参考重复同样的先转换顺序，把错误结果判为通过。
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: FP16 boxes 且 shape_hw 为 INT32、值达 65536（>65504）时，归一化框坐标输出全 0 而非 0.01526，12/12 错；旧 GPU 参考同步输出 0，cross_check 误判 PASS；修正参考后旧内核 FAIL，FP32 输入正常可作对照。
+  visibility: 静默错误
+mitigation:
+  detect: 用提升精度的数学参考（如 FP64 或先除后转）替代同样低精度的 GPU 参考；hw≥65536 的边界用例覆盖。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/13275 （open：修 Host 推导校验 + 用例；数值修复包含在内，未发布未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7869
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13275
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0574
+original:
+  mechanism: 'cann/ops-nn issue #7869（2026-10-31，Ascend950PR_9579/CANN 9.3.0，ops-nn 主线 d1109ae3c，TTK fb6f02fc，GPU 参考为 A100）：NormalizeBBox 在 FP16 坐标、高宽超过 FP16 最大有限值（65536）时算错。机制：高宽原本是合法 INT32，旧实现先把它转成 FP16（溢出）再相除，输出全 0。双重缺陷：测试 GPU 参考重复同样的转换顺序，cross_check 把错误结果判为 PASS（误判矩阵：未修改包 dyn/cst/bin 均 0、12/12 错、旧 GPU 参考也 0 → PASS）；修正参考后旧内核 FAIL。修复验证：FP16 大除数用例（nb_float16_large_hw）加入回归，修正后 26 条小用例三 Kernel 路径 + 26 条 GE 用例全 PASS。附带：Host 推导直接放行已知非法 rank/shape_hw 结构/batch 关系/输入 dtype（如 boxes rank9、BOOL 输入），缺少推导阶段独立校验。关联 PR !13275（open）。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7869 （open，2026-10-31 创建；含复现参数、误判矩阵与质量看板链接）+ 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13275 （open）
+  behavior: 目标检测后处理用 NormalizeBBox 且坐标为 FP16、图像高宽达 65536（4K+ 拼接或大分辨率特征图）时，归一化框坐标输出全部为 0 而非 0.01526——框整体静默丢失。更隐蔽的是配套精度测试的 GPU 参考实现犯同样的错，cross_check 显示 PASS，回归体系对此失明；把参考换成高精度数学参考后旧内核才 FAIL。FP32 输入正常可作对照。
+  trigger_surface: cann/ops-nn normalize_bbox；FP16 boxes；shape_hw INT32 且值 >65504（FP16 最大有限值）；检测模型 NMS 前归一化路径；Ascend950PR/CANN 9.3.0。
+  signature: FP16+大 hw 输出全 0；FP32 同输入正确；旧 GPU 参考同步输出 0。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

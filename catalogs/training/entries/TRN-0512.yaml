@@ -1,0 +1,59 @@
+id: TRN-0512
+legacy_ids: []
+slug: trl_continuous_batching_inplace_bf16_cast
+aliases: []
+title: TRL 连续批采样把训练权重就地 cast bf16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: generate_batch 前就地 cast
+  behavior: 连续批每次生成前把模型就地 cast bf16 且不 cast 回（FlashAttention 拒 fp32）；nn.Module.to 换掉优化器所持 Parameter 的 .data，第一次生成起纯 bf16 训练。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: 策略按 GRPOTrainer 默认 fp32 加载、bf16=True 期望优化器保 fp32 master 权重；实际第一次生成后优化器状态绑定 bf16 参数，更新精度与预期配置静默不符。
+  visibility: 静默错误
+mitigation:
+  detect: 首步生成后打印 policy 参数 dtype 与优化器 state dtype；对比同配置非连续批路径 loss 曲线
+  fix: 待定（issue open 2026-10-28，1.17.0.dev0；非连续批路径不受影响）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 报告者环境：trl 1.17.0.dev0 + transformers 5.21.0 + accelerate 1.15.0 + peft 0.21.2 + torch 2.14.1+cu130；issue 自述+代码行锚点（grpo_trainer.py L1843-1849），无维护者回应
+evidence:
+- url: https://github.com/huggingface/trl/issues/7965
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'huggingface/trl #7965（2026-10-28，open；trl 1.17.0.dev0/transformers 5.21.0/accelerate 1.15.0/peft 0.21.2/torch 2.14.1+cu130，L4）：use_transformers_continuous_batching 文档声明只切换生成引擎，策略默认 fp32 加载（utils.py L1327）、bf16=True 下用户期望优化器持 fp32 master 权重；但每次 generate_batch 前训练模型被就地 cast 到 bf16/fp16（grpo_trainer.py L1843-1849）且从不 cast 回。cast 是生成所需（连续批在 FlashAttention 可用时切换，其拒绝 fp32、请求会失败返回无 token），但 nn.Module.to 交换优化器所持同一 Parameter 的 .data——从第一次生成起整跑纯 bf16 训练（报告正文截断处即此结论）。'
+  source: https://github.com/huggingface/trl/issues/7965
+  behavior: GRPO/RLOO 开 use_transformers_continuous_batching + bf16=True 训练时，第一次 rollout 生成后整个训练静默变成纯 bf16：策略参数与优化器实际操作的 .data 被就地换成 bf16，与文档承诺的 fp32 策略/fp32 master 权重配置不符。无报错，指标不直接暴露精度降级，训练质量相对预期配置静默偏差；非连续批模式不受影响。
+  trigger_surface: trl GRPO/RLOO + use_transformers_continuous_batching + bf16/fp16；transformers 连续批切 FlashAttention（可用时）
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：trl #7965 open；同 issue 族 vllm_mode=server+PEFT 尾块广播 TRN-0498 无修复动态'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 优化器
+        to: RL训练回路
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

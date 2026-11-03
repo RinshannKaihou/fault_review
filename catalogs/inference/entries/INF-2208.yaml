@@ -1,0 +1,55 @@
+id: INF-2208
+legacy_ids: []
+slug: vllm_mooncake_bhlnc_stride_as_length
+aliases: []
+title: Mooncake 连接器 BHLNC 布局按整块步长传输污染跨请求 KV
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake 布局注册 stride 当长度
+  behavior: 按 head 注册传输区时把整块步长同时当块间距与传输长度，BHLNC 下每 4KB segment 传输 196608 字节并越写相邻块。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: BHLNC 开启 Mooncake 传输后，load 越过 4KB segment 写进下一物理块（常属其他请求）：600 题温度 0 对照错误 54-60 条 vs 无连接器 0 条，store 约 430 块即写满，全程无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open，根因已定位到 data.py register_kv_caches，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/64117
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm 0.29.0（lmcache/vllm-openai 镜像，main bfa2a43 同路径）。MooncakeStoreConnector 在 VLLM_KV_CACHE_LAYOUT=BHLNC 下，RankLocalStoreLayout.register_kv_caches（vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/data.py）对非密集层按 head 注册 region 时 block_lens.append(head_cache.stride(0)*element_size()) 把 BHLNC 视图 (B,H,N,C) 的整块步长 196608B 同时当作块间距与每个 head segment 的传输长度；实际每 head 块仅 4096B 密集。每次 put 拷 48 个重叠整块窗口，每次 get 向每个 segment 之后多写至 192KB 覆盖下一物理块。T4+Qwen2.5-0.5B-Instruct（24 层 2 KV 头 block16 fp16）实测：LBNHC 196608 B/block vs BHLNC 9437184 B/block（48 倍）、num_segments 24→48；8 并发 600 题温度 0 对照错误 60/56/54 vs 连接器关闭 0、LBNHC 6-8（普通批间非确定性）；错误大量来自未发生 load 的 bystander 请求。
+  source: https://github.com/vllm-project/vllm/issues/64117（源码级定位 + 三臂对照实测）
+  behavior: 开启 BHLNC KV 布局并使用 Mooncake 传输后，服务不报任何错误，但命中 store 的请求与共享 store 的其他请求答案开始变错：600 题温度 0 压测中 54-60 题答错（对照组 0-8 题），且大量错误来自根本没有加载动作的旁观请求；日志可见每块传输字节数 48 倍膨胀（196KB 变 9.4MB）、store 约 430 块就报 insufficient space 提前写满。
+  trigger_surface: vLLM 0.29+ + VLLM_KV_CACHE_LAYOUT=BHLNC + MooncakeStoreConnector（kv_both/load/store 任一）+ 每 head 非密集 KV 层（多头模型普遍成立）；LBNHC 与无连接器路径不受影响。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: KV状态

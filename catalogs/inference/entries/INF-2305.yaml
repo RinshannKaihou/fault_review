@@ -1,0 +1,51 @@
+id: INF-2305
+legacy_ids: []
+slug: ops_nn_squared_relu_out_contract_miswrite
+aliases: []
+title: aclnnSquaredRelu out 契约缺失错写越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: squared_relu out 校验
+  behavior: 第一段不校验 out 与 input shape 一致也不拒绝非连续 out：偏小 out 时内核按 input 元素数写完越界；非连续 out 时按连续内存写而按逻辑 stride 读回错位。
+effect:
+  objects:
+  - 数值结果
+  detail: input=fp32[4x8]：out=[4x4] 越界写 16 元素、out=[1x8] 越界写 24；out strides=[8,1]（资料标 ×）时 8 逻辑元素 4 个错值，两段均返回 0。框架把 out 传成切片/转置视图时常见。
+  visibility: 静默错误
+mitigation:
+  detect: 出参 shape/stride 契约探针（偏小 out + 金丝雀越界检测、非连续 out 逻辑视图比对）。
+  fix: 待定（未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: 同型机制与 INF-2261（GeluMul/FatreluMul out 契约）一致，不同算子独立提单，不建 var（共享机制宽泛：out 契约校验缺失大族，非同一具体失效）。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7756
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7757
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn aclnnSquaredRelu out 参数契约缺失两缺陷（issue #7756/#7757，910B3/CANN 9.2.0，master 59c0720c 实测）：(1) GetWorkspaceSize 不校验 out 与 input shape 一致——input=fp32[4x8]、out=fp32[4x4] 时两段返回 0，内核按 input 32 元素写完，越界写 16 个元素（out=[1x8] 时越界 24）；资料要求 out 与输入 dtype/shape/格式一致，应 161002 拒绝。(2) 非连续 out（shape[2,4]、strides[8,1]、storage[2,8]）被放行（资料「非连续Tensor」标 ×），内核按连续内存写 8 个结果，按逻辑 stride 读回时第二行仍是哨兵值——8 个逻辑元素 4 个错值。两者均两段返回 0 静默错值/越界。报告者指出框架侧把 out 传成视图（切片、转置 buffer、narrow）很常见，误差被后续层放大且无告警。与 10-29 GeluMul 族（INF-2261）同属 out 契约缺失大类，本条为独立算子的独立提单。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7756 、https://gitcode.com/cann/ops-nn/issues/7757 （均 open，2026-10-30 创建；各含 CTRL/DEFECT 实测与自包含复现）
+  behavior: 调用 aclnnSquaredRelu 时把输出张量传得比输入小（如输入 [4,8] 传 [4,4]）：接口返回成功，内核按输入大小往输出缓冲区写，多出来的 16/24 个元素写到缓冲区外，踩坏相邻显存；把输出传成非连续视图（如带 stride 的切片）时，内核按连续内存写、调用方按 stride 读，一半逻辑元素还是初始值。两种情况都无报错，输出错值或相邻数据损坏，且都是框架里传视图时自然发生的形态。
+  trigger_surface: cann/ops-nn squared_relu；out 偏小（越界写）或非连续（错位写）；两段式 ACL 直调；910B3。
+  signature: 偏小 out 时缓冲区外哨兵被覆写；非连续 out 时逻辑视图一半元素为初始值。
+  repro: 两 issue 各附自包含 repro.cpp（CTRL/DEFECT 分组输出）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,52 @@
+id: TRN-0580
+legacy_ids: []
+slug: opsnn_apply_adam_w_quant_mref_always_zero
+aliases: []
+title: ApplyAdamWQuant mRef 索引计算缺陷致输出恒为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnnApplyAdamWQuant
+  behavior: mRef 作为输入/输出张量调用后恒为全 0（预填 127 仍被写成 0，排除未写回），量化动量索引未按更新后的 m 写出；同调用 vRef/absmaxMRef 正确
+effect:
+  objects:
+  - 优化器状态
+  detail: 下一步以 0 号索引反量化 m，absmaxMRef 系统性偏小（第 2 步实测 0.2013 vs 参考 0.5268），量化 AdamW 训练静默错值
+  visibility: 静默错误
+mitigation:
+  detect: 调用后读回 mRef 与参考量化索引对拍（absmaxMRef 与 vRef 可作对照，两者正确）
+  fix: 待定（issue open，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7901
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn #7901（2026-11-01 open，Atlas A2/910B2，CANN 9.2.0，master a429215a3471，optim/apply_adam_w_quant 自 a61e016a71f4 后无改动）。aclnnApplyAdamWQuant 的 mRef（输入/输出）调用后 256 个元素全 0（min=max=sum=0）；同一调用内 vRef 的 256 个索引与参考逐个一致、absmaxMRef 与参考一致（0.4）；把 mRef 初值全部预填 127 后仍被写成 0，排除『未写回』，是索引计算/写回路径缺陷。资料参数表明写 mRef 是『AdamW 优化器公式中 m 参数量化前的索引值，根据索引导出 qmapM 中具体的值』的输入/输出张量，应按更新后的 m 写出新量化索引（与 vRef 对称）。后果：下一步以 0 号索引反量化 m，absmaxMRef 系统性偏小（第 2 步实测 0.2013，参考 0.5268）。复现：aclnn C 接口直调，对照组 max|vRefIdx-refIdx|=0，缺陷组 max|mRefIdx-refIdx|=255。关联 #7736（同接口另一现象：全零 block 归一化 NaN，已编 TRN-0560）。'
+  source: 'cann/ops-nn https://gitcode.com/cann/ops-nn/issues/7901（open；同接口另案 #7736 已编 TRN-0560）'
+  behavior: 用 aclnnApplyAdamWQuant 做量化 AdamW 更新时，调用返回成功，但读回 mRef 发现 256 个元素全为 0（预填 127 也会被覆盖成 0）；同一次调用的 vRef 和 absmaxMRef 都是对的。下一步拿 mRef 反量化动量时用 0 号索引，absmaxMRef 越走越小（0.2013 vs 0.5268），训练全程无报错。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - title

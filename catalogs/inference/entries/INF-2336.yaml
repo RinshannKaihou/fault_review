@@ -1,0 +1,54 @@
+id: INF-2336
+legacy_ids: []
+slug: flashinfer_b12x_moe_wrapper_eager_after_capture_zeros
+aliases: []
+title: B12xMoEWrapper 逐层图捕获后 eager run() 静默全零输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: flashinfer
+    component: B12xMoEWrapper alpha 折叠缓存
+  behavior: 单 wrapper 逐层捕获 CUDA graph 时折叠 FC1 alpha 缓存保持全零且键绑定最后捕获层的 scale 张量，之后该层 eager run() 返回全零输出直到不同 scale 强制重折；图重放正确。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: '0.7.0.post1/0.7.2.post1（sm_120/121）复现；main@96ca3d0 已有 #5168 守卫（捕获期折叠准备改 RuntimeError），诉求 backport；混合图+eager 执行输出交替正确/全零。'
+  visibility: 静默错误
+mitigation:
+  detect: 图捕获后首个 eager run() 输出与图重放对照；检查 _folded_w1_alpha 是否全零。
+  fix: 'main 已有守卫 PR #5168（5c4058bd9b：捕获期折叠准备改为显式 RuntimeError 提示 eager 预热）；0.7.x release 未携带，issue 诉求 backport（open，未发布）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/8119
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'flashinfer issue #8119（2026-10-31，SM12x：RTX PRO 6000 Blackwell sm_120 与 DGX Spark GB10 sm_121，flashinfer 0.7.0.post1/0.7.2.post1 复现）：B12xMoEWrapper（NVFP4，use_cuda_graph=True）用一个 wrapper 逐层捕获 CUDA graph（每 MoE 层独立权重与 w1_alpha 的常见模式）时，折叠 FC1 alpha 缓存 _folded_w1_alpha 保持全零、键绑定到最后捕获层的 scale 张量；之后该层的每个 eager run() 返回全零输出，静默发生，直到带不同 scale 张量的调用强制重折。图重放路径正确。main@96ca3d0 同脚本已由 #5168（5c4058bd9b）守卫：捕获期折叠准备直接 RuntimeError（提示先 eager 预热）；报告诉求是把守卫 backport 到 0.7.x release。'
+  source: GitHub issue https://github.com/flashinfer-ai/flashinfer/issues/8119 （open，2026-10-31 创建；含复现矩阵与 main 守卫行为）
+  behavior: 在 Blackwell 消费卡（sm_120/121）上给每个 MoE 层用同一个 B12xMoEWrapper 包装器分别捕获 CUDA graph：捕获完成后任何走 eager 路径的调用（如预热外的动态 shape、debug 前向）输出整层全零——模型部分层静默吐零、与图重放的正确输出交错，生成质量崩坏且难定位。最新 release 0.7.2.post1 仍无提示；main 已把该误用变成显式报错（#5168），等待 backport。
+  trigger_surface: flashinfer B12xMoEWrapper；SM12x/121；use_cuda_graph=True 且单 wrapper 逐层捕获；捕获后 eager run()；0.7.0.post1/0.7.2.post1。
+  signature: 图重放正确、eager 全零；_folded_w1_alpha 全零且键为最后捕获层。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

@@ -1,0 +1,58 @@
+id: TRN-0543
+legacy_ids: []
+slug: deepspeed_onecycle_first_adam_min_momentum
+aliases: []
+title: DeepSpeed OneCycle 首步 Adam 用最小动量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: OneCycle 动量调度初始化
+  behavior: OneCycle 开启动量循环时把 optimizer 初始 beta1 设为 cycle_min_mom，而调度器 get_mom() 报 cycle_max_mom：首个 Adam 更新消费的动量与反带动量计划相反
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  detail: 首个更新的一阶矩按 min 动量累积，偏差修正可掩盖第一步，第二步起权重偏离调度参考（实测 actual 0.7388 vs reference 0.7878）；fp64 双优化器对照脚本稳定复现
+  visibility: 静默错误
+mitigation:
+  detect: 断言 optimizer.param_groups beta1 与 scheduler.get_mom() 首步一致；双优化器对照训练
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8953（open，Initialize OneCycle momentum at the upper bound，未合入）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8951
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8953
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed #8951（2026-10-30，master 8d4f29c7）：构造 OneCycle（cycle_min_mom=0.8/cycle_max_mom=0.9）时 optimizer 初始 beta1 被设为 0.8（cycle_min_mom），而 scheduler.get_mom() 首步报 0.9（cycle_max_mom），首个 Adam 更新实际消费与逆 LR/动量调度相反的动量。实测（真实 forward/backward，betas=(0.9,0.99) 隔离 beta2 问题，fp64）：按调度参考手设 lr/beta1 的 reference optimizer 两次更新后权重 0.7878449066，actual 0.7387770530，assert_close 失败；偏差修正可在第一个参数更新上掩盖问题，第二个更新起偏离。修复 PR #8953（open）：初始化动量至上界。'
+  source: https://github.com/deepspeedai/DeepSpeed/issues/8951 + 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8953（open）
+  behavior: 训练用 DeepSpeed OneCycle 调度器并开启动量循环（cycle_min_mom/cycle_max_mom）时，第一步 Adam 更新用的是最小动量而非调度声明的最大动量：日志里 scheduler 报的动量与 optimizer 实际用的不一致，前一两步权重更新偏离预期计划，loss 曲线无显式异常，只有逐步对照参考优化器才能发现偏差。
+  trigger_surface: DeepSpeed OneCycle + 动量循环（cycle_min_mom/cycle_max_mom）+ Adam 系优化器；master 8d4f29c7
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail
+    uncertain:
+    - effect

@@ -1,0 +1,51 @@
+id: INF-2193
+legacy_ids: []
+slug: cann_fia_v5_tnd_zero_len_batch_gm_oob_write
+aliases: []
+title: FIA V5 TND 零长度 batch 静默越界写 GM
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FIA V5 TND 零长度 batch 分支
+  behavior: TND 且 actualSeqLengths 含零长度 batch（累加值相等）时 kernel 对 GM 不持有区间越界写，两段返回 0、数值正确
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: mssanitizer memcheck 报 out of bounds of size 38（每个 AIV 核一条，数十条）；数值输出正确故静默；零长度 batch 是必要条件，无零长度则 0 告警
+  visibility: 静默错误
+mitigation:
+  detect: mssanitizer --tool=memcheck 检查 out of bounds 段；对照无零长度 batch 用例告警为 0
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6734
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend 950PR 上 aclnnFusedInferAttentionScoreV5（torch 侧入口 torch_npu.npu_fused_infer_attention_score），当 inputLayout=TND 且 actualSeqLengths/actualSeqLengthsKv 中存在长度为 0 的 batch（累加序列长度出现相等值，如 [2,2]）时，kernel 对 GM 发生越界写：mssanitizer --tool=memcheck 报 out of bounds of size 38（每个 AIV 核一条，按 aiv 块递增分布，共数十条）。接口两段均返回成功、attentionOut 数值正确，属静默越界写：每次调用向 GM 上本算子不持有的地址区间多写若干十字节，若与其他算子/框架 buffer 相邻存在踩坏数据风险。6 组对照确认零长度 batch 是必要条件：TND [0,0,1]→51 告警、[2,2]→53、[0,2]→53；TND [1,2,3]（无零长度）→0、[1]→0、BNSD decode →0。与 decode/prefill、dtype（fp16/bf16）、head 数无关。环境：Ascend 950PR、CANN 9.2.0-beta.2（driver npu-smi 25.7.rc1）、torch 2.14.0 + torch_npu 2.14.0。来源 https://gitcode.com/cann/ops-transformer/issues/6734（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-transformer/issues/6734
+  behavior: 用 TND 布局调 fused infer attention，只要某个 batch 的实际序列长度为 0（如变长批处理里空请求占位），接口返回成功、注意力输出数值也正确，但每次调用都会向 GM 上不属于该算子的地址区间多写几十字节（memcheck 每核一条、共数十条 out of bounds 告警）。正常运行完全无感；若受害地址恰好是其他算子或框架的 buffer，其数据会被悄悄改坏，表现为之后无关步骤出现错值或崩溃，难以回溯到本次调用。去掉零长度 batch 后告警归零。
+  trigger_surface: aclnnFusedInferAttentionScoreV5 / torch_npu.npu_fused_infer_attention_score；inputLayout=TND + actualSeqLengths 含零长度 batch；Ascend 950PR、CANN 9.2.0-beta.2 实测；fp16/bf16 均触发
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

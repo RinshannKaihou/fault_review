@@ -1,0 +1,58 @@
+id: INF-2254
+legacy_ids: []
+slug: attention_update_lse_common_offset_denorm
+aliases: []
+title: AttentionUpdate 大 LSE 公共偏移致归一权重失真输出翻倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: attention_update kernel
+  behavior: 权重先构造 lse_out=max+log(sum(exp(lse-max))) 再 exp(lse_i-lse_out)，有限 LSE 带大公共偏移时小 log-sum 项相加被舍入丢失，权重不归一，输出显著偏离。
+effect:
+  objects:
+  - 数值结果
+  detail: FP32 sp=2 两路 LSE 均 16777216 时输出 3（正确 1.5）；LSE=1000000 输出 1.50849；7 设备场景 5 个数值失败，全部 rc=0 无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 构造大公共偏移 LSE（如全 16777216）对照组与 0 偏移基线对比输出是否仍为 1.5；权重和≠1 可直接检出。
+  fix: issue 给出修复方案（权重指数改为 (lse_i-max(lse))-log(sum(exp(lse-max(lse))))，公共偏移在减法中先抵消，同步修复三个 kernel 路径与 golden），未见独立修复 PR 链接；未核实
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6872
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer 的 AttentionUpdate 算子权重计算缺陷。权重先构造 float32 lse_out = max(lse) + log(sum(exp(lse-max)))，再使用 exp(lse_i-lse_out)。当有限 LSE 含较大公共偏移时，小的 log-sum 项在相加时被舍入丢失，权重不再归一化。arch35 的带/不带 LSE 输出路径、legacy kernel 和当前 golden 均有相同计算，即 golden 参考值同样错误，会掩盖错误设备输出。真实设备复现：openEuler 24.03 LTS SP3 / x86_64，Ascend950PR，driver 25.7.rc1.10，CANN Toolkit 与 bisheng 9.1.0，未修改基线 a18ec2631ccf4b8ed08027d7d38bc3c1816f929a。隔离工作树原生构建并经 ASCEND_CUSTOM_OPP_PATH 加载，SDK debug 日志确认加载该内核对象。FP32，total_length=32，hd=16，sp=2，两路 go 分别全 1 和全 2：两路 LSE 均为 0 时 update_type=0/1 输出 1.5 通过；LSE 均为 16777216 时两种模式均输出 3（正确 1.5）；LSE=1000000 输出 1.50849473476；sp=3/16 混合 LSE 也出现偏差。7 设备场景 5 失败 2 控制，全部 rc=0。输出 LSE 本身仍符合 float32 舍入值，问题在归一权重。报告者已检索上游 6706 条 issue/14821 条 PR 排除既有 Exp 精度、Inf mask、空 Tensor 修复同根因。修复方案：权重指数改为 (lse_i-max(lse))-log(sum(exp(lse-max(lse))))，公共偏移在减法中先抵消；同步修复三个 kernel 路径与 golden 防止错误参考值掩盖；新增完整 golden 回归（独立高精度归一权重 oracle，覆盖 FP32/FP16/BF16、多分片、两输出模式、正负公共偏移）。
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6872 （open，2026-10-29，含真实设备复现与修复回归方案）
+  behavior: 调用 AttentionUpdate 算子且输入 LSE 含较大公共偏移（如两路 LSE 均为 16777216 或 1000000）时，输出数值显著偏离正确值（1.5 变 3、1.50849 等），sp=3/16 混合 LSE 同样偏差；接口返回码全部为 0，无告警无 NaN，输出数值看似合理但错误，NPU 输出可翻倍。
+  trigger_surface: Ascend950PR；CANN 9.2/bisheng 9.1.0；FP32/FP16/BF16；attention update（多分片 LSE 合并，含带/不带 LSE 输出路径与 legacy kernel）；LSE 带大有限公共偏移时触发。
+  signature: 大公共偏移 LSE（如全 16777216）对照组：输出 3 而正确 1.5；权重和≠1。
+  repro: issue 正文含原生构建命令与两路全 1/全 2 输入的设备实测矩阵。
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：ops-transformer#6872 批次快照仍 open，无修复进展。
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

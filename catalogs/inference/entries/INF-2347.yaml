@@ -1,0 +1,58 @@
+id: INF-2347
+legacy_ids: []
+slug: transformers_mamba1_multi_token_primed_cache_restart
+aliases: []
+title: Mamba-1 多 token 前向遇 primed cache 静默从零重启
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: Mamba-1 cache 传递分支
+  behavior: 对已 prime 的 Mamba-1 cache 做多 token forward 时 dispatch 静默走零状态分支重启 selective scan 返回错误 logits；Mamba-2 等价路径已修，Mamba-1 未覆盖。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 复现（mamba-130m-hf fp32 CPU，transformers 5.20.2，main@10-31 无变化）：primed 多 token 路径与 full forward 后半 logits 不一致，静默无报错，影响长生成/批推理/评测 harness。
+  visibility: 静默错误
+mitigation:
+  detect: 对 primed cache 的多 token forward 与 full forward logits 对照（issue 复现脚本即此法）。
+  fix: '待定（issue open 2026-10-31；Mamba-2 对应修复 #46084/#46741 已在，Mamba-1 待同样处理）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/50195
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'transformers issue #50195（2026-10-31，transformers 5.20.2 + torch 2.14.1+cpu fp32 CPU，代码对照 main@2026-10-31 dispatch 无变化）：对已 prime（预填充）的 Mamba-1 cache 做多 token forward（如一次喂入 ids 后半段）时，静默从零状态重启 selective scan，返回错误 logits——与 full forward 的对应片段不一致。复现模型 state-spaces/mamba-130m-hf；报告者注明 Mamba-2 等价问题已由 #46084/#46741 修复（@vasqu 审过），Mamba-1 分支未覆盖。影响：任何把「多 token 增量前向 over primed cache」用于 Mamba-1 的路径（长文本生成、批处理评测、蒸馏/打分 harness）静默拿到偏离的 logits。'
+  source: GitHub issue https://github.com/huggingface/transformers/issues/50195 （open，2026-10-31 创建；含 CPU 复现脚本与 Mamba-2 修复参照）
+  behavior: 用 transformers 跑 Mamba-1 模型、先用一段文本填充 cache 再继续喂多个 token（多轮续写、分块打分等）：模型不报错但内部把状态当作空 cache 从零重算 selective scan——续写内容/打分 logits 与一次性完整前向明显不一致，输出看似通顺实则偏离正确状态演化。同场景 Mamba-2 已修复，可对照确认是 Mamba-1 独有。
+  trigger_surface: transformers Mamba-1（MambaForCausalLM/Hybrid）；use_cache prime 后多 token forward；5.20.2 复现、main@2026-10-31 仍在；CPU/GPU 通用（纯 dispatch 逻辑）。
+  signature: primed 多 token 前向与 full 前向 logits 不一致；单 token 增量正常。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: KV缓存
+    uncertain:
+    - effect

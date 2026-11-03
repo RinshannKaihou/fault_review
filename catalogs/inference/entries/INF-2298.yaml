@@ -1,0 +1,60 @@
+id: INF-2298
+legacy_ids: []
+slug: ops_nn_sce_logits_labels_shape_oob_write
+aliases: []
+title: aclnnSCEWithLogits labels 形状不一致越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: sce_logits shape 校验
+  behavior: 第一段未校验 labels 与 features 形状一致，非法入参被接受后内核按 labels 行数计算，向按 features 分配的输出缓冲越界写。
+effect:
+  objects:
+  - 数值结果
+  detail: features=fp32[1x47]、labels=fp32[109x1]、loss/backprop 按 features 分配（4B/188B）时两段接口均返回 0；msSanitizer 实测 72 处 illegal_write（单次最大 564B），可踩坏同 buffer 相邻数据。
+  visibility: 静默错误
+mitigation:
+  detect: labels 行数>features 行数构造用例 + msSanitizer memcheck；第一段断言 161002。
+  fix: 待定（未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7747
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0555
+original:
+  mechanism: 'cann/ops-nn aclnnSoftmaxCrossEntropyWithLogits 在 features/labels 形状不一致时两段接口均返回 0 且内核越界写（issue #7747，910B2/CANN 9.2.0，master c46db05f 实测，P0）：features=fp32[1x47]ND、labels=fp32[109x1]ND、loss=fp32[1]、backprop=fp32[1x47]（调用方按 features 分配仅 4B/188B）时，非法入参被接受，内核按 labels 的 109 行计算，向不足的 loss/backprop buffer 写出界。msSanitizer memcheck 实测 72 处 illegal_write（started_count=3，单次最大 564B），属设备侧内存安全缺陷，可踩坏同 buffer 相邻数据。资料要求 labels shape 与 features 一致，不一致应返回 161002。合法基线输出正确。同类「shape 校验缺失+越界写」族在 ops-nn/ops-math 已多单（10-22~10-29 大族），本条为 P0 且有 msSanitizer 实测越界证据，单列。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7747 （open，2026-10-30 创建；含 msSanitizer memcheck 原始输出与自包含 repro.cpp）
+  behavior: 调用 aclnnSoftmaxCrossEntropyWithLogits 时如果把 labels 的形状传得和 features 不一致（如 features 是 [1,47] 而 labels 是 [109,1]），接口两个阶段都返回成功，但内核会按 labels 的行数往只按 features 大小分配的输出缓冲区里写数据，越界写出缓冲区外（memcheck 记录 72 处非法写、单次最多 564 字节），可能直接踩坏相邻张量。日志无任何报错，表现为其他张量莫名出错或后续计算崩溃难定位。
+  trigger_surface: cann/ops-nn softmax_cross_entropy_with_logits；labels 与 features 形状不一致（labels 行数更大）；两段式 ACL 直调。
+  signature: shape 不一致两段 rc=0 + msSanitizer illegal_write 集中在 loss/backprop 地址段。
+  repro: issue 附自包含 repro.cpp 与 memcheck 日志。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

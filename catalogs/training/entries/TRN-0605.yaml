@@ -1,0 +1,53 @@
+id: TRN-0605
+legacy_ids: []
+slug: meg_moe_aux_loss_counter_cast_stall
+aliases: []
+title: Megatron MoE aux loss 计数器被 cast 停滞在 256
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: megatron
+    component: MoE aux loss 计数器
+  behavior: MoE aux loss 全局步数计数器 fp32 注册，被 Float16Module cast 成 bf16/fp16：bf16 加到 256 后 256+1 舍回 256 停滞；fp16 溢出 inf
+effect:
+  objects:
+  - 训练信号
+  - 数值结果
+  - 训练轨迹
+  detail: bf16 训练中 aux loss 权重按停滞的 ga_steps 计算而不随步数衰减——路由平衡压力不再按计划退火，长跑（>256 步）的 MoE 负载均衡行为静默偏离配方；fp16 下计数 inf 直接产生 inf aux loss。触发需长累积窗口，短跑/测试不可见
+  visibility: 静默错误
+mitigation:
+  detect: 'bf16 MoE 训练检查 ckpt 里 ga_steps 类全局 buffer 的 dtype 与数值是否停滞在 256；对照 #7081 已修的 local 计数器'
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/8520（open）：补 cast 豁免；含单卡复现。core 评论复核：MEMBER yaox12 两次 /ok to test（CI 放行）+ 作者 inline 已处理，属测试放行非缺陷确认；11-01 起留观 48h 窗口（至 11-02T16:19Z）无维护者缺陷确认，按计划收录
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8520
+  kind: github_pr
+relations: []
+original:
+  mechanism: NVIDIA/Megatron-LM !8520（open 修复载体；10-31 首见留观，48h 无维护者回应本轮按计划收录）。MoE aux loss 的全局步数计数器 buffer 以 fp32 注册，Float16Module 把模块参数与 buffer 一并 cast：bf16 下计数到 256 后 256+1 舍回 256（bf16 256 处 ulp=2）永久停滞；fp16 下计数溢出 inf。#7081 已修复同机制的 local 计数器，这两个全局 buffer 漏网。影响：aux loss 权重按 ga_steps 计算的退火配方失效（长跑>256 步才可见）、fp16 下 aux loss 直接 inf。
+  source: NVIDIA/Megatron-LM https://github.com/NVIDIA/Megatron-LM/pull/8520（open 修复载体）
+  behavior: bf16 精度的 Megatron MoE 预训练跑长一点（几百步以上）时，aux loss 用的全局步数计数器被 cast 成 bf16 后加到 256 就再也不涨——aux loss 权重不再按步数退火，路由负载均衡压力与配方设计静默偏离；fp16 配置下该计数器还会溢出成 inf 直接污染 aux loss。训练不崩、loss 曲线看不出明显异常，只有读 ckpt 里的计数器值或对比路由分布演化才能发现。
+  discovery: 2026-11-03 每日扫描（10-31 留观转收：core 复核 comments=0 维护者缺陷确认无、48h 窗口到点，按 11-01 报告计划收录）
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 数值结果
+        to: 训练信号

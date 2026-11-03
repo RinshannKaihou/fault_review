@@ -1,0 +1,61 @@
+id: TRN-0501
+legacy_ids: []
+slug: opsmath_fmod_remainder_large_magnitude_collapse
+aliases: []
+title: CANN fmod/remainder 大数值域结果塌 0 或 -inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Fmod/Remainder 标量核
+  behavior: fp32/bf16/int32 路径大数值域精度塌陷：|self| 约 2^24 起出错、≥2^25 整片塌 0；other 极小时返回 -inf。fp16/int64/double 正确，910B 走 ops_legacy 内置实现。
+effect:
+  objects:
+  - 数值结果
+  detail: fmod 是 IEEE-754 精确运算，|self|≥2^25 后结果全 0（期望交替 2/1）；16128 点阶梯扫描 other=3 失败 10068、other=5 失败 11883；x=1e30/other=1e-20 返回 -inf 违反 |out|<|other| 与符号不变量。
+  visibility: 静默错误
+mitigation:
+  detect: 对含大数值取模的算子输出与 CPU torch.fmod/remainder 对照（2 的幂×小 other 是敏感探针）
+  fix: 待定（两 issue 均 open；remainder 侧 ops-math 仓库 floor_mod 的 SUPPORT_COMPUTE_UNIT 不含 ascend910b，缺陷在 CANN 内置 ops_legacy 交付路径，仓库源码修复不覆盖 A2）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 训练中 LR schedule（周期取模）、positional wrap、loss mask 计算若在大数值域取模即触发；资料仅对 INT32 声明 [-2^24,2^24] 精度保障，fp32/bf16 无衰减声明
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4181
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4006
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math #4181（2026-10-28，Ascend FmodScalar/InplaceFmodScalar）与 #4006（2026-10-26，InplaceRemainderTensorScalar，910B2+CANN 9.2.0）：fp32/bf16/int32 路径取模在大数值域精度塌陷。#4181 实测：other=3、输入取精确可表示的 2 的幂，fp32/bf16 自 2^25 起结果全 0（期望 2/1/2/1 交替），int32 同边界失败；邻值错位型（other=5）16826368 期望 3 实测 4；x=1e30、other∈{1e-20,1e-30,1e-38} 返回 -inf（0xFF800000），同时违反有界与符号不变量。fp16（上限 65504 够不到边界）与 int64/double 全对——证明是特定实现路径精度问题而非数学取舍。阶梯扫描 x∈[2^22,2^28) 步长 2^14 共 16128 点：other=3 失败 10068、other=5 失败 11883、other=7 失败 12543。#4006 实测 InplaceRemainderTensorScalar fp32 同边界塌 0（2^25~2^28 全 0，fp64/int32 正确），x=1e30/other=1e-20 得 -inf（CPU 7.85e-21）；910B 走 CANN 内置 ops_legacy（仓库 floor_mod 的 SUPPORT_COMPUTE_UNIT 只含 ascend950/350/960dt/960pr），仓库源码不含 ascend910b 实现；资料约束只对 INT32 声明 [-2^24,2^24] 精度保障。fmod 是 IEEE-754 精确运算（余数可精确表示），上述结果属实现缺陷。'
+  source: https://gitcode.com/cann/ops-math/issues/4181 + https://gitcode.com/cann/ops-math/issues/4006
+  behavior: 在 NPU 上对 fp32/bf16（含 int32）大数值做 fmod/remainder 取模：|x| 超过约 2^24~2^25 后结果整片变 0 或邻值错位（期望 2/1 交替得到全 0），除数极小时返回 -inf——余数比除数还大且符号翻转。两段接口返回成功、无任何报错；同输入 fp64/int64 路径正确、GPU/CPU 正确。训练里 LR 周期调度、位置折返、大数值取模的 mask 计算会静默拿到错值。
+  trigger_surface: CANN 9.2.0（910B2 实测；fmod 侧三芯形态未列明）；fp32/bf16/int32 + |self|≳2^24~2^25 或商溢出的极小 other；aclnnFmodScalar/aclnnInplaceFmodScalar/aclnnInplaceRemainderTensorScalar
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：ops-math #4181/#4006 open 无修复动态'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

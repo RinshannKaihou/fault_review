@@ -1,0 +1,66 @@
+id: TRN-0502
+legacy_ids: []
+slug: opstransformer_dense_lightning_kl_grad_ws_overflow
+aliases: []
+title: Lightning Indexer KL 反向 workspace 越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: KL loss 反向 workspace 尺寸
+  behavior: 第一段返回的 workspaceSize 小于 kernel 实际用量，kernel 写到 workspace 之外；越界写无报错（两段接口与同步均返回 0）。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  detail: B=1 S2=5 实测越界写 96 字节（首个偏移 32，连续 3 次一致）；越界量与 S2/B 相关：S2=1→28B、S2=2→56B、S2=5→140B（B=3），S2=8（8 对齐）→0B；mssanitizer memcheck 同配置报 GM 越界写命中本算子。
+  visibility: 静默错误
+mitigation:
+  detect: 按 workspaceSize+4096 分配、尾部预填 0x5A 哨兵执行后回读（issue 附 C++ 一键复现）；mssanitizer --tool=memcheck
+  fix: 待定（issue open 2026-10-28；触发量与 S2/B 相关、S2 8 对齐时不越界——短期可按对齐规避，未核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 与 TRN-0377（SparseFlashMlaGrad 合法基线 GM 越界写）同属反向算子 workspace/访存越界写族、同为合法输入静默越界、均 memcheck 实锤；不同算子与越界对象（本条 workspace、0377 GM），训练 Lightning Indexer KL 反向路径
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6847
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0377
+pattern: PAT-TRN-0056
+original:
+  mechanism: 'cann/ops-transformer #6847（2026-10-28，Ascend950PR + CANN 9.2.0-beta.2，master f3f3135a6104）：aclnnDenseLightningIndexerKLLossGrad 第一段返回的 workspaceSize 比 kernel 实际使用量小，kernel 写到 workspace 缓冲之外，越界写无报错。判定方法：按返回 workspaceSize 申请 ws+4096 字节、多出 4096 预填 0x5A 哨兵、执行后回读，非 0x5A 字节数即越界量。实测 B=1 S1=1 S2=5 N1=1 D=128 maskMode=0 cmpRatio=1 layout=BSND：越界写 96 字节（首个偏移 32），连续 3 次一致非偶发；mssanitizer memcheck 同配置报 out of bounds of size 70 on GM writing in DenseLightningIndexerKLLossGrad_*。触发量与 S2/B 相关：S2=1→28B、S2=2→56B、S2=5→140B（B=3），S2=8（8 对齐）→0B；与 S1、N1、dtype、maskMode、pMode 无关。作者附自包含 C++ 一键复现（ctypes/c++ 两段式调用）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6847
+  behavior: 调用 Lightning Indexer KL loss 的反向算子（Dense 变体）时，kernel 向 workspace 之外的内存写字节（S2 非 8 对齐时 28~140+ 字节）：两段接口与同步全部返回 0、结果数值本身看似正常，但相邻显存内容被静默改写——训练中可破坏同 stream 上其他张量或 allocator 元数据，症状随机且难归因。mssanitizer memcheck 可直接命中；无该工具时用哨兵缓冲复现。
+  trigger_surface: Ascend950PR + CANN 9.2.0-beta.2（master f3f3135a 同在）；aclnnDenseLightningIndexerKLLossGrad；S2 非 8 对齐时越界（S2=1/2/5 实测，S2=8 为 0）
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：ops-transformer #6847 open 无修复动态'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - pattern
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

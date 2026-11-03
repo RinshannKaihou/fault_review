@@ -1,0 +1,52 @@
+id: TRN-0597
+legacy_ids: []
+slug: mindspeed_sp_column_linear_bias_lost
+aliases: []
+title: MindSpeed SP 列并行 forward 丢失 bias 项
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: ascend
+    component: ColumnParallelSeq.forward
+  behavior: ColumnParallelSeq.forward 把 None 作 bias 传给 allgather_matmul 且此前省略独立 bias 加法——传入 bias 整个丢弃；影响 FP8 开与关，非 FP8 GEMM 缺陷
+effect:
+  objects:
+  - 数值结果
+  detail: SP+TP 列并行线性层带 bias 的 forward 输出缺 bias 项；历史 12 个零权重前向用例 2 failed/10 passed，修复后（补一次显式 bias 加法）24/24 通过，非零权重 forward/backward 的 dX/dW/dbias 零容差通过
+  visibility: 静默错误
+mitigation:
+  detect: SP+TP 列并行层非零 bias 的 forward 对照单卡（fix 后 A/B 每 rank 24 PASS）；检查输出对 bias 的偏导 dbias
+  fix: 修复 PR https://gitcode.com/Ascend/MindSpeed/merge_requests/4128（open）：两行源码修复，传入 bias 显式加一次，对齐非 SP 路径；skip_bias_add 语义不变。测试为真实 NPU 双 worker 直调（Ascend950DT/CANN9.1.0/torch2.7.1），官方 CI 与 maintainer review pending
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/merge_requests/4128
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: Ascend/MindSpeed !4128（2026-11-02 open 修复载体）。ColumnParallelSeq.forward passes None as bias to allgather_matmul 但此前省略单独 bias 加法，两行源码修复补一次显式 bias 加法、对齐既有非 SP 路径。缺陷影响 FP8 开与关两种执行（不是 FP8 GEMM 缺陷证据）；backward、collectives、scaling/amax、MC2 实现不变。测试：历史 12 个零权重前向用例 RED 2failed/10passed → GREEN 12passed；新增 12 个非零权重 forward/backward 用例（完整 output/dX/dW/dbias 零容差），FP8 off/on × bias none/zero/nonzero × skip_bias_add off/on，双 worker NPU 直调 A(每 rank 20PASS4expectedFAIL)→B(每 rank 24PASS)。fixture 输入/权重/梯度手工推导（输出 3.75、dW row [1,2,4,8]×16、dbias=8，E4M3 scale 下 [56,112,224,448] 避免 FP8 表示错误）。环境 Ascend950DT/CANN 9.1.0/torch 2.7.1+cpu/torch_npu 2.7.1.post8，非官方 910B/torch2.9.0 CI 矩阵；更广套件在 test_mc2_tflops 处暴露与本修复无关的 std::bad_alloc/aclnnAllGatherMatmulV2/ERR00100（两臂同现，上游原生问题）。当前 NOT MERGE-READY、官方门禁 pending。
+  source: Ascend/MindSpeed https://gitcode.com/Ascend/MindSpeed/merge_requests/4128（open 修复载体）
+  behavior: 在 NPU 上用 MindSpeed 的 TE sequence-parallel 列并行线性层（TP+SP，如 LLM/MLP 列切 first FC）训练时，凡传入非零 bias 的层，forward 输出整体少了 bias 项——模型还能继续跑、loss 正常下降路径看不出异常，但与单卡/非 SP 路径的输出系统性偏移。非零 bias 的 forward/backward 用例修复前 2/12 失败（零权重用例测不出），修复后 24/24 通过。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

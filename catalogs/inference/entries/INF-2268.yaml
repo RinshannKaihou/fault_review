@@ -1,0 +1,49 @@
+id: INF-2268
+legacy_ids: []
+slug: ttmetal_sum_rowmajor_bf16_long_w_halved
+aliases: []
+title: ttnn.sum/mean ROW_MAJOR bf16 长宽归约输出减半
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ROW_MAJOR bf16 W 归约
+  behavior: bf16 ROW_MAJOR 输入沿 W 归约（fp32_dest_acc_en=True 及默认）随宽度漂移，长行输出精确一半：全 1 张量 W=262144 的 sum 得 131072、mean 得 0.5。
+effect:
+  objects:
+  - 数值结果
+  detail: 同一数据 TILE 布局或 float32 输入时误差 0.4% 内；仅 ROW_MAJOR+bf16 组合漂移，长行精确减半（系统性丢半）而非普通舍入噪声。
+  visibility: 静默错误
+mitigation:
+  detect: 全 1 输入沿 W 归约比对期望（sum=W、mean=1）；ROW_MAJOR bf16 长行重点覆盖。
+  fix: 待定（规避：TILE 布局或 fp32 输入；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62662
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal ttnn.sum/ttnn.mean 对 ROW_MAJOR bf16 输入沿 W 归约的系统性缺陷：compute kernel config（math_fidelity=HiFi4、fp32_dest_acc_en=True 及默认）下，bf16 ROW_MAJOR 输入的 W 归约随 W 增大漂移，长行输出精确一半——ones[1,1,32,262144] 的 ttnn.sum(dim=-1) 得 131072（应 262144）、mean 得 0.5（应 1.0）；正随机数据 W=32768 结果 62720（正确 58724，偏高 6.8%）。对照：同数据 TILE 布局或 float32 输入误差 0.4% 内，问题限定在 ROW_MAJOR+bf16 组合的长 W 归约路径。复现环境：issue 附 ttnn.from_torch + init_device_compute_kernel_config 的完整 8 行脚本与实测输出。
+  source: GitHub issue https://github.com/tenstorrent/tt-metal/issues/62662 （open，2026-10-27，含最小复现脚本与数值）
+  behavior: 在 tt 硬件上对 bf16 ROW_MAJOR 张量沿最后一维做 sum/mean（如 pooling、normalization 统计、loss 归约）时，宽行（万级以上元素）结果静默出错：全 1 输入求和恰好只有一半（262144 行和=131072）、mean=0.5；随机数据偏 6.8%。无报错、无 NaN，数值量级看起来仍合理；TILE 布局或 fp32 输入即正确。
+  trigger_surface: ttnn.sum/ttnn.mean dim=-1；ROW_MAJOR 布局 + bf16；长 W（≥32768 明显，262144 精确减半）；fp32_dest_acc_en 开关无关（默认也触发）。
+  signature: ones 输入沿 W sum=W/2、mean=0.5。
+  repro: issue 含 8 行最小脚本（torch.ones + ttnn.from_torch + sum）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

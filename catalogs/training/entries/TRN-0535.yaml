@@ -1,0 +1,57 @@
+id: TRN-0535
+legacy_ids: []
+slug: fa_prefill_310p_fp16_softmax_sum_overflow_inf
+aliases: []
+title: PromptFA 310P fp16 归一化前溢出 Inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: prompt FA UpdateOutput
+  behavior: 310P fp16 高性能路径先把未归一化 fp32 累加 O cast 成 fp16 再除，均匀 softmax 时 O=n*35 超 fp16 上限溢出 +Inf
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 长序列均匀注意力下注意力输出变 +Inf（tiling key QINT8_KVFP16_OUTBF16_BSH_HIGHLEVELAPI_MDL_310TILING 触发路径）
+  visibility: 数值异常
+mitigation:
+  detect: 均匀 softmax 长 seq fp16 路径对拍 fp32 参考；监控注意力输出 Inf
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14827（open）：先广播 l 在 fp32 域完成 O/l 归一化再 cast 回 fp16
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14827
+  kind: gitcode_pr
+relations: []
+pattern: PAT-TRN-0059
+original:
+  mechanism: CANN ops-transformer PromptFlashAttention 310P（x310）fp16 HighPerformance 场景（tiling key QINT8_KVFP16_OUTBF16_BSH_HIGHLEVELAPI_MDL_310TILING）派发到 PromptAttentionPrefill -> UnpadFlashAttentionCommon。原 UpdateOutput 先把未归一化的 fp32 累加结果 O 直接 cast 成 fp16，再在 fp16 域做除法（除以 softmax 行和 l）。softmax 均匀时 O=n*35（每元素值 35 的均匀分布），n=1872 时 65520 > fp16 上限 65504，cast 时溢出为 +Inf，归一化后输出 Inf。修复 PR !14827（open）：先广播 l 并在 fp32 域完成 O/l 归一化，最后 cast 回 fp16，消除中途溢出。
+  source: https://gitcode.com/cann/ops-transformer/merge_requests/14827
+  behavior: Ascend 310P fp16 高性能模式跑 PromptFlashAttention prefill，序列长且注意力近似均匀（约 ≥1872 长度、值域 ~35）时注意力输出 +Inf：训练 loss 变 Inf/NaN 或模型输出立即劣化；短序列或非均匀分布不触发，问题随 tiling 路径切换出现，难定位
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - pattern

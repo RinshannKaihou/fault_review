@@ -1,0 +1,58 @@
+id: INF-2287
+legacy_ids: []
+slug: ops_transformer_fa_arch92_optionaldn_pse_dropout_skipped
+aliases: []
+title: FA arch92 optionalDn 漏算 PSE 与 dropout
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ProcessVec1Dn
+  behavior: arch92 AnalyzeOptionalDn 允许 pse_type=2/3 与内部 dropout 进 DN kernel，但 ProcessVec1Dn 不读 PSE、不用 dropout，attentionOut 出错。
+effect:
+  objects:
+  - 数值结果
+  detail: 实测对照（fp16，S1=507，D=219）：pse_type=2+keep_prob=0.6+sparse_mode=2 失败；keep_prob=1+sparse_mode=2 仍失败；sparse_mode=0+keep_prob=1 通过；代码原因为静态检查结论。
+  visibility: 静默错误
+mitigation:
+  detect: pse_type=2/3、keep_prob<1 组合对拍 golden（attentionOut/softmaxMax/softmaxSum）；arch92 DN 选择条件日志。
+  fix: 修复方案见关联 PR https://gitcode.com/cann/ops-transformer/merge_requests/14821 （open：arch92 普通/变长 tiling 的 AnalyzeOptionalDn 对 hasPse/hasDropOut 场景回退 ND，待 DN 内核支持后再放开；含回归方案，未合入）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6868
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6866
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14821
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer FlashAttentionScore 在 arch92（Ascend 960DT，DAV_9201）optionalDn 路径的精度缺陷。仓库版本 2350f90f7f5ce6a430607ed0270a39b468563cdf：tiling 的 FlashAttentionScoreTilingBasicV121::AnalyzeOptionalDn 允许左上 causal 压缩 mask、pse_type=2/3 及内部生成 dropout mask 的场景将 optionalDn 置 true；进入 ProcessVec1Dn 后该函数既不读取内部 PSE 的 slope、不计算位置偏移（对照 ProcessVec1Nd 调用 ComputeInnerPseOffset 传参），也不调用 FANoQuantBlockVecTrain::GenerateDropoutMaskDn 生成/应用 dropout mask。实测用例（fp16，B/N1/N2=6/12/12、S1/S2=507/507、D/Dv=219/99、BSH、pse_type=2 提供 slope、提供 attention mask）：keep_prob=0.6+sparse_mode=2 失败、keep_prob=1+sparse_mode=2 仍失败、keep_prob=0.6+sparse_mode=0 仍失败、sparse_mode=0+keep_prob=1 通过——前三者与「PSE slope 未算」可解释（前提 slope 非零影响分数）；sparse_mode=0+keep_prob=0.6 的失败独立未归因，不能全归 DN。静态分析限于无 NPU 环境执行 kernel 修改验证，失败现象由实际用例反馈。修复 PR !14821：arch92 普通/变长 tiling 的 AnalyzeOptionalDn 对 hasPse/hasDropOut 回退 ND，并建议对 pse_type=2/3×causal×keep_prob×内外部 dropout×尾块做 NPU 回归与同 seed/offset mask 一致性检查。
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6868 （open，2026-10-29，实测对照+静态分析）；同题分析帖 https://gitcode.com/cann/ops-transformer/issues/6866 ；修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14821 （open）
+  behavior: 在 Ascend 960DT 上调用 FlashAttentionScore 且配置 pse_type=2/3（带 PSE slope）或 keep_prob<1（内部 dropout）等组合时，若 tiling 选择了 optionalDn 路径，attention 输出精度静默不达标（与 golden 比对失败）；接口正常返回，无报错。keep_prob=1 且不用 PSE 的组合不受影响，问题只在特定特性组合被 DN 路径接收但 DN 内核未实现相应计算时出现。
+  trigger_surface: Ascend 960DT（arch92/DAV_9201）；FlashAttentionScore（fp16，BSH，S1/S2=507、D=219 类形状）；pse_type=2/3 且/或内部 dropout（keep_prob<1）；左上 causal 压缩 mask 等被 AnalyzeOptionalDn 接纳的场景；训练与推理 attention 均可触发。
+  signature: pse_type=2+keep_prob=1+sparse_mode=2 失败而 sparse_mode=0+keep_prob=1 通过的对照矩阵。
+  repro: issue 6866/6868 附完整用例参数与对照表；PR 14821 附回归方案。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

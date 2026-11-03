@@ -1,0 +1,65 @@
+id: TRN-0472
+legacy_ids: []
+slug: deepspeed_autotp_mq_kv_replica_drift
+aliases: []
+title: DeepSpeed AutoTP 多查询 K/V 副本梯度不归约致漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: AutoTP fused QKV 切分
+  behavior: _bigcode_type_transpose 给每 rank 返回其 query 切片拼接整块共享 K/V 行；各 rank 对复制 K/V 行算出部分梯度，column-parallel 的权重梯度留本地
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: TP>1 下 c_attn.weight/bias 的 K/V 行在各 rank 间漂移：实测 TP2 一步后 rank0/rank1 的 K/V 行梯度与单卡相对误差 0.81/0.61（rank 求和后 2.7e-7 证明梯度本可对齐）；训练静默发散于单卡结果。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 TP>1 与单卡的 c_attn K/V 行梯度；各 rank K/V 行参数逐 step all-gather 对比
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8928（merged 2026-10-30T01:04:53Z，issue 同刻 closed）；发布版本未核实
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8927
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'DeepSpeed #8927（2026-10-27）：AutoTP 训练（tensor_parallel.autotp_size>1）下 multi-query GPTBigCode（StarCoder/SantaCoder 风格，multi_query=True）与单卡训练的不是同一个模型且无任何报错。deepspeed/module_inject/fusedqkv_utils.py 的 _bigcode_type_transpose 执行 `torch.cat((split_q[gpu_index], kv), dim=0)`——每 rank 拿自己的 query 行切片加整块共享 K/V。各 rank attention 只用自身 query 头，对复制 K/V 行算的是部分梯度；fused_LinearLayer 是 column-parallel，权重梯度留本地，K/V 部分无人跨 TP 组求和。实测 TP2 一步：rank0 K/V 行梯度 vs 单卡相对误差 0.81、rank1 0.61，两 rank 求和后 2.7e-7（证明求和即可对齐）；c_attn.weight 与 c_attn.bias 均受影响。'
+  source: https://github.com/deepspeedai/DeepSpeed/issues/8927
+  behavior: GPTBigCode 类 multi-query 模型在 DeepSpeed AutoTP（TP>1）下训练时，各 rank 的 c_attn K/V 权重从第一步起朝不同方向更新（一步后梯度与单卡差 61%~81%），训练全程无报错但训出的权重与单卡不一致、副本间互相漂移；loss 曲线本身看不出异常。
+  trigger_surface: DeepSpeed AutoTP（tensor_parallel.autotp_size>1）+ GPTBigCode multi_query=True（StarCoder/SantaCoder 类）；c_attn.weight/bias
+  discovery: 2026-10-28 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：DeepSpeed #8927 open；共享 KV 梯度归约修复 PR 未出现（搜索窗口内无）'
+  - '2026-10-31 2026-10-31 回访：issue #8927 closed（2026-10-30T01:04:53Z）、修复 PR #8928 (Sum GPTBigCode''s shared key/value gradient across tensor-parallel ranks) 同刻 merged。修复合入主库；发布版本未核实。'
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  - date: '2026-10-31'
+    fields:
+    - original.notes
+  - date: '2026-10-31'
+    fields:
+    - mitigation.fix

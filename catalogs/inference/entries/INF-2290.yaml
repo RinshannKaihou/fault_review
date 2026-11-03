@@ -1,0 +1,51 @@
+id: INF-2290
+legacy_ids: []
+slug: ops_math_linalg_cross_fp64_fma_residual
+aliases: []
+title: aclnnLinalgCross fp64 叉积平行向量非零且溢出区返回 inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: linalg_cross fp64 叉积实现
+  behavior: fp64 通路疑似以 FMA 实现叉积（z0=fma(x1,y2,-round(x2*y1))），乘积舍入残差被保留；AICORE op_kernel/cross.h 为 AscendC::Mul+Sub，两乘积位相同时精确相消为 0。
+effect:
+  objects:
+  - 数值结果
+  detail: self=other 逐字节相同时 fp64 返回 e-18 量级非零残差（fp32 等其他 dtype 返回精确 0）；|x|>1.34e154 溢出区 fp64 返回 ±inf 而同形态 fp32 返回 NaN，下游传播语义不同；|x|=1e154 时残差实测 6.29e291。接口返回 0。
+  visibility: 静默错误
+mitigation:
+  detect: cross(x,x) 断言为 0；fp32/fp64 对照同数据输出；溢出区检查 inf vs NaN 语义。
+  fix: 待定（未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4272
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math aclnnLinalgCross 在 fp64 通路偏离叉积定义式（issue #4272，910B2/CANN 9.2.0 实测）：(1) self 与 other 逐字节相同时数学上 cross(x,x)≡0，fp64 返回 [3.33e-18, 1.67e-18, -1.67e-18]（输入 [0.1,0.2,0.3]），而同数据 fp32/fp16/bf16/complex64/complex128 全部返回精确 0；[1,2,3] 这类乘积可精确表示的输入 fp64 返回 0，说明现象与乘积舍入残差有关。(2) |x|>1.34e154 时 x*x 在 fp64 溢出，定义式应 inf-inf=NaN，实测返回 -inf（同形态 fp32/bf16 返回 NaN）。报告者机理判断：两条现象与「FMA 实现叉积 z0=fma(x1,y2,-round(x2*y1))」一致——乘积舍入残差被保留（现象 1）、FMA 乘积中间态不溢出只有 ±inf 参与运算（现象 2）；AICORE 通路 op_kernel/cross.h 为 AscendC::Mul+Sub，两乘积位相同时精确相消为 0。残差随量级增长：|x|=1e154 实测残差 6.29e291。两段式接口返回 0 无告警。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4272 （open，2026-10-29 创建；含自包含 C++ 复现与逐 dtype 对照表）
+  behavior: 对 fp64 张量做 linalg_cross：两条同数据向量求叉积时结果不是 0 而是 1e-18 量级的小残差（fp32 等其他 dtype 同数据是精确 0）；元素量级超过 1.34e154 时输出 -inf 而 fp32 同场景输出 NaN，两者在下游除法等传播行为不同。接口不报错，依赖 cross(x,x)==0 或平行判定的几何计算（共面判定、退化三角形面积、法向量共线检测）会拿到非零结果且残差随输入量级增长到 6e291。
+  trigger_surface: cann/ops-math linalg_cross；fp64；self 与 other 平行/相同、或 |x|>1.34e154 溢出区；共面/法向量等几何判定路径。
+  signature: cross(x,x) fp64 ≠0 而 fp32 =0；溢出区 fp64 返回 ±inf 而非 NaN。
+  repro: issue 附自包含 repro.cpp（910B2/CANN 9.2.0 实测输出表）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

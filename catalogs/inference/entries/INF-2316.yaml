@@ -1,0 +1,70 @@
+id: INF-2316
+legacy_ids: []
+slug: ops_transformer_compressor_autograd_grad_garbage
+aliases: []
+title: compressor 公开入口 autograd 梯度全错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: compressor autograd 入口
+  behavior: torch.autograd.Function.forward 内部强制 no_grad，grad_enabled 判据结构性恒 False，kernel 不写中间量，backward 消费未初始化显存得垃圾梯度。
+effect:
+  objects:
+  - 梯度
+  detail: 910_93 实测：直调内部 op 三梯度 rel 2.5e-3~3.5e-3（正常），公开入口 rel 1.1~2.8 或大形状 nan；一行补丁后全绿。pytest 三通路均直调未覆盖。
+  visibility: 静默错误
+mitigation:
+  detect: 公开入口 vs 内部 op 的 backward 梯度对照（小形状即可暴露 rel>1）；为大形状补 nan 检查。
+  fix: 待定（issue 报告一行补丁验证全绿，未见修复 MR 合入记录）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6962
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15041
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0563
+original:
+  mechanism: 'cann/ops-transformer compressor 公开入口经 _CompressorFunction 反向梯度静默全错（issue #6962，A3 实测）：位置 attention/compressor/torch_extension/compressor.py:368，引入提交 fa4364547（MR !13855）。根因：torch.autograd.Function.forward 内部强制 no_grad，`grad_enabled = torch.is_grad_enabled() and any(t.requires_grad...)` 结构性恒 False → kernel 不写 softmax_score/kv 中间量 → backward 消费未初始化显存 → 经 cann_ops_transformer.compressor() 训练态梯度为垃圾值/nan，无任何报错。改动前（父提交 3d40e5645）公开入口为普通函数、判据 grad_enabled = x.requires_grad，行为正确。验证（910_93，B=1/S=1024 与 131072、H=5120、D=512、cmp_ratio=2、bf16）：直调 _compressor_forward(grad_enabled=True)+_compressor_backward 三梯度 rel 2.5e-3~3.5e-3（=权重 bf16 量化噪声正常）；走公开入口 rel 1.1~2.8、大形状 nan；打一行补丁后公开入口两形状全绿。现有 pytest 三通路均直调内部 op，未覆盖公开入口 autograd 路径。'
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6962 （open，2026-10-30 创建；含源码行、引入提交、对照验证数据）
+  behavior: 用 cann_ops_transformer.compressor() 公开接口（Python torch extension）做训练：前向正常，反向拿到的梯度是垃圾值（相对误差 1.1~2.8，而正确实现应为 1e-3 量级）或直接 nan，无任何报错；换大形状（S=131072）必 nan。用内部 _compressor_forward 直接调用则完全正常。模型接入该入口后训练不收敛/梯度异常，且因为前向无恙、测试也不走这条路径，定位非常困难。
+  trigger_surface: cann/ops-transformer compressor torch_extension 公开入口；训练态 backward；MR !13855 之后版本；A3 实测。
+  signature: 公开入口 backward rel 1.1~2.8/nan vs 内部直调 2.5e-3~3.5e-3。
+  repro: issue 附两形状对照实测与一行补丁验证。
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - 2026-10-31 2026-10-31：修复 MR !15041（open）补充两个新证据面——公开入口 Python 判据 torch.is_grad_enabled() 在 Function.forward 内结构性恒 False（fa4364547 引入，父提交正确）；arch35/92 GenTilingKey 判 OPTIONAL.Bool 指针恒非空致 GRAD_ENABLED 位恒 1，推理态白写 softmax_score/kv（S=131072/bf16/D=512 约 536MB）；两缺陷互相掩盖须同一笔修复（3 文件 3 行）
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - relations
+  - date: '2026-10-31'
+    fields:
+    - evidence
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 算子/内核

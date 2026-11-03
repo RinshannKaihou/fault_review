@@ -1,0 +1,55 @@
+id: INF-2210
+legacy_ids: []
+slug: sglang_dspark_penalty_ignored
+aliases: []
+title: SGLang DSPARK/DFLASH 推测解码静默忽略采样惩罚项
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: DFLASH 家族惩罚器状态累积
+  behavior: prepare_for_decode 在惩罚累积前移交推测解码返回，DFLASH/DSPARK 分支从不累积生成 token 进 penalizer，verify 调整又忽略惩罚 buffer。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: repetition_penalty 1.0 vs 2.0 vs frequency_penalty 2.0 输出逐字节相同；越界值仍被 SamplingParams.verify() 拒绝（400），证明参数到达但路径不生效；presence_penalty/min_tokens 同路径同影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/46752
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang main（db90f58 与 6393e66 同码）+ Qwen3-4B + DSPARK block7 复现。ScheduleBatch.prepare_for_decode（managers/schedule_batch.py:3736）移交推测解码后在惩罚累积（:3769-3770）前返回：dflash 家族从不累积生成 token 进 penalizer；DFLASH verify 时 logits 调整另忽略预计算惩罚 buffer。EAGLE 路径 eagle_prepare_for_decode() 正确累积故不受影响。实测：temperature 0、贪心逐字节对比 repetition_penalty 1.0/2.0/frequency_penalty 2.0 三者输出完全相同；rep=100 被 SamplingParams.verify() 400 拒绝（参数确实到达 SamplingParams，非网关剥离）；vLLM 同 checkpoint 对 rep=2.0 有反应（输出劣化）。--speculative-algorithm none 的 A/B 未跑（共享端点）。
+  source: https://github.com/sgl-project/sglang/issues/46752（字节级对照 + 参数到达证明）
+  behavior: 用 --speculative-algorithm DSPARK/DFLASH 服务时，请求里的 repetition_penalty/frequency_penalty/presence_penalty/min_tokens 完全无效：惩罚值从 1.0 调到 2.0 输出一字不变，模型重复内容不受抑制；无任何告警，用户以为惩罚已生效。
+  trigger_surface: SGLang main/v0.5.2x + --speculative-algorithm DSPARK 或 DFLASH + 请求级采样惩罚参数；EAGLE 路径不受影响。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 输出分布

@@ -1,0 +1,69 @@
+id: TRN-0564
+legacy_ids: []
+slug: opsnn_bn3dtrainingreduce_fp16_kahan_loss
+aliases: []
+title: BN3DTrainingReduce FP16 归约丢补偿量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BN3DTrainingReduce 归约
+  behavior: FP16 短行（N≤64、R0=1）直接累加无补偿；分核路径只传 FP32 部分和、补偿量在根核合并前丢失——跨核相消输入下求和/平方和精度塌陷
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend 950 FP16 下，53×5 固定输入稳定超三方 L1 RMSE 比值门槛（比值超判据 2~3 倍，相消求和差 2e-3 量级）；相消输入 NPU=-1 vs CPU/GPU=-0.998046875；仓内 Golden 平方和另有独立参考累加误差
+  visibility: 静默错误
+mitigation:
+  detect: FP16 相消输入（±1 对称）对拍 GPU；短行 N∈[53,64] RMSE 比值回归
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13131（merged：短行复用 TwoSum 补偿、分核 K=8 双链并传主值+补偿量；扩展 32 条 30 PASS/2 FAIL（1 ULP 既有问题未解））
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7762
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13131
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2308
+pattern: PAT-TRN-0062
+original:
+  mechanism: 'cann/ops-nn #7762（2026-10-30，closed）+ 修复 MR !13131（merged）：BN3DTrainingReduce 在 Ascend 950 上的 FP16 短行平方和与分核归约精度损失。短行分支 N≤64、R0=1 时直接累加，53×5 固定输入稳定超三方 L1 RMSE 比值门槛；分核路径只传 FP32 部分和，补偿量在根核合并前丢失，同 shape 相消输入（[2,1,4682181,2]，前 65536 元素 1、中段 -1、首元 2^-9）NPU=-1、CPU/GPU=-0.998046875。仓内 Golden 的 Promote 平方和另有独立参考累加误差（[2047,1]×5 原 FP32 并行和 20951048 vs 精确 20951050）。修复：短行复用 TwoSum 补偿路径、分核 K=8 平方和双链、每核主值+补偿量一起传根核；Golden 复用 Torch 排序 cumsum。验证 GEIR14/14、Host UT 60/60、跨核相消 RMSE 比值 32/16/16→1；扩展 32 条冻结输入 30 PASS/2 FAIL（shape (1,1,1048575)/(1,4,1048575) 平方和 1 ULP 既有问题，基线同错，未解）。BN3DTrainingReduce 是视觉 BN3D 训练归约算子，训练侧统计量（mean/var）直接受害。'
+  source: https://gitcode.com/cann/ops-nn/issues/7762 + 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13131（merged）
+  behavior: NPU（Ascend 950）FP16 BN3D 训练里，短行（每核元素 ≤64）与跨核相消输入（正负对称、和接近 0）的均值/方差统计量精度显著差于 GPU（RMSE 比值超判据 2~3 倍，相消求和差 2e-3 量级）；BN 归一化用错统计量，训练 loss 无报错但数值偏离参考，FP32/BF16 正常。
+  trigger_surface: CANN BN3DTrainingReduce + FP16 + Ascend 950 + 短行(N≤64,R0=1)或跨核相消输入
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - '2026-11-01 回访 2026-11-01：同算子另一触发面 #7831（FP16 单 tile 融合路径块参数 8 丢低位，RMSE 比值 1.732 超 1.5 门槛，修复 MR !13229 open 块参数 8→2）本轮独立判定为 var→TRN-0573；!13131 merged 状态不变，发布版本未核实。'
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - original.notes
+  - date: '2026-11-01'
+    fields:
+    - pattern

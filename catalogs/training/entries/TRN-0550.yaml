@@ -1,0 +1,53 @@
+id: TRN-0550
+legacy_ids: []
+slug: deepspeed_sequence_tiled_compute_inplace_grad_division
+aliases: []
+title: SequenceTiledCompute 原地除共享入梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: TiledCompute backward
+  behavior: SequenceTiledCompute.backward 对传入梯度原地 /= shards：tiled+other 复合 loss 下 autograd 把同一张量发给两分支，另一项梯度也被除 shards 倍
+effect:
+  objects:
+  - 梯度
+  detail: 把 sequence_tiled_compute 输出与任何其他项相加且 output_reduction=mean 时，另一项梯度被静默除以 shards；TiledMLP 不改写入梯度、TiledFusedLogitsLoss 只除自己的张量，无此缺陷；CPU 测试修前失败、修后 26 通过
+  visibility: 静默错误
+mitigation:
+  detect: 对 tiled+other 复合 loss 与单卡参考对拍梯度；检查 autograd 传入梯度是否被原地修改
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8960（open，改为 out-of-place 除法，未合入）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8960
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed PR #8960（2026-10-30，open）：sequence_tiled_compute(..., output_reduction="mean") 会重缩放加到同一 loss 的其他项梯度。原因：SequenceTiledCompute.backward 对 autograd 传入的 incoming_grad 执行 incoming_grad /= shards（原地除）；对 tiled + other 复合 loss，两个分支收到同一张量，另一项的梯度也被除以 shards。修复：out-of-place 除。TiledMLP 从不改写入梯度、TiledFusedLogitsLoss 除自己的张量，均无此缺陷。测试：CPU（Apple M2 Pro, torch 2.11.0）新测试把 tiled 结果与 x.sum() 两种顺序求和，修前 max diff 0.75 失败、修后 26 通过。未覆盖 GPU、DistributedTest、ZeRO 与多 rank 序列并行。'
+  source: https://github.com/deepspeedai/DeepSpeed/pull/8960
+  behavior: 训练 loss 里把 sequence_tiled_compute 输出与任何其他项相加（如正则、辅助 loss）且 output_reduction=mean 时：另一项的梯度被静默除以 shards（序列切分数），复合 loss 的梯度权重失衡，训练仍正常运行、无报错，与单卡参考对拍梯度才能发现（实测偏差 0.75 量级）。
+  trigger_surface: DeepSpeed sequence_tiled_compute（Ulysses ALST 序列切分）+ output_reduction=mean + 复合 loss 相加
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

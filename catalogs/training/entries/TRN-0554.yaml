@@ -1,0 +1,55 @@
+id: TRN-0554
+legacy_ids: []
+slug: opsnn_swiglu_small_out_oob_write
+aliases: []
+title: SwiGlu 偏小 out 越界写 64B
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: swi_glu out 形状校验
+  behavior: out 形状小于由 x 推导的输出形状时无任何校验：GetWorkspaceSize 与 Execute 均返回 0，kernel 仍按 x.numel()/2 写 out 的 GM 地址越过缓冲尾部
+effect:
+  objects:
+  - 数值结果
+  detail: x=[2,32] dim=-1、out=[2,8]（16 元素，应 32）：msSanitizer illegal write of size 64（SwiGlu_2_high_performance_0）；out 偏大时只写前段、其余保持调用前内容，同样 rc=0；910B2/CANN 9.2.0
+  visibility: 静默错误
+mitigation:
+  detect: msSanitizer memcheck；out numel 与推导值断言
+  fix: 待定（issue open：第一段应校验 out 与推导形状一致）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7760
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0524
+pattern: PAT-TRN-0058
+original:
+  mechanism: 'cann/ops-nn #7760（2026-10-30，Atlas A2 910B2、CANN 9.2.0 version 26.1.1、activation/swi_glu）：aclnnSwiGlu 在 out 张量形状小于由 x 推导的输出形状时不做校验：两段接口返回 0，kernel 按 x 推导长度（x.numel()/2）写 out 的 GM 地址，越过 out 缓冲区尾部。实测 x=fp32[2,32] dim=-1、out=fp32[2,8]：msSanitizer 报 illegal write of size 64（SwiGlu_2_high_performance_0）；写回的前 16 元素与正确输出一致，多出 16 个 fp32（64B）落分配外。out 偏大时只写前 32 元素、其余保持调用前内容，同样无报错。含完整 C++ 复现。同族越界写：#7756（SquaredRelu）、#7654（GeluMul 族，INF-2261）。'
+  source: https://gitcode.com/cann/ops-nn/issues/7760
+  behavior: NPU 调用 SwiGlu 时 out 张量分配偏小（形状推导错误、复用缓冲过小）：接口成功返回、前段结果正确，但多出的输出越过缓冲区写到相邻显存（实测 64B 越界写）；out 偏大时后半保持旧值。两种情况都无报错，相邻张量被静默破坏，sanitizer 才能抓到。
+  trigger_surface: CANN aclnnSwiGlu + out 形状小于推导输出；910B2/CANN 9.2.0
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

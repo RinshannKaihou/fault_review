@@ -1,0 +1,56 @@
+id: INF-2302
+legacy_ids: []
+slug: vllm_ascend_mooncake_register_buffer_nonzero_silent
+aliases: []
+title: vllm-ascend Mooncake 注册失败不中止初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: mooncake_backend 注册
+  behavior: register_buffer 在 store 返回非零时仅记日志并继续，正常返回后 KVPoolWorker 照常启动传输线程；Store-owned TE 路径受影响，GlobalTE 路径会抛异常。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 注册失败（-600）后服务照常起来，未注册 KV 区域参与传输，失败推迟到实际转移时；mock 注入与 b03 真实 buffer 注入均验证两路径正常返回。
+  visibility: 静默错误
+mitigation:
+  detect: 启动后扫描 'Failed to register buffer via store' 日志并 fail fast；对已注册区域做一次回读校验。
+  fix: 待定（issue 建议非零返回码上抛异常对齐 GlobalTE 路径）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20391
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend MooncakeBackend.register_buffer() 在 store.register_buffer(ptr,length) 返回非零时只打日志、继续注册后续 buffer 并正常返回（issue #20391，v0.32.0.dev0+ge8a6393）：受影响路径为 Store-owned Transfer Engine 注册（_use_store_independent_te=true 或 _prefetch_conf.use_dict_setup=true），共享 GlobalTE 注册路径失败已会抛异常。KVPoolWorker.register_kv_caches() 因此在请求的 KV cache 区域注册未完成的情况下进入 _start_kv_transfer_threads()。验证：纯标准库提取受测 revision 的 register_buffer 方法并注入非零 Store 返回码（mock 地址不进 native SDK），两条路径均 returned normally；另在 b03 用真实 Ascend 910B3 buffer 注入返回码验证同行为。后果：注册失败的 KV 区域参与传输时才暴露错误，启动阶段完全吞掉失败信号，部署带病起服务。属「fail-loud 被吞成延迟失败」，单独占号理由：KV 传输可用性直接受损且修复方向明确（对齐 GlobalTE 抛异常）。'
+  source: GitHub issue https://github.com/vllm-project/vllm-ascend/issues/20391 （open，2026-10-30 创建；附 AST 提取复现与 b03 实测）
+  behavior: 使用 Mooncake Store 的 KV 传输部署中，若 buffer 注册失败（Store 返回非零错误码），后端只在日志里记一行 'Failed to register buffer via store'，不抛异常、不中止：服务正常完成初始化并启动 KV 传输线程，未注册成功的 KV 内存区域随后参与传输，错误推迟到实际传输时才爆发（或表现为传输异常/慢）。启动期任何依赖「初始化成功=注册成功」的检查都会被骗过。
+  trigger_surface: vllm-ascend ascend_store/mooncake_backend；_use_store_independent_te 或 use_dict_setup 路径；Store register_buffer 返回非零；KV pool 初始化。
+  signature: 启动日志含 'Failed to register buffer via store ... ret=-600' 但进程继续运行。
+  repro: issue 附标准库 mock 注入复现与 910B3 真实 buffer 验证。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 报错
+        to: 静默错误

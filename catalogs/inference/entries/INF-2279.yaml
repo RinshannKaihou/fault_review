@@ -1,0 +1,57 @@
+id: INF-2279
+legacy_ids: []
+slug: ops_transformer_gbsa_grad_s1_1_dquery_nonzero
+aliases: []
+title: BlockSparseAttentionGrad 三边界数值错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: block_sparse_attn_grad
+  behavior: S1=1（causal 单列）dQuery 应为 0 但非 0；BSND N1>1 按资料形状传 lse 算错；追加 cnt=0 空块改变第一块梯度——三个独立边界/布局处理错误。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 三个 issue 实测：#6905 S1=1 max|dQ| 6.x 量级；#6904 BSND N1>1 max|dQ| 1.26e-4（实现与资料 lse 形状约定不一致）；#6900 空块追加改变已有块梯度 max|dQ| 5.27e-4。
+  visibility: 静默错误
+mitigation:
+  detect: S1=1 causal 单列用例断言 dQuery==0；BSND N1>1 与空块追加用例对拍参考实现。
+  fix: 待定（未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 同族三 issue（#6905/#6904/#6900）合并收录；另有同算子文档/错误码类（#6906/#6862/#6858/#6863）属校验契约族未并入。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6905
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6904
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6900
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer 的 aclnnGenericBlockSparseAttentionGrad 三个数值缺陷（独立 issue 同算子）：1) #6905：S1=1（causal 单列）时 dQuery 数学上应为 0（无可见 key 参与该 query 的梯度），实测非 0，max|dQ| 6.x 量级；2) #6904：BSND 且 N1>1 时按资料声明的 lse 形状传入会算错，max|dQ| 1.26e-4——实现与资料对 lse 形状的约定不一致；3) #6900：多 KV 块时追加 cnt=0 的空块（不应改变结果）会改变第一块梯度，max|dQ| 5.27e-4。三者均为块稀疏 attention 反传的边界/布局处理错误，错误量级远超舍入，影响对应 query/权重梯度。'
+  source: GitCode issues https://gitcode.com/cann/ops-transformer/issues/6905 、https://gitcode.com/cann/ops-transformer/issues/6904 、https://gitcode.com/cann/ops-transformer/issues/6900 （均 open，2026-10-29，各含实测 max|dQ| 与对照条件）
+  behavior: 使用块稀疏 attention 的反传（如 MoE/长序列训练、块稀疏微调）时：单 query 因果列（S1=1）的 dQuery 输出非零垃圾（应严格为 0）；N1>1 的 BSND 布局按官方资料传 lse 时梯度错 1.26e-4 量级；追加空 KV 块这类不应有数值影响的操作也改变已有块的梯度（5.27e-4）。全部无报错，梯度静默偏差。
+  trigger_surface: cann/ops-transformer generic_block_sparse_attention_grad；S1=1 causal、BSND N1>1 lse 形状、追加 cnt=0 空块三类触发；训练反传。
+  signature: S1=1 断言 dQuery==0 失败；空块追加前后同块梯度 diff>0。
+  repro: 三 issue 各附触发条件与实测 max|dQ|。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

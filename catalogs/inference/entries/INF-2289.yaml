@@ -1,0 +1,63 @@
+id: INF-2289
+legacy_ids: []
+slug: ops_nn_fused_ce_loss_max_sum_empty_vocab_silent
+aliases: []
+title: FusedCEWithMaxSum V=0/行数不校验错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: fused_cross_entropy_loss
+  behavior: V=0 时 InitParams() 不申请 buffer，BtCompute() 无条件搬运使 log(sumExp) 算成 log(logitsMax)；行数不校验致少写/越界；可选 input/weight 被静默忽略。
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: 上板验证（910B3/CANN 9.3.0）：修复前 5 项负向用例（V=0、行数偏小/偏大、input/weight 非空）全放行返回 0；正向 lossOut 与理论值逐点一致。
+  visibility: 静默错误
+mitigation:
+  detect: V=0 / vocab 行数与 logitsMax 不一致 / 传了 input/weight 可选输入的负向用例（修复后应 161002/161001）。
+  fix: '修复 PR https://gitcode.com/cann/ops-nn/merge_requests/13086 （open：op_api CheckShape 三项校验 + tiling 兜底 + kernel vLen<=0 分支补齐 buffer + 文档错误码补齐；6 负向用例上板验证，Closes #7446/#7447/#7472/#7473）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13086
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn 的 fused_cross_entropy_loss_with_max_sum（融合交叉熵，训练 loss 路径）四个关联缺陷（PR !13086 修复，对应 issue #7446/#7447/#7472/#7473）：1) 词表维 V=0 时 kernel InitParams() else 分支不申请 logitsMaxQue_/logQue_ buffer，BtCompute() 无条件搬运导致 log(sumExp) 被算成 log(logitsMax)，lossOut 静默错值；2) vocab 第 1 维与 logitsMax 第 1 维不一致时 kernel 按 vocab 行数切行外推 lossOut 偏移，静默少写或越界写；3) inputOptional/weightOptional 非空被静默忽略（调用方以为传了 label smoothing/weight 生效，实际丢弃）；4) 文档 161001 未说明 vocab 非空时 softMaxOutOptional 必填。修复：op_api CheckShape 新增 vocab 首维一致性、V=0、input/weight 非空三项校验（161002）；tiling Init() 补 bt>0/v>0/bt 对齐、TilingForMenory() 补 bt<=0 拦截；kernel vLen<=0 分支补齐 buffer 根因修复；docs 中英文补错误码。上板验证（Atlas 910B3 / CANN 9.3.0，vendor custom 包 + 修复源码直编探针对照内置基线）：6 负向用例全返回预期 161002/161001，内置未修复基线前 5 项均放行（返回 0）与 issue 静默行为一致；正向 bt=4/V=8 lossOut 与理论值逐点一致。'
+  source: '修复 PR https://gitcode.com/cann/ops-nn/merge_requests/13086 （open，2026-10-29，含四缺陷机制与上板验证矩阵；Closes #7446/#7447/#7472/#7473）'
+  behavior: 训练/评测使用该融合交叉熵算子时：词表维被错误传成 0 的话 loss 数值静默算错（log 项取错来源），训练信号失真但无报错；vocab 与 logitsMax 行数不一致时 loss 输出少写或越界写相邻显存；传了可选 input/weight 输入会被静默忽略（以为生效的加权/平滑实际没起作用）。三类都返回成功码，直到训练曲线异常才可能被发现。
+  trigger_surface: cann/ops-nn fused_cross_entropy_loss_with_max_sum（910B 内置及仓版本）；V=0、vocab/logitsMax 行数不一致、inputOptional/weightOptional 非空三类非法/边界输入；训练与评测 loss 计算路径。
+  signature: 负向用例返回 0 而非 161002；V=0 时 lossOut=log(logitsMax)-pred 的错值模式。
+  repro: PR 附 6 个负向 UT 与上板对照（修复前放行/修复后拦截）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: 算子/内核
+      effect:
+        from: 训练信号
+        to: 数值结果
+    uncertain:
+    - component
+    - detail

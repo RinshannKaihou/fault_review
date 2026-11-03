@@ -1,0 +1,57 @@
+id: INF-2266
+legacy_ids: []
+slug: triton_mxfp4_quant_context_dependent_encoding
+aliases: []
+title: Triton MXFP4 转换结果依赖同张量无关元素
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: triton
+    component: mxfp.py _from_float
+  behavior: tie-break 的 is_tie.sum() 在全张量与候选维全局归约，多元素时几乎恒>1，即使无任何元素 tie，epsilon 也从所有偶 mantissa 候选减去，同值编码随批内容变化。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  detail: 略高于 1.0/1.5 中点的值单独转换正确选 1.5（E2M1=3），加入一个无关第二元素后第一个值的编码变为 2（表示 1.0）；转换结果随批内无关内容变化，非确定、违反逐元素语义。
+  visibility: 不可复现
+mitigation:
+  detect: 同一值单元素张量 vs 多元素张量分别转换比对编码；对拍独立 MXFP4 参考实现。
+  fix: 待定（issue 给出修复方向：tie 判定应逐元素 mask 而非全局 sum；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12506
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'Triton python/triton/tools/mxfp.py 的 MXFP4Tensor._from_float() 编码缺陷：```min_errors, _ = torch.min(errors, dim=1, keepdim=True); is_tie = (errors == min_errors); if is_tie.sum() > 1: ...; errors = errors - (tie_breaker * 1e-6)```。is_tie.sum() 在整个张量与候选维度上全局归约，两个及以上输入元素时几乎恒大于 1，即使没有任何单个输入处于 tie；epsilon 随后从每个偶 mantissa 候选中减去而非仅从并列最小误差的候选减去，导致同一 float32 值的编码取决于是否与无关值一起转换。示例：略高于 1.0 与 1.5 中点的值应 round-to-nearest 选 1.5（E2M1 编码 3），单元素张量正确；加入无关第二元素后第一个值编码变为 2（表示 1.0）。该工具用于权重/激活 MXFP4 量化转换，逐元素语义被破坏。'
+  source: GitHub issue https://github.com/triton-lang/triton/issues/12506 （open，2026-10-27，含定位代码段与示例）
+  behavior: 用 Triton 的 MXFP4 工具做量化转换时，同一个数值的量化结果会随同批其他无关数值的存在而改变：单独转换是对的，和别的值放在一起就被舍入到相邻编码（1.5 变 1.0）；导致量化产物不可复现、依赖批次内容，且全程无告警。影响所有用该工具生成的 MXFP4 权重/激活。
+  trigger_surface: triton.tools.mxfp（MXFP4Tensor._from_float）；多元素张量转换（几乎所有实际使用场景）；MXFP4 量化权重准备与在线量化路径。
+  signature: 单元素 vs 多元素张量同值编码不一致（3 vs 2）。
+  repro: issue 正文含最小示例与定位代码。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现

@@ -1,0 +1,50 @@
+id: INF-2319
+legacy_ids: []
+slug: vllm_reshape_and_cache_512_chunk_head_drop
+aliases: []
+title: vLLM reshape_and_cache 大 KV 形状丢写 head
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: reshape_and_cache 循环
+  behavior: 单 token 16B chunk 数超 512（KV>8192B）时第 512 chunk 后的 KV head 被跳过不写，ROCM_ATTN 静默读旧 KV 数据。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 32 KV heads×head 192/256 bf16 max error 0.097–0.196（修复后 ≤0.0006 对齐 TRITON_ATTN）；fresh prefill 回读 cache 差 5.31。PR 恢复线程步长循环，open。
+  visibility: 静默错误
+mitigation:
+  detect: 对 num_kv_heads*head_size 大形状比对 cache 写后回读与参考；TRITON_ATTN vs ROCM_ATTN 对照。
+  fix: 修复 PR https://github.com/vllm-project/vllm/pull/64087 （open，未合入）：恢复 thread-stride loop，三组失败 case 转 PASS（max error ≤0.0006），新增回归测试；仅修 Pattern B。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/pull/64087
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vLLM reshape_and_cache kernel 在单 token 的 16 字节 chunk 数超 512 时留下部分 KV head 不写（PR #64087，1×MI355X gfx950 验证，修 #62697 Pattern B）：触发条件 num_kv_heads*head_size*cache_element_size>8192 字节（如 32 KV heads×head 192/256 bf16），此时第 512 个 chunk 之后的 KV head 被跳过，ROCM_ATTN 对这些 head 静默读旧 KV cache 数据。直接核验：对基线 ops.reshape_and_cache 检查发现恰好是根因预测的未写 head（32×256 是 head 16–31；32×192 是 21–31）。修复恢复 kernel 的 thread-stride loop 并加回归测试。验证：报告者脚本三组失败 Pattern B case（p2-d256-bs16-gqa1 decode 0.1935、p2-d192 0.1955、prefill 0.0967 mismatch）修复后 max error ≤0.0006 对齐 TRITON_ATTN；fresh prefill 回读 cache 由最多差 5.31 变 exact；其余 6 组（GQA-4、block-528）两版均过。#62697 Pattern A（decode 在 block size 528 gfx1201 的读问题）不在本 PR 范围。PR open 未合入。'
+  source: 'GitHub PR https://github.com/vllm-project/vllm/pull/64087 （open，2026-10-27 创建；含根因直检、修复前后误差表与回归测试）；父 issue #62697'
+  behavior: 在 ROCm 后端对 32 个 KV head、head size 192/256 这类大 KV 形状（单 token KV 超 8KB）做推理：写 KV cache 时后半部分 head 根本没被写入，attention 读这些 head 用的是显存里上一次的旧值——输出与参考差 0.1–0.2 量级（修复后 ≤0.0006），prefill 后回读缓存能差 5.31，无任何报错。换个 head 数少的形状或 TRITON_ATTN 后端就正常，问题只在特定大 KV 形状组合下静默出错。
+  trigger_surface: vLLM ROCm ROCM_ATTN 后端；num_kv_heads*head_size*element_size>8192B（32 heads×192/256 bf16 实测）；decode 与 prefill 均可。
+  signature: 大 KV 形状下 cache 写后回读与参考不等；恰从第 513 个 16B chunk 起的 head 未写。
+  repro: 'PR 附报告者脚本（gist of #62697 未改）与 reshape_and_cache 直检。'
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

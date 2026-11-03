@@ -1,0 +1,54 @@
+id: INF-2257
+legacy_ids: []
+slug: nan_to_num_fp16_posinf_attr_nan_saturates
+aliases: []
+title: NanToNum fp16 posinf 属性 NaN 被饱和成 65504
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: nan_to_num fp16 通路
+  behavior: 910B TBE nan_to_num.py 中 posinf/neginf 走 tbe.var（fp16 下 vsel 标量寄存器），把 NaN 饱和成 dtype 最大值，fp16 下 ±inf 被替换成 65504.0 而非 NaN。
+effect:
+  objects:
+  - 数值结果
+  detail: fp16 posinf/neginf=NaN 时 ±inf 元素输出 65504.0（0x7BFF）而非 NaN；fp32/bf16 正确、nan 属性正确；12 种 shape 与两入口均复现。
+  visibility: 静默错误
+mitigation:
+  detect: fp16 输入 [NaN,+inf,-inf,1.0]，属性 nan/posinf/neginf 分别取 NaN，检查 +inf/-inf 位置输出位模式（0x7BFF=65504 而非 NaN）。
+  fix: 待定（issue 给出根因参考与期望：vsel 标量不应饱和 NaN；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4216
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math 的 aclnnNanToNum/aclnnInplaceNanToNum 在 Ascend 910B3（Atlas A2，aarch64）、CANN 9.2.0、仓 master b7fe8ad85b879ec4ad7d358c19bddd26fe85e181 的 fp16 通路缺陷。属性类型为 float，NaN 是合法取值，资料定义「NaN→nan、+inf→posinf、-inf→neginf」，故 posinf=NaN 时 +inf 元素应为 NaN。实测 fp16 下 posinf/neginf 取 NaN 时 ±inf 元素被替换成 65504.0（fp16 最大值 0x7BFF），FLOAT32/BFLOAT16 同属性组合正确、nan 属性取 NaN 亦正确，说明 fp16 通路独有。根因参考：910B 走 TBE nan_to_num.py，nan 走常量折叠、posinf/neginf 走 tbe.var（fp16 下为 vsel 标量寄存器），后者把 NaN 饱和成 dtype 最大值。与 shape 无关（[1]~[8193] 共 12 种均复现），含 Inplace 在内两个入口均受影响。判据不依赖容差：机器产物 [缺陷组 fp16 posinf=NaN] max|diff|=1 idx1:7BFF!=7E00（期望 NaN 位模式指数全 1 且尾数非 0，实测 0x7BFF）。issue 含 79 行自包含 repro.cpp，按位模式构造输入避免规范化 NaN/inf，仅判「指数全 1 且尾数非 0」。
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4216 （open，2026-10-29，含三 dtype 对照矩阵与位模式级判据）
+  behavior: 用 aclnnNanToNum（或 Inplace 版）处理 fp16 张量、且把 posinf 或 neginf 属性设为 NaN 想把 ±inf 替换成 NaN 时，输出里 ±inf 位置出现的是 65504.0（fp16 最大值）而不是 NaN；同一调用在 fp32/bf16 下正确，把 nan 属性设为 NaN 也正确。任何 shape 都复现，无报错，属于清洗后数值仍非法的静默错误。
+  trigger_surface: Ascend 910B3 / CANN 9.2.0；fp16 张量；posinf/neginf 属性取 NaN；NanToNum 与 InplaceNanToNum 两入口；数据清洗/异常值替换场景。
+  signature: fp16 + posinf=NaN：输出位模式 0x7BFF（65504）而非指数全 1 尾数非 0 的 NaN。
+  repro: issue 含自包含 repro.cpp（位模式构造与判读，g++ 命令齐全）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

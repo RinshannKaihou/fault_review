@@ -1,0 +1,51 @@
+id: INF-2224
+legacy_ids: []
+slug: vllm_int8_scale_view_overwrite_gdn_state
+aliases: []
+title: int8 scale-view 填充覆写 GDN 状态首请求垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: scale cache 初始化
+  behavior: 首次运行 fill_(1.0) scale view，混合 KV 管理下注意力层与 GDN 层共享物理页——GDN 状态页被覆写为 1.0。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 首个请求从第二个 token 起输出垃圾，之后所有请求正常；--kv-cache-dtype auto（无 scale view）时首请求也正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue 状态未在本批快照中更新；修复未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63944
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm TritonAttentionImpl._ensure_scale_caches（vllm/v1/attention/backends/triton_attn.py）首次层运行时构建 per-token-head scale views 并 fill_(1.0)：torch.as_strided(base_f32, size=(num_blocks, block_size, nkv), stride=(block_f32, slot_f32, head_f32), storage_offset=k_scale_off_f32) 后 k/v_scale_cache.fill_(1.0)。该模型中混合 KV cache manager 给注意力层和 Gated DeltaNet 层同一物理页的视图——scale 填充把 GDN 状态页覆写为 1.0。首个请求（填充发生在其首 token 后）从第二个 token 起垃圾；后续请求正常（cache 已初始化不再覆写）。--kv-cache-dtype auto 不建 scale view，不受影响。
+  source: https://github.com/vllm-project/vllm/issues/63944（机制代码摘录 + 首 token 后垃圾/auto 正确的对照）
+  behavior: 混合注意力+GDN 模型开 --kv-cache-dtype int8_per_token_head + TRITON_ATTN 后端时，引擎启动后的第一个请求从第二个 token 开始输出完全错误（垃圾），而之后的所有请求都正常；把 KV dtype 换回 auto 同样的首请求正确——极易在冒烟测试通过后被忽略。
+  trigger_surface: vllm + 混合 KV（attention+Gated DeltaNet 同页）+ --kv-cache-dtype int8_per_token_head + TritonAttentionImpl + 引擎启动后首个请求。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

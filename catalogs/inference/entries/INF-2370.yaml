@@ -1,0 +1,55 @@
+id: INF-2370
+legacy_ids: []
+slug: maxpool2d_with_mask_m200_tail_unaligned_datacopy_dirt
+aliases: []
+title: MaxPool2dWithMask 310P 索引尾部非对齐清零残留脏数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: CANN
+    component: max_pool2d_with_mask m200
+  behavior: 310P 路径清零 indices 尾部用 3 参 DataCopy 按元素计数下发，非 32B 整数倍时硬件按 32B 块向下取整，尾部最多 7 个 int32 未写
+effect:
+  objects:
+  - 数值结果
+  detail: 输出 indices 尾部最多 7 个 int32 保留未初始化/脏数据，算子仍返回成功、索引看似有数但不可信，下游据此回溯位置时静默取错；官方样例 [1,1,7,7]→5x5=25（100B%32=4）即触发，元素数为 8 的倍数时不触发
+  visibility: 静默错误
+mitigation:
+  detect: 同族 910B 路径与 m200_transpose 对照实现（AlignUp+SetValue 补齐首尾）验证正确行为；报告者已在 NPU 跑正确实现对照实验
+  fix: 待定（正文定位 5 处 M200 实现文件，同算子 910B 路径有正确写法可循，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7917
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0594
+original:
+  mechanism: CANN ops-nn MaxPool2dWithMask 310P(M200) 路径（5 个 m200 实现文件：max_pool2d_with_mask_m200.h:206-209、_encoded.h:240-243、_spatial.h:188-192、_spatial_half_input.h:106-109、_spatial_separable.h:135-138）在清零输出 indices 尾部时用 3 参 DataCopy(dst, src, bytes/sizeof(int32_t)) 直接传元素计数。AscendC DataCopy 硬件访问粒度 32B 块，非对齐 count 在 NPU 模式被 DataCopyCheck 静默向下取整，尾部 <32B（最多 7 个 int32）不被清零。代码只按 8192 字节分片，未对最后一块做 DataCopyPad 或 SetValue 补齐；同算子 910B 路径（max_pool2d_with_mask.h:790-819）显式用 AlignUp 计算并用 SetValue 处理首尾非对齐字节，m200_transpose.h:767 先 Align(...,32) 再分片——均为正确对照，说明其余 5 处是实现遗漏。报告者在 910B/910_93/950 上跑同族正确实现对照验证场景合法（M200 路径无对应硬件无法直接执行）。
+  source: https://gitcode.com/cann/ops-nn/issues/7917
+  behavior: 在 310P(M200) 上跑 MaxPool2dWithMask 且输出元素数不是 8 的倍数时（官方自带样例 2D 池化 input [1,1,7,7] fp32、kernel 3x3、stride 1 → 输出 5x5=25，100 字节 %32=4 即触发），输出的 indices 尾部最多 7 个 int32 保留未初始化/脏数据。算子正常返回成功，索引值看似有数但不可信；下游用这些索引取回溯位置时静默取错。
+  trigger_surface: CANN ops-nn MaxPool2dWithMask 310P(M200) 专用路径；validIndexBytes 或尾块非 32B 整数倍（输出元素数非 8 倍数）；样例 [1,1,7,7]→25 元素即合法触发；8 倍数输出不触发
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  updates:
+  - date: '2026-11-03'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

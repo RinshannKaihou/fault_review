@@ -1,0 +1,54 @@
+id: INF-2368
+legacy_ids: []
+slug: trtllm_swa_scratch_reuse_host_staging_race
+aliases: []
+title: TRT-LLM SWA KV 页表 staging 竞态读覆写数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: TensorRT-LLM
+    component: KVCacheManagerV2 staging
+  behavior: enable_swa_scratch_reuse=True 的 per-layer 路径复用持久 host staging 张量做 non_blocking 异步拷贝，流未排空前 host 源被下一迭代覆写
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  detail: GPU 收到描述错误状态的 per-layer KV block offsets，attention 静默读错物理 KV 页；复现 5 次竞态拷贝全部 checksum 失配（3048 → 5.9e8 量级），控制组全对
+  visibility: 静默错误
+mitigation:
+  detect: 报告附确定性复现 harness（排队 stream stall 后覆写 host 再同步比对 checksum）
+  fix: '同机制默认 V2 block-offset 路径已由 PR #16088 修复并明确点出 per-layer 路径为遗留 follow-up；snapshot 到 fresh pinned buffer 的写法验证可消除（本路径修复尚未核实）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/TensorRT-LLM/issues/21385
+  kind: github_issue
+- url: https://github.com/NVIDIA/TensorRT-LLM/pull/16088
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'TensorRT-LLM KVCacheManagerV2（commit 5d86481f6，1.3.0rc28）enable_swa_scratch_reuse=True 的 SWA per-layer 路径用持久 host staging 张量做异步设备拷贝源：copy_idx、host scratch metadata、host_kv_cache_block_offsets 三者都以 non_blocking=True 拷贝。overlap scheduler 在上一个 CUDA 工作排空前排队下一迭代并覆写这些 host buffer 时，异步拷贝可能读到覆写后的 host 源，GPU 收到与排队时状态不符的页表。RTX 5090 复现：基线 checksum 3048，5 次控制拷贝全对，5 次竞态拷贝全部失配（597333024~597336096）。把持久页表 snapshot 到新 pinned buffer 再异步拷贝则 checksum 回到 3048。PR #16088 已修同机制默认 V2 block-offset 路径并明确指出该 per-layer 路径是独立遗留 follow-up；本报告覆盖该剩余路径。'
+  source: https://github.com/NVIDIA/TensorRT-LLM/issues/21385；同机制已修路径见 PR https://github.com/NVIDIA/TensorRT-LLM/pull/16088
+  behavior: 开 enable_swa_scratch_reuse 且 overlap scheduler 高负载排队密集时，per-layer KV 页表拷贝可能读到已被下一迭代覆写的 host 数据，attention 按错误页表静默读到错误的物理 KV 页——操作正常完成、无任何报错，但输出使用的 KV 内容来自别处，属正确性故障而非纯性能问题。报告者在 RTX 5090 上用确定性 harness 复现：5 次竞态拷贝 checksum 全部失配、5 次控制组全部正确。
+  trigger_surface: TensorRT-LLM 1.3.0rc28（commit 5d86481f6）；enable_swa_scratch_reuse=True 的 SWA per-layer KV 页表路径；overlap scheduler 下一迭代在流排空前覆写 host staging；RTX 5090/SM120、CUDA 13.0 复现
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 隐状态
+        to: KV状态

@@ -1,0 +1,59 @@
+id: INF-2274
+legacy_ids: []
+slug: ttmetal_quasar_slice_rm_sharded_alignment_guard_miss
+aliases: []
+title: quasar slice RM 分片行未对齐静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: quasar slice RM 分片对齐守卫
+  behavior: composite 路由守卫（slice.cpp:53）不检查分片行字节对齐，RM BLOCK/WIDTH 分片、分片行非对齐倍数（如 24B）时 native 路径按错误 page size 步进运行，静默返回错误值。
+effect:
+  objects:
+  - 数值结果
+  detail: 复现 (1,1,64,96) bf16 WIDTH_SHARDED 8 核（分片行 24B）：W=96 tile 对齐且 begin=0 使 composite 守卫不分流，RM 工厂按 24B page size 步进无对齐处理，静默错值；#58407 item 21。
+  visibility: 静默错误
+mitigation:
+  detect: RM 分片 + 子对齐行宽 slice 对拍 torch 参考；分片行字节数非 16 倍数的形状重点覆盖。
+  fix: 待定（#58407 跟踪族内 item 21；未见单独修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/63277
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2251
+pattern: PAT-INF-0197
+original:
+  mechanism: tt-metal ttnn.experimental.quasar.slice 的 RM 分片对齐守卫缺失（#58407 item 21，定位 ttnn/cpp/ttnn/operations/experimental/quasar/slice/slice.cpp:53）：对 row-major BLOCK/WIDTH 分片且分片行非缓冲对齐倍数的张量静默返回错误值。复现：RM bf16 (1,1,64,96)，WIDTH_SHARDED L1 8 核（分片 (64,12)，24B 行），begin (0,0,0,0)、end (1,1,32,96)、step 1、输出 L1_INTERLEAVED。W=96 tile 对齐且 width begin=0，needs_rm_composite_input 返回 false 不分流（slice.cpp:188-192）；设备算子校验无分片对齐检查；select_program_factory 把 RM、非 HEIGHT 分片、step-1 工作路由到 SliceRmProgramFactory（slice_device_operation.cpp:279-296），该工厂用 spec.shape[1]*element_size()=24 计算 page size，无对齐处理，错步进读取产生静默错值。
+  source: GitHub issue https://github.com/tenstorrent/tt-metal/issues/63277 （open，2026-10-29，#58407 item 21，含定位与复现配置）
+  behavior: '在 quasar 上对 row-major BLOCK/WIDTH 分片张量做 slice，当分片行字节数不是对齐倍数（如 24B）时，输出数值静默错误：无报错、无断言，结果与参考不符；W 方向 tile 对齐且起点为 0 的「看起来安全」形状同样踩中。属 #58407 quasar 分片守卫失配族的 slice 表现（与已收录 transpose/1D matmul/slice-TILE 族同族不同算子）。'
+  trigger_surface: tt-metal quasar；ttnn.experimental.quasar.slice；RM BLOCK/WIDTH 分片；分片行字节数非缓冲对齐倍数（如 bf16 行 24B）。
+  signature: 分片行 24B + slice 输出对参考错值，无报错。
+  repro: issue 含完整形状/分片/begin/end 配置。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

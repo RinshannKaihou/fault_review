@@ -1,0 +1,52 @@
+id: TRN-0530
+legacy_ids: []
+slug: triton_ascend_noop_permute_ub_overflow
+aliases: []
+title: triton-ascend 空 permute UB 溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: getTransposedValue 降级
+  behavior: tl.permute 无条件降为 linalg.transpose，只移动 size-1 维的空排列被当真转置 bufferize，NZ 分形布局放大 UB 8 倍触发编译期 ub overflow
+effect:
+  objects:
+  - 可用性/进度
+  detail: '特定 reshape/permute 组合（size-1 维移动）在 Ascend 上编译期报 ub overflow 而无法运行（上游 #1640 载体）；GPU 语义等价路径无此问题'
+  visibility: 报错
+mitigation:
+  detect: 编译期 ub overflow 报错自带定位
+  fix: 修复 PR https://github.com/triton-lang/triton-ascend/pull/2848（open）：getTransposedValue 检测空排列降为 tensor.collapse_shape+expand_shape 纯 reshape
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: 'fail-loud（编译期报错），但属编译器把合法 Triton 程序静默错降级为无法执行的布局这一正确性缺陷；上游 issue #1640 是载体的运行失败面。按边界收编译器降级缺陷'
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/pull/2848
+  kind: github_pr
+- url: https://github.com/triton-lang/triton-ascend/issues/1640
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'triton-ascend 的 getTransposedValue 把 tl.permute 无条件降为 linalg.transpose。只移动 size-1 维、保持非单一维相对顺序的空排列（no-op permutation）实际不移动数据、语义等于 reshape，但 bishengir bufferizer 把得到的 linalg.transpose 当真实立方转置处理：(1,4096)->(4096,1) 的 reshape 被重新折回 64×64 并以分形（NZ）布局布置 buffer，UB 需求放大 8 倍，触发 "ub overflow, requires 3407872 bits while 1572864 bits available"（上游 issue #1640）。修复 PR #2848（open）：getTransposedValue 检测 isNoOpPermutation（输出维从左到右扫描、非单一维保持相对顺序）并降为 tensor.collapse_shape+tensor.expand_shape 纯 reshape；真实转置保持 linalg.transpose 路径。'
+  source: https://github.com/triton-lang/triton-ascend/pull/2848（现象载体 https://github.com/triton-lang/triton-ascend/issues/1640）
+  behavior: 在 NPU 上跑含 (1,N)->(N,1) 类维度重排的 Triton kernel（常见于注意力/MLP 前处理的 reshape 链）时编译直接报 ub overflow 无法运行；同程序在 GPU triton 上语义等价可跑。属移植正确性缺陷：合法 Triton 程序被后端错降级为不可执行布局
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,64 @@
+id: INF-2275
+legacy_ids: []
+slug: ops_nn_dynamic_block_mx_quant_interleave_overlap
+aliases: []
+title: DynamicBlockMxQuant Interleave 源目标同址
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: mx_quant Interleave
+  behavior: 生成 -2 轴 scale2 后在同一 UB buffer 内 Interleave：目标与源指向相同地址（scale2Local 同址），交织写入覆盖原始输入，存在时序性读写覆盖隐患。
+effect:
+  objects:
+  - 数值结果
+  detail: 依据源码地址重叠提出；修复版（独立 buffer+tiling 计入空间）在 Ascend 950 TTK 回归 9/9 PASS、输出与 golden 逐字节一致，性能 +0.033%；修复前非每尺寸稳定复现（时序性危害）。
+  visibility: 静默错误
+mitigation:
+  detect: BF16→E2M1 [32768,2048] 等大尺寸 TTK 回归比对量化结果与两路 scale；UB 级检查（GM 边界检查不能替代 UB 检查）。
+  fix: '修复 PR https://gitcode.com/cann/ops-nn/merge_requests/12999 （merged；issue #7717 closed：独立 buffer + tiling 空间预算 + 500 条网络尺寸/泛化与 50 条大尺寸性能回归）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7717
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12999
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn 的 DynamicBlockMxQuant（arch35 实现）在生成 -2 轴 scale2 后于同一块 UB buffer 内执行 Interleave 的源目标地址重叠缺陷：原实现等价于 Interleave(scale2Local[offset-2*blockW_], scale2Local[offset-blockW_], scale2Local[offset-2*blockW_], scale2Local[offset-blockW_], blockW_)，前两个目标与后两个源指向相同地址，交织写入覆盖原始输入。定位：quant/dynamic_block_mx_quant/op_kernel/arch35/dynamic_block_mx_quant_base.h 的 Compute。修复 PR !12999（已 merged）：scale2 原始数据与交织结果使用独立 UB 空间、交织输出经独立输出队列搬出 GM、dynamic_block_mx_quant_tiling.cpp 计入新增空间。验证（Ascend 950、CANN 9.2.0、TTK+msprof）：修复版 9/9 精度 PASS、三路输出与 golden 逐字节一致；500 条网络尺寸+泛化用例平均耗时 25.2719→25.2802μs（+0.033%）；另 50 条两版均超 100μs 的大尺寸对比。注意：问题依据代码地址重叠提出，修复前的测试尺寸不保证每个都稳定复现精度失败（危害为时序性读写覆盖）。
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7717 （closed）；修复 PR https://gitcode.com/cann/ops-nn/merge_requests/12999 （merged）
+  behavior: 在 Ascend 950 等设备上使用 DynamicBlockMxQuant（MXFP4 块量化，MoE/大模型量化推理路径）时，-2 轴 scale 的交织（Interleave）步骤在源与目标为同一 UB 地址的情况下写入，原始 scale 数据可能被部分覆盖后才被读取，量化 scale 与输出存在时序相关的静默错误风险（并非每次都复现，取决于调度时序）；修复后 scale/输出与 golden 逐字节一致。无报错，量化结果偶发错值难以追查。
+  trigger_surface: Ascend 950 / CANN 9.2.0；DynamicBlockMxQuant arch35；-2 轴 scale2 Interleave 路径（BF16→E2M1 大尺寸如 [32768,2048] 用于回归）；修复 !12999 已 merged。
+  signature: 修复前后 TTK 回归 9/9 逐字节一致性对比；UB 地址重叠代码定位。
+  repro: issue 附排查步骤与回归尺寸清单（修复版验证记录）。
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：ops-nn#7717 批次快照显示 closed（2026-10-29），closed 不自动证明修复发布，关闭原因未核实。
+  - 2026-10-31 2026-10-31 回访：#7717 保持 closed（10-29 关闭），无新评论证据，维持原判
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  - date: '2026-10-31'
+    fields:
+    - original.notes

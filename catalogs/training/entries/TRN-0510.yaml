@@ -1,0 +1,65 @@
+id: TRN-0510
+legacy_ids: []
+slug: verl_k3_kl_cancellation_wrong_rejection
+aliases: []
+title: verl k3 KL 相减消去致拒绝判定反转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: k3 估计 exp(x)-1-x
+  behavior: k3 KL 估计用 exp(x)-1-x：x 接近 0 时对接近 1 的指数减 1 发生灾难性消去，x=-1e-4 时统计量为负（-1.66e-8，应为 +5e-9）。
+effect:
+  objects:
+  - 训练信号
+  detail: seq_sum_k3 阈值 1e-4 时本应拒绝的序列被保留、token_k3 阈值 1e-8 时 x=+1e-4 被误拒——KL 惩罚、rollout 拒绝采样与 off-policy 诊断三处 k3 表达式同病；作者明示未确立端到端训练回归。
+  visibility: 静默错误
+mitigation:
+  detect: 小 log-ratio 输入下与 fp64 基准或 expm1(x)-x 对照 k3 值与符号
+  fix: 修复 PR https://github.com/verl-project/verl/pull/8386（open，2026-10-26）——三处 k3 表达式改用数学等价的 torch.expm1(x)-x；Windows/py3.12/torch2.13 CPU 验证
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-29'
+remarks: 与 TRN-0220（OpenRLHF k3 先 exp 后 clamp 致反向 NaN 梯度）同属 k3 KL 估计数值面：本条是 exp(x)-1 的 catastrophic cancellation 致阈值判定反转，非溢出 NaN；不同栈（verl）不同失效模式
+evidence:
+- url: https://github.com/verl-project/verl/pull/8386
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0220
+pattern: PAT-TRN-0055
+original:
+  mechanism: 'verl-project/verl #8386（2026-10-26，open PR）：KL 惩罚、rollout 拒绝采样与 off-policy 诊断三处 k3 KL 估计用 exp(x)-1-x，数学上等价但 x 接近 0 时对接近 1 的指数减 1 发生灾难性消去。fp32 x=-1e-4：现行拒绝统计量≈-1.65965e-8（k3 非负，fp64 参考≈4.99983e-9）；32768 token 求和≈-5.43833e-4 而非 1.63835e-4。seq_sum_k3 阈值 1e-4 配置下未打补丁的实现保留本应拒绝的序列；x=+1e-4 时 token_k3 阈值 1e-8 误拒。作者明示：以上是小 log-ratio 与严格阈值下的数值与阈值错误示例，未确立端到端训练回归或模型质量改善。修复改用 torch.expm1(x)-x（等价、无消去）；Windows 11/py3.12.13/torch 2.13.0+cpu/TensorDict 0.10.0 本地 CPU 验证；查重确认无其他 open PR 处理这三处表达式（#8377/#8378 是别的文件的 logprob/CE 精度、#2928 是 KL 下钳位）。'
+  source: https://github.com/verl-project/verl/pull/8386
+  behavior: RL 训练用 k3 KL 估计（KL 惩罚/rollout 拒绝/off-policy 诊断）且 log-ratio 接近 0（近 on-policy）时，k3 统计量因浮点消去可算出负值：按 seq_sum_k3 或 token_k3 阈值做的序列拒绝判定反转——该拒的留下、该留的拒掉；KL 惩罚项同源失真。数值量级小（1e-8/token）但 3 万 token 求和后达 5e-4，足以越过严格阈值。无报错；与 fp64 基准对照才能发现。
+  trigger_surface: verl k3 KL 三处表达式（惩罚/拒绝采样/诊断）；近 on-policy 小 log-ratio（|x|~1e-4）+ 严格阈值（1e-4/1e-8 量级）；fp32
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：verl k3 修复 PR #8386 仍 open 未合入；同日新增 CANN mhc 1-σ(z) 消去同族条目 TRN-0536（var→本条）'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - pattern
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

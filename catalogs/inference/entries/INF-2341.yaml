@@ -1,0 +1,59 @@
+id: INF-2341
+legacy_ids: []
+slug: ops_nn_in_training_reduce_v2_ar_fold_loss_lowbits
+aliases: []
+title: INTrainingReduceV2 AR 折叠丢低位极值抵消输出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: AR 归约结构与折叠
+  behavior: ARA以默认AR结构定位oom元数据，400000元素需112B与默认184B不符；FLOAT求和中间溢出先于抵消，全载AR折叠丢低位分量；DYN Tiling未校验输出ND格式，非法格式误落rank、零R缺诊断。
+effect:
+  objects:
+  - 数值结果
+  detail: 极值对消输入 sum=0 被算成 NaN；137 条动态 oom 失败 + 6 条极值 sum 精度失败（三方冻结输入复现）；修复（400000 单独注册 ARA 结构 + 全 R 共享二进制缩放保留 AR 高/低分量）后 19/19 原失败用例通过、485/486 L1 首跑通过。
+  visibility: 数值异常
+mitigation:
+  detect: 极值对消输入（±FLT_MAX 序列）检查 sum 是否 NaN；动态 shape 高压回归。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/13239 （open：ARA 结构单独注册+二进制缩放+格式诊断；CANN 9.3.0 实测 19/19 通过，未发布未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7835
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13239
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #7835（2026-10-31，Ascend950PR_9579/CANN 9.3.0，官方 TTK a996a415）：INTrainingReduceV2（arch35）扫描发现三类缺陷：(1) ARA 使用默认 AR 结构定位 oom 边界元数据，400000 元素所需 112B 结构与 184B 默认结构不符，触发 137 条动态 oom 失败；(2) FLOAT 求和中间溢出发生在最终抵消之前——全载 AR 折叠丢失低位分量，输入 [FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX] 应输出 sum=0，原实现输出 NaN（6 条极值 sum 精度失败）；(3) DYN Tiling 未校验输出 ND 格式，非法输入格式误落 rank 错误、零 R 缺诊断。修复（PR !13239 open）：400000 单独注册 ARA 结构、全 R 共享二进制缩放并保留 AR 高/低分量、修正格式/零 R 诊断；TestSpec 保持 Torch FP64 参考。验证：19 条原精度失败冻结输入三方 19/19 通过（含 6 条极值）、485/486 L1 首跑通过、137 条动态 oom 全通过、26 条 DYN+oom/12 条 GE 回归通过。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7835 （open，2026-10-31 创建；含质量看板链接与修复验证矩阵）+ 修复 PR https://gitcode.com/cann/ops-nn/pull/13239 （open）
+  behavior: InstanceNorm 类训练归约算子 INTrainingReduceV2 在两种输入下静默出错：一是含 ±FLT_MAX 极值对消的求和（数学上应为 0），输出 NaN 污染后续梯度；二是大 shape（40 万元素级）动态 shape 下归约结构按默认尺寸注册，运行时动态 oom 失败或折叠路径丢低位分量使精度超差。冻结输入三方复现稳定；修复版 19/19 恢复正确。
+  trigger_surface: cann/ops-nn in_training_reduce_v2；FLOAT 求和 + 极值对消输入；动态 shape（400000 级）；Ascend950PR arch35/CANN 9.3.0。
+  signature: ±FLT_MAX 对消输入 sum=NaN；大动态 shape oom；修复后二进制缩放路径通过。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - behavior

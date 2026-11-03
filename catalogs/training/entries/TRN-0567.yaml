@@ -1,0 +1,56 @@
+id: TRN-0567
+legacy_ids: []
+slug: ops_nn_embeddingbag_includelastoffset_boundary
+aliases: []
+title: aclnnEmbeddingBag includeLastOffset 聚合越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: embedding_bag offsets 边界
+  behavior: includeLastOffset=true 时最后一个 offset 未被当作 bag 结束边界，bag 一直聚合到 indices 末尾，把应被标记掉的尾部索引也算进去；同二进制只改该 bool 即触发。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 910B：indices={0,5,9,5,5,77,3}、offsets={0,4}，true 时 out[0]=110.28（7 个全算），期望 62.11；false 正确。800 级矩阵 133 条 true 用例全 FAIL，每条恰差一整行。
+  visibility: 静默错误
+mitigation:
+  detect: includeLastOffset=true/false 双跑对照（同权重/索引/偏移，差异即暴露）；与 CPU EmbeddingBag 参照对拍。
+  fix: 待定（issue open：按资料语义最后一个 offset 应为结束位置，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-01'
+remarks: 同族不同对象：TRN-0279 是索引算子越界输入静默错值（校验缺失），本案是合法输入下边界语义算错（聚合范围错误）——共享「NPU 索引/embedding 算子静默错值」失效面。cross INF-2334 为推理库同 URL 条目，训练侧重判定梯度/数据面。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7822
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0279
+pattern: PAT-TRN-0060
+original:
+  mechanism: 'cann/ops-nn #7822（2026-10-31，open；Atlas A2/Ascend910B、CANN 9.2.0、mode=sum）：aclnnEmbeddingBag 在 includeLastOffset=true 时最后一个 offset 未被当作结束边界，第 i 个 bag 未按资料语义止于 offsets[i+1]，而是一直聚合到 indices 末尾。最小复现：weight=fp32[100x32]、indices=int64[7]={0,5,9,5,5,77,3}、offsets=int64[2]={0,4}、includeLastOffset=true → out[0] 元素和 110.28（把 7 个索引全算），期望 62.11（仅 indices[0:4]）；同一二进制同一张卡只改这一个 bool 输出 62.11 正确。30 条 800 级用例矩阵中 includeLastOffset=true 的 133 条全部 FAIL，每条恰好差一整行（embeddingDim 个元素），与多算尾部索引一致。资料 aclnnEmbeddingBag.md 明写 includeLastOffset=true 时输出 shape 为 (bagOffsets-1, embeddingDim)、最后 offset 为结束位置。'
+  source: https://gitcode.com/cann/ops-nn/issues/7822 （open，2026-10-31；含最小复现 C++ 脚本与对照表）
+  behavior: NPU 训练用 EmbeddingBag（includeLastOffset=true，如变长 bag 聚合）时每个 bag 的求和/均值静默多算 offsets 末尾之后的索引：输出数值系统性偏大（示例 110.28 vs 62.11），无报错；反向梯度同样按错误聚合范围传播。只改 includeLastOffset=false 就正确，极易误判为数据问题。
+  trigger_surface: Ascend 910B + CANN 9.2.0；aclnnEmbeddingBag includeLastOffset=true；变长序列 bag 聚合训练路径。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

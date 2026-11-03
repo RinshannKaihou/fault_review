@@ -1,0 +1,54 @@
+id: INF-2288
+legacy_ids: []
+slug: ops_transformer_inplace_fused_causal_conv1d_v2_dispatch_dead_zone
+aliases: []
+title: FusedCausalConv1dV2 2D 短序列派发死区
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: conv1d tiling 派发
+  behavior: 2D 输入派发规则 useBH 判定与 BSH 模板能力判定（maxQueryLen∈[1,8]→false）不一致：交集里派发选 BSH 而模板自认不支持，DoTiling 失败恒返回 561002。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 950PR 实测：maxQueryLen=5/maxDraftTokens=3 或 0 恒 561002；同 shape maxDraftTokens=4（BH）rc=0 且与 numpy 一致；属性扫描 260 条精度用例 127 条无法执行；V2 开放属性后必踩。
+  visibility: 报错
+mitigation:
+  detect: 2D 输入 + maxDraftTokens<maxQueryLen-1 且 maxQueryLen≤8 的组合扫描返回码；对照 BH 派发同 shape 成功。
+  fix: 待定（根因已定位至 tiling.cpp:53 派发规则与 cut_bsh_tiling_arch35.cpp:92 能力判定不一致；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: fail-loud（恒定错误码），但整类合法 shape 不可用且掩盖于派发层；按任务影响收录。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6915
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer 的 aclnnInplaceFusedCausalConv1dV2 派发死区（Ascend950PR 8 die、CANN 9.2.0-beta.2、V2 op_api/op_host/op_kernel 均仓 master 重构）：op_host/inplace_fused_causal_conv1d_tiling.cpp:53 的 useBH=(xDimNum==3)||(xDimNum==2 && maxQueryLen<=maxDraftTokens+1)，2D 输入只要 maxQueryLen>maxDraftTokens+1 就直调 BSH 的 DoTiling() 不经模板注册表能力筛选；而 attention/fused_causal_conv1d/op_host/fused_causal_conv1d_cut_bsh_tiling_arch35.cpp:92 的 BSH 能力判定要求 maxQueryLen∈[1,8] 否则 false（注释「短序列 1..8 → BH」）。于是 maxDraftTokens+1<maxQueryLen<=8 的交集：派发选 BSH、BSH 自认不支持 → DoTiling 失败 → 561002。V1 把 maxDraftTokens 硬编码 7（阈值 8）交集为空不暴露；V2 开放属性 [0,16] 后只要 maxDraftTokens<maxQueryLen-1 必然掉进。实测矩阵：maxQueryLen=5/maxDraftTokens=4（BH）rc=0 与 numpy 一致；=5/3、=5/0（BSH）561002；=9/3（BSH）rc=0。260 条精度用例 127 条无法执行。资料约束只要求 maxQueryLen>maxDraftTokens+1 未给下界，属实现派发缺陷而非非法参数。
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6915 （open，2026-10-29，含派发规则/能力判定双定位与 4 行实测矩阵）
+  behavior: 在 950PR 上用该 MTP/PD 混部卷积算子（V2）处理 2D 输入时，maxQueryLen 在 (maxDraftTokens+1, 8] 区间的所有请求恒定报 561002 参数错误——这批 shape 合法且同 shape 换属性即可成功，导致近半精度用例与对应生产配置完全不可用；虽是显式报错（非静默错值），但整类输入被派发层死区挡死，掩盖了真实能力边界。
+  trigger_surface: Ascend950PR / CANN 9.2.0-beta.2；aclnnInplaceFusedCausalConv1dV2；2D 输入 + maxDraftTokens+1<maxQueryLen<=8（V2 开放 maxDraftTokens 后典型 PD 配置）；prefill/PD 混部。
+  signature: 同 shape 下 BSH 派发 561002 / BH 派发 rc=0 的切换矩阵。
+  repro: issue 附 repro.cpp（extern C 声明 + 4 组返回码）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

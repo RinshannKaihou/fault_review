@@ -1,0 +1,53 @@
+id: TRN-0542
+legacy_ids: []
+slug: deepspeed_zero_reexport_stale_index_loads_old_weights
+aliases: []
+title: DeepSpeed ZeRO 二次导出残留旧索引加载旧权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: deepspeed
+    component: zero_to_fp32 导出索引清理
+  behavior: 向已有输出目录再次导出 ZeRO 检查点时不清理旧 index/shard：先分片 FP32 后单文件 BF16 导出返回成功，目录加载器仍按残留旧索引读旧分片
+effect:
+  objects:
+  - 模型权重
+  detail: 第二次转换本身写对，但 stale index 让 loader 读到旧权重：后续训练或推理静默使用旧模型，无报错；DeepSpeed master 8d4f29c7、含无 mock 复现脚本
+  visibility: 静默错误
+mitigation:
+  detect: 导出后校验 index 文件时间戳与权重 dtype/数值指纹（如 tag 值断言）
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8954（open，Retire stale checkpoint artifacts after replacing a ZeRO export，未合入）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8952
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8954
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed #8952（2026-10-30，master 8d4f29c75f4a4b30d4db00a94b4aebfdff5107f3）：convert_zero_checkpoint_to_fp32_state_dict / convert_zero_checkpoint_to_state_dict 向已存在的输出目录转换时不退役旧输出 index 与 shard。复现：写 tag=old（fp32 值 1.0）与 tag=new（值 2.0）两份 ZeRO-2 布局，先按 old 分片导出（max_shard_size=24）、再按 new 以 bf16 单文件导出到同一目录；第二次转换正确重建 tag 并写出正确新文件，但残留的旧输出 index 使目录式 loader（huggingface_hub load_torch_model）读到旧分片，pytorch_model.bin 断言通过而目录加载拿到旧权重。issue 给出不 mock loader 的最小复现脚本。修复 PR #8954（open）在替换 ZeRO export 后退役 stale checkpoint artifacts。'
+  source: https://github.com/deepspeedai/DeepSpeed/issues/8952 + 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8954（open）
+  behavior: 用 zero_to_fp32 转换工具把 ZeRO 检查点重复导出到同一目录（例如先导一版分片 FP32，再导一版更小的单文件 BF16）：转换报告成功、单文件内容正确，但之后从该目录加载（load_torch_model 等按 index 解析的 loader）拿到的仍是上一次导出的旧权重，训练继续或推理上线都用错版本模型，全程无任何报错或告警。
+  trigger_surface: DeepSpeed zero_to_fp32 转换 API 复用同一输出目录、二次导出；master 8d4f29c7（2026-10-30）
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

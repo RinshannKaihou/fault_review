@@ -1,0 +1,51 @@
+id: INF-2195
+legacy_ids: []
+slug: cann_flatquant_fp16_overflow_scale_inf_out_zero
+aliases: []
+title: FlatQuant 中间值超 fp16 上限量化和输出静默清零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnnFlatQuant 量化阶段
+  behavior: '|x''''|>65504 时 quantScale 按 fp16 计算溢出为 inf、out 整块清 0；bf16 输入同样按 fp16 截断；资料未声明上限'
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: '|x''''|>65504 时 quantScale=inf、out 全 0（实测 out.int32[0]=0x0），两段返回 0；bf16 输入 x''''=65536 可表示仍被清零；对照组 quantScale=9357.7、out=0x77777777'
+  visibility: 静默错误
+mitigation:
+  detect: 输入幅值扫描找 65504 阈值；对照 quantScale 是否 inf、out 是否全 0
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7335
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnFlatQuant 对 x:[K,M,N] 做 x@kroneckerP2、kroneckerP1@x' 两次小矩阵乘得到 x''，再按 perToken 量化（quantScale = max|x''|/(7/clipRatio)、out = x''/quantScale）。当 |x''|>65504（fp16 上限）时：quantScale 输出 inf、out 整块为 0，两段接口都返回 0，无任何报错。bf16 输入同样被截断：x''=65536 在 bf16（上限约 3.4e38）中完全可表示，但量化阶段按 fp16 计算，结果被静默清零。资料 aclnnFlatQuant.md 未声明该上限（只限制 K≤262144、M/N≤256 与 dtype）。环境：Atlas A2（910B2）、CANN 9.2.0、算子包 kernel FlatQuant_3703755a..._high_performance_2；三组自包含 C++ 复现（对照组 quantScale=9357.7、out.int32[0]=0x77777777；两个缺陷组 quantScale=inf、out=0x0，两段返回码均 0）。来源 https://gitcode.com/cann/ops-nn/issues/7335（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-nn/issues/7335
+  behavior: 使用 FlatQuant 正交旋转量化算子时，若旋转后的中间矩阵元素幅值超过 65504（fp16 上限），量化 scale 输出 inf、量化输出整块全 0，接口返回成功无任何报错；即使输入是 bf16（可表示 65536）也同样被清零。上层模型该层输出从此全 0，下游静默消费全零特征，损失该分支全部信息；只有检查 quantScale 是否为 inf 或输出是否全零才能发现。资料未声明任何幅值上限。
+  trigger_surface: aclnnFlatQuant；|kroneckerP1@x@P2|>65504 或 bf16 输入中间值超 fp16 范围；Ascend 910B2、CANN 9.2.0 实测
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

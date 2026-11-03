@@ -1,0 +1,54 @@
+id: INF-2204
+legacy_ids: []
+slug: msprobe_compare_inf_sign_mismatch_normalized
+aliases: []
+title: msprobe 比对把异号无穷视为一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: msprobe handle_inf_nan
+  behavior: handle_inf_nan 只查 inf/NaN 位置不查符号，+inf 与 -inf 同位置都被置 0 后继续比对，异号无穷符号差异被掩盖
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: actual=[1.0,+inf] vs expected=[1.0,-inf] 返回 (False,'') 且两侧都被改写成 [1.,0.]，比对通过；含符号差异的张量被误判为一致
+  visibility: 静默错误
+mitigation:
+  detect: CPU 复现：npy_data_check(np.array([1.0,np.inf]), np.array([1.0,-np.inf])) 返回 (False,'')
+  fix: 修复 MR https://gitcode.com/Ascend/msprobe/merge_requests/1125 （open，未发布）：改用 isposinf/isneginf 分别校验正负无穷位置，全部通过后才置 0，任一不匹配返回 'Nan' 由上层报错
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: 观测/评测域收录（监测工具缺陷，非模型计算损坏）；监测覆盖未实测的声明不写
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/655
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/msprobe/merge_requests/1125
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: msprobe（精度比对工具）revision c9ecde2f 的 npy_compare.py 中 handle_inf_nan() 只检查 infinity/NaN 的位置：actual 与 expected 同位置出现 inf 时（无论 +inf 还是 -inf），两侧 inf 都被替换为 0 后继续数值比对，于是 NPU 输出 +inf 而 bench 为 -inf（或反之）这一实际的符号差异被完全掩盖，比对显示一致。CPU 复现：npy_data_check(np.array([1.0, np.inf]), np.array([1.0, -np.inf])) 返回 (False, '')，且两侧输入都被改写为 [1., 0.]。回归测试覆盖 FP16/FP32/FP64 双向符号、匹配的同号 inf/NaN、混合数组（验证拒绝时不部分归一化）。修复 MR !1125（open，未发布）：分别用 isposinf/isneginf 校验正、负无穷位置，保留 NaN 位置校验，全部通过才置 0，任一不匹配返回 'Nan' 由上层比对报错，并更新报错提示。来源 https://gitcode.com/Ascend/msprobe/issues/655（open）+ 修复 MR !1125（open）。CPU-only 复现，无 NPU 验证声明。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/Ascend/msprobe/issues/655 https://gitcode.com/Ascend/msprobe/merge_requests/1125
+  behavior: 用 msprobe 做 NPU 与基准的精度比对时，若两张量同位置一个是 +inf 另一个是 -inf（典型如溢出方向相反、logits/loss 上溢符号翻转），工具会把两个 inf 都当无效值置 0 然后继续比对，最终报告两者一致，符号差异完全不可见。最小例：[1.0, +inf] vs [1.0, -inf] 比对通过。依赖 msprobe 判定精度回归是否修复的流水线会把符号相反的溢出误判为无差异；修复 MR 尚未合入发布。
+  trigger_surface: msprobe 精度比对（npy_compare/handle_inf_nan）；NPU 与 bench 同位置出现符号相反的 inf；revision c9ecde2f 起；CPU-only 复现，无 NPU 验证声明
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 指标/日志
+        to: 测试判定

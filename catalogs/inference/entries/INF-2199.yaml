@@ -1,0 +1,50 @@
+id: INF-2199
+legacy_ids: []
+slug: vllm_ascend_fia_v3_mte_48bit_sustained_decode_crash
+aliases: []
+title: FIA V3 持续 decode 负载 MTE 48bit 地址故障崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FIA V3 kernel 地址计算
+  behavior: 持续 paged-decode 下 kernel 内 scalar 访问 GM 地址超 48 位（errcode 0x4000）；host 可插桩输入全部契约内，根因未定位
+effect:
+  objects:
+  - 可用性/进度
+  detail: 引擎数分钟至~1 小时内死亡，6 次崩溃两日、kernelName 每次相同、故障 NPU 轮换（4/2/7…）；HCCL AllReduce 超时连锁 EngineDeadError；npu-smi 全卡健康
+  visibility: 报错
+mitigation:
+  detect: plog + exception_info dump（~2.5GB/次）；排除矩阵：block_table 完整性 2^24 探针 0 违例、GDN conv-state 3 站点 0 失配
+  fix: 待定（issue 请求 CANN 团队审查 FIA kernel 910B tiling/地址计算）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: 'fail-loud（MTE fault 崩溃）为主，收录面为：持续负载下可复现（6/6 同 kernel 签名）、host 输入契约内、排除矩阵系统性排除 host 侧成因，指向 kernel 侧地址计算；与 #19611（910B1 PD decode 507057+MTE 48bit）、#19608（910C GDN spec-decode MTE）同签名族，留观并案'
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/19720
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend v0.30.0rc2（commit 8fde6d4e3）+ Qwen3.5-27B（hybrid GDN+full-attention MoE），16x Ascend 910B2C 单机 DP4xTP4、CANN 9.2.0、driver 7.7.0.1.231，持续 decode 负载（evalscope perf，--parallel 1-32）下引擎数分钟至~1 小时死亡。六次崩溃（跨两日）设备侧签名完全一致：CANN exception dump 每次指向同一 kernel FusedInferAttentionScore_3b093497fc536d61a77a7a3293a524da_5100000000010200203，errcode:(0, 0x4000, 0) errorStr: The GM address accessed by scalar exceeds 48 bits；故障设备轮换（NPU 4/2/7...），每次重启后 npu-smi 16 卡全健康。系统性排除矩阵：host 侧 block_table 完整性（numpy 探针每次 commit_block_table、2^24 边界，全部崩溃 0 违例）、GDN conv-state 索引（3 个 recurrent_gated_delta_rule 调用点探针 0 失配）、expandable_segments、graph mode、推测解码（MTP@4/7、DFlash2@4/7、DSpark@7 全崩）、本地改动（stash 后纯 v0.30.0rc2 仍崩）、硬件健康（HCCS/PCIe/HBM ECC 全净）、DEBUG 日志、AOT cache、内存压力（922GB free、oom=0）。结论：所有可插桩 host 输入在契约内，故障稳定落在 aclnnFusedInferAttentionScoreV3 的 910B kernel 内，疑 tiling/地址计算问题。相关报告：#16646/#16652（GLM-5.2/5.3 A2 双节点 fftsplus 超时同 EngineDeadError 链）、#18828（Qwen3.8-27B+MTP+FULL_DECODE_ONLY fftsplus 0x800000+507057）、#19608（910C/A3 GDN spec-decode MTE 507015）、#19611（910B1 PD decode 507057+MTE 48bit 地址）、HUST#40（CANN 9.1.0 Paged FIA TND/BF16/D256 非确定性错值）。来源 https://github.com/vllm-project/vllm-ascend/issues/19720（open）。'
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://github.com/vllm-project/vllm-ascend/issues/19720
+  behavior: vLLM-Ascend 上跑 Qwen3.5-27B 混合架构模型的长稳 decode 服务时，引擎会在数分钟到一小时内崩溃退出：某个 rank 的设备端报「scalar 访问 GM 地址超 48 位」MTE 故障，kernel 每次都是 FusedInferAttentionScoreV3，随后 HCCL AllReduce 超时、EngineDeadError、服务死亡。故障卡轮换但签名固定，重启后硬件自检全绿。崩溃前输出无异常（静默期），崩时整服务中断；持续压力下 6/6 复现。负载低时不出现。
+  trigger_surface: vllm-ascend v0.30.0rc2、CANN 9.2.0、910B2C×16（DP4TP4）；Qwen3.5-27B hybrid GDN+MoE；持续 paged-decode 压力（max-model-len 1010000、MTP/DFlash2/DSpark 均触发）；根因未定位（kernel 侧疑点）
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

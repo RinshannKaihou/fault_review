@@ -1,0 +1,60 @@
+id: INF-2198
+legacy_ids: []
+slug: cann_npu_inductor_symbolic_stride_patch_process_wide
+aliases: []
+title: NPU Inductor 归约 mask 污染与小图派生多类缺陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: NPU Inductor codegen
+  behavior: persistent reduction mask 缺失使无效 lane 非零污染归约；多轴归约 layout 压平错误轴；另有负索引/符号证明等六类
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: GPT2/BERT 派生归约实际长度 768、SIMT tile 扩到 1024，越界值置零后减均值/平方仍使无效 lane 非零，污染归约结果；BERT 反向 bias 梯度错误压平保留轴
+  visibility: 静默错误
+mitigation:
+  detect: Inductor 派生 kernel 与 eager 对照；SIGTRACE（!3816）整网精度二分定位
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/pull/48387 （随 2026-10 修复批次）；训练库 TRN-0398 追踪同源八类
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-26'
+remarks: 10-25 曾按 PR 配套汇总留观；本轮按范围扩展重新评估：第 1/2 类为真实前向/反向数值面（推理库范围），与 INF-2159（同仓 Inductor 域）相邻作变体；训练库 TRN-0398 已收录同源条目（bias 梯度视角），cross 关联。第 3-8 类多为编译失败/调试/符号域，随条目记录不单列
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5625
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2159
+- kind: cross
+  target: TRN-0398
+pattern: PAT-INF-0194
+original:
+  mechanism: 'PyTorch 2.13 的 NPU Inductor 路径（torch.compile backend=inductor + torch_npu）八类缺陷（issue #5625 汇总，修复随 PR !48387）：1) persistent reduction mask：GPT2/BERT 派生归约实际长度 768、SIMT tile 扩展到 1024，即使 load 的越界值置零，后续减均值、平方仍使无效 lane 非零，污染归约结果——修复为在融合表达式计算后、实际归约前选择该归约的单位元；2) 多轴 reduction layout：BERT 反向 bias gradient 的轴压平与归约维分析不一致，把应保留的输出轴一并归约——修复为只压平 reduction axes；3) 负索引（dump/check 开关覆盖 wrap_neg，尚未证实原模型触发）；4) Load 生存期（UB 资源不足编译失败）；5) Tiling 资源搜索遗漏合法小候选；6) 符号 group 匹配误判（数学等价式结构比较不匹配）；7) 符号 stride 证明（取模化简引入负指数触发 Invalid ranges [0:-1]，独立复现脚本；补丁由 torch_npu 安装到公共 Layout 方法，进程级影响）；8) Range split 拒绝协议（CantSplit 缺构造参数/先访问 remaining 致异常逃逸）。环境：PyTorch/torch_npu 2.13。来源 https://gitcode.com/Ascend/pytorch/issues/5625（open）+ PR !48387。训练库 TRN-0398 已按 bias 梯度视角收录同源。'
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/Ascend/pytorch/issues/5625
+  behavior: 在 NPU 上用 torch.compile(inductor) 编译含归约的模型（如 GPT2/BERT 类派生图）时，部分融合 kernel 的归约结果被污染：实际长度 768 的归约被 tile 到 1024，padding lane 的值虽被置零但参与减均值、平方后再次非零，最终归约输出偏差无报错；BERT 类反向 bias 梯度的多轴归约还可能把应保留的通道轴一并求和。此外若干动态 shape/符号推导场景会编译失败或异常逃逸（第 3-8 类）。第 7 类补丁具进程级影响（安装到公共 Layout 方法）。前 1/2 类直接影响编译后模型的前向/反向数值正确性。
+  trigger_surface: torch.compile(backend=inductor) NPU 路径 + torch_npu 2.13；GPT2/BERT 派生归约图（实际长度非 tile 整数倍）、多轴 bias 梯度归约；第 7 类任何动态 shape 小图
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

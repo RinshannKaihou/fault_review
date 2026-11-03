@@ -1,0 +1,58 @@
+id: INF-2262
+legacy_ids: []
+slug: vllm_ascend_kv_copy_overlaid_views_same_ptr
+aliases: []
+title: vllm-ascend KV 块拷贝按 data_ptr 去重跳过重叠视图
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Ascend KV 拷贝 helper 视图去重
+  behavior: Ascend KV 块拷贝 helper 仅按 data_ptr 对源/目标视图去重，data_ptr 相同但形状不同的视图被判同一份而跳过拷贝，[narrow,wide] 组合实际不拷贝。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 12 组 NPU 实测（3 dtype×4 视图组合）：[narrow,wide] 单双向 6 组全 FAIL（mismatch 6/8=75%，max diff 16），[wide,narrow]/[wide,wide] 6 组 PASS；安装版与 e8a6393d 提取版一致；端到端影响未测量。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 data_ptr 相同但宽度不同的 overlay 视图对，拷贝后 assert_close（rtol=0, atol=0）；repro 已给出。
+  fix: 上游 vLLM 对应修复 https://github.com/vllm-project/vllm/pull/55112 （overlaid-view 去重问题，状态未核实）；vllm-ascend 侧暂无专门修复 issue/PR（报告者已检索确认）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20157
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/pull/55112
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend 的 KV 块拷贝 helper（分段混合缓存拷贝相关，#16013 曾处理分段拷贝但 helper 仍仅按起始地址去重视图）在 NPU 上的正确性缺陷：对共享同一 data_ptr 但形状（narrow/wide）不同的 overlaid 视图，去重逻辑把 distinct 视图当作同一份跳过拷贝。报告者在 Ascend910B3（vLLM PyTorch 2.10.0+cpu / torch_npu，collect_env 全量输出附于 issue）用实际 NPU 张量测 4 视图组合 × 3 dtype 共 12 例：[narrow, wide] block 0→2 单向与双向均 FAIL（actual [0,1,18,19,20,21,22,23] vs expected [0..7]，mismatch 6/8，Greatest abs diff 16.0），[wide, narrow]、[wide, wide] PASS；安装版 helper 与 commit e8a6393dda93e085cd8210011c6ec12027acb8a0 提取的未改版行为一致，证明缺陷在 helper 本身而非近期改动。上游 vLLM #55112 处理了对应的 overlaid-view 去重问题；报告者检索 vllm-ascend 现存与历史 issue/PR 未发现该 case 的专门修复。端到端模型输出影响未测量。'
+  source: 'GitHub issue https://github.com/vllm-project/vllm-ascend/issues/20157 （open，2026-10-28，含 collect_env、12 组实测矩阵与最小 repro）；上游对应 https://github.com/vllm-project/vllm/pull/55112 '
+  behavior: 在 vllm-ascend 上执行 KV cache 块拷贝（如同前缀共享/块整理时对 overlay 视图做 copy）时，若源与目标视图起始地址相同但形状不同，一个方向的拷贝被静默跳过，读回的 8 个值里 6 个是错的（差值最大 16）；fp32/fp16/bf16 三种 dtype 全部复现，服务不报错。函数级已确立，模型输出层影响尚未量化。
+  trigger_surface: vllm-ascend（NPU 平台 KV 拷贝路径）；存在 data_ptr 相同但形状不同的 overlaid KV 视图（多组分配/overlay 布局，如 DSV4.1 多后端分配）时触发；版本：报告时安装版及 e8a6393d 均在。
+  signature: 12 例 6 过 6 败的固定模式（[narrow,wide] FAIL / [wide,*] PASS），assert_close rtol=0 atol=0 直接断言失败。
+  repro: issue 附 /repro/repro_kv_cache_views_npu.py 完整输出与复现脚本。
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：vllm-ascend#20157 批次快照仍 open。
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

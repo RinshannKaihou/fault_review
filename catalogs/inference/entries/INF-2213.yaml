@@ -1,0 +1,67 @@
+id: INF-2213
+legacy_ids: []
+slug: cann_indexer_quant_cache_negative_slot_stomp
+aliases: []
+title: IndexerQuantCache 负 slot 踩写其他 KV slot
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: cann
+    component: slotMapping 值域校验
+  behavior: host/tiling 对 slotMapping 无值域校验，负 slot 参与 cache 地址计算，按 cache 末尾−|slot|×4B 落点静默改掉另一 slot 的 4 字节数据，调用仍返回成功。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 一个越界 slot 静默改掉 cache 内另一 slot 数据，KV Cache 被污染而调用方无从察觉；±2^31 极值才触发 507035 aicore 异常。资料声明取值 [-1, num_slots-1]、-1 表示跳过。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；同族 aclnnScatterPaKvCache 已修同类问题，修复未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6812
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2162
+pattern: PAT-INF-0192
+original:
+  mechanism: Ascend950PR + CANN 9.2.0-beta.2（ops-transformer master attention/indexer_quant_cache）。资料声明 slotMapping 取值 [-1, num_slots-1]、-1 跳过；实测 host/tiling 无值域校验，负 slot 参与 cache 地址计算。定量表：slot=-1→跳过（合规）、63→正确 128B、64/65→静默丢弃、-2→4B 写入 slot 63 行内偏移 120-123、-3→slot 63 偏移 116-119、-64→slot 62 偏移 0-3、±2^31→507035。规律：写入位置=cache 末尾−|slot|×4B，3 次重复 3/3 一致、首错下标固定 8184。自包含 C++ 单文件复现（cache FP8[4,16,1,128] 预填 0xA5 + 金丝雀比对）。同族 aclnnScatterPaKvCache 已修同类问题。
+  source: https://gitcode.com/cann/ops-transformer/issues/6812（A2 之外的 950PR 实测 + 负 slot 落点定量 + C++ 复现）
+  behavior: 向 IndexerQuantCache 传含负值的 slotMapping（如 -2）时调用返回成功，但 cache 里另一个 slot 的数据被悄悄改掉 4 字节；被污染的 KV 后续被读出参与计算，输出错值但无任何报错。只有 slot 达到 ±2^31 极端值才会以设备异常暴露。
+  trigger_surface: CANN 9.2.0-beta.2 ops-transformer + aclnnIndexerQuantCache + slotMapping 含 [−num_slots, −2] 负值（-1 为合法跳过）；每个负 slot 静默踩写 cache 尾部对应位置。
+  discovery: 2026-10-27 每日扫描
+  notes:
+  - 2026-10-27 var 目标 INF-2162『CANN GatherPaKvCache 索引/长度缺校验族静默越界或错值』——共享机制：host/tiling 对索引类入参（blockId/seqLens/seqOffset/slotMapping）缺值域校验，越界/负值静默参与地址计算踩写或错读 cache；触发差异：本条为 IndexerQuantCache 的 slotMapping 负值踩写其他 slot（950PR/CANN 9.2.0-beta.2），目标族为 GatherPaKvCache 的 blockId/seqLens/seqOffset（A2/9.2.0）。
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - original.notes
+  - date: '2026-10-28'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

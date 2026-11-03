@@ -1,0 +1,55 @@
+id: INF-2367
+legacy_ids: []
+slug: vllm_ascend_defer_block_free_accept_count_loss
+aliases: []
+title: defer_block_free 暂停请求丢 MTP 计数读过期状态槽
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm-ascend
+    component: defer_block_free 调度暂停
+  behavior: accepted 计数只存在按 batch 行号索引的临时量里，被暂停的请求移出 InputBatch 时删掉 prev 映射，回来时缺省发布为 1
+effect:
+  objects:
+  - KV状态
+  - 隐状态
+  detail: 混合 GDN + MTP + async 调度下被暂停请求的 recurrent 状态地址（accepted-1）丢失，下次 forward 读过期状态槽，生成被静默污染成复读环/乱码；GPQA 从 83-88 掉到 64-72
+  visibility: 静默错误
+mitigation:
+  detect: 报告者有同步现场记录（defer=true、sched_seq>processed_seq、pending D2H 值 2/4 被发布成 1）与真实 FLA GDN 内核因果探针（计数 3→输出 0.375、计数 1→0.125、拷回正确状态恢复 0.375）
+  fix: 修复建议按请求 ID 保存计数（快照 req→row、event 同步后收割、生命周期失效），报告者称已有实现并验证（A/B：计数丢失事件每 rank 3298→0、16384 token 复读环请求 1651 token 干净结束），尚未提 PR
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20677
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 0.30.0（8fde6d4e 起，v0.30.0 分支仍在）：align 模式下请求已结算的 recurrent 状态位于 mamba_state_idx[req] + accepted − 1，accepted 计数本身就是状态地址（内核 recurrent_gated_delta_rule_v310.h 的 stateTokenIdx = seq0 + acceptedTokenNum − 1、mamba precopy、postprocess 三处消费）。该计数只存在于按 batch 行号索引的临时量：GPU postprocess 按刚执行完那批的行序 D2H 落盘（NPUModelRunner._update_states_after_model_execute），下一步 _sync_num_accepted_tokens 靠 prev_req_id_to_index/prev_positions 认领，映射里找不到的按新请求发布为 1。KV 池压力下分配失败且抢占 victim 在飞时，defer_block_free guard（任何 is_kv_consumer 角色 connector 都武装，零 I/O connector 即可复现）让 scheduler 直接退出调度而不抢占；未调度请求保持 RUNNING 但被移出常驻 InputBatch，InputBatch.remove_request 同时删掉 prev_req_id_to_index 条目。请求回来落新行→计数发布为 1；而它的 mamba 块和 mamba_state_idx 活过暂停→真状态仍在槽 k−1→下次 forward 读槽 0（缺至多 num_spec 个已接受 token 的旧状态），错误状态进入递推并被下一次 precopy 归并洗白成基线；内核只校验 0<count≤窗口长，全程无报错。其他按请求保存的状态（block_ids、num_computed_tokens、mamba_state_idx）都以请求 ID 为键可活过暂停，accepted 计数是唯一只存行号临时量的一份。修复 A/B：暂停计数丢失事件每 rank 3298→0、复读环请求干净结束、空步 127→77，未受影响步逐位一致；另有 CPU 元数据回归 22 用例。环境：910B3×2 TP=2、Qwen3.8-27B（qwen3_5_mtp，num_speculative_tokens=3，mamba_cache_mode=align）、async 调度、KV 池满载。
+  source: https://github.com/vllm-project/vllm-ascend/issues/20677
+  behavior: 混合架构模型（full-attention+GDN 线性注意力+MTP 投机头）在开 async 调度、KV 缓存压力大、请求被暂停再恢复的组合下，生成输出被静默污染：请求先给出正确答案后同一短语复读（实测复读 1870 次直到 max_tokens）或输出乱码，全程不报任何错误；受影响配置 GPQA-diamond 准确率从干净区间 83–88 掉到 64–72。MTP 接受率不是可靠信号——复读环里可能冲到 ~100%，坏场景又会衰减到 0。
+  trigger_surface: vllm-ascend 0.30.0（v0.30.0 分支仍存在）；四条件缺一即不触发：hybrid GDN（mamba align）、MTP（accepted 产生非零偏移）、async 调度（武装 defer_block_free）、consumer connector + KV 压力（请求被暂停而非抢占）；910B3×2 TP=2、Qwen3.8-27B qwen3_5_mtp 复现
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: KV缓存
+      effect:
+        from: 隐状态
+        to: KV状态

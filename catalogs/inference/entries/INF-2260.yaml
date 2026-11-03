@@ -1,0 +1,64 @@
+id: INF-2260
+legacy_ids: []
+slug: gelu_backward_v2_rank26_30_output_unwritten
+aliases: []
+title: GeluBackwardV2 rank26-30 返回成功但输出未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: gelu_grad_v2 rank 上限校验
+  behavior: aclnnGeluBackwardV2 对 rank 26~30 输入两段均返回 0，但 gradInput 一个字节都未写，调用方拿到调用前残留数据；rank≤25 正常、rank≥31 返回 161002，行为不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: 对照组 rank25：0 字节未写（32/32 全写、数值正确 max|diff| 7e-08）；缺陷组 rank26：32/32 字节保持 0xA5 金丝雀残留，两段均返回 0。输出为调用前残留内存内容，不可预测。
+  visibility: 静默错误
+mitigation:
+  detect: 输出缓冲预填金丝雀（如 0xA5），调用后检查残留；rank 扫描 25/26/31 三档行为不一致即可定位。
+  fix: 待定（issue 期望：rank 超过资料声明 0-8 时返回 161002，或至少不得在输出未写时返回成功；同族 elu_grad_v2 已有 OP_CHECK_MAX_DIM 可参照；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7640
+  kind: gitcode_issue
+relations: []
+pattern: PAT-INF-0198
+original:
+  mechanism: cann/ops-nn 的 aclnnGeluBackwardV2 在 Ascend 910B2（单卡）、CANN 9.2.0（npu-smi 26.1.1）、TorchNPU 2.12.0.post3、仓 master 754a2ee9111fc9bdf6ce87ffa1fc3f837d37c694（2026-10-29）的维度校验缺口。910B 走内置 kernel ascend910b/ops_legacy/gelu_grad_v2，aclnn 入口在 libopapi.so。对 rank 26~30 输入两段返回 0 但 gradInput 完全未写（0xA5 金丝雀 32/32 残留）；rank≤25 正常（与解析导数 max 绝对差 7e-08），rank≥31 返回 161002。资料 activation/gelu_grad_v2/docs/aclnnGeluBackwardV2.md 三个张量「维度」列声明 0-8，同仓同族 elu_grad_v2 的 op_api/aclnn_elu_backward.cpp:32 定义 MAX_DIM_LEN=8 且 :102 用 OP_CHECK_MAX_DIM 拒绝，本算子缺少等价校验。issue 含自包含 repro.cpp（金丝雀判读）。
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7640 （open，2026-10-29，含对照/缺陷组金丝雀实测表）
+  behavior: 给 aclnnGeluBackwardV2 传入 26~30 维的张量时，接口两次调用都返回成功（0），但输出梯度张量一个字节都没写，读回来的是调用前缓冲区里的残留数据（金丝雀 0xA5 全保留）——值完全是垃圾但看起来像正常返回；25 维及以下数值正确，31 维及以上会报 161002，唯独 26~30 维落进静默未写的窗口。
+  trigger_surface: Ascend 910B2 / CANN 9.2.0；输入张量 rank∈[26,30]；gelu backward（训练/微调反传路径为主，极高高维张量场景）；aclnn 直调或经 TorchNPU。
+  signature: rank 26~30：两段 rc=0 且输出保持金丝雀初值；rank 25 正常、rank 31 报 161002。
+  repro: issue 含自包含 repro.cpp（0xA5 金丝雀计数）。
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：同型机制新增 aclnnSituGlu（ops-nn#7741，rank≥26 两段 0/0、ws=0、输出金丝雀未写，INF-2293 建 var 关联）；#7640 本轮批次快照仍 open，无修复进展。
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  - date: '2026-10-31'
+    fields:
+    - pattern

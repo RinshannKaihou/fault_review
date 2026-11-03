@@ -1,0 +1,56 @@
+id: INF-2281
+legacy_ids: []
+slug: ttmetal_all_gather_wrong_axis_guard_1xn
+aliases: []
+title: tt_all_gather 1xN mesh 错轴守卫静默跳过聚合
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: tt-metal
+    component: tt_all_gather 守卫
+  behavior: 单设备守卫检查任意轴含 1 而非目标轴：cluster_axis=1 在 [1,N] mesh（axis1 有 N 设备）恒命中，直接返回输入不做 gather；all_reduce 同款守卫。
+effect:
+  objects:
+  - 数值结果
+  detail: 2×p150a 组 [1,2] mesh（TP=2）实测：decode token embedding 经 all_gather(cluster_axis=1) 原样返回本 rank 分片；v0.80.0 与 v0.82.0-dev 守卫一致（main 同）。
+  visibility: 静默错误
+mitigation:
+  detect: '[1,N] mesh 上验证 all_gather 输出形状/内容（应含全 rank 分片）；单测断言非目标轴为 1 时仍执行 gather。'
+  fix: 待定（修复方向：守卫改为 mesh_shape[cluster_axis]==1；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/63259
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal tt_transformers 的 CCL 守卫逻辑缺陷（models/tt_transformers/tt/ccl.py:315-317，main@648cb136b9）：```if mesh_shape == [1,1] or (cluster_axis == 1 and 1 in list(mesh_device.shape)): return input_tensor```。注释写「仅目标轴为 1 时跳过」，代码却检查任意轴含 1；cluster_axis=1 在 [1,2] mesh 上计算为 True and (1 in [1,2])，函数提前返回输入，尽管 axis 1 实际有 2 台设备、gather 本应执行。同款守卫还门控 tt_all_reduce（ccl.py:160）。硬件实测：2× Blackhole p150a 组 [1,2] mesh（TP=2），tt-metal v0.80.0 与 v0.82.0-dev20261028 行为一致；测试张量为 decode token embedding（width-sharded），all_gather 后应含两卡完整数据，实际原样返回本 rank 分片。'
+  source: GitHub issue https://github.com/tenstorrent/tt-metal/issues/63259 （open，2026-10-28，含守卫代码定位与 2×p150a 实测）
+  behavior: 在 1×N mesh（如 2 卡 TP）上跑 tt_transformers 模型时，token embedding 等本应跨卡聚合的张量被守卫错误跳过 all_gather（及同款守卫的 all_reduce）：每个 rank 拿着自己的分片当作完整结果继续算，输出静默错误（各 rank 看到的数据不完整），无任何警告；网格任一维为 1 且走 cluster_axis=1 时全部命中，v0.80 与 v0.82-dev 均在。
+  trigger_surface: tt-metal v0.80.0/v0.82.0-dev/main；tt_transformers ccl；[1,N] 或任意含 1 轴的 mesh + cluster_axis=1 的 all_gather/all_reduce（1×N TP 部署典型）。
+  signature: '[1,2] mesh all_gather 输出 == 输入（形状与内容都不变）。'
+  repro: issue 附 2×p150a 实测（decode embedding width-sharded 张量）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 并行切分
+        to: 集合通信

@@ -1,0 +1,69 @@
+id: INF-2259
+legacy_ids: []
+slug: moe_gating_topk_softmax_310p_tiling_ub_overflow
+aliases: []
+title: MoeGatingTopKSoftmax 310P tiling UB 溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: MoeGating tiling 310P
+  behavior: 310P tiling 的 Align() 向上取整到 16*blockNum，row<160 分片越过真实行数，尾块非 8 倍数走单整块 softmax，UB 需求超上限，softmax 写坏、TopK 产垃圾索引、MoE 路由错乱。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: vLLM+MoE(256 experts) GSM8K 约 21% 样本空输出（首 token 即 EOS）；空输出 batch input_tokens 100% 落 (144,159] 非 8 倍数；单算子 row=156/col=256/fp16 输出垃圾行，EP 机型同输入正确。
+  visibility: 静默错误
+mitigation:
+  detect: 端到端：空输出样本的 batch input_tokens 落点统计；单算子层：RC 与 EP 机型同输入 golden 对比（kernel sha256 一致可排除设备侧）。
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14811 （open，CI 已通过，守卫循环逐档收缩 + 不可行时显式失败 + 3 个回归用例；未发布版本）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6910
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14811
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0522
+original:
+  mechanism: Ascend 310P（RC 形态单 SoC，GetCoreNumAic()=10 即 blockNum=10）上 moe/moe_gating_top_k_softmax 的 310P tiling 路径（tilingKey=18）缺陷。源码 moe/moe_gating_top_k_softmax/op_host/moe_gating_top_k_softmax_tiling_310p.cpp 的 DoOpTiling：oneCoreRow = Align(std::min(rowTmp, UB_SIZE / (32 * (colTmp + 3 * kAlign))), 16 * blockNum)。Align() 向上取整到 16*blockNum（310P RC 上=160），当 rowTmp<160（如 156）时取整越过真实行数 → activateCore = CeilDiv(156,160)=1，整个输入塌缩成单个尾块；尾块非 8 倍数时走 SoftMaxTilingFunc 的单整块路径，UB 需求约 (m+16)*col*fp16*3，col=256、m>144 时超过 MAX_UB_SIZE(245760B) → softmax 输出被写坏 → TopK 产出垃圾专家索引 → MoE 路由错乱 → 首 token EOS 空输出。EP 机型（blockNum=8）幸免纯属 batch 形状没踩中：Align(25,128)=128<156 从未越过行数，不是平台差异而是形状差异。kernel 侧 sha256 两机型一致，病全在 host tiling。毒窗：col=256 时 rowTmp∈[145,159] 且非 8 倍数 100% 中招（152 为 8 倍数走 4 均分路径安全）。复现环境：Ascend 310P RC 单卡，vLLM + MoE 模型（256 experts）GSM8K 动态 batch；单算子最小复现 row=156、col=256、fp16。RC 机型 GSM8K 94.01% vs EP 机型 95.75%。
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6910 （open，2026-10-29 报告，含完整根因分析与最小复现）；修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14811 （open，CI 已通过）
+  behavior: 在 310P 上跑 vLLM + MoE 模型（如 256 experts）GSM8K 评测时，约 21% 的样本输出为空（第一个 token 就生成 EOS 结束）；统计发现所有空输出样本的 batch input_tokens 都落在 (144,159] 区间且非 8 的倍数，同命令同权重在 EP 机型上精度正常（95.75% vs 94.01%）。单算子层面 row=156、col=256、fp16 输入时 310P 输出 10 行垃圾数据（等差数列或全 0），对照 EP 机型同输入逐位正确。无任何报错，完全静默。
+  trigger_surface: Ascend 310P（RC 形态，blockNum=10）；MoE 模型（256 experts）；动态 batch 使拼接后 input_tokens 落在 (144,159] 且非 8 倍数；col=256、fp16。vLLM 推理服务 + GSM8K 类评测可直接观察到空输出比例升高。
+  signature: 空输出样本的 batch input_tokens 100% 落在 (144,159] 且非 8 倍数；单算子 RC/EP 同输入输出分歧且 kernel sha256 一致。
+  repro: issue 正文含完整最小复现（row=156, col=256, fp16）与 vLLM GSM8K 评测统计。
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：ops-transformer#6910 批次快照仍 open；修复 !14811 未在窗口内更新（未核实合入）。
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - relations
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - behavior

@@ -1,0 +1,63 @@
+id: INF-2318
+legacy_ids: []
+slug: vllm_dp_dummy_run_writes_live_mamba_state
+aliases: []
+title: vLLM DP dummy run 写活请求 Mamba 状态块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: _dummy_run block table
+  behavior: _dummy_run（FULL）提交活 block table 后建 metadata，NULL 填充范围为空，dummy 行保留活请求 block ID；mamba kernel 无守卫就地更新共享 KV。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: RL 权重热更新 pause（keep）期间每 rank 空转 2–56 dummy 步，循环状态覆盖他人 K/V，fp32 状态读成 bf16 含 NaN，活请求下一实步 NaN logits。
+  visibility: 数值异常
+mitigation:
+  detect: DP+FULL graph+align 模式 pause 后监控活请求 logits NaN；检查 dummy 步 block table 是否指向 NULL。
+  fix: 待定（PR 给出修复：dummy 批全部行指向 NULL_BLOCK_ID；新版 v1/worker/gpu runner 已用独立 get_dummy_block_tables）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63776
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM 混合模型 + prefix caching align + FULL CUDA graph + DP 下，dummy run 可把 linear-attention 状态写进其他活请求的 KV 块（issue #63776）：触发场景为 DP pause_generation(mode=keep)（RL 框架 inflight 权重更新常用）——未达成一致的 rank 持续跑 dummy 批，实测每次 pause 2–56 个 dummy 步且活请求仍在批内。根因（GPUModelRunner._dummy_run，FULL 模式）：commit_block_table(num_reqs_padded) 提交活 block table，随后 _build_attention_metadata(num_reqs=num_reqs_padded) 未单独传 num_reqs_padded，使「fill unused rows with NULL_BLOCK_ID」范围为空，每个 dummy 行保留活请求 block ID；dummy seq_lens=1，align 模式 mamba_get_block_table_tensor 取 (seq_len-1)//block_size=0 即 mamba block list 首项——长请求的 entry 0 是早已释放复用（常为他人 attention 块）的旧状态块；attention KV 写在 dummy 下禁用（slot_mapping=-1）但 mamba/GDN kernel 无守卫就地更新状态；hybrid allocator 里 attention 与 mamba 共享物理 KV 张量，状态写覆盖他人 K/V，fp32 状态按 bf16 读出含 NaN 模式，下一实步读出。PIECEWISE/eager 不建 attention metadata 不触发；新版 runner 已有独立 get_dummy_block_tables。修复：_dummy_run 全部行指向 NULL_BLOCK_ID。'
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/63776 （open PR，2026-10-26 创建；含根因链与实测场景）
+  behavior: DP 部署混合（Mamba/线性注意力）模型开 FULL 图捕获和 align 前缀缓存，在做暂停以热更新权重（RL 训练常见）时：暂停期间各 rank 跑的空批（dummy batch）会把线性注意力状态写进仍活在批里的其他请求的 KV 缓存块，被写的请求下一个真实步骤读出 NaN logits、输出损坏。服务无报错，空批看起来无害；每次暂停可发生几十个空步，逐次污染累积。仅 FULL 图模式触发，eager/PIECEWISE 模式无恙。
+  trigger_surface: vLLM 混合 Mamba/GDN+attention 模型；DP + FULL CUDA graph + mamba_cache_mode=align + prefix caching；pause_generation(mode=keep)（RL 权重更新）期间 dummy 批。
+  signature: RL 热更新 pause 后活请求 NaN logits；dummy 批 block table 含活请求 block ID。
+  repro: issue 附实测（2–56 dummy 步/pause，fp32→bf16 NaN 模式）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: KV缓存
+      effect:
+        from: 跨请求/跨样本数据
+        to: KV状态
+      visibility:
+        from: 静默错误
+        to: 数值异常

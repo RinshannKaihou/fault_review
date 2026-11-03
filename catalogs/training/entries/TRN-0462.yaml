@@ -1,0 +1,55 @@
+id: TRN-0462
+legacy_ids: []
+slug: deepspeed_lowprec_optimizer_init_step
+aliases: []
+title: DeepSpeed 低精度优化器构造期推进 Adam
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: FP16/BF16 优化器包装初始化
+  behavior: FP16/BF16 包装在初始化时对零梯度执行真实 optimizer.step()：计数器被推进、weight decay 在首步 backward 前修改 master 权重，首步用错 bias correction。
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  detail: FP16/BF16 训练构造包装后未见过任何数据，master 权重已被 weight decay 改动（实测 0.5→0.4995）、Adam step=1；首步更新与独立初始化的 FP32 优化器不一致。静默。
+  visibility: 静默错误
+mitigation:
+  detect: 构造包装后立即比对 master 权重与 step 计数（应 0.5/0）；首步与 FP32 参考对照
+  fix: 待定（issue 提出移除合成 step、改用不改参数的状态分配例程，open）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8910
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'DeepSpeed #8910（open，2026-10-26，master fc7bc301）：FP16_UnfusedOptimizer（deepspeed/runtime/fp16/unfused_optimizer.py）与 FusedFP16Optimizer（fused_optimizer.py）在 initialize_optimizer_states() 中赋零梯度后调用真实 optimizer.step()。作者实测最小复现：构造 FP16_UnfusedOptimizer 包装 AdamW(lr=0.01, weight_decay=0.1) 后未做任何 backward，master 权重 0.5→≈0.4995、base.state[master][''step'']=1——解耦 weight decay 已在首次真实更新前修改 FP32 master 权重、Adam 偏差校正步进被推进，第一次真实更新用错 bias correction。fused 包装同机制。附 ZeRO-0 FP16/BF16 回归描述（构造期 master 不变检查 + 首步与独立 FP32 优化器同梯度对照）。修复建议：移除合成 step，让兼容优化器在首次真实更新时惰性初始化；确需 eager buffer 的用不改参数/计数器的专用状态分配。'
+  source: GitHub issue：https://github.com/deepspeedai/DeepSpeed/issues/8910 （open，含 4 行最小复现与实测 master/step 值）
+  behavior: FP16/BF16 DeepSpeed 训练刚初始化（还没喂过任何 batch），FP32 master 权重就已经被 weight decay 改小、Adam 的 step 计数已经变成 1：表现为首步更新与正确实现的 FP32 基线对不上、weight decay 大或 lr 高时初始权重莫名漂移；全程无报错，diff 权重才能发现。任何用 FP16/BF16 包装 + AdamW 的训练都受影响。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 优化器状态
+        to: 模型权重

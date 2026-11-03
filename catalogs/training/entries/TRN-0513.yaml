@@ -1,0 +1,53 @@
+id: TRN-0513
+legacy_ids: []
+slug: mfsdp_v2_backward_prefetch_stale_weights
+aliases: []
+title: Megatron MFSDP v2 预取错序静默用旧权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: MFSDP v2 prefetch
+  behavior: MFSDP v2 按静态注册序预取，模块执行序与注册序不同时反向序预测错误，对已完成 post_backward 的模块重复预取且不释放 gather，step 后该模块权重不换新也不报错
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 从第二步起部分模块用 step 前的旧全量权重做前向/反向，loss 逐步漂移（2 GPU fp32 SGD 实测 5 步 max|Δloss| 2.27e-3），无任何报错或警告
+  visibility: 静默错误
+mitigation:
+  detect: 对比 prefetch 关闭前后的 loss/梯度；检查 step 后 Parameter 是否仍为 unsharded 状态
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/8687（open，未合入）：FsdpContext 用 weak set 记录本趟已完成 post_backward 的模块并跳过对其预取
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8687
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'MFSDP v2 沿 FsdpContext.forward_order/backward_order（静态模块注册序）做 backward prefetch。模型注册子模块的顺序与 forward 实际执行顺序不同（如先注册 second 后注册 first、forward 先跑 first）时，预测的反向序是 [root, first, second]，而 autograd 实际先跑 second 再跑 first；first 进入反向时预取 second，但 second 的 post_backward() 已将其 reshard，该 gather 无人释放，second 保有 unsharded Parameter 与 unshard events 直到 optimizer.step()。下一步 forward 的 unshard_parameters() 看到已有 events 直接返回，second 用 step 前的旧权重计算；无报错，model.second.weight 在 backward 后保持 unsharded Parameter 而非 sharded DTensor。触发场景：兄弟 FSDP root、层复用（A→A→B）、reentrant/non-reentrant 重计算、梯度累积、多次 forward 后多次 backward，凡静态序重访已完成 backward 的模块即触发；LLaVAModel 注册 language_model 先于 vision_model 但 forward 先跑 vision，作者推测暴露但未实测。PR 作者在 2 GPU fp32 plain SGD 实测：从第二步起用未更新的参考权重，5 步 max|Δloss| 2.27e-3（关闭 prefetch 则为 0）。修复（PR #8687，open 未合入）：FsdpContext 维护本趟 post_backward 已运行模块的 weak set 并在 _prefetch_parameter_groups 两条路径中跳过它们；正确预测序不受影响。补充：register_hooks=False（MCore combined 1F1B）路径不受影响。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/8687
+  behavior: 训练不报错但 loss 与单卡/正确配置逐步偏离：多卡 MFSDP v2 训练中若模型注册序与执行序不一致（视觉-语言模型、层复用等结构常见），从第二个 optimizer step 起部分层一直用旧权重前向/反向，梯度与 loss 漂移（实测 5 步最大 loss 偏差 2.27e-3，随步数累积），模型权重收敛变慢或停滞，日志与指标无任何异常提示
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

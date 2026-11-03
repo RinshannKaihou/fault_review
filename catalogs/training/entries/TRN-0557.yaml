@@ -1,0 +1,54 @@
+id: TRN-0557
+legacy_ids: []
+slug: opsnn_swigluquant_v2_rank1_dynamic_quant_wrong
+aliases: []
+title: SwiGluQuantV2 rank1 动态量化输出错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: swi_glu_quant rank1 寻址
+  behavior: smoothScales传rank1 [G]（per-tensor）+dynamic时量化输出错误；疑似（issue自述未改码验证）：kernel按basicColLen做向量乘，smooth仅G个float，越界读后rowmax
+effect:
+  objects:
+  - 数值结果
+  detail: '实测 y 仅 1 个元素非 0、scale=20.62（应 86.86，对应 amax 6.16 vs 1.46）；同 x 改 rank2 [1,32] 后 64/64 一致；与 V1 #7770 同机理（共用 op_kernel/swi_glu_quant.h），910B3/CANN 9.2.0'
+  visibility: 静默错误
+mitigation:
+  detect: rank1 smooth + dynamic 组合与 CPU 标杆全量对拍；或第一段直接拒绝该组合
+  fix: 待定（issue open：若 rank1 只允许静态量化应在 GetWorkspaceSize 拒绝；动态需按标量乘）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7774
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7770
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2311
+original:
+  mechanism: 'cann/ops-nn #7774（2026-10-30，Atlas A2 910B3、CANN 9.2.0）：aclnnSwiGluQuantV2 在 smoothScalesOptional=rank1 [G]（per_tensor）+ quantMode=dynamic 时量化输出错误：GetWorkspaceSize/Execute 均返回 0，yOut 只有一个元素 ±127、其余 0，scaleOut 与资料公式不符。疑似机理（issue 自述未改码验证）：动态 kernel 用 Mul(tempFp32, tempFp32, smoothLocal, basicColLen) 按 H 元素做向量乘，rank1 smooth 只有 G 个 float，越界读未初始化/相邻内存后做 rowmax。预期 x 全 1 时 scale=127/1.4621≈86.86、整行 127；实测 scale=20.62（对应 amax≈6.16，与 smooth 行内除第 1 元素外取野值一致）、y 仅第 4 元素非 0。同 x 改 rank2 [1,32] 后设备与 CPU 标杆 64/64 一致。与 V1 #7770（kernel 越界读 120B/128B）同机理，两接口共用 op_kernel/swi_glu_quant.h，修复需一并覆盖 V2。'
+  source: https://gitcode.com/cann/ops-nn/issues/7774（关联 V1 同机理 https://gitcode.com/cann/ops-nn/issues/7770）
+  behavior: NPU W8A8 动态量化训练/推理调用 SwiGluQuantV2 且 smooth 量表传一维 [G]（per-tensor，资料声明支持）时：接口成功返回但量化输出几乎全 0（仅个别元素 ±127）、scale 与公式不符——量化激活整片报废，无报错，同数据改 [G,N] 二维就正确，对拍才能发现。
+  trigger_surface: CANN aclnnSwiGluQuantV2 + smoothScalesOptional=[G] + quantMode=dynamic；910B3/CANN 9.2.0
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

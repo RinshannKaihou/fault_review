@@ -1,0 +1,72 @@
+id: TRN-0469
+legacy_ids: []
+slug: trl_vespo_token_mask_sequence_collapse
+aliases: []
+title: trl VESPO+token_mask 单 token 出界压零整条序列权
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: VESPO get_gamma_weights
+  behavior: token_mask 把出界 token 的 IS ratio 置 0 后，VESPO 的 get_gamma_weights 对置零 ratio 取 log 并按序列求和：单个被掩 token 给整条序列加 log(1e-8)≈-18
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 含任一出界 token 的整条 completion 的 gamma 权重塌到 ~1e-15/~1e-24 量级，序列级梯度被整体抹掉；无报错、grad_norm 仅显示变小。
+  visibility: 静默错误
+mitigation:
+  detect: cispo_clip_ratio/IS 权重直方图：单 token 出界序列整体塌零；γ 权重分布双峰
+  fix: 待定（issue open，2026-10-27；文档口径与实现矛盾待维护者裁决）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7952
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0229
+pattern: PAT-TRN-0041
+original:
+  mechanism: 'trl #7952（2026-10-27）：`vllm_importance_sampling_mode="token_mask"` 文档口径为 token 级（「per-token ratios outside [C_min, C_max] are set to zero」），VESPO 章节也声明支持。但 `loss_type="vespo"` 下置零 ratio 经 `get_gamma_weights`（grpo_trainer.py：`log_is_ratio = torch.clamp(torch.log(importance_sampling_ratio), lower_clamp, 20.0)`）取 log 并累进序列 log-权重：一个被掩 token 给整条序列加 log(1e-8)≈-18.4，φ(w) 塌缩至 ~0。报告者 4×512 张量复现：序列 1/3 各含 1 个置零 token 时 γ 权重输出 [1.0, 2.0e-15, 1.0, 7.4e-24]——即 token_mask 在 VESPO 下从不只丢弃出界 token，而是丢弃整条序列。又因 VESPO 被排除在 `per_token_loss * importance_sampling_ratio` 步之外，被掩 token 自身保留梯度。与 TRN-0229（截断采样 logprob 口径不一致）同为「IS 修正口径错致序列权重塌缩」家族，触发点不同（token_mask 置零后取 log vs 采样截断口径）。源码锚点：grpo_trainer.py get_gamma_weights。'
+  source: https://github.com/huggingface/trl/issues/7952
+  behavior: GRPO 训练用 loss_type=vespo 且 vllm_importance_sampling_mode=token_mask 时，只要某条 completion 出现 1 个出界 token，该整条序列的 γ 权重即塌到 1e-15~1e-24 量级、序列梯度整体消失；无任何报错，grad_norm 只表现为变小，训练看起来仍在进行但对应样本不再学习。含出界 token 的序列越 多，有效 batch 越小。
+  trigger_surface: trl GRPOTrainer loss_type=vespo + vllm_importance_sampling_mode=token_mask（vLLM rollout）；任一 token 的 IS ratio 落在 [C_min, C_max] 外即触发
+  discovery: 2026-10-28 每日扫描
+  notes:
+  - '2026-10-29 2026-10-29 轮巡：issue #7952 open（6 评论，GitHub core 轮巡确认）；修复 PR !7998/!8000/!8001（exclude masked tokens from VESPO sequence weight）已关闭但均 merged_at=None——closed 非合入，fix 维持待定。'
+  - '2026-10-29 更正 2026-10-29 note：VESPO sequence weight 修复 PR 为 #7996/#8000/#8001（closed 且 merged_at=None，未合入）；#7998 是 FSDP2 权重广播另一修复，与本条无关。fix 维持待定。'
+  - '2026-10-30 2026-10-30 回访：trl #7952 open 6 评论无变化；修复 PR #7996/#8000/#8001 仍 closed 未合入（merged_at=None 核对）'
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - pattern
+  - date: '2026-10-29'
+    fields:
+    - original.notes
+  - date: '2026-10-29'
+    fields:
+    - original.notes
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

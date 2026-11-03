@@ -1,0 +1,54 @@
+id: TRN-0581
+legacy_ids: []
+slug: torchnpu_310p_inner_abort_poisons_process
+aliases: []
+title: 310P INNER-ABORT 后同进程 NPU 算子静默返回垃圾值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: CANN error-manager 内错中止
+  behavior: INNER-ABORT 抛异常后进程继续运行，同进程后续 NPU 算子静默返回未初始化垃圾，属进程态毒化；触发面 7 格：fp64 matmul/addmm/bmm/conv/LayerNorm、bf16 conv/LayerNorm
+effect:
+  objects:
+  - 数值结果
+  - 训练轨迹
+  detail: abort 后同进程所有 NPU 计算静默不可信：fp32 matmul 相对误差 8.06e+17、17 案例族全部垃圾；一个 batch 混入一条触发语句则此后 loss/精度全线静默失真
+  visibility: 静默错误
+mitigation:
+  detect: abort 后同进程跑已知值探针（如 tanh/matmul vs CPU）即可暴露；运行期在每条 INNER-ABORT 异常后强制进程退出或重建上下文
+  fix: 待定（issue open；对照 A3 同版本 fp64 走干净 op-plugin RuntimeError 且不毒化）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5789
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/issues/5788
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2352
+original:
+  mechanism: 'Ascend/pytorch #5789（2026-11-01 open，310P3，CANN 9.2.1 社区版 + torch 2.11.0 + torch_npu 2.11.0rc1）。进程内一条 fp64 语句（如 matmul float64）触发 CANN error-manager 内错中止（签名含 ''The Inner error is reported as above. The process exits for this inner error, and the current working operator name is MatMul''），但异常抛出后进程继续运行，同进程此后所有 NPU 算子静默返回未初始化垃圾：两语句最小复现中 fp32 matmul 相对误差 8.064e+17（垃圾为未初始化显存值，16384/16384 全有限非 NaN）；扩谱取证 17 案全部垃圾（matmul/conv 系 1e24~1e36、addmm 系全零、LayerNorm 系 NaN），同场独立对照组全净，证明是进程态毒化而非算子问题。触发面 7 格 INNER-ABORT：fp64 matmul/addmm/bmm + fp64 conv + fp64 LayerNorm + bf16 conv + bf16 LayerNorm。对照：A3 上同版本同代码 fp64 matmul 为干净 op-plugin RuntimeError 且不毒化。关联 #5788（bicubic ResizeD INNER-ABORT 同样毒化，已并入推理库 INF-2352）、#5642（to_copy Double 支持缺口）、#5785（310P fp32 降级带）。'
+  source: 'Ascend/pytorch https://gitcode.com/Ascend/pytorch/issues/5789（open）；同签名另案 #5788 https://gitcode.com/Ascend/pytorch/issues/5788；推理库同机制 INF-2352'
+  behavior: 310P 上进程里只要有一条不支持的语句（如 fp64 matmul、bicubic interpolate）触发 INNER-ABORT，异常被捕获后进程不退出，之后所有 NPU 算子『正常』返回未初始化垃圾值——无异常无告警，数值全有限不报 NaN。实测 abort 后 fp32 matmul 相对误差 8e+17 量级；训练进程一旦命中，此后 loss、梯度、精度全线静默失真。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

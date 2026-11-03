@@ -1,0 +1,52 @@
+id: TRN-0594
+legacy_ids: []
+slug: opsnn_max_pool2d_with_mask_310p_tail_dirty
+aliases: []
+title: MaxPool2dWithMask 310P 索引尾部非对齐清零残留脏数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MaxPool2dWithMask M200 实现
+  behavior: 310P(M200) 5 个实现文件用 3 参 DataCopy 按元素计数清零 indices 尾部，NPU 模式 32B 块对齐向下取整，尾块非 32B 整数倍时最后最多 7 个 int32 不被清零，保留未初始化/脏数据
+effect:
+  objects:
+  - 数值结果
+  detail: 正常业务 shape 即触发：样例 input[1,1,7,7] fp32 kernel 3x3 → output 25 元素、100%32=4 非对齐，indices 尾部最多 7 个 int32 脏数据；output 元素数 8 倍数时对齐不触发
+  visibility: 静默错误
+mitigation:
+  detect: 310P 上 output 元素数非 8 倍数的池化核对 indices 尾部与 CPU 参照；8 倍数对照组
+  fix: 待定（issue open；修复方向为尾块 DataCopyPad 或逐元素 SetValue 补齐，未见修复 PR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7917
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2370
+original:
+  mechanism: 'cann/ops-nn #7917（2026-11-02 open，310P M200）。max_pool2d_with_mask_m200*.h 共 5 个实现文件（206-209/240-243/188-192/106-109/135-138 行）的索引尾部清零均用 3 参 DataCopy 传元素计数：AscendC DataCopy 在 NPU 模式按 32B 块对齐向下取整（DataCopyCheck 静默截断），bytes 非 32B 整数倍时尾部不足一块的字节不写入。代码只按 8192 字节分片、未对最后一块 DataCopyPad 或 SetValue 补齐。原代码摘录见 issue（max_pool2d_with_mask_m200_spatial.h:183-192）。输入合法性依据：算子自带样例 2D 池化 input[1,1,7,7] fp32 kernel 3x3 stride 1 pad 0 → output 5x5=25、validIndexBytes=25*4=100、100%32=4。与 TRN-0583（max_pool2d return_indices 四芯四态）同为 max_pool 索引面但芯片/机制不同（310P 尾部清零截断 vs 契约四态）。'
+  source: cann/ops-nn https://gitcode.com/cann/ops-nn/issues/7917（open）
+  behavior: 在 310P(M200) 上跑 MaxPool2dWithMask，凡是输出元素数不是 8 的倍数的正常 shape（如 7x7 输入 3x3 池化输出 5x5=25 个），indices 输出的尾部几个位置（最多 7 个 int32）不是 0 而是未初始化的脏数据——上游若信任这些索引做 unpool/backward 会静默取错位置。输出元素数是 8 的倍数时对齐、不触发。全程无报错。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,51 @@
+id: INF-2209
+legacy_ids: []
+slug: vllm_ascend_indexshare_pp_topk_mixed
+aliases: []
+title: GLM-5.2 IndexShare 跨 PP 阶段复用错位 Top-K 索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: PP 传输与 enable_sp 判定
+  behavior: PP 收发路径调用 enable_sp() 未传配置恒返 False，误选 TP all-gather 组；TP 切片重组把其他 rank 的 Top-K 行拼进接收 buffer 前缀。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 共享索引层读错其他 TP rank 的 Top-K 选择，张量形状合法、静默影响稀疏注意力正确性；小 batch 下单行内可混入不同 rank 的列。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；源码级闭环已给出，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/19929
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend releases/v0.30.0 @ 3b2ed407a20b（配 vLLM v0.30.0 ced6857afa0e）。GLM-5.2 + PP>1 + TP>1 + DSA-CP（序列并行 MoE）+ 共享索引层跨 PP 边界。根因链：① DSA-CP 下各 TP rank 把本地 Top-K 选择写进 buffer 前缀（sfa_v1.py#L1582-1600），PP payload（patch_deepseek_v2.py#L457-464）保留 rank 局部内容；② worker.py#L788-824 的 PP 收发调用 enable_sp() 未带配置，普通 worker RPC 不在临时 current-config 上下文内，utils.py#L1071-1083 返回 False（即使 worker 实际开 SP），两端误选 all_gather_group=get_tp_group()；③ 上游 vLLM parallel_state.py#L1204-1207/#L1331-1340 的 TP 切片重组假设 TP 复制输入，对 rank 局部 buffer 重组后接收方读到错误索引。验证为源码审阅 + Python3.14/PyTorch2.13 CPU/Gloo 组件级复现；NPU/HCCL、全模型 GLM-5.2 与图精度未测，端到端精度影响未量化。
+  source: https://github.com/vllm-project/vllm-ascend/issues/19929（源码级三步根因链 + CPU 组件复现）
+  behavior: GLM-5.2 在 PP>1 且 DSA-CP 开启、索引共享组跨 PP 边界时，跨阶段共享索引层拿到其他 TP rank 的 Top-K 索引参与稀疏注意力；张量形状合法不报错，输出静默偏离正确结果（小 batch 下单行可混入不同 rank 的列）。
+  trigger_surface: vllm-ascend releases/v0.30.0 + GLM-5.2 + Model Runner V1 + PP>1 & TP>1 + DSA-CP 实际启用 + PP 边界落在索引共享组内 + 传输张量元素数可被 TP 整除；同 PP 阶段内共享或下阶段重算索引不触发。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

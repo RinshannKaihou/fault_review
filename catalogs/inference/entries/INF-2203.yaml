@@ -1,0 +1,61 @@
+id: INF-2203
+legacy_ids: []
+slug: cann_groupnorm_family_fp32_narrow_variance_nan
+aliases: []
+title: GroupNorm fp32 均值≫标准差：rstd 异常、out 大块 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: GroupNorm 族方差归约
+  behavior: fp32 组内方差远小于均值平方时方差计算灾难性抵消为负或 0，rstdOut 输出 NaN 或 1/sqrt(eps)，两段返回 0
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: x=1000±0.01（var≈3.5e-5）时 rstdOut=NaN/1/sqrt(eps)、out 128/128 或 256 中 128 个 NaN；良态输入（均值≈0）同形状正常（相对误差 ~6e-8）；meanOut 始终正常
+  visibility: 数值异常
+mitigation:
+  detect: 大均值小方差输入（如 1000±0.01）与 fp64 逐组参考对照；检查 rstdOut 是否 NaN
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: '同仓同日 #7334（GroupNormSilu）与 #7347（GroupNorm）为同一数值机制在两个算子上的实例，本条合并收录；#7348（nullptr gamma/beta 静默按 1/0 代入）与 #7363/#7321（空 Tensor 出参 inf/0/NaN 契约）为同算子族不同机制，留观'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7334
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7347
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0454
+original:
+  mechanism: aclnnGroupNorm / aclnnGroupNormSilu 在 fp32 输入满足「组内均值远大于标准差」（完全合法入参，数据量级仍在 fp32 正常范围）时，rstdOut 返回 NaN 或 1/sqrt(eps)（方差被算成 0），out 随之大块 NaN；两段式接口均返回 0，静默脏数据。GroupNormSilu 实测（910B2，CANN 9.2.0）：x=fp32[1,128] 50±0.001 / 1000±0.01（组内方差 3.5e-7/3.5e-5），期望 rstd≈310.77/148.35，实际 rstdOut=NaN、out 128/128 全 NaN、meanOut 正常。GroupNorm 实测（910B2）：x=1000±0.01 fp32，fp64 逐组参考 rstd=55.52/56.08，实测 nan/316.23（=1/sqrt(1e-5)），out 256 元素中 128 个 NaN。两算子良态对照（均值≈0）同形状正常（与 fp64 参考相对误差 ~6e-8），证明是大均值下方差计算（疑似 E[x²]−mean² 形态）灾难性抵消导致方差为负/0，而非非法入参。资料约束（rank 2-8、group 整除 C、eps>0、fp32）均满足。两个 issue 均带完整 C++ 复现脚本。来源 https://gitcode.com/cann/ops-nn/issues/7334、https://gitcode.com/cann/ops-nn/issues/7347（均 open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-nn/issues/7334 https://gitcode.com/cann/ops-nn/issues/7347
+  behavior: 对 fp32 张量做 GroupNorm 或 GroupNormSilu，当数据整体偏移很大而波动很小（例如全部在 1000 附近、波动 ±0.01，即均值远大于标准差）时，输出的倒数标准差 rstdOut 变成 NaN（或 1/sqrt(eps)），归一化输出整块 NaN；而同样的形状、同样 dtype、均值接近 0 的数据完全正常。接口返回成功无任何错误码，meanOut 也正常，只有看输出才会发现。任何含大 DC 偏移激活的归一化层（如某些传感器特征、残差累积后的激活）会静默产出 NaN 激活并在网络中扩散。
+  trigger_surface: aclnnGroupNorm / aclnnGroupNormSilu（fp32）；组内均值远大于标准差（如 x≈1000±0.01、50±0.001）；Ascend 910B2、CANN 9.2.0 实测；fp16/bf16 未实测
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - title

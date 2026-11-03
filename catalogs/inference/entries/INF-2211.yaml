@@ -1,0 +1,60 @@
+id: INF-2211
+legacy_ids: []
+slug: sglang_dspark_fa3_draft_width_mismatch
+aliases: []
+title: SGLang DSpark draft 宽度 FA3/FA4 错配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: FA backend draft 宽度推导
+  behavior: sample_from_anchor=False 的 draft 每请求前向 γ+1 行，FA backend 经 target_verify helper 固定取 γ，cu_seqlens_q 与实际 Q 布局错位。
+effect:
+  objects:
+  - 性能/资源
+  - 输出分布
+  detail: batch>1 时 per-request 注意力边界错，服务可继续运行不报错，draft 接受率随 batch 增大显著劣化；FA3 0.5.22 复现（Fun-CosyV），FA4 同初始化代码同病，FlashInfer 路径未证实。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://github.com/sgl-project/sglang/pull/46478（状态未核实，发布未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/46476
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang 0.5.22 FA3 复现（发现 @WilsonZheng0327，验证复现 @charliechenye）。sample_from_anchor=False 的 DSpark draft checkpoint：dspark_draft.py 中 query_token_num = sample_from_anchor ? γ : γ+1，draft ForwardBatch 携带 bs*(γ+1) 行；flashattention_backend.py 里 FlashAttentionBackend 独立经 SpeculativeAlgorithm.get_num_tokens_per_req_for_target_verify()（无视 sample_from_anchor）取 num_draft_tokens-1=γ，cu_seqlens_q=[0,7,14] vs 实际 [0,8,16]（γ=7、bs=2 例），注意力元数据与实际 Q 张量布局不符。ModelRunner.decode_num_tokens_per_req() 已正确区分，但 FA backend 未复用。FA4 与 FA3 共用 FlashAttentionBackend（不同 fa_impl_ver），同病；FlashInfer 独立元数据路径未证实受影响。'
+  source: 'https://github.com/sgl-project/sglang/issues/46476（γ+1 vs γ 推导错配 + cu_seqlens 对照 + Fun-CosyV 实测；修复 PR #46478）'
+  behavior: 使用 sample_from_anchor=False 的 DSpark draft 模型 + FA3/FA4 后端时，batch>1 下推测解码接受长度明显下降、加速比劣化（吞吐掉到接近关闭推测解码），全程无报错；单请求时无感。
+  trigger_surface: SGLang 0.5.22 + --speculative-algorithm DSPARK + sample_from_anchor=False 的 draft checkpoint + FA3/FA4 后端 + batch>1。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出分布
+        to: 性能/资源
+      visibility:
+        from: 质量退化
+        to: 性能退化
+    uncertain:
+    - detail

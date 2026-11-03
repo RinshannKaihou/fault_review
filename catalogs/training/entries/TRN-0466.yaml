@@ -1,0 +1,50 @@
+id: TRN-0466
+legacy_ids: []
+slug: trl_gkd_onpolicy_dataset_token_denom
+aliases: []
+title: GKD on-policy 步按数据集 token 数归一化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: trl
+    component: GKD loss 归一化口径
+  behavior: Trainer 在用生成 completion 替换 labels 前就从 dataset labels 数出 num_items_in_batch；JSD 和除以数据集 token 数，分母含已丢弃的参考答案 token。
+effect:
+  objects:
+  - 训练信号
+  detail: 每个 on-policy/seq_kd 步的 loss 尺度取决于被扔掉的参考答案长度（默认 lmbda=0.5 约一半步受影响）；实测 num_items_in_batch=172 而生成 batch label token 远小。同仓 DistillationTrainer 已按生成侧重数。
+  visibility: 静默错误
+mitigation:
+  detect: 对照 DistillationTrainer 重数逻辑；打印 num_items_in_batch 与生成 batch label token 数
+  fix: 待定（issue open）
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7924
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'trl #7924（open，2026-10-26）：Trainer 在 GKDTrainer.training_step 以生成 completion 替换 dataset labels（gkd_trainer.py:406-447）之前，就已从 dataset labels 数出 num_items_in_batch；generalized_jsd_loss（:304-310）把对生成 token 求和的 JSD 除以该数据集 token 数——分母包含已被丢弃的参考答案 token。结果：on-policy/seq_kd 步的 loss 尺度线性依赖参考答案长度，参考答案越长梯度越小。同仓 DistillationTrainer 已在生成侧重数并留注释（distillation_trainer.py:1838-1843），GKD 未得到同等修复（GOLD 不用 num_items_in_batch）。#6006 为 #4719 引入该归一化。复现：InspectGKDTrainer 打印传入计数与生成 batch label token 数（lmbda=1.0 全走生成分支，实测 num_items_in_batch=172 vs 生成 token 远小）。'
+  source: GitHub issue：https://github.com/huggingface/trl/issues/7924 （open，含代码行锚点与计数打印复现）
+  behavior: GKD 蒸馏训练里所有走生成分支的步（默认 lmbda=0.5 约一半步；lmbda=1.0 全部步），loss 被参考答案的 token 数而非实际生成 token 数归一化：参考答案写得越长，这步的有效梯度越小。训练完全无报错，表现为蒸馏效果不稳定地依赖数据集参考答案长度分布，同配置换数据集（答案长短不同）收敛行为明显不同。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,53 @@
+id: TRN-0603
+legacy_ids: []
+slug: opsnn_modulate_grad_formula_and_dtype
+aliases: []
+title: ModulateBackward 梯度公式缺 +1 项且半精度字节错乱
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnModulateBackward
+  behavior: kernel 实现 grad_input=grad_output*scale 遗漏链式法则 (1+scale) 的 +1 项，所有 dtype 所有 shape 均错；fp16/bf16 又被按 4 字节步长搬运输出错乱
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: modulate 层反向梯度全部错误：grad_input 差一个 +grad_output 项，半精度输入因 dtype 硬编码整体字节错乱，与 PyTorch modulate backward 不一致；含修复 PR 逐项对齐前后公式
+  visibility: 静默错误
+mitigation:
+  detect: 对 modulate 反向与 PyTorch 参考做逐元素梯度对拍（fp16/bf16/fp32、非零 bias、skip_bias_add on/off）
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/13360（open，2026-11-02）：修正梯度公式三式、按 DTYPE_GRAD_OUTPUT 编译期选型 + fp32 累加、tiling 按 dtype 推导、空张量写零、非 3 维输入 EZ1008 拒绝、补 fp16/空张量 UT
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13360
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn !13360（2026-11-02 open 修复载体，7 文件 +626/−128）。前向公式 out = self*(1+scale)+shift，正确反向应为 grad_input = grad_output*(1+scale)、grad_scale = Σ_L grad_output*input、grad_shift = Σ_L grad_output。原 kernel 实现为 grad_input = grad_output*scale，遗漏 +1 项——所有 dtype、所有 shape 的 grad_input 均计算错误，与 PyTorch modulate backward 亦不一致（修复 PR 中英文档公式同步修正）。第二独立缺陷：op def 声明支持 FP16/BF16/FP32，但 kernel 无条件实例化 ModulateGradKernel<float>，所有 DataCopyExtParams 步长按 sizeof(float) 硬编码，fp16/bf16 张量按 4 字节读取、输出数据完全错乱；修复按 DTYPE_GRAD_OUTPUT 编译期选择元素类型，计算统一提升 fp32（AccType）累加、最终 Cast 回 T。第三：tiling dataType=2/dataTypeSize=4 为结构体默认值从不读输入 dtype，fp16 按 fp32 字节宽度分块。第四：numBlocks==0||B*D==0 时 GenerateTilingData 直接 return，splitB/usedCores 等栈上字段未初始化即下发（垃圾核数）。第五：totalD_==0 整数除零；L==0 时 grad_scale/grad_shift 累加循环不执行、可选输出遗留未初始化 GM 内容（修复显式写零）。第六：非 3 维输入 tiling 无条件 GetDim(0/1/2) 越界读 shape（修复加校验报 EZ1008）。
+  source: cann/ops-nn https://gitcode.com/cann/ops-nn/merge_requests/13360（open 修复载体）
+  behavior: 训练或推理模型里带 modulate 层（如 DiT/SD3 类 time-embedding 调制）做反向传播时，该层梯度静默算错：grad_input 少了 +grad_output 项（差一个与 scale 无关的系统性偏移），fp16/bf16 输入时更严重——因 kernel 按固定 4 字节步长搬运，半精度张量的输入输出整体字节错乱、数值完全不可用。前向不受影响、无报错无警告，只有对拍 PyTorch 参考或训练不收敛才能发现。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

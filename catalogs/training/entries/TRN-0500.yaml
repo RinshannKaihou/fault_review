@@ -1,0 +1,75 @@
+id: TRN-0500
+legacy_ids: []
+slug: trl_chunked_logprob_support_underflow_inf_grad
+aliases: []
+title: TRL chunked logprob 支持集远低于最大 logit 时下溢
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: trl
+    component: ChunkedLogProbFunction
+  behavior: support_ids 的 support_sum_exp 相对全词表行最大值累加；support 全部远低于行最大值时 exp(z-max) 在 fp32 下溢为 0，log 项成 -inf。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 行内 support 全部远低于最高 logit（约 90+）时该行 logprob 输出 0.0 而非正确值（如 -log2=-0.6931），weight.grad 含 -inf/nan；梯度按全行累加，单行即污染整个 LM 头梯度。
+  visibility: 数值异常
+mitigation:
+  detect: 对 support_ids 输入统计 support 内最大 logit 与全词表最大值差距；监控 fused LM head 梯度 finite 检查
+  fix: 修复 PR https://github.com/huggingface/trl/pull/7983（open，2026-10-28）——track 支持的最大值？以 issue 正文与 PR 标题 Track the support maximum in the chunked log-prob kernel 判定，状态 open 未合入，细节未逐行核
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 与 TRN-0451（verl 确信标签 margin>16.6 logprob 舍入 0）同为 fused/chunked logprob 数值面但机制不同：0451 是 1+exp(-m) 舍入、本条是 support 相对全词表 max 的 fp32 下溢，共享 chunked logprob 内以全词表统计量归一 support 子集这一数值面
+evidence:
+- url: https://github.com/huggingface/trl/issues/7982
+  kind: github_issue
+- url: https://github.com/huggingface/trl/pull/7983
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0451
+pattern: PAT-TRN-0054
+original:
+  mechanism: 'huggingface/trl #7982（2026-10-28，open）：ChunkedLogProbFunction（fused LM head + support_ids，AsyncGRPO top-k/top-p 路径）在行内 support 的全部 token 低于全词表最高 logit 约 90 logits 以上时 logprob 与梯度错误。复现（main，row 0 logits [200,0,0,0]、support {1,2}、target 1）：logps[0]=0.0 而非 -log(2)=-0.6931；weight.grad 含 -inf（CUDA）或 nan 与 -inf（CPU），参考梯度有限。根因：support 和（support_sum_exp/support_other_sum_exp）相对行最大值 running_max 累加，而 running_max 取自全词表、可能在 support 之外；support 远低于它时 support 内每个 exp(z-running_max) 在 fp32 下溢为 0，log(others) 与 support_log_z 变 -inf。梯度按全行累加，单行即让整个 LM 头梯度非有限。修复 PR #7983（open）按标题在 kernel 内跟踪 support 的最大值。'
+  source: https://github.com/huggingface/trl/issues/7982 + 修复 PR https://github.com/huggingface/trl/pull/7983（open）
+  behavior: AsyncGRPO/top-k/top-p 用 support_ids 的 fused LM head 计算每 token logprob 时，若某行候选集内 token 的 logit 都远低于全词表最高 logit（约 90 以上），该行 logprob 输出 0 而非真实负值，且反向产生 -inf/NaN 梯度污染整个 LM 头——训练在若干步后以 NaN loss 或梯度爆掉显现，但源头 logprob=0 本身无告警。作者给了四行 logits 的 CUDA/CPU 最小复现与有限参考梯度对照。
+  trigger_surface: trl ChunkedLogProbFunction + support_ids（AsyncGRPO top-k/top-p 截断候选）；support 与全词表 max 差距约 90 logits 以上（fp32 exp 下溢界）
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：trl chunked logprob 修复 #7983 仍 open'
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - pattern
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: RL训练回路
+        to: 算子/内核
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    uncertain:
+    - effect

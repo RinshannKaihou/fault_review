@@ -1,0 +1,65 @@
+id: INF-2237
+legacy_ids: []
+slug: vllm_kimi_k3_fp8_kv_mla_prefill_silent_accuracy
+aliases: []
+title: vLLM Kimi-K3 FP8 KV 致 GSM8K 静默塌陷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FP8 MLA prefill 路径
+  behavior: Kimi-K3 在 MI355X 上以 --kv-cache-dtype fp8 服务时，ROCM_AITER MLA FP8 prefill 路径产出错误 KV，文本流畅但大面积答错，无任何报错或告警日志。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 8-shot GSM8K 前 200 题 greedy 从 0.975（BF16 KV）塌到 0.305（FP8 KV），134 题仅 BF16 正确；SGLang 同 checkpoint FP8 KV 0.950，指向 vLLM AITER MLA FP8 prefill 路径。
+  visibility: 质量退化
+mitigation:
+  detect: 同 prompt BF16/FP8 KV 对照评测可检出；运行时无检测（未评估）
+  fix: 规避：--kv-cache-dtype auto 或目标+draft KV 均 auto（实测 0.975/0.980）；上游修复未定位（issue open，报告者已排除 prefix caching/SITUV2/DSpark/load-format 等因素并锁定 FP8 MLA prefill PS buffer 日志为唯一差异）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/64106
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm/vllm issue #64106（2026-10-27，open）：8×AMD MI355X（gfx950）TP8，vllm/vllm-openai-rocm:nightly-rocm72（vLLM 0.32.1rc1.dev602+g5d35ce3934，ROCm 7.2.3、aiter 0.1.26、triton 3.8.0、transformers 5.20.2），moonshotai/Kimi-K3。--kv-cache-dtype fp8 时 8-shot GSM8K 前 200 题 greedy 0.305，--kv-cache-dtype auto 时 0.975，其余 flag 完全相同；200 题中 134 题仅 BF16 KV 正确、0 题仅 FP8 正确。单变量扫描：关 prefix caching 0.325、SITUV2 a8w4/a16w4 0.315/0.285、DSpark K=7 配置 0.345、load-format auto 0.310——均不动结论；目标+draft KV 全 auto 恢复 0.980。仅 FP8 运行打印 [rocm_aiter_mla.py:1268] FP8 MLA prefill PS buffers allocated（Kimi-K3 每 rank 12 头 padding 到 16，#51040），报告者据此把范围收窄到 AITER FP8 asm MLA prefill 路径，但未做逐 kernel 分离，根因未最终定位。FP8 KV 配置来自 vllm-project/recipes models/moonshotai/Kimi-K3.yaml 的 MI355X 单机 TP8 姿令（InferenceX AgentX lane），照抄配方即中招；SGLang 同卡同 checkpoint FP8_e4m3 KV 0.950（无推测）/0.970（DSpark），证明 checkpoint 与硬件可容忍 FP8 KV。'
+  source: https://github.com/vllm-project/vllm/issues/64106
+  behavior: 在 MI355X 上按官方 Kimi-K3 配方启动 vLLM 并加 --kv-cache-dtype fp8 后，服务 HTTP 200、无报错无告警、输出流畅，但数学题大面积答错：8-shot GSM8K 前 200 题 greedy 准确率从 0.975 掉到 0.305，同一题的答案往往前几步推导一致、随后一步算错走向错误结论；换回 --kv-cache-dtype auto 立即恢复。所有只看服务日志和输出流畅度的监控都无法发现。
+  trigger_surface: AMD MI355X（gfx950）+ TP8 + moonshotai/Kimi-K3 + --kv-cache-dtype fp8 + ROCM_AITER_MLA 后端（FP8 asm MLA prefill）；vLLM nightly-rocm72（0.32.1rc1.dev602）。recipes 仓库 Kimi-K3.yaml MI355X 配方直接触发。
+  discovery: 2026-10-28 每日扫描
+  notes:
+  - 2026-10-29 2026-10-29 回访：vllm#64106 仍 open，无修复进展
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 量化
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - original.notes

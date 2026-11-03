@@ -1,0 +1,59 @@
+id: TRN-0527
+legacy_ids: []
+slug: meg_sft_moe_aux_loss_mask_normalization_mismatch
+aliases: []
+title: SFT MoE aux loss 系数随 mask 漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: megatron-lm
+    component: router aux loss 归一化
+  behavior: per_token_loss 模式 router aux loss 乘输入 token 数而 finalize 除以目标 token 数，SFT mask prompt 时 aux 系数随 mask 比例漂移
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: SFT 训练 MoE 模型（mask prompt、calculate_per_token_loss=True）时，目标 token 占比不同的 DP 副本贡献的 aux 梯度没有按预期平均而是相加；路由正则强度随每步 prompt/目标 token 比例漂移，专家负载均衡效果偏离配置，全程无报错
+  visibility: 静默错误
+mitigation:
+  detect: 对比不同 prompt mask 比例下 aux loss/梯度尺度；检查 router aux 梯度与 moe_grad_scale 的关系
+  fix: 修复/提案 PR https://github.com/NVIDIA/Megatron-LM/pull/8662（open，opt-in flag --moe-aux-loss-input-token-normalization）：缓冲一步 CPU batch 计算全局 scored/input 比，经 moe_grad_scale_func 组合；要求 PP=1、独立 PAD/EOD ID、无序列调度器；内部报告者 aamjad-nvidia
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: PR 自述行为 possibly unintended（内部数小时前报告），非使用者 issue 载体；机制与量级（N_input/N_scored 比例、DP 副本 g0+g1 实例）具体，收为条目待维护者定夺默认行为
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8662
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'Megatron GPT SFT + calculate_per_token_loss=True：router 把均值辅助损失乘输入 token 数，而 finalize_model_grads 把合并梯度除以被评分目标 token 数。SFT mask prompt 时有效辅助系数改变 N_input/N_scored，且随各优化器步目标占比变化。PR #8662（open，opt-in flag --moe-aux-loss-input-token-normalization）提案：把一步 CPU batch 缓冲、计算全局 scored/input token 总数、与既有 moe_grad_scale_func 钩子组合；主 loss 梯度不变，AMP 与自定义 aux 缩放保留；PAD mask 排除 PAD 保留 prompt；空目标数匹配 finalizer 的 clamp-to-one；比率须覆盖整个优化器步而非单个 microbatch；不支持组合显式失败；初始集成要求 PP=1、独立 PAD/EOD ID、无序列调度器或 GTP rematerialization。发现者为 NVIDIA 内部（aamjad-nvidia，内部报告数小时前）。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/8662
+  behavior: SFT 训练 MoE 模型（mask prompt、calculate_per_token_loss=True）时，router 负载均衡 aux loss 的有效系数随每步 prompt/目标 token 比例漂移（如 N_input/N_scored），两个目标占比不同的 DP 副本贡献的 aux 梯度没有按预期平均而是相加；路由正则强度不可控，专家负载均衡效果偏离配置，全程无报错
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 损失计算
+        to: MoE路由
+    rewritten:
+    - detail
+    uncertain:
+    - effect

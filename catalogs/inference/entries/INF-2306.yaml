@@ -1,0 +1,52 @@
+id: INF-2306
+legacy_ids: []
+slug: ops_nn_swi_glu_quant_group_index_unvalidated
+aliases: []
+title: aclnnSwiGluQuant groupIndex 非法分组静默接受
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: swi_glu_quant group_index
+  behavior: op_host 只校验 group 长度与 smooth 首维，不校验取值/单调/末值；kernel 找不到组时 SMOOTH_INDEX_UPBOUND 分支跳过 smooth 乘法。
+effect:
+  objects:
+  - 数值结果
+  detail: groupIndex=[4,12]（末值>rows）ret=0 同基线；[1,1]（不覆盖末行）ret=0 且 digest 与基线不同——未覆盖行整段不乘 smooth 输出偏离。
+  visibility: 静默错误
+mitigation:
+  detect: groupIndex 末值>行数与不覆盖用例断言 161002；digest 对比合法基线。
+  fix: 待定（未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7772
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn aclnnSwiGluQuant groupIndexOptional 违反资料约束时仍返回 0（issue #7772，910B3/CANN 9.2.0 实测）：资料 L139 要求非递减且最大值不超过 x 除末维外维度乘积。实测 x=fp16[8x32]：groupIndex=[4,12]（末值 12>rows 8）两段返回 0；[1,1]（不覆盖末行）两段返回 0 且输出 digest 与覆盖全行的合法基线不同——kernel 对第 2..8 行找不到所属组，把 smoothIndex 置为上界后整段不乘 smooth，结果静默偏离。源码定位：op_host/swi_glu_quant_tiling_utils.h:240-258 只校验 group 长度与 smooth 首维；op_kernel/swi_glu_quant.h:285-299 找不到组时 SMOOTH_INDEX_UPBOUND 分支跳过 smooth 乘法。备注（未单独提单）：x 末维超资料 8192 上限（[8x8194]）返回 0；空 tensor（[0,32]，资料声明不支持）返回 0 且输出为空。与同日 #7770（[G] 越界读）同算子不同机制，分别记录。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7772 （open，2026-10-30 创建；含 digest 对照与源码行定位）
+  behavior: 调用 aclnnSwiGluQuant 时给 groupIndex 传非法分组：末值超过实际行数（如行数 8 传 12）接口照样成功、结果恰好与合法基线相同（侥幸）；分组不覆盖全部行（如 [1,1] 只覆盖第 1 行）时接口也返回成功，但没被任何组覆盖的行整段跳过 smooth 缩放，量化输出与正确结果静默不同。没有错误码、没有告警，仅能靠与合法配置逐字节比对发现；备注里 x 超长（8194 列）与空张量同样被静默放行。
+  trigger_surface: cann/ops-nn swi_glu_quant；groupIndex 末值越界或分组不覆盖全部行（另 x 末维>8192、空 tensor）；910B3。
+  signature: groupIndex=[1,1] 时 yOut digest≠合法基线 digest，两段 rc=0。
+  repro: issue 附三组 digest 对照（合法/[4,12]/[1,1]）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

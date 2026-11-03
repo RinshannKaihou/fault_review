@@ -1,0 +1,48 @@
+id: INF-2192
+legacy_ids: []
+slug: cann_fia_v5_scale_zero_half_mean_v
+aliases: []
+title: FIA V5 scaleValue=0 输出恒为 mean(V)/2
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FIA V5 scaleValue=0 路径
+  behavior: scaleValue=0 时 softmax 应退化为均匀分布输出 mean(V)，kernel 却恒输出 0.5×mean(V)，固定 0.5 倍偏差，两段返回 0
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: scale=0 时输出逐元素恰为期望 mean(V) 的一半；实测 7424/8192 元素偏差>1e-2、最大相对误差 0.5018；precision 线 5000 用例中 6 条同类系统性 FAIL（mismatch_ratio 0.80~1.00）
+  visibility: 静默错误
+mitigation:
+  detect: scale=0 用例与 mean(V) 对照（相对偏差恒 0.5）；precision 线 FIA-FS-* 系统性 FAIL 模式
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6739
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnFusedInferAttentionScoreV5（Ascend950PR，CANN 9.2.0-beta.2）在 scaleValue=0 时两段式返回 0、不报错，但 attentionOut 恒等于 0.5×mean(V)。按语义 scale=0 时 scores 全 0，softmax 退化为均匀分布，输出应为 mean(V)（沿 Skv 维）；实测输出正好是它的一半。复现（BNSD，1×2×64×64 fp16）：o[0,0,0,:4]=[0.012,-0.032,0.144,0.0691]，mean_v=[0.024,-0.064,0.2882,0.1381]（恰 2 倍），(o-mean_v).abs().max()=0.1445；7424/8192 元素偏差>1e-2，最大相对误差 0.5018。precision 线 5000 条用例中 6 条同类系统性 FAIL（FIA-FS-001/043/085 fp16、FIA-FS-167/209/251 bf16），共同特征 scaleValue=0，mismatch_ratio 0.80~1.00、max_rel_diff=0.5。资料仅说明 scaleValue 是「d 开根号的倒数」并建议不指定时传 1.0，未声明 0 非法，当前行为是静默返回错值。来源 https://gitcode.com/cann/ops-transformer/issues/6739（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-transformer/issues/6739
+  behavior: 调用 fused infer attention 接口把 scale 显式传 0（合法入参，资料未禁止）时，输出的注意力结果整体是正确值（mean(V)）的一半：每个元素都偏小 50%，数值本身无 NaN、无报错、接口返回成功。实测 8192 个元素里 7424 个偏差超过 1e-2，最大相对误差恰为 0.5；5000 条精度用例中 6 条 scaleValue=0 用例全部系统性失败，mismatch 比例 0.8~1.0。上层若显式传 scale=0（如自定义缩放实验或参数扫描），会拿到被静默减半的注意力输出。
+  trigger_surface: aclnnFusedInferAttentionScoreV5 / torch_npu.npu_fused_infer_attention_score；scaleValue=0（显式传 0）；Ascend950PR、CANN 9.2.0-beta.2 实测；fp16/bf16 均触发
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

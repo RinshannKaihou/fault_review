@@ -1,0 +1,53 @@
+id: TRN-0516
+legacy_ids: []
+slug: swift_grpo_masked_token_log_ratio_overflow_nan
+aliases: []
+title: swift GRPO 掩码 token log-ratio 溢出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: ms-swift
+    component: GRPO per-token IS ratio
+  behavior: per-token IS ratio 先 exp(Δlogp) 再在 reduce 时乘 completion_mask，被排除 token 的 log-ratio 溢出为 inf 后 inf*0 变 NaN 污染 loss 与梯度
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: completion_mask 排除的 token（如 padding/截断段）Δlogp 大于 ~88（fp32 exp 上限）时 loss=NaN 且梯度 NaN；修复把掩码提到 exp 之前
+  visibility: 数值异常
+mitigation:
+  detect: 监控 loss/梯度 NaN；检查被 mask token 的 Δlogp 分布
+  fix: 修复 PR https://github.com/modelscope/ms-swift/pull/10433（commit 3f6d7cde 已在 main，PR 关闭未标 merged，等价修复已入主干）：exp 之前先把被排除 token 的 log-ratio 置 0
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: 10-27 曾按「作者自述未确认生产失败」留观；本轮改判依据见 original.notes 之外：修复 commit 3f6d7cde（2026-10-26）已进 main 分支主干，视为维护者接受该缺陷路径
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10431
+  kind: github_issue
+- url: https://github.com/modelscope/ms-swift/pull/10433
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'swift/rlhf_trainers/grpo_trainer.py 的 _compute_loss_and_metrics 把 per-token importance ratio 构造为 exp(per_token_logps - old_per_token_logps)，只在 PPO loss reduce 时才乘 completion_mask。若被排除的 completion token 上 log-ratio 溢出（如 old=-1001、new=-1，Δ=1000 > fp32 exp 上限 ~709），随后的 inf*0 产生 NaN，同时污染 loss 与该被排除 token 的梯度。修复（PR #10433，commit 3f6d7cde 于 2026-10-26 进 main 分支）：exp 之前把被排除 token 的 log-ratio 置 0；sequence/sequence_token 级别与 real/FIPO 路径不变。作者在 trainer 路径用 controlled per-token log-probs 复现（修复前 loss nan、grad [nan,-1]；修复后 -1.0/[0,-1]），并跑过 2 步端到端与 RTX A5000 GPU 验证；自述未观察到生产训练失败实例。10-27 留观时以「作者自明非确认生产失败」为据；本轮范围复核发现修复 commit 已进 main（ms-swift main 历史 3dc578f151→…→942be5a612→3f6d7cde 祖先链确认，PR 记录 closed 未标 merged 属推送方式差异），缺陷路径的静默数值面（NaN loss 且污染被排除 token 梯度）符合收录边界，改判收录。'
+  source: https://github.com/modelscope/ms-swift/issues/10431 + 修复 https://github.com/modelscope/ms-swift/pull/10433
+  behavior: GRPO/PPO 训练中若被 completion_mask 排除的 token（padding、截断段等）上新旧 policy 的 logprob 差超过约 88（fp32）/709，loss 突然变 NaN、梯度 NaN，训练崩溃或被跳过；由于溢出发生在被 mask 的 token 上，常规检查有效 token 的 logprob 分布看不出异常，report 里也无提示
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,50 @@
+id: INF-2356
+legacy_ids: []
+slug: aclnn_inverse_out_dtype_silent_cast
+aliases: []
+title: aclnnInverse out 与 self dtype 不一致静默降精度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnInverse host 校验
+  behavior: GetWorkspaceSize 只查 dtype 可否 cast 不查是否一致，out 与 self dtype 不一致时返回 0 继续执行，结果按 out dtype 静默写出
+effect:
+  objects:
+  - 数值结果
+  detail: fp32 self + fp16/bf16 out 全返回 0，输出 fp16/bf16 精度（1/3→0.33398）；fp32→int32 正确返回 161002（cast 不允许），fp32→fp64 也返回 0 与资料「需一致」不符
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7880
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnInverse 在 out 的 dtype 与 self 不一致时第一段 GetWorkspaceSize 返回 0（成功）并继续执行，把结果按 out 的 dtype 静默降精度写入，全程无告警。资料原文：「out（aclTensor*）输出：输出逆矩阵。使用说明：数据类型和shape需要与self一致」。实测矩阵（self=fp32[2x2]，只改 out dtype）：fp32→fp32 输出正确基线 0.6/-0.7/-0.2/0.4；fp32→fp16 返回 0 输出 0.6001/-0.7002/…（fp16 精度）；fp32→bf16 返回 0 输出 0.60156/-0.69922/…；fp16→fp32 返回 0 输出 fp32 值；fp32→int32 正确返回 161002（cast 不允许）；fp32→fp64 返回 0（与资料不符）。可精确表示对角阵 [3,7] 显误差：fp32→fp32 得 0.333333/0.142857，fp32→bf16 得 0.33398/0.14258。即校验只做 cast 可行性、不做一致性，调用方以为算 fp32 实际拿到 bf16 精度。环境：Ascend 910B2、CANN 9.2.0（opp 20261015）、驱动 26.1.1、torch_npu 2.12.0.post3，2026-11-01 复现。来源 https://gitcode.com/cann/ops-nn/issues/7880（open，2026-11-01）。
+  source: 2026-11-01 每日扫描。https://gitcode.com/cann/ops-nn/issues/7880
+  behavior: 调 aclnnInverse 求 fp32 矩阵的逆、但 out 张量误设成 fp16/bf16：接口返回成功、无任何警告，读回的「fp32 位置」结果是 fp16/bf16 精度——对角阵 [3,7] 的逆 1/3 本该 0.333333，bf16 out 下拿到 0.33398。调用方以为在做 fp32 运算，实际精度被静默降级；只有把 out 设成 int32 这类不可 cast 的类型才会正确报 161002。
+  trigger_surface: Ascend 910B2；CANN 9.2.0；aclnnInverse out dtype != self dtype 且可 cast（fp32→fp16/bf16/fp64、fp16→fp32）；资料要求 dtype 一致
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

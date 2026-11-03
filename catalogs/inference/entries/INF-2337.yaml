@@ -1,0 +1,48 @@
+id: INF-2337
+legacy_ids: []
+slug: ge_atc_onnx_resize_half_pixel_silent_asymmetric
+aliases: []
+title: ATC 静默把 Resize half_pixel 换成 asymmetric
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: ATC ONNX Resize 算子映射
+  behavior: ATC 的 ONNX 解析层未把 coordinate_transformation_mode='half_pixel' 映射到算子的 half_pixel_centers=True，静默落入默认 False（asymmetric 语义）。
+effect:
+  objects:
+  - 数值结果
+  detail: half_pixel 模式的 Resize 经 ATC 转 .om 后输出逐位等于 asymmetric 语义；转换无报错无警告，输出数值本身自洽（另一种合法插值语义）；报告者分割模型全量评测 S-measure 下降 0.02。
+  visibility: 静默错误
+mitigation:
+  detect: ATC 转换后的 .om 输出与 onnxruntime 同输入逐位比对；重点测 align_corners=False 的 bilinear Resize。
+  fix: 待定（issue open；算子实现层 resize_bilinear_v2_d.py 自带 half_pixel_centers 开关，修复点在 ONNX 解析层映射，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ge/issues/698
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ge issue #698（2026-10-31，Ascend910_9362，CANN 9.1.0）：PyTorch F.interpolate(scale_factor=2, mode=''bilinear'', align_corners=False) 导出的 ONNX Resize 节点属性 mode=''linear''、coordinate_transformation_mode=''half_pixel''；经 ATC 转 .om 后 NPU 输出不符合 ONNX 声明的 half_pixel 语义，而是逐位等于 asymmetric（TF ResizeBilinearV2 half_pixel_centers=False 默认）语义。根因定位：CANN 安装包 opp/built-in/op_impl/ai_core/tbe/impl/ops_legacy/resize_bilinear_v2_d.py 的接口签名 check_supported(..., align_corners=False, half_pixel_centers=False, ...) 表明算子具备 half_pixel_centers 开关，但 ONNX 解析层未把 coordinate_transformation_mode=''half_pixel'' 映射为 True，静默落入默认 False。对照验证：align_corners 模式映射正确（与 onnxruntime 逐位一致），唯独 half_pixel 未映射；scales 与 sizes 两种 Resize 形式均受影响。'
+  source: GitCode issue https://gitcode.com/cann/ge/issues/698 （open，2026-10-31 创建；含最小复现三步与 onnxruntime 交叉验证）
+  behavior: 把 PyTorch 导出的 align_corners=False 双线性插值 ONNX 模型用 ATC 转成 .om 部署到 NPU：上采样输出整体偏离正确语义（等于 TensorFlow 式 asymmetric 插值），转换过程无任何报错或警告，输出数值自洽所以肉眼难以发现；图像分割模型上表现为全量评测 S-measure 掉 0.02。align_corners=True 的模型不受影响，可作对照定位。
+  trigger_surface: cann/ge ATC；ONNX Resize（bilinear，coordinate_transformation_mode=half_pixel，即 PyTorch align_corners=False 导出）；scales 与 sizes 两种形式；Ascend910（9362）/CANN 9.1.0。
+  signature: .om Resize 输出与 onnxruntime half_pixel 基准逐位不符但与 asymmetric 基准逐位一致。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

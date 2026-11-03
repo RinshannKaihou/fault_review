@@ -1,0 +1,54 @@
+id: INF-2229
+legacy_ids: []
+slug: ttmetal_softmax_pad_nan_poisons_mask
+aliases: []
+title: tt-metal softmax padding NaN 击穿掩码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: softmax padding 掩码
+  behavior: 用加 -inf tile 掩蔽 padding 列，但 NaN+(-inf)=NaN：隐式 padding 含 NaN/inf 时掩码失效，行被毒化。
+effect:
+  objects:
+  - 数值结果
+  detail: BEVFormer P150 4/8 PCC 失败（0.9978-0.9988 vs 0.999）；末维非 32 倍数的 softmax 可返回错误行；padding 列 NaN 数与坏行数一一对应（270↔270）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: '待定（issue open；zero padding 或 fill_implicit_tile_padding 规避——诊断帖已更正最初对 #61609 DFB 顺序的归因）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62506
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'P150（stock tree with #61609）。ttnn.softmax/scale_mask_softmax 对最后 tile 的 padding 列以加 -inf tile 掩蔽，但 NaN+(-inf)=NaN、+inf+(-inf)=NaN，掩码失效。隐式 tile padding 是未定义数据：BEVFormer reshape([1,900,16]→[1,900,4,4]) 在列 4..31 留 stale L1 字节；#61609 改 matmul L1 布局后这些字节变 NaN（恢复 DFB 顺序只是碰巧又变有限——最初归因已更正）。证据矩阵：失败测试中每个 ttnn.linear vs torch PCC≥0.99997 无坏行，softmax PCC 0.82/0.71；padding 列 NaN 计数与坏 softmax 行数精确对应 270↔270、38↔38；softmax 前 zero padding（不动 matmul）BEVFormer 8/8 通过。'
+  source: https://github.com/tenstorrent/tt-metal/issues/62506（诊断更正帖 + NaN/坏行精确对应 + 规避验证）
+  behavior: 任何末维不是 32 倍数的 interleaved softmax（或 scale_mask_softmax）只要隐式 tile padding 里恰好有 NaN 或 inf（如上游 reshape 残留），对应输出行就被毒化算错，无报错；BEVFormer 上表现为 4/8 精度检查失败、PCC 掉到 0.998 以下。
+  trigger_surface: tt-metal + ttnn.softmax/scale_mask_softmax + 末维非 32 倍数 + 隐式 tile padding 含 NaN/±inf（依赖上游算子残留）。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail
+    uncertain:
+    - behavior

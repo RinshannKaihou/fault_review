@@ -1,0 +1,67 @@
+id: TRN-0560
+legacy_ids: []
+slug: opsnn_apply_adam_w_quant_zero_block_nan
+aliases: []
+title: ApplyAdamWQuant 零块 0/0 出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: apply_adam_w_quant 归一化
+  behavior: 量化归一化 Div(state, absmax) 在 block absmax=0 时 0/0=NaN（golden 有特判），NaN 进二分查找/CheckSign 后量化码值与 golden 分歧
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  detail: gnormScale=0（grad 全零）触发；TTK 169 用例修前 156 PASS、4 个 gnormScale=0 组 FAIL；mRef/vRef/absmax 输出错；arch35（950PR/DT）路径
+  visibility: 数值异常
+mitigation:
+  detect: gnormScale=0 / 全零梯度步回归；输出 NaN 断言
+  fix: '修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13012（merged：Div 前除数取 max(absmax, FLT_MIN)，169→全 PASS；issue #7736 closed）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7736
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13012
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2320
+original:
+  mechanism: 'cann/ops-nn #7736（2026-10-30，closed）+ 修复 MR !13012（merged）：aclnnApplyAdamWQuant arch35 kernel（optim/apply_adam_w_quant/op_kernel/arch35/apply_adam_w_quant_fp16.h/_fp32.h）在量化归一化 Div(state, absmax) 中，block 的 absmax=0 时 0/0=NaN（golden 用 where(absmax==0,1,absmax) 特判走 0/1=0）。典型触发 gnormScale=0：grad''=grad*0=0、m/v 更新后 s1'' 全零、块内 state 与 absmax 同 0。NaN 进入二分查找/CheckSign 后量化码值走向错误，mRef/vRef/absmax 输出错。修复：Div 前对除数取 max(absmax, FLT_MIN)（0/FLT_MIN=0 与 golden 一致、absmax>0 无扰动），tinyVec 复用 calcBuf offset 无竞争；TTK 全量 169 用例 156→159 PASS（gnormScale=0 组 L0_093/097/129/151 FAIL→PASS）。遗留 9 个巨 grad 用例属用例/环境问题。回归时 aclnn 判据同时由 stat_rel_err 调整为 mix_tolerance（var 过零元素相对判据误报）。'
+  source: https://gitcode.com/cann/ops-nn/issues/7736 + 修复 MR https://gitcode.com/cann/ops-nn/pull/13012（merged）
+  behavior: NPU（950PR/950DT arch35）上用 ApplyAdamWQuant 量化优化器训练，遇到梯度全零步（gnormScale=0、梯度被完全 clip、空 micro-batch 聚合）时：全零 block 的归一化 0/0 产生 NaN，量化码值与 m/v/absmax 输出错乱，训练从该步起优化器状态被污染；日志可见 NaN 扩散或精度突然劣化，需要 gnormScale=0 用例才能复现。
+  trigger_surface: CANN aclnnApplyAdamWQuant arch35（950PR/950DT）+ gnormScale=0 或 block 内 state 全零；CANN 9.2.0 族
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - '2026-11-01 回访 2026-11-01：批次快照显示 issue #7736 closed、修复 !13012 merged 状态不变；未核实发布版本。'
+  - '2026-11-02 2026-11-02 回访：同接口另案 #7901（mRef 量化索引未写回恒 0，absmaxMRef 系统性偏小）已独立收录为 TRN-0580——机制不同（输出索引写回缺陷 vs 零块 0/0 归一化 NaN），非 var 关系。'
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 优化器
+        to: 量化
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - original.notes
+  - date: '2026-11-02'
+    fields:
+    - original.notes

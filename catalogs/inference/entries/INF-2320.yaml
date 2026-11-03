@@ -1,0 +1,69 @@
+id: INF-2320
+legacy_ids: []
+slug: ops_nn_apply_adam_w_quant_zero_block_nan
+aliases: []
+title: aclnnApplyAdamWQuant 零 block 0/0 出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: apply_adam_w_quant Div
+  behavior: arch35 kernel 归一化 Div(state,absmax) 在 block absmax=0 时 0/0=NaN；golden 有 where(absmax==0,1,absmax) 特判，kernel 无。
+effect:
+  objects:
+  - 优化器状态
+  detail: NaN 进二分查找/CheckSign 后量化码值走向错误，mRef/vRef/absmax 输出错；修复前 TTK 169 用例 13 FAIL，修复（max(absmax,FLT_MIN)）后 159 PASS。
+  visibility: 静默错误
+mitigation:
+  detect: gnormScale=0 或全零 block 用例比对 golden（仓库 ST json 取值范围 [1e-8,0.9999] 不含 0，需单独构造）。
+  fix: '修复 PR https://gitcode.com/cann/ops-nn/pull/13012 （issue #7736 报告并附修复，TTK 169 用例 156→159 PASS；发布状态未核实）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7736
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13012
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0560
+original:
+  mechanism: 'cann/ops-nn aclnnApplyAdamWQuant（arch35 kernel：optim/apply_adam_w_quant/op_kernel/arch35/apply_adam_w_quant_fp16.h/_fp32.h）量化归一化 Div(state,absmax) 在 block 的 absmax=0 时 0/0 产生 NaN（issue #7736，arch35=950PR/950DT 路径，arch22 不涉及）：典型触发 gnormScale=0 时 grad''=grad*0=0，m/v 更新后 s1'' 全零、块内 state 与 absmax 同时为 0。NaN 进入二分查找/CheckSign 后量化码值走向与 golden 的 where(absmax==0,1,absmax) 特判分歧（golden 0/1=0，kernel 0/0=NaN），mRef/vRef/absmax 输出错误。修复前 TTK 全量 169 用例仅 156 PASS；修复（Div 前对除数取 max(absmax,FLT_MIN)，absmax=0 时 0/FLT_MIN=0 与 golden 一致，absmax>0 时无扰动；tinyVec 复用 calcBuf 既有 offset 无数据竞争）后 gnormScale=0 组 L0_093/097/129/151 转 PASS、全量 159/169。注意仓库 ST json 的 gnormScale 取值范围 [1e-08,0.9999] 不含 0，需单独构造。issue 状态 closed（随修复 PR !13012 关闭，发布状态未核实）。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7736 （closed，2026-10-30 创建；含触发机制、修复方式与 TTK 回归数据）；修复 PR https://gitcode.com/cann/ops-nn/pull/13012
+  behavior: 量化版 AdamW 优化器算子在梯度缩放系数为 0（或某 block 状态全零）时：块内归一化算出 0/0=NaN，量化码值分配走错，m/v 参考输出和 absmax 都错，无报错。169 个回归用例里 13 个失败（全部是 gnormScale=0 组），修复（除数加 FLT_MIN 下限）后转绿。零梯度 block 在训练收尾、稀疏梯度或显式 gnormScale=0 调试时出现，此时优化器状态被静默写坏。
+  trigger_surface: cann/ops-nn apply_adam_w_quant；arch35（950PR/950DT）；gnormScale=0 或 block absmax=0；fp16/fp32 kernel。
+  signature: gnormScale=0 组 TTK L0 用例 FAIL（golden 特判 0/1 vs kernel 0/0=NaN）。
+  repro: issue 附用例配置（atk_aclnnApplyAdamWQuant.json L0_093/097/129/151）与 TTK 回归。
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - '2026-10-31 2026-10-31 回访：issue #7736 已 closed（10-30）；修复 !13012 此前已 merged；是否随版本发布未核实'
+  - '2026-11-01 回访 2026-11-01：同接口 ops-nn#7901（mRef 输出恒 0）与 #7888（固定 4096 越界读写）另立新案 INF-2355/INF-2364；源 #7736 closed，修复 !13012 merged 但发布未核实'
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - relations
+  - date: '2026-10-31'
+    fields:
+    - original.notes
+  - date: '2026-11-01'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

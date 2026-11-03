@@ -1,0 +1,54 @@
+id: INF-2243
+legacy_ids: []
+slug: cann_multi_add_rms_norm_dynamic_quant_arch35_defects
+aliases: []
+title: CANN MultiAddRmsNormDynQuant arch35 量化饱和
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: multi_add_rms_dyn_quant
+  behavior: arch35 把 inp=y*smooth_scale 物化进 UB，smooth_scale 极小时落入 fp32 次正规区被抹零致 int8 饱和；另有累加序差 1-2 ULP、零行 scale 随模板变、inf 补偿得 NaN。
+effect:
+  objects:
+  - 数值结果
+  detail: smooth_scale 极小（如 ±1e-40，次正规量级）时 y1 饱和超 1 LSB 判据（D=2048/10240/16384）；x1 含 inf 时 scale 应 inf 却 NaN；零行 scale 随 D 在 1.0 与 0 间跳变；相消输入差 1-2 ULP；全程无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对照 golden 的 int8 判据（|err|≤1 LSB）与 scale 合法性检查可检出
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/pull/12728 （merged，修复全部四处：归一化后 y 保留正常数域改算 k、累加序对齐 A2、零行 scale 统一 0、回退两处退化补偿；实机 Ascend950PR/950DT 验证；发布版本未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7527
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/12728
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #7527（2026-10-28 报，closed）+ 修复 MR !12728（merged）：Ascend 950PR/950DT（arch35）、CANN 9.3.0（V100R001C12B136）。四处缺陷：1) 量化饱和——inp=y*smooth_scale 物化进 UB，smooth_scale 极小（如 ±1e-40）时中间值落入 fp32 次正规区被 FTZ 抹零，int8 输出 y1 饱和；修复改为保留归一化 y、改算 k=(smooth_scale*quantMax)/row_max，全程正常数域。2) 累加序 arch35 为 (Σx1)+x2，A2（910b）为 (x1[0]+x2)+x1[1]+...，相消点差 1-2 ULP。3) row_max==0 时 single_row 模板 scale=1.0、其余模板与 golden 为 0，同一输入 scale 随 D 改变；统一为 0。4) row_max/末级 rstd 两段式补偿 hi-s0*quantMax 在 hi 非有限时 inf-inf=NaN 而公式应得 inf；回退该补偿。修复验证：两方 kernel 泛化 2495 例全 PASS、应被拒集 7 例全 FAIL、三方 cross_check 287 例全 PASS、op_host UT 33/33（--soc=ascend950）。触发用例形态见 issue（D=2048/10240/16384、bf16、x1 注 inf 等）。'
+  source: https://gitcode.com/cann/ops-nn/issues/7527 修复 https://gitcode.com/cann/ops-nn/pull/12728
+  behavior: 在 Ascend 950 上用 MultiAddRmsNormDynamicQuant 做 RMSNorm+动态量化时：smooth_scale 很小（次正规量级）时量化输出饱和超出 1 LSB 判据；输入含 inf 时输出的 scale 变成 NaN（应为 inf）；整行零输入时 scale 的值随归约长度 D 在 1.0 和 0 之间跳变；与 910b 相比相消场景有 1-2 ULP 差。全程无报错；修复后泛化 2495 例与三方 cross_check 287 例全过。
+  trigger_surface: Ascend 950PR/950DT（arch35）+ CANN 9.3.0 + MultiAddRmsNormDynamicQuant + smooth_scale 次正规量级 / x1 含 inf / 零行 / 相消输入；修复 MR !12728 已 merged（发布版本未核实）。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

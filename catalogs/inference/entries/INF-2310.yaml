@@ -1,0 +1,56 @@
+id: INF-2310
+legacy_ids: []
+slug: ops_math_isclose_int_cast_fp32_compare
+aliases: []
+title: aclnnIsClose 大整数被转 fp32 后判等失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: is_close Cast<float>
+  behavior: arch35 is_close_dag.h 对整数输入先 Cast<float> 再比较，|x|≥2^24 的不同整数在 fp32 舍入到同值，零容差下仍判 close。
+effect:
+  objects:
+  - 数值结果
+  detail: int32 16777217 vs 16777216 实测 True（应 False）；int64 2^53+1 vs 2^53、1e18+1 vs 1e18 同错；阈值 |x|≥2^24，2^24−1 及以下正确；master 该行仍为 Cast<float>。
+  visibility: 静默错误
+mitigation:
+  detect: rtol=atol=0 下断言 (16777217,16777216)=False；整数 dtype 全零容差扫描。
+  fix: '待定（WIP MR !6909 isclose: compare wide integers exactly when tolerances are zero，未合入）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4314
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/6909
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-math aclnnIsClose 在 int32/int64 输入且 |self| 或 |other| ≥ 2^24 时把两个不同整数判为 close（issue #4314，A2/910_9362，CANN 9.2.0-beta.2，master 9a37afeb）：rtol=atol=0 时本应退化为整数相等。实测 int32 16777217 vs 16777216 返回 True（应 False），2147483647 vs 2147483646 True；int64 9007199254740993 vs 9007199254740992 True，1e18+1 vs 1e18 True。失效阈值精确到 2^24：2^24−1 及以下正确，2^24+1 起错误（2^24 本身可被 fp32 精确表示仍正确）。根因定位（报告者 git show master）：math/is_close/op_kernel/arch35/is_close_dag.h 仍为 Cast<float>——整数被转成 fp32 后尾数 24 位舍入到同值，比较失效。资料声明支持 INT32/INT64，计算公式 |self−other|<=atol+rtol*|other| 应按真实 dtype 精度比较。WIP 修复 MR !6909「compare wide integers exactly when tolerances are zero」方向为容差为零时整数精确比较，未合入。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4314 （open，2026-10-30 创建；含自包含 repro.cpp 与阈值二分实测）；修复 MR https://gitcode.com/cann/ops-math/merge_requests/6909 （open WIP，未核实内容）
+  behavior: 用 aclnnIsClose 比较 int32/int64 张量：当数值绝对值达到 2^24（16777216）以上时，两个明显不同的整数（如 16777217 和 16777216、9007199254740993 和 9007199254740992）即使 rtol=atol=0 也会被判为 close 返回 True；小数值与浮点输入正常。接口不报错，做整数逐元素校验、差异检测的下游会把本不相同的整数当成相同放行。
+  trigger_surface: cann/ops-math is_close；INT32/INT64；|x|≥2^24；rtol/atol 任意（零容差也不拦截）。
+  signature: isclose(16777217,16777216,rtol=0,atol=0)=True；阈值恰为 fp32 尾数 24 位边界。
+  repro: issue 附自包含 repro.cpp（CASE-1..4 实测 out=1）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

@@ -1,0 +1,60 @@
+id: INF-2238
+legacy_ids: []
+slug: ttmetal_paged_sdpa_decode_stale_kv_inf_nan
+aliases: []
+title: tt-metal paged sdpa_decode 复用块残值错输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: paged SDPA decode kernel
+  behavior: paged sdpa_decode 对 cur_pos 之后的 KV 不掩蔽，复用块越界位置残留的 inf/NaN 被读入 attention，返回错误输出且无报错；有限残值不影响结果。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Llama-3.2-1B decode 中回收块含 inf 时 8/8 次运行在 14-27 token 内发散；stale-cache 用例 54 failed（clean cache 18 passed）。输出只应依赖 cur_pos 之前的 KV 行。
+  visibility: 静默错误
+mitigation:
+  detect: 复用块预填 inf/NaN 与清零 cache 对照可检出；无运行时检测（未评估）
+  fix: '待定（issue open 2026-10-28 新报；测试 test_sdpa_decode_stale_kv.py 见 #62634；非回归，一直存在）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62901
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2113
+pattern: PAT-INF-0195
+original:
+  mechanism: 'tenstorrent/tt-metal issue #62901（2026-10-28，open）：ttnn.transformer.paged_scaled_dot_product_attention_decode。复用的 paged K/V block 在 cur_pos 之后的位置仍保留旧值（回收块未清零），kernel 对这些位置不掩蔽直接参与 attention；若残值为 inf/NaN 则输出错误，有限残值经 softmax 归一化不改变结果。实测（Wormhole N150，tt-metal f288db45673，KMD 2.9.0/FW 19.11.0）：stale-cache 用例 test_sdpa_decode_stale_kv.py（#62634）54 failed、同用例 clean cache 18 passed；Llama-3.2-1B decode 在回收块填 inf 时 8/8 次运行 14-27 token 内发散（Llama 栈 39e7277fcd6）。复现：cache 预填 inf、写有效 0..cur_pos、与零填 cache 对照。Frequency: always；非回归。与 vLLM ROCM_ATTN 滑窗不 mask V（INF-2113）共享『越界/窗口外 KV 残值中的 inf/NaN 未被掩蔽即进入 attention』机制，差异在平台（tt-metal paged decode vs vLLM ROCm 滑窗）与残值来源（块复用回收 vs 滑窗槽位）。'
+  source: https://github.com/tenstorrent/tt-metal/issues/62901
+  behavior: 在 Wormhole 上跑 paged sdpa_decode 解码时，如果某个复用的 KV block 里 cur_pos 之后的位置还残留 inf 或 NaN（上一个序列留下的），当步解码输出直接错掉且无任何报错；实测 Llama-3.2-1B 8/8 次在 14-27 个 token 内生成发散。残留是有限值则结果不受影响，因此问题只在含 inf/NaN 残值时出现，极难从输出日志察觉。
+  trigger_surface: Wormhole N150 + tt-metal f288db45673 + paged sdpa_decode + KV block 复用且越界位置残留 inf/NaN；Llama 栈 39e7277fcd6。always 复现，非回归。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

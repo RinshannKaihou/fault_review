@@ -1,0 +1,58 @@
+id: TRN-0546
+legacy_ids: []
+slug: torch_npu_lazy_call_race_drops_callbacks
+aliases: []
+title: torch_npu _lazy_call 竞态静默丢回调
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: npu._lazy_call 初始化队列
+  behavior: _lazy_call 先查 _initialized 再入队，与 _lazy_init 不共用 _initialization_lock：初始化线程遍历完队列后、置位前，另一线程回调被追加进已消费队列，此后无人消费
+effect:
+  objects:
+  - 训练样本流
+  detail: manual_seed/set_rng_state 等经 _lazy_call 延迟执行：多线程首次初始化并发时随机种子或 RNG 状态设置被静默丢失，数据顺序/初始化偏离预期且不可复现；持有初始化锁的模拟复现可稳定构造
+  visibility: 不可复现
+mitigation:
+  detect: 初始化后断言 _queued_calls 为空；对 seed 生效性做两次采样一致性检查
+  fix: 待定（issue open：建议 _lazy_call 与 _lazy_init 共用 _initialization_lock，重入不死锁）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5744
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5744（2026-10-30，open）：torch_npu/npu/__init__.py 的 _lazy_call() 先检查 _initialized 再决定直接执行或追加 _queued_calls，检查与追加不和 _lazy_init() 共用 _initialization_lock。竞态时序：初始化线程持锁完成 _queued_calls 遍历 → 另一线程调 _lazy_call（_initialized 仍为 False）→ 回调追加进已遍历完的队列 → 初始化线程置位 _initialized 退出 → 该回调永不消费。manual_seed()/set_rng_state() 经 _lazy_call 延迟执行，多线程首次初始化场景下随机种子/RNG 状态可被静默丢失。issue 给出持锁模拟复现脚本（worker 调 _lazy_call 后 callback_ran 不置位、队列长度为 1）。与 NPU 型号/CANN 版本无关。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5744
+  behavior: torch_npu 多线程环境（dataloader worker、训练/生成线程并发）触发 NPU 首次初始化时，恰在初始化收尾阶段调用的 npu.manual_seed()/set_rng_state() 等延迟接口可能被静默丢弃：种子没生效但无任何报错，后续采样、数据 shuffle、初始化全部偏离预期且两次运行不可复现，只能靠两次采样对比才能察觉。
+  trigger_surface: torch_npu master npu/__init__.py；多线程首次 NPU 初始化窗口 + _lazy_call 排队的回调（manual_seed/set_rng_state 等）
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    uncertain:
+    - effect
+    - detail

@@ -1,0 +1,65 @@
+id: TRN-0522
+legacy_ids: []
+slug: moegating_topk_softmax_310p_tiling_ub_overflow
+aliases: []
+title: MoeGatingTopKSoftmax 310P tiling 路由错乱
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: MoeGating tiling 310P
+  behavior: tiling 向上取整越过真实行数使输入塌缩为单尾块，非 8 倍数尾块走单整块 softmax 路径 UB 需求超限，输出被写坏产出垃圾专家索引
+effect:
+  objects:
+  - 数值结果
+  - 训练样本流
+  detail: col=256 且行数落 (144,159] 非 8 倍数时 router 输出垃圾专家索引；vLLM+MoE GSM8K 动态 batch 约 21% 样本空输出（首 token 即 EOS），空输出样本 input_tokens 全落该区间；EP 机型 blockNum=8 未踩中
+  visibility: 静默错误
+mitigation:
+  detect: 对 row<16*blockNum 且非 8 倍数输入单算子对拍；监控 MoE 首 token EOS 率
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14811（open）：guard 310P 尾块防 softmax UB 溢出
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: 推理库 INF-2259 同 URL 已收（vLLM GSM8K 载体）；训练侧独立条目：MoE gating 同一算子服务训练前向，路由索引错乱直接污染专家梯度
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6910
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14811
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2259
+original:
+  mechanism: CANN ops-transformer MoeGatingTopKSoftmax 310P tiling 路径（moe/moe_gating_top_k_softmax/op_host/moe_gating_top_k_softmax_tiling_310p.cpp DoOpTiling）：oneCoreRow=Align(min(rowTmp, UB_SIZE/(32*(colTmp+3*kAlign))), 16*blockNum)。Align 向上取整到 16*blockNum（310P RC 单 SoC GetCoreNumAic()=10 → 160），rowTmp<160（如 156）时取整越过真实行数 → activateCore=CeilDiv(156,160)=1，整个输入塌缩为单个尾块；尾块非 8 倍数走 SoftMaxTilingFunc 单整块路径，UB 需求约 (m+16)*col*fp16*3，col=256、m>144 时超 MAX_UB_SIZE(245760B) → softmax 输出写坏 → TopK 垃圾专家索引 → MoE 路由错乱。复现：vLLM+MoE 256 experts GSM8K 动态 batch，约 21% 样本空输出（首 token EOS），空输出样本 input_tokens 100% 落 (144,159] 非 8 倍数；EP 机型 blockNum=8、Align(25,128)=128<156 未踩中属形状差异非平台差异。单算子 row=156/col=256/fp16 RC 输出 10 行垃圾、EP 逐位正确，kernel sha256 两机型一致、病在 host tiling。修复 PR !14811（open）：guard 310P 尾块防 softmax UB 溢出。
+  source: https://gitcode.com/cann/ops-transformer/issues/6910 + 修复 https://gitcode.com/cann/ops-transformer/merge_requests/14811
+  behavior: Ascend 310P 上 MoE 模型训练/推理前向在 batch 行数落在特定窗口（col=256 时 row∈[145,159] 非 8 倍数）时 router 输出垃圾专家索引：训练侧专家分派与梯度全错，推理侧首 token 即 EOS（GSM8K 21% 空输出）；同权重同命令在 blockNum=8 机型正常，难以归因到 tiling 形状
+  discovery: 2026-10-30 每日扫描
+  notes:
+  - 2026-10-31 2026-10-31 回访：#6910 open；修复 !14811 open（2026-10-30T03:15Z 更新），无状态变化。
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - original.notes

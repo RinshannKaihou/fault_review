@@ -1,0 +1,61 @@
+id: INF-2251
+legacy_ids: []
+slug: ttmetal_quasar_sharded_layout_silent_corruption
+aliases: []
+title: ttnn quasar 分片布局守卫失配静默错值三连
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: quasar 分片布局校验
+  behavior: quasar 布局守卫查错条件：transpose 查 tile 倍数而非 shard 行 16B 对齐；1D matmul 借用 in0 缓冲致行块只读一次；slice 降级后仍把 TILE 输出交 RM writer 越界写。均静默。
+effect:
+  objects:
+  - 数值结果
+  detail: transpose：bf16 WIDTH_SHARDED shard [32,12]（24B 行）PCC 近 0、写侧只写 4/8 页其余核留旧值；matmul：多块输出借用 in0 缓冲时 PCC≈0.3；slice：输出按 tile 读 RM 字节、writer 越过 L1 分配末尾。
+  visibility: 静默错误
+mitigation:
+  detect: 与 torch 参考实现逐元素对照（PCC 检查）可检出；布局校验层全部放行
+  fix: '待定（三个 issue 均 open，2026-10-27/28 报，属 #58407 quasar 加固系列 item 18/22/23；slice 的 can_land_in_preallocated 判据已存在但未被使用）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62605
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/62465
+  kind: github_issue
+- url: https://github.com/tenstorrent/tt-metal/issues/62613
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0197
+original:
+  mechanism: 'tenstorrent/tt-metal quasar 实验算子三连（#58407 item 18/22/23，2026-10-26/27 报，均 open）：1) #62605 transpose——transpose.cpp:203 守卫检查逻辑 tile 倍数，但 noc_async_*_sharded 实际要求 shard 行 16B 对齐；bf16 (1,1,32,96) WIDTH_SHARDED 8 核（shard [32,12]，行 24B）时 6 次 32B 读代替 8 次 24B 读（末 2 shard/行不读、8B padding 进 CB），写侧 [96,4] 输出每行只写 4/8 页、核 4-7 留旧 L1，PCC 近 0 无报错；4 核（48B 行）正确。2) #62465 1D matmul——matmul_multicore_reuse_mcast_1d_program_factory.cpp:6551 以 in0_shard_width/in0_block_w==1 借用 in0 数据流缓冲（RO_IN0_TENSOR 视图），mcast_in1 分支只查 shard 几何与 in1 布局、out_block 限制在 is_sharded() 守卫内而 interleaved 输出放行；out_block_h=4、in0_num_blocks_y=in1_num_blocks_x=2 时四块输出走过仅前向的缓冲，行块只消费一次，PCC≈0.3。3) #62613 slice——step!=1 触发 rm_only 把 TILE 输入降级 ROW_MAJOR 后，slice.cpp:380 无条件把调用者 TILE 分页的预分配输出交给 RM writer（同文件已有 can_land_in_preallocated 判据未用），输出按 tile 读 RM 字节全错且 writer 越过 L1 分配末尾；step=1 非对齐 begin 同型。三者共同机制：布局/分片前置校验检查的条件与 kernel 实际约束不一致，错配组合静默通过并产出错值。'
+  source: https://github.com/tenstorrent/tt-metal/issues/62605 https://github.com/tenstorrent/tt-metal/issues/62465 https://github.com/tenstorrent/tt-metal/issues/62613
+  behavior: quasar 实验路径上三个常用算子在特定分片/布局组合下静默返回错值：transpose 对行宽非 16B 对齐的 width-shard 输入 PCC 掉到近 0 且部分核保留旧数据；1D matmul 在多块输出+借用输入缓冲时 PCC≈0.3；slice 步长≠1 加预分配 TILE 输出时输出全错并越界写。三次调用都不报错、不挂起，与 torch 对照即现。
+  trigger_surface: Wormhole N150 + tt-metal f288db45673 + ttnn.experimental.quasar.{transpose, matmul, slice} + 特定分片几何（sub-16B 行宽 / 多块输出借用缓冲 / rm_only 降级+TILE 预分配输出）；#58407 加固系列。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - pattern

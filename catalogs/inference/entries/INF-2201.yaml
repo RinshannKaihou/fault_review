@@ -1,0 +1,56 @@
+id: INF-2201
+legacy_ids: []
+slug: cann_acos_grad_tiling_u32_wraparound_silent_partial_compute
+aliases: []
+title: acos_grad tiling uint32 回绕只算前 512 元素
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: acos_grad tiling
+  behavior: coreNum 等四处先运算后 uint32 窄化，totalLength 达 2^41-511 时回绕，blockNum=1 仅覆盖前 512 元素仍返回成功
+effect:
+  objects:
+  - 数值结果
+  detail: 超大 shape 下 kernel 仅覆盖前 512 元素、其余不计算，返回 GRAPH_SUCCESS，静默大规模错误输出；同族 asin_grad tiling 全链 int64 无此问题
+  visibility: 静默错误
+mitigation:
+  detect: 超大 totalLength 用例与 CPU 参考全量对照（首 512 元素正确其后全错的结构性特征）
+  fix: 待定（issue 建议全链 int64 承载、窄化前校验值域，越界报 EZ0015）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: 同为 uint32 回绕族但机制与收录面不同：#6766 是寻址偏移回绕（乘加域），本条是 tiling 块参数整型窄化致计算覆盖塌缩（调度域），不合并；触发需 totalLength≈2^41（约 2.2 万亿元素）超大 shape，推理常规规模不触发
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4087
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0459
+original:
+  mechanism: acos_grad 算子（Ascend 950 / arch35）tiling 块参数计算存在四处先运算后窄化，中间值 ≥2^32 时按模回绕：op_host/arch35/acos_grad_tiling_arch35.cpp 的 CalcBlockParams——coreNum = static_cast<uint32_t>(CeilDiv(totalLength, ELEM_ALIGN))：totalLength 达 2^41-511 时 CeilDiv 结果越过 uint32 边界回绕，blockFormer 塌缩、blockNum=1，仅覆盖前 512 元素且返回 GRAPH_SUCCESS，静默大规模错误输出；blockFormerRaw、blockFormer、blockNum 三处同样先运算后窄化，过渡区间另产病态 blockNum；比较与兜底逻辑均位于窄化之后，无法纠正回绕结果；全链（def/infershape/tiling）无 totalLength 上界校验。同族算子 asin_grad 的 tiling 参数全链 int64，无此问题。复现：构造 totalLength 接近及超过 2^41-511 量级的超大 shape 下发执行，tiling 参数回绕后仍返回成功、kernel 仅覆盖部分元素。环境：Ascend 950、CANN 9.3.0。来源 https://gitcode.com/cann/ops-math/issues/4087（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-math/issues/4087
+  behavior: 对 acos_grad（反余弦梯度）算子下发超大张量（元素总数接近或超过 2^41≈2.2 万亿）时，算子返回成功，但只计算并写出前 512 个元素，其余全部元素保持原值/未初始化值——从输出看是「开头正确、后面大片错误」的结构性静默错误。常规规模完全不触发。触发面为超大 shape（如内存允许下的批量反传或测试基线构造），错误无任何错误码。
+  trigger_surface: acos_grad（arch35 tiling 路径）；totalLength ≥ 约 2^41-511；Ascend 950、CANN 9.3.0；asin_grad 同族不受影响
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

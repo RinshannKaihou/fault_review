@@ -1,0 +1,52 @@
+id: TRN-0591
+legacy_ids: []
+slug: deepspeed_cpuadam_load_state_dict_casts_fp32_moments
+aliases: []
+title: CPU 优化器 load_state_dict 舍入 fp32 矩
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: CPUAdam load_state_dict
+  behavior: fp32_optimizer_states 默认开启时 bf16/fp16 参数保留 fp32 矩，但继承 torch 的 load_state_dict 把状态 cast 成参数 dtype，resume 在舍入后的矩上静默继续
+effect:
+  objects:
+  - 优化器状态
+  detail: load_checkpoint 后 131584 元素中仅 3 个未舍入（最大 0.39% 偏差）；resume 与连续运行偏差最高 1.0e-2
+  visibility: 静默错误
+mitigation:
+  detect: resume 后读回优化器状态 dtype 与保存值比对；与不间断运行对拍第一步后参数
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8974（open，未合入）：override load_state_dict 从保存张量按 fp32 取回状态（修复后 resume bit-identical，未核实合入）
+labels:
+  stage:
+  - pretrain
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-02'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8974
+  kind: github_pr
+relations: []
+original:
+  mechanism: deepspeedai/DeepSpeed !8974（2026-11-01 open PR，附前后对比实测）。DeepSpeedCPUAdam/DeepSpeedCPULion/DeepSpeedCPULAdagrad 在 fp32_optimizer_states 置位（默认）时为 bf16/fp16 参数保留 fp32 优化器状态，但其 load_state_dict 继承自 torch 实现，会把加载的状态 cast 成参数 dtype。后果：bf16_master_weights_and_grads + offload_optimizer（ZeRO-1/2/3 及 SuperOffload）的 resume 在 bf16 舍入的动量/二阶矩与 bf16-state kernel 上静默继续——实测 load_checkpoint 后每个矩 131584 个元素仅 3 个未被舍入（最大偏差 0.39%）；resume 相对不间断运行最高偏 1.0e-2。修复 PR override load_state_dict 按 fp32 取回保存值，修复后 ZeRO-1/2/3（betas 0.5）resume bit-identical。
+  source: deepspeedai/DeepSpeed 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8974（open，未合入）
+  behavior: bf16/fp16 + CPU offload 优化器训练中断恢复后，加载的 Adam 动量/二阶矩被静默舍入到 bf16 精度（131584 个元素里 99.998% 被舍入，最大偏 0.39%），恢复训练无任何报错，但与不间断运行相比第一步就偏到 1e-2 量级——长跑 resume 精度悄悄劣化。
+  discovery: 2026-11-02 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-02'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

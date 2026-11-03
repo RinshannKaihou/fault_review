@@ -1,0 +1,58 @@
+id: INF-2296
+legacy_ids: []
+slug: ops_math_remainder_negative_divisor_product_overflow
+aliases: []
+title: aclnnRemainder fp32 负除数乘积溢出返 -inf/0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: remainder 中间乘积 fp32 溢出
+  behavior: out = self − floor(self/other)*other 的中间乘积在 fp32 域计算：负除数使 floor 商绝对值变大，乘积越过 3.4e38 溢出，self−(±inf) 得 ∓inf 或经舍入得 0.0。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32、|self|≈3.4e38 且 other<0 时无报错：remainder(3.4e38,-1.2e38)=-inf（真值约 -2e37），remainder(3.0e38,-1.0e38)=0.0（真值约 -1e37）；35 组扫描 19 组命中，正除数与 fp64 全对。
+  visibility: 数值异常
+mitigation:
+  detect: 大值×负除数 remainder 与 fp64 对照；扫描 |self| 接近 fp32 上限 × 负除数组合。
+  fix: 待定（未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4301
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math aclnnRemainderScalarTensor 在 fp32 且除数与被除数异号、|self| 接近 fp32 上限时输出 -inf 或 0.0（issue #4301，910B3/CANN 9.2.0 实测）：真实余数 |out|<|other| 本可表示。根因：out=self−floor(self/other)*other 的中间乘积在 fp32 域计算，other 为负时 floor() 使商绝对值变大（如 self=3.4e38、other=-1.2e38 时 floor 商 -3，乘积 3.6e38），乘积越过 3.4028235e38 溢出为 ±inf，self−(±inf) 得 ∓inf；部分组合经舍入得 0.0（self=3.0e38、other=-1.0e38 实测 0.0，应 -9.9999987e+37）比 -inf 更隐蔽。关键点：商本身正常（仅 2.83），溢出发生在乘积，与 #4006 及「极小除数商溢出」为不同路径。35 组扫描（self 5 档×负除数 7 档）19 组命中，正除数 8/8 全对（floor 使乘积变小不溢出）。族级一致性：同配置 aclnnRemainderTensorScalar/TensorTensor/torch NPU 入口均复现 -inf；fp64 全部正确；910B 走 CANN 内置 ops_legacy。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4301 （open，2026-10-30 创建；含 35 组扫描表与自包含 repro.cpp）
+  behavior: 对接近 fp32 上限的大数值做 remainder：除数为负时结果变成 -inf 甚至 0.0（如 3.4e38 对 -1.2e38 取余得 -inf、3.0e38 对 -1.0e38 取余得 0.0），而真实余数是可表示的普通数（约 -2e37/-1e37）；除数为正时同样量级完全正确，fp64 也全对。三个 remainder 入口（ScalarTensor/TensorScalar/TensorTensor）和 torch NPU 路径同样复现。无报错，取余做周期折叠、取模索引的下游会静默拿到 inf 或 0。
+  trigger_surface: cann/ops-math remainder 全族；fp32；|self| 接近 3.4e38 且 other<0；910B（内置 ops_legacy）。
+  signature: remainder(3.4e38, -1.2e38)=-inf；remainder(3.0e38,-1.0e38)=0.0；正除数同量级正确。
+  repro: issue 附自包含 repro.cpp（35 组扫描 19 组命中）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail

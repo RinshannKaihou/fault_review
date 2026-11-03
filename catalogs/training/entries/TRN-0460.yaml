@@ -1,0 +1,58 @@
+id: TRN-0460
+legacy_ids: []
+slug: trl_repetition_penalty_is_ratio_zero
+aliases: []
+title: GRPO vLLM 重复惩罚使 IS ratio 归零停滞
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: vLLM 采样 logprob 口径
+  behavior: repetition_penalty 传入 vLLM 后其返回 logprobs 已含惩罚；trainer 用无惩罚 raw logits 重算取比值，被惩罚 token 给 log-ratio 加偏置并连乘。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: use_vllm=True 且 repetition_penalty≠1.0 时 IS 权重每个 completion 都≈0，grad_norm 无报错跌到 0、训练停滞；presence/frequency penalty 同点位施加应同病。#7866 修复不覆盖。
+  visibility: 静默错误
+mitigation:
+  detect: 监控 sampling_logp_difference 与 IS ratio 分布；grad_norm→0 告警
+  fix: '待定（同机制 #7865 修复 #7866 不覆盖此触发面，issue open）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7914
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0229
+pattern: PAT-TRN-0041
+original:
+  mechanism: 'trl #7914（open，2026-10-26）：GRPOConfig.repetition_penalty 传入 vLLM SamplingParams（vllm_generation.py:620-625）；vLLM 对 logits 施加惩罚后计算返回的 processed_logprobs（:365）；trainer 用 raw logits（无惩罚）重算 logprob 并取比值做重要性采样修正（grpo_trainer.py:2707-2755）。每个被惩罚 token 给 log-ratio 加偏置，默认 sequence_mask 模式把偏置在整个 completion 上连乘，权重≈0，grad_norm 跌 0 无报错。作者明确：与 #7865（top-k/top-p/min-p，已编 TRN-0229）同一机制不同成因——惩罚改变候选集内部 logits，#7866 候选集重归一化修复不覆盖；presence_penalty/frequency_penalty/logit_bias 同点位施加应同样致病。附完整复现脚本（colocate vLLM + Qwen2.5-0.5B，观测 sampling_logp_difference/mean 与 grad_norm）。共享机制：rollout 侧采样变换改变了返回 logprob 的口径，与 trainer 重算口径不一致，IS ratio 系统性偏置；触发点从截断采样换为重复惩罚。'
+  source: 'GitHub issue：https://github.com/huggingface/trl/issues/7914 （open，含代码行锚点与复现脚本）；同机制已编 TRN-0229（trl #7865）'
+  behavior: GRPO 训练开 use_vllm 并设置 repetition_penalty（或 presence/frequency penalty）后，每个 completion 的重要性采样权重都被乘到接近 0：grad_norm 无任何报错地掉到 0，reward 还在统计但策略不再更新，训练表面正常实际停滞；把惩罚去掉立刻恢复。与之前 top_p/top_k/min_p 触发的同类停滞（TRN-0229）同一病灶、不同开关。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

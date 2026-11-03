@@ -1,0 +1,51 @@
+id: INF-2351
+legacy_ids: []
+slug: vllm_ascend_swa_zip_drops_layers
+aliases: []
+title: vLLM-Ascend SWA 层分组用 zip() 静默丢弃不均匀尾层缓存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: group_cache_specs SWA 层分组
+  behavior: 按物理槽位转置 SWA 层分组时用 zip()，列长不齐时在最短列截断，尾部层被静默丢弃出调度器组
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 39 层骨干（KV 源层 [2,8,14,20]→SWA 列长 [10,10,10,9]）丢层 36/37/38 的 SWA 缓存；削减层 DeepSeek V4.1 骨干静默失去尾部层缓存，属缓存规划正确性缺陷
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20532（open，2026-11-01）：改 zip_longest 省略缺项，含 37/38/39/40 层回归测试；未发布
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/20532
+  kind: github_pr
+relations: []
+original:
+  mechanism: vllm-ascend 的 group_cache_specs() 对分配到各 DeepSeek V4.1 物理缓存槽的 SWA 层做 zip() 转置。列长不同时 zip() 在最短列停止，静默省略剩余层。例：39 层骨干、KV 源层 [2,8,14,20] 产生 SWA 列长 [10,10,10,9]，旧分组丢层 36/37/38 的 SWA 缓存。修复用 zip_longest() 并省略缺失项，每层保留；均衡 40 层分组次序不变；每个调度器 SWA 组仍至多含每物理槽一层。PR 声明为 cache-planning 正确性修复、不涉性能。来源 https://github.com/vllm-project/vllm-ascend/pull/20532（open，2026-11-01），按正文与回归测试判定。
+  source: 2026-11-01 每日扫描。https://github.com/vllm-project/vllm-ascend/pull/20532
+  behavior: 部署削减过层数的 DeepSeek V4.1 骨干（如 39 层、KV 源层 [2,8,14,20]）：服务正常启动，但尾部若干层（36/37/38）的 SWA KV 缓存悄悄不在调度器组里，任何报错都没有；40 层标准骨干不受影响。
+  trigger_surface: vllm-ascend main（2026-11-01）；DeepSeek V4.1 物理缓存槽 SWA 列长不齐的削减骨干（37/38/39 层实测触发，40 层不触发）
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

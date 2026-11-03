@@ -1,0 +1,61 @@
+id: INF-2327
+legacy_ids: []
+slug: msprobe_cosine_overflow_misjudge_zero_vector
+aliases: []
+title: msprobe Cosine 比对大数溢出与微小值误判为全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: alg_cosine_similarity 计算
+  behavior: compare 直接用原始数值算点积与 L2 范数（float64 机器精度判零向量）：有限大数平方溢出产生 inf/inf、0/inf 错误结果；微小非零向量范数下溢被判为全零，正交/反向微小向量返回 1.0。
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: 相同大数向量 [1e200,1e200] 报 NaN 并提示数据含 NaN（应为 1.0）；大数与普通非平行向量返回 0.0（应为 0.7071）；正交/反向微小非零向量返回 1.0（应为 0/-1）。真实方向差异被掩盖，精度定位结论错误。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 [1e200,1e200] 与 [1e-200,0] 两类边界用例检查比对结果；结果应为 1.0/0 而非 NaN/1.0。
+  fix: 待定（issue 附修复方案：按各自最大绝对值归一后再算点积与范数，仅真全零走零分支；未见修复 MR 合入）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/665
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0576
+original:
+  mechanism: 'Ascend/msprobe issue #665（2026-10-31）：msprobe/core/compare/algorithm/builtin_algorithm/alg_cosine_similarity.py 直接使用原始数值计算点积与 L2 范数，并用 float64 机器精度判断零向量，存在两类错误：(1) 有限大数的平方或点积溢出，产生 inf/inf、0/inf 错误结果——相同大数向量 [1e200,1e200] 返回 NaN 并提示「数据含有 NaN」（应为 1.0），大数 [1e308,1e308] 与 [1,0] 返回 0.0（应为 0.7071）；(2) 很小但非零的向量因范数小于机器精度或范数平方下溢被当全零，正交微小向量 [1e-200,0]/[0,1e-200] 与反向 [1e-200,0]/[-1e-200,0] 均返回 1.0（应为 0/-1）。影响：精度比对工具把相同数据误报含 NaN、把真实方向差异掩盖成一致，精度定位（如 NPU vs GPU dump 比对）结论错误。issue 附修复方案：分别取两向量最大绝对值，仅真为零时走全零分支；点积/范数计算前除以各自最大绝对值（正比例缩放不改变余弦），对 flatten_numpy 浮点副本原地缩放不修改调用方输入。'
+  source: GitCode issue https://gitcode.com/Ascend/msprobe/issues/665 （open，2026-10-31 创建；含 4 组边界用例修复前后对照表与修复方案）
+  behavior: 用 msprobe 做张量精度比对时，数值很大的张量（如 1e200 量级）会被误报「数据含有 NaN」或相似度算成 0，数值极小的非零张量（1e-200 量级）会被当成全零向量、相似度恒 1.0——本来有方向差异的数据被判一致，本相同的数据被误报异常。做 NPU/GPU 精度定位时结论与真实偏差相反，且无崩溃可循。
+  trigger_surface: Ascend/msprobe core/compare/algorithm/builtin_algorithm/alg_cosine_similarity.py；输入含 |x|≥1e154（平方溢出）量级或 |x|≤1e-162（范数下溢）量级的向量；精度比对/精度定位流程。
+  signature: cosine([1e200,1e200],[1e200,1e200])=NaN；cosine(正交微小向量)=1.0。
+  repro: issue 附 PYTHONPATH=python 最小复现（4 组 cases 对照表）。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

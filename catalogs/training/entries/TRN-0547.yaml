@@ -1,0 +1,50 @@
+id: TRN-0547
+legacy_ids: []
+slug: deepspeed_opsd_jsd_lowprec_mask_count_loss_zero
+aliases: []
+title: DeepSpeed OPSD JSD 低精 logits 掩码计数错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: deepspeed
+    component: generalized_jsd_loss 掩码计数
+  behavior: OPSD JSD loss 把 response mask cast 成 logits dtype 再 sum：bf16 舍入 >256 计数（97992→97792），fp16 溢出 int64 max，loss 归 0
+effect:
+  objects:
+  - 训练信号
+  detail: bf16 下有效 token 计数被舍入（97992→97792），loss 归一化分母错；fp16 下计数溢出为 int64 max，JSD loss 归 0，蒸馏信号静默消失而训练照常跑完；新增 bf16/fp16 用例修前失败、修后 22 通过（CPU，未覆盖 GPU/ZeRO）
+  visibility: 静默错误
+mitigation:
+  detect: 对 bf16/fp16 logits 的 loss 路径断言 mask 计数与 int64 参考一致；监控 loss 是否异常趋 0
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8947（open，mask 以 int64 计数、逐 token JSD 至少 float32 求和，未合入）
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8947
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed PR #8947（2026-10-30，open）：opsd.py generalized_jsd_loss 对 bf16/fp16 logits 错计有效 token 数并错配 loss 尺寸。原因：response mask 在 .sum() 前被 cast 成 logits dtype——bf16 对 >256 的计数舍入（97992 变 97792），fp16 超过 65504 后溢出为 int64 max，loss 随之归 0。修复：mask 计数用 int64、逐 token JSD 在至少 float32 上求和；fp32/fp64 行为不变。测试：tests/unit/runtime/rollout/test_rollout_interface.py CPU（Apple M2 Pro, torch 2.11.0）新增 bf16/fp16 用例修前失败（97792==97992、int64 max==97992）、修后 22 通过。未覆盖 GPU、ZeRO 与多 rank 聚合。'
+  source: https://github.com/deepspeedai/DeepSpeed/pull/8947
+  behavior: 用 DeepSpeed OPSD 蒸馏（generalized_jsd_loss）且 rollout/学生 logits 为 bf16 或 fp16 时：bf16 下有效 token 计数被舍入（9.8 万 token 差 200），loss 归一化分母错；fp16 下计数溢出使 JSD loss 直接变 0——蒸馏目标静默消失，训练照常跑完、指标看似正常，实际学生没有从 teacher 学到任何信号。
+  trigger_surface: DeepSpeed OPSD generalized_jsd_loss + bf16/fp16 logits（长 response 计数 >256/>65504）；#8677 引入的 opsd.py
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

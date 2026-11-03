@@ -1,0 +1,54 @@
+id: TRN-0601
+legacy_ids: []
+slug: torchnpu_inductor_static_full_reduction_grid_split
+aliases: []
+title: NPU Inductor 静态完整归约误选 grid split 重复归约
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: ascend
+    component: SplitTiling 轴选择
+  behavior: 静态完整归约在 fallback 中仍把归约轴选为 grid split；生成内核无 program_id 分区、无跨 program 合并，多 program 重复处理同一数据；归一化 epilogue 复用输入缓冲产生竞争
+effect:
+  objects:
+  - 数值结果
+  detail: NPU 上 torch.compile(inductor, dynamic=False) 编译归一化模式时，4 个静态形状 (1,)/(1536,)/(32768,)/(7,1024) 的 split_axis==[] 断言在静态路径失败，数值对照失败；修复后多长度×多种子 9/9 对照通过。
+  visibility: 静默错误
+mitigation:
+  detect: 静态完整归约的 compiled vs eager 数值对照（多长度多种子）；调度层断言 split_axis==[]
+  fix: 修复 MR https://gitcode.com/Ascend/pytorch/pull/48919（open）：完整归约保护从动态尺寸扩展到所有完整归约 + test/_inductor/test_full_reduction_split.py 回归
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5816
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/pull/48919
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5816 + 修复 !48919（2026-11-02，open）。torch_npu._inductor.codegen.split_tiling.SplitTiling.select_split_axis 对动态完整归约保留空 split_axis，静态完整归约 fallback 仍选归约轴为 grid split。定位基线 1d00c9eef（v2.10.0 分支）。确定性复现：SimpleNamespace 构造 r0 单归约轴 + patch V.graph.sizevars，断言 split_axis==[] 在静态路径失败（4 个静态形状 (1,)/(1536,)/(32768,)/(7,1024) 均复现）。模型侧模式 normalize(x)=(x+1)/torch.linalg.vector_norm(values).clamp_min(1e-12) + torch.compile(backend=inductor, dynamic=False)。影响：多 program 重复处理同一归约域（无 program_id 分区、无跨 program 合并）、归一化 epilogue 复用输入缓冲产生读写竞争，数值结果受影响。历史 #2659 已关闭（动态面）；本条补充静态面确定性复现。NPU 验证环境 PyTorch 2.10/TorchNPU 2.10/CANN 9.1/aarch64。'
+  source: Ascend/pytorch https://gitcode.com/Ascend/pytorch/issues/5816（open）+ 修复 https://gitcode.com/Ascend/pytorch/pull/48919（open）
+  behavior: 在 NPU 上用 torch.compile（Inductor 后端、静态 shape）编译只含完整归约的计算（如 L2 归一化 vector_norm+除法）时，调度器错误地把归约轴切成多 program 并行：多个 program 重复读同一数据做归约、结果无跨 program 合并，归一化 epilogue 还会竞争复用的输入缓冲——compiled 输出与 eager 参考静默偏差。修复前 4 个静态形状调度断言复现、数值对照失败；修复后多长度×多种子 9/9 对照通过。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-03
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

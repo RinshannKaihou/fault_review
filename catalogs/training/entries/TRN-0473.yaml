@@ -1,0 +1,58 @@
+id: TRN-0473
+legacy_ids: []
+slug: opstransformer_moe_token_unpermute_negidx_family
+aliases: []
+title: CANN MoE token unpermute 族负索引缺下界校验
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: moe_token_unpermute 族索引。
+  behavior: moe_token_unpermute/moe_token_permute_grad/moe_index_copy 对 sortedIndices 只判上界不判下界，负值经 int64_t offset 直读 GM。
+effect:
+  objects:
+  - 数值结果
+  detail: sortedIndices 含负值时（上游 -1 padding，vLLM 标准行为）：{-1,1} 输出 [0,0,1.5,2]，无效槽未清零、无报错，两段接口返回 0；大负值（-2^30）sync fail 507035 KERNEL_ERROR。CANN 9.0.0、910_93 实测。
+  visibility: 静默错误
+mitigation:
+  detect: 训练/路由输入含 -1 padding 时输出对照 CPU 参考实现；大负值直接 KERNEL_ERROR
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14742（open，2026-10-27）——按本仓 moe_token_unpermute_with_routing_map_not_pad.h:228-233 的 IsValidInputIndex 范本补 `in_token_index >= 0 && < num_out_tokens` 下界，三文件 4+4+2 处；同仓 commit 0c5c1ed15 为既有范本。用户自编译修复版实测 {-1,1} 用例通过
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6814
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14742
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2214
+original:
+  mechanism: 'cann/ops-transformer #6814（2026-10-27，Ascend 910_93 单卡、CANN 9.0.0 built-in 与仓源码复现）：moe_token_unpermute/moe_token_permute_grad/moe_index_copy 对 sortedIndices 只判上界不判下界（moe_token_unpermute.h:244-265 四处、moe_token_permute_grad.h 同型四处、moe_index_copy.h:120-130）。负值经 `int64_t offset = in_token_index * hidden_size` 直读 GM。报告者 C++ 两段式直调三用例（bf16 {2,2}，probs={0.5,0.5}）：对照 {0,1} 输出 [0.5,1,1.5,2] 与公式一致；{-1,1}（vLLM padding 惯例，-1 为文档明示的无效槽位）输出 [0,0,1.5,2]——无效槽未清零且无报错；{-2^30,1} sync fail 507035 KERNEL_ERROR。-1 是 moe_init_routing_v2/v3 expandedRowIdx 的标准无效行标记，上游产生 -1 是 vLLM 标准行为；修法范本在同仓 with_routing_map_not_pad.h 的 IsValidInputIndex（commit 0c5c1ed15）。修复 PR !14742（open）。注意：仓库自带 examples test_aclnn_moe_token_unpermute.cpp 的 probs shape {1,2} 与语义不符、无判别力。推理库 INF-2214 已按同源收推理侧；本条按训练侧（MoE token 重排在训练/RL 路径的使用）单独收录。'
+  source: https://gitcode.com/cann/ops-transformer/issues/6814 + 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14742（open）
+  behavior: MoE 训练/推理链路中 sortedIndices 含 -1（无效槽 padding，vLLM 标准行为）时，moe_token_unpermute 族算子静默输出错数据（无效槽不清零、读到 GM 越界内容），两段接口返回 0 无任何告警；含大负值（如 -2^30）时直接 NPU 设备错误 507035。表现为模型输出漂移且难以定位，或偶发设备错误。
+  trigger_surface: CANN 9.0.0 built-in 及仓 master（910_93 实测）；moe_token_unpermute / moe_token_permute_grad / moe_index_copy 三算子；sortedIndices 含负值（上游 moe_init_routing -1 padding）
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    - detail

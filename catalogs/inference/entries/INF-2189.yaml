@@ -1,0 +1,57 @@
+id: INF-2189
+legacy_ids: []
+slug: cann_rotate_quant_empty_x_scaleout_unwritten
+aliases: []
+title: RotateQuant 空张量时 scaleOut 静默未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnnRotateQuant 早退分支
+  behavior: x/yOut/scaleOut 任一 IsEmpty 即返回成功且不下发 kernel；x=(4,0) 时空、scaleOut=(4) 非空，scaleOut 4 元素全部未写
+effect:
+  objects:
+  - 数值结果
+  detail: scaleOut 预填金丝雀 1e30 读回仍 1e30（一个元素都没写）；两段返回 0；仅 M>0 且 N=0 形态暴露（(0,256) 时 scaleOut 也为 0 元素）
+  visibility: 静默错误
+mitigation:
+  detect: scaleOut 预填金丝雀检查是否被写；N=256 对照组正常写出
+  fix: 待定（issue 期望：N=0 要么报 161002 要么 scaleOut 写出确定值）
+labels:
+  stage: N/A
+  coverage: var
+  confidence: documented
+  discovered: '2026-10-26'
+remarks: 与 INF-2187（GatherPaKvCache 空输入静默 no-op）同「空输入早退返回成功但非空输出未写」机制；算子（RotateQuant vs GatherPaKvCache）与早退判据不同，作为变体关联
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7414
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2187
+pattern: PAT-INF-0192
+original:
+  mechanism: aclnnRotateQuant（A2 分支，CANN 9.2.0，ops-nn 711a4f5d）：资料参数表对 x 标注「支持空 Tensor」。当 x 为 (4,0)、yOut 为 int8(4,0)、scaleOut 为 float(4) 时，两段接口都返回 0，但 scaleOut 的 4 个元素一个都没写（预填金丝雀 1e30 读回仍是 1e30）。源码锚点：op_api/aclnn_rotate_quant.cpp 早退分支 `if (x->IsEmpty() || rotation->IsEmpty() || yOut->IsEmpty() || scaleOut->IsEmpty()) { *workspaceSize = 0; ...; return ACLNN_SUCCESS; }`——x、yOut 为空（0 元素）但 scaleOut 是 (4) 非空，「返回成功 + 有非空输出 + 输出未写」三者同时成立，且 workspaceSize=0 意味着第二段不下发任何 kernel。(0,256) 形态不暴露（scaleOut 为 0 元素），故缺陷仅在 M>0 且 N=0 时出现。自包含 C++ 复现（N=256 对照 + N=0 缺陷组对比 scaleOut_canary_kept）。来源 https://gitcode.com/cann/ops-nn/issues/7414（open）。与 INF-2187（GatherPaKvCache 空输入静默 no-op）同机制不同算子。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-nn/issues/7414
+  behavior: 调用 RotateQuant 旋转量化算子时，如果输入张量行数非零但列数为 0（如 (4,0)，变长场景中空 token 行），接口返回成功，但输出里的 scaleOut（形状 (4)，非空）一个元素都不写，保持调用前缓冲区内容——预填金丝雀 1e30 后读回仍是 1e30。上层拿到的 scale 是上一步或未初始化的残留值，量化系数完全错误且无任何报错；下游按错误 scale 反量化会整体错值。只有专门检查 scaleOut 是否被写过才能发现。
+  trigger_surface: aclnnRotateQuant（A2 分支）；x 形状 M>0 且 N=0（scaleOut 非空的空输入形态）；Ascend 910B2、CANN 9.2.0 实测
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

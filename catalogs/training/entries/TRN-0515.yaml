@@ -1,0 +1,60 @@
+id: TRN-0515
+legacy_ids: []
+slug: deepspeed_zero_init_casts_rope_inv_freq_bf16
+aliases: []
+title: ZeRO-3 init 把 fp32 RoPE inv_freq 算成 bf16
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: zero.Init 构造器包装
+  behavior: zero.Init 的 fp tensor constructor 包装把显式 dtype=torch.float 的构造结果也 cast 到 bf16，RoPE inv_freq 计算落 bf16
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 梯度
+  detail: ZeRO-3 下 RoPE 角度=位置×频率，误差随位置增长；Qwen3.8-27B LoRA 单条 65k token 实测 grad norm 0.78 vs 单卡 7.91（差一个量级），ZeRO-0/2 与单卡 bit-identical
+  visibility: 静默错误
+mitigation:
+  detect: 对比 ZeRO-3 与 ZeRO-0/2/单卡的 grad norm 与 loss；检查 inv_freq buffer dtype 是否 bf16
+  fix: 部分规避：data_types.keep_in_fp32_modules=["rotary_emb"]（#8699，0.19.8 起 opt-in，默认 "auto" 不覆盖 RoPE）；修复 PR 未出（issue open，讨论是否 "auto" 应保留显式 fp32 非 persistent buffer）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8948
+  kind: github_issue
+relations: []
+original:
+  mechanism: deepspeed.zero.Init(dtype=torch.bfloat16) 内 zero_wrapper_for_fp_tensor_constructor（partition_parameters.py:263-276）把所有浮点构造结果 cast 到 bf16，即使调用方显式传了 dtype=torch.float。transformers 用 1.0/(base**(torch.arange(0,dim,2,dtype=torch.float)/dim)) 计算 RoPE 频率（Qwen3.5、Llama 及约 200 个模型文件），ZeRO-3 下 inv_freq 在 bf16 计算。RoPE 角度=位置×频率，误差随位置增长。实测（Qwen3.8-27B、LoRA、单条 65k token）：ZeRO-3 grad norm 0.78 vs 单 GPU 7.91；ZeRO-0/ZeRO-2 与单卡 bit-identical；from_pretrained 后在 fp32 重建 rotary 模块可使 ZeRO-3 也 bit-identical（loss 0.1093、grad norm 7.906）。0.19.8 的 data_types.keep_in_fp32_modules:["rotary_emb"]（#8699）可规避，但属 opt-in，默认 "auto" 不覆盖 RoPE。历史报告：#4932、huggingface/transformers#28596。实测版本 0.19.7、0.19.8 与 master 1bdaaf73。issue 作者提出问题："auto" 或 zero.Init 本身是否应保留显式 fp32 的非 persistent buffer。
+  source: https://github.com/deepspeedai/DeepSpeed/issues/8948
+  behavior: ZeRO-3 训练 transformers 系模型（Qwen/Llama 等约 200 个模型文件的 RoPE 计算方式）时长文本 loss 与梯度静默劣化：grad norm 与单卡差一个量级（实测 0.78 vs 7.91），长序列 RoPE 位置编码精度劣化随位置累积，模型质量受损但无报错；ZeRO-0/2 用户不受影响，难以归因到 ZeRO-3 配置
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

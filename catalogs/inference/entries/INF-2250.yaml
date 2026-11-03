@@ -1,0 +1,56 @@
+id: INF-2250
+legacy_ids: []
+slug: vllm_ascend_sampler_logprobs_mode_not_forwarded
+aliases: []
+title: vllm-ascend V1 sampler 不透传 logprobs 模式
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: V1 runner 构造 sampler
+  behavior: V1 runner 构造 AscendSampler 时不转发 model_config.logprobs_mode，配置 processed_logprobs 等模式的引擎仍以默认 raw 模式初始化，返回概率语义与配置不符。
+effect:
+  objects:
+  - 输出分布
+  detail: 配置 processed_logprobs 时按 raw_logprobs 计算；历史 MiniMax-M3.1-Flash RL 诊断中修正语义后 mean abs prob diff 从 0.0145 降到 0.0066；对 train/rollout 一致性度量引入偏差。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 logits 对比 raw/processed 两种模式的 logprob 输出可检出
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20146 （open，2026-10-28）：runner→sampler 转发 logprobs_mode，缺失字段回退 raw_logprobs；constructor 回归（CPU）全过；原生 NPU 验收与 CI 归属 reviewer，未合入）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/20146
+  kind: github_pr
+relations:
+- kind: cross
+  target: TRN-0505
+original:
+  mechanism: 'vllm-project/vllm-ascend PR #20146（2026-10-28，open，BugFix）：V1 runner 构造 AscendSampler 时未转发 model_config.logprobs_mode，配置了 processed_logprobs/raw_logits/processed_logits 的引擎仍以默认 raw 模式初始化 sampler。动机负载 MiniMax-M3.1-Flash RL：train/rollout 一致性度量对『处理前 vs 处理后』概率敏感；属通用 V1 配置缺口不限于 MiniMax。内层 sampler 已在当前 main 把收到的模式转发给 AscendTopKTopPSampler（#8643 是内层调用点，本 PR 修 runner→sampler 这一独立边）。影响报告概率/logprob 语义、不改前向 logits。历史诊断（60 层/8 专家，64 响应/54762 token）：修正采样器语义使 mean abs prob diff 0.014523769978→0.006640143468——该数据为减专家历史证据非 128 专家完整验收。当前源 CPU constructor 回归（4 模式+缺省回退+已装 sampler 对象）全过；mypy 通过；完整仓库 pre-commit 与 NPU 原生验收未做（归属 CI/reviewer）。'
+  source: https://github.com/vllm-project/vllm-ascend/pull/20146
+  behavior: 在 vllm-ascend V1 引擎上配置 logprobs_mode（如 processed_logprobs）跑 RL rollout 或评测时，AscendSampler 实际按默认 raw 模式算概率，返回的 logprobs 语义与请求配置不一致；拿这些数字做 train/rollout 一致性或重要性比率的管线会得到系统性偏差（历史诊断中修正后 mean abs prob diff 减半以上），且无任何报错或模式提示。
+  trigger_surface: 'vllm-ascend V1 runner + 显式配置 ModelConfig.logprobs_mode（processed_logprobs/raw_logits/processed_logits）+ 依赖返回 logprobs 的负载（RL rollout 一致性、评测）；修复 PR #20146 open 未合入。'
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

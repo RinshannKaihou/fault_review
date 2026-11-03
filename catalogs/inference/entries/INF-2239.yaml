@@ -1,0 +1,52 @@
+id: INF-2239
+legacy_ids: []
+slug: ttmetal_softmax_tile_padding_inf_nan_poison
+aliases: []
+title: ttnn.softmax tile padding inf/NaN 污染整行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: softmax kernel padding 处理
+  behavior: TILE 布局 float32 输入的 tile padding 含 +inf/NaN 时按整 tile 归约，padding 值参与 max/sum 使整行错误且输出无 NaN；有限 padding 正确。
+effect:
+  objects:
+  - 数值结果
+  detail: last dim=24 padding=+inf 时最大相对误差 21.8%、NaN 时 100% 错；last dim=40 +inf 达 40.8%；8200 宽 NaN 100% 错、+inf 正确。输出不含 NaN、无报错，仅逐行检查概率和（应等于 1）才能发现。
+  visibility: 静默错误
+mitigation:
+  detect: 检查每行 softmax 概率和是否为 1 可检出（错行 sum≠1）；输出无 NaN，逐元素对照才能定量
+  fix: 待定（issue open 2026-10-28 新报）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/62628
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tenstorrent/tt-metal issue #62628（2026-10-28 见报，open；créated 2026-10-27）：ttnn.softmax 对 TILE 布局 float32、末维非 32 倍数的输入，softmax kernel 按整个 tile（含 padding）计算，padding 中残留的 +inf/NaN 参与 max/exp/sum 污染整行。padding 非逻辑张量的一部分，但其他算子会把这样的值留在那里：ttnn.reciprocal 对零 padding 产生 +inf、ttnn.divide(t,t) 产生 NaN。实测（Wormhole n150，tt-metal f288db45673，KMD 2.9.0/FW 19.11.0）：last dim 24 padding +inf 最大相对误差 21.8%、NaN 100%；dim 40 +inf 40.8%；dim 8200 +inf 正确、NaN 100%。有限值 padding（含 0）正确。复现用 fill_implicit_tile_padding(x, inf) 后 softmax、对照 torch。'
+  source: https://github.com/tenstorrent/tt-metal/issues/62628
+  behavior: 对 TILE 布局、最后一维不是 32 倍数的 float32 张量做 ttnn.softmax 时，如果 tile padding 区（前面算子留下的）含 +inf 或 NaN，整行 softmax 结果错误：24 维输入 +inf padding 错 21.8%、NaN padding 整行全错，且输出本身不含 NaN、无任何报错；只有逐行检查概率和（应等于 1）才能发现。padding 是有限值时结果正确。
+  trigger_surface: Wormhole n150 + tt-metal f288db45673 + ttnn.softmax + TILE 布局 float32 + 末维非 32 倍数 + padding 残留 inf/NaN（由 reciprocal(0)=inf、x/x=NaN 等上游算子产生）。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

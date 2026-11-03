@@ -1,0 +1,47 @@
+id: TRN-0465
+legacy_ids: []
+slug: trl_rloo_exp_before_clip_nan_grad
+aliases: []
+title: RLOO 先 exp 后 clip 致 NaN 梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: RLOO 序列 ratio 裁剪顺序
+  behavior: RLOO 对正 advantage completion 先对序列 log-ratio 求和取 exp 再 clamp：复用旧 completion 时增量和超 FP32 指数域，exp 溢出 inf 后才裁剪，反传 NaN。
+effect:
+  objects:
+  - 梯度
+  detail: num_iterations>1 且被复用的正 advantage 长 completion 序列 log-ratio 增量超 FP32 指数域时，loss 数值有限但反传 NaN 梯度；真实 tiny-Llama 复现。默认 num_iterations=1 不触发。
+  visibility: 数值异常
+mitigation:
+  detect: clip 前检查序列 log-ratio 上界（>~88 for fp32 exp）；先 clamp log-ratio 再 exp
+  fix: 待定（issue open，建议先裁剪后指数化）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/7896
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'trl #7896（open，2026-10-26，对照 main c6eac19f 确认）：RLOOTrainer 在 num_iterations>1（completion 与旧 logprob 复用）时，正 advantage completion 的求和 log-prob 增量若超出 FP32 指数域，损失先对序列 log-ratio 求和取 exp 再 clamp（rloo_trainer.py:1867-1879 求和→指数→裁剪），exp 溢出为 inf，裁剪在 inf 之后执行，反传产生 NaN 梯度，而该 completion 本已越过上裁剪界、正确梯度贡献应为零。数据流锚点：保存旧序列 logprob（:1643-1656）、跨迭代复用缓冲 completion（:1138-1164）。复现用真实 tiny LlamaForCausalLM + trainer 实际 fused LM-head 打分与公开 compute_loss（不替换内部）：leave-one-out advantage [+1,-1]，固定每 token logprob 增量 ~0.02 nats，首步梯度有限且 LM-head 梯度非零，第二步（复用后）loss 有限但梯度 NaN。默认 num_iterations=1 不触发；无 8192 特殊边界。'
+  source: GitHub issue：https://github.com/huggingface/trl/issues/7896 （open，含真实模型复现与逐步数据表）
+  behavior: RLOO 训练开 num_iterations>1 复用 completion 时，若某条正 advantage 的长 completion 在两次迭代间整体 log-prob 提升过大（序列和超过 ~88 nats），该步 loss 数值看起来完全正常，但 backward 出来的梯度是 NaN 并污染整批更新；不崩、无报错，只有检查梯度才会发现。默认 num_iterations=1 的配置不触发。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

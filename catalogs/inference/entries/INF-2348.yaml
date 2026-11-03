@@ -1,0 +1,59 @@
+id: INF-2348
+legacy_ids: []
+slug: ops_transformer_fd_min_check_value_sign_lse
+aliases: []
+title: FA/FD minCheckValue 默认值符号错全掩码行 LSE 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FA/FD minCheckValue 默认值
+  behavior: 三个 ComputeScaleValue 接口的 minCheckValue 默认值为 +FLT_MAX_NEW，而 vregLseMax 哨兵为 -FLT_MAX_NEW，符号相反使 == 判断永不成立，全掩码行 LSE 输出错误值。
+effect:
+  objects:
+  - 数值结果
+  detail: 全掩码行（该行所有 KV 被 mask，vregLseMax 保持 -FLT_MAX_NEW）在 softmaxLseFlag 生效且不显式传 minCheckValue（走默认值）时 LSE 输出错误值而非 inf；非掩码行不受影响。修复 = 三处默认参数改 -FLT_MAX_NEW。
+  visibility: 静默错误
+mitigation:
+  detect: 构造全掩码行输入检查 LSE 是否为 inf；显式传入 -FLT_MAX 亦可规避（显式传参路径不受默认值影响）。
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/15023 （merged 2026-10-31：三处默认参数改为 -FLT_MAX_NEW；是否随 CANN 版本发布未核实；!15022 为同修复早期提交已关闭）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6975
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15023
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-transformer issue #6975/#6976（2026-10-31，Ascend950 arch35 DAV_3510/CANN 9.1.0，closed）+修复 !15023（merged 2026-10-31）：attention/common/op_kernel/arch35/vf/vf_flash_decode_arch35.h 中 FA/FD（Flash Decode）scale 计算接口的 minCheckValue 默认值错误：三个 ComputeScaleValue 接口默认值均为 FLT_MAX_NEW（+3.402823466e+38），但该参数在函数内只用于判断「整行是否完全被 mask」：Reg::Compare<float, CMPMODE::EQ>(pregCompare, vregLseMax, vregMinValue, pregTailN) + Reg::Select<T>(vregRes, vregInfValue, vregRes, pregCompare)——而同文件 vregLseMax 的初值与尾部填充哨兵均为 -FLT_MAX_NEW（L271/L348/L467-468）。哨兵符号相反使 == 判断永不成立，全掩码行的 LSE 无法按设计置为 inf 而输出错误值。问题由代码走读定位（文件+行号），修复将三处默认参数改为 -FLT_MAX_NEW，不改变显式传参路径。'
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6975 （closed）+ 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/15023 （merged 2026-10-31）
+  behavior: 用 arch35 的 Flash Decode / FlashAttention Decode 且开启 softmaxLseFlag 输出 LSE 时，遇到整行 KV 全被 mask 掉的行（如纯 padding 行或左 padding 超长请求），LSE 本应输出 inf 标记无有效注意力，实际输出一个错误的有效数值——下游依赖 LSE 判空或做 logsumexp 组合的路径（如 chunked prefill 合并、logprob 计算）会静默用错值。不显式传 minCheckValue 的调用全部受影响。
+  trigger_surface: cann/ops-transformer arch35 FA/FD（vf_flash_decode_arch35.h）；softmaxLseFlag 生效；全掩码行输入；不显式传 minCheckValue；Ascend950/CANN 9.1.0。
+  signature: 全掩码行 LSE 非 inf；显式传 -FLT_MAX 恢复正确。
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - 2026-11-01 回访 2026-11-01：源 ops-transformer#6975 已 closed；修复 !15023 此前已 merged，是否随版本发布未核实
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - original.notes

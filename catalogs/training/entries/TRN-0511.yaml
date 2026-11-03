@@ -1,0 +1,76 @@
+id: TRN-0511
+legacy_ids: []
+slug: torchtitan_loss_parallel_confident_target_zero
+aliases: []
+title: torchtitan 并行 CE 确信标签 loss 梯度归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: torchtitan
+    component: 并行 CE 目标计入归约和
+  behavior: log_softmax 构造把目标自身 exp(0)=1 计入 all-reduce 求和：margin 超 ~16.6 后 fp32 和舍入为 1，per-token loss 与目标梯度成精确 0，非目标梯度保留。
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: compute_logprobs 以 reduction=none 复用同一 Function，RL 中部分高确信 token 的 logprob 恒 0；TP>1 与 TP=1 的非 TP 路径（F.cross_entropy 未改）均含该舍入。
+  visibility: 静默错误
+mitigation:
+  detect: 高置信样本（margin>16.6）检查 per-token loss 是否精确 0、梯度是否和为零
+  fix: 修复 PR https://github.com/pytorch/torchtitan/pull/5624 仍 open 未合入（2026-10-30 核对）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-29'
+remarks: 与 TRN-0451（verl logprobs_from_logits/Triton fused CE 同一 1+exp(-m) 舍入机制）共享机制：logprob 计算把标签自身 exp(0)=1 计入归约和、margin>16.6 后 fp32 舍入；不同栈（torchtitan loss_parallel TP 路径）与实现（all-reduce 归约内）
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/5623
+  kind: github_issue
+- url: https://github.com/pytorch/torchtitan/pull/5624
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0451
+pattern: PAT-TRN-0054
+original:
+  mechanism: 'pytorch/torchtitan #5623 + 修复 PR #5624（2026-10-26，open WIP）：_LossParallelCrossEntropy 把 log_softmax 构造为 shifted - log(sum exp(shifted))，目标的 exp(0)=1 在 all-reduce 求和内；目标对其他 logit 的 margin m 超 ~16.6 后 fp32 的 1+exp(-m) 舍入为 1，per-token loss 与目标梯度 p_t-1 成精确 0，而每个非目标梯度 p_j 非零（梯度不再和为零）。compute_logprobs 以 reduction=none 复用同一 Function，RL 每 token logprob 同样受影响。修复按 Barron et al. arXiv:2610.31642：NLL=softplus(logsumexp_{j!=t}(z_j)-z_t)，目标移出和式而非事后相减；owner shard 先把目标 exp 项置零再参与 max/非目标和/target logit 三个 all-reduce，反向免集合通信、目标槽用 p_t-1=expm1(-NLL)。数值注：修复后与 loss_parallel() 不再逐位一致（常规范数差在 assert_close 默认 fp32 容差内）；非 TP 路径 F.cross_entropy 未改仍有该舍入。WIP：数值测试与 TP=2 收敛检查已做，CLA 未签。'
+  source: https://github.com/pytorch/torchtitan/issues/5623 + 修复 PR https://github.com/pytorch/torchtitan/pull/5624（open WIP）
+  behavior: torchtitan 训练（含 RL compute_logprobs）中，模型对某 token 已高度确信（目标 logit 领先其余约 16.6 以上）时，该 token 的 loss 与目标侧梯度精确变 0 而非极小值，非目标梯度保留——梯度不再平衡；高置信样本的学习信号被静默丢弃，loss 曲线正常、无任何报错。bf16 下更早触发。RL 里表现为部分高确信 token 的 logprob 恒 0。
+  trigger_surface: torchtitan _LossParallelCrossEntropy / compute_logprobs；目标 margin 对其余 logit > ~16.6（fp32；bf16 更早）；TP>1 与 TP=1 非 TP 路径均在
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  updates:
+  - date: '2026-10-29'
+    fields:
+    - pattern
+  - date: '2026-10-30'
+    fields:
+    - mitigation.fix
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    uncertain_short:
+    - kind
+    - subsystem
+    - effect
+    - visibility

@@ -1,0 +1,54 @@
+id: TRN-0486
+legacy_ids: []
+slug: opstransformer_pfa_310p3_fp16_o_acc_overflow
+aliases: []
+title: PFA 310P3 fp16 高性能模式 O 累加溢出 +Inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: prompt_flash_attention。
+  behavior: fp16+HighPerformance 下 mmOutputType/computeType 为 half，O 累加（未归一化加权和）超 FP16 上限 65504 溢出为 +Inf（实测 position 1871 处 1872×3
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 长序列（累加元素数×幅值超 65504）时 O 输出 +Inf，经 softmax 归一化扩散为 NaN/错值；无报错。
+  visibility: 数值异常
+mitigation:
+  detect: fp16 高性能模式 + 长序列时对 O 输出 Inf/NaN 断言
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/14683（open，2026-10-27）——新增 oAccType：非 MSD 且 T==half 时为 float；O 累加迁 FP32 独立缓冲（oAccBuff_/oAccTmpF_），补两处 seed 与输出 cast，tiling 两处 UB 预算新增
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14683
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-transformer !14683（open，2026-10-27，fix(prompt_flash_attention): 310P3 fp16 高性能模式 O 累加溢出改为 FP32）：PromptFlashAttention 在 Ascend 310P3（x910/C220）上 fp16 + HighPerformance 模式下 O 累加溢出——未归一化加权和超过 FP16 上限 65504 时溢出为 +Inf。根因：fp16+HighPerformance 下 mmOutputType/computeType 为 half，O 累加在 position 1871 时 1872×35=65520 超上限。修复：新增 oAccType（非 MSD 且 T==half 时为 float，否则 mmOutputType）；O 累加迁到 FP32 独立缓冲（oAccBuff_/oAccTmpF_），补两处 seed 与输出 cast；tiling 两处 UB 预算新增 oAccBufferSize/oAccTmpFSize。涉及 arch22 prompt_flash_attention_s1s2_bns1_x910 内核与 tiling。训练侧影响：310P3 上 fp16 训练/微调走 PFA 高性能模式时注意力输出溢出 Inf。'
+  source: https://gitcode.com/cann/ops-transformer/merge_requests/14683（open）
+  behavior: Ascend 310P3 上 fp16 + HighPerformance 的 PFA 注意力在序列较长（如 1872 位置×幅值 35）时 O 累加溢出为 +Inf，随后归一化把 Inf 扩散成 NaN 或错值；前向与反向都建在被污染的 O 上，训练 loss 出现 NaN 或静默错值，无算子级报错。
+  trigger_surface: Ascend 310P3（x910/C220）+ fp16 + HighPerformance；序列累加和 >65504；修复 !14683 前
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

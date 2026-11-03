@@ -1,0 +1,57 @@
+id: INF-2315
+legacy_ids: []
+slug: vllm_hybrid_pad_rows_null_block_state_alias
+aliases: []
+title: vLLM 混合图回放 padding 行污染 null 页状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: gdn/mamba padding 行
+  behavior: padding 行 state index 填 NULL_BLOCK_ID=block 0，统一 hybrid KV 布局里该块是全部层共享单一 null 页，不跳过 index 0 的 state kernel 在此读写循环状态。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 一次 padded 回放内 block 0 出现 13 个非有限视图，NaN 污染整批 attention 输出；Triton GDN 跳过 index<=0 不触发，XPU kernel 曾触发（#660 已修），其他后端同理暴露。
+  visibility: 数值异常
+mitigation:
+  detect: graph 回放+padding 下监控整批 NaN；对 block 0 做非有限视图计数；非 Triton GDN 后端跑 padded replay 用例。
+  fix: 待定（issue 提出方案未实施：每 Mamba-spec 组预留一块清零 scratch block，padding 行指向 scratch；kernel 侧守卫作第二道防线）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63620
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM 混合（GDN+attention）模型图回放批次的 padding 行循环状态指向 NULL_BLOCK_ID（issue #63620，XPU 4×Arc Pro B70 实测，v0.30.0/v0.32.0 与 2026-10-25 main 均在）：gdn_attn.py/short_conv_attn.py/mamba_attn.py 的 metadata 构建把 padding 行 state index 填 NULL_BLOCK_ID=block 0；统一 hybrid KV 布局下每个 group 从字节 0 看同一 pool，BlockPool 只预留一次 block 0 作 null block——它是全部 recurrent 层和 attention 层 null 页共享的单一页。不跳过 index 0 的 state kernel 直接在该页按各自层布局读写循环状态：实测一次 padded 回放内 block 0 出现 13 个非有限视图，随后整批 attention 输出变 NaN。Triton GDN kernel 跳过 state index<=0（默认 CUDA 路径不触发）；XPU GDN kernel 曾不跳过（vllm-xpu-kernels#660 kernel 侧已修）；任何把 index 0 当普通槽的后端/未来 kernel 同样暴露，且失败形态（无关请求 NaN、仅图回放+padding 下）难回溯。issue 提出防御方案（每 Mamba-spec 组 withholding 一个清零 scratch block，padding 行指向 scratch）并已在 XPU FULL graph+async+spec burst 下验证无 NaN，等待维护者对触及 KV cache manager 的方案表态。'
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/63620 （open，2026-10-25 创建；含 block 0 非有限视图计数实测与 XPU 修复引用）
+  behavior: 混合架构（Mamba/GDN 类线性注意力+attention）模型用图回放跑 decode 且批次有 padding 时：padding 行的循环状态指针全部指向 0 号块——这个块是所有层共享的空页。没有特判 0 号块的 state kernel 会把各层循环状态都写进这一页（实测一次回放后该页出现 13 个非有限值），下一个真实步骤把 NaN 读进 attention 计算，整批不相关请求的输出一起变 NaN，且只在图回放+padding 的组合下出现，平时完全正常，极难定位。默认 Triton kernel 跳过 0 号块所以 CUDA 路径幸免，XPU 路径已实测踩中。
+  trigger_surface: vLLM 混合 GDN/SSM+attention 模型；FULL graph 回放 + 批 padding（decode/spec）；不跳过 index 0 的 state kernel 后端（XPU 实测，其他后端同理暴露）。
+  signature: 仅图回放+padding 时整批 NaN；block 0 非有限视图计数增长。
+  repro: issue 附 XPU 4 卡 burst 实测（concurrency 3/4/8、150 请求同 step，修复后无 NaN）。
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: KV状态
+      visibility:
+        from: 静默错误
+        to: 数值异常

@@ -1,0 +1,59 @@
+id: TRN-0575
+legacy_ids: []
+slug: ops_nn_unique_valueout_dtype_unvalidated
+aliases: []
+title: aclnnUnique/Unique2 不校验 valueOut dtype
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: unique valueOut 校验缺失
+  behavior: CheckDtypeValid 不校验 valueOut：dtype 与 self 不一致时两段式接口返回 0，输出为位模式错读的脏数据；同族 aclnnUniqueConsecutive 同输入正确返回 161002，行为不一致。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B2 实测：self=FP32[8]、valueOut=FP16 两段均返回 0，拿到脏数据无错误码；资料错误码表明写 self 或 valueOut dtype 非法应 161002；四接口行为不一致。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前断言 valueOut.dtype==self.dtype；与同族 UniqueConsecutive（会正确拒绝）或 CPU 参照对拍。
+  fix: 待定（issue open：期望补齐 valueOut dtype 校验，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-01'
+remarks: TRN-0524 族（out 参数契约缺失）unique 侧实例。训练面：去重/词表构建/数据管线常用 unique；dtype 错配（如 fp32 输入配 fp16 输出缓冲）静默产出位模式错数据。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7867
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0524
+- kind: cross
+  target: INF-2339
+pattern: PAT-TRN-0058
+original:
+  mechanism: 'cann/ops-nn #7867（2026-10-31，open；Ascend910B2、CANN 9.2.0、ACLNN 两段式直调、master index/unique/op_api）：aclnnUnique/aclnnUnique2 的 CheckDtypeValid 只校验 self/inverseOut（Unique2 另加 countsOut），完全不校验 valueOut 的 dtype。实测 self=FP32[8]={1,2,2,3,3,3,4,5}、valueOut=FP16[8]（与 self 不一致）、inverseOut=INT64：两段式接口均返回 0，调用方拿到 self 位模式按另一 dtype 解释后的脏数据；对照组同违约输入调 aclnnUniqueConsecutive（dim=1000）正确返回 161002——同族四个接口行为不一致。资料 aclnnUnique.md/aclnnUnique2.md 错误码表明写「self 或 valueOut 的数据类型不在支持范围 → 161002」且 valueOut 参数行注明「数据类型同 self」。'
+  source: https://gitcode.com/cann/ops-nn/issues/7867 （open，2026-10-31；含自包含 C++ 探针与同族对照）
+  behavior: NPU 训练数据管线做去重（unique）时若输出缓冲 dtype 与输入不一致（如 fp32 数据配 fp16 valueOut）：接口返回成功、去重结果是位模式错读的脏数值（如把 fp32 位当 fp16 解释），无错误码无告警；同族 UniqueConsecutive 同输入会正确报 161002，行为不一致使问题更难预期。下游按脏值继续构建词表/统计。
+  trigger_surface: Ascend 910B2 + CANN 9.2.0；aclnnUnique/aclnnUnique2 + valueOut dtype 与 self 不一致；去重/词表构建路径。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

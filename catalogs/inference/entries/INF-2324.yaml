@@ -1,0 +1,63 @@
+id: INF-2324
+legacy_ids: []
+slug: torch_npu_950pr_index_put_oob_silent_corruption
+aliases: []
+title: 950PR index_put_/scatter_ 越界写静默腐蚀邻接内存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: index_put_/scatter_ 越界防护
+  behavior: 950PR 上 index_put_/scatter_ 的越界索引写不抛任何异常（call/sync/read 三相静默，8/8 档零 raise），写指针按线性偏移裸走出界，物理腐蚀目标张量之外的相邻内存。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 越界写值与用户写入值逐位相同地落到紧邻张量（哨兵 S3[871]/[65407] 精确预言）；d=+8 等小越界恰好落入分配隙时完全无痕；靶内 63 个未触碰行被回卷覆盖。CPU 同码 7/7 立即抛错，复机重跑逐位复现。
+  visibility: 静默错误
+mitigation:
+  detect: 目标张量前后各布 1MB 哨兵缓冲区逐位比对（issue 方法）；调用侧自行校验 index 范围（index < size 与 >=0）后再调用。
+  fix: 待定（issue open；A3/910B3 为 5/7 档 sync 期延迟抛、310P3 7/7 延迟抛，仅 950PR 全静默）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5786
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0566
+original:
+  mechanism: 'Ascend/pytorch issue #5786（2026-10-31，Atlas 950PR，CANN 9.2.1 + torch 2.11.0 + torch_npu 2.11.0rc1）：index_put_/scatter_ 越界索引写入全程无异常（8 档 RAISE=0/8），越界线性偏移真实落到目标张量外物理内存。几何实证：越界线性偏移 ×4B − 1MB − 512B 分配隙 = 哨兵内元素偏移（871/65407 分毫不差），写指针按线性偏移裸走出界，落点由内存布局精确预言。w03（d=+1000）与 w04（d=+65536）腐蚀 S3 双跑位级同值；w05/w06（scatter_ dim1 列越界回卷）腐蚀靶内 63 个未触碰行+S3[871]；w02/w07/w08（d=+8）落入 512B 分配隙完全无痕。跨芯对照：CPU 7/7 立即 IndexError、310P3 7/7 延迟抛（零腐蚀）、A3/910B3 5 档 sync 期延迟抛（但静默腐蚀同列写、拓扑不同）、950PR 0 raise 全静默。复机（整机重启全新进程）重跑逐位复现同一腐蚀，排除瞬态。'
+  source: GitCode issue https://gitcode.com/Ascend/pytorch/issues/5786 （open，2026-10-31 创建；含哨兵几何实证表、跨芯拦截谱系与最小复现脚本）
+  behavior: 在 950PR 上用越界 index 调 index_put_ 或 scatter_，调用、同步、读取都不报错，后续算子照常运行；越界的值被无声写进目标张量之后的物理内存——紧邻它的其他张量（如相邻激活、权重分片）会被逐位写穿，或 scatter_ 的列越界把张量内 63 个未触碰行整体覆盖。同一代码在 CPU 立即抛 IndexError，只有 950PR 全静默；整机重启后重跑腐蚀值逐位复现，属确定性无痕内存腐蚀。
+  trigger_surface: Ascend/pytorch（torch_npu）950PR；index_put_ dim0 越界、scatter_ dim1 标量/张量越界；任何含越界索引的用户输入（索引来自外部数据或动态计算时无防护）。
+  signature: 相邻张量内容被用户写入值逐位替换；越界量与腐蚀位置满足 线性偏移×4B−1MB−512B 关系；零异常日志。
+  repro: issue 附自包含最小复现（N=262144 目标张量 + S1/S2/S3 哨兵布局，seed=20261031）。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: 数值结果

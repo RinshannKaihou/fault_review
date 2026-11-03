@@ -1,0 +1,54 @@
+id: TRN-0576
+legacy_ids: []
+slug: msprobe_cosine_compare_overflow_underflow_misjudge
+aliases: []
+title: msprobe Cosine 比对大数溢出与微小值误判
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: cosine 相似度数值稳定性
+  behavior: 直接用原始数值算点积与 L2 范数（float64 机器精度判零向量）：有限大数平方/点积溢出产生 inf/inf、0/inf；很小的非零向量因范数下溢被当全零，正交/反向微小向量返回 1.0。
+effect:
+  objects:
+  - 测试判定
+  - 指标/日志
+  detail: 实测：相同大数向量报「Nan 数据含 NaN」（应 1.0）；大数 vs 非平行向量得 0.0（应 0.707）；正交微小向量得 1.0（应 0）；反向微小向量得 1.0（应 -1.0）——相同数据被误报或真实方向差异被掩盖。
+  visibility: 静默错误
+mitigation:
+  detect: 用 issue 附带 4 组边界用例（±1e200/±1e308/1e-200）做比对器自测。
+  fix: 修复方案已在 issue 给出（按最大绝对值预缩放再算点积/范数、仅真零走全零分支、原地缩放不动调用方输入）；未见独立修复 MR 合入记录，未核实。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: 训练面：msprobe 是昇腾精度比对/故障定位工具（NPU dump vs 基准），cosine 相似度是核心比对算法——比对器本身在大数/微小值下误判，会把正确对排查引偏或漏掉真实数值差异（OBS 面：观测工具骗过）。cross INF-2327 同 URL。
+evidence:
+- url: https://gitcode.com/Ascend/msprobe/issues/665
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2327
+original:
+  mechanism: 'Ascend/msprobe #665（2026-10-31，open）：python/msprobe/core/compare/algorithm/builtin_algorithm/alg_cosine_similarity.py 直接使用原始数值计算点积与 L2 范数、用 float64 机器精度判断零向量，缺数值稳定性处理：(1) 有限大数的平方或点积溢出 → inf/inf、0/inf 错误结果；(2) 很小但非零的向量因范数小于机器精度或范数平方下溢被当成全零向量，两个正交或反向的微小向量因此返回 1.0。最小复现（PYTHONPATH=python 直接调 compare）：[1e200,1e200] vs 自身 → ''Nan''（提示数据含 NaN，应 1.0）；[1e308,1e308] vs [1.0,0.0] → 0.0（应 0.7071）；[1e-200,0.0] vs [0.0,1e-200] → 1.0（应 0）；[1e-200,0.0] vs [-1e-200,0.0] → 1.0（应 -1.0）。修复方案（issue 内）：分别取最大绝对值、仅真零走全零分支、点积/范数前除以各自最大绝对值（正比例缩放不改变余弦值、缩放后至少一个元素绝对值为 1 避免上下溢）、对 flatten_numpy 副本原地缩放。'
+  source: https://gitcode.com/Ascend/msprobe/issues/665 （open，2026-10-31；含最小复现脚本、修复前后结果表与修复方案）
+  behavior: NPU 训练精度比对（msprobe dump 数据 vs 基准）遇到大数值（|x|~1e200+）张量：完全相同的两组数据被报「含 NaN 有差异」，排查被引向不存在的污染；遇到微小数值（~1e-200）张量：正交甚至反向的数据比对结果 1.0 判定一致，真实的方向性数值差异（如梯度反号）被比对器掩盖。比对结论在这两个区间不可信，无报错。
+  trigger_surface: msprobe（昇腾精度比对工具）alg_cosine_similarity；输入含 |x|≥1e200 或 |x|≤1e-200 的 dump/基准张量；训练精度对排查。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,68 @@
+id: TRN-0456
+legacy_ids: []
+slug: inplace_adagrad_v2_tail_accum_and_tiling_overflow
+aliases: []
+title: AdagradV2 尾块 accum 错值与 tiling 溢出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: InplaceApplyAdagradV2
+  behavior: kernel 端 accum UB 搬运用裸三参 DataCopy（按 32B 向下取整），numel%8≠0 时尾部元素被丢弃、回写取到错误数据；tiling 端 coreNum 计算另有有符号乘法溢出。
+effect:
+  objects:
+  - 优化器状态
+  - 训练轨迹
+  detail: 参数元素数非 8 对齐时 accum（二阶矩）输出尾部 numel%8 个元素为错值（135/135 用例零例外，var 输出恒正确），单元素张量即触发；优化器状态静默错位后训练轨迹偏离。
+  visibility: 静默错误
+mitigation:
+  detect: 对 numel%8≠0 参数检查 accum 尾部与 golden；TTK/GEIR 双通路失败集逐名一致可定位 kernel
+  fix: 待定（issue 给出修复方案：搬运长度向上取整到 32B、按真实长度回写；未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7427
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7428
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12905
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn #7427（open，Ascend 950PR/CANN 9.2.0，AI 识别批）：InplaceApplyAdagradV2（optim/inplace_apply_adagrad_v2，arch35）ComputeFP32 中 accum→outAccum 的 UB→UB 搬运使用裸三参 AscendC::DataCopy(outAccumLocal, accumLocal, tileSize)，该接口按 32B 块搬运，元素数非 32B 整数倍时向下取整丢尾部；末块 tileSize%8≠0 时 CopyOut 回写 GM 的尾部元素取到错误数据。同文件 CopyIn/CopyOut 均已用 DataCopyPad，唯此处遗漏。存量 497 用例批量执行：numel%8==0 的 362 条全 PASS，numel%8≠0 的 135 条全部 FAIL 且失败形态零例外（out1 错误元素数恰=numel%8），TTK kernel 与 GEIR 双通路失败用例集逐名一致（缺陷在 kernel 二进制）；单元素张量（numel=1）最小复现。外部同类 GEIR 通路 26 条同形态见 https://gitcode.com/wangyueting/changwei_liuyi/issues/106 。#7428（同日 AI 识别）：同算子 Tiling coreNum 计算存在有符号乘法溢出。修复方案：搬运长度向上取整到 32B（多搬元素仅落 UB 队列内部缓冲），CopyOut 按真实长度字节回写。'
+  source: GitCode issues：https://gitcode.com/cann/ops-nn/issues/7427 （accum 尾块错值，open，497 用例统计）、https://gitcode.com/cann/ops-nn/issues/7428 （tiling coreNum 有符号乘法溢出，open）
+  behavior: 用 InplaceApplyAdagradV2 做分布式 Adagrad 优化器 step 时，任何参数张量元素数不是 8 的整数倍（如 63、99999、单元素 bias），该参数的累积器（accum）状态尾部 1~7 个元素每次更新都写成错误值，而参数本体（var）输出正常；没有任何报错，训练继续跑，但该参数的二阶矩状态已悄悄错位，长跑后表现为个别参数更新方向劣化。135/135 非对齐用例全部失败、零例外。
+  discovery: 2026-10-27 每日扫描
+  notes:
+  - '2026-10-28 2026-10-28 回访：加固 MR !12905（open）汇总 #7427 尾块对齐（497 存量中 135 例 %8≠0 全部失败、错元素数恰=numel%8 零例外，修复后全绿）与 #7428 coreNum CeilDiv 溢出改写；KERNEL 497/497、GEIR 49/49、外部 29 条 GEIR 失败集复验全绿、determinism 41/41。'
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 优化器
+        to: 算子/内核
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - evidence
+    - original.notes

@@ -1,0 +1,55 @@
+id: INF-2236
+legacy_ids: []
+slug: cann_dequant_swiglu_quant_out_size_unchecked_oob
+aliases: []
+title: CANN DequantSwigluQuant 出参偏小静默越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: dequant_swiglu_quant 出参校验
+  behavior: aclnnDequantSwigluQuantGetWorkspaceSize 不校验 yOut/scaleOut 尺寸是否等于推导尺寸，出参声明小于推导值时两段接口返回 0，内核按 x 推导的真实尺寸写满输出，越过声明张量边界。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: yOut 声明 [4,32]（真实 [4,64]）时边界外被写 128 字节，行数 1/4/16 时越界 32/128/512 字节线性增长；scaleOut 同型（声明 [1] 实际 [4] 时多写 3 个 float）。对照组越界恒 0，排除哨兵误判。
+  visibility: 静默错误
+mitigation:
+  detect: 守护区哨兵回读可检出；rc 与日志无异常（实测 ret1=0 ret2=0）
+  fix: 待定（issue 2026-10-28 新报 open；期望按资料错误码表返回 ACLNN_ERR_PARAM_INVALID 161002）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7569
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #7569（2026-10-28，open）：aclnnDequantSwigluQuant 第一段接口不校验出参 yOut/scaleOut 尺寸。资料 op_host/dequant_swiglu_quant_infershape.cpp 声明 yOut.shape=x.shape（末维除 2）、scaleOut.shape=yOut.shape 去尾轴。实测（Ascend 910B2，CANN 9.2.0，源码 711a4f5d，quant/dequant_swiglu_quant，两段式 C 直调，同 die 连续两次结果一致）：x=[4,128] 时 yOut 应 [4,64]；声明成 [4,32]（128 元素）后 ret1=0 ret2=0，内核按真实尺寸写满，边界外被写 128 字节；行数 1/4/16 声明为真实一半时越界 32/128/512 字节线性。scaleOut 声明 [1]（真实 [4]）时边界外 3 个 float 被写。对照组越界恒 0。含完整 C++ 复现（0xA5 哨兵缓冲）。'
+  source: https://gitcode.com/cann/ops-nn/issues/7569
+  behavior: 给 aclnnDequantSwigluQuant 传一个比推导尺寸小的 yOut 或 scaleOut（例如只开一半大小），两段接口都返回成功，内核把输出按真实尺寸写满，多出来的部分直接越过张量声明边界写进相邻显存（实测 128/512 字节量级、随行数线性增长），没有任何报错；调用方若按声明尺寸读结果还会读到被截断的数据之外的情况。
+  trigger_surface: Ascend 910B2 + CANN 9.2.0 + aclnnDequantSwigluQuant 两段式调用 + 出参尺寸小于推导尺寸（分配过小或形状声明错误）；ops-nn 711a4f5d。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化

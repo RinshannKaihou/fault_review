@@ -1,0 +1,62 @@
+id: INF-2215
+legacy_ids: []
+slug: cann_wqbmv2_tiling_l1_budget_nondeterministic
+aliases: []
+title: WQBMV2 tiling L1 预算缺陷非确定错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: WQBMV2 arch35 tiling
+  behavior: host tiling 三处 L1 预算缺陷：预载粗估未扣 WeightL1 与 bias 致越界踩 WeightL1；无符号减法下溢误放行 L1 扩展；全载按 baseM×CeilAlign(K,32)×2B 低估占用。
+effect:
+  objects:
+  - 数值结果
+  detail: perchannel+int4 转置 weight+bf16 x 组合下多组形状输出非确定性错误（同输入多次执行不一致，rel_l2 0.2-1.4）；16/22 核限核、部分 eager 配置触发。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/12304（issue 已 closed，修复后 rel_l2=2.8e-03 且与不限核 eager 逐 bit 一致；发布未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7357
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0457
+original:
+  mechanism: Ascend950（DAV3510）+ CANN 9.2.0。WeightQuantBatchMatmulV2 arch35 adaptive split tiling 路径（perchannel + weight int4 转置 + x bf16 非转置）：① SetPreLoad 判断 A 预载用粗估 256KB 未扣 L1 A 区 WeightL1（baseN×baseK×stepKb 双缓冲）与 bias（4KB 双缓冲），kernel 按 host 下发 aPreloadSize（≈M×K/核数）预载越界踩 WeightL1_P1 与 AIV 反量化写 Weight 竞态（16 核 baseN=352 溢出 32KB、22 核 12KB）；② CheckL1SizeAfterExtending 无符号减法 al1Size 260KB>256KB 时下溢成巨大正数误放行（baseN 256→288）；③ OptimizeMatmulTiling 按 baseM×CeilAlign(K,32)×2B 估算 255KB 放行，kernel 按 baseK 粒度实际 260KB 且未扣 WeightL1(288KB)，AL1+WeightL1=548KB>L1(512KB)。用例1 M=256,K=6144,N=6912 图模式 16/22 核 rel_l2 0.2-0.6 非确定；用例2 M=80,K=1632,N=9216 eager 原生配置 rel_l2 0.95-1.4 非确定。修复 PR !12304 后 2.82e-03/2.80e-03 且多次执行逐 bit 确定。
+  source: https://gitcode.com/cann/ops-nn/issues/7357（三处 tiling 缺陷定量 + 修复 PR !12304 前后对照）
+  behavior: 量化矩阵乘 WeightQuantBatchMatmulV2 在特定形状（如 M=256/K=6144/N=6912 限核或 M=80/K=1632/N=9216 eager）下，同一输入每次执行结果都不一样且错误（rel_l2 高达 1.4），量化推理输出随机劣化、难以复现定位；其他核数配置正常。
+  trigger_surface: Ascend950 + CANN 9.2.0 + WQBMV2 perchannel 量化 + int4 转置 weight + bf16 x + 特定 M/K/N 与核数组合（16/22 核图模式、部分 eager 原生配置）；kernel 本身无问题，缺陷在 host tiling。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  updates:
+  - date: '2026-10-28'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+    rewritten:
+    - behavior

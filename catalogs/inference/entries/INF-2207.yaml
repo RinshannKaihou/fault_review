@@ -1,0 +1,56 @@
+id: INF-2207
+legacy_ids: []
+slug: vllm_ascend_eplb_mxfp8_silent_corruption
+aliases: []
+title: vllm-ascend EPLB 重排后 W8A8-MXFP8 静默输出垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: MRv2 EPLB 专家权重迁移
+  behavior: EPLB 首次专家重排 commit 后模型输出变为垃圾；传输拿到哪组张量（而非如何拷贝）出错，已有两个专家传输格式 PR（#18015/#18035 叠加）不修复。
+effect:
+  objects:
+  - 输出内容
+  detail: 重排前 8 题全对，9 次 cycle commit 后 0/8，'The capital of France is' 输出 'cancer cancer cancer...'；无 EPLB、step_interval 1000000（不重排）均正确，step_interval 600 垃圾。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；#18015/#18035 叠加验证无效，方向指向传给 transfer 的张量选择）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/19948
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend releases/v0.30.0（vllm_ascend 0.30.0rc2.dev157+gd4ad49796，#18436/#18718/#18788 已含）。A5 4 卡、Qwen3-30B-A3B W8A8-MXFP8、DP2/TP2(EP4)、MRv2、STAIR、num_redundant_experts 4。首次 EPLB 专家重排 commit 后输出即垃圾，机制未定位：格式保持分配器 _empty_like_preserving_npu_format 已在分支内、#18035 expert_copy/explicit_transfer 补丁可干净叠加且两文件与 main 逐字节相同，叠加后结果不变——指向传输被交给的张量集合（哪个 expert 的权重/scale）选择错误而非拷贝方式。9 次 'Ascend async EPLB cycle committed' 日志后 0/8；对照三臂：no EPLB 正确、step_interval 1000000（无重排）正确、step_interval 600（9 commit）垃圾，排除 checkpoint 与负载本身。
+  source: https://github.com/vllm-project/vllm-ascend/issues/19948（三臂对照 + 两个在途修复 PR 排除实验）
+  behavior: 开启 --enable-eplb 服务 W8A8-MXFP8 MoE 模型，第一次专家重排提交后模型回答完全损坏：'The capital of France is' 输出 'cancer cancer cancer...'，8 题从全对变 0 对；服务无错误无警告，健康检查与请求全部正常，继续对外服务垃圾答案。
+  trigger_surface: vllm-ascend releases/v0.30.0 + --enable-eplb（STAIR 策略）+ W8A8-MXFP8 量化 MoE（A5 实测）；首个重排 commit 后即发生；关闭 EPLB 或调大 step_interval 避免重排即不触发。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - effect

@@ -1,0 +1,57 @@
+id: TRN-0574
+legacy_ids: []
+slug: ops_nn_normalize_bbox_fp16_large_divisor
+aliases: []
+title: NormalizeBBox FP16 大除数精度错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: NormalizeBBox FP16 转换溢出
+  behavior: FP16 坐标、高宽（合法 INT32）超 FP16 最大有限值（65536>65504）时，旧实现先把高宽转 FP16 溢出后再相除，输出全 0；仓内 GPU 测试参考重复同样转换，把错误结果判为 PASS。
+effect:
+  objects:
+  - 数值结果
+  - 测试判定
+  detail: 950PR 实测：boxes=FP16[1,3,4] 全 1000、shape_hw=INT32 高宽 65536，12 输出应 0.01526 实得全 0（12/12 错）；FP32 对照通过；旧 GPU 参考也输出 0 致 cross_check 误判 PASS。修复参考后旧内核 FAIL。
+  visibility: 静默错误
+mitigation:
+  detect: 提升精度数学参考对照（勿复刻 kernel 的 dtype 转换路径）；FP32 对照组。
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13275 （open）：修 FP16 大除数精度并补 Host 推导校验；26 条小用例三 Kernel 路径 + 26 条 GE 用例 PASS。未核实发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: 训练面：检测框归一化常在数据管线/检测头训练中；错误参考使测试假绿（OBS 兼面）。无推理库同 URL 条目。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7869
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2335
+original:
+  mechanism: 'cann/ops-nn #7869（2026-10-31，open；Ascend950PR_9579、CANN 9.3.0、ops-nn 主线 d1109ae3）：NormalizeBBox 在 FP16 坐标 + 高宽超过 FP16 最大有限值（65536>65504）时算错：高宽原本合法 INT32，旧实现先转 FP16 溢出后再相除，输出全 0；且旧 GPU 测试参考重复同样转换，把错误结果判为 PASS（cross_check 假绿）。实测：boxes=FP16[1,3,4] 全 1000、shape_hw=INT32[1,3] 高宽均 65536，12 个输出应 1000/65536=0.0152587890625 实得 0（12/12 错）；FP32 对照通过；修正参考后旧内核 FAIL，修复后 26 条小用例 dyn/cst/release 三 Kernel 路径与 26 条 GE 用例全 PASS。另 Host 推导放行非法 rank/shape_hw/batch 关系与 BOOL dtype（负向问题，随 MR 一并修）。'
+  source: https://gitcode.com/cann/ops-nn/issues/7869 （open，2026-10-31；含回归用例 nb_float16_large_hw、质量看板链接与关联 MR）
+  behavior: NPU 检测/分割训练数据管线里用 FP16 坐标做大图（高宽>65504）框归一化：输出框坐标全部变 0（应为 ~0.015），无报错；更隐蔽的是仓内 GPU 测试参考犯同样转换错误，精度比对显示 PASS——错误结果自带「测试通过」假象，只有换提升精度参考才暴露；FP32 输入不受影响。
+  trigger_surface: Ascend 950PR + CANN 9.3.0；NormalizeBBox FP16 坐标 + INT32 高宽>65504；检测框归一化训练/数据路径。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

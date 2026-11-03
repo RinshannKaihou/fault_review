@@ -1,0 +1,57 @@
+id: TRN-0514
+legacy_ids: []
+slug: verl_fused_kernels_skip_lm_head_logit_scaling
+aliases: []
+title: verl fused kernel 丢 lm_head logit 缩放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: verl
+    component: fused 线性 CE 路径
+  behavior: use_fused_kernels=True 时绕过 CausalLM.forward，取 pre-lm_head hidden states 与 lm_head.weight 直接调融合核，不执行模型自带的 logit 缩放/bias
+effect:
+  objects:
+  - 输出分布
+  - 训练信号
+  detail: Granite（logits_scaling 3~16×）/Cohere（logit_scale 0.0625~0.8333）/Falcon-H1（1/25.6~1/51.2）等家族的 logprob、PPO/GRPO loss 与 KL 全部按错误尺度的 logits 计算，无报错
+  visibility: 静默错误
+mitigation:
+  detect: 对比 fused 与非 fused 路径的 logprob/loss；检查模型 config 中 logits_scaling/logit_scale/lm_head_multiplier 是否非默认
+  fix: 修复 PR https://github.com/verl-project/verl/pull/8441（open，未合入）：把缩放因子折进 fused 核的 temperature 并拒绝带 lm_head.bias 的模型
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/pull/8441
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'verl use_fused_kernels=True 时，monkey_patch.py 的 patch_forward_with_backends 把 causal LM 架构路由到 dense_common.py 的 forward_with_torch_backend/forward_with_triton_backend，两者经 forward_base_model 取 pre-lm_head hidden states 后直接调 FusedLinearForPPO/linear_cross_entropy（(hidden, lm_head.weight, temperature)），绕过模型 CausalLM.forward。多个标准 transformers causal LM 家族在 CausalLM.forward 内部对 logits 施加强制 post-lm_head 缩放或 bias：Granite/GraniteMoE 系除以 config.logits_scaling（granite-4.0-h-350m 为 3.0，granite-3.x-8b/4.0-h-small 高达 16.0）；Cohere/Cohere2 系乘 config.logit_scale（0.0625~0.8333）；Falcon-H1 乘 lm_head_multiplier（1/25.6、1/51.2）。fused 路径不执行这些操作，RL 训练中 logprob、PPO/GRPO loss、KL 全按未缩放 logits 计算。修复 PR #8441（open 未合入）：把缩放因子折进 fused kernel 的 temperature，并显式拒绝 lm_head.bias 模型（bias 无法折入）。'
+  source: https://github.com/verl-project/verl/pull/8441
+  behavior: 在 verl 上对 Granite、Cohere/Command、Falcon-H1 等带 logit 缩放的模型做 RL 训练（use_fused_kernels=True）时，rollout logprob、policy loss、KL 与 reward 后处理全部建立在尺度错误的 logits 上（最大差 16 倍），训练不报错但学到的策略与正确尺度严重偏离，KL/entropy 等诊断指标同样失真
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: RL训练回路
+        to: 算子/内核
+      effect:
+        from: 训练信号
+        to: 输出分布
+    rewritten:
+    - behavior

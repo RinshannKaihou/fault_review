@@ -1,0 +1,49 @@
+id: INF-2322
+legacy_ids: []
+slug: vllm_npcache_stale_weights_after_bin_update
+aliases: []
+title: vLLM npcache 源 .bin 更新后静默服务旧权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: npcache 权重缓存失效逻辑
+  behavior: vLLM 为 .bin 检查点创建 npcache 后，替换/更新源 .bin 文件不会使缓存失效；只要 np/weight_names.json 存在，新进程继续加载旧 NumPy 数组，无任何校验源文件是否变化。
+effect:
+  objects:
+  - 模型权重
+  detail: 复现：embed_tokens 全元素 +1.0 并回写 .bin 后，npcache 新进程加载的 embedding sum 仍 378.0/哈希不变（旧张量），auto 加载器同目录读到 447.0/新哈希；同目录两种 load_format 结果系统性分叉，属静默模型版本正确性失败。
+  visibility: 静默错误
+mitigation:
+  detect: 更新 .bin 后比对 npcache 与 auto 加载的权重哈希/sum；或删除 np/ 目录强制重建。
+  fix: 待定（issue open 2026-10-30，vLLM 0.32.0；报告建议缓存校验源 shard 指纹，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/64696
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm issue #64696（2026-10-30，vLLM 0.32.0，L40S）：npcache 为 PyTorch 检查点建立 NumPy 缓存后，源 .bin 文件替换/更新不触发缓存失效——只要 np/weight_names.json 存在，新进程继续加载旧数组，没有任何「缓存是否由当前源生成」的校验。复现序列（5 步，双进程对照）：无缓存目录 + npcache 加载建缓存 → model.embed_tokens.weight 全元素 +1.0 回写 .bin → 新进程 npcache 加载 sum=378.0（旧值）、哈希 20d5b5f4...；同目录 auto 加载 sum=447.0（+4096.0 精确差）、哈希 bc48e3dd...。机器可读判定 sum_delta_visible_to_direct_loader=4096.0、bug_reproduced=true。影响：同一模型目录按 load_format 选择不同，服务的模型版本不同——用于热更新权重、A/B 比对或迭代评测的流程在 npcache 路径下静默停留在旧模型。'
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/64696 （open，2026-10-30 创建；含 5 步复现与 sum/SHA 对照表）
+  behavior: 用过 npcache 加载过一次 .bin 模型后，即使替换了磁盘上的权重文件，再用 npcache 启动的 vLLM 进程仍加载旧权重的 NumPy 缓存：服务正常启动、正常出话，但跑的不是当前磁盘上的模型——同一目录 auto 加载则是新权重，两种方式结果分叉。做权重热更新、灰度或版本对比时版本结论完全失效，且无任何告警。
+  trigger_surface: vllm load_format=npcache；pytorch_model.bin 源文件被替换/更新；np/weight_names.json 残留；0.32.0 复现。
+  signature: npcache 与 auto 加载同目录权重哈希/sum 不一致；删除 np/ 后恢复。
+  repro: issue 附 repro.py（5 步序列 + 双进程哈希对照）。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

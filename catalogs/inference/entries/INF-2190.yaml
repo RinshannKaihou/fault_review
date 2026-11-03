@@ -1,0 +1,58 @@
+id: INF-2190
+legacy_ids: []
+slug: op_plugin_sdpa_bool_mask_full_masked_row_uniform
+aliases: []
+title: SDPA bool 掩码全遮行输出均匀分布而非 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: SDPA bool 掩码融合 kernel
+  behavior: bool 融合 kernel 对整行 max=-inf 做 clamp，softmax 退化为均匀分布，输出 v.mean 而非 0 行，与 CPU 语义不一致
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 输出内容
+  detail: bool 全遮 query 行输出非零实值（对 key 的均匀 softmax，maxabs 0.37），外观可信；训练/推理注意力输出被静默污染；加性 -inf 掩码路径不受影响
+  visibility: 静默错误
+mitigation:
+  detect: 对 bool 全遮行输出与 CPU 对照（allclose 5.96e-08 内为均匀值）；加性 -inf 掩码路径对照一致
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-26'
+remarks: 训练库 TRN-0445 已按同一 issue 收录（训练视角）；本条目按推理库范围单独收录，反向关联由每日审计自动补上
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/642
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0445
+original:
+  mechanism: Ascend op-plugin 的 torch.scaled_dot_product_attention bool 掩码路径：当 bool 掩码把某个 query 行全部遮蔽（整行不可见）时，CPU 参考输出全 0 行（softmax 对全 -inf 行返回 0），而 NPU 的 bool 融合 kernel 对整行 max=-inf 做了 clamp，使 softmax 退化为对该行所有 key 的均匀分布，输出等于 v.mean。四象限对照（B1H2S8D8，掩码位置 7，同一随机数据）证明：bool×遮 query 行 CPU=全 0 行 vs NPU=非零实值（zeroRows=0，maxabs 0.37，与均匀 softmax 一致，allclose 5.96e-08）为真分歧；加性 -inf×遮 query 行两端一致（ULP 8.9e-08）；bool/加性×遮 key 列两路一致（ULP 级）。即缺陷仅 bool 掩码路径。最小复现：q=torch.randn(1,2,8,8,npu)，mask[...,7,:]=True，F.scaled_dot_product_attention(q,q,q,attn_mask=mask) 的 r[0,0,7] 在 NPU 上非零、CPU 上全 0。环境：Ascend950PR / CANN 9.1.0 / torch_npu 2.9.1，CPU torch 2.9.1 对照。来源 https://gitcode.com/Ascend/op-plugin/issues/642（open）。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/Ascend/op-plugin/issues/642
+  behavior: 使用 bool attn_mask 且某 query 行被全部遮蔽时，NPU 上 scaled_dot_product_attention 的该行输出不是 0，而是对全部 key 的均匀注意力值（约等于 v 的平均），数值看起来完全正常、无任何报错或 NaN；CPU 上同输入输出全 0 行。这会使依赖 bool 掩码做行级屏蔽的任务（如 padding、专家路由屏蔽、因果外屏蔽）在 NPU 上拿到非零注意力输出，模型行为静默偏离预期；改用加性 -inf 掩码则两端一致。
+  trigger_surface: torch.scaled_dot_product_attention 或等价 bool attn_mask 路径；掩码需把至少一个 query 行全部遮蔽；Ascend950PR、CANN 9.1.0、torch_npu 2.9.1 实测；其他芯片版本未实测
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果

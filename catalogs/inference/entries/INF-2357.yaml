@@ -1,0 +1,55 @@
+id: INF-2357
+legacy_ids: []
+slug: maxpool2d_indices_contract_split
+aliases: []
+title: max_pool2d indices 契约四芯四态分裂
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: max_pool2d indices 适配层
+  behavior: indices dtype 随芯片分裂：310P3 float32、A3/910B3 int8、950PR int32（均非契约 int64）；310P3/A3/910B3 形状与 CPU 契约不符，310P3 池化值面同时失真
+effect:
+  objects:
+  - 数值结果
+  detail: 同一 API 四芯四种形态无一符合 CPU 契约（int64+输出空间形状）：310P3 float32 索引不可用于 gather/scatter、A3/910B3 int8 语义不成立、形状破裂使依赖形状的下游报错；310P3 值面同时与 CPU DIVERGE
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5791
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0586
+original:
+  mechanism: 'torch.nn.functional.max_pool2d(..., return_indices=True) 的 indices 返回契约在四条芯片线上四种形态：310P3 indices dtype=torch.float32（索引用浮点返回！）、shape (2,8,4,5)（期望 (2,8,8,8)）且池化值面与 CPU DIVERGE（maxpool 纯选择无累加应逐位一致，与 310P3 fp32 降级带 #5785 同域）；A3 int8、shape (2,8,4,160)（2048 元素 vs 期望 1024）；910B3 int8、另一配置 (2,3,4,64) 形状错误；950PR int32（非契约 int64）但形状与值面正确。int8 对 16×16 窗口寻址 0~255 语义不成立；float32 索引用于 gather/scatter 直接报错。平局打破语义虽有实现定义空间，但 dtype/形状/值面三个硬契约破裂与平局无关。取证：四芯全列探针日志（t320_convpool_*.log×4 + t332_idxret_{953,310p}.log），md5 在档，每案独立子进程 + CPU 同码对照，310P3 双跑确定性。版本：CANN 9.2.1（社区版）、torch 2.11.0 + torch_npu 2.11.0rc1。来源 https://gitcode.com/Ascend/pytorch/issues/5791（open，2026-11-01）。关联 #5203（max_pool2d 屏蔽任务件）、#5785（310P3 值面失真同域）。'
+  source: 2026-11-01 每日扫描。https://gitcode.com/Ascend/pytorch/issues/5791
+  behavior: 在 NPU 上用 F.max_pool2d(..., return_indices=True)：indices 的类型和形状随芯片完全不同——310P3 返回 float32 类型索引且形状错、A3/910B3 返回 int8 且形状多一倍元素、950PR 是 int32；CPU 契约是 int64 且形状等于输出空间形状。拿这些 indices 去 gather/unpool 立即报错或悄悄用错位置；310P3 连池化输出值本身都和 CPU 对不上。跨芯代码无法依赖任何统一行为。
+  trigger_surface: CANN 9.2.1 + torch_npu 2.11.0rc1；max_pool2d(return_indices=True)；310P3/A3/910B3/950PR 四芯全触发（形态各异）；依赖 indices dtype/形状的下游（gather/scatter/unpool）
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  updates:
+  - date: '2026-11-02'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

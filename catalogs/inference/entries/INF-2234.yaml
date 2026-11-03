@@ -1,0 +1,58 @@
+id: INF-2234
+legacy_ids: []
+slug: sglang_inkling_prefill_padding_kv_slot0_nan
+aliases: []
+title: SGLang Inkling padding 写 KV slot 0 致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: Inkling prefill 图缓冲注册
+  behavior: prologue kernel 按整个 launch grid 写 K/V，含 padding token（out_cache_loc=0）的 stale 数据写入 slot 0；页<128 的滑窗注意力读 slot 0 得 NaN。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: GUMBEL=0 时 multinomial assert 每 rank 退出；默认 GUMBEL=1 时受影响请求静默返回 token id 0（'!'）且 logprob 为 NaN。H200 FA4 默认页 1 即触发；B200 FA4 强制页 128 掩盖读取。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/46572
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang v0.5.22（lmsysorg/sglang:v0.5.22-cu130，H200）。Inkling（NVFP4）prefill CUDA graph backend 默认 full：inkling_attn_prologue_extend_kernel（inkling_attn_prologue_fused.cuh）对 launch grid 内每个 token 写 K/V，包括捕获 bucket 的 padding token；build_prefill_registry（cuda_graph_buffer_registry.py，PaddingPolicy.ZERO）把 padded 尾部 out_cache_loc 置 0，其行是 stale 静态缓冲数据（有时非有限）→ 写入 KV slot 0。页大小<128 时滑动窗口注意力读 slot 0（H200 FA4 默认页 1），masked score 0 但 0*NaN=NaN → logits 行 NaN。SGLANG_OPT_USE_GUMBEL_SAMPLE=0：torch.multinomial assert、scheduler 每 rank 退出；默认 =1：静默 token id 0（'!'）+NaN logprobs。B200 FA4 经 _fa4_page_constraint 强制页 128 隐藏读取，页 1 时同样崩溃。
+  source: https://github.com/sgl-project/sglang/issues/46572（机制链 + H200 复现）
+  behavior: Inkling NVFP4 模型服务中，受影响请求要么整批 crash（关闭 Gumbel 采样时 multinomial 断言、每 rank 退出），要么更糟——默认配置下静默返回 token id 0（'!'）且 logprobs 为 NaN，请求不失败但输出完全错误。
+  trigger_surface: SGLang v0.5.22 + Inkling(NVFP4) + prefill CUDA graph full + FA4 页大小<128（H200 默认 1）；B200 页 128 时不暴露读取但页 1 可复现。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: KV状态
+      visibility:
+        from: 静默错误
+        to: 数值异常

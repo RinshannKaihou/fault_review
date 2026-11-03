@@ -1,0 +1,64 @@
+id: TRN-0497
+legacy_ids: []
+slug: megatron_dp_reshardable_resume_adam_step_reset
+aliases: []
+title: dp_reshardable 恢复后 Adam step 重置为 1
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: megatron-lm
+    component: dp_reshardable 加载器
+  behavior: dp_reshardable 加载用 dummy_step 的 step=1 占位张量覆写已恢复的 step，且不同步 HDO 子优化器状态。
+effect:
+  objects:
+  - 优化器状态
+  detail: 恢复后首个更新用 t=2 而非 trained_steps+1：默认 betas 下偏差校正错，50 步检查点恢复后下一更新约 1.7 倍过大，loss 尖几个步骤后回到原曲线；矩与权重本身恢复正确。GPU 轮审实测 step 63 恢复成 1。
+  visibility: 静默错误
+mitigation:
+  detect: 恢复后立即打印优化器 step（param_groups 与各 param state）与 trained_steps 对比
+  fix: '待定（issue #8632 已 closed 2026-10-28，未见关联修复 PR；另一报告 #8622 open。建议对齐 fully_reshardable/fully_sharded_model_space 两加载器：丢弃 step 后再 _set_main_param_and_optimizer_states 并同步 HDO 状态）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: GPU TE FusedAdam 不受影响（step 存 param group 非每参数张量）；HybridDeviceOptimizer+CPU offload AdamW 受影响
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/8632
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/issues/8622
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'NVIDIA/Megatron-LM #8632（2026-10-28 closed）/ #8622（2026-10-28 open）：恢复 dp_reshardable 分布式优化器检查点 + optimizer_cpu_offload（HybridDeviceOptimizer + torch.optim.AdamW）时，exp_avg/exp_avg_sq/fp32 master 正确恢复，但 Adam step 留在 1。链条：sharded_state_dict(is_loading=True) 调 dummy_step() 使状态张量存在，该真实 step 把每个 state[p][''step''] 置 1；load_state_dict 从 param_groups 拷出检查点 step；但 step 在保存时被 LocalNonpersistentObject 包裹、bucket 不含检查点值，加载时解包为 dummy_step 的本地张量（值 1）；load_parameter_state_from_dp_reshardable 再把该张量经 _set_main_param_and_optimizer_states 拷回、覆写第 2 步的值，且从不调 HybridDeviceOptimizer._sync_hdo_state_to_sub_optimizers()（其余两个加载器都调）——而内部 CPU AdamW 才是真正执行 step() 的。后果：下一次更新用 t=2 而非 trained_steps+1，默认 betas 下偏差校正因子膨胀，50 步后恢复的下一更新约 1.7 倍过大（(1-β1^51)/(1-β1^2) 除以 sqrt((1-β2^51)/(1-β2^2))）。两次 GPU 检查点加载审计中保存的 step 63 变成 1，而权重与矩正确。#8622 为 NeMo-RL DPO/SFT+DPO 相同工作流的独立报告（open，无最小复现）。fully_reshardable 与 fully_sharded_model_space 两个加载器不受影响；GPU TE FusedAdam 不受影响（step 存 param group）。建议修复对齐其余两加载器。'
+  source: https://github.com/NVIDIA/Megatron-LM/issues/8632 + https://github.com/NVIDIA/Megatron-LM/issues/8622
+  behavior: 用 HybridDeviceOptimizer（优化器 CPU offload）+ dp_reshardable 分布式优化器检查点恢复训练后，Adam 的步数计数器静默回到 1（保存值如 63）：恢复后的前几个更新步用了错误的偏差校正，更新量约偏大 1.7 倍，表现为恢复后 loss 短暂尖峰再回落原曲线。权重、动量、二阶矩都恢复正确，日志无任何告警；只有直接审计优化器 step 值才能发现。
+  trigger_surface: Megatron-Core HybridDeviceOptimizer + optimizer_cpu_offload + 分布式优化器 dp_reshardable 检查点格式 + AdamW（CPU offload 侧）；NeMo-RL DPO/SFT+DPO 恢复工作流实测
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - '2026-10-30 2026-10-30 回访：#8632 closed（无关联修复 PR）；第二报告 #8622 仍 open（2 评论无变化）。修复动态继续下轮跟踪'
+  - 2026-11-01 回访 2026-11-01：#8632 closed、#8622 open 状态不变（10-30/10-31 已核）；未见关联修复 PR。
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 重计算/卸载
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes
+  - date: '2026-11-01'
+    fields:
+    - original.notes

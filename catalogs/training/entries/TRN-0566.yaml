@@ -1,0 +1,57 @@
+id: TRN-0566
+legacy_ids: []
+slug: torch_npu_950pr_index_put_oob_silent_memory_corruption
+aliases: []
+title: 950PR index_put_/scatter_ 越界写静默腐蚀邻接内存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: index_put_/scatter_ 越界无校验
+  behavior: 950PR 上 index_put_/scatter_ 的越界索引写全程无异常（call/sync/read 三相静默，8/8 档零 raise），写指针按线性偏移裸走出界、真实落到目标张量之外的物理内存。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 哨兵实证：越界偏移精确落到邻接缓冲（S3[871]/[65407]，值逐位相同）；scatter_ 列越界回卷覆盖靶内 63 个未触碰行；落点恰进 512B 分配隙时完全无痕。复机重跑逐位复现，紧邻目标张量（1MB 内）布置的其他张量被逐位写入用户值而无声毁掉。
+  visibility: 静默错误
+mitigation:
+  detect: 对 index/target 做范围断言（host 侧）；目标张量邻接布哨兵缓冲区检测写穿透；CPU 同码对照（CPU 7/7 立即 raise）。
+  fix: 待定（issue open：期望对齐 CPU/CUDA 抛 IndexError；跨芯谱系 A3/910B3 延迟抛、310P3 全抛，唯 950PR 全静默，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: 与 TRN-0279（#5296 读侧越界静默错值/写被丢弃）同族但更重一级：本案是写到别的内存的持久物理腐蚀。训练面：数据侧 bug（越界 label/index 写）在 NPU 训练中被无声吞掉并腐蚀无关张量。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5786
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2324
+original:
+  mechanism: 'Ascend/pytorch #5786（2026-10-31，open；Atlas 950PR、CANN 9.2.1 + torch_npu 2.11.0rc1）：index_put_/scatter_ 越界索引写无任何拦截，越界线性偏移物理写出目标张量之外。方法：每案独立子进程 + CPU 同码对照，目标张量前后各布 1MB 哨兵逐位比对，固定 seed=20261031，双跑指纹门禁，复机（整机重启）重跑复现。实证：w03 index_put_ dim0 OOB d=+1000 腐蚀 S3[871..874]（值 4242.5 逐位相同）、w04 d=+65536 腐蚀 S3[65407..65410]；几何验证 越界线性偏移×4B −1MB−512B 分配隙 = 哨兵内元素偏移分毫不差，写指针按线性偏移裸走出界；w05/w06 scatter_ dim1 列越界回卷逐位覆盖靶内 63 个未触碰行。8 档越界写 RAISE=0/8；w02/w07/w08（d=+8 落进 512B 分配隙）完全无痕——紧邻用户张量即被无声腐蚀。跨芯对照：CPU 7/7 立即 raise、310P3 7/7 延迟抛、A3/910B3 5 档延迟抛（但拓扑不同：n=32、步长 8192 每两行毁一行），唯 950PR 0 抛全静默。与 #5296（TRN-0279：读到错数据/写被丢弃）互补且更重：本案跨张量持久腐蚀、不可见、事后无从定位。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5786 （open，2026-10-31；含哨兵几何+位型双证据链、跨芯拦截谱系、最小复现脚本）
+  behavior: NPU 训练/数据处理代码里越界的 index_put_/scatter_（如 index 目标张量末行+1000 的写入）不抛任何异常，synchronize 后照常读回；紧邻目标张量布置的其他张量（哨兵实测 1MB 距离内）被逐位写入用户值而无声毁掉，双跑与重启后重跑均逐位复现；同一代码在 CPU 上 7/7 档立即 IndexError/RuntimeError。训练中表现为无关张量莫名错值、loss 异常但无任何报错线索。
+  trigger_surface: Atlas 950PR + CANN 9.2.1 + torch_npu 2.11.0rc1；index_put_/scatter_ 越界索引（正向越界/列回卷）；数据管线或训练中带索引的写操作。
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: 数值结果
+    rewritten:
+    - detail

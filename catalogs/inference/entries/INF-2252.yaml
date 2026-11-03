@@ -1,0 +1,61 @@
+id: INF-2252
+legacy_ids: []
+slug: vllm_ascend_embedding_finegrained_tp_dp_idle_rank_hang
+aliases: []
+title: vllm-ascend embedding 细粒度 TP 空闲秩失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm
+    component: finegrained embedding TP
+  behavior: embedding 细粒度 TP>1 在 DP>1 下，空闲 DP 引擎 dummy batch 直接喂 inputs_embeds 跳过查表，跨 DP 交换无对端、busy 秩集合通信挂死；HCCL 惰性创建竞态损坏首交换。
+effect:
+  objects:
+  - 可用性/进度
+  - 跨请求/跨样本数据
+  detail: 三种失效：首请求 hang 至 HCCL 超时引擎死亡；HCCL EI0019/集合死锁；竞态下首请求从 prefill 首 token 起乱码。DP4×TP4/EP16+DSpark 在 Atlas 900 A3 复现。仅影响 inputs_embeds 型模型。
+  visibility: 挂起
+mitigation:
+  detect: 首请求 HCCL 执行超时日志与 EI0019 报错可诊断；首 token 乱码需输出侧检查
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20113 （open，2026-10-28）：dummy join（镜像 LM-head join，零 token 按组定容量入交换）、draft 模型 embedding 回退标准 TP 布局、load_model 后预热交换提前建 HCCL communicator；复现与修复均在 Atlas 900 A3 验证；未合入未发布）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/20113
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-project/vllm-ascend PR #20113（2026-10-28，open，BugFix）：finegrained_tp_config.embedding_tensor_parallel_size>1 且 DP>1（空闲 DP 引擎跑 dummy batch）。三重失效（Atlas 900 A3，DP4×TP4/EP16 + dspark 推测解码复现）：1) 首请求挂起——空闲 DP 引擎 dummy batch 直接喂 inputs_embeds、跳过主模型 token embedding 查表，AscendVocabParallelEmbedding 的跨 DP all_gather/reduce_scatter 交换在空闲秩无对应贡献，busy 秩集合通信永不完成，首个真实请求到达后引擎在 HCCL 执行超时后死亡。2) HCCL EI0019/集合死锁/首请求数据损坏——交换组 HCCL communicator 在首次集合通信时惰性创建，首次交换落在请求路径上时各秩并发创建竞态（EI0019 endpoint 冲突）或死锁；竞态得逞时首次交换返回损坏数据，第一个请求从其 prefill 首 token 起解码乱码。3) draft embedding 失步——vocab plan builder 把所有 embed_tokens 路由为 FINE_GRAINED 含推测解码 draft 模型；draft 在 propose replay 期间喂 inputs_embeds（或不在配对交换步内查表），首调用使跨 DP 交换组失步，权重被切到其从不参与的组上。issue 1 是既有缺口（该旋钮从未与空闲 DP 引擎组合使用过）非回归；1、3 仅影响 dummy batch 喂 inputs_embeds 的模型（多模态输入与 prompt-embeds），纯文本 dummy 携带 input_ids 已自配对。修复：model_runner dummy join（uses_inputs_embeds 门控）、plan builder 限制主模型模块、load_model 后容量预热交换（NZ/early-kernel 预热线程 join 后）急建 communicator。'
+  source: https://github.com/vllm-project/vllm-ascend/pull/20113
+  behavior: 在 DP>1（如 DP4）开启 embedding 细粒度 TP 部署多模态或 prompt-embeds 模型时：要么第一个真实请求永远不返回（busy 秩集合通信无对端，直至 HCCL 超时、引擎死亡，日志可见 HCCL 执行超时/EI0019）；要么竞态下第一个请求从 prefill 第一个 token 起输出就是乱码；带 DSpark 推测解码时 draft 权重分片错组还会让交换组持续失步。纯文本模型不受影响。
+  trigger_surface: vllm-ascend + finegrained_tp_config.embedding_tensor_parallel_size>1 + DP>1 + inputs_embeds 型模型（多模态/prompt-embeds）+ 首真实请求；DP4×TP4/EP16+DSpark、Atlas 900 A3 复现。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - kind
+    - subsystem
+    - effect
+    - visibility
+    uncertain_short:
+    - kind
+    - subsystem
+    - effect
+    - visibility

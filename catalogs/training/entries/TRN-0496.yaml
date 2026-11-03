@@ -1,0 +1,60 @@
+id: TRN-0496
+legacy_ids: []
+slug: msformers_pynative_scaling_factor_alias_dropped
+aliases: []
+title: MindFormers 配置转换静默丢弃 scaling_factor
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: mindformers
+    component: ConfigConverter 键映射
+  behavior: DeepseekV3Config 接收 scaling_factor，但 ConfigConverter 未映射到 rotary_scaling_factor；源键在未映射白名单不提示，静默回落默认值 40。
+effect:
+  objects:
+  - 输入编码
+  - 训练轨迹
+  detail: '源 YAML 写 scaling_factor: 1.0 或 2.0 实际解析均为 40；单卡诊断中 MLA softmax scale 实际 0.13523（factor=40）而非期望 0.07217（factor=1），FP64 参考支持该差异改变输出。'
+  visibility: 静默错误
+mitigation:
+  detect: 构造 config 后断言 convert_to_transformer_config().rotary_scaling_factor == 源值；打印 attention scale 与 mscale/factor
+  fix: 修复 PR https://atomgit.com/mindspore/mindformers/merge_requests/8888（open 草稿，2026-10-28）——透传 scaling_factor 到目标字段
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: '仓内样例配置 scaling_factor: 40 恰等于默认值，长期掩盖该缺陷'
+evidence:
+- url: https://atomgit.com/mindspore/mindformers/issues/2619
+  kind: gitcode_issue
+- url: https://atomgit.com/mindspore/mindformers/merge_requests/8888
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'mindspore/mindformers #2619（2026-10-28，官方 master 902de5f0）：DeepseekV3Config 和 PyNative YAML 接收顶层 scaling_factor，但模型实际使用的 DeepseekV3ConfigConverter 没有把它映射到 MLATransformerConfig.rotary_scaling_factor，且该源键位于 DEFAULT_WHITE_KEY（未映射键白名单），不会提示未映射，实际回落为目标配置默认值 40。实测输入 1 和 2 都得到 40；显式填原生目标字段 rotary_scaling_factor=2 则得到 2。仓内 configs/deepseek3/pretrain_deepseek3_1b_8p_pynative.yaml 用 scaling_factor: 40 恰等于默认值，无法暴露。CPU 最小复现：DeepseekV3Config(scaling_factor=1.0/2.0).convert_to_transformer_config().rotary_scaling_factor 均为 40.0，断言失败。902 上用同一份有效测试文件实证 5 failed/5 passed；独立候选 e5fe163c 的 21 个 converter 用例全 passed（覆盖缺省、1/2/40、原生字段、同值别名、双字段冲突、嵌套 rope_scaling 优先级）。独立真实 NPU 首微批诊断：源 YAML position_embedding_type=rope、scaling_factor=1.0、mscale=1，解析后 factor=40，FlashAttention Cell 实际 scalar_value=0.1352337788608801（Q/K 每头总维度 192），factor=1 对应约 0.07216878364870322；两侧投影/归一化/布局对齐后的 Q/K/V 在采样位置逐位相同、仅 attention scale 不同；两 token 独立 FP64 参考支持该差异会改变输出。修复 PR !8888（open 草稿）透传该字段。'
+  source: https://atomgit.com/mindspore/mindformers/issues/2619 + 修复 PR https://atomgit.com/mindspore/mindformers/merge_requests/8888（open 草稿）
+  behavior: DeepSeekV3/3.x PyNative 预训练里按官方文档写 scaling_factor 调 RoPE 缩放时，配置被静默忽略：无论填 1.0 还是 2.0，模型都用默认 40 训练。用户看配置文件与 YAML 完全一致、无任何未映射告警，训练正常启动、loss 正常下降，但 attention 温度与预期不同——模型学到的是另一组 scale 下的权重，与按生效配置推理或对齐参考实现时表现不一致。单卡诊断中实际 softmax scale 0.135 vs 期望 0.072，差异会改变输出。
+  trigger_surface: MindFormers master 902de5f0 附近 + MindSpore 2.12.0 PyNative；DeepSeekV3 类 MLA 模型 + 顶层 scaling_factor 配置（非原生 rotary_scaling_factor 字段）
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 配置/参数
+        to: 位置编码
+    uncertain:
+    - effect

@@ -1,0 +1,60 @@
+id: INF-2276
+legacy_ids: []
+slug: ops_transformer_6872_family_partial_rotary_slice_unchecked
+aliases: []
+title: PartialRotaryMulGrad partialSlice 不校验
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: partialSlice CheckAttr
+  behavior: CheckAttr 按固定下标 GetData()[0]/[1] 取值不校验长度：传 1 元素时两段返回 0 但行为随堆内容变化（一次 no-op、一次按 [0,64) 全量改写）；0 元素返回未声明的 561103。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 950PR/CANN 9.2.0-beta.2 实测：partialSlice={0} 单独进程一次 changed=0、一次 changed=3984（越界读堆内存后继续执行）；{} 返回 561103（资料仅声明 161001/161002/561002）。
+  visibility: 不可复现
+mitigation:
+  detect: partialSlice 传 1/0 元素探测返回码与改写范围；正常应 161002/561002 拒绝。
+  fix: 待定（issue 期望元素个数≠2 时明确拒绝；未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/6857
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer 的 aclnnInplacePartialRotaryMulGrad 在 Ascend950PR / CANN 9.2.0-beta.2 的 partialSlice 参数校验缺失：资料规定 partialSlice 表示 [start,end) 必须恰 2 元素（docs/aclnnInplacePartialRotaryMulGrad.md:205），但 op_host/inplace_partial_rotary_mul_grad_tiling_base_arch35.cpp:371-374 的 CheckAttr 直接 partialSlicePtr->GetData()[0]/GetData()[1] 固定下标取值，无长度校验。实测：传 {0}（1 元素）两段返回 0，行为随堆内容变化——单独进程一次运行观测 dy 完全未改写（no-op，changed=0），另一次按 [0,64) 全量改写（changed=3984），即越界读取 aclIntArray 相邻内存后继续执行；传 {}（0 元素）第一段返回 561103，资料错误码表只声明 161001/161002/561002。issue 附完整 probe.cpp（三组 CTRL/DEFECT 判读）。
+  source: GitCode issue https://gitcode.com/cann/ops-transformer/issues/6857 （open，2026-10-29，含源码行号与堆内容相关行为实测）
+  behavior: 调用该 partial RoPE 反传算子时，若 partialSlice 参数长度不对（上游构造 bug 传了 1 个或 0 个元素），接口不拒绝：1 元素时返回成功但实际行为不确定——有时梯度完全没被更新（静默丢更新），有时按错误的 [0,64) 区间全量改写（静默改错），同一次代码不同进程结果都不同；0 元素时返回一个资料没写的错误码。训练反传路径上难以察觉。
+  trigger_surface: Ascend950PR / CANN 9.2.0-beta.2；aclnnInplacePartialRotaryMulGrad；partialSlice 长度≠2 的非法输入（上游序列构造 bug 时触发）；训练反传。
+  signature: 同输入两次运行改写范围不同（0 vs 3984 元素）；rc=0。
+  repro: issue 附 probe.cpp（g++ 命令齐全）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 位置编码
+        to: 算子/内核
+      visibility:
+        from: 静默错误
+        to: 不可复现

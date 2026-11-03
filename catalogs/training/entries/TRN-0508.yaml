@@ -1,0 +1,59 @@
+id: TRN-0508
+legacy_ids: []
+slug: megatron_absorbed_mla_softmax_scale_override_ignored
+aliases: []
+title: AbsorbedMLA 忽略 softmax_scale 显式覆盖
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: megatron-lm
+    component: AbsorbedMLA softmax_scale
+  behavior: __init__ 无条件按 mscale*mscale*(1/sqrt(q_head_dim)) 计算，忽略显式 config.softmax_scale；MultiLatentAttention 自身会使用覆盖值。
+effect:
+  objects:
+  - 隐状态
+  detail: muP 开启时 AbsorbedMLA 的 softmax scale 与标准 MLA 静默不同（所查案例约 11 倍），而文档与 docstring 声明两者数学等价；无报错，注意力输出直接偏离。
+  visibility: 静默错误
+mitigation:
+  detect: 同 config 构造 AbsorbedMLASelfAttention 与 MLASelfAttention 断言 softmax_scale 相等（修复 PR 附该测试）
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/8649（open，2026-10-28）——镜像 MultiLatentAttention 的表达式，override 存在时使用之；附单测 test_softmax_scale_respects_explicit_config_override
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 影响 muP 训练与所有显式设 softmax_scale 的配置；默认 None（不自定义）路径不受影响
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8649
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'NVIDIA/Megatron-LM #8649（2026-10-28，open PR）：AbsorbedMLASelfAttention 文档声明与 MultiLatentAttention 数学等价，但其 __init__ 把 softmax_scale 无条件算成 mscale*mscale*(1/sqrt(q_head_dim))，忽略显式 config.softmax_scale；MultiLatentAttention 检查覆盖并在存在时使用（如 muP 训练时 TransformerConfig.__post_init__ 推导的值）。muP 开启时 AbsorbedMLA 得到与标准 MLA 静默不同且大得多的 softmax scale（所查案例约 11 倍）。修复：镜像 MultiLatentAttention 的精确表达式；新增单测从同一 config（显式 override）构造两实现并断言 softmax_scale 相等。Claude Code 生成 PR。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/8649
+  behavior: 用 AbsorbedMLASelfAttention（文档称与 MLA 等价）训练并显式配置 softmax_scale（典型：muP 训练由 TransformerConfig 推导的值）时，覆盖被静默忽略：attention 温度按默认公式计算（所查 muP 案例约偏大 11 倍），注意力输出与标准 MLA 模型静默偏离，无任何报错或告警；两种实现的训练不可互换，等价性声明失效。
+  trigger_surface: Megatron-LM AbsorbedMLASelfAttention + 显式 config.softmax_scale（muP 训练派生值或手动指定）；默认 None 不触发
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：AbsorbedMLA softmax_scale 修复 PR !8649 仍 open
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - original.notes

@@ -1,0 +1,59 @@
+id: TRN-0553
+legacy_ids: []
+slug: opsnn_squaredrelu_out_contract_missing
+aliases: []
+title: SquaredRelu out 契约缺失错写越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: squared_relu out 校验/布局
+  behavior: out 与 input shape 不一致（[4x8]→[4x4]）不校验不拒绝，内核按 input 32 元素写完越界 16/24 元素；out 非连续（strides [8,1]）被放行且按连续写，逻辑视图 4 元素未写
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3/CANN 9.2.0/master 59c0720c：out=[4x4]（16 元素）时两段返回 0，内核写 32 元素越界 16（out=[1x8] 越界 24）；out [2,4]/strides [8,1] 返回 0，按连续写 8 元素，第二行 4 元素仍为初始化哨兵
+  visibility: 静默错误
+mitigation:
+  detect: out shape/strides 契约用例 + msSanitizer；非连续视图读回对拍
+  fix: 待定（issue open：期望第一段 161002 或按 stride 写）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7756
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/7757
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0524
+pattern: PAT-TRN-0058
+original:
+  mechanism: 'cann/ops-nn #7756 + #7757（2026-10-30，Atlas A2 910B3、CANN 9.2.0、master 59c0720c）：aclnnSquaredRelu 的 GetWorkspaceSize 不校验 out 与 input 的 shape 一致，也不拒绝非连续 out。#7756：input=fp32[4x8]、out=fp32[4x4]（16 元素）时两段返回 0、内核写 32 元素越界 16 个（out=[1x8] 时越界 24）；#7757：out shape [2,4]、strides [8,1]（storage [2,8]）返回 0、内核按连续写 8 元素，按 out 逻辑 stride 读回第二行 4 元素仍是初始化哨兵。资料参数表 out 要求「与输入 shape/格式一致」且非连续标 ×。两 issue 均含完整 C++ 复现与对照表。同族：TRN-0524（GeluMul 非连续 out 错写）、#7654/#7647（越界写，INF-2261 覆盖）、#7760（SwiGlu 偏小 out 越界写 64B）。'
+  source: https://gitcode.com/cann/ops-nn/issues/7756 + https://gitcode.com/cann/ops-nn/issues/7757
+  behavior: NPU 上把偏小或非连续的张量作为 SquaredRelu 的 out 参数（转置/切片视图、预估形状偏小）：接口返回成功，但要么越界写破坏相邻显存（实测越界 16~24 元素）、要么按连续布局写导致逻辑视图一半元素根本没更新（保持旧值）——下游拿到错值或旧值，无报错，sanitizer/对拍才能发现。
+  trigger_surface: CANN aclnnSquaredRelu + out shape 偏小或非连续 strides；910B3/CANN 9.2.0/master 59c0720c
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-10-31'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

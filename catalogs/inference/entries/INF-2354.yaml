@@ -1,0 +1,64 @@
+id: INF-2354
+legacy_ids: []
+slug: vllm_ascend_swiglu_mxfp_tail_masks
+aliases: []
+title: SwigluGroupQuant MXFP 尾部四连存计数缺失越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: SwigluGroupQuant 尾存储掩码
+  behavior: 四个连续 packed store 各自维护独立的剩余列计数器，同一尾部被四个 store 都当作有效，越行覆写相邻 UB 缓冲
+effect:
+  objects:
+  - 数值结果
+  detail: 专家中间维 640（W4A8 MoE，Qwen3.8-Next 实测）在四路 packed 输出存储路径留下不完整尾向量，激活量化输出错误或不稳定；修复后 22 例 NPU 回归通过、端到端 GPQA 90.91%（180/198）
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: '修复 PR https://github.com/vllm-project/vllm-ascend/pull/20539 与 backport #20540（均 closed/merged 进 v0.32.0rc，2026-11-01）：四个 store 共享一个计数器，含 640 宽度/FP16/BF16/重复性/重建误差/graph replay 回归；发布状态未核实'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/20539
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/pull/20540
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend SwigluGroupQuant 的 MXFP 输出存储路径：四个连续 packed store 此前用四个独立的剩余列计数器，每个 store 把同一尾部都当有效，可越行覆写相邻行或 UB 缓冲。触发于 Qwen3.8-Next W4A8 MoE：专家中间维 640 在四路 packed 输出存储路径留下不完整最终向量，独立计数器错误标记该组后续 store 为有效，写入越过行边界，导致量化激活错误或不稳定。修复（#20539，closed；v0.32.0rc backport #20540）改为四个 store 共享一个计数器。测试：Ascend 950/CANN 9.2 上 22 例 NPU 回归（tests/e2e/pull_request/one_card/test_swiglu_group_quant_mxfp_tail.py）通过；端到端 Qwen3.8-Next W4A8 GPQA Diamond 90.91%（180/198 全部请求成功）——PR 注明这是含修复的整栈部署验证、非对该修复的孤立精度归因。上游 vLLM commit 544f182d。来源 https://github.com/vllm-project/vllm-ascend/pull/20539（2026-11-01）。'
+  source: 2026-11-01 每日扫描。https://github.com/vllm-project/vllm-ascend/pull/20539 ；backport https://github.com/vllm-project/vllm-ascend/pull/20540
+  behavior: 在 Ascend 950 上跑 Qwen3.8-Next W4A8 MoE 推理：专家中间维 640 不是 4 的整组宽度时，SwigluGroupQuant 量化激活输出错误或不稳定（MXFP 尾部向量被重复/越界写入），下游量化 MoE 计算随之出错；配置不动、重跑结果可能漂移。修复后同栈 22 例回归与 GPQA 端到端全部通过。
+  trigger_surface: vllm-ascend（v0.32.0rc 前版本）；Ascend 950 + CANN 9.2 实测；Qwen3.8-Next W4A8（专家中间维 640）等中间维留下不完整四路 packed 尾向量的 MoE 配置
+  discovery: 2026-11-01 每日扫描
+  notes:
+  - '2026-11-02 2026-11-02 回访：backport #20540 已 closed（11-01），关闭原因未核实（closed≠已修复发布）；主修复 #20539 此前 merged，是否随版本发布未核实'
+  - '2026-11-02 2026-11-02 回访：backport #20540 已 closed（11-01），关闭原因未核实（closed≠已修复发布）；主修复 #20539 此前 merged，是否随版本发布未核实'
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility
+  updates:
+  - date: '2026-11-02'
+    fields:
+    - original.notes
+  - date: '2026-11-02'
+    fields:
+    - original.notes

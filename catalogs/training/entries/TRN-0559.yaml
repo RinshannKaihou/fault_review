@@ -1,0 +1,55 @@
+id: TRN-0559
+legacy_ids: []
+slug: opsmath_reducesum_bool_int64_negative_axis_missing
+aliases: []
+title: ReduceSum bool→INT64 负轴丢末位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: reduce_sum 负轴 promote
+  behavior: BOOL→INT64 分支 reduceDims 累乘未做负轴归一，负索引 size_t 越界得错值 → 误判 <2^24 → promoteType 选 fp32 累加 1670 万级布尔计数，超 2^24 后丢末位
+effect:
+  objects:
+  - 数值结果
+  detail: dims 用负轴（如 [-2,-1]）时和 16785409 实测 16785408；bool→int64 正轴对、负轴错；bool→int32、int32→int64 不走分支全对；和为偶数或 2^24 附近可精确表示时错误被掩盖；keepDims 无关；重复 3 次一致
+  visibility: 静默错误
+mitigation:
+  detect: bool→int64 归约用正/负轴双写对拍；和大数时断言精确
+  fix: 待定（issue open：循环内对 (*dims)[i] 做 GetPosDim 归一）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4298
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2295
+original:
+  mechanism: 'cann/ops-math #4298（2026-10-30）：aclnnReduceSum 在 self=BOOL、dtype=INT64、dims 含负轴时归约结果丢末位（少 1）。根因（op_api/aclnn_reduce_sum.cpp:261-268）：该分支对 reduceDims = ∏shape[(*dims)[i]] 累乘，未做负轴归一，负索引以 size_t 越界 → reduceDims 错值（<2^24）→ promoteType 误选 DT_FLOAT → fp32 累加 16785409 个 1，fp32 尾数 24 位、最大精确整数 16777216，结果舍入 16785408。同函数 CheckDimValid（GetPosDim 归一）证明负轴合法。判别矩阵：bool→int64 正轴对/负轴错；bool→int32、int32→int64 不走分支全对；和为偶数或 2^24 附近可精确表示时错误被掩盖；keepDims 无关。重复 3 次一致，确定性缺陷。训练中 bool mask 计数（有效 token 数、正样本数）超 2^24 且用负轴写法即命中。'
+  source: https://gitcode.com/cann/ops-math/issues/4298
+  behavior: NPU 上对 bool 张量做 ReduceSum 出 int64 计数（如有效 token mask 求和、样本计数）且 dims 用负轴写法（[-1,-2] 等）：元素总数超过 2^24 后计数静默丢 1 或更多（实测 16785409→16785408）；同一计算用正轴完全正确。无报错，计数差 1 起步，下游归一化/统计轻微偏离。
+  trigger_surface: CANN aclnnReduceSum + BOOL self + INT64 dtype + 负轴 dims + 总数 >2^24
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

@@ -1,0 +1,51 @@
+id: TRN-0531
+legacy_ids: []
+slug: torchtitan_dsv4_swiglu_limit_missing
+aliases: []
+title: torchtitan DSV4 缺 swiglu_limit 偏差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: torchtitan
+    component: DSV4 flavor MoE 激活
+  behavior: deepseek_v4_flash/pro flavor 对两类专家用普通 SwiGLU，不带官方 config swiglu_limit=10.0 clamp，与参考推理代码及 HF transformers 行为不同
+effect:
+  objects:
+  - 数值结果
+  - 训练轨迹
+  detail: gate 或 up 激活超过 10 时 MoE 输出与参考实现不同；同一 checkpoint 在 torchtitan 训练路径与 transformers 参考路径算出不同结果，静默无报错
+  visibility: 静默错误
+mitigation:
+  detect: 同权重与 transformers DeepseekV4MLP 对拍（PR 自带 reproducer：同随机权重比 shared expert 输出）
+  fix: 修复 PR https://github.com/pytorch/torchtitan/pull/5646（merged 2026-10-29）：新增 LimitedSwiGLU 用于两 flavor 的路由/共享专家，MTP 块深拷贝继承；dist_moe 对不支持的激活显式 TypeError
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: 10-29 留观（等影响面确认）；本轮 PR merged（2026-10-29T07:44Z）落地：新增 LimitedSwiGLU + reproducer 与 transformers 对比。改判收录
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/5646
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSeek-V4-Flash 与 V4-Pro 官方 config 都发布 swiglu_limit: 10.0；官方参考推理代码（inference/model.py Expert.forward）对路由专家与共享专家实施 clamp：up 投影 clamp 到 [-limit,limit]、gate 取 max=limit 后 silu(gate)*up；HF transformers 的 DeepseekV4MLP 与 DeepseekV4Experts._apply_gate 同样实施。torchtitan 的 deepseek_v4_flash/deepseek_v4_pro flavor 两类专家都用普通 SwiGLU，从这些 checkpoint 加载的模型在 gate 或 up 激活超 10 时 MoE 输出与参考不同。修复 PR #5646（merged 2026-10-29T07:44:32Z）：新增 LimitedSwiGLU（独立类而非 ClampedSwiGLU 选项——后者是 GPT-OSS 公式 gate*sigmoid(alpha*gate)*(up+1)；bundled fused_swiglu override 针对 SwiGLU.Config 不 clamp 不应匹配）用于两 flavor 全部 MoE 层的路由/共享专家，MTP 深拷贝继承；dist_moe 对不支持的激活 raise TypeError；reproducer 用同随机权重对比 transformers DeepseekV4MLP。'
+  source: https://github.com/pytorch/torchtitan/pull/5646
+  behavior: 用 torchtitan 训练/加载 DeepSeek-V4-Flash 或 V4-Pro checkpoint 时，MoE 层激活超 10 的 token 输出与官方参考实现/HF transformers 不同：训练损失与评测结果和 transformers 路径不可比、微调起点就带偏差，全程无报错无警告；已 merged 修复后的版本不再触发
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

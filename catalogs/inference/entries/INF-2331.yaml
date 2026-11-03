@@ -1,0 +1,68 @@
+id: INF-2331
+legacy_ids: []
+slug: ops_nn_scatter_nd_update_shape_constraint_unchecked
+aliases: []
+title: aclnnScatterNdUpdate 形状约束不校验越界读静默写入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: scatter_nd_update 校验缺失
+  behavior: 两段式接口对资料明写的两条约束（updates 形状必须等于 indices.shape[:-1]+varRef.shape[a:]；索引维度数 a 必须 ≤ varRef.rank）不做任何校验，第一段全部返回 0。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: updates 偏小/偏大或 a>rank 时直到流同步才暴露设备侧异常，或干脆静默把越界读到的值写进 varRef；报告者实测非法输入部分场景静默写入错误值无任何报错。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前自行校验 updates.shape == indices.shape[:-1]+varRef.shape[a:] 与 a<=varRef.rank。
+  fix: 待定（issue open，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7858
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0572
+original:
+  mechanism: 'cann/ops-nn issue #7858（2026-10-31，Ascend 910B3/CANN 9.2.0，ops-nn master 稀疏检出）：aclnnScatterNdUpdate 的两段式接口对「updates 形状必须等于 indices.shape[:-1] + varRef.shape[a:]」与「索引维度数 a 必须 ≤ varRef.rank」两条资料明写的约束不做任何校验。实测探针（varRef=FP32[7] 初值 1..7、indices=INT64[3,1]、updates 三种尺寸 + indices=[3,2]（a=2>rank=1））：GetWorkspaceSize 全部返回 0，第二段也返回 0，直到 aclrtSynchronizeStream 才暴露设备侧异常，或者干脆静默把越界读到的值写进 varRef。issue 附自包含 C++ 探针（g++ 编译运行）。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7858 （open，2026-10-31 创建；含自包含形状约束探针）
+  behavior: 用 aclnnScatterNdUpdate 做scatter 更新时，若 updates 张量尺寸与 indices 推导不符（偏小/偏大）或 indices 维度数超过 varRef 秩，接口第一阶段照样返回成功；随后要么在流同步时才报设备异常（晚且难定位），要么更糟——不报错并把越界读到的脏值静默写进目标张量，原地参数被污染且无任何信号。
+  trigger_surface: cann/ops-nn scatter_nd_update；updates 形状失配或 indices 维度数 a > varRef.rank；ACLNN 两段式直调；910B3/CANN 9.2.0。
+  signature: 非法形状第一段返回 0；varRef 被写入与 updates 无关的越界读值。
+  discovery: 2026-10-31 每日扫描
+  notes:
+  - 2026-11-01 回访 2026-11-01：修复 MR !13327（Validate indices depth and updates shape in ScatterNdUpdate）已开（11-01 18:36Z 更新），仍 open 未合入
+  - 2026-11-02 2026-11-02 回访：修复 MR !13327 仍 open（11-02 03:19Z 更新），未合入
+  - 2026-11-02 2026-11-02 回访：修复 MR !13327 仍 open（11-02 03:19Z 更新），未合入
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  - date: '2026-11-01'
+    fields:
+    - original.notes
+  - date: '2026-11-02'
+    fields:
+    - original.notes
+  - date: '2026-11-02'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

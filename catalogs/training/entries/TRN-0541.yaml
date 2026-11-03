@@ -1,0 +1,52 @@
+id: TRN-0541
+legacy_ids: []
+slug: dynamic_stitch_cross_tensor_waw_race
+aliases: []
+title: CANN DynamicStitch 跨张量散射 WAW
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: dynamic_stitch arch35 散射写
+  behavior: y 写地址由 indices 决定而核按输入张量切分，无原子操作，跨张量重复 index 由不同核并发写同一地址产生 WAW，结果取决于写序
+effect:
+  objects:
+  - 数值结果
+  detail: 跨张量重复 index + usedCoreNum>1 时输出非确定（同输入多次运行可不同）；越界 index 造成任意偏移写；arch35 dynamic_stitch_scatter_simd.h:100-130
+  visibility: 不可复现
+mitigation:
+  detect: 同输入多次运行对比；构造跨张量重复 index 用例验证 WAW
+  fix: 待定（issue open，建议加原子或按 dst 划分核；越界校验一并补）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4226
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-math DynamicStitch（conversion/dynamic_stitch/op_kernel/arch35/dynamic_stitch_scatter_simd.h:100-130）：blockIdx 按输入张量分段（tensorStartList/tensorEndList），每核负责一段输入张量；y 的写入地址完全由 indices.GetValue(i) 决定，y 地址空间不按核划分；全文件 SetAtomicAdd 计数为 0。不同输入张量中的重复 index 由不同核并发写同一 y 地址 → WAW，结果取决于 MTE3 到达顺序。仅有 index<0 判断、缺 index<dstSize 上界校验，构造非法 index 可越界写（安全影响高于 WAW）。触发条件：indices 同值出现在两个不同输入张量（跨 tensor 重复）+ 两张量被切到不同核（usedCoreNum>1 且数据量足以分核）；同张量内重复（同核）不触发。POC：run_all.sh '2 3 4' 同构散射写验证因果；或在 poc5556_proj 加 mode 6 模拟两核并发写。
+  source: https://gitcode.com/cann/ops-math/issues/4226
+  behavior: NPU 训练数据管线用到 dynamic_stitch（如稀疏特征合并、tf.data 风格 scatter）且 indices 跨输入张量重复时，输出值非确定：同输入多次运行结果不同（取决于核间写序），训练不可复现、指标抖动；非法 index 时越界写可破坏邻近内存；接口不报错
+  discovery: 2026-10-30 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-30'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

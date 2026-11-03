@@ -1,0 +1,57 @@
+id: INF-2353
+legacy_ids: []
+slug: vllm_ascend_block_size_omitted_corrupts_output
+aliases: []
+title: vLLM-Ascend 省略 --block-size 时元数据失配输出乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: block size 刷新与元数据构建不一致
+  behavior: 源码级假设（非运行时 trace）：带 prefix caching/chunked prefill 且未传 --block-size 时，Ascend 构建前解析为 128，随后 worker 按后端偏好选 16，与已分配规格不一致
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: DeepSeek V4.1 Flash P/D 部署省略 --block-size 时全部 8 个端点与 16 组 P/D 对检查失败：reasoning 复述错误的校验码与算式、content 为 null 或空、1024 token 截断；显式 --block-size 128 输出正常
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；规避：显式传 --block-size 128）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-01'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20550
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM-Ascend（基于 v0.30.0rc2）+ DeepSeek V4.1 Flash（Ascend 量化、Atlas 800 A2、2 prefill + 2 decode 节点、TP4×DP2+EP、DSpark 5 draft tokens）部署中，省略 --block-size 导致输出乱码，显式 --block-size 128 正常。同镜像同权重同硬件同拓扑对照，仅改 block-size 设置。源码级假设（非运行时 trace）：CacheConfig 默认 16 且 user_specified_block_size=False；带 prefix caching/chunked prefill 时 Ascend 的 refresh_block_size 在模型构建前把 size 解析为 128，V4.1 模型按 128 构建缓存规格；load_model 后 vLLM worker 调 update_block_size_for_backend，无用户指定值时 V4.1 缓存后端继承偏好选 16（显式 128 则跳过该选择）；worker 已有的分配规格仍是 128，AscendDSAV41MetadataBuilder 按不一致的 block size 构建元数据导致输出损坏。失败形态：全部 8 个 P/D 实例端点冒烟失败、16 组固定 P/D 对全败；temperature=0 的固定三行格式 prompt 下 reasoning 完整但复述了与请求不同的校验码/算式（幻觉整段），content 为 null，finish_reason=length（1024 token）；部分响应 stop 但 content 空。直连单端点即可复现（与 P/D 代理无关）。来源 https://github.com/vllm-project/vllm-ascend/issues/20550（open，2026-11-01）。
+  source: 2026-11-01 每日扫描。https://github.com/vllm-project/vllm-ascend/issues/20550
+  behavior: DeepSeek V4.1 Flash 在 vLLM-Ascend 上 P/D 分离部署：启动命令不写 --block-size 时服务正常起来，但所有请求输出乱码——reasoning 里模型复述的校验码和乘法算式跟用户发的不一样（如把 37×64 答成别的算式），最终 content 为 null 或空，1024 token 耗尽；同环境只加 --block-size 128 输出即正常。8 个端点与 16 组 P/D 配对检查全部失败。
+  trigger_surface: vLLM-Ascend v0.30.0rc2 + vLLM 0.30.0（V1）、DeepSeek V4.1 Flash Ascend 量化、Atlas 800 A2、TP4×DP2+EP、DSpark 5 draft tokens、prefix caching + chunked prefill、省略 --block-size；显式指定 block-size 不触发
+  discovery: 2026-11-01 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-01'
+  audit:
+    round: daily-audit-2026-11-02
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: KV状态
+    rewritten:
+    - behavior

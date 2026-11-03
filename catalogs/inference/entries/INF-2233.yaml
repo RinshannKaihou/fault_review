@@ -1,0 +1,50 @@
+id: INF-2233
+legacy_ids: []
+slug: vllm_qwen35_triton_int32_offset_overflow
+aliases: []
+title: Qwen3.5 Triton kernel int32 偏移溢出错写行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: Qwen3.5 prefill kernel
+  behavior: 三个 Triton kernel 以 int32 计算 token*row_stride，乘积超 2^31-1 后回绕，读写错误行。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: max-num-batched-tokens≥209717 启动即失败；GDN checkpoint 路径 174763 token/步起非法访存或写坏 conv 状态；post_conv 路径单步超 262144 token 时 q/k/v 静默错值无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/63759
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm main ffcabb8c7（0.32.1rc1.dev524）+B200 实测。Qwen3.5 prefill 路径三个 Triton kernel 的行偏移 token*row_stride 以 int32 计算：fused_qk_norm_rope.py#L50-62（stride 10240，首个坏 token 行 209716，启动 profile run 全预算运行即触发启动失败）；mamba/checkpoint.py#L285（stride 12288，174763 起 illegal memory access 或错误 cached conv state，prefix caching 默认开启时在真实 prefill 暴露）；fused_gdn_prefill_post_conv.py#L66-82（stride 8192，262144 起无报错错 q/k/v）。kernel1 在启动 profile 隐藏后两个；修复 kernel1 后 kernel2 在带前缀缓存（默认开）的真实 prefill 上出现。覆盖 qwen3_next 门控注意力（CUDA/XPU）与 GDN 线性注意力层，即 Qwen3.5 全家族，阈值随模型宽度变化。
+  source: https://github.com/vllm-project/vllm/issues/63759（三 kernel 表 + 单 GPU 最小复现）
+  behavior: 大 --max-num-batched-tokens 或长 prompt 下 Qwen3.5 服务出现三类现象：启动阶段直接失败（≥209717）；带前缀缓存的 GDN prefill 抛非法显存访问或写坏卷积状态（≥174763 token/步）；单步超 262144 token 时卷积后 q/k/v 被静默算错、无任何报错，生成质量随之劣化。
+  trigger_surface: Qwen3.5 家族（qwen3_next 门控注意力 + GDN）+ 大 max-num-batched-tokens 或等量单步 token（9B 阈值 209717/174763/262144，随宽度变化）；prefix caching 开启使 checkpoint kernel 更早暴露。
+  discovery: 2026-10-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-27'
+  audit:
+    round: daily-audit-2026-10-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    issue_unfixed:
+    - detail

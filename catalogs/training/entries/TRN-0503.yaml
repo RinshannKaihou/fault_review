@@ -1,0 +1,60 @@
+id: TRN-0503
+legacy_ids: []
+slug: opsnn_bn_training_update_v2_ftz_subnormal_nan
+aliases: []
+title: BNTrainingUpdateV2 次正规域 FTZ 输出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BN 更新 arch35 预计算
+  behavior: arch35 预计算原生 vsqrt 把次正规方差 flush 为 0（multiplier=inf、addend=NaN）、vdiv 把次正规商 flush 为 0（y=inf×0=NaN）；IEEE 参考给有限值或 ±inf。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 次正规域（batch_variance≈6.53e-40、商≈1e-39~1.5e-40）y 输出全 NaN，ttk 报 NaN/Inf mismatch；L0_045/L1_505 seed=1234 稳定复现，L1_154 数据依赖偶发（随机 square_sum 落点决定商是否入次正规区）。
+  visibility: 数值异常
+mitigation:
+  detect: ttk kernel 通路 seed=1234 跑 L0_045（稳定复现）；对 batch_variance 分布做次正规域检查
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/12961 已 merged（2026-10-29T07:13Z 批次快照）：sqrt/div 关闭 FTZ 消除次正规域 NaN/Inf，48/48 PASS→已合入，发布状态未核实
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: 与既有 FTZ/次正规族（TRN-0392/0475/0490）同为次正规域 FTZ 数值面，但本条是 BN 训练更新算子的系数预计算路径（sqrt/div 两指令），机制定位与修复独立
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7578
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/12961
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn #7578（2026-10-28，Ascend 950PR/950DT arch35 实现，cann-9.3.0+custom_nn，ttk kernel 通路）：BNTrainingUpdateV2 的 PrecomputeAffine（fp32 系数预计算 mean→var→sqrt→div→addend）两条指令在次正规域与 IEEE 参考不一致。Sqrt：原生 vsqrt 把次正规 batch_variance+epsilon（FLT_MIN×numRecip≈6.53e-40，epsilon=0）flush 为 0，multiplier=scale/0=+inf、addend=offset−inf×mean=NaN、y=NaN；golden（numpy/torch 保留次正规）得 den=2.56e-20、multiplier=3.9e19 有限、y=+inf。Div：原生 vdiv 把次正规商 multiplier（≈1.0e-39~1.5e-40）flush 为 0，y=inf×0+addend=NaN；third_party torch fp32（IEEE 除法保留次正规）为 ±inf。L1_154 偶发性来自随机 square_sum 落点：商落次正规区时失败、落 fp32 真下溢区时 NPU 与 third_party 同 NaN 判过。设备侧 batch_variance 输出 6.53e-40 数值正确，说明 Muls/Sub 不 flush，分歧集中在 Sqrt/Div。修复 !12961（open）：SqrtAlgo::PRECISION_0ULP_FTZ_FALSE（b<1 先乘 2^24 再开方、结果乘 2^-12）与 DivAlgo::PRECISION_0ULP_FTZ_FALSE（DivIEEE754FloatImpl，次正规预归一化、RNE 舍入），950DT 实测 L0_045/L1_505/L1_154 修复前 FAIL、修复后全 PASS、L0 全量 48/48；性能影响可忽略（系数预计算每 chunk 一次）。'
+  source: https://gitcode.com/cann/ops-nn/issues/7578 + 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/12961（open）
+  behavior: BN 训练更新（BNTrainingUpdateV2，arch35 路径）遇到次正规的 batch_variance（方差极小，如 6.53e-40）或次正规的 scale/方差商时，归一化输出 y 全 NaN 而不是 IEEE 语义的 ±inf/有限值：ttk kernel 通路报 NaN/Inf mismatch（L0_045/L1_505 seed=1234 稳定，L1_154 偶发）。训练中若出现极小方差 batch，该层输出 NaN 向下游传播；用例为 EXPLORATORY/epsilon=0 或次正规边界输入，超出 README 记录的 epsilon>0 文档域。
+  trigger_surface: Ascend 950PR/950DT（arch35 实现路径）+ CANN 9.3.0；BNTrainingUpdateV2；次正规 batch_variance+eps 或次正规 multiplier（fp32 约 1e-39 量级）；ttk kernel 通路
+  discovery: 2026-10-29 每日扫描
+  notes:
+  - 2026-10-30 2026-10-30 回访：修复 !12961 状态由 open 变 merged（批次快照 2026-10-29T07:13Z）；未随版本发布信息，发布核实待下轮
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-10-30'
+    fields:
+    - mitigation.fix
+  - date: '2026-10-30'
+    fields:
+    - original.notes

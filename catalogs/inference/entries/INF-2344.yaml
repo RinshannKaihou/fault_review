@@ -1,0 +1,63 @@
+id: INF-2344
+legacy_ids: []
+slug: vllm_indexer_ragged_spec_decode_weights_misaligned
+aliases: []
+title: vLLM indexer ragged spec-decode 权重与因果界错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: indexer padded decode 打包
+  behavior: ragged decode 批下 q 被打包但两输入不配套：weights 仍按 token 序传（短请求后每 token 读错权重行）；因果界用 batch 最大值而非请求自身 decode 长度。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  - KV状态
+  detail: indexer logits 错误 → 选错 top-k KV 行做 sparse attention，无任何报错、输出质量下降；缺陷在 host 侧 metadata/输入切片，与 ROCm 版本无关（MI355X 复现，代码锚点 main@602811546）。
+  visibility: 质量退化
+mitigation:
+  detect: 构造含短请求（0<decode_len<max）的 ragged spec-decode 批，对照各请求独立运行的 indexer top-k 行集合。
+  fix: 待定（issue open 2026-10-31，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/64855
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm issue #64855（2026-10-31，AMD MI355X gfx950，vLLM 0.32.1 dev，main@602811546b035a5ff35256a0a008b61071b13904）：native (B, next_n) indexer padded decode 路径在 ragged 批（某请求 0<decode_len<max_decode_len）时 builder 置 requires_padding=True，indexer 用 pack_seq_triton 打包 q，但两输入不匹配：(1) weights 保持 token 序传 weights[:B*max_decode_len]，logits kernel 为打包 q 行 (b,j) 读权重行 b*next_n+j——首个短请求之后的每个 token 拿到别的 token 的权重，尾行来自 prefill token 或 padding；(2) 因果界按 batch 最大值：行 j 得 L_b - max_decode_len + 1 + j，而正确为 L_b - d_b + 1 + j（d_b 为该请求自身 decode 长度），短请求 token 丢失最后 max_decode_len - d_b 个 key 包括自身位置。后果：indexer logits 错误 → top-k KV 行选错 → sparse attention 关注错行，无错误信号只有输出质量下降。缺陷在 host 侧 metadata/输入切片（与 ROCm 版本无关）。'
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/64855 （open，2026-10-31 创建；含两条根因与代码锚点）
+  behavior: 推测解码（MTP 类）批内请求 draft 长度不齐（有请求比最长者短）时，sparse attention 的 indexer 给每个 draft token 配错的检索权重与因果边界：短请求之后的 token 读到别的 token 的权重、且丢失靠近自身的 key——选出的 top-k KV 行系统性错误，注意力聚焦错位置，输出质量静默下降。无任何报错；同批请求长度一致（非 ragged）则不触发。
+  trigger_surface: vllm native (B, next_n) indexer 路径；spec-decode 批内 decode_len 不齐（ragged）；requires_padding=True；MI355X 复现但机制在 host 侧通用于各后端。
+  signature: ragged 批 indexer top-k 行集与逐请求独立运行不一致；打包 q 与 token 序 weights 行号错位。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 算子/内核
+      effect:
+        from: 输出分布
+        to: 数值结果
+      visibility:
+        from: 静默错误
+        to: 质量退化

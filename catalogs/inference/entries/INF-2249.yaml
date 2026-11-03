@@ -1,0 +1,52 @@
+id: INF-2249
+legacy_ids: []
+slug: cann_kv_quant_sparse_fa_tnd_tail_uninit
+aliases: []
+title: CANN KvQuantSparseFA TND 尾部残留 NaN/Inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: kv_quant_sparse_fa 初始化
+  behavior: Atlas A2/A3（arch22）初始化逻辑排除 TND、整块长度按 BSND 计算，实际 query 数小于 capacity 时尾部 [actual,T) 不清零，保留缓冲旧值；旧值含 NaN/Inf 时原样输出且无报错。
+effect:
+  objects:
+  - 数值结果
+  detail: TND 布局、capacity 128 实际 64 时输出尾部 64 行保留旧值（含预填 NaN/Inf）；下游若读整块输出即被污染。修复实测 6048 个预填 NaN 的图输出全部有效行有限、尾部精确为 0。
+  visibility: 静默错误
+mitigation:
+  detect: 输出预填 NaN 后检查尾部是否清零可检出；eager 对照可现
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/14799 （open，2026-10-28）：为 TND 启用初始化、按 device 上 actual_seq_lengths_query 末项清零 [actual,T)，32B 对齐分核；实测 910B3/CANN 9.3.0.weekly.20261021，回归 4 passed、泛化 42 case、6048 图输出全过；社区 CI 待运行，未发布）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/14799
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer MR !14799（2026-10-28，open，bug 修复）：KvQuantSparseFlashAttention 在 Atlas A2/A3（arch22）TND 布局、实际 query token 数小于输出 capacity 时，尾部 [actual, T) 未写入且不被清零——原初始化逻辑排除 TND、整块输出长度按 BSND 计算。修复为 TND 启用初始化，读 device 上 actual_seq_lengths_query 最后一项作有效 token 总数，仅清零 [actual, T)；分核区间 32B 对齐避免相邻 AIV 共用 GM 块；满批跳过清零与同步；BSND 保留原语义。回归测试（BF16/FP16 × RoPE=0/64、capacity 128→64、ACL 图累计 query 长度动态变化）先将图输出填 NaN 再重放，验证有效行有限、尾部精确 0、与 eager 一致；泛化 42 case 三方案 ×3 轮最大绝对差 0；计时检查 6048 个预填 NaN 图输出全过。实测环境 Ascend 910B3（arch22）、CANN 9.3.0.weekly.20261021、PyTorch 2.12.0、torch_npu 2.12.0.post2。无关联 issue。
+  source: https://gitcode.com/cann/ops-transformer/merge_requests/14799
+  behavior: 在 Atlas A2/A3 上用 KvQuantSparseFlashAttention（TND 布局）做稀疏量化注意力，当实际 query 数小于输出缓冲 capacity（如 capacity 128、实际 64）时，输出尾部那些没被算到的行不清零，保留缓冲里的旧值——如果之前有 NaN/Inf 残留（如图捕获前预填或上批残留），这些脏值原样出现在输出里且无报错；下游按整块读输出就被静默污染。
+  trigger_surface: Atlas A2/A3（arch22）+ KvQuantSparseFlashAttention + TND 布局 + actual query < capacity（padding 存在）；修复 MR !14799 open 未合入。
+  discovery: 2026-10-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-28'
+  audit:
+    round: daily-audit-2026-10-29
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

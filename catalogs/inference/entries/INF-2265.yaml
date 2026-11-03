@@ -1,0 +1,55 @@
+id: INF-2265
+legacy_ids: []
+slug: vllm_ascend_mla_qb_padded_head_prolog_v3
+aliases: []
+title: vllm-ascend MLA padded 头 Q_B 投影错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: _build_prolog_v3_weights
+  behavior: native MLA Q_B 权重是 padded 3-D 基座的 2-D 视图，.contiguous() 不保证新建分配，视图经 FRACTAL_NZ 转换被 PROLOG_V3 消费，A3 上产出错误 Q NoPE/Q RoPE。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Kimi-K3 block5 TP16（6 头 pad 到 8）DSpark 接受率 1.47%（修复后 69.83%）；Q NoPE 相对 L2 误差 1.149、cosine 0.036（clone 后 1.4e-4）；TPOT 85.4→27.6ms。
+  visibility: 质量退化
+mitigation:
+  detect: NPU 数值回归：真实权重准备 + PROLOG_V3 算子对独立 CPU 投影数学 + 独立 rotary 算子对比（PR 附测试 test_mla_prolog_head_padding.py）；端到端看 DSpark 接受率断崖（<5%）。
+  fix: '修复 PR https://github.com/vllm-project/vllm-ascend/pull/20287 （open，v0.30.0 分支，权重准备期 .clone() 物化 padded 2-D Q_B，无 per-token 开销；A3 回归 4 passed；引入路径 #18682/#18256）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-29'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/20287
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend native MLA 的 PROLOG_V3 权重准备缺陷（引入于 #18682，源 #18256，影响 v0.30.0rc 系列）：当本地头数需要 padding 时（如 Kimi-K3 block5 TP16：96 逻辑头/16 秩=6 头，pad 到 8），native MLA Q_B 权重成为 padded 3-D 基座的 2-D 视图；.contiguous() 不保证为 2-D 形状新建分配，该视图经 FRACTAL_NZ 转换后被 PROLOG_V3 消费，在 A3 上产出错误的 Q NoPE 与 Q RoPE 输出——逻辑权重值与原矩阵一致，错在布局视图未物化。修复在 _build_prolog_v3_weights() 中 NZ 转换前用 .clone() 物化 padded 2-D Q_B 矩阵（权重准备期一次性，无 per-token 拷贝），改动限于 native-weight head-padding 分支。验证：A3 NPU 数值回归 test_mla_prolog_head_padding.py（6→8 与 12→16 padding、4/8 头对照，4 passed）；数值隔离显示原 6→8 头 Q NoPE 相对 L2 误差 1.14949、cosine 0.03618，仅物化 Q_B 后 L2 降为 1.4e-4、cosine≈1，KV 投影本就正确；受控 P/D 诊断（128k 输入、4 请求自然 EOS）：acceptance 1.47%→69.83%、mean acceptance length 1.044→3.095；全量 P/D 性能回归（128 请求、并发 32、DSpark width 3）：accepted/proposed 3.19%→81.86%、mean acceptance 1.096→3.456、TPOT 85.4→27.6ms、吞吐 324→921 tok/s，P/D prefix 命中率两组一致（99.89%），数值隔离检验独立于缓存差异。硬件验证基于部署镜像 vllm-ascend eac9c0cf + 本修复。'
+  source: GitHub PR https://github.com/vllm-project/vllm-ascend/pull/20287 （open，2026-10-29，BugFix v0.30.0，含完整数值隔离与 P/D 回归数据）
+  behavior: 在 A3 上以 TP16 部署 Kimi-K3（或任何 native MLA 本地头数需 padding 的配置）并启用 DSpark 投推时，draft 接受率塌到约 1.5%（正常约 70-80%），每步几乎全部拒绝、生成极慢（TPOT 85ms 级），输出内容因 draft-target 不一致而质量下降但无任何报错；日志里 acceptance 计数是可见线索。修复（权重准备期 clone）后同配置恢复 69.83%。
+  trigger_surface: 'vllm-ascend v0.30.0rc 系（引入于 #18682）；A3 硬件；native MLA 权重 + 头数 padding（TP16 Kimi-K3 block5 6→8、12→16）+ PROLOG_V3/FRACTAL_NZ 路径 + DSpark 投推。'
+  signature: DSpark accepted/proposed <5%、mean acceptance ≈1.0；Q NoPE 对独立参考 cosine≈0.036。
+  repro: PR 附 A3 回归 test_mla_prolog_head_padding.py（pytest 4 passed in 11.63s）。
+  discovery: 2026-10-29 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-29'
+  audit:
+    round: daily-audit-2026-10-30
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

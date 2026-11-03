@@ -1,0 +1,56 @@
+id: INF-2196
+legacy_ids: []
+slug: cann_bitwise_or_scalar_int8_fp16_cast_truncation
+aliases: []
+title: BitwiseOrScalar out=INT8 经 fp16 中转截断错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BitwiseOrScalar fp16 中转
+  behavior: out=INT8 时标量先经 fp16 中转（>2048 整数按 8 对齐舍入）再取低 8 位；int16/int32/int64 出参正确
+effect:
+  objects:
+  - 数值结果
+  detail: 0|2147483647 实测 out=0（低 8 位回绕应为 -1）；other=12345→56（回绕预期 57）、32767/65535/2147483647→0；|结果|≤2048 全部正确；实测值与「先转 fp16 再取低 8 位」逐条一致；接口返回成功
+  visibility: 静默错误
+mitigation:
+  detect: out=INT8 + 大标量（>2048）与 CPU 位运算对照；int16 出参对照正确
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-10-26'
+remarks: 与 INF-2122（ttnn.where 整型标量经 float32 舍入变值）共享「整型逻辑运算经浮点中转丢失整数精度」机制；平台（CANN vs tt-metal）、中转精度（fp16 vs fp32）与算子不同，作为变体关联
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/3999
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2122
+pattern: PAT-INF-0193
+original:
+  mechanism: aclnnBitwiseOrScalar 在 out=INT8 时结果错误，且实测值与「先转 fp16 再取低 8 位」逐条一致：self=int8[1]{0}，other=2147483647（aclScalar INT64）时 0|0x7FFFFFFF 低 8 位 0xFF → int8 应为 -1，实测 out[0]=0；换 out=int16 得 -1 正确。改变 other 实测：255→-1（对）、12345→56（回绕预期 57）、32767→0（应 -1）、65535→0（应 -1）、2147483647→0（应 -1）、-12345→-56（应 -57）；|结果|≤2048 全部正确，超过后与 fp16 整数精度损失一一对应（fp16 尾数 11 位，>2048 整数按 8 对齐舍入）。int16/int32/int64 出参同输入均正确，说明仅 INT8 出参路径的 Cast 经 fp16 中转截断。即使实现选择饱和语义也应为 -128，回绕与饱和都得不到 0。环境：Ascend 910B2、CANN 9.2.0；910B 上该算子由 CANN 内置 ops_legacy 二进制承载。自包含 C++ 复现脚本。来源 https://gitcode.com/cann/ops-math/issues/3999（open）。与 INF-2122（ttnn.where int 标量经 fp32 舍入）为同一「整型逻辑/比较运算经浮点中转丢失整数精度」机制的跨平台变体。
+  source: 2026-10-26 每日扫描（NPU 批次 batch-20261026T230043147986-d99c34of）。https://gitcode.com/cann/ops-math/issues/3999
+  behavior: 对 int8 输出张量做按位或标量（bitwise_or with scalar）运算，当标量绝对值超过 2048 后结果开始出错：例如 0 | 2147483647 应得 -1（0xFF），实测 0；12345 应得 57，实测 56。错误模式与「标量先转 fp16（只能精确表示到 2048）再取低 8 位」完全一致，即大整数先被四舍五入再参与位运算。接口返回成功；把输出换成 int16/int32/int64 则完全正确。任何在 int8 管线上用大标量做位掩码（如哈希合并、桶标记）的逻辑会静默拿到错误位模式。
+  trigger_surface: aclnnBitwiseOrScalar（及同实现位运算族）；out=INT8 且 |scalar|>2048；Ascend 910B2、CANN 9.2.0 实测（内置 ops_legacy 路径）
+  discovery: 2026-10-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-26'
+  updates:
+  - date: '2026-10-27'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-10-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

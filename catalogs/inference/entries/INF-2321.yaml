@@ -1,0 +1,58 @@
+id: INF-2321
+legacy_ids: []
+slug: ops_nn_gather_v3_fp64_rank6_all_zero
+aliases: []
+title: aclnnGatherV3 fp64 且秩≥6 时两段返回 0 但输出整块全 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: gather_v3 fp64 高秩通路
+  behavior: self.dtype=DOUBLE(fp64) 且秩 ≥5/6 时（dim=0、batchDims=0、mode=1，A2 唯一放行配置），两段式接口均返回 0 但设备侧输出整块为 0，属确定性计算错误而非竞争或未初始化。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B/CANN 9.2.0-beta.2、dim=0/batchDims=0/mode=1 下，fp64 rank6 输出 2048/2048 元素全 0；fp32 rank 2-8 逐位正确，fp64 rank5 起 561000 错、rank6-8 全 0；同一输入重复 3 次结果一致。
+  visibility: 静默错误
+mitigation:
+  detect: fp64 高秩输入与 fp32 同形对照；输出全 0 且接口返回 0 即命中。
+  fix: 待定（issue open，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-31'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7848
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0570
+original:
+  mechanism: 'cann/ops-nn issue #7848（2026-10-31，Atlas A2 910B/CANN 9.2.0-beta.2）：aclnnGatherV3 在 self.dtype=DOUBLE(fp64) 且秩 ≥6（实测 rank≥5 已出现 561000 错值、rank≥6 全 0）时，两段式接口均返回 0，但设备侧输出整块为 0（静默脏数据）。证据矩阵（self=(3,2,...,2)、index=(2,2,...,2)、dim=0）：fp32 全 rank 2-8 逐位正确（neq=0），fp64 rank 2-4 正确、rank5 561000 错、rank6-8 全 0（neq=2048/2048、8192/8192、32768/32768）——fp32 全对排除 shape 构造/标杆问题，是 fp64 通路高秩独立缺陷。确定性证据：同一输入重复 3 次结果完全一致（run0/1/2 全 0），排除竞争/未初始化。资料 index/gather_v2/docs/aclnnGatherV3.md 的 self dtype 表包含 DOUBLE 且产品支持声明 Atlas A2 支持，未对 rank 与 dtype 组合加限制。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/7848 （open，2026-10-31 创建；含 rank×dtype 扫描矩阵与三次重复一致性证据）
+  behavior: 用 aclnnGatherV3 聚合 fp64 高秩（≥5 维起错、≥6 维必错）张量时，接口两次调用都返回成功，读回的输出却是整块 0.0 而非索引聚集结果——下游直接消费到全零张量，数值静默全错；同 shape 的 fp32/fp16/bf16 全部逐位正确，换成 fp32 即恢复，可作定位对照。同一输入反复运行输出稳定全 0，不是偶发。
+  trigger_surface: cann/ops-nn gather_v3（aclnnGatherV3）；self.dtype=DOUBLE；rank(self)≥5（≥6 全 0）；dim=0/batchDims=0/mode=1；910B/CANN 9.2.0-beta.2。
+  signature: fp64 高秩 gather 输出全 0 + 接口返回 0；fp32 同形逐位正确。
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  updates:
+  - date: '2026-11-01'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-01
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail
+    issue_unfixed:
+    - behavior

@@ -1,0 +1,51 @@
+id: TRN-0556
+legacy_ids: []
+slug: opsnn_swiglu_odd_split_axis_flat_offset
+aliases: []
+title: SwiGlu 奇数切分轴静默扁平半切
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: swi_glu_tiling 奇偶校验
+  behavior: 切分轴奇偶校验判的是「切分轴×后续所有轴乘积」：切分轴奇数但乘积偶数被放行，kernel 按扁平化 numel/2 偏移切分（B 半起点落在行中间），与资料「按 dim 轴对半切」不符且返回 0
+effect:
+  objects:
+  - 数值结果
+  detail: x=[3,4] dim=0 实测 out=silu(x[0..3])*x[6..9]（应按行对半）；x=[2,3,32] dim=1 同样扁平半切；奇乘积输入被拒但错误码 561002≠资料 161002；910B2/CANN 9.2.0
+  visibility: 静默错误
+mitigation:
+  detect: 奇数切分轴用例对拍 CPU 参考；校验 out 与按 dim 切分语义一致
+  fix: 待定（issue open：校验应改为 inShape.GetDim(splitDim) 判偶）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-10-30'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7763
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn #7763（2026-10-30，Atlas A2 910B2、CANN 9.2.0、activation/swi_glu）：SetTotalShape() 的 shapeAfter 循环从 splitDim 累乘到末维，shapeAfter%2 只保证乘积偶数；「切分轴奇数、后续轴含偶数」被放行，tiling 用 colLen=shapeAfter/2 作偏移、kernel 按扁平化 numel/2 切分。实测 x=fp32[3,4] dim=0 → rc=0、out=silu(x[0..3])*x[6..9]（B 起点在第 1 行中间）；x=fp32[2,3,32] dim=1 → 偏移 48=3*32/2 同样扁平半切；x=[2,33] dim=-1（乘积奇）被拒但返回 561002 而非资料 161002。资料要求 x 的 dim 对应维必须是偶数。含复现与日志。'
+  source: https://gitcode.com/cann/ops-nn/issues/7763
+  behavior: NPU 上对 SwiGlu（swiglu 前激活）传奇数切分轴（如 [3,4] dim=0、[2,3,32] dim=1）：算子返回成功但按扁平化 numel/2 偏移切分，A/B 两半起点落在错误位置，输出是形状合法的错值——前向激活全链路偏离，无报错无 NaN，与 CPU 参考对拍才能发现。
+  trigger_surface: CANN aclnnSwiGlu + 切分轴为奇数但其后轴乘积为偶数；910B2/CANN 9.2.0/master 59c0720c 族
+  discovery: 2026-10-31 每日扫描
+migration:
+  method: scan
+  scanned: '2026-10-31'
+  audit:
+    round: daily-audit-2026-10-31
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
