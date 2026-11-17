@@ -132,11 +132,14 @@ export class Index {
 
   // Rows passing the filters, in catalog order: the browse view, and search's candidate set.
   filter({ repo, category, confidence, include_neg = true, include_pointers = false,
-           pattern } = {}) {
+           pattern, allowed_rows = null } = {}) {
     const f = { repo, category, confidence, pattern, include_pointers,
                 neg: include_neg ? null : false };
     const rows = [];
-    this.docs.forEach((e, i) => passes(e, f) && rows.push(i));
+    this.docs.forEach((e, i) => {
+      if (allowed_rows && !allowed_rows.has(i)) return;
+      if (passes(e, f)) rows.push(i);
+    });
     return rows;
   }
 

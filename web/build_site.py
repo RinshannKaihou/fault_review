@@ -37,6 +37,7 @@ sys.path.insert(0, ROOT)
 from fault_rag import parse as parse_mod                     # noqa: E402
 from fault_rag.index import BM25, bm25_text, expand_latin_tokens, mark_name_collisions   # noqa: E402
 from fault_rag.search import _entry_type, _full, _summary    # noqa: E402
+from topology.build_graph_data import enrich_site_docs        # noqa: E402
 
 TOKENIZER = "bigram-v2"
 _LATIN_RE = re.compile(r"[a-z0-9][a-z0-9_.\-/#]*")
@@ -200,7 +201,9 @@ def main(argv=None):
     data = os.path.join(out, "data")
 
     ys = [entry_yaml(e) for e in entries]
-    write_json(os.path.join(data, "docs.json"), [doc_row(e, y) for e, y in zip(entries, ys)])
+    docs_rows = [doc_row(e, y) for e, y in zip(entries, ys)]
+    causal_meta = enrich_site_docs(entries, docs_rows)
+    write_json(os.path.join(data, "docs.json"), docs_rows)
     write_json(os.path.join(data, "bm25.json"), bm25_payload(entries))
     for e, y in zip(entries, ys):
         write_json(os.path.join(data, "entry", e["repo"], e["id"] + ".json"), entry_detail(e, y))
@@ -243,6 +246,7 @@ def main(argv=None):
         },
         "tokenizer": TOKENIZER,
         "semantic": semantic,
+        "causal": causal_meta,
     }
     write_json(os.path.join(data, "meta.json"), meta, pretty=True)
     size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(out) for f in fs)

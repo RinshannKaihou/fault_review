@@ -1,7 +1,9 @@
-// fault-rag static site: search, lookup, entry sheet. Retrieval itself lives in search.js (shared
-// with the Node eval); the semantic tier (semantic.js + vendored transformers.js) loads on demand.
+// fault-rag static site: unified search/browse lens + lifecycle causal map lens + entry sheet.
+// Retrieval itself lives in search.js (shared with the Node eval); the semantic tier
+// (semantic.js + vendored transformers.js) loads on demand and stays resident across view switches.
 import { Index } from "./search.js";
 import { configureWeb, createEmbedder } from "./semantic.js";
+import { createCausalMap } from "./causal_map.js";
 
 const REPO_LABEL = { inference: "推理", training: "训练" };
 const CONF_NOTE = {
@@ -26,6 +28,9 @@ const EXAMPLES = ["loss spike 但无 NaN", "GRPO advantage std zero", "前缀缓
                   "INF-0044", "TRN-0005"];
 const PAGE = 10;          // search results per page
 const BROWSE_PAGE = 50;   // browse rows per page
+
+const SEARCH_LEDE = "描述你看到的症状或怀疑的机制，从推理与训练两个故障编目里找相似先例。结果只供参考，引用前请打开条目核对原文。";
+const MAP_LEDE = "每个框是一个真实的系统模块，箭头 A → B 表示 B 依赖 A 的数据或权重。点看到异常的模块即可顺箭头倒推真凶，或将候选范围带回检索。";
 
 // ---------- tiny DOM helpers (text only: catalog content never becomes HTML) ----------
 function h(tag, attrs = {}, ...kids) {
@@ -64,8 +69,11 @@ function value(v) {
 }
 
 // ---------- state <-> URL hash ----------
-// all: browse every entry (no query, no filter); sort: browse order ("" = catalog id, "new" = newest first-seen)
-const FIELDS = ["q", "repo", "category", "confidence", "pattern", "mode", "no_neg", "pointers", "all", "sort", "e"];
+// view: "" = search/browse, "map" = lifecycle causal map; cscope: "1" applies map selection to search
+const FIELDS = [
+  "q", "repo", "category", "confidence", "pattern", "mode", "no_neg", "pointers",
+  "all", "sort", "e", "view", "cscope", "cmode", "cmod", "csub", "cstg", "cstk", "cvis", "cprn",
+];
 function readState() {
   const p = new URLSearchParams(location.hash.slice(1));
   const s = Object.fromEntries(FIELDS.map((f) => [f, p.get(f) || ""]));
@@ -83,7 +91,7 @@ function writeState(s, { push = false } = {}) {
 }
 
 // ---------- data ----------
-let meta, index, docs;
+let meta, index, docs, causalMap;
 let semantic = { state: "off", embedder: null, error: null };
 const getJSON = (p) => fetch(p).then((r) => {
   if (!r.ok) throw new Error(`${p}: HTTP ${r.status}`);
@@ -99,10 +107,22 @@ async function boot() {
   meta = m;
   docs = d;
   index = new Index(docs, bm25);
+  causalMap = createCausalMap({ h, docs, meta, index, readState, writeState, stampFor, summaryLines });
+  causalMap.initControls($("#causal-pane"));
   renderSnapshot();
   initForm();
+  initViewTabs();
   window.addEventListener("hashchange", render);
   render();
+}
+
+function initViewTabs() {
+  $("#tab-view-search").addEventListener("click", () => {
+    if (readState().view === "map") writeState({ ...readState(), view: "" }, { push: true });
+  });
+  $("#tab-view-map").addEventListener("click", () => {
+    if (readState().view !== "map") writeState({ ...readState(), view: "map" }, { push: true });
+  });
 }
 
 function renderSnapshot() {
@@ -123,7 +143,7 @@ const form = () => $("#search-form");
 function initForm() {
   $("#examples").replaceChildren("试试：", ...EXAMPLES.flatMap((q, i) => [
     i ? "、" : "",
-    h("button", { type: "button", onclick: () => writeState({ ...readState(), q, e: "", k: 0 }, { push: true }) }, q),
+    h("button", { type: "button", onclick: () => writeState({ ...readState(), view: "", q, e: "", k: 0 }, { push: true }) }, q),
   ]));
   fillCategories("");
   $("#f-repo").addEventListener("change", (ev) => fillCategories(ev.target.value));
@@ -175,6 +195,8 @@ function collect() {
   const s = readState();
   const q = (f.get("q") || "").trim();
   return {
+    ...s,
+    view: "",
     q, repo: f.get("repo") || "", category: f.get("category") || "",
     confidence: f.get("confidence") || "", pattern: s.pattern,
     mode: f.get("mode") === "hybrid" ? "hybrid" : "", no_neg: f.get("no_neg") ? "1" : "",
@@ -198,6 +220,17 @@ function syncForm(s) {
   if (s.pattern) {
     pf.replaceChildren("只看故障模式 ", h("code", {}, s.pattern), " ",
       h("button", { type: "button", onclick: () => writeState({ ...readState(), pattern: "", k: 0 }) }, "取消"));
+  }
+  const cf = $("#causal-filter");
+  cf.hidden = !s.cscope;
+  if (s.cscope && causalMap) {
+    const n = causalMap.getScopedRowSet(s).size;
+    cf.replaceChildren(
+      `因果范围：${causalMap.describeScope(s)}（${n} 条） `,
+      h("button", { type: "button", onclick: () => writeState({ ...readState(), view: "map" }, { push: true }) }, "调整"),
+      " · ",
+      h("button", { type: "button", onclick: () => writeState({ ...readState(), cscope: "", k: 0 }) }, "取消")
+    );
   }
 }
 
@@ -256,23 +289,46 @@ let renderSeq = 0;
 async function render() {
   const s = readState();
   const seq = ++renderSeq;
+  const isMap = s.view === "map";
+
+  $("#tab-view-search").classList.toggle("active", !isMap);
+  $("#tab-view-search").setAttribute("aria-selected", String(!isMap));
+  $("#tab-view-map").classList.toggle("active", isMap);
+  $("#tab-view-map").setAttribute("aria-selected", String(isMap));
+  $("#finder-pane").hidden = isMap;
+  $("#causal-pane").hidden = !isMap;
+  $("#main-layout").classList.toggle("map-active", isMap);
+  $("#masthead-lede").textContent = isMap ? MAP_LEDE : SEARCH_LEDE;
+
+  if (isMap) {
+    lastSearchKey = null;
+    const mapData = causalMap.renderLeftPane($("#causal-pane"), s);
+    if (!s.e) {
+      causalMap.renderWorkbenchSheet($("#sheet"), s, mapData);
+    } else {
+      await renderSheet(s.e, mapData);
+    }
+    return;
+  }
+
   syncForm(s);
-  const key = JSON.stringify({ ...s, e: "" });
+  const key = JSON.stringify({ ...s, e: "", view: "" });
   if (key !== lastSearchKey) {
     lastSearchKey = key;
     await renderResults(s, seq);
   } else {
     markCurrent(s.e);
   }
-  if (seq === renderSeq) renderSheet(s.e);
+  if (seq === renderSeq) renderSheet(s.e, null);
 }
 
 const filterOpts = (s) => ({
   repo: s.repo || undefined, category: s.category || undefined, confidence: s.confidence || undefined,
   pattern: s.pattern || undefined,
   include_neg: !s.no_neg, include_pointers: !!s.pointers,
+  allowed_rows: s.cscope && causalMap ? causalMap.getScopedRowSet(s) : null,
 });
-const isBrowsing = (s) => !s.q && !!(s.repo || s.category || s.confidence || s.pattern || s.all);
+const isBrowsing = (s) => !s.q && !!(s.repo || s.category || s.confidence || s.pattern || s.cscope || s.all);
 
 async function renderResults(s, seq) {
   const out = $("#results");
@@ -328,9 +384,12 @@ async function renderResults(s, seq) {
 
 function emptyPrompt() {
   return h("div", { class: "browse-prompt" },
-    h("p", {}, "不输入检索词也可以：在上面选任一筛选条件（编目、原因子系统、置信度），会直接列出符合条件的全部条目。"),
-    h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), all: "1", k: 0 }, { push: true }) },
-      `浏览全部 ${index.filter().length.toLocaleString()} 条`));    // same default as search: no pointers
+    h("p", {}, "不输入检索词也可以：在上面选任一筛选条件（编目、原因子系统、置信度），会直接列出符合条件的全部条目；若只看到表象不确定根因模块，可切到生命周期因果图顺箭头排查。"),
+    h("div", { style: "display:flex;flex-wrap:wrap;gap:0.6rem" },
+      h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), all: "1", k: 0 }, { push: true }) },
+        `浏览全部 ${index.filter().length.toLocaleString()} 条`),
+      h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), view: "map" }, { push: true }) },
+        "打开生命周期因果图按模块溯因 →")));
 }
 
 // Newest first-seen first; undated entries (待定) go last, in catalog order.
@@ -410,7 +469,7 @@ function markCurrent(key) {
 }
 
 // ---------- entry sheet ----------
-async function renderSheet(key) {
+async function renderSheet(key, mapData = null) {
   const sheet = $("#sheet");
   if (!key) {
     sheet.replaceChildren(h("div", { class: "sheet-empty" },
@@ -431,8 +490,23 @@ async function renderSheet(key) {
     sheet.replaceChildren(h("p", { class: "notice" }, `条目没能载入：${err.message}`));
     return;
   }
-  if (readState().e !== key) return;
-  sheet.replaceChildren(...sheetNodes(d, row));
+  const curState = readState();
+  if (curState.e !== key) return;
+
+  const extraTop = [];
+  if (curState.view === "map" && causalMap) {
+    const mName = causalMap.MOD_MAP[causalMap.activeMod(curState)]?.name || "模块";
+    const cnt = mapData?.scopedRows?.length ?? 0;
+    extraTop.push(h("div", { class: "sheet-back-bar" },
+      h("button", {
+        type: "button", class: "link-btn", style: "font-weight:600;text-decoration:none",
+        onclick: () => writeState({ ...readState(), e: "" }, { push: true }),
+      }, `← 返回【${mName}】溯因分析面板（共 ${cnt} 条候选）`),
+      h("span", { class: "panel-sub" }, "左图已标出本条目的根因与暴露位置")
+    ));
+  }
+
+  sheet.replaceChildren(...extraTop, ...sheetNodes(d, row, curState));
   if (matchMedia("(max-width: 960px)").matches) sheet.scrollIntoView({ block: "start" });
   sheet.scrollTop = 0;
 }
@@ -458,15 +532,21 @@ function citation(d) {
   return `${REPO_LABEL[d.repo]}编目 ${d.id} ${d.name}（${where}；${conf}）`;
 }
 
-function sheetNodes(d, row) {
+function sheetNodes(d, row, curState = readState()) {
   const y = d.yaml || {};
+  const canLocate = causalMap && docs[row]?.causal && docs[row].causal.kind !== "method";
   const nodes = [
     h("p", { class: "sheet-acc" }, d.id, h("small", {}, `${REPO_LABEL[d.repo]}编目`)),
     h("p", { class: "snake-line" }, h("code", {}, d.name)),
     d.title ? h("h2", {}, d.title) : null,
     h("div", { class: "stamps" }, stampFor(d),
       d.status === "pending_audit" ? h("span", { class: "stamp pending" }, "待审计") : null,
-      y.kind ? h("span", { class: "stamp none" }, y.kind) : null),
+      y.kind ? h("span", { class: "stamp none" }, y.kind) : null,
+      canLocate && curState.view !== "map" ? h("button", {
+        type: "button",
+        class: "locate-btn",
+        onclick: () => writeState({ ...readState(), ...causalMap.locateEntryState(row), e: `${d.repo}/${d.id}` }, { push: true }),
+      }, "在因果图中定位 →") : null),
   ];
   if (d.neg) nodes.push(h("p", { class: "banner" }, "负结果：它告诉你“这条路被否过”，不要当成可复用的故障模式引用。"));
   if (d.entry_type === "pointer") nodes.push(h("p", { class: "banner" }, "指针条目：指向其他记录的说明，不是独立故障，不能作为故障证据引用。顺着下面的关联条目找到真实条目。"));
@@ -512,7 +592,7 @@ function sheetNodes(d, row) {
     const ptitle = docs[row]?.pattern_title;
     nodes.push(section("故障模式",
       h("p", {}, "属于 ", h("code", {}, d.pattern), ptitle ? `（${ptitle}）` : "", "。 ",
-        h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), pattern: d.pattern, k: 0 }) }, "只看这一族")),
+        h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), view: "", e: "", pattern: d.pattern, k: 0 }, { push: true }) }, "只看这一族")),
       h("p", { class: "note" }, "模式成员由变体关系派生，只表示同族，不等于已核实同机制。")));
   }
 

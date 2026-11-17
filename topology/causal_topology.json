@@ -1,0 +1,335 @@
+{
+  "schema_version": "1.0.0",
+  "name": "llm_lifecycle_bipartite_causal_topology",
+  "description": "Complete LLM lifecycle bipartite causal graph mapping 26 fault subsystems (injection plane) onto 17 state/observation carriers (propagation plane) across 6 macro-stages, with explicit feedback loops and diagnostic bisection probes.",
+  "vocab_alignment": {
+    "vocab_version": "v1.3",
+    "subsystems_count": 26,
+    "carriers_count": 17,
+    "visibilities_count": 7
+  },
+  "stages": [
+    {
+      "id": "pretrain",
+      "label": "预训练 (Pretrain)",
+      "order": 1,
+      "description": "大规模语料自监督预训练：数据采样/packing → 前向激活 → CE/辅助 Loss → 反向梯度与分布式归约 → 优化器更新权重流形。"
+    },
+    {
+      "id": "sft",
+      "label": "指令/多模态微调 (SFT / PEFT)",
+      "order": 2,
+      "description": "监督微调与 LoRA/全参适配：chat template 渲染、response-only loss mask、多模态特征对齐与权重合并。"
+    },
+    {
+      "id": "rl",
+      "label": "强化学习后训练闭环 (RL Post-Training)",
+      "order": 3,
+      "description": "在线/半在线策略优化闭环：Rollout 推理引擎生成与 logprobs 采集 ⇄ Reward/Reference/Parser 信号计算 ⇄ Actor/Critic 更新 ⇄ 跨引擎权重同步。"
+    },
+    {
+      "id": "ckpt_export",
+      "label": "检查点转换与量化导出 (Checkpoint & Quant Export)",
+      "order": 4,
+      "description": "训推交界静态枢纽：TP/PP/EP 权重重分片、跨框架权重键名映射、LoRA 合并及 PTQ/FP8/INT4 校准导出。"
+    },
+    {
+      "id": "serving",
+      "label": "在线推理服务 (Online Serving)",
+      "order": 5,
+      "description": "多并发低延迟服务：API 调度与多模态预处理 → Chunked Prefill → Paged KV / Prefix Cache 管理 ⇄ 自回归/投机解码采样 → 流式结构化输出解析。"
+    },
+    {
+      "id": "eval_obs",
+      "label": "评测与运行时观测平面 (Eval & Telemetry Plane)",
+      "order": 6,
+      "description": "横切验证与监控：算子单测 golden/容差门禁、端到端 benchmark harness、运行时指标与静默损坏检测器。"
+    }
+  ],
+  "carriers": [
+    {
+      "id": "训练样本流",
+      "track": "forward_dataflow",
+      "rank": 10,
+      "stages": ["pretrain", "sft", "rl"],
+      "description": "数据集读取、shuffle/sampler 随机种子、packing 文档边界与监督 label/loss_mask 序列。",
+      "probe": "对比单步 DataLoader 产出的 sample IDs、position_ids、cu_seqlens 与有效监督 token 掩码计数。"
+    },
+    {
+      "id": "输入编码",
+      "track": "forward_dataflow",
+      "rank": 15,
+      "stages": ["pretrain", "sft", "rl", "serving"],
+      "description": "Tokenizer 分词、chat template 渲染、特殊 token 映射、多模态像素/音频预处理张量与 prompt embedding。",
+      "probe": "在进入 Embedding 层前导出精确 input_ids 与 pixel_values 哈希，核对训推模板与设备侧/CPU 侧预处理一致性。"
+    },
+    {
+      "id": "数值结果",
+      "track": "forward_dataflow",
+      "rank": 20,
+      "stages": ["pretrain", "sft", "rl", "ckpt_export", "serving"],
+      "description": "单个算子、融合内核或中间张量的局部数值计算结果（全生命周期底层计算载体）。",
+      "probe": "给定完全相同输入张量，与 FP32/FP64 eager 参考实现逐算子对比相对/绝对误差及跨运行位级哈希。"
+    },
+    {
+      "id": "隐状态",
+      "track": "forward_dataflow",
+      "rank": 25,
+      "stages": ["pretrain", "sft", "rl", "serving"],
+      "description": "Transformer/SSM 层间前向激活与残差流张量（承载跨层累积漂移、成簇位翻转与归约失配）。",
+      "probe": "按层二分抓取 residual/hidden_states，计算与基准路径的余弦相似度、通道离群度（clustered Mahalanobis）。"
+    },
+    {
+      "id": "KV状态",
+      "track": "forward_dataflow",
+      "rank": 30,
+      "stages": ["rl", "serving", "pretrain", "sft"],
+      "description": "Paged KV cache 块内容与 block table 映射、Prefix Cache、跨节点 KV 传输及线性注意力/SSM 循环状态。",
+      "probe": "关闭 prefix caching / chunked prefill 并设 concurrency=1，对比全量重算 K/V 张量与缓存命中路径。"
+    },
+    {
+      "id": "跨请求/跨样本数据",
+      "track": "orthogonal_isolation",
+      "rank": 35,
+      "stages": ["pretrain", "sft", "rl", "serving"],
+      "description": "并发请求间（共享 KV 块/pinned buffer/槽位复用）或 packed 训练文档间的状态越界与串扰泄漏。",
+      "probe": "构造金丝雀请求（canary prompt）与高熵伴随批次并发/拼接执行，检验输出或激活是否随批伴内容变化（batch invariance test）。"
+    },
+    {
+      "id": "输出分布",
+      "track": "forward_dataflow",
+      "rank": 40,
+      "stages": ["rl", "serving", "pretrain", "sft"],
+      "description": "LM Head 产出的 logits/logprobs、温度/惩罚处理器输出、投机解码草稿-目标验收分布与语法约束掩码。",
+      "probe": "固定 temperature=0、关闭 speculative decoding，直接导出首步完整 vocabulary logits / top-k logprobs 对拍。"
+    },
+    {
+      "id": "输出内容",
+      "track": "forward_dataflow",
+      "rank": 50,
+      "stages": ["rl", "serving"],
+      "description": "采样的 token 序列、detokenize 文本、流式增量解析后的 reasoning/tool_calls 结构及多模态/向量响应。",
+      "probe": "对比引擎原始输出 token IDs 与 HTTP/API 序列化字段，二分隔离「模型采样前异常」与「detokenize/输出解析器缺陷」。"
+    },
+    {
+      "id": "训练信号",
+      "track": "backward_update",
+      "rank": 60,
+      "stages": ["pretrain", "sft", "rl"],
+      "description": "CE loss、MoE 辅助负载均衡 loss、分片归一化因子，以及 RL 的 reward、advantage、KL 散度与 IS ratio。",
+      "probe": "冻结同一批前向 logits 与 rollout 轨迹，在独立单卡脚本重算 per-token loss、advantage 均值/标准差与 KL。"
+    },
+    {
+      "id": "梯度",
+      "track": "backward_update",
+      "rank": 70,
+      "stages": ["pretrain", "sft", "rl"],
+      "description": "反向传播激活梯度、参数梯度及跨 DP/TP/PP/EP 归约同步后的梯度张量。",
+      "probe": "开启非零 LR 后对比 TP=1/DP=1/无重计算基准的单步逐层 grad norm 与有限差分数值梯度（避开 LR=0 warmup 盲区）。"
+    },
+    {
+      "id": "优化器状态",
+      "track": "backward_update",
+      "rank": 80,
+      "stages": ["pretrain", "sft", "rl"],
+      "description": "Adam 一阶/二阶矩、FP32 主权重副本、动态 loss scaler 状态及 CPU/NVMe offload 恢复状态。",
+      "probe": "对比 save→resume 前后或 offload→reload 前后 exp_avg / exp_avg_sq / loss_scale 张量精确范数与步数计数。"
+    },
+    {
+      "id": "模型权重",
+      "track": "backward_update",
+      "rank": 90,
+      "stages": ["pretrain", "sft", "rl", "ckpt_export", "serving"],
+      "description": "内存中的模型参数、挂载的 LoRA 权重、跨框架转换/重分片后的检查点及量化权重张量（训推桥接核心）。",
+      "probe": "核对加载后各层参数 shape/dtype/分片哈希与源检查点映射表（检测未绑定随机初始化键、scale 丢失或位翻转）。"
+    },
+    {
+      "id": "训练轨迹",
+      "track": "backward_update",
+      "rank": 95,
+      "stages": ["pretrain", "sft", "rl"],
+      "description": "多步迭代涌现的宏观训练动力学：收敛速度、loss spike、局部最优漂移、策略熵塌缩与下游能力退化。",
+      "probe": "除监控标量训练 loss 外，定期运行确定性验证探针集与干净参照检查点的权重/激活流形偏离度对比。"
+    },
+    {
+      "id": "可用性/进度",
+      "track": "orthogonal_system",
+      "rank": 100,
+      "stages": ["pretrain", "sft", "rl", "ckpt_export", "serving", "eval_obs"],
+      "description": "进程崩溃、非法访存、通信/流同步死锁挂起、请求饥饿丢失、僵尸健康端点或训练 step 停滞。",
+      "probe": "采集集合通信 flight recorder、CUDA/CANN stream 等待图与 supervisor 子进程退出状态码。"
+    },
+    {
+      "id": "性能/资源",
+      "track": "orthogonal_system",
+      "rank": 100,
+      "stages": ["pretrain", "sft", "rl", "ckpt_export", "serving"],
+      "description": "数值正确但吞吐骤降、TTFT/TPOT 退化、显存泄漏/容量缩水、编译重编译风暴或投机接受率塌陷。",
+      "probe": "检查 KV 可用块预算、CUDA Graph 命中计数、算子 fallback 日志、投机草稿接受率与显存分配器水位。"
+    },
+    {
+      "id": "指标/日志",
+      "track": "orthogonal_observation",
+      "rank": 110,
+      "stages": ["pretrain", "sft", "rl", "serving", "eval_obs"],
+      "description": "监控指标、吞吐/延迟统计、训练标量读数、健康检查状态与运行时告警日志失真。",
+      "probe": "用端到端外部计时/独立离线重算交叉核验内部上报的指标分母、采样窗口与归约口径。"
+    },
+    {
+      "id": "测试判定",
+      "track": "orthogonal_observation",
+      "rank": 115,
+      "stages": ["eval_obs", "pretrain", "sft", "rl", "serving"],
+      "description": "单元测试通过/失败结论、golden 参考对比、flaky 重试掩盖或 benchmark 评测集打分失真。",
+      "probe": "审查测试自身是否共享被测缺陷代码作 golden、容差是否宽于故障幅值、评测长度/chat template 是否截断。"
+    }
+  ],
+  "canonical_forward_edges": [
+    {"from": "训练样本流", "to": "输入编码", "mechanism": "样本经分词/模板/packing 编码为模型输入张量"},
+    {"from": "训练样本流", "to": "数值结果", "mechanism": "数据张量进入前向算子计算"},
+    {"from": "训练样本流", "to": "隐状态", "mechanism": "packing/position/mask 直接决定前向注意力隐藏态"},
+    {"from": "训练样本流", "to": "跨请求/跨样本数据", "mechanism": "packed 序列缺少文档隔离掩码引发跨样本注意力污染"},
+    {"from": "训练样本流", "to": "训练信号", "mechanism": "labels / loss_mask / 样本权重直接参与 loss 与 RL 信号计算"},
+    {"from": "训练样本流", "to": "梯度", "mechanism": "错配样本流经 loss 产生有偏梯度"},
+    {"from": "训练样本流", "to": "训练轨迹", "mechanism": "样本重复/遗漏/顺序偏移改变多步收敛轨迹"},
+
+    {"from": "输入编码", "to": "数值结果", "mechanism": "编码张量/多模态特征送入底层算子"},
+    {"from": "输入编码", "to": "隐状态", "mechanism": "token/position/prompt embedding 驱动各层前向隐状态"},
+    {"from": "输入编码", "to": "KV状态", "mechanism": "输入前缀哈希与 token 长度决定 KV 块写入与前缀复用"},
+    {"from": "输入编码", "to": "跨请求/跨样本数据", "mechanism": "输入缓冲区复用或哈希碰撞引发跨请求输入串扰"},
+    {"from": "输入编码", "to": "输出分布", "mechanism": "错位输入编码经前向传播扭曲输出 logits 分布"},
+    {"from": "输入编码", "to": "输出内容", "mechanism": "模板/分词/多模态输入错误直接导致生成内容错乱"},
+    {"from": "输入编码", "to": "训练信号", "mechanism": "SFT/RL 模板与分词错位污染 token 级对齐训练信号"},
+    {"from": "输入编码", "to": "训练轨迹", "mechanism": "编码系统性偏差导致微调/预训练轨迹退化"},
+
+    {"from": "数值结果", "to": "隐状态", "mechanism": "算子局部数值误差写入层激活与残差流"},
+    {"from": "数值结果", "to": "KV状态", "mechanism": "K/V 投影、RoPE 或 KV 量化算子错值写入缓存块"},
+    {"from": "数值结果", "to": "跨请求/跨样本数据", "mechanism": "算子越界读写或共享 workspace 污染同批其他请求/样本"},
+    {"from": "数值结果", "to": "输出分布", "mechanism": "LM head / attention / 采样核数值误差扭曲 logits"},
+    {"from": "数值结果", "to": "输出内容", "mechanism": "底层算子错值传导为最终错误生成内容"},
+    {"from": "数值结果", "to": "训练信号", "mechanism": "前向或 loss 算子数值异常污染标量/逐 token 训练信号"},
+    {"from": "数值结果", "to": "梯度", "mechanism": "前向保存激活或反向算子数值错误直接产生错梯度"},
+    {"from": "数值结果", "to": "优化器状态", "mechanism": "foreach/fused 优化器算子错值直接写坏动量或二阶矩"},
+    {"from": "数值结果", "to": "模型权重", "mechanism": "权重转换/量化打包或原地更新算子错值直接写坏参数"},
+    {"from": "数值结果", "to": "训练轨迹", "mechanism": "持续算子数值偏差累积为训练发散或精度退化"},
+
+    {"from": "隐状态", "to": "KV状态", "mechanism": "前向隐状态投影生成并持久化进 KV 缓存或循环状态"},
+    {"from": "隐状态", "to": "输出分布", "mechanism": "末层隐状态经归一化与 LM Head 映射为输出分布"},
+    {"from": "隐状态", "to": "输出内容", "mechanism": "隐状态偏移经解码体现为输出内容退化"},
+    {"from": "隐状态", "to": "训练信号", "mechanism": "隐状态偏离改变前向输出与 loss / KL 信号"},
+    {"from": "隐状态", "to": "梯度", "mechanism": "前向保存或重算的隐状态偏离导致反向梯度失真"},
+    {"from": "隐状态", "to": "训练轨迹", "mechanism": "激活流形偏移把训练推离正常收敛轨迹"},
+
+    {"from": "KV状态", "to": "跨请求/跨样本数据", "mechanism": "共享前缀块篡改、负槽位踩写或驱逐竞态导致跨请求 KV 串扰"},
+    {"from": "KV状态", "to": "输出分布", "mechanism": "损坏或错配的 KV 缓存经注意力计算扭曲解码 logits"},
+    {"from": "KV状态", "to": "输出内容", "mechanism": "KV 缓存错位/失真直接导致长上下文或续写内容崩坏"},
+
+    {"from": "跨请求/跨样本数据", "to": "输出分布", "mechanism": "跨请求状态污染扭曲受害请求的 logits 分布"},
+    {"from": "跨请求/跨样本数据", "to": "输出内容", "mechanism": "跨请求状态串扰直接泄漏他人内容或毒化受害者输出"},
+    {"from": "跨请求/跨样本数据", "to": "训练信号", "mechanism": "跨样本/组内串扰污染 packed loss 或 RL 组归一化信号"},
+    {"from": "跨请求/跨样本数据", "to": "训练轨迹", "mechanism": "持续跨文档注意力泄漏损害长周期训练模型质量"},
+
+    {"from": "输出分布", "to": "输出内容", "mechanism": "采样器在错误 logits/掩码分布上采样出错误 token 序列"},
+    {"from": "输出分布", "to": "训练信号", "mechanism": "前向 logits 计算 CE/KL loss，或 rollout logprobs 参与 RL IS ratio / advantage 计算"},
+    {"from": "输出分布", "to": "梯度", "mechanism": "logits 数值异常经 loss 求导直接污染反向梯度"},
+    {"from": "输出分布", "to": "训练轨迹", "mechanism": "采样分布/策略熵偏移改变多步 RL 或自博弈训练轨迹"},
+
+    {"from": "训练信号", "to": "梯度", "mechanism": "有偏或溢出的 loss/advantage/IS ratio 反向传播生成错误梯度"},
+    {"from": "训练信号", "to": "优化器状态", "mechanism": "异常 loss/scale 信号污染优化器缩放器与矩估计"},
+    {"from": "训练信号", "to": "模型权重", "mechanism": "错误训练信号驱动参数朝错误方向更新"},
+    {"from": "训练信号", "to": "训练轨迹", "mechanism": "失真训练信号引发收敛停滞、reward hacking 或发散"},
+
+    {"from": "梯度", "to": "优化器状态", "mechanism": "错误/NaN/未归约梯度累积进动量、二阶矩或触发错误缩放"},
+    {"from": "梯度", "to": "模型权重", "mechanism": "错误梯度经 optimizer step 写入模型权重"},
+    {"from": "梯度", "to": "训练轨迹", "mechanism": "梯度偏差或裁剪失效使训练轨迹分叉或震荡"},
+
+    {"from": "优化器状态", "to": "模型权重", "mechanism": "截断/错位/未恢复的优化器状态计算出错误参数步长"},
+    {"from": "优化器状态", "to": "训练轨迹", "mechanism": "优化器矩状态失真导致续训 spike 或收敛退化"},
+
+    {"from": "模型权重", "to": "训练轨迹", "mechanism": "坏参数更新或错载检查点改变后续整体训练轨迹"},
+
+    {"from": "*", "to": "可用性/进度", "mechanism": "任一计算/状态异常（如越界索引、NaN 分支、通信失步）触发崩溃或死锁"},
+    {"from": "*", "to": "性能/资源", "mechanism": "任一状态异常（如拒绝率飙升、重编译、容量记账失真）引发吞吐或显存退化"},
+    {"from": "*", "to": "指标/日志", "mechanism": "真实状态变化或统计口径缺陷投影到监控与日志读数"},
+    {"from": "*", "to": "测试判定", "mechanism": "计算结果、性能或指标读数最终送入测试/评测判定器"}
+  ],
+  "intra_step_coupled_pairs": [
+    {"a": "隐状态", "b": "数值结果", "reason": "同层内前向激活输入算子与算子输出写回激活双向紧耦合"},
+    {"a": "梯度", "b": "数值结果", "reason": "反向算子 (*_bw) 的局部数值结果本身即为梯度张量"},
+    {"a": "输入编码", "b": "训练样本流", "reason": "在线分词 packing 管线中编码与样本流构造交替进行"},
+    {"a": "跨请求/跨样本数据", "b": "KV状态", "reason": "槽位越界写坏 KV 与坏 KV 造成跨请求泄漏互为一体两面"},
+    {"a": "跨请求/跨样本数据", "b": "隐状态", "reason": "跨样本无掩码注意力直接体现为隐状态串扰"},
+    {"a": "跨请求/跨样本数据", "b": "数值结果", "reason": "共享临时 buffer 竞态同时造成跨请求串扰与算子错值"},
+    {"a": "可用性/进度", "b": "性能/资源", "reason": "OOM/重试风暴/慢节点停滞等系统级并发症状"}
+  ],
+  "feedback_loops": [
+    {
+      "id": "LOOP-1",
+      "name": "权重加载与跨步前向反馈环 (Weight-to-Forward / Cross-Stage Inheritance)",
+      "from": ["模型权重"],
+      "to": ["数值结果", "隐状态", "KV状态", "输出分布", "输出内容", "训练信号", "梯度", "优化器状态"],
+      "condition": "always",
+      "description": "训练步 t 更新后的权重、离线量化/转换检查点或被位翻转篡改的权重，作为下一步前向/反向或线上 Serving 的初始参数输入。"
+    },
+    {
+      "id": "LOOP-2",
+      "name": "KV 与循环状态跨步回读环 (KV / Recurrent Read-Back Loop)",
+      "from": ["KV状态"],
+      "to": ["数值结果", "隐状态"],
+      "condition": "always",
+      "description": "第 k 步或历史请求写入的污染 KV 块 / SSM 状态在后续步被注意力算子回读，重新污染局部数值结果与隐状态。"
+    },
+    {
+      "id": "LOOP-3",
+      "name": "RL Rollout-Learner 在线闭环 (RL Rollout-to-Signal Loop)",
+      "from": ["KV状态", "输出分布", "输出内容"],
+      "to": ["训练信号", "梯度", "训练样本流", "训练轨迹"],
+      "condition": "rl_or_training",
+      "description": "RL 或在线合成管线中，推理引擎的采样 logprobs（输出分布）、生成轨迹/工具解析（输出内容）与前缀缓存（KV状态）直接回流计算 advantage/KL/reward 或构造下一轮训练样本。"
+    },
+    {
+      "id": "LOOP-4",
+      "name": "投机解码与自回归状态选择环 (Speculative / Indexer Feedback Loop)",
+      "from": ["输出分布"],
+      "to": ["KV状态", "跨请求/跨样本数据"],
+      "condition": "always",
+      "description": "投机解码验收分布或稀疏注意力 indexer logits 反向决定保留/选取哪些 KV 缓存行。"
+    },
+    {
+      "id": "LOOP-5",
+      "name": "数据生成算子馈入样本流 (Kernel-to-Sampler Pipeline)",
+      "from": ["数值结果"],
+      "to": ["训练样本流", "输入编码"],
+      "condition": "always",
+      "description": "随机数/排列算子（如 randperm/multinomial）或预处理内核的数值输出直接用于构造采样序列或输入特征。"
+    }
+  ],
+  "subsystems": [
+    {"id": "数据管线", "plane": "pipeline_train", "primary_carriers": ["训练样本流", "输入编码", "跨请求/跨样本数据", "可用性/进度"], "secondary_carriers": ["训练信号", "梯度", "训练轨迹", "性能/资源", "指标/日志"]},
+    {"id": "分词/模板", "plane": "pipeline_shared", "primary_carriers": ["输入编码", "输出内容", "训练样本流"], "secondary_carriers": ["训练信号", "输出分布", "可用性/进度", "性能/资源", "测试判定"]},
+    {"id": "模型定义", "plane": "pipeline_shared", "primary_carriers": ["隐状态", "数值结果", "KV状态", "输出分布", "模型权重", "输入编码"], "secondary_carriers": ["输出内容", "训练信号", "梯度", "跨请求/跨样本数据", "可用性/进度", "性能/资源"]},
+    {"id": "位置编码", "plane": "pipeline_shared", "primary_carriers": ["隐状态", "数值结果", "KV状态", "输入编码", "梯度"], "secondary_carriers": ["输出分布", "输出内容", "模型权重", "训练轨迹", "可用性/进度"]},
+    {"id": "MoE路由", "plane": "pipeline_shared", "primary_carriers": ["数值结果", "隐状态", "训练信号", "梯度"], "secondary_carriers": ["输出分布", "输出内容", "模型权重", "训练轨迹", "可用性/进度", "性能/资源", "指标/日志"]},
+    {"id": "损失计算", "plane": "pipeline_train", "primary_carriers": ["训练信号", "梯度", "数值结果"], "secondary_carriers": ["训练轨迹", "指标/日志", "可用性/进度"]},
+    {"id": "优化器", "plane": "pipeline_train", "primary_carriers": ["优化器状态", "模型权重", "梯度"], "secondary_carriers": ["数值结果", "训练信号", "训练轨迹", "可用性/进度", "性能/资源", "指标/日志"]},
+    {"id": "RL训练回路", "plane": "pipeline_train", "primary_carriers": ["训练信号", "训练样本流", "模型权重", "输出分布", "KV状态"], "secondary_carriers": ["梯度", "训练轨迹", "输出内容", "跨请求/跨样本数据", "输入编码", "可用性/进度", "性能/资源", "指标/日志"]},
+    {"id": "权重/检查点", "plane": "pipeline_shared", "primary_carriers": ["模型权重", "优化器状态", "KV状态", "可用性/进度"], "secondary_carriers": ["数值结果", "隐状态", "输出分布", "输出内容", "训练信号", "梯度", "训练轨迹", "性能/资源", "指标/日志"]},
+    {"id": "KV缓存", "plane": "pipeline_serving", "primary_carriers": ["KV状态", "跨请求/跨样本数据", "可用性/进度", "性能/资源"], "secondary_carriers": ["数值结果", "隐状态", "输出分布", "输出内容", "模型权重", "指标/日志"]},
+    {"id": "调度/服务", "plane": "pipeline_serving", "primary_carriers": ["输入编码", "跨请求/跨样本数据", "可用性/进度", "性能/资源", "KV状态"], "secondary_carriers": ["数值结果", "隐状态", "输出分布", "输出内容", "训练样本流", "指标/日志"]},
+    {"id": "解码/采样", "plane": "pipeline_serving", "primary_carriers": ["输出分布", "输出内容", "隐状态", "可用性/进度", "性能/资源"], "secondary_carriers": ["KV状态", "数值结果", "跨请求/跨样本数据", "训练信号"]},
+    {"id": "输出解析", "plane": "pipeline_serving", "primary_carriers": ["输出内容", "可用性/进度"], "secondary_carriers": ["跨请求/跨样本数据", "训练信号", "训练样本流", "性能/资源", "指标/日志"]},
+    {"id": "硬件", "plane": "substrate_compute", "primary_carriers": ["数值结果", "隐状态", "模型权重", "KV状态", "梯度", "可用性/进度"], "secondary_carriers": ["输出分布", "输出内容", "训练信号", "训练轨迹", "性能/资源"]},
+    {"id": "算子/内核", "plane": "substrate_compute", "primary_carriers": ["数值结果", "隐状态", "梯度", "KV状态", "输出分布", "优化器状态", "模型权重", "可用性/进度", "性能/资源"], "secondary_carriers": ["输出内容", "训练信号", "训练样本流", "训练轨迹", "跨请求/跨样本数据", "输入编码", "指标/日志", "测试判定"]},
+    {"id": "编译器", "plane": "substrate_compute", "primary_carriers": ["数值结果", "隐状态", "梯度", "可用性/进度", "性能/资源"], "secondary_carriers": ["KV状态", "输出分布", "输出内容", "训练信号", "模型权重", "训练轨迹", "跨请求/跨样本数据", "指标/日志"]},
+    {"id": "运行时/执行", "plane": "substrate_compute", "primary_carriers": ["数值结果", "隐状态", "KV状态", "输入编码", "跨请求/跨样本数据", "模型权重", "可用性/进度", "性能/资源"], "secondary_carriers": ["输出分布", "输出内容", "训练信号", "梯度", "训练样本流", "训练轨迹", "指标/日志"]},
+    {"id": "量化", "plane": "substrate_compute", "primary_carriers": ["数值结果", "模型权重", "KV状态", "隐状态", "梯度", "输出分布", "可用性/进度", "性能/资源"], "secondary_carriers": ["输出内容", "优化器状态", "训练信号", "训练轨迹", "跨请求/跨样本数据", "测试判定"]},
+    {"id": "并行切分", "plane": "substrate_distributed", "primary_carriers": ["隐状态", "数值结果", "梯度", "模型权重", "训练信号", "输入编码", "跨请求/跨样本数据", "可用性/进度", "性能/资源"], "secondary_carriers": ["输出分布", "输出内容", "KV状态", "优化器状态", "训练样本流", "训练轨迹"]},
+    {"id": "集合通信", "plane": "substrate_distributed", "primary_carriers": ["数值结果", "隐状态", "梯度", "KV状态", "可用性/进度", "性能/资源"], "secondary_carriers": ["输出分布", "输出内容", "模型权重", "训练信号", "训练轨迹", "跨请求/跨样本数据"]},
+    {"id": "重计算/卸载", "plane": "substrate_distributed", "primary_carriers": ["隐状态", "梯度", "优化器状态", "模型权重", "KV状态", "数值结果", "可用性/进度", "性能/资源"], "secondary_carriers": ["输出内容", "训练信号", "训练轨迹", "指标/日志"]},
+    {"id": "观测/评测", "plane": "cross_cutting_meta", "primary_carriers": ["测试判定", "指标/日志", "可用性/进度", "性能/资源"], "secondary_carriers": ["输入编码", "输出内容", "数值结果", "训练轨迹"]},
+    {"id": "配置/参数", "plane": "cross_cutting_meta", "primary_carriers": ["模型权重", "性能/资源", "可用性/进度", "输入编码", "输出分布", "训练信号"], "secondary_carriers": ["数值结果", "隐状态", "输出内容", "KV状态", "梯度", "优化器状态", "训练轨迹", "指标/日志", "测试判定"]},
+    {"id": "构建/发布", "plane": "cross_cutting_meta", "primary_carriers": ["可用性/进度", "数值结果", "梯度", "性能/资源"], "secondary_carriers": ["输出内容", "模型权重", "KV状态"]},
+    {"id": "模型自身", "plane": "cross_cutting_meta", "primary_carriers": ["输出分布", "输出内容", "隐状态"], "secondary_carriers": ["测试判定", "性能/资源"]},
+    {"id": "外部攻击", "plane": "cross_cutting_meta", "primary_carriers": ["模型权重", "KV状态", "数值结果", "隐状态", "输入编码", "可用性/进度", "性能/资源"], "secondary_carriers": ["输出分布", "输出内容", "跨请求/跨样本数据"]}
+  ]
+}

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fault-rag · LLM 生命周期模块因果图与溯因工作台</title>
+  <meta name="description" content="以 LLM 全生命周期模块为节点、数据与权重传递为有向因果边，映射 3,248 条推理与训练故障，支持按表象逆向溯因与模块异常可视化。">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="causal.css">
+  <script type="module" src="causal.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-text">
+      <h1>fault-rag <span>LLM 生命周期模块因果图</span></h1>
+      <p class="lede">每个框是一个真实的系统模块，箭头 <code>A → B</code> 表示 B 用了 A 传来的数据或权重（所以 A 出错会让 B 跟着表现异常）。点看到异常的模块即可顺箭头往回找真凶。</p>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.45rem">
+      <a class="nav-pill" href="index.html">← 返回关键词/语义检索</a>
+      <p class="snapshot" id="causal-scope">正在载入编目数据…</p>
+    </div>
+  </header>
+
+  <section class="causal-controls" aria-label="全局切片与模式">
+    <div class="control-group">
+      <div class="mode-switch" role="group" aria-label="查看模式">
+        <button type="button" id="btn-mode-back" class="active">按表象溯因（点看到异常处 → 往上游找真凶）</button>
+        <button type="button" id="btn-mode-fwd">按模块查库（点任一模块 → 看自身缺陷与波及面）</button>
+      </div>
+
+      <label>生命周期切片
+        <select id="sel-stage">
+          <option value="all">全生命周期（全部 3,248 条）</option>
+          <option value="pretrain">预训练 (Pretrain)</option>
+          <option value="sft">指令/多模态微调 (SFT)</option>
+          <option value="rl">强化学习闭环 (RL)</option>
+          <option value="ckpt_export">检查点转换与量化导出</option>
+          <option value="serving">在线推理服务 (Serving)</option>
+          <option value="eval_obs">评测与监控平面</option>
+        </select>
+      </label>
+
+      <label>软件栈生态
+        <select id="sel-stack"><option value="all">全部软件栈</option></select>
+      </label>
+
+      <label>外部表象类型
+        <select id="sel-vis"><option value="all">全部表象</option></select>
+      </label>
+    </div>
+
+    <div class="control-group" style="align-items:center">
+      <button type="button" class="link-btn" id="btn-reset">重置全部筛选与排除项</button>
+    </div>
+  </section>
+
+  <main class="causal-layout">
+    <!-- Left Column: Intuitive 3-Layer Module Architecture Causal SVG -->
+    <div>
+      <section class="panel" aria-label="LLM 生命周期模块因果图">
+        <div class="preset-bar">
+          <span class="panel-sub">常见排障入口：</span>
+          <button type="button" class="preset-btn" data-preset="m_parse">① 最终回复乱码 / 评测掉点</button>
+          <button type="button" class="preset-btn" data-preset="m_loss">② 训练 Loss 突跳 / 不收敛</button>
+          <button type="button" class="preset-btn" data-preset="m_kv">③ 长上下文退化 / 并发串扰</button>
+          <button type="button" class="preset-btn" data-preset="m_rl">④ RL 训推发散 / 奖励崩塌</button>
+        </div>
+
+        <svg id="module-svg" viewBox="0 0 880 318" class="graph-svg">
+          <defs>
+            <marker id="arr-dim" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="var(--muted)" opacity="0.45"></path>
+            </marker>
+            <marker id="arr-act" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+              <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="var(--action)"></path>
+            </marker>
+          </defs>
+
+          <text x="8" y="15" font-size="12" fill="var(--muted)">上层：训练与权重导出 ｜ 中层：前向与在线推理流水线</text>
+
+          <line x1="6" y1="216" x2="874" y2="216" stroke="var(--action)" stroke-dasharray="4 3" opacity="0.5"></line>
+          <text x="8" y="234" font-size="12" font-weight="600" fill="var(--muted)" id="pedestal-caption">↑ 底层软硬件承重地基（上方任一模块计算时都踩在这层地基上，地基算错会导致上方模块跟着表现异常）</text>
+
+          <g id="svg-edges"></g>
+          <g id="svg-nodes"></g>
+        </svg>
+
+        <div class="walkthrough-box" id="walkthrough-box">
+          <div class="walkthrough-head">
+            <span class="insp-tag" id="wt-badge"></span>
+            <span class="panel-sub" id="wt-pruned"></span>
+          </div>
+          <div id="wt-steps"></div>
+        </div>
+      </section>
+
+      <!-- Full 26 Vocab Subsystems Quick Index -->
+      <section class="panel" aria-label="26 个受控词表子系统全景索引">
+        <div class="panel-head">
+          <h2>附：编目全部 26 个细分模块（cause.subsystem）热度总览</h2>
+          <span class="panel-sub">点任意细分模块直接查看它作为根因的全部故障</span>
+        </div>
+        <div id="all-subs-strip" class="sub-pills"></div>
+      </section>
+    </div>
+
+    <!-- Right Column: Attribution Ranking, Environment Pruner & Entry List -->
+    <div>
+      <section class="panel" aria-label="根因排序与已知条件排除">
+        <div class="insp-title-row">
+          <span class="insp-tag" id="insp-badge"></span>
+          <h2 id="insp-title"></h2>
+          <button type="button" class="link-btn" id="btn-unpin" hidden>取消真凶锁定 ×</button>
+        </div>
+        <p class="insp-desc" id="insp-desc"></p>
+
+        <!-- Sub-module chips when a visual node groups 2-4 vocab subsystems -->
+        <div id="sub-filter-wrap" class="sub-pills" style="margin-bottom:0.65rem" hidden></div>
+
+        <div class="kpi-row" id="insp-kpis"></div>
+
+        <div class="probe-card">
+          <div class="probe-card-head">
+            <span id="probe-title">二分插桩检查建议（先在哪一刀切开上下游）</span>
+            <span id="probe-methods-cnt" style="font-family:var(--mono);color:var(--muted)"></span>
+          </div>
+          <div id="probe-text"></div>
+          <div class="method-chips" id="probe-methods"></div>
+        </div>
+
+        <div class="pruner-sec" id="pruner-box">
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:var(--step--1)">
+            <strong>排除已确认无关的环境条件（勾选后实时重算嫌疑占比）</strong>
+            <button type="button" class="link-btn" id="btn-clear-pruners" style="padding:0">清空排除项</button>
+          </div>
+          <div class="pruner-pills" id="pruner-pills"></div>
+        </div>
+
+        <div class="bars-sec">
+          <div style="display:flex;justify-content:space-between;font-size:var(--step--1);margin-bottom:0.35rem">
+            <strong id="bars-heading"></strong>
+            <span style="color:var(--muted)" id="bars-hint">点击任一行只看该模块导致的案例</span>
+          </div>
+          <div id="bars-list"></div>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="故障案例与模式族列表">
+        <div class="tabs-head">
+          <div class="tab-btns">
+            <button type="button" id="tab-entries" class="active"></button>
+            <button type="button" id="tab-patterns"></button>
+            <button type="button" id="tab-mysteries"></button>
+          </div>
+          <input type="search" id="entry-q" class="mini-search" placeholder="搜编号 / 标题 / 关键词…">
+        </div>
+        <div id="tab-body" class="entry-list"></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="colophon">
+    <p>说明：投影层自动将推理库内 74 条纯反向/优化器缺陷挂载至训练回路（带“INF→训练挂载”标签），并对 233 条因果顺序写反的 <code>effect.objects</code> 做了拓扑归一，上游 YAML 保持只读未改。</p>
+  </footer>
+</body>
+</html>

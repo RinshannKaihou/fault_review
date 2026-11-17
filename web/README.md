@@ -4,6 +4,8 @@
 
 不输入检索词时是**浏览模式**：选任一筛选条件（编目、原因子系统、置信度，或详情页的"只看这一族"），直接列出符合条件的全部条目和总数，按编号或最新首录日期排序，每页 50 条；也可以"浏览全部"。浏览不经过任何排名，过滤规则与检索共用 `src/search.js` 的 `filter()`（与 CLI 的 `_passes` 一致，指针条目默认不列）。筛选条件、排序和选中的条目都写在 URL 里，可以直接分享。
 
+顶栏还提供**生命周期因果图**切换视图（`#view=map`），与检索共用同一份 `docs.json`、语义模型内存状态和右侧条目详情抽屉：可点击看到异常的模块顺箭头倒推候选真凶、勾选已知环境条件剪枝，再点"在此范围内检索"带着缩小后的候选集回到检索视图跑 BM25 或语义排序；在任一条目详情页也可点"在因果图中定位"反向查看其根因与暴露位置。
+
 检索结果只供参考，和命令行版一样：引用前打开条目原文核对，遵守 [AGENTS.md](../AGENTS.md) 的引用纪律。页面把这些纪律放在上下文里：负结果、指针条目、speculative、待审计、同名条目都有标记与说明，详情页给出带编目、编号、名称、源文件的引用行。
 
 ## 两档检索
@@ -79,7 +81,9 @@ embed_corpus.mjs     语料向量（onnxruntime-web wasm，逐条，多 worker�
 node_env.mjs         Node 端 transformers.js：注入 onnxruntime-web，模型来源配置
 src/search.js        检索内核（过滤、BM25、RRF、lookup、related），浏览器与门禁共用
 src/semantic.js      语义档：模型加载与查询编码，浏览器与 Node 共用
-src/app.js           页面：检索、编号匹配、条目详情、引用行
+src/app.js           页面：检索与因果图双视图切换、编号匹配、条目详情、引用行
+src/causal_map.js    生命周期模块因果图视图、环境条件剪枝与检索范围联动
+src/causal.css       因果图视图样式（复用 style.css 主题变量）
 src/model.json       语义模型与固定 revision
 src/licenses/        随站点发布的许可证：本项目与 vendor/ 里第三方运行时（README.txt 是索引）
 eval/check_web.py    网页门禁；eval/rank.mjs 是它调用的 Node 排序器
