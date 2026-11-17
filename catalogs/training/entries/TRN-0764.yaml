@@ -1,0 +1,49 @@
+id: TRN-0764
+legacy_ids: []
+slug: torchtitan_resume_step_rollback_torn_checkpoint
+aliases: []
+title: resume-step 回滚重存覆盖旧 step 目录致撕裂 ckpt
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: torchtitan
+    component: Checkpointer 保存路径
+  behavior: --resume-step K 只设 load_step，重训仍写回被放弃 run 的 step-N；DCP 默认 overwrite=True 原地截断分片，崩溃可留半新半旧 step，旧 .metadata 仍让它成为最新可恢复点。
+effect:
+  objects:
+  - 模型权重
+  - 可用性/进度
+  detail: 重存崩溃后重启：或每次 CheckpointException EOFError（loud），或不报错加载 rank0 新 run、rank1 旧 run 的混合分片；不崩溃时无 flag 重启续旧 run 最新 ckpt，带 flag 回 K 丢进度。
+  visibility: 静默错误
+mitigation:
+  detect: rollback 时检查目标 step 目录是否已存在；保存后校验各 rank 分片来源与 .metadata 一致。
+  fix: 待定（issue open 2026-11-12；维护者建议配置期 ValueError，未实现）
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/6064
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'pytorch/torchtitan #6064（2026-11-12，open）。--resume-step K 只设置 checkpointer.load_step，不改变保存目录；重训从 K 继续写回被放弃 run 的 step-N 目录。DCP 默认 overwrite=True 会原地截断每个分片，保存中途崩溃就留下 half-new/half-old 的 step-N；被放弃 run 的 .metadata 仍在，重启仍把它当最新可恢复点。若某 rank 在打开分片前丢失、另一 rank 已写完，重启可能不报错地加载两次 run 混合的分片。即使不崩溃：不带 --resume-step 的重启会继续被放弃 run 的最新 checkpoint，直到重训 run 超过它；带 flag 重启回到 K，丢掉重训进度或因 retention 已清掉 step-K 而失败。维护者评论要求把「显式 load_step=K + 保存开启 + 目录已有可恢复 step-N(N>K)」变成配置期 ValueError，并指向 fresh folder + initial_load_path；bot 复核确认报告与 main 一致。'
+  source: https://github.com/pytorch/torchtitan/issues/6064
+  behavior: 用 --resume-step 从一个较旧 checkpoint 回滚重训时，新 run 会覆盖原来 run 的 step-N 目录：保存中崩溃后，重启要么每次报 CheckpointException/EOFError，要么静默加载 rank0 来自新 run、rank1 来自旧 run 的混合分片继续训练。即使不崩溃，重启后也可能回到被放弃 run 的最新 ckpt，或反复回到 step K、丢掉重训进度；权重已经混合但 job 仍能跑。
+  trigger_surface: torchtitan --resume-step K（load_step）+ 同目录重训保存；DCP overwrite=True 默认。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

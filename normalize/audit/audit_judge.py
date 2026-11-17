@@ -27,7 +27,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VOTES = os.path.join(HERE, "votes")
-API = "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1/chat/completions"
+API = os.environ.get("JUDGE_API_URL") or sys.exit("JUDGE_API_URL not set")
 KEY = os.environ.get("JUDGE_API_KEY") or sys.exit("JUDGE_API_KEY not set")
 WORKERS, RETRIES, BATCH, SOLO_CHARS = 8, 4, 3, 8000
 MAX_TOKENS, EXTRA, TIMEOUT = 16384, {}, 600

@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import unittest
 
 import numpy as np
@@ -107,7 +108,9 @@ class DuplicateNameIntegrationTests(unittest.TestCase):
 
 class CategoryFilterTests(unittest.TestCase):
     def test_subsystem_filters(self):
-        rows = S.search("prefix cache stale KV reuse", topk=10, repo="inference", category="KV缓存")
+        from fault_rag import index as I
+        mode = "hybrid" if os.path.exists(I.EMB_NPY) else "bm25"
+        rows = S.search("prefix cache stale KV reuse", topk=10, mode=mode, repo="inference", category="KV缓存")
         self.assertTrue(rows)
         self.assertTrue(all(r["category"] == "KV缓存" for r in rows))
 
@@ -136,7 +139,7 @@ class CategoryFilterTests(unittest.TestCase):
 class BM25IntegrationTests(unittest.TestCase):
     def test_bm25_returns_empty_for_unknown_token(self):
         results = S.search(
-            "zzzxqv_nonexistent_token_94731",
+            "zzzxqv_qxwvtr_94731982",
             mode="bm25",
             topk=3,
             include_neg=False,
@@ -163,6 +166,9 @@ class RerankTests(unittest.TestCase):
         self.assertAlmostEqual(scores[0], 1 / 60 + 1 / 61)
 
     def test_missing_model_falls_back_to_hybrid(self):
+        from fault_rag import index as I
+        if not os.path.exists(I.EMB_NPY):
+            self.skipTest("embeddings.npy not built (lexical-only index)")
         self.R.available = lambda: False
         rows = S.search("loss spike", topk=3)
         self.assertTrue(rows)
@@ -177,6 +183,28 @@ class RerankTests(unittest.TestCase):
             self.skipTest("reranker model not downloaded")
         rows = S.search("loss spike", topk=3)
         self.assertTrue(all(r["rerank_rank"] is not None for r in rows))
+
+
+class TokenizerAndInactiveLookupTests(unittest.TestCase):
+    def test_compound_and_alnum_subtokens_are_indexed(self):
+        from fault_rag.index import expand_latin_tokens
+
+        toks = expand_latin_tokens(["qwen2-vl", "importance_sampling_ratio.", "bf16/fp16", "every"])
+        for wanted in ("qwen2-vl", "qwen2", "qwen", "vl", "importance_sampling_ratio",
+                       "importance", "sampling", "ratio", "bf16", "fp16"):
+            self.assertIn(wanted, toks)
+        self.assertNotIn("every", toks)
+
+    def test_lookup_reports_retired_and_merged_entries_on_stderr(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(S.lookup("INF-2167"), [])
+        self.assertIn("status=retired", err.getvalue())
+
+        err2 = io.StringIO()
+        with contextlib.redirect_stderr(err2):
+            self.assertEqual(S.lookup("TRN-0687"), [])
+        self.assertIn("merged_into TRN-0229", err2.getvalue())
 
 
 if __name__ == "__main__":

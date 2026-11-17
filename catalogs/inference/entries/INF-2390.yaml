@@ -1,0 +1,91 @@
+id: INF-2390
+legacy_ids: []
+slug: rmsnorm_dynamic_mxquant_epsilon_double_narrowing
+aliases: []
+title: RmsNormDynamicMxQuant epsilon 静默归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: RmsNorm epsilon 属性窄化
+  behavior: aclnn 接口把 epsilon 声明为 double，算子原型却登记为 Float 属性，进入 tiling/kernel 前被窄化成 fp32，小于 float 最小次正规的合法 double 静默变 0
+effect:
+  objects:
+  - 数值结果
+  detail: 全零 x 下 epsilon=1e-46（合法 double）时 rstd 返回 inf（期望约 1e23，在 fp32 值域内），y 输出 0；epsilon=1e-6 正常，同装置对照排除传参错误
+  visibility: 静默错误
+mitigation:
+  detect: 全零 x + 极小 epsilon 对照 rstd 输出（1e-6 正常 / 1e-46 inf）
+  fix: 待定（issue 2026-11-04 新开；建议 norm/ 下 .Float epsilon 类属性一并排查）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8096
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8694
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8731
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8745
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8791
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8795
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8799
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8802
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8805
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8828
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-nn aclnnRmsNormDynamicMxQuant（master 0fc301c67，CANN 9.3.0，Ascend950PR）：头文件声明 epsilon 为 double，算子原型 rms_norm_dynamic_mx_quant_def.cpp:89 登记为 Float 属性（默认 1e-06），double 入参进入 tiling/kernel 前被窄化 fp32。任何 0<epsilon<1.4e-45（float 最小次正规）的合法 double 被静默变 0。真机复现：x 全零 bf16[4,64]（mean(x^2)=0，rstd 完全由 epsilon 决定），gamma=1、beta=0、dstType=FLOAT8_E4M3FN、outputRstd=true；epsilon=1e-6 时 rstd=1000.0 正确，epsilon=1e-46 时 rstd=inf（期望 1/sqrt(1e-46)≈1e23，完全在 fp32 值域内），证明 epsilon 已被归零。两段接口均返回 0。aclnn 两段式 C 接口 ctypes 直调，不经 torch_npu。报告者标 P2（常规 1e-5/1e-6 取值不受影响），故障模式 FP-A10（接口声明与实现不一致）。
+  source: https://gitcode.com/cann/ops-nn/issues/8096
+  behavior: 对 RmsNorm 动态 MX 量化算子传入极小 epsilon（如 1e-46，合法 double）做无 eps 等价实验时，rstd 输出 inf 而非约 1e23，y 输出 0——静默错误结果且依赖分配器残留不可复现；常规 epsilon 取值正常，问题只在极小值区间出现，返回码始终为 0。
+  trigger_surface: CANN 9.3.0 ops-nn master 0fc301c67；aclnnRmsNormDynamicMxQuant；0<epsilon<1.4e-45 的 double 入参。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - '2026-11-13 同机制（epsilon 声明 double、proto 注册 Float，进入执行前窄化 fp32）在 AddRmsNorm 系复现：#8694 AddRmsNormDynamicQuant 与 #8731 V2 的 eps=1e-50 均在执行段 561103；#8745 AddRmsNorm 在 A2 上 1e-50 与 0.0 输出逐字节一致、全零行 NaN，-1e-50 因非 regbase 首段无 epsilon 校验被放行（-1.0 报 561103 而非 161002）。本条保留 RmsNormDynamicMxQuant 为首单，其余为同机制证据。'
+  - '2026-11-13 回访：回访：epsilon 声明 double 却按 float 截断的同机制扩展到 4 个算子——aclnnAddLayerNorm #8791、aclnnRmsNorm #8795、aclnnBatchNorm #8799、aclnnFastLayerNorm #8802；1e-46（FastLayerNorm 1e-50）起与 eps=0.0 位级一致，全零行/通道输出 NaN。原条目证据为 #8096/#8694/#8731。'
+  - 2026-11-14 回访：回访：eps 声明 double、实现按 float 截断的 norm 族再增两接口——#8805 aclnnLayerNorm（V3/V4 三处 static_cast<float>(eps)，eps=1e-50 与 0.0 输出位级一致，var=0 行 NaN、rstd=inf；eps=2e-45 时 rstd 偏差 19.5%）、#8828 aclnnAddRmsNormCast（proto Attr Float，eps=1e-45 时 rstd 偏差 15.5%，eps≤1e-46 下溢为 0 致 inf）。两单均为 A2/910B3 + CANN 9.3.0 实测、两段返回 0/0。
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility
+    - detail
+  updates:
+  - date: '2026-11-13'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-13'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-14'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

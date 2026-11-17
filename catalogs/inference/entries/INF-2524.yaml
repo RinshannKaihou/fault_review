@@ -1,0 +1,55 @@
+id: INF-2524
+legacy_ids: []
+slug: ops_nn_runtime_bank_query_readlock_erase_race
+aliases: []
+title: Runtime Bank 读锁内擦缓存并发错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: op host tiling 缓存
+  behavior: Query 在 rwlock 读锁下命中 tuning_cache_ 后直接 erase；多个 Query 可同时持读锁，构成对 unordered_map 的并发读写，只有 SetTuningTiling 走写锁。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 并发 tiling 查询命中同一项时可能返回错误缓存 tiling、查找异常或进程崩溃；源码确认读锁内 erase 路径在 d1efef7c HEAD 仍存在，未声称生产已观测。
+  visibility: 静默错误
+mitigation:
+  detect: 多线程并发调用同一 RuntimeBankManager::Query 并命中同一 tuning 项，开启 TSAN/重复压测观察 map 异常；检查 rwlock 读锁内是否存在 erase。
+  fix: 修复 PR !14327（open，未发布）：读锁只探测，命中后升级写锁重查、复制并擦除，未命中保持读路径。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8713
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/14327
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #8713（固定源码 ae873b119fb5499c41a6893f920171551fb0a197，调度器刷新后的 HEAD d1efef7c30ca124dc30787a7db3c4479c8ffcc05 仍含该路径）：RuntimeBankManager::Query 通过共享读锁访问并调用 OpRuntimeBank::Query，多个 tiling 查询可同时进入同一 bank；OpRuntimeBank::Query 在 rwlock_.rdlock() 保护下查找 tuning_cache_（std::unordered_map<uint32_t, TuningTilingDefPtr>），命中后直接 erase。rdlock 允许多个读者同时持锁，只有 wrlock 等待读者计数归零，因此两个 Query 可同时持读锁，其中一个 erase 时另一个仍在 find/读取值/擦除同一容器，构成容器并发读写数据竞争。SetTuningTiling 已在写锁下清空并写入缓存，写入者与 Query 读者受锁保护；缺口只在 Query 读者之间的擦除。并发命中可能触发未定义行为，表现为返回错误的缓存结果、缓存查找异常或进程崩溃；issue 只确认可达的并发访问与不匹配的锁权限，未声称生产进程观测到崩溃。修复 PR !14327 在读锁下仅探测 k/pid 是否命中，命中后释放读锁、取得写锁重新查找，找到后复制 tiling 并擦除；若并发 Query 已消费该项则释放写锁恢复读锁继续查找。'
+  source: https://gitcode.com/cann/ops-nn/issues/8713 ｜修复 https://gitcode.com/cann/ops-nn/merge_requests/14327
+  behavior: 推理服务在并发请求下同时触发同一算子的 tiling 查询时，RuntimeBank 的调优缓存可能被两个线程同时读写：一个线程刚查到缓存项，另一个线程把它擦除，结果可能拿到错误的 tiling 参数、查询抛异常或进程崩溃；因为只在并发命中同一缓存项时出现，单请求压测和常规回归都看不到，属于低概率但难定位的静默/崩溃面。
+  trigger_surface: cann/ops-nn RuntimeBankManager::Query 并发调用且命中同一 tuning_cache_ 项；多线程 tiling（服务并发编译/首次请求）；CANN ops-nn master ae873b1/d1efef7c。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

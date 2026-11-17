@@ -1,0 +1,57 @@
+id: INF-2513
+legacy_ids: []
+slug: nixl_n_children_early_kv_release
+aliases: []
+title: NixlConnector n>1 子请求读复用 KV 块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: pull worker 通知计数释放
+  behavior: n 个子请求共享 remote_request_id 各自发读通知；_get_new_notifs 按 req_id 计数不区分发送者，达 expected_consumers（TP 拓扑而非 n）即释放——首子读完即释放，晚子读到复用块。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: Nixl pull n>1：晚到子请求把复用重写的块当 KV 解码，客户端拿到 200 和无关文本；prefill 侧并发负载复用释放块、冷 pod 首请求传输差可达 5 秒级最易触发；线索仅 prefill 日志每请求 n-1 条『Potentially invalid KV blocks』。
+  visibility: 静默错误
+mitigation:
+  detect: prefill 侧日志『Potentially invalid KV blocks for unrecognized request ... were retrieved by a decode worker. They may have expired.』（每个晚到子请求一条）。
+  fix: 待定（issue open、0 评论；曾以 GHSA-grjf-r4cj-w3ch 私报，vLLM 漏洞管理组判为超安全范围、要求按正确性 bug 公开）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/67065
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2425
+pattern: PAT-INF-0201
+original:
+  mechanism: vLLM NixlConnector pull 模式 n>1：AsyncLLM.add_request 把 n>1 拆成 n 个子 EngineCoreRequest、各带同一 kv_transfer_params（同一 remote_request_id）；同 decode 引擎同步调度时各子因 delay_cache_blocks=True 无前缀命中、各发各的 _read_blocks（DP decode 下分散到各引擎）。每个子发『{remote_request_id}:{expected_consumers}』，expected_consumers=plan.local_consumers（等 TP 下为 1，来源是 TP 拓扑而非 n）；NixlPullConnectorWorker._get_new_notifs 按 req_id 计数通知、不区分发送者，计数达标即 free_blocks——首个子读完后 prefill 即释放该请求块，BlockPool.free_blocks 把无 hash 的部分填充尾块前插空闲队列，最容易被下一个 prefill 分配复用并重写。晚到子读到复用块并以 HTTP 200 返回无关文本。与 INF-2425（租约过期后读已回收块）共享机制：prefill 侧在消费完成前释放/回收 KV 块，后到消费者读到复用块静默错值；触发差异：租约定时过期 vs n>1 时通知计数不含 n。decode TP>prefill TP（local_consumers>1）时不同子的通知相加、可能在任一子读完全部分片前释放（未测）。v0.9.0（首个引入版本，首通知即释放）至 v0.33.0 均受影响，实测 v0.32.0（H100×2、Qwen2.5-0.5B、UCX）。
+  source: 'https://github.com/vllm-project/vllm/issues/67065 '
+  behavior: P/D 分离（NixlConnector pull 模式）下对同一 prompt 发 n>1 个采样：多个子请求各自从 prefill 拉 KV，只要不是所有子在大约同一时刻读完（冷 decode pod 首请求传输差可达 5 秒级），先读完的子会让 prefill 提前释放块，晚到的子把已被其他 prefill 复用重写的块当 KV 用来解码，客户端拿到 200 和毫不相关的文本；只有 prefill 日志里每请求 n-1 条『Potentially invalid KV blocks』可作线索。
+  trigger_surface: NixlConnector pull 模式 + 请求 n>1 + prefill 侧有并发负载会复用释放块；v0.9.0~v0.33.0 全系；多秒级读完成差（冷 pod 首请求）最易触发。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  updates:
+  - date: '2026-11-12'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

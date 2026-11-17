@@ -1,0 +1,60 @@
+id: INF-2459
+legacy_ids: []
+slug: ops_math_floordivide_near_integer_quotient_off_by_one
+aliases: []
+title: aclnnFloorDivide fp32 真商贴近整数时结果偏差 1
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: floor_div vdiv→floor 链路
+  behavior: A2 走 ops_legacy floor_div.py 的 vdiv→floor→cast 链路，商先按 fp32 舍入成整数再取 floor，真商贴近整数（相对差约 1e-7）时结果比数学值大 1（负商方向小 1），无余数校正。
+effect:
+  objects:
+  - 数值结果
+  detail: Atlas A2 fp32 输入、真商贴近整数时结果偏差 1：0.5/0.1f（真商 4.999999925）返回 5 应 4，-3.5/0.7f 返回 -5 应 -6；张量与标量入口一致偏差，无告警，仅与双精度公式或 CPU 对照才暴露；资料建议改用 FLOAT32 保精度的路径本身偏差 1。
+  visibility: 静默错误
+mitigation:
+  detect: fp32 位型精确构造 0.5/0.1f（真商 4.999999925）与 -3.5/0.7f（真商 -5.000000085），比对实测与双精度 floor 期望。
+  fix: 待定（issue open，未见修复；建议按资料公式以双精度计算商后取 floor）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4620
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0673
+original:
+  mechanism: 'cann/ops-math issue #4620（2026-11-08，master aae0dcf0）：aclnnFloorDivide/aclnnInplaceFloorDivide 在 Atlas A2 处理 fp32 时走 opp/built-in/op_impl/ai_core/tbe/impl/ops_legacy/floor_div.py:64-67 的 vdiv→floor→cast，无余数校正；真商贴近整数（相对差约 1e-7）时先把商按 fp32 舍入成整数再取 floor，结果比数学值大 1（负商方向小 1）。资料（math/floor_div/docs/aclnnFloorDivide.md:12/:30/:403）承诺 A2 支持 FLOAT 且 :403 明确建议 fp16/bf16 改用 FLOAT32 保精度——该推荐路径本身偏差 1。报告者在 A2 910B2/CANN 9.3.0 用 IEEE-754 位型精确写入实测：0.5/0.1f（真商 4.999999925）期望 4 实测 5；1.0/(1/3)f（真商 2.999999911）期望 2 实测 3；-3.5/0.7f（真商 -5.000000085）期望 -6 实测 -5。issue 特别澄清：初版「标量入口正确」判断未控制变量（标量传的是 double 0.1），标量传 fp32 0.1f 同样偏差，缺陷覆盖张量与标量全部入口。与已收 INF-2057（int32 floor_div 特定除数差一）不同：本条是 fp32 入口的舍入先后错误，非整型截断。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4620 （open，2026-11-08 创建；含 IEEE-754 位型复现脚本、张量/标量控制变量对照、A2 实测）
+  behavior: 在 Ascend A2 上调用 aclnnFloorDivide（fp32）：当两数真商恰好贴近整数（相对差约 1e-7）时，整除结果比正确值大 1（负商方向小 1），如 0.5÷0.1f 返回 5（应 4）、-3.5÷0.7f 返回 -5（应 -6）；标量入口传 fp32 除数同样错。张量/标量全路径无告警，返回值是看似合理的整数，仅与双精度公式或 CPU 对照才暴露。
+  trigger_surface: Atlas A2（910B2）；CANN 9.3.0；aclnnFloorDivide/aclnnInplaceFloorDivide/aclnnFloorDivides fp32 入口；真商贴近整数的 self/other；ops-math master aae0dcf0（ops_legacy floor_div.py:64-67）。
+  signature: fp32 整除在近整商处系统性 ±1；除数位型换 double 后同一算式变正确（控制变量可区分入口与位型效应）。
+  repro: issue 附 repro.cpp（张量+标量六组位型精确用例）+ A2 实测输出。
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

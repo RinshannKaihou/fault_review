@@ -1,0 +1,47 @@
+id: INF-2428
+legacy_ids: []
+slug: te_scalar_accumulator_four_family
+aliases: []
+title: TE 标量累加器四族代码生成缺陷，整型/低精度旁路归约错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: TE 标量累加器 codegen
+  behavior: 标量累加器路径四族独立缺陷：loop-carry init 携带旧秩、int64 累加器降级 int32、-inf 哨兵经 fptoui 变 255 毒化归约、窄整型 sum 标量携带被 vendor 编译器误编译
+effect:
+  objects:
+  - 数值结果
+  detail: online softmax 融合内核中 u8 amax 行全 255、u8 sum 与 eager 差 183（无报错错值）；另有 loop-carry 断言、NoTritonConfigsError、bishengir LLVM ERROR 等编译失败形态；TE 基线 63/75 过 12 红
+  visibility: 静默错误
+mitigation:
+  detect: 对整型/低精度旁路归约与 eager 对照
+  fix: 待定（单内给出 triton.py 四处修改方案：线性化 fixup/int64 重打字/哨兵重写为 0/窄整型 sum 密集路由，未见独立修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5911
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu/_inductor/triton_experimental/codegen/triton.py 标量累加器（use_scalar_accumulators，online_softmax_nodes∈{1,2}）路径四族独立缺陷（A2/910B4，CANN 9.2.0，torch 2.16.0a0，torch_npu 2.16.0+git111ec0d，triton-ascend 3.6.0）：B1/B2 _apply_linearize 把 r0 循环提升为 real_block 多 tile 后循环携带累加器 init 仍携带第一遍秩，子节点寄存器槽位未计入，tile 步长混入 combine 维（triton 编译期断言 initial type ['1'] vs ['1','4096']）；B3 acc_type 经进程全局 triton_type 映射把 int64 累加器降级 tl.int32 致极值 init 字面量溢出（全部配置编译失败）；哨兵毒——上游把归约默认值折进 masked load（other=-inf，整数 load 同），vendor 编译器整数 load 内 -inf 经 fptoui 转 255，随后被 0-default re-mask 覆盖时哨兵冗余且毒化归约（u8 amax 行全 255）；D2 同内核中 online_softmax_reduce 与窄整型 sum 的标量携带形式触发 vendor 编译器误编译（u8 sum 与 eager 差 183，n=8200 稳定、n=4104 对齐相关翻转，i32/i64 密集形式免疫）。A1/A3 store 秩与 C1/C2 strict 门控与 B 族共享线性化发射链路，随修复顺带治愈。适配套件 75 例 TE 后端 63 过 12 红，其中 8 例同源本单、4 例顺带治愈、1 例 kldiv 独立。
+  source: https://gitcode.com/Ascend/pytorch/issues/5911
+  behavior: 'softmax/交叉熵类融合（外层归约+内层 online_softmax）在 triton_experimental 后端+标量累加器路径下，整型/低精度输入的旁路归约无报错算错：u8 amax 行全 255（-inf 哨兵泄漏）、u8 sum 与 eager 差 183；另一部分配置直接编译失败（loop-carry 类型断言/NoTritonConfigsError/bishengir LLVM ERROR: Not implemented）。default 后端不受影响。'
+  trigger_surface: TORCHINDUCTOR_NPU_BACKEND=triton_experimental+标量累加器路径（online_softmax_nodes∈{1,2}）+整型/低精度输入旁路归约；A2/910B4、triton-ascend 3.6.0
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

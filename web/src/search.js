@@ -5,15 +5,46 @@
 
 export const RRF_K = 60;
 const LATIN_RE = /[a-z0-9][a-z0-9_.\-\/#]*/g;
+const SUB_RE = /[a-z0-9]+/g;
+const SPLIT_ALNUM_RE = /[a-z]+|[0-9]+/g;
 const CJK_RUN_RE = /[一-鿿]+/g;
+const EN_STOPWORDS = new Set([
+  "the", "a", "an", "of", "to", "in", "on", "for", "with", "by", "from", "as", "at",
+  "into", "over", "while", "every", "that", "this", "is", "are", "be", "or", "and", "when", "after", "makes",
+]);
 const ID_SHAPED = /^(?:INF|TRN)-\d+$/;
 // Old Markdown ids (inference 1.44 / K9.3, training HW.01 / RL-RO.01), retired 2026-10-26.
 const LEGACY_ID_SHAPED = /^(?:\d+|[A-Z][A-Z0-9-]*)\.\d+$/;
 
+function expandLatinTokens(rawTokens) {
+  const toks = [];
+  for (const raw of rawTokens) {
+    const t = raw.replace(/\.+$/, "");
+    if (!t || EN_STOPWORDS.has(t)) continue;
+    toks.push(t);
+    const subs = t.match(SUB_RE) || [];
+    if (subs.length > 1) {
+      for (const s of subs) {
+        if (s.length >= 2 && !EN_STOPWORDS.has(s)) {
+          toks.push(s);
+          for (const p of s.match(SPLIT_ALNUM_RE) || []) {
+            if (p.length >= 2 && p !== s && !EN_STOPWORDS.has(p)) toks.push(p);
+          }
+        }
+      }
+    } else {
+      for (const p of t.match(SPLIT_ALNUM_RE) || []) {
+        if (p.length >= 2 && p !== t && !EN_STOPWORDS.has(p)) toks.push(p);
+      }
+    }
+  }
+  return toks;
+}
+
 // Byte-identical to build_site.tokenize (checked by web/eval/check_web.py).
 export function tokenize(text) {
   text = text.toLowerCase();
-  const toks = text.match(LATIN_RE) || [];
+  const toks = expandLatinTokens(text.match(LATIN_RE) || []);
   for (const run of text.match(CJK_RUN_RE) || []) {
     if (run.length === 1) toks.push(run);
     else for (let i = 0; i < run.length - 1; i++) toks.push(run.slice(i, i + 2));

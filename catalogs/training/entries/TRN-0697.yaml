@@ -1,0 +1,48 @@
+id: TRN-0697
+legacy_ids: []
+slug: opp_plugin_lazy_fusion_bn_gelu_backward
+aliases: []
+title: 无图融合 BN 反向误读保存统计量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: lazy fusion BN/GELU 反向
+  behavior: 无图融合 BN 反向无条件把前向保存量当方差再算 1/sqrt(saved+eps)，950 保存的是标准差倒数；GELU backward 缺 approximate 检查
+effect:
+  objects:
+  - 梯度
+  detail: 950 上训练 BN 反向结果错（保存量被二次转换）；approximate=none 的 GELU 反向用 tanh 近似公式与原生不一致
+  visibility: 静默错误
+mitigation:
+  detect: 消费真实前向保存统计量与 CPU 正反向对照（2~4 维输入、不同 eps、梯度输出掩码）；GELU 非 tanh 与同配置原生对拍
+  fix: 待定（issue open 2026-11-09：期望训练 BN 反向整体回退原生实现、GELU 非 tanh 走原生回退；回归场景与 A2/950+CANN 9.2.0+PyTorch 2.13 验证环境已列，未见修复 PR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: 含 BN 性能回退面（性能不收，条目只记精度面）
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/692
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/op-plugin #692（2026-11-09 open，A2/Ascend950、CANN 9.2.0、PyTorch 2.13）两个问题：①无图融合（lazy fusion）native_batch_norm_backward 在计算输入梯度与权重梯度时无条件把前向保存量按方差处理再算 1/sqrt(saved+eps)；CANN 保存量约定按产品而异——A2/A3 保存方差、Ascend950 保存标准差倒数——950 上重复转换使训练反向结果错；原生前向/反向配套调用不需要转换，仅无图融合拆分路径错。且拆分路径在 A2、950 整网对照出现性能回退（仅替换逐元素部分不能恢复原生 BN 反向性能，应训练入口整体回退）。②lazy_fusion::gelu_out 已对非 tanh 模式回退，但 lazy_fusion::gelu_backward 缺对应模式检查，approximate="none" 仍构造 tanh 近似反向公式；950 原生 OpAPI 后端用模式感知的 aclnnGeluBackwardV2，错误发生在无图融合反向直接进近似公式未到原生回退；A2 默认旧 API 不接收 approximate、行为由原生后端决定。回归场景已列：BN 消费真实前向保存统计量与 CPU 正反向对照（二维至四维、不同 eps、梯度输出掩码）；GELU FP32/FP16/BF16、连续/转置、两种 approximation、autograd，非 tanh 与同配置原生严格对齐。'
+  source: https://gitcode.com/Ascend/op-plugin/issues/692
+  behavior: 开无图融合在 Ascend950 上训练含 BN 的模型：反向梯度与原生/eager 不一致（前向保存的标准差倒数被当方差二次转换），无报错、loss 曲线看不出异常，只有与 CPU/原生正反向对拍才暴露；整网对照还可见 BN 反向性能回退。用 approximate="none" 的 GELU 时反向走了 tanh 近似公式，梯度与原生 aclnnGeluBackwardV2 不一致；A2 上 BN 保存量约定匹配、GELU 由旧原生 API 决定，两问题均不触发。
+  trigger_surface: Ascend950（BN）/无图融合路径（BN+GELU）；A2/950、CANN 9.2.0、PyTorch 2.13
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

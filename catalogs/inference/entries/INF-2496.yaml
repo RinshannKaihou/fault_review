@@ -1,0 +1,62 @@
+id: INF-2496
+legacy_ids: []
+slug: aicpu_sched_worker_false_success_hang
+aliases: []
+title: aicpu_sched worker 假成功致业务静默卡死
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: CreateWorker 状态校验
+  behavior: worker 线程初始化失败（事件订阅或消息队列初始化失败）时在 PostSem 后退出，但 threadStatusList_ 未回退仍为 THREAD_RUNNING；CreateWorker 校验被绕过，对该 worker 返回成功。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 触发于 aicpu_sched 守护进程启动期 worker 初始化失败（事件订阅 halEschedSubscribeEvent 失败或消息队列初始化失败），低频；服务照常启动成功且无日志报错，落到该 AICPU 核的任务全部挂起，进程不报错不退出，host 侧同步等待超时，业务无进展卡死。
+  visibility: 挂起
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/cann/runtime/merge_requests/6157（初始化失败路径在 PostSem 前将线程状态置 THREAD_EXIT，使 CreateWorker 校验识别已退出 worker 并返回启动失败；合入状态未核实）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: aicpu_sched 初始化挂死属编排/运行时死锁（fail-loud/hang，记入 blindspots.md）
+evidence:
+- url: https://gitcode.com/cann/runtime/issues/1357
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/runtime aicpu_sched 守护进程：worker 线程初始化失败（中断模式 halEschedSubscribeEvent 返回非 DRV_ERROR_NONE，或消息队列模式 MessageQueue::InitMessageQueueForThread 失败）时该线程在 PostSem 后退出，但 threadStatusList_ 未回退仍为 THREAD_RUNNING；主线程 CreateWorker 通过 sem_wait 等待各 worker 应答后校验 threadStatusList_==THREAD_RUNNING——已死 worker 状态未回退，校验被绕过，对该 worker 返回成功。修复（PR !6157）：失败路径在 PostSem 前置 THREAD_EXIT。触发窗口为守护进程启动期，属低频初始化竞争，但一旦命中即整核 AICPU 任务无人调度。
+  source: https://gitcode.com/cann/runtime/issues/1357
+  behavior: NPU 上 aicpu_sched 守护进程启动时若某 worker 线程初始化失败，服务照常启动成功（CreateWorker 返回成功、无任何日志报错），随后落到该 AICPU 核的任务全部挂起：进程不报错不退出，host 侧同步等待超时，业务表现为无进展的卡死，现场只能靠排查定位。
+  trigger_surface: aicpu_sched 守护进程启动期 worker 初始化失败（halEschedSubscribeEvent 失败或消息队列初始化失败）；低频但命中即整核任务静默挂起。
+  discovery: 2026-11-10 每日扫描
+  notes:
+  - '2026-11-11 回访：回访：issue #1357 已于 2026-11-11 closed；修复 PR !6157 合入与随版发布状态未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - status

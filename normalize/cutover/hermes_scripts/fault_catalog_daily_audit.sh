@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
 # hermes cron (--no-agent) job: audit entries the daily scans wrote, in both catalog repos.
-# Install as ~/.hermes/scripts/fault_catalog_daily_audit.sh; stdout is delivered verbatim (Feishu).
+# Install as ~/.hermes/profiles/third/scripts/fault_catalog_daily_audit.sh; stdout is delivered verbatim (Feishu).
 set -uo pipefail
-# JUDGE_API_KEY lives in ~/.bashrc; take only that line instead of sourcing an interactive rc file
-eval "$(grep -E '^export JUDGE_API_KEY=' ~/.bashrc | tail -n 1)"
+# Read JUDGE_API_KEY and JUDGE_API_URL safely without eval-ing shell lines from ~/.bashrc
+read_rc_var() {
+  local name="$1"
+  python3 - "$name" "$HOME/.bashrc" <<'PY'
+import os, re, shlex, sys
+name, rc = sys.argv[1], sys.argv[2]
+val = ""
+if os.path.exists(rc):
+    for line in open(rc, encoding="utf-8", errors="ignore"):
+        m = re.match(rf"^\s*export\s+{re.escape(name)}=(.+)$", line.strip())
+        if m:
+            toks = shlex.split(m.group(1), comments=True)
+            val = toks[0] if toks else ""
+print(val, end="")
+PY
+}
+export JUDGE_API_KEY="${JUDGE_API_KEY:-$(read_rc_var JUDGE_API_KEY)}"
+export JUDGE_API_URL="${JUDGE_API_URL:-$(read_rc_var JUDGE_API_URL)}"
 [ -n "${JUDGE_API_KEY:-}" ] || { echo "❌ 故障编目每日审计：JUDGE_API_KEY 未设置，未运行"; exit 1; }
+[ -n "${JUDGE_API_URL:-}" ] || { echo "❌ 故障编目每日审计：JUDGE_API_URL 未设置，未运行"; exit 1; }
 
 ROOT="${CATALOG_REPOS_ROOT:-/workspace}"   # override only for sandbox tests
 echo "📋 故障编目每日审计 — $(date -u +%F) UTC"

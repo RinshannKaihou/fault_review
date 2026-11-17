@@ -1,0 +1,52 @@
+id: INF-2559
+legacy_ids: []
+slug: triton_experimental_same_name_kernel_xblock_state_reuse
+aliases: []
+title: 同进程同名 kernel 不同 XBLOCK 结果错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: triton launcher 运行期状态
+  behavior: 同一进程内同一算子两次编译生成同名 kernel（仅 XBLOCK 8/16 不同），kernel hash、launcher cache_hash、autotune 配置与 run 实参全同，后一个 kernel 持续输出错误结果。
+effect:
+  objects:
+  - 数值结果
+  detail: 先编 1×1 再编 2×2 后，2×2 的 2×2 fractional_max_pool2d maxdiff=7，连调 3 次持续复现；单独编 2×2 时 maxdiff=0。
+  visibility: 静默错误
+mitigation:
+  detect: 同一进程内按不同 shape 顺序编译同一算子，比较 kernel hash/launcher cache hash 相同但输出不同；清 PyCodeCache.modules 与关 use_fast_triton_launcher 均无效。
+  fix: 待定：issue 下一步用同一 TTIR 两次 launch 判定在 torch_npu launcher 还是 triton-ascend 运行时，未核实修复 PR。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-14'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6114
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend 950DT、torch 2.15.0+cpu、torch_npu 2.15.0+git7abfe3c、triton 3.6.0 上，triton_experimental 后端同一进程内先用另一 shape 编译同一算子（fractional_max_pool2d），再编译目标 shape，后一个 kernel 持续产出错误结果。两次编译生成的 kernel 同名 triton_unk_fused_fractional_max_pool2d_0，但 XBLOCK 分别为 8 和 16；实测 kernel hash（30bbd4d3…）、launcher cache_hash（GC55JU5Z…）、autotune 配置 {'XBLOCK':16}、run() 实参与输入形状全部相同，结果却是 alone maxdiff 0、after maxdiff 7。已排除跨进程 cache 复用、独立 cache 目录、同 shape 连编、先编无关算子、清 PyCodeCache.modules、换函数对象、关 use_fast_triton_launcher、TTIR/编译元数据 diff（归一化后为空）。触发条件收窄为：同一进程、同一算子两次编译产生同名 kernel、两次 XBLOCK 不同。作者初步判断指向运行期按 kernel 名而非 hash/特化复用 launcher/常量表/共享库绑定，非结论。
+  source: https://gitcode.com/Ascend/pytorch/issues/6114
+  behavior: 同一进程里先用一种 shape 编译某算子、再编译另一种 shape 后，后一个 kernel 从第一次调用起就稳定输出错误结果：2×2 的 fractional_max_pool2d 与 eager 最大偏差 7，换新数据、连调 3 次仍错。编译器不报错，kernel hash 和 autotune 配置显示两次是同一份产物，排查时极易误判为数据或参考实现问题；只有换新进程或先编目标 shape 才恢复正常。
+  trigger_surface: triton_experimental 后端；同一进程内同一算子以不同 XBLOCK 编译两次（如先 1×1 后 2×2）；Ascend 950DT + triton 3.6.0。
+  discovery: 2026-11-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-14'
+  audit:
+    round: daily-audit-2026-11-15
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

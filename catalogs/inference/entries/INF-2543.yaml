@@ -1,0 +1,50 @@
+id: INF-2543
+legacy_ids: []
+slug: npu_inductor_rope_int32_bitops_noncontig_nan
+aliases: []
+title: Inductor RoPE 位操作非连续输入全 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: RoPE 位打包 codegen
+  behavior: torchtitan RoPE 用 view(int32)、<<16、&~0xFFFF 打包 bf16 对；cos/sin 为 stride[-1]==2 的切片时，inductor 生成的 Triton kernel 按连续读取。
+effect:
+  objects:
+  - 数值结果
+  detail: 同一输入 eager 输出正确；torch.compile 后整张量全 NaN（每个元素），cos/sin 先 contiguous 后恢复正确，8×910B4 单卡可复现。
+  visibility: 数值异常
+mitigation:
+  detect: compile 与 eager 对拍，cos/sin 分别用连续与 stride[-1]=2 的 slice view，检查输出是否 isnan().all()。
+  fix: 未核实修复 PR；规避为调用前对 cos/sin 做 contiguous（eager 与编译结果逐位一致）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6095
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torchtitan.models.common.rope._RotatePairs.rotate 的 bf16 fast path 通过 int32 位操作打包：pairs = x.view(torch.int32)，x_real=(pairs<<16).view(torch.float32)，x_imag=(pairs&~0xFFFF).view(torch.float32)，再用 cos/sin 旋转并重打包。当 cos/sin 是 stride[-1]==2 的非连续 slice view（RoPE cache gather：cache.unflatten(-1,(-1,2))[...,0]）时，torch.compile/inductor 生成的 Triton kernel 错误读取这些非连续输入，输出全 NaN；eager 输出有限且与布局无关，连续化 cos/sin 后编译路径也正确，说明缺陷在编译生成的地址/步长处理而非数学。环境：torch 2.15.0.dev20261005、torch_npu 2c8682d 源码构建 + storage.patch、CANN 9.2.0、8×Ascend 910B4（单卡可复现）。
+  source: https://gitcode.com/Ascend/pytorch/issues/6095
+  behavior: 用 torch.compile 跑 torchtitan 的 RoPE rotate（bf16、int32 位打包）时，只要 cos/sin 来自 cache.unflatten(-1,(-1,2))[...,0] 这种末维 stride=2 的切片，编译后 q/k 整张量变成 NaN；eager 同一输入完全正常，日志没有报错，直到 attention 输出全 NaN 才暴露。
+  trigger_surface: torch_npu 源码构建 + inductor，RoPE 的 bf16/int32 位打包 fast path，cos/sin 为非连续 slice（stride[-1]=2）；8×910B4。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

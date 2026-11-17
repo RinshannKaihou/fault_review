@@ -1,0 +1,61 @@
+id: TRN-0763
+legacy_ids: []
+slug: msswift_packed_gdn_qk_l2norm_missing
+aliases: []
+title: ms-swift packed GDN 回退漏 Q/K L2 归一化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: ms-swift
+    component: MegatronAdaptor GDN 回退
+  behavior: MegatronAdaptor 原生 GDN 回退在 packed 路径未执行 use_qk_l2norm_in_kernel 请求的 Q/K L2 归一化，递推输入被改变。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 梯度
+  detail: cu_seqlens + use_qk_l2norm=True 时输出与梯度错误；修复后在 FP32 以 eps=1e-6 归一化，四卡 Qwen3.5-35B-A3B LoRA 三步 smoke 与真 FLA 路径 loss MAE 0.00993、最大差 0.01179。
+  visibility: 静默错误
+mitigation:
+  detect: 真 FLA 与 no-FLA 回退两条路径同输入对拍 loss/梯度；检查 packed 路径是否应用 Q/K L2 norm。
+  fix: 修复 PR https://github.com/modelscope/ms-swift/pull/10567（open 2026-11-13，未合入）
+labels:
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10567
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'modelscope/ms-swift #10567（2026-11-13，open PR）。MegatronAdaptor 的原生 GDN 回退在 packed 序列路径没有执行 use_qk_l2norm_in_kernel=True 所要求的 Q/K L2 归一化：调用方传 cu_seqlens 且请求归一化时，回退直接把未归一化的 Q/K 送进递推，改变 recurrent 输入。PR 在 packed 路径用 FP32、eps=1e-6 对 Q/K 做 L2 归一化后转回原 dtype，再调用既有 native fallback 并清掉归一化标志；unpacked 调用和不请求归一化的调用保持原行为；同时检查 Transformers 导入的 FLA 符号，避免 MegatronAdaptor 的部分 dummy 包被误判为完整 FLA。验证：Qwen3.5-35B-A3B LoRA、Ascend 950DT、TP2/EP2/ETP1、序列并行、MTP1、micro batch 2/global batch 4，真 FLA 与进程隔离 no-FLA 各跑 3 步并保存 checkpoint-3，四 rank 输入 hash 一致，loss MAE 0.00992668、最大绝对差 0.01178670。'
+  source: https://github.com/modelscope/ms-swift/pull/10567
+  behavior: 在 NPU 上用 ms-swift 跑 Qwen3.5 这类 GDN/线性注意力模型的 packed 训练，且配置要求 Q/K L2 norm、但环境没有可用 FLA 而走 MegatronAdaptor 原生回退时，Q/K 没有归一化就进入递推：输出和梯度都偏离真 FLA 路径，loss 仍正常下降、无报错。四卡 smoke 中两条路径 loss MAE 约 0.0099、最大差 0.0118，只有与真 FLA 对拍才能发现。
+  trigger_surface: ms-swift MegatronAdaptor GDN packed 回退 + use_qk_l2norm_in_kernel=True + cu_seqlens；Ascend 950DT 四卡实测。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: 算子/内核
+      effect:
+        from: 隐状态
+        to: 数值结果

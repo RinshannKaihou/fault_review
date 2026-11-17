@@ -1,0 +1,66 @@
+id: TRN-0608
+legacy_ids: []
+slug: opstransformer_fa_bwd_det_tnd_shape_wrong
+aliases: []
+title: FA 反向 deterministic+TND 特定 shape 梯度错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FA 反向确定性 TND 路径
+  behavior: deterministic=True 且 Softmax Layout=TND 的 FlashAttention 反向算子在特定 shape 下计算结果错误，无法与 fp64/CPU 参考对齐；seq_len 超过 1024 后复现
+effect:
+  objects:
+  - 梯度
+  detail: varlen 序列（实测 [128,256]）反向 dq/dk/dv 与 CPU fp64 参考超出 1e-2 容差，deterministic=True + softmax_layout=TND 触发；同输入 deterministic=False 通过，但确定性与非确定性输出互相一致校验也失败
+  visibility: 静默错误
+mitigation:
+  detect: deterministic+TND 组合下用 CPU fp64 eager 参考 dq/dk/dv 对拍
+  fix: 待定（issue 2026-11-03 open，未见修复）
+labels:
+  stage:
+  - shared
+  confidence: speculative
+  coverage: var
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7070
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0402
+pattern: PAT-TRN-0051
+original:
+  mechanism: 'cann/ops-transformer #7070（2026-11-03 open）。Flash Attention 反向算子（npudelay 正文为 torch_npu.npu_fusion_attention 反向，input_layout=TND、softmax_layout=TND、actual_seq_qlen/kvlen varlen）在 deterministic=True 时特定 shape 计算结果有误。环境：Atlas A3、CANN 9.1.0 及其后版本、Python 3.12。复现：seq_length=[128,256]、num_heads=8、dim=128、bf16，autograd 取 dq/dk/dv 与 CPU fp64 eager 参考 assert_close(1e-2) 失败；报告者注明序列长度超过 1024 后复现（脚本内为 128/256 变长列表）。对照面：deterministic=False 时同输入通过；脚本同时校验 determin 与非 determin 输出互相一致也失败。与 TRN-0402（FA-Grad V3 确定性路径 dsink 输出完全不写，ACL_OPT_DETERMINISTIC=1）同为 FA 反向确定性开关路径的静默错误族：该条是 sink 输出完整性缺失，本条是 TND softmax 布局下梯度数值错误，机制细节（哪段 kernel 分支错）未在 issue 中定位，按确定性路径数值错误族记 var；confidence documented（自述复现脚本完整、根因未定位）。训练影响：NPU 上开确定性训练（torch.use_deterministic_algorithms(True)）+ varlen TND attention 的反向梯度错误。'
+  source: GitCode issue：https://gitcode.com/cann/ops-transformer/issues/7070 （open，附完整复现脚本与期望行为）
+  behavior: 在 NPU 上用 varlen TND 布局的 fusion attention 并开启确定性算法（use_deterministic_algorithms(True)）做训练反向时，特定序列长度组合（超过 1024 复现，报告者最小用例 [128,256]）的 dq/dk/dv 梯度与 CPU fp64 参考明显偏离（容差 1e-2 校验失败），且确定性输出与非确定性输出互相不一致；关掉确定性开关同输入立即正常，无任何报错，训练梯度静默错值。
+  trigger_surface: torch_npu.npu_fusion_attention 反向（input_layout=TND + softmax_layout=TND + deterministic=True + varlen），Atlas A3、CANN 9.1.0+
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence
+  - date: '2026-11-17'
+    fields:
+    - labels.coverage
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

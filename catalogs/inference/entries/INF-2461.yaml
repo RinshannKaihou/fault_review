@@ -1,0 +1,67 @@
+id: INF-2461
+legacy_ids: []
+slug: ops_nn_indexadd_out_variant_inplace_overwrites_input
+aliases: []
+title: aclnnIndexAdd 出参版原地改写输入 self
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnIndexAdd 出参版执行路径
+  behavior: 出参版 aclnnIndexAdd 在 self 连续时把结果原地写回输入 self 再拷到 out；非连续时先拷副本、原地计算落在副本上——连续性决定是否改写输入。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 调用结束后 self 的 device 缓冲区字节被改写为计算结果（资料声明 self 为输入）；实测 [512,8] fp32 连续 self 被整块改写、非连续 self 不改写（改写为 0）；torch.index_add（torch_npu 2.12.0）对照输入不变。两段返回 0，无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前后对 self 同一块 device 缓冲区做原始字节比较（与 stride 布局无关）；连续 self 被改写即命中。
+  fix: 待定（issue open，未见修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8390
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0677
+original:
+  mechanism: 'cann/ops-nn issue #8390（2026-11-08，master d1efef7c）：aclnnIndexAdd 出参版在 self 连续时把结果原地写回输入张量再拷到 out；非连续时先被 Contiguous 拷成副本、原地计算落在副本上——「连续改、非连续不改」证明改写来自实现分支而非接口设计。资料（index/inplace_scatter_add/docs/aclnnIndexAdd.md:80-82）把 self 声明为输入、:130-132 把 out 声明为输出，出参版不应改写输入。报告者在 A2 910B2/CANN 9.3.0 实测 [512,8] fp32、index 512 个 int64、alpha=1、dim=0：用例 1（连续）self 被改写、用例 2（非连续）改写为 0；判据是同一块 device 缓冲区调用前后的原始字节比较，与张量 stride 布局无关。对照 torch.index_add（torch_npu 2.12.0）输入未被改写。与已收 INF-1659（aclnnIndexAdd arch22 索引缺校验致越界写）同算子不同机制：本条是出参版对输入缓冲的别名写，非索引校验缺口。'
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/8390 （open，2026-11-08 创建；含连续/非连续对照、字节级判据、torch_npu 对照）
+  behavior: 在 Ascend A2 上调用出参版 aclnnIndexAdd：如果 self 是连续张量，调用返回后 self 缓冲区本身被改写成计算结果（不再保留原输入值），后续任何复用该输入的计算全部基于被污染的值；self 非连续时不发生改写。两段返回 0 无告警，torch.index_add 同参数下输入保持不变，可对照识别。
+  trigger_surface: Atlas A2（910B2）；CANN 9.3.0；aclnnIndexAdd 出参版（签名含 out）；连续布局的 self 张量；ops-nn master d1efef7c。
+  signature: 出参版调用后 self device 字节改变（连续时）；非连续不变——布局依赖的别名写。
+  repro: issue 附 repro.cpp（连续/非连续双用例 + 调用前后字节比对）。
+  discovery: 2026-11-08 每日扫描
+  notes:
+  - 2026-11-11 回访：回访：#8390 updated_at 2026-11-11T06:44Z 有新活动、仍 open；GitCode 评论线程仍无低成本入口，评论内容未读，无新证据不改判。
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - relations
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

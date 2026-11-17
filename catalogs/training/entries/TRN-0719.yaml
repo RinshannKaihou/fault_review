@@ -1,0 +1,66 @@
+id: TRN-0719
+legacy_ids: []
+slug: torch_npu_rsplit_no_combine_uninit_output
+aliases: []
+title: torch_npu 双归约不同轴长第二个归约输出未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: inductor rsplit 配对
+  behavior: 同一图两个归约轴长不同时第二个归约走 rsplit 只写 workspace，但 npu_rsplit_partial 的 4 处赋值只有 1 处设置 rsplit_kernel，其余路径不生成 combine kernel
+effect:
+  objects:
+  - 数值结果
+  detail: torch.compile 编译的函数中同一张图有两个归约且归约轴长度不同（如 sum 两次、维度不同）时，第二个归约输出为未初始化显存，值像随机垃圾（实测 maxdiff 178.66），不报错；只算单个归约或两个归约轴长相同则完全正常，复现稳定；修复 !49440
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/pull/49440 （open，WIP，未发布）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5990
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/pull/49440
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0690
+- kind: cross
+  target: INF-2495
+pattern: PAT-TRN-0076
+original:
+  mechanism: 'Ascend/pytorch #5990（2026-11-10，open）+ 修复 !49440。根因取证：triton.py 中 npu_rsplit_partial=True 共 4 处赋值（L5976 codegen_node_schedule 接 combine / L7139 _apply_linearize INNER / L7636-7638 promoted rtree 两处均不设 rsplit_kernel），走后三条路径的 kernel 写 ws_ptr 但 combine 完全不生成；生成代码实锤 out_ptr0 从未被写、全部 kernel 只有 2 个且无读 workspace 的 combine。与 TRN-0690 同族：NPU inductor rsplit partial/combine 配对不完整致归约输出错值——TRN-0690 为改写锚点漏匹配致 combine 重复加总（48 倍），本条为 combine 整段缺失（未初始化）。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5990 https://gitcode.com/Ascend/pytorch/pull/49440
+  behavior: torch.compile 编译的函数里若同一张图有两个归约且归约轴长度不同（如 sum 两次、维度不同），第二个归约的输出是未初始化显存：值像随机垃圾（实测 maxdiff 178.66），不报错；只算单个归约或两个归约轴长相同则完全正常，复现稳定。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

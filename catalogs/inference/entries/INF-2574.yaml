@@ -1,0 +1,54 @@
+id: INF-2574
+legacy_ids: []
+slug: ops_math_reduce_v2_large_out_unwritten
+aliases: []
+title: Reduce V2 大输出 axes=1 时整块不写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnReduceSumV2 等五算子
+  behavior: experimental reduce V2 系列（Sum/Mean/Min/Max/Prod）在 axes=1、输出元素数达到各自阈值时，两段接口返回 0，out 完全未写。
+effect:
+  objects:
+  - 数值结果
+  detail: ReduceSumV2 ≥2304(fp32)/≥2050(fp16)、Mean/Min/Max ≥2304、Prod ≥4096 时 out 全保留 -777/0xDEADBEEF；R=2049 及以下正常；五份 kernel 独立实现。
+  visibility: 静默错误
+mitigation:
+  detect: out 预填 -777/0xDEADBEEF，扫 R=2048/2049/2304/4096；读回仍为哨兵即命中。
+  fix: 待定（两条 issue 均 open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 两条为同族不同 kernel：合为一条并在 trigger 注明五算子各自阈值，不拆成五个编号。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4791
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4793
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math master 129bdc0d4（Ascend910B2、CANN 9.2.0）的 experimental reduce V2 系列：aclnnReduceSumV2 在 axes=1、out 元素数 ≥2304（fp32）/≥2050（fp16）时两段返回 0 但 out 完全未写，R=2049 仍正常（#4791）。#4793 进一步实测 ReduceMean/Min/MaxV2 在 R=2304 起未写、ReduceProdV2 在 R=4096 起未写，四份 kernel 各自独立实现、互不 include、md5 各异，修 reduce_sum_v2 不会自动修好。复现用 canary：fp32 out 预填 -777.0，输入全 1 的 [R,8]，期望 o0=1.0；R≥2304 时 untouched=nO、o[0]=-777。资料 README「约束说明」原文只有「无」，未声明输出元素数上限。
+  source: https://gitcode.com/cann/ops-math/issues/4791 与 https://gitcode.com/cann/ops-math/issues/4793 （均 open，2026-11-16）
+  behavior: 沿行归约的结果整块是调用前的旧值（金丝雀 -777 或 0xDEADBEEF），用户很容易把它当真实结果继续算：比如 batch 维统计、归一化分母或 loss 归约拿到全 -777 的向量仍会继续传播。两段接口都返回成功，没有告警、没有错误码，只有把 R 缩到 2049 以下做对照、或预填不同哨兵回读，才会发现这次调用根本没写。
+  trigger_surface: ops-math master 129bdc0d4；Ascend910B2 + CANN 9.2.0；2D 输入、axis=1、keepdims 0/1；experimental reduce_*_v2 算子。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

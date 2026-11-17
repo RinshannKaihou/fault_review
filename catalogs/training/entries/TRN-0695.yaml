@@ -1,0 +1,66 @@
+id: TRN-0695
+legacy_ids: []
+slug: grouped_matmul_splitk_early_success_skip_check
+aliases: []
+title: GroupedMatmul split-K 早退成功跳过校验
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CheckCaseSplitK 平台分支
+  behavior: x 单 tensor 时 Ascend950/960DT 分支提前 return success，跳过 transpose_x 检查与其后 rank/shape 检查；group_type=2 单 x 需转置输入被放行
+effect:
+  objects:
+  - 数值结果
+  detail: 非法输入进入通用 tiler 按转置解释 x 静默错算；基线期望 GRAPH_FAILED 实得 GRAPH_SUCCESS（confirmed_bug，host UT 回归）
+  visibility: 静默错误
+mitigation:
+  detect: group_type=2+单x+transpose_x=false 的负向回归（ut nonquant_splitk_transposex_required_invalid_950）；下发前对账转置契约
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/15577 （open 2026-11-09）：删除早退成功返回，CSV 回归通过
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: 与 TRN-0669 同族（首段校验缺口放行），效应差异：放行后静默错算而非延迟报内部错
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7296
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #7296+!15577（open，2026-11-09，源码 5adf800c91c9）：CheckCaseSplitK 在 Ascend950/960DT 上 x 只含一个 tensor 时立即返回成功，跳过必需的 transpose_x 检查与其后的 rank、shape 检查；group_type=2 的单 x split-K 路径要求转置输入，transpose_x=false 的非法组合被接受，进入通用 tiler 被按转置布局对待。回归用例（一个 x、group_type=2、transpose_x=false）基线返回 GRAPH_SUCCESS（用例期望 GRAPH_FAILED）；修复删除该早退成功返回，使既有 transpose/rank/shape 校验执行，ut GROUPED_MATMUL_INFERSHAPE_CSV nonquant_splitk_transposex_required_invalid_950 通过（outcome confirmed_bug）。与 TRN-0669（首段校验缺口放行）同族，差异在放行后 tiler 按转置解释静默错算。训练面：MoE/分组 GEMM split-K 训练图。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7296
+  behavior: 下发 GroupedMatmul split-K（group_type=2、单个 x、transpose_x=false，Ascend950/960DT）：接口返回成功、不报参数错误，tiling 把 x 当转置布局解释并继续计算，输出数值错误且无告警；只有构造期望被拒的回归用例或与标杆对拍才能发现。正确配置（transpose_x=true 或多 x 输入）不受影响。
+  trigger_surface: Ascend950/960DT、ops-transformer 源码 5adf800c；group_type=2 + 单 x split-K + transpose_x=false
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - relations
+  - date: '2026-11-17'
+    fields:
+    - labels.coverage
+  - date: '2026-11-17'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

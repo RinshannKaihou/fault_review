@@ -18,7 +18,9 @@ let vectors = null, embedder = null;
 if (tier === "hybrid") {
   if (!meta.semantic) throw new Error("site was built --no-vectors; no hybrid tier");
   const buf = read("vectors.f32");
-  vectors = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+  vectors = buf.byteOffset % 4 === 0
+    ? new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
+    : new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
   embedder = await createEmbedder(await transformers(), meta.semantic, { device: DEVICE });
 }
 const index = new Index(JSON.parse(read("docs.json")), JSON.parse(read("bm25.json")),

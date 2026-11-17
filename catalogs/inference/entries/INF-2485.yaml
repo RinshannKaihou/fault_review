@@ -1,0 +1,53 @@
+id: INF-2485
+legacy_ids: []
+slug: overpadded_tile_inputs_misread
+aliases: []
+title: 过度填充 TILE 输入五算子误读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: TILE 填充形状感知
+  behavior: TILE 输入带整 tile 级过量填充时，五个算子按逻辑形状定输出、按填充形状计工作量：六情形静默错值，1D matmul 输出对但越界改写相邻张量。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: Blackhole p150、c408df62：logical 32 行存成 padded 64 行等 7 用例中 6 例输出静默错值；1D matmul 后分配的 guard 张量 8192 值全被改写；填充规整到下一 tile 的对照全精确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（输入由公开调用 tilize_with_val_padding/reshape 构造即触发；https://github.com/tenstorrent/tt-metal/issues/64826）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/64826
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal TILE 张量以 32×32 tile 存储，逻辑形状与填充形状通常只差最小取整；当张量带整多一个 tile 的填充（如 logical 高 32、padded 高 64，可由公开调用 ttnn.tilize_with_val_padding 或带填充形状的 ttnn.reshape 构造）时，五个算子（matmul 1D/2D/无 program config、interleaved_to_sharded、transpose、typecast、nlp_create_qkv_heads）按逻辑形状分配输出、按填充形状计数工作量，两者不一致。Blackhole p150、c408df62：七个情形中六个输出值静默错误；1D matmul 输出本身正确但紧随其后分配的 guard 张量 8192 值全部被改写（算子写越其输出）。填充规整到下一 tile 的对照全部精确，唯一变量是过量填充。无已知模型路径产生此类输入。
+  source: https://github.com/tenstorrent/tt-metal/issues/64826
+  behavior: 给 TILE 布局算子喂带过量填充的张量（合法公开 API 即可构造）时，多数算子输出静默错值；1D matmul 则悄悄改写紧邻分配的另一张量的内存。全程无报错，只有对拍或 guard 张量能发现。
+  trigger_surface: ttnn TILE 输入带超过最小取整的填充（整 tile 级过量 padding）+ matmul/interleaved_to_sharded/transpose/typecast/nlp_create_qkv_heads。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

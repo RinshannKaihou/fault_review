@@ -1,0 +1,73 @@
+id: TRN-0732
+legacy_ids: []
+slug: sparse_adadelta_division_order_underflow
+aliases: []
+title: SparseApplyAdadelta 先除后乘中间量下溢
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: cann
+    component: SparseApplyAdadelta
+  behavior: update 按 sqrtf(numer)*(g/sqrtf(denom)) 先除后乘，与 README/TF 参考 (sqrt(numer)/sqrt(denom))*g 浮点不等价，denom 大 g 小时中间商下溢为 0。
+effect:
+  objects:
+  - 模型权重
+  detail: 构造 denom=1e20、g=1e-20 时 g/sqrt(denom) 中间结果下溢为 0，update 静默变 0（参考非 0），稀疏嵌入行更新被吞；同 issue 另有 tiling/infershape 缺校验的越界风险。
+  visibility: 静默错误
+mitigation:
+  detect: 极小 grad/极大 accum 组合与 TF 参考对账 update 是否为 0；长时间训练后 update 范数监控
+  fix: 待定（issue open，未见修复 PR；期望按参考公式 (sqrt(numer)/sqrt(denom))*g 计算）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-12'
+remarks: 非大模型（CV/传统ML/3D/RNN）算子缺陷，脱离 LLM 训推主路径
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8581
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0519
+original:
+  mechanism: 'cann/ops-nn issue #8581（2026-11-11 open，Ascend 950）。SparseApplyAdadelta kernel 侧 update 计算为 sqrtf(numer)*(g/sqrtf(denom))——先做除法再做乘法；README 公式与 TensorFlow 参考实现为 (sqrt(numer)/sqrt(denom))*g。两者数学等价但浮点不等价：denom 很大（如 1e20）、g 很小（如 1e-20）时，g/sqrt(denom)=1e-20/1e-10 先下溢为 0（fp32 最小正规约 1.2e-38，构造值已越过），update 静默变 0。同 issue 另报 tiling 对 kCount/varShapeSize 无负值与乘法溢出校验（核数计算窄位宽）、infershape 对 var/accum/accum_update/grad/indices 秩与形状一致性无校验，非法输入不返回 GRAPH_FAILED 而是继续执行，存在越界与结果错误风险。来源：https://gitcode.com/cann/ops-nn/issues/8581 。训练面：稀疏 Adadelta 用于嵌入行稀疏更新，长跑后 accum 增大、grad 变小的组合可命中下溢区，更新静默归零。'
+  source: https://gitcode.com/cann/ops-nn/issues/8581
+  behavior: 用 SparseApplyAdadelta 训练嵌入时，若某行的 accum_update（denom）已很大而梯度很小（长跑后期常见组合），该行 update 的中间商 g/sqrt(denom) 在 fp32 下溢为 0，整步更新静默变 0——不报错、loss 无异常，但这些行的权重从此停止有效更新；构造值（denom=1e20、g=1e-20）已复现该路径，与 TF 参考实现不等价。
+  trigger_surface: Ascend 950；SparseApplyAdadelta update 公式，denom 极大 × g 极小组合；issue open 无修复 PR
+  discovery: 2026-11-12 每日扫描
+  notes:
+  - '2026-11-13 回访：回访：源 issue #8581 已 closed，未见关联修复 MR；机制判定不变。'
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  updates:
+  - date: '2026-11-12'
+    fields:
+    - pattern
+  - date: '2026-11-13'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - status
+  - date: '2026-11-17'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

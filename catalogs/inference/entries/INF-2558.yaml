@@ -1,0 +1,52 @@
+id: INF-2558
+legacy_ids: []
+slug: sglang_npu_kvpool_smaller_than_input_silent_clip
+aliases: []
+title: SGLang KV 池不足输入长度时静默只出 1 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: sglang
+    component: NPU scheduler token 裁剪
+  behavior: max_total_num_tokens 小于 input_len+max_new_tokens 时调度器既不拒绝也不告警，直接把 max_new_tokens 夹到约 1。
+effect:
+  objects:
+  - 输出内容
+  - 指标/日志
+  detail: A2 32GB 上 Qwen3.8-27B hybrid 的 pool=45184，128K 请求返回 1 token；benchmark 报 8/8 成功、总生成 8 token、TPOT 0.00，看似正常。
+  visibility: 静默错误
+mitigation:
+  detect: 比较 num_prompts*output_len 与 benchmark 的 Total generated tokens；在 server 侧对 input_len+max_new_tokens > max_total_num_tokens 打 warning 或返回错误。
+  fix: 待定：issue 建议 server 侧校验并告警、benchmark 检查总生成 token 数；规避为调大 --max-mamba-cache-size、关闭 DP attention 以扩大 KV pool，未核实修复 PR。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-14'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/50443
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang 在 Atlas 800I A2（4×910B4 32GB）上部署 Qwen3.8-27B，使用 Qwen3.6-27B NPU 教程的 BF16 配置（--tp-size 4 --dp-size 2 --enable-dp-attention --mem-fraction-static 0.85）时，hybrid（GDN/Mamba+attention）模型的默认 mamba state cache 占掉大部分空闲显存，max_total_num_tokens 只有 45184，容不下一个 128K 请求。调度器没有拒绝请求也没有打 warning，而是把该请求的 max_new_tokens 静默夹到约 1：benchmark 输出 Successful requests 8、Total generated tokens 8（期望 8000）、Mean TPOT 0.00，每个请求都被记为成功。把 --max-mamba-cache-size 设为 40 并关闭 DP attention 后 pool 变为 585344，同一批请求恢复每请求 1000 token。issue 建议 server 在 input_len+max_new_tokens > max_total_num_tokens 时告警或报错，benchmark 在总生成 token 远低于 num_prompts*output_len 时告警，并补充 hybrid 模型 mamba cache 与 KV 容量的权衡文档。
+  source: https://github.com/sgl-project/sglang/issues/50443
+  behavior: 在 NPU 上用较小的 KV 池（例如 hybrid 模型被 mamba state cache 占掉大半显存）跑超过池容量的长输入时，服务不报错也不拒绝：每个请求只生成约 1 个 token，benchmark 仍然打印 8/8 successful、TPOT 0.00，看起来又快又正常。只有把 Total generated tokens 与 num_prompts*output_len 对比，才会发现输出被静默截断到几乎为空。
+  trigger_surface: SGLang NPU，hybrid GDN/Mamba+attention 模型（Qwen3.8-27B），max_total_num_tokens < input_len + max_new_tokens；A2 32GB、DP attention 开启、默认 mamba cache。
+  discovery: 2026-11-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-14'
+  audit:
+    round: daily-audit-2026-11-15
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 静默错误

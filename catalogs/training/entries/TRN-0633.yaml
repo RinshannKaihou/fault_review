@@ -1,0 +1,60 @@
+id: TRN-0633
+legacy_ids: []
+slug: opstransformer_smla_causal_topk_metadata_mismatch_nan
+aliases: []
+title: SMLA 族 causal topk 规划与主内核不一致出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SMLA 族 metadata
+  behavior: cmp_mask_mode=3 且给 cmp_topk_length 时，metadata 忽略逐行实际长度按 indices 宽度规划，主内核按实际长度执行——FA/FD 分块规划与执行不一致，产出 NaN 与 Inf LSE。
+effect:
+  objects:
+  - 数值结果
+  detail: ragged batch B=16/S1=14/S2=4196、ORI band mask + CMP causal mask、cmp_topk_length 覆盖零长度/17/缺省：未修复包三算子复现失败（NaN/Inf），修复后 9/9 paramset 通过；Ascend950 实测
+  visibility: 数值异常
+mitigation:
+  detect: causal mask + cmp_topk_length 组合的 batch consistency 回归（修复新增 bc_causal_cmp_topk_length paramset 即此判据）；输出 NaN/LSE Inf 直接可见但定位难
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/15351 （open 2026-11-05）：三个 metadata 移除仅 No Mask 下读实际长度的限制、保留按索引宽度截断与缺省行为；9/9 paramset 通过，未发布
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15351
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0608
+pattern: PAT-TRN-0051
+original:
+  mechanism: cann/ops-transformer MR !15351（2026-11-05 open）。SMLA、MQSMLA、QSMLA（稀疏 MLA 注意力族）在 dl3 batch 一致性场景中，cmp_mask_mode=3 且提供 cmp_topk_length 时，metadata 的 GetCmpTopkLength 忽略逐行实际长度、按 sparse indices 宽度规划 CMP 任务，主内核按实际长度执行——FA/FD 分块规划与执行不一致，产出 output NaN、softmax_lse Inf。修复：三个 metadata 均移除「仅在 No Mask 下读取实际长度」的限制，使 causal mask 下规划与主内核一致，保留实际长度按索引宽度截断及缺省长度行为。验证：Ascend950 NPU，三算子各 3 条新增 bc_causal_cmp_topk_length paramset（几何 B=16,S1=14,S2=4196,N1=128,D=512,K=512，ORI band mask+CMP causal mask，cmp_topk_length 覆盖零长度/17/缺省）9/9 通过；未修复算子包同 paramset 三算子均复现失败；baseline 精度、batch 重排与 B=8 两组拆分逐字节一致性通过。训练影响：SMLA 族是 NPU 上 MLA 注意力的训练/反向路径，metadata 与主内核分块不一致直接产 NaN 梯度源头。
+  source: https://gitcode.com/cann/ops-transformer/merge_requests/15351 （open；含复现参数组与修复前后对照）
+  behavior: NPU 上用稀疏 MLA 注意力（SMLA/MQSMLA/QSMLA）训练时，配置 causal 比较掩码（cmp_mask_mode=3）并显式给 cmp_topk_length 的 ragged batch 输入会算出 NaN 输出和 Inf 的 softmax LSE——前向已经 NaN，反向梯度随之全坏；不用 causal cmp 掩码或走普通全掩码时正常。修复后同输入逐字节恢复正确。
+  trigger_surface: cann SMLA/MQSMLA/QSMLA + cmp_mask_mode=3 + cmp_topk_length（零长度/部分长度/缺省）+ ragged batch（B=16,S1=14,S2=4196 实测）；Ascend950
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

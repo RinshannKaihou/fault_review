@@ -1,0 +1,58 @@
+id: TRN-0607
+legacy_ids: []
+slug: opsnn_foreach_unscale_noncontig_silent_noop
+aliases: []
+title: ForeachUnscale 非连续梯度静默不反缩放
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: foreach 非连续 in-place 回写
+  behavior: in-place 反缩放对非连续 scaledGrads view 的 MakeContiguous+ViewCopy 回写失效，反缩放静默不执行；tiling 按 storage shape 而非逻辑 view 取元素数
+effect:
+  objects:
+  - 梯度
+  detail: 混合精度训练中非连续（sliced/strided）scaledGrads 输入反缩放后 storage 逐字节不变（实测 0/8 元素更新），foundInf 正常置位但乘法写回丢失，两段返回 0 无错误码，梯度保留 loss scale 倍放大
+  visibility: 静默错误
+mitigation:
+  detect: 对非连续梯度 view 在 unscale 前后 allclose 断言；连续对照用例交替执行
+  fix: 待定（issue 2026-11-03 open，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/7999
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0444
+pattern: PAT-TRN-0063
+original:
+  mechanism: 'cann/ops-nn #7999（2026-11-03 open，提交后即 closed，正文完整）。aclnnForeachNonFiniteCheckAndUnscale 对非连续 scaledGrads 的原地反缩放静默不执行。复现环境：Ascend 910B3（Atlas A2）、CANN 9.2.0、master@6df08e45。storage=[1..8] fp32、invScale=2.0：连续 view [8]/stride[1] 正确更新 8/8；非连续 sliced view [4]/stride[2] 与二维 [2,2]/[4,1] 均返回 0/0 但 0/8 元素改动；连续+offset 正常（4/8，只改 view 内）。关键用例 E：非连续 view 内含 Inf 时 foundInf 正确置 1 但不反缩放——非有限检查走到了、乘法写回没走到，缺陷定位在 in-place 回写步。10 次重复非连续用例 10/10 零改动。host 链路：foreach_non_finite_check_and_unscale.cpp:112 ForeachMakeContiguousTensorList(scaledGrads) + :130 ForeachViewCopyToOutputTensorList 回写；对照同 helper 实现的 ForeachNeg 非连续 out 能写入（错位落位但写入），本接口差异在 scaledGrads 既是输入又是输出。tiling 侧 foreach_non_finite_check_and_unscale_tiling.cpp:143 用 GetStorageShape().GetShapeSize() 取元素数，与资料要求的逻辑 view 语义不一致，疑同源。资料《约束说明》第 1 条明确承诺 A2/A3 支持非连续 scaledGrads 的原地反缩放。训练影响：_foreach_non_finite_check_and_unscale 是混合精度训练梯度反缩放+Inf 检测标准调用（torch.cuda.amax/GradScaler 路径 NPU 对应），非连续梯度 view 触发时反缩放丢失、梯度残留 scale 倍数值。与 TRN-0444（op-plugin 快路径门控缺连续性检查致 _foreach_add_ 静默不执行）共享『foreach 族非连续视图静默不生效』机制，触发层不同（算子 in-place 回写 vs 框架快路径门控），标 var。'
+  source: GitCode issue：https://gitcode.com/cann/ops-nn/issues/7999 （closed，正文完整）
+  behavior: 混合精度训练开启 loss scale 后，若某个梯度的 view 是切片/跨步的非连续张量（如 fused 优化器分组、切片梯度），反缩放调用成功返回但该梯度数值完全没有除以 scale：上层看到 foundInf 检查结果正确、无任何报错，但后续 optimizer.step 拿到的是仍放大 N 倍的梯度；同 storage 的连续 view 一切正常，同进程交替执行连续/非连续用例可稳定复现（非连续 10/10 零改动）。
+  trigger_surface: aclnnForeachNonFiniteCheckAndUnscale / torch._foreach_non_finite_check_and_unscale_（非连续 scaledGrads view），Atlas A2 910B3 实测、CANN 9.2.0、master@6df08e45
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - labels.coverage
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

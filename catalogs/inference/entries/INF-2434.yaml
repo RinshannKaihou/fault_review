@@ -1,0 +1,63 @@
+id: INF-2434
+legacy_ids: []
+slug: layernorm_eps_negative_nan_family
+aliases: []
+title: LayerNorm 族 eps<0 放行静默输出全 NaN（三算子同型）
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: LayerNorm eps 校验
+  behavior: 三个归一化算子对 eps<0 不校验直接放行，含负 eps 的方差倒数计算产出 NaN，两段 rc=0；同族 aclnnAddRmsNorm 对同类输入正确返回 161002
+effect:
+  objects:
+  - 数值结果
+  detail: eps<0 时三个归一化算子 rc=0 且输出全 NaN（#8304 LayerNorm、#8309 FastLayerNorm、#8310 BatchNorm 同型三单）；AddRmsNorm 同条件返回 161002 形成对照
+  visibility: 数值异常
+mitigation:
+  detect: 入口侧断言 eps≥0，或对首个输出块做 NaN 检查
+  fix: 待定（期望与 AddRmsNorm 一致返回 161002；三单未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: C++ aclnn 直调契约外非法入参（GIGO 负向测试），正常 PyTorch/LLM 框架路径不可达
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8304
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8309
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8310
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0640
+original:
+  mechanism: 'cann/ops-nn 三单同型缺陷（950）：#8304 aclnnLayerNorm 对 eps<0 放行并静默输出全 NaN，同族 aclnnAddRmsNorm 返回 161002；#8309 aclnnFastLayerNorm 对 eps<0 不校验，放行 rc=0 并静默产出全 NaN（与 #8304 同型、接口不同）；#8310 aclnnBatchNorm 对 eps<0 不校验，放行 rc=0 并静默产出全 NaN（与 #8304/#8309 同型）。三单均实测 rc=0，属参数校验缺失+非法参数静默产出 NaN：调用方传负 eps（配置错误、符号算反、动态 eps 计算出错）时接口不拒绝，方差倒数 1/sqrt(含负 eps 的表达式) 产出 NaN 整块输出，返回码 SUCCESS。同仓 AddRmsNorm 的正确拒绝行为证明这是校验缺失而非约定行为。'
+  source: https://gitcode.com/cann/ops-nn/issues/8304 （同型：https://gitcode.com/cann/ops-nn/issues/8309 https://gitcode.com/cann/ops-nn/issues/8310 ）
+  behavior: 调用方误传负 eps 时，LayerNorm/FastLayerNorm/BatchNorm 三个归一化算子都不报错：两段接口返回成功，输出整块 NaN；若下游不显式检查 NaN（训练步多数情况），NaN 沿网络静默扩散多步后才在别处显形；同族 AddRmsNorm 则会立即以 161002 拒绝，同仓行为不一致。
+  trigger_surface: eps<0（调用方参数错误）+aclnnLayerNorm/aclnnFastLayerNorm/aclnnBatchNorm；950
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - relations
+  - date: '2026-11-17'
+    fields:
+    - status
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,63 @@
+id: INF-2397
+legacy_ids: []
+slug: mindformers_mla_tnd_dsa_flag_loses_causal_mask
+aliases: []
+title: MindFormers MLA TND 因 DSA 标志误判丢因果掩码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: mindformers
+    component: MLA 掩码预处理 DSA 分支
+  behavior: 掩码预处理只看 DSA 标志不检查实际 attention variant，普通 MLA+TND+EOD 压缩时提前返回空 mask，MLA FlashAttention V4 读整段序列
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 自回归位置本应只访问因果前缀，空 mask 下首 token 与因果前缀参考最大差 0.90（与全序列参考仅差 3.4e-5）；输出与 Q/K/V 梯度均有差异，末 token 不受影响
+  visibility: 静默错误
+mitigation:
+  detect: 同输入 mask=None 与压缩因果 mask 双跑 local_v4_varlen_flash_attention 对比（首 token 差 0.90）
+  fix: 修复 MR https://atomgit.com/mindspore/mindformers/merge_requests/8893 （open，未发布）：将省略 mask 分支限制到实际 DSA 稀疏路径
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://atomgit.com/mindspore/mindformers/issues/2624
+  kind: gitcode_issue
+- url: https://atomgit.com/mindspore/mindformers/merge_requests/8893
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0619
+original:
+  mechanism: MindFormers master 79caac2a（独立验证源 52f614ee）：PyNative GPTModel 普通 MLA、TND 与 EOD 掩码压缩场景下，若 DSA 稀疏损失配置为 true，_preprocess_input_labels_and_masks 提前返回空 attention mask——判断只看 DSA 标志不检查实际 attention variant。MLA FlashAttention V4 随后读整段序列而自回归位置应仅访问因果前缀。组件对照环境 910B3、CANN 9.1.0 B243、MindSpore 2.10.0 6b7c4b02、HP-MS r1.0.0。最小复现：同随机种子调用 local_v4_varlen_flash_attention 两次（TND、sparse_mode=3、BF16、Q/K [4096,32,192]、V [4096,32,128]、384 个 4096 端点），空 mask 首对首 token/head0 与因果前缀参考最大绝对差 0.90191650（与全序列参考仅 0.00003401），压缩因果 mask 则与因果前缀参考差 0；输出及梯度均差异，末 token 两分支一致。修复 MR 8893（open）把省略 mask 分支限制到实际 DSA 稀疏路径。
+  source: https://atomgit.com/mindspore/mindformers/issues/2624 修复 https://atomgit.com/mindspore/mindformers/merge_requests/8893
+  behavior: MindFormers PyNative 下普通 MLA 模型（TND+EOD 压缩）误开 DSA 稀疏损失标志时，模型输出与梯度静默偏离因果语义：每个自回归 token 注意到了未来内容（首 token 与因果参考差达 0.90），训练损失与生成质量受污染但无任何报错；关掉该标志或打修复后恢复。
+  trigger_surface: MindFormers master 79caac2a；PyNative + 普通 MLA + TND + EOD 掩码压缩 + DSA 稀疏损失配置 true；910B3/CANN 9.1.0。
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - relations

@@ -1,0 +1,53 @@
+id: INF-2571
+legacy_ids: []
+slug: cann_causal_conv1d_fn_single_token_prefill_update_kernel
+aliases: []
+title: CausalConv1dFn 单 token prefill 误选 update
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: CausalConv1dFn
+  behavior: tiling 的 InferIsFnMode 3D 分支把所有序列长度 1 判为 update 模式，Fn 接口因此派发 update kernel，后者无条件读取缓存历史。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: prefill 未提供 initialStateMode 时应按零历史卷积，实际 update kernel 读入 cache 旧状态；单 token prefill（chunk 尾块/首 token）输出与 prefill 语义不符，返回成功。
+  visibility: 静默错误
+mitigation:
+  detect: 同一段音频/序列分别整段 prefill 与逐 token prefill，比较首 token 输出；单 token 且不传 initialStateMode 时结果不同即命中。
+  fix: 待定（issue open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 与 INF-2288（FusedCausalConv1dV2 2D 短序列派发死区）算子/机制均不同：本条为 3D 长度 1 被判 update 模式。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7712
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnCausalConv1dFnGetWorkspaceSize 调 CausalConv1dFnCommonProcess（op_api/aclnn_causal_conv1d_fn.cpp:394），后者在 :360 调 l0op::CausalConv1d，launcher 未传显式 operation mode（op_api/causal_conv1d.cpp:36-39）。CausalConv1dTiling::ParseCausalConv1dInputInfo 调 InferIsFnMode（op_host/causal_conv1d_tiling.cpp:667），其 3D 分支在 :829 把每个长度为 1 的序列判为 update；RunCausalConv1d 因此派发 update kernel（op_kernel/causal_conv1d_apt.cpp:27-34）。语义差别：prefill 无 initialStateMode 时经 ResolveBatchHasInit（op_kernel/arch35/causal_conv1d.h:414-416）与 LoadConvStates（causal_conv1d_fn.h:305-307）走零历史，而 CausalConv1dUpdate::InitRing 无条件读缓存历史（causal_conv1d_update.h:217-235）。报告为源码定位，无实测数值。
+  source: https://gitcode.com/cann/ops-transformer/issues/7712 （open，2026-11-16，源码行号定位，无实测数值）
+  behavior: 混合模型（causal conv + attention）在 chunked prefill 的最后一块只有一个 token 时，卷积会读到上一轮遗留的 cache 状态而不是从零开始，输出偏离 prefill 结果；没有报错或日志，只有对比整段 prefill 与逐 token prefill 才能发现。
+  trigger_surface: aclnnCausalConv1dFn（TND 3D）；序列长度 1；未传 initialStateMode；CANN 9.3.0 ops-transformer master。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

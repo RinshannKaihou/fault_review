@@ -1,0 +1,63 @@
+id: INF-2479
+legacy_ids: []
+slug: kimi_mla_float_gate_silent_int8
+aliases: []
+title: Kimi 混合精度 FLOAT gate 静默按 INT8 分配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: ModelSlim 融合层量化映射
+  behavior: 上游 Kimi 打包 q_a/kv_a/g_proj 三 shard，ModelSlim 映射只描述前两个；量化 Q/KV+FLOAT gate 时融合层全按 INT8 分配，BF16 gate 被静默 cast 成 INT8。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: CPU 复现：BF16 gate 值 0.25 被静默转成 INT8 0，gate 的 scale/offset 仍为哨兵未填；nightly 佐证：v0.32 GPQA 93.33% 完成，v0.33 用例超时，draft 接受率 22.26%→1.53%。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/21387 （open）：混合精度 gate 与复制 Q/KV 分离、standalone verifier/MTP gate 先于融合重映射加载并保 TP 切分；646 测试通过，NPU 端到端恢复未建立。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/21387
+  kind: github_pr
+relations: []
+original:
+  mechanism: vLLM 0.33 起 Kimi MLA 把 q_a_proj、kv_a_proj_with_mqa、g_proj 打包为 KimiK3MergedQKVGateLinear；vllm-ascend 的 ModelSlim 量化映射仍只描述前两个 shard。对量化 Q/KV + FLOAT gate 的 checkpoint（真实例：Eco-Tech/Kimi-K3-w4a8，MLA layer 11 为 W8A8_DYNAMIC Q/KV + FLOAT gate），融合层按映射给全部三个 shard 分配 INT8 存储，上游权重 loader 把 BF16 gate 权重静默 cast 成 INT8（CPU 复现：0.25→0），gate 的 scale/offset shard 无 checkpoint 值仍为哨兵。#20627 的 d0e83d582 修正了输出切分但未覆盖该分配/加载错配。PR 附 nightly 佐证：v0.32 GPQA 93.33% 完成 vs v0.33 用例超时、draft 接受率 91,417/410,732（22.26%）→20,455/1,335,936（1.53%）；PR 明示未声称该缺陷是超时唯一原因、硬件恢复未建立。
+  source: https://github.com/vllm-project/vllm-ascend/pull/21387
+  behavior: 用带混合精度 MLA（量化 Q/KV + FLOAT gate）的 ModelSlim Kimi-K3 checkpoint 在 vllm-ascend v0.33 上部署：gate 权重被静默压成 INT8 零/错值、量化 scale 缺失，模型照常服务但输出质量坍塌——nightly 表现为 spec decode 接受率从 22% 掉到 1.5%、生成超时；无加载报错。
+  trigger_surface: vllm-ascend（v0.33 系）+ ModelSlim 量化 Kimi-K3 checkpoint + MLA 层 gate 与 Q/KV 精度不一致（FLOAT gate）。
+  discovery: 2026-11-09 每日扫描
+  notes:
+  - '2026-11-10 回访：回访：修复 PR #21387 已 merged（2026-11-10T09:35Z，Kimi MLA FLOAT gate INT8 错配修复合入）；随版本发布状态未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

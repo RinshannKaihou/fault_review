@@ -1,0 +1,69 @@
+id: TRN-0615
+legacy_ids: []
+slug: msswift_tool_schema_json_loads_retype
+aliases: []
+title: swift agent 模板工具参数被 json.loads 改型
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: ms-swift
+    component: agent 模板 get_toolcall 解码
+  behavior: hy_v3/minimax_m2/m3 的 get_toolcall 对每个 XML 参数值做 json.loads(+ast.literal_eval)，不查工具 schema；字符串参数形似字面量时类型或值被改
+effect:
+  objects:
+  - 输出内容
+  - 训练样本流
+  - 跨请求/跨样本数据
+  detail: type:string 参数返回错误类型或改变值（12345 变 int）：swift infer/deploy 响应 arguments 错，GRPO 多轮 rollout 的环境反馈与奖励判定随之错；模板渲染-解析不往返
+  visibility: 静默错误
+mitigation:
+  detect: _format_tool_calls 渲染后 get_toolcall 解析做往返对拍；字符串型参数用例
+  fix: '修复 PR https://github.com/modelscope/ms-swift/pull/10490 （open）：为 hy_v3/flint/ling3/spark2_5/seed_oss 等接 supports_tool_schema 并传 tools schema（对齐 #10281/#10300 已修路径）；未核实合入'
+labels:
+  stage:
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10461
+  kind: github_issue
+- url: https://github.com/modelscope/ms-swift/pull/10490
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'ms-swift #10461（2026-10-28 open）+ 修复 PR !10490（open）。HyV3PreviewAgentTemplate/HyV3AgentTemplate（hy_v3.py）、MinimaxM2AgentTemplate（minimax_m2.py）、MinimaxM3AgentTemplate（minimax_m3.py）的 get_toolcall 对每个 XML 参数值用 json.loads（hy_v3/minimax_m2 另有 BaseAgentTemplate._parse_json 的 ast.literal_eval）解码，从不参考工具的 JSON schema；而这些格式以原文写字符串值（<arg_value>12345</arg_value>、<parameter name="zip_code">12345</parameter>），于是 type:string 的参数只要文本形似 JSON/Python 字面量，返回值类型或值就被改。影响面：swift infer/swift deploy 响应的 tool_calls[].function.arguments 与经 InferEngine._get_toolcall 的 GRPO 多轮 rollout（环境交互的参数解析）。模板自身训练渲染也不往返：_format_tool_calls 渲染再 get_toolcall 解析，arguments 不同。#10281/#10300 已为 xing4_0/minicpm5 修过同类（supports_tool_schema=True + 传 tools），Hunyuan/MiniMax 模板未同步。修复 !10490（open，2026-11-02 更新）：glm4_5/glm4_7/glm5_1、flint、ling3、spark2_5、seed_oss 非字符串工具参数改 json.dumps 渲染（镜像已修路径）。11-02 留观判 48h 窗口：PR open 无 issue 内数值实测；core 复核 2026-11-04 issue open 0 评论、PR open 0 评论，无维护者回应——正文自含渲染-解析往返矛盾与跨模板对照（vLLM hy_v3 parser 行为即目标行为），机制证据自洽，按窗口到点收录。'
+  source: GitHub issue：https://github.com/modelscope/ms-swift/issues/10461 （open）；修复 PR：https://github.com/modelscope/ms-swift/pull/10490 （open）
+  behavior: agent 训练/推理时模型按模板格式输出工具调用，字符串参数恰好长得像数字/JSON（如邮编 12345、名字 true）时，解析出的 arguments 里类型被改（string 变 int/bool）或值被换：GRPO 多轮 rollout 中环境拿到错误参数执行错误动作、奖励判定错；swift infer/deploy 的响应同样错。训练全程无报错，模板渲染再解析自身都不往返（渲染的参数与解析回的不同），只有对照工具 schema 才能发现。
+  trigger_surface: ms-swift hy_v3 / minimax_m2 / minimax_m3 agent 模板的 get_toolcall（字符串文本形似 JSON/Python 字面量的参数）；GRPO 多轮 rollout 与 infer/deploy
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 分词/模板
+        to: 输出解析
+      effect:
+        from: 训练样本流
+        to: 输出内容
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - labels.stage

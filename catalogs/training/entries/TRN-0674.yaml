@@ -1,0 +1,57 @@
+id: TRN-0674
+legacy_ids: []
+slug: te_welford_epilogue_unmasked_mean_var
+aliases: []
+title: TE 后端 Welford epilogue 无掩码 mean/var 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: Welford epilogue 代码生成
+  behavior: 归约循环内 load 带掩码（正确），epilogue 读 weight/bias 与 store 均无掩码；wrapper 的 R0_BLOCK_HINT 被当候选补充而非硬约束
+effect:
+  objects:
+  - 数值结果
+  detail: layer_norm mean/var 86.5% 元素失配、最大绝对差 23074，lane 8..63 散写破坏相邻行；R0_BLOCK=8 时 0 失配
+  visibility: 静默错误
+mitigation:
+  detect: TE 后端 layer_norm/归约 epilogue 与 eager 对账；watch autotuner 选大 R0_BLOCK 的用例
+  fix: 待定（issue 给出修复方向未实施：epilogue 补掩码或将 R0_BLOCK_HINT 作硬约束；TE codegen 为物理隔离 fork）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-09'
+remarks: 与 TRN-0653 同属 triton_experimental 归约代码生成静默错值族；触发点不同（epilogue 无掩码 vs 尾块 mask 删除）
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5954
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0653
+- kind: cross
+  target: INF-2460
+pattern: PAT-TRN-0066
+original:
+  mechanism: 'Ascend/pytorch #5954（open；triton_experimental 后端，CI torch213 车道 profile）：test/_inductor/test_var_mean.py 的 test_welford_simd_codegen/test_welford_simd_tail_codegen 确定性数值损坏——86.5%（1687648/1950720）元素失配、最大绝对差 23074@(98,62,1)，与 CI 日志逐位一致；default 后端无此问题。根因：TE codegen 生成的 kernel 把归约索引拆为 r0_2=r0_4+8*r0_5（内层 extent=8），autotuner 选中 R0_BLOCK=64（XBLOCK=128、grid=40）时：归约循环内 tl.load 带掩码（r0_index<8）mean/var 累加正确；epilogue 无掩码——in_ptr1+(r0_2) 对 64 元素 weight/bias 读到偏移 119（越界），tl.store 把 lane 8..63 散写进行首相邻行破坏无关数据。wrapper 发射的 R0_BLOCK_HINT[8,8] 在 torch_npu/_inductor/triton_experimental/npu_triton_heuristics.py 约 2831 行仅作候选补充而非硬约束。最小复现：(381,8,80,8) fp32→permute(0,2,1,3).contiguous().view(381,80,64)→F.layer_norm((64,),eps=1e-6)，同一 kernel R0_BLOCK=64 失配 79.5%、R0_BLOCK=8 全对。修复方向未实施（TE codegen 为约 6.5k 行物理隔离 fork，需自带验证）。与 TRN-0653（分核归约尾块 mask 丢失）同族不同触发点。推理库 INF-2460 已收同源。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5954
+  behavior: NPU 上以 TORCHINDUCTOR_NPU_BACKEND=triton_experimental 对含 layer_norm（Welford 均值/方差 epilogue）的函数做 torch.compile：autotuner 选中大于内层归约 extent 的 R0_BLOCK（如 64>8）时，编译结果 86.5% 元素与 eager 不符、最大绝对差上万，且把越界 lane 散写进相邻输出行破坏无关数据；全程无报错，与 CI 日志逐位一致、确定性复现，R0_BLOCK=8 则完全正确。
+  trigger_surface: Ascend pytorch triton_experimental 后端 torch.compile + Welford/layer_norm epilogue；autotuner 选中 R0_BLOCK>内层归约 extent
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -90,12 +90,16 @@ def search(query, topk=8, mode="hybrid", repo=None, category=None,
                   "(e.g. KV缓存) or neg_rejected / neg_blindspot / neg_appendix; `stats` lists them "
                   "under by_category. Old categories (cat1 / KV9 / HW ...) were retired 2026-10-26.",
                   file=sys.stderr)
+        if pattern and not any((e.get("pattern") or "") == pattern for e in idx.entries):
+            print(f"fault-rag: no indexed entry belongs to pattern {pattern!r} "
+                  "(use PAT-INF-xxxx or PAT-TRN-xxxx).", file=sys.stderr)
         return []
 
     dense_r = {}
     if mode in ("hybrid", "dense"):
+        mat = idx.mat
         qv = embed_mod.embed_one(query)
-        sims = idx.mat @ qv  # unit vectors -> cosine
+        sims = mat @ qv  # unit vectors -> cosine
         dense_r = _ranks(sims, eligible)
 
     bm25_r = {}
@@ -160,7 +164,14 @@ def lookup(q):
               f"`tools/catalog_tool.py find {q}` in the upstream catalog repo (also covers merged ids).",
               file=sys.stderr)
     elif re.fullmatch(r"(?:INF|TRN)-\d+", q):
-        # An unknown catalog ID must not partially match an unrelated ID.
+        # An unknown catalog ID must not partially match an unrelated ID; report if merged/retired.
+        from . import parse as parse_mod
+        inactive = parse_mod.load_inactive_entries().get(q)
+        if inactive:
+            into = f" -> merged_into {inactive['merged_into']}" if inactive.get("merged_into") else ""
+            rem = f" ({inactive['remarks']})" if inactive.get("remarks") else ""
+            print(f"fault-rag: {q} has status={inactive['status']}{into}{rem} and is excluded from the active index.",
+                  file=sys.stderr)
         rows = []
     else:
         ql = q.lower()

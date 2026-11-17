@@ -1,0 +1,62 @@
+id: INF-2378
+legacy_ids: []
+slug: foreach_sin_fp32_large_arg_unbounded_output
+aliases: []
+title: ForeachSin fp32 大参数返回 inf 越界值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: foreach_sin fp32 通路
+  behavior: fp32 通路直接调 Sin<float,false>，角度归约 x-k*2π 中间量在 |x| 超出归约范围后溢出返回 ±inf；fp16 走 half 指令、bf16 值域够不到阈值不受影响
+effect:
+  objects:
+  - 数值结果
+  detail: fp32 输入 |x|>=1e10 时输出 5.18e21 或 ±inf 等 [-1,1] 外越界值且不报错，7 值复现全越界（std::sin 参考均在 [-1,1]）；同值 1e4 时 fp16/bf16/fp32 全对；精度线 special_input=max 的 28 条全 FAIL
+  visibility: 数值异常
+mitigation:
+  detect: 对大幅值输入抽查 |sin(x)|<=1 有界性
+  fix: 待定（issue open，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8007
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnForeachSin（Atlas A2 910B2、CANN 9.2.0、ops-nn master 12ad726c）fp32 输入 |x|>=1e10 时返回 inf/-inf/1e21 级越界值。源码定位 foreach/foreach_sin/op_kernel/foreach_sin.cpp:32-42 tiling key 分派：fp32 走 Sin<float,false>（lib/math/kernel_operator_sin_intf.h），该实现角度归约（argument reduction）在 |x| 超出可表示范围后 x-k*2π 中间量溢出返回 ±inf；fp16 走 Sin<half,false> 指令、bf16 虽升 fp32 但值域起点未达失效阈值，两者正常。自包含 C++ 复现（7 值跨失效区间）：1e10→5.18e21、1e20/1e30/1e35/1e37/1e38/3.4e38→±inf，全部越界（std::sin(double) 参考均在 [-1,1]）；dtype 对照同值 1e4 时 fp16/bf16/fp32 全对、fp32 1e10 才错；双算子对照 ForeachSinh 返回 inf 合理（真值溢出）、ForeachSigmoid/Sqrt 正确，排除输入构造问题。精度线 775 条中 special_input=max 的 28 条全 FAIL（fp32 与 bf16 各 14，fp16 无）。环境：npu:2/npu:7 Health=OK，npu-smi 26.1.1。
+  source: https://gitcode.com/cann/ops-nn/issues/8007
+  behavior: 对 fp32 大幅值（|x|>=1e10）输入调用 aclnnForeachSin，sin 结果是 1e21 量级或 ±inf，而不是有界 [-1,1] 内的值；不报错。小幅值与其他 dtype 正常，容易在长尾大值数据上被忽视。
+  trigger_surface: Atlas A2（910B2）；CANN 9.2.0；aclnnForeachSin fp32 通路 |x|>=1e10。
+  discovery: 2026-11-03 每日扫描
+  notes:
+  - 2026-11-04 回访：#8007 仍 open，无更新
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

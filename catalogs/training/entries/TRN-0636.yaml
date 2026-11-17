@@ -1,0 +1,60 @@
+id: TRN-0636
+legacy_ids: []
+slug: opstransformer_flash_attn_score_a6_dn_tail_stride_mismatch
+aliases: []
+title: FlashAttentionScore A6 DN 尾块行距不一致精度错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FA DN fixpipe dstStride
+  behavior: A6 DN 路径 fixpipe dstStride 写死 s1BaseSize，vec 侧按 Align32(s1RealSize)/CV_RATIO 行距读——尾块 s1RealSize≤32 时行距不一致，softmax 数据错位。
+effect:
+  objects:
+  - 数值结果
+  detail: TND varlen B=2、seq_q=[250,1]、seq_kv=[41,40]、d=192/dv=128、bf16 无 mask：输出从第 250 行（batch1 唯一输出行）起错误、batch0 前 250 行正确；A5（CV_RATIO=2）无此问题
+  visibility: 静默错误
+mitigation:
+  detect: TND varlen 且存在 s1 尾块（Align32(s1RealSize)<s1BaseSize）的用例对拍 CPU 参考；batch1 短序列行先错是判别特征
+  fix: 修复方案在 issue 内给出（CV_RATIO==1 分支 dstStride 改为跟随 nSize，classic DN=Align32(s1RealSize)），批次内未见关联 MR，状态未核实
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-06'
+remarks: 推理库 INF-2412 已收同源；训练侧 var→TRN-0608（FA 家族 shape/布局相关静默错值族）
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7138
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2412
+- kind: var
+  target: TRN-0608
+pattern: PAT-TRN-0051
+original:
+  mechanism: 'cann/ops-transformer issue #7138（2026-11-05 open）。A6（ascend960dt，DAV_9201）FlashAttentionScore 走 DN 路径且 s1 存在尾块（Align32(s1RealSize)<s1BaseSize）时输出精度错误。触发链：d=192>128 → tiling 选 S1Base=64；无可选输入 → A6 IsDnForTrain=true → classic DN 路径（IterateBmm1DnSplitK+ProcessVec1Dn）；cube 侧 DN fixpipe CV_RATIO==1 分支 dstStride 写死 s1BaseSize，vec 侧以 m=Align32(s1RealSize)/CV_RATIO 为行距读取 bmm1 UB 瓦片；尾块 s1RealSize≤32 时 nSize=32≠s1BaseSize=64，fixpipe 写入行距与 vec 读取行距不一致 → softmax（max/sum/exp）数据错位。A5 CV_RATIO=2 时 dstStride=nSize/2 恒等于 vec 侧 m，无此问题。复现：TND varlen B=2、headNum=1、seq_list_q=[250,1]、seq_list_kv=[41,40]、d=dk=192、dv=128、bf16、无 mask——输出从第 250 行（batch1 唯一输出行）开始错误，batch0（0~249 行）正确。修复方案（issue 内给出）：CV_RATIO==1 分支 dstStride 改为跟随 nSize（classic DN=Align32(s1RealSize)，Causal DN=Align64(s1RealSize)），与 vec 侧对齐；满块时 nSize==s1BaseSize 行为不变。批次快照未见关联修复 MR。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7138 （open；含根因定位与修复方案）
+  behavior: A6 NPU 上 FlashAttention 前向在变长序列（TND varlen）且某条序列长度不足一个分块（尾块）时，该短序列的注意力输出静默算错（softmax 数据错位），不报错；实测 batch0 的 250 长序列正确、batch1 的 1 长序列整行错。训练前向/反向经过该路径的注意力输出被污染，loss 无显式异常。A5 平台不受影响。
+  trigger_surface: cann FlashAttentionScore DN 路径 + A6/ascend960dt + TND varlen + s1 尾块（s1RealSize≤32）+ d=192（S1Base=64）；bf16 实测
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

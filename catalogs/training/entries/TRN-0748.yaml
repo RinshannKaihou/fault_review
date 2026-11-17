@@ -1,0 +1,58 @@
+id: TRN-0748
+legacy_ids: []
+slug: deepspeed_checkpoint_tag_nonatomic_latest_mixed
+aliases: []
+title: DeepSpeed 检查点 tag 非原子提交致混合状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: deepspeed
+    component: save_checkpoint latest 写入
+  behavior: rank0 在本 rank 文件落盘后、dist.barrier() 之前就写 <save_dir>/latest，且各 rank 用 torch.save 直接写最终文件名并原地截断 latest，中间无临时文件与 fsync
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  detail: '#9067：latest 指向缺 ZeRO 分片的 tag，每次重启抛 ZeRORuntimeException 直到人工改 latest；#9066：回滚后重存崩溃留两次 run 混合分片，load 成功且静默续训'
+  visibility: 静默错误
+mitigation:
+  detect: 保存后校验 tag 目录内各 rank 分片齐全再读 latest；跨 run 复用 tag 时比对 client_state 与分片内的 run 标识
+  fix: 已有修复 PR/MR：https://github.com/deepspeedai/DeepSpeed/pull/9071（发布状态待核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: 两单同属『检查点 tag 非原子提交』：#9067 是顺序/原地写的 loud 面，#9066 是混合分片被静默加载的 silent 面。
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/9067
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/issues/9066
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/9071
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeedEngine.save_checkpoint（deepspeed/runtime/engine.py）把每个 rank 的文件用 torch.save 直接写到 <save_dir>/<tag>/ 下的最终文件名，rank0 在自己文件写完后立即写 <save_dir>/latest，然后才走 dist.barrier()（#2202 把 barrier 移到写入之后），因此 latest 的写入与其它 rank 的分片完成之间没有任何顺序约束；latest 又是 open(...,''w'') 原地截断后写入，中间窗口为空文件，且 latest 与分片都没有 fsync。两单都给出 2 CPU rank、gloo、ZeRO-1 的独立复现脚本，并用测试专用 sleep 让窗口确定化。① #9067：另一 rank 仍在写 ZeRO 分片时 job 被杀，latest 指向缺该分片的 tag，之后每次 load_checkpoint(save_dir) 都抛 ZeRORuntimeException: Unable to load ZeRO checkpoint ... Saved fp32 weights are required for this checkpoint load，报错不指向缺失分片，需人工把 latest 改回上一个 tag；在 open 与 write 之间被杀则留下空 latest，重启 AssertionError。② #9066：显式 load_checkpoint(load_dir, tag=<older>) 回滚后，下一次保存复用被放弃那次 run 的 global_step<N> tag（默认 tag 由步数生成，两次 run 重名），崩溃可留下 rank0 model states 与部分分片来自 run B、其余分片来自 run A 的混合 tag，下一次 load_checkpoint 成功并接着训练；正在重写的文件被截断时则抛 EOFError。修复 PR #9071（open）在 checkpoint_engine.commit() 之后、rank0 写 latest 之前补 barrier，并用临时文件+rename 写 latest，只覆盖 #9067。'
+  source: https://github.com/deepspeedai/DeepSpeed/issues/9067 ｜https://github.com/deepspeedai/DeepSpeed/issues/9066 ｜修复 https://github.com/deepspeedai/DeepSpeed/pull/9071
+  behavior: 训练被 kill 或节点掉电后重启：一种表现是 latest 指向一个缺了某个 rank 分片的 tag，load_checkpoint 直接抛 ZeRORuntimeException，报错只说 fp32 权重缺失、不说是哪个分片，必须人工把 latest 改回上一个 tag 才能恢复（上一个 ckpt 完好）；另一种更隐蔽——回滚到旧 tag 继续训、下一次保存又写回同一个 global_step 名字，此时再崩，目录里留下两次 run 混合的分片，load_checkpoint 不报错、训练照常继续，权重和优化器状态却来自不同 run，只能靠指标异常反推。
+  trigger_surface: DeepSpeed save_checkpoint + load_checkpoint；默认 save_latest=True、默认 global_step<N> tag；ZeRO-1/2（rank0 额外写 model states）、多 rank 且各 rank 落盘时间不齐；回滚场景需显式 tag 加载后在同一 save_dir 继续训。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix

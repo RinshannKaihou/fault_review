@@ -1,0 +1,57 @@
+id: TRN-0768
+legacy_ids: []
+slug: msswift_qwen_reasoning_content_dropped
+aliases: []
+title: Qwen SFT 丢 reasoning_content 且错切标签
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: RowPreprocessor/Qwen 模板
+  behavior: RowPreprocessor 只保留 role/content/loss/loss_scale，独立 reasoning_content 被删；并入 content 后模板把思考中字面标签当边界。
+effect:
+  objects:
+  - 训练样本流
+  - 输入编码
+  detail: reasoning_content='BEFORE quote 字面起始标签 then AFTER' 预处理后整字段消失；同一文本放进 content 后规范化只剩 '" then AFTER'，前文被删除；发生在 tokenization 之前。
+  visibility: 静默错误
+mitigation:
+  detect: 预处理后回读 messages，断言 reasoning_content 保留；用含字面标签的思考文本做模板渲染回归。
+  fix: 修复 PR https://github.com/modelscope/ms-swift/pull/10570 、https://github.com/modelscope/ms-swift/pull/10571（均 open 2026-11-14，未合入）
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10569
+  kind: github_issue
+- url: https://github.com/modelscope/ms-swift/pull/10570
+  kind: github_pr
+- url: https://github.com/modelscope/ms-swift/pull/10571
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'modelscope/ms-swift #10569（2026-11-14，open，ms-swift 4.5.3 / Transformers 5.16.1 / tokenizers 0.23.2 / Qwen3.8-27B，4.6.1 仍有该处理）。swift/dataset/preprocessor/core.py 的 RowPreprocessor._check_messages 只保留 role/content/loss/loss_scale，assistant 消息里的独立 reasoning_content 字段被直接删除；把思考并入 content 后，swift/template/templates/qwen.py 的 Qwen3_5Template._swift_prepare_inputs 先 partition(结束标签) 再 rsplit(起始标签,1)，思考正文中引用的字面标签被当成协议边界。实测 reasoning_content=''BEFORE quote 字面起始标签 then AFTER'' 经 _check_messages 后整字段消失；同一文本放进 content，规范化结果只剩 ''" then AFTER''，前半段被删除。丢失发生在 tokenization 之前；报告者已提交 #10570（保留独立字段）与 #10571（按字段编码、区分字面标签）两个修复 PR。'
+  source: https://github.com/modelscope/ms-swift/issues/10569 ；修复：https://github.com/modelscope/ms-swift/pull/10570 、https://github.com/modelscope/ms-swift/pull/10571
+  behavior: Qwen 系列 SFT 数据里带独立 reasoning_content，或把思考文本合并进 content 且思考中引用了字面 think 开/闭标签时，预处理会丢掉整段推理内容，或把思考前半段删掉：训练样本静默缺标签，loss 仍正常下降。数据检查要在 tokenization 之前做；用官方模板渲染后对比原始 messages 才能发现字段被删或文本被截。
+  trigger_surface: ms-swift Qwen SFT 数据预处理与 Qwen3_5Template；4.5.3 / 4.6.1 源码。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 分词/模板
+        to: 数据管线

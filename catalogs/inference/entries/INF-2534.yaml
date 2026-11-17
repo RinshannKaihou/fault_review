@@ -1,0 +1,53 @@
+id: INF-2534
+legacy_ids: []
+slug: rope_int64_mode_tiling_narrow_truncation
+aliases: []
+title: RoPE int64 mode 截断致非法值当 0
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: cann
+    component: RoPE mode 属性读取
+  behavior: RotaryPositionEmbedding/Grad 的 int64 mode 在 tiling 层按 char/uint32/int32 窄类型读取，高位丢失：mode=2^32 低 32 位为 0，被当 mode=0 放行执行。
+effect:
+  objects:
+  - 数值结果
+  detail: CANN 9.3.0 + Ascend950PR 实测前向与 Grad 对 mode=4294967296 均返回 0，执行 half 模式；非法值未按参数错误拒绝，语义静默错误。
+  visibility: 静默错误
+mitigation:
+  detect: 传 mode=2^32 等超出 int32 的 int64 值，检查两段是否返回 0；与 mode=0 输出逐字节对比，相同即命中截断。
+  fix: 修复 PR !15834（open，未发布）：tiling 统一按 int64 读取 mode 并做范围校验。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: C++ aclnn 直调契约外非法入参（GIGO 负向测试），正常 PyTorch/LLM 框架路径不可达
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7470
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15834
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-transformer issue #7470（CANN 9.3.0 + Ascend950PR 实测）：RoPE 系列算子 RotaryPositionEmbedding / RotaryPositionEmbeddingGrad 的 int64 attr mode 在 tiling 层被按 char/uint32/int32 窄类型截断读取，高位丢失：mode=2^32（4294967296，低 32 位为 0）等非法值被静默当成 mode=0（half）接受执行，aclnn 返回成功但语义错误；前向与 Grad 对 mode=4294967296 均返回 0。来源是 Alice_zhou/issue#497、#498 排查中的衍生发现（#386 同族，ARPE V2 的 layout 读取正确不受影响）。修复 PR !15834 把 tiling 统一按 int64 读取 mode 并做范围校验，非法值返回参数错误。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7470 ｜修复 https://gitcode.com/cann/ops-transformer/merge_requests/15834
+  behavior: 调用 RoPE/RoPE Grad 时如果 mode 来自配置/前端并被写成超出 32 位的整数（例如 2^32），接口不报错，直接按 mode=0 的 half 语义算位置编码；模型仍能生成文本，但位置编码方式与请求不符，长序列或特定 RoPE 变体的精度会异常，只有逐字节对比 mode=0 输出或检查 tiling 参数才能发现。
+  trigger_surface: cann/ops-transformer RotaryPositionEmbedding/RotaryPositionEmbeddingGrad；int64 mode 超出 int32 范围（如 2^32）；CANN 9.3.0、Ascend950PR。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

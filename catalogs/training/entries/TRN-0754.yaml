@@ -1,0 +1,53 @@
+id: TRN-0754
+legacy_ids: []
+slug: openrlhf_entropy_logsumexp_offset_cancellation
+aliases: []
+title: OpenRLHF entropy 用 logsumexp 相减致偏移抵消
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: compute_entropy 相减实现
+  behavior: entropy 由 logsumexp(logits) 减期望 logit 两个大数相减得到，logits 有公共偏移时两项相消，float32 上把熵抹成 0 并留下非零梯度
+effect:
+  objects:
+  - 训练信号
+  - 梯度
+  detail: 四个相等的 float32 logits=1e8 实测 entropy=0、梯度非零（应为 log4 与零梯度）；接近 dtype 极值的有限 logits 还会给出非有限结果
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 logits 加减公共常数后比对 entropy 与 d(entropy)/d(logits)；理论上应不变，实测会变即命中
+  fix: 修复 PR https://github.com/OpenRLHF/OpenRLHF/pull/1411 （open）：改用 log_softmax 与概率计算，零概率项的 log prob 置 0 以保持 0*log0 极限；新增 33 例（主干 27 失败）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: 与 TRN-0218（entropy bonus 用未除温度的 logits）同函数域但机制不同：那条是温度漏除，本条是 logsumexp 相减的相消。
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1411
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'OpenRLHF 的 compute_entropy 用 logsumexp(logits) 减去期望 logit 来求熵，两项都可能很大且只差一个较小的量；当 logits 带公共偏移（softmax 不变）时，float32 上两项相消，熵被舍入成 0，同时梯度不再为 0。PR #1411 给出的最小例子：四个相等的 float32 logits 取 1e8，实现返回 entropy=0、梯度非零，正确结果是 log(4) 与零梯度；接近 dtype 极值的有限 logits 还会产生非有限值。修复方式是从 log_softmax 及其概率计算熵，并在乘法前把「概率恰好为 0」项的 log prob 置 0，以在正向和反向都保持 0*log(0) 的极限；函数签名、输出 dtype、温度处理与 NaN 输入行为不变。验证：新增 33 例在未改主干上 27 失败 6 通过、打补丁后 33 全过（含两项既有 actor 温度用例共 35 过）；均匀分布用硬编码 log(vocab_size) 与零梯度做参考，非均匀 float16/bf16/float32/float64 用中心化双精度值与独立闭式熵梯度比对，覆盖正负公共偏移、dtype 极值、输入不变与 NaN 对照；另用真实 tiny GPT2LMHeadModel 过 Actor、三个温度、两符号偏移验证两次 momentum-SGD entropy-bonus 步后均匀策略不变，以及两个 torch.compile(fullgraph=True) CPU Inductor 用例与参考对拍。'
+  source: https://github.com/OpenRLHF/OpenRLHF/pull/1411
+  behavior: PPO 训练里 entropy bonus 的系数看起来生效、loss 也正常，但 entropy 指标长期贴在 0 附近、策略很快失去探索；原因是 logits 只要带一个较大的公共偏移（数值上不改变策略），熵就被两个大数相减抹成 0，同时还往 actor 注入了一个本来不该有的梯度。只有把 logits 整体平移再做对比、或对拍独立实现的熵梯度才能发现。
+  trigger_surface: OpenRLHF PPO actor 的 entropy bonus（compute_entropy）；logits 存在较大公共偏移或接近 dtype 极值；float32/float16/bfloat16 均受影响。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

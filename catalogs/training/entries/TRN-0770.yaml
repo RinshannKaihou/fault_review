@@ -1,0 +1,45 @@
+id: TRN-0770
+legacy_ids: []
+slug: verl_fused_linear_ppo_bf16_temperature_divide
+aliases: []
+title: verl FusedLinearForPPO 先 bf16 除温度再升 fp32
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: verl
+    component: FusedLinearForPPO torch
+  behavior: torch 后端把 bf16 logits 先除以 temperature 再升到 fp32 算 logprob 与 entropy，除法舍入停在 bf16 精度上
+effect:
+  objects:
+  - 输出分布
+  - 训练信号
+  detail: T=0.7 时 logprob 与 rollout 采样器公式最大差 0.054（修复后 3.8e-6），entropy 仍以 bf16 返回；旧策略 logprob 偏差直接进入 importance ratio
+  visibility: 静默错误
+mitigation:
+  detect: 同 batch 用 fused 与未融合路径（fp32 logits/T）对拍 logprob 与 entropy；temperature≠1 时差异随 bf16 量化步长放大
+  fix: 修复 PR https://github.com/verl-project/verl/pull/8684（open，未合入）：先升 fp32 再除温度；H100 T=0.7 实测 logprob 与采样器公式差 3.8e-6（原 0.054）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-17'
+remarks: 与 TRN-0514（fused kernel 丢 lm_head logit 缩放）同在 verl fused PPO logits 路径，但机制不同：那条是完全漏乘模型缩放，本条是温度除法的 dtype/顺序错。
+evidence:
+- url: https://github.com/verl-project/verl/pull/8684
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'verl 的 FusedLinearForPPO（trainer 默认 fused backend）在 torch 后端中先对 bf16 logits 做 temperature 除法，再把结果 upcast 到 fp32 计算 log-prob 与 entropy。rollout 采样器侧用的是 fp32 logits / T，两条路径在除法这一步就分叉：bf16 的量化步长把 logprob 误差放大到 0.054（T=0.7）。PR #8684 修复为先把 logits 升到 fp32 再除以 temperature，并新增 CPU 测试 test_fused_linear_for_ppo_temperature_on_cpu.py（主干失败、打补丁通过）。PR 实测：H100、T=0.7 时 log-prob 与采样器公式差 3.8e-6（原 0.054）；对 fp32 的梯度误差 0.0128（主干 0.0205，未融合 bf16 路径 0.0127）；行不变性不变；entropy 仍以 bf16 返回。PR 描述称无其他 open PR/issue 覆盖该点。'
+  source: https://github.com/verl-project/verl/pull/8684
+  behavior: 在 verl 上跑 PPO/GRPO 且 temperature≠1 时，训练侧重算的 old_logprob 与 rollout 采样器记录的 logprob 系统性对不上（T=0.7 最大差 0.054），importance ratio 与 KL 因此带一个随温度放大的固定偏差；训练不报错、loss 曲线看起来正常，只有把同批 logits 分别按 fused 路径与 fp32/T 公式对拍才能发现。温度越低差异越大，T=1 时不显现。
+  trigger_surface: verl FusedLinearForPPO torch 后端（默认 fused backend）+ temperature≠1 的 PPO/GRPO 训练 + bf16 logits；H100 实测。
+  discovery: 2026-11-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-17'
+  audit:
+    date: '2026-11-17'
+    method: manual_stewardship_review

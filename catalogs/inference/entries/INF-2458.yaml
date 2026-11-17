@@ -1,0 +1,72 @@
+id: INF-2458
+legacy_ids: []
+slug: vllm_eplb_async_worker_error_stall_and_stale_reset_leak
+aliases: []
+title: vLLM EPLB worker 异常静默停摆与 reset 泄漏
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: async EPLB worker
+  behavior: async EPLB worker 异常被吞：step() 不抛、引擎 HEALTHY，EPLB 永久停摆；FT reset 另有 4 种陈旧泄漏（stale error 复写、竞态、信号被重标、per-rank 判定不一致）。
+effect:
+  objects:
+  - 性能/资源
+  - 可用性/进度
+  detail: 带 --enable-fault-tolerance 服务时 worker 异常后负载均衡静默失效（专家分布固化、吞吐劣化），引擎健康检查仍 HEALTHY；或 FT 恢复后反复再次故障/集合通信超时。
+  visibility: 性能退化
+mitigation:
+  detect: 待定
+  fix: '修复 PR https://github.com/vllm-project/vllm/pull/66146 （open，未合入，2026-11-07 仍在更新）：worker 错误经 #62009 路径上报 FT、reset_eplb_async_state() 清错误；作者 follow-up 注明 4 种 stale 泄漏场景只记录未修（硬化尝试已 revert f38055c02f）。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: 异步 EPLB 负载均衡线程停摆，计算结果无损的纯性能问题
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/66144
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/pull/66146
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vLLM --enable-fault-tolerance 下 async EPLB worker 线程的异常不会传导到任何引擎路径：EplbState.step() 不抛错、engine 状态保持 HEALTHY，EPLB 就此永久停摆（rebalancing 静默失效）。修复 PR #66146 的根因定位：WorkerSentinel.retry() 调 reset_eplb_async_state() 后 _reinit_eplb_groups()，但 async worker 线程可能仍卡在 reset 前周期的 collective 或 stream sync 里，恢复过程既不停 worker 也不等它；ft_reset_epoch 只让 worker 丢弃 stale *result*，不覆盖以下场景（作者 2026-11-06 follow-up，全部在 main 上）：1）reset 前的 collective 在 retry() 清空 async_worker_error 之后超时，其异常随后写入，恢复后第一次 rearrange 即抛、FT 再次故障；2）worker 侧先查 epoch 再写 error 的 check-then-write 竞态，reset 可落在两步之间；3）rearrange_event 在 worker 忙时（如卡 stream.synchronize()）排队，reset 落在 worker 取信号之前，worker 按新 epoch 把陈旧周期当当前工作执行——且 reset_eplb_async_state() 先于 _reinit_eplb_groups()，该周期跑在旧失败组上；4）任何 per-rank 的 stale 判定决定是否进 collective 时，各 rank 判定方向可不同，rank 间集合通信不匹配致恢复组超时；另 worker 在 _transfer_cycle() 内无同步地取 get_eplb_group()，与 _reinit_eplb_groups() 竞争，rank 可在不同组上。作者在 #66146 试过 4 种硬化（epoch 条件写、写后复查、信号带 epoch、(epoch,exc) 存储）均因上述竞态不充分而 revert（f38055c02f），PR 收敛为最小修复：上报 worker 错误 + reset 清错。单测在 tests/distributed/test_eplb_utils.py（单 rank 真实 EplbState.step()/rearrange()/async worker/FT reset）。'
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/66144 （open）；修复 PR https://github.com/vllm-project/vllm/pull/66146 （open，2026-11-07 更新）；作者 follow-up 评论 2026-11-06
+  behavior: 开启 --enable-fault-tolerance 的 vLLM 服务中，异步 EPLB worker 出异常时负载均衡静默停止：日志无报错、健康检查显示 HEALTHY、服务继续出 token，但专家负载均衡从此固化（长期吞吐与显存分布劣化），只有翻看内部状态才能发现 rebalancing 已死。走 FT 恢复（retry）时还可能遇到恢复后第一次 rearrange 立即再故障（陈旧错误复写）、或各 rank 集合通信错配导致恢复组超时，表现为反复 fault-recover 循环。
+  trigger_surface: vLLM --enable-fault-tolerance + EPLB（async worker）+ worker 线程异常（如 collective 超时/stream sync 失败）；停摆在任何 worker 异常时出现，陈旧泄漏 4 场景仅在 FT reset/retry 路径出现；#66146 合入前 main 均存在。
+  discovery: 2026-11-07 每日扫描
+  notes:
+  - '2026-11-08 回访：#66144 仍 open；修复 PR #66146 open 无变化（search 快照）'
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: MoE路由
+      effect:
+        from: 可用性/进度
+        to: 性能/资源
+      visibility:
+        from: 静默错误
+        to: 性能退化
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - status

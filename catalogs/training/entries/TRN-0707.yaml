@@ -1,0 +1,62 @@
+id: TRN-0707
+legacy_ids: []
+slug: torchtitan_async_pinned_staging_before_optim_step
+aliases: []
+title: 异步 ckpt 落盘先于优化器步存旧权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: torchtitan
+    component: async ckpt staging 流排序
+  behavior: DCP DefaultStager 在自有 stream 从后台线程拷贝、不等待当前流；不 log 的步上 train_step 在 optim.step() 后立即返回无 host 同步，save 开始时优化器步可能仍在执行
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  detail: ckpt 存进 step 前的权重/优化器状态或新旧混合，保存成功无警告；resume 后 loss 与原轨迹不一致（2xH100 验证，修复后 bitwise 相等）
+  visibility: 静默错误
+mitigation:
+  detect: ckpt 频率与 log 频率错开配置下做 resume 对拍（loss bitwise）；staging 前后对参数做 stream 同步 checksum
+  fix: 修复 PR https://github.com/pytorch/torchtitan/pull/5989 已 merged（2026-11-10T07:14Z）；发布未核实
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/5989
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'pytorch/torchtitan #5989（open PR，2026-11-09，2xH100 验证）：async_mode="async_with_pinned_mem" 下 DCP 的 DefaultStager 在自有 stream 上把 state 拷到 CPU（后台线程），该 stream 不等当前流；ckpt 频率与 log 频率不对齐时（如 ckpt 每 20 步、log 每 11 步），无 log 的步 train_step 在 optim.step() 后直接返回、无 .item() 类 host 同步，save 开始时优化器步可能仍在 GPU 执行——staged 拷贝在 4/5 试验中持旧值。训练流顺序为 optim.step()→CPU 工作（log）→ckpt staging（copy），只有 log 的 .item() 会让 CPU 等 GPU。修复：async_with_pinned_mem save 前让 staging stream 等待当前流（CPU 不阻塞）；async 模式（当前流 staging）与 torch_checkpointing 后端（stager 已等当前流）不受影响。验证：不修 resume loss 不同、修复后 bitwise 相等；5 次排队试验 4/5 旧值→5/5 新值。'
+  source: https://github.com/pytorch/torchtitan/pull/5989
+  behavior: torchtitan 开 async_with_pinned_mem 异步 checkpoint、且存盘频率与日志频率不对齐：checkpoint 文件里的权重/优化器状态是 step 前的旧值或新旧混合，保存成功、无任何警告；从该 ckpt resume 后 loss 与原轨迹不重合（bitwise 不同），训练表面继续，只有 resume 对拍才能发现存了旧状态。
+  trigger_surface: torchtitan async_mode=async_with_pinned_mem；ckpt 间隔步不触发 log（无 host 同步）时保存
+  discovery: 2026-11-10 每日扫描
+  notes:
+  - 2026-11-11 回访：回访：修复 !5989 merged。
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - mitigation.fix
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

@@ -1,0 +1,47 @@
+id: INF-2511
+legacy_ids: []
+slug: inductor_erf_dtype_roundtrip
+aliases: []
+title: NPU erf 分解 dtype 回转破坏提升契约
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: aten.erf 自定义分解
+  behavior: aten.erf 的 NPU 自定义分解对非 fp32 输入先升 fp32 计算再回转 orig_dtype：bool/int64 的 INT_TO_FLOAT 提升结果被强行转回整型，破坏输出 dtype 契约。
+effect:
+  objects:
+  - 数值结果
+  detail: torch.compile 路径 erf(bool/int64) 返回原 dtype 而非提升的 float32（eager NPU/CPU 与 meta 均 float32），bool 结果被压回 0/1 语义；TestInductorOpInfoNPU 两例 dtype 断言失败。
+  visibility: 静默错误
+mitigation:
+  detect: 对编译前后输出 dtype 做断言（torch.compile(torch.erf)(x).dtype vs eager）即可稳定区分。
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49444（keep aten.erf output dtype for bool/integral inputs，open 未发布）；边界：eager aclnnErf 不支持 DT_INT32（161002，支持列表无 INT32）与 fp64 设备能力为独立问题不在本缺陷范围。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6025
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu Inductor erf 分解 dtype 契约破坏：torch-npu master 694f3b3714（op-plugin pin eee88cf4）+ torch 2.16.0.dev20261107+cpu + triton-ascend 3.6.0.post2 + CANN 9.2.0-beta.2、Ascend 910B4。aten.erf 的 INT_TO_FLOAT 类型提升要求 bool/整型输入提升为默认浮点类型且结果保持浮点；eager NPU、eager CPU、meta 三条参考路径均返回 float32，仅编译路径返回输入原 dtype。根因：torch_npu/_inductor/decomposition.py 的 _override_gelu_decomp() 注册的 aten.erf.default NPU 自定义分解 _erf() 对非 fp32 输入计算后 out.to(orig_dtype)——该回转服务于 fp16/bf16 的上转计算再下转，但对 bool/int64 同样生效，把提升后的 float32 结果打回整型。同函数内 gelu/gelu_backward 有同形写法但 aten.gelu 不接受整型输入、当前无失败用例。
+  source: 'https://gitcode.com/Ascend/pytorch/issues/6025 '
+  behavior: 在 NPU 上对 bool 或 int64 张量调用 torch.compile 包装的 torch.erf：输出 dtype 变成 bool/int64（正确应为提升后的 float32），bool 输入的 erf 结果被压回 0/1；eager 路径完全正常，编译与 eager 自相矛盾。最小复现：x=torch.ones((4,4),dtype=torch.bool,device='npu') 时 torch.erf(x).dtype==float32 而 torch.compile(torch.erf)(x).dtype==bool。测试侧表现为 TestInductorOpInfoNPU 两个完整用例 dtype 断言失败。
+  trigger_surface: torch_npu Inductor 编译路径 + aten.erf 的 bool/int64 输入（910B4 实卡验证；torch-npu master 694f3b3714）；eager 不受影响。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

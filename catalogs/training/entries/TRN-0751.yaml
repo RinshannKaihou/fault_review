@@ -1,0 +1,54 @@
+id: TRN-0751
+legacy_ids: []
+slug: megatron_batch_invariant_gemm_strided_bias_int32_offsets
+aliases: []
+title: batch-invariant GEMM 非连续 bias 读错与偏移回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: megatron-lm
+    component: persistent GEMM 替换
+  behavior: 替换 aten::addmm 的 persistent GEMM 按连续布局取 bias 并忽略其 stride，64 位偏移标志按 numel>2^31 选，且不接受 alpha/beta 与多维 bias
+effect:
+  objects:
+  - 数值结果
+  detail: bf16 addmm(storage[::2],...) 1486/1650 元素错、部分 NaN（H100/GB200 实测），fp32 deepgemm 1518/1650；strided view 元素数不足但偏移过 2^31 时 int32 行偏移回绕读越界
+  visibility: 静默错误
+mitigation:
+  detect: 在 batch-invariant 进程里对 addmm 用 fp64 参考对拍（含 strided/多维 bias 与 alpha/beta）；用 launch spy 检查 A_LARGE/B_LARGE/C_LARGE 是否按最大元素偏移置位
+  fix: '修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9305 （open，堆叠在 #8957/#8867 之上）：按 stride 取 bias、支持任意可广播 bias 与 alpha/beta、按最大元素偏移选 64 位'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: Muon/RL 触发路径是作者按代码推断（未实跑），strided bias 错值与 int32 偏移是 H100/GB200 实测。
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9305
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'Megatron-LM 的 batch-invariant 模式（batch_invariant_backend=''triton''，或 ''deepgemm'' 下的 fp16/fp32 操作数）把 aten::addmm 换成 addmm_batch_invariant，内部跑 Triton persistent GEMM matmul_persistent（megatron/core/transformer/custom_layers/batch_invariant_kernels.py）。它与 torch.addmm 有三处偏离：① bias 按连续布局加载（kernel 取 bias_ptr + n），忽略 bias 的 stride，torch.addmm(storage[::2], a, b) 实际加的是 storage[n] 而不是 storage[2n]；② matmul_persistent 断言 bias 必须 1-D（Currently assuming bias is 1D），[1,N]/[M,1]/[M,N] bias 直接 AssertionError，addmm_batch_invariant 又没有 beta/alpha 参数，torch.addmm(..., beta=..., alpha=...) 在两个后端都抛 TypeError；③ A_LARGE/B_LARGE/C_LARGE 由 numel() > 2**31 决定，而列切片、padding 行、转置权重切片这类 strided view 元素数可能不到 2^31、最大元素偏移却已越过 2^31，偏移按 int32 计算后回绕。实测（H100 pdx 7986825、GB200 hsg 8780121，dyadic 输入下 fp32 乘积与和精确，正确实现必须等于 fp64 值舍入一次）：bf16 strided bias 场景 1486/1650 输出元素错（含 NaN），fp32 deepgemm 场景 1518/1650 错；8 个 bias/scalar 形态全部抛错；4 个 strided view 的 64 位标志全为 False（如偏移到 2457593855 仍 A_LARGE=False）。替换是进程级的，除推理调用点外训练侧也会走到，例如 Muon 优化器的 Newton–Schulz 步（v0.3.0 pin）调用 torch.addmm(A, A, A, alpha=c, beta=b)，作者按代码推断会抛 TypeError，未实跑。修复 PR #9305 本身仍未合入（open，堆叠在 #8957/#8867 之上）。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/9305
+  behavior: 打开 batch-invariant 后，同一个进程里任何走 addmm 的代码只要 bias 是 strided view 或多维形状，输出就会静默错误——实测 1650 个元素里 1486 个不对、部分还是 NaN，没有任何报错；传 beta/alpha 则直接 TypeError。训练侧最典型的是 RL 任务为了确定性打开 batch-invariant、又用 Muon 优化器（Newton–Schulz 内部就是带 alpha/beta 的 addmm），第一步就报错；普通 GEMM 用连续 1-D bias 时结果与之前逐位一致，所以问题容易被当成个别算子不兼容。
+  trigger_surface: Megatron batch_invariant_backend='triton'（fp16/fp32）或 'deepgemm'（fp16/fp32）；aten::addmm 的 bias 为非连续或多维；或调用方传 alpha/beta；或操作数是最大偏移越过 2^31 的 strided view。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - detail

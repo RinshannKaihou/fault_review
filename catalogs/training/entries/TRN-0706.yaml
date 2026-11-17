@@ -1,0 +1,75 @@
+id: TRN-0706
+legacy_ids: []
+slug: megatron_masked_loss_cp_microbatch_domain
+aliases: []
+title: masked/MTP loss 按本域归一随划分漂移
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: megatron-lm
+    component: CP/微批 token 归一
+  behavior: 3806ec2754 删掉跨 CP 的 loss/token all-reduce 后各 CP rank 用本地有效 token 数除 masked loss；MTP loss 按微批 valid 比例 re-weight 再除全局分母
+effect:
+  objects:
+  - 梯度
+  - 训练信号
+  detail: CP ranks 有效 token 数不同（mask/padding/--eod-mask-loss）时优化的是 CP 局部均值之均值，CP=1 与 CP=2 同数据梯度方向不同；MTP token 有效权重随微批/DP 划分变化
+  visibility: 静默错误
+mitigation:
+  detect: 同数据 CP=1/CP=2 梯度对拍；packed/masked 序列下改微批划分对比 MTP 梯度
+  fix: '#9048（closed 2026-11-06）：forward_step_calc_loss 对 CP 组求和 count、loss 乘 CP size（与 #7513 同改、冲突关系未核实）；#8997（closed 2026-11-04）：opt-in --mtp-normalize-loss-by-main-tokens（默认关）'
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-10'
+remarks: 与 TRN-0173 同族（归一化域/累积错配），载体为 CP 划分与 MTP 微批比例
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9048
+  kind: github_pr
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8997
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0173
+pattern: PAT-TRN-0014
+original:
+  mechanism: 'NVIDIA/Megatron-LM #9048+#8997（均 closed，2026-11-06/04）：①CP>1 且 calculate_per_token_loss=False 时各 CP rank 用 CP 本地 valid-token 数除 masked loss sum，DDP 再对 DP×CP 平均梯度——实际优化 CP 局部均值之均值而非微批 masked 均值；CP ranks 有效 token 数不同（prompt/padding mask、--eod-mask-loss）时 CP=1 与 CP=2 同数据梯度不同（改变方向非仅尺度）。回归来源：3806ec2754（内部 MR !3139）删掉了此前 GPT/Mamba/多模态 loss 函数对 CP 组的 loss sum/token count all-reduce 及 schedule 的 ×CP。修复：count 对 CP 组求和、loss 乘 CP size，等 count 时梯度数学不变（2 幂 CP 位相同）；仅该模式生效，per-token loss 与两值 loss 函数不受影响。②calculate_per_token_loss 下 process_mtp_loss 把各逻辑微批 MTP loss 按 valid MTP targets 归一、再按 main-loss token count re-weight，梯度 finalize 再除全局 main count——MTP/main 有效比例随微批/DP 划分变化时 token 有效权重依赖划分（packed/masked 序列触发）；#7048 已使其 CP 不变，仍微批相关。修复加 opt-in --mtp-normalize-loss-by-main-tokens：MTP loss 保持为和、与 main 用同一全局分母，无需 CP collective；4×GB200 89 项测试通过。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/9048 ｜ https://github.com/NVIDIA/Megatron-LM/pull/8997
+  behavior: CP>1 且各 rank 有效 token 数不同（padding/prompt mask、--eod-mask-loss）训练：换 CP 度（CP=1→2）相同数据得到不同梯度方向，loss 读数也不可比，静默改变训练目标；MTP 场景（packed/masked 序列）MTP token 的有效权重随微批/DP 划分漂移，重新划分数据即改变每个 token 的训练权重。两者均无报错，只有跨划分对拍梯度/loss 才暴露。
+  trigger_surface: Megatron-LM；CP>1 + calculate_per_token_loss=False + 各 CP rank 有效 token 数不同；MTP + packed/masked 序列
+  discovery: 2026-11-10 每日扫描
+  notes:
+  - '2026-11-11 回访：回访：修复 PR #9048/#9042 closed 未标 merged（2026-11-06）；#8997（MTP 按主 loss token 全局归一的 opt-in 开关）已 merged 2026-11-08T07:04Z。'
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 训练信号
+        to: 梯度
+    uncertain:
+    - behavior

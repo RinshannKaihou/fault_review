@@ -1,0 +1,54 @@
+id: TRN-0749
+legacy_ids: []
+slug: verl_megatron_snapshot_persistent_buffer_missing
+aliases: []
+title: verl Megatron 策略快照漏存 persistent buffer
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: 策略快照拷贝函数
+  behavior: 快照只存参数与 DDP 参数桶，不存 persistent nn.Module buffer；restore 时 buffer 保留新值，旧参数与新路由偏置被拼在一起
+effect:
+  objects:
+  - 训练信号
+  detail: Decoupled PPO 旧策略 logprob 恢复误差 0.0589986（两层 MoE 诊断），补存 buffer 后归零；router bias 更新开、router replay 关时触发
+  visibility: 静默错误
+mitigation:
+  detect: 快照前后修改 expert_bias 等 persistent buffer，restore 后断言 buffer 回到旧值；或对拍旧策略 logprob
+  fix: '修复 PR https://github.com/verl-project/verl/pull/8633 （open，fixes #8632：随参数保存并原地恢复 persistent buffer，排除 nonpersistent 计数与缓存）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/8632
+  kind: github_issue
+- url: https://github.com/verl-project/verl/pull/8633
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'verl 的 Megatron 策略快照 copy_megatron_model_to_cpu 保存参数或 DDP parameter bucket，但漏掉 persistent 的 nn.Module buffer；restore_megatron_model_from_cpu 因此不会恢复 buffer，保留训练中更新后的新值。issue 给出独立回归用例 tests/utils/megatron/test_policy_snapshot.py::test_snapshot_buffer_storage_and_lifetime[cpu]，在 verl b10a5d421a1bb3ab4067d6aa47b8e5ead1a34df3 / PyTorch 2.13.0+cu130 / Megatron-Core 0.19.2 / 单 H100 上失败于 ''policy snapshot did not restore persistent counter''。同一遗漏影响 TopKRouter.expert_bias：开启 bias 更新时，Decoupled PPO 在 bypass_mode=False 下重算旧策略 logprob，会拿旧参数配新的路由偏置；关闭 router replay 的两层 MoE GPT 诊断里，旧策略 logprob 恢复误差 0.0589986，把 persistent buffer 一起存后误差归零，冻结 bias 更新也能消掉该触发。修复 PR #8633（open）把 persistent buffer 与参数一起保存并原地恢复，排除 nonpersistent 计数器与缓存，并处理 persistent buffer 的 nonpersistent 别名先注册的情况；相关 #7881/#7342 只涉及快照分配与 pin-memory 失败，不是本条。'
+  source: https://github.com/verl-project/verl/issues/8632 ｜修复 https://github.com/verl-project/verl/pull/8633
+  behavior: RL 训练里做旧策略 logprob 重算或快照回滚时，模型的 persistent buffer（最典型是 MoE router 的 expert_bias）不会跟着回到旧值：参数是旧的、路由偏置是新的，于是『旧策略』logprob 与真正的旧策略对不上，ratio 与 KL 静默偏移，loss 曲线看不出异常。只在开启 router bias 更新、同时关闭 router replay 的配置下明显，量级约 0.06（两层 MoE 诊断），足以让 on-policy 假设失效。
+  trigger_surface: verl + Megatron-Core 策略快照（copy_megatron_model_to_cpu / restore_megatron_model_from_cpu）；Decoupled PPO bypass_mode=False 的旧策略重算；TopKRouter.expert_bias 更新开启、router replay 关闭。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

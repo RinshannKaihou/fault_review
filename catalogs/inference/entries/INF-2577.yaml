@@ -1,0 +1,52 @@
+id: INF-2577
+legacy_ids: []
+slug: ttmetal_int32_maxmin_pad_sentinel_numeric_zero
+aliases: []
+title: ttnn INT32 max/min 非 32 倍数维归约返回 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: ttnn.max/min reduce
+  behavior: INT32 max/min 的 padding 哨兵以 float 位模式存放，permute/transpose 改用 pack_scalar_into_uint32 数值转换，INT32_MIN+1 与 INT32_MAX 都变成 0。
+effect:
+  objects:
+  - 数值结果
+  detail: dim0/1 长度非 32 倍数时，全负组的 max、全正组的 min 返回 0；单测 4/4 失败（Max ATOL 38712、RTOL inf），simulator 与硅片一致。
+  visibility: 静默错误
+mitigation:
+  detect: 构造全负/全正 INT32 张量，对非 32 倍数维求 max/min，与 torch 逐元素比较；padded 维是关键。
+  fix: 报告者建议对 permute/transpose 恢复 bit cast（未核实是否已有 PR）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 与 INF-2155（bfloat8_b 归约 padding 共享指数）同为 reduce padding 类但机制不同：本条是 INT32 哨兵被数值转换。
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/65954
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal #61611（10f65df1e0a）改动后，INT32 ttnn.max/ttnn.min 对非 H/W 维做归约、且该维长度不是 32 的倍数时返回错误值。INT32 max/min 的 pad 哨兵以 int32 位模式塞进 float pad 值（generic_reductions.cpp get_pad_value：max 用 bit_cast<float>(0x80000001)、min 用 bit_cast<float>(0x7FFFFFFF)），经 ttnn::transpose/permute 到达 dim0/1 reduce；permute tiled 与 transpose HC 原先做 bit cast，改成 pack_scalar_into_uint32 后按数值转换：0x80000001 作为 float 是极小负 denormal、截断为 0，0x7FFFFFFF 是 NaN、也变 0。padded 行变成 0，于是全负组 max 得 0、全正组 min 得 0。仓内单测 test_merge_gate_reduction_coverage.py::test_int32_max_min_batch_dims_with_negatives 四例（dim0/dim1 × max/min）在硅片与 simulator 全失败，例：Max ATOL Delta 38712、RTOL inf；dims 4/3 被 pad 到 32 行。'
+  source: https://github.com/tenstorrent/tt-metal/issues/65954 （open，2026-11-16，含单测名与失败断言）
+  behavior: 对 INT32 张量沿 batch/通道维求 max/min 时，结果里混入 0：全负数组的最大值变成 0，全正数组的最小值变成 0，看起来像合理的边界值。无报错，只有与 torch 对拍才能发现。
+  trigger_surface: 'tt-metal main since #61611 (10f65df1e0a)；INT32 tensor；reduce dim 0/1 且该维长度非 32 倍数；permute/transpose 路径（含 simulator）。'
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - title

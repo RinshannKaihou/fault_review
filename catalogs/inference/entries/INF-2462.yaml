@@ -1,0 +1,58 @@
+id: INF-2462
+legacy_ids: []
+slug: ops_math_remainder_near_integer_quotient_floor_wrong
+aliases: []
+title: aclnnRemainder fp32 真商贴近整数时余数差一个除数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Remainder floor 分支
+  behavior: 实现把 fp32 商先舍入成整数再取 floor，真商贴近整数（相对差约 1e-7）时 floor 少取 1，余数由 other-ε 变约 0。
+effect:
+  objects:
+  - 数值结果
+  detail: Atlas A2（910B2）fp32 输入、self/other 真商贴近整数（如 -6.000000157）时，remainder 输出误差达 |other|（本例 0.379，即 100%），且接口全程返回成功，无任何告警。
+  visibility: 静默错误
+mitigation:
+  detect: 用 IEEE-754 位型精确构造真商贴近整数的 self/other（如 0xC0118406/0x3EC2055D），比对 aclnn 输出与双精度公式 floor 期望。
+  fix: 待定（issue open，未见修复；建议按资料公式以双精度计算商后取 floor）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4619
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0673
+original:
+  mechanism: 'cann/ops-math issue #4619（2026-11-08，master aae0dcf0）：aclnnRemainderTensorTensor 在 Atlas A2 处理 fp32 时，实现把商按 fp32 舍入成整数后再取 floor（vdiv→floor 链路无余数校正），真商极接近整数（相对差约 1e-7）时 floor 少取 1，输出由期望的 other-ε 变成 ≈0，绝对误差≈|other|。资料（math/floor_mod/docs/aclnnRemainderTensorTensor&aclnnInplaceRemainderTensorTensor.md:12/:31/:73）声明 A2 支持 FLOAT 且公式要求对实数商取 floor。报告者用 IEEE-754 位型精确写入 self={0xC0118406,…}/other=0x3EC2055D（真商 -6.000000157，floor 应取 -7），在 A2 910B2/CANN 9.3.0 实测元素 0 的 |err|=0.378947=|other|；误差恒超 mixed_tolerance_standard.md 的 fp32 口径（max(1e-2, 32*ULP)）。与已收 INF-2296（负除数中间乘积溢出）同为 Remainder fp32 缺陷但机制不同：本条是舍入到整数后才取 floor 的分支选择错误，非乘积溢出。'
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4619 （open，2026-11-08 创建；含 IEEE-754 位型复现脚本、A2 实测、源码/资料行锚点）
+  behavior: 在 Ascend A2 上调用 aclnnRemainderTensorTensor（fp32）：当两个输入的除法真商恰好贴近整数（相对差约 1e-7，如 -6.000000157）时，remainder 返回约 0 而非接近除数的正确余数（0.379 量级），单个元素误差等于整个除数大小（100%）；其余元素误差在 1~2 ULP 正常范围。接口两段均返回 0（成功），无告警，结果数字看似合理但完全错误。
+  trigger_surface: Atlas A2（910B2）；CANN 9.3.0；aclnnRemainderTensorTensor/aclnnInplaceRemainderTensorTensor fp32 输入；真商贴近整数的 self/other 组合；ops-math master aae0dcf0。
+  signature: remainder 真商贴近整数时输出 ≈0 而非 other-ε，误差=|other|；fp64 对照正确。
+  repro: issue 附 repro.cpp（IEEE-754 位型精确写入）+ 编译命令 + A2 实测输出。
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

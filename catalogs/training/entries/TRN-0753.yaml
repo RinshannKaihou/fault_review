@@ -1,0 +1,54 @@
+id: TRN-0753
+legacy_ids: []
+slug: ascend_pytorch_dvm_batchnorm_backward_mismatch
+aliases: []
+title: DVM 编译 BatchNorm 训练反向梯度与 eager 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: DVM 后端 batch_norm 反向分解
+  behavior: TORCHINDUCTOR_NPU_BACKEND=dvm 编译训练态 F.batch_norm 时，反向图分解与 eager 实现不同，前向逐位一致但输入与权重梯度偏离
+effect:
+  objects:
+  - 梯度
+  detail: fp32 4x3x8x8、无 running stats：前向 max diff 0，x grad 3.886、weight grad 37.97、bias grad 0；509/768 元素超差（66.3%），910B4/CANN 9.2.1
+  visibility: 静默错误
+mitigation:
+  detect: 同一模型分别用 eager 与 torch.compile(DVM) 跑一步，对拍 x/weight/bias 梯度；前向一致而梯度不一致即命中
+  fix: '待定（issue #6073 open；同期 !49574 只涉及保留 BN 前向原生算子，未见针对本反向的修复）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6073
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #6073 报告：torch_npu 环境设 TORCHINDUCTOR_NPU_BACKEND=dvm 后，torch.compile(model, fullgraph=True) 编译训练态 F.batch_norm（F.batch_norm(x, None, None, weight, bias, training=True).relu().sum()）时，前向与 NPU eager 逐位一致（max abs diff 0），但反向梯度明显偏离：fp32、输入 4x3x8x8、无 running statistics、x/weight/bias 三者都需梯度，实测 x grad max abs diff 3.8860352、weight grad 37.968235、bias grad 0，509/768 元素超差（66.3%），最大相对差 14.45。环境 Huawei Cloud EulerOS 2.0 AArch64、Ascend 910B4 单卡、CANN 9.2.1、Python 3.12.15、PyTorch 2.13.0+cpu、torch_npu 2.13.0（上游 067ee81975b0d1352afa8e9c4a49de1a52c8a5b8）。issue 说明已做多组对比实验（同一固定种子输入、同原生库与 op-plugin、每组独立进程与编译缓存，各 eager 参考梯度逐位一致），但帖子里没有给出反向分解的最终根因行号；复现脚本可 20 行内跑完，且不需要模型权重或外部数据。'
+  source: https://gitcode.com/Ascend/pytorch/issues/6073
+  behavior: 在 NPU 上用 torch.compile（DVM 后端）训练带 BatchNorm 的模型时，前向输出与 eager 完全一样、loss 第一步也对，但反传得到的输入梯度和 BN 权重梯度是错的：实测 x 梯度最大差 3.89、weight 梯度最大差 37.97，66% 元素超出 1e-4 容差。训练表现为 loss 能降但收敛轨迹与 eager 不一致、最终精度偏低，且不会有任何报错；只有对拍 eager 梯度或做梯度检查才能发现。
+  trigger_surface: torch.compile + TORCHINDUCTOR_NPU_BACKEND=dvm；训练态 F.batch_norm（training=True、无 running stats）；Ascend 910B4、CANN 9.2.1、torch 2.13.0 + torch_npu 2.13.0。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

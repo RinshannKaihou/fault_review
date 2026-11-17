@@ -1,0 +1,80 @@
+id: TRN-0659
+legacy_ids: []
+slug: aclnn_empty_input_early_return_unwritten_batch_1107
+aliases: []
+title: aclnn 空输入早退不写非空出参又三例
+kind: 故障
+status: merged
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn 空输入早退分支
+  behavior: 空输入快路径只置 workspaceSize=0 即返回 SUCCESS，不写与空输入无关的非空输出（三接口各带 A2 真机实测与源码行定位）。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: N=0/BT=0/空 self 时两段返回 0 但 gradGamma/gradBeta（预填 123456 原样）、weightGradOut（0/2048 字节改写）、mOut（0/9 元素改写）保持缓冲残留；空 batch 步梯度读到未初始化显存。
+  visibility: 静默错误
+mitigation:
+  detect: 出参预填哨兵 round-trip；空 batch 用例与 CPU 语义对账（应写 0 或 A 拷贝）。
+  fix: 已有修复 PR/MR：https://gitcode.com/cann/ops-math/merge_requests/7205（发布状态待核实）
+labels:
+  stage:
+  - shared
+  confidence: verified
+  coverage: var
+  discovered: '2026-11-08'
+remarks: 连续两日同机制 CANN aclnn 空输入早退漏写出参批次，归并入 TRN-0641
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8374
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8385
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4617
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/7205
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0275
+original:
+  mechanism: '2026-11-07 新开三单，与 TRN-0275（aclnn 空输入早退不写非空出参）同机理，均 910B2（Atlas A2）真机实测并给出 master 源码行定位与修复建议：① ops-nn #8374 aclnnGroupNormBackward：N=0（gradOut/input 空、gamma [C] 非空）两段返回 0、workspaceSize=0，gradGammaOut/gradBetaOut 预填 123456 原样残留；源码 aclnn_group_norm_backward.cpp:691-696 非 Regbase 早退分支只置 workspaceSize=0 返回（同文件 Regbase 分支 :711-719 会走 ComputeGroupNormBackwardEmptyInput 拷回 dgamma/dbeta——A5 正确、A2 缺陷）；N=0 数学上应写 0（空集求和）；复核基线 d1efef7c30 问题仍在。训练影响：动态 batch 退化为 0 时返回成功但输出未初始化显存，随后参与 weight/bias 梯度更新——静默参数污染。② ops-nn #8385 aclnnFusedLinearCrossEntropyLossGrad：BT=0（input [0,H]、grad [0] 均属资料「支持空tensor」）两段返回 0，weightGradOut [V,H]=[128,8] 预填 fp16 canary 0/2048 字节被改写；源码 :298-302 早退无任何写回；BT=0 是空集求和应写全 0；影响：全 mask 空 micro-batch 时 weightGrad 为未初始化显存直接送优化器、垃圾值（含 NaN/Inf 位模式）写进权重，后续 step 才表现为 loss 异常。③ ops-math #4617 aclnnTriangularSolve：self=(3,0)（0 个右端项、A=(3,3) 非空）两段返回 0，mOut 预填 7.0 读回 0/9 元素改写；源码 :184-189 早退只置 workspaceSize=0；非空路径 :204-214 ViewCopy(aBroadcast,mOut) 只依赖 A 与 self 无关，mOut 应为 A 完整拷贝（资料 docs:150 明写）；修复 PR !7205（open）在早退分支补拷 mOut。三单均 open（2026-11-07/08）。'
+  source: https://gitcode.com/cann/ops-nn/issues/8374 ；同族：https://gitcode.com/cann/ops-nn/issues/8385 、https://gitcode.com/cann/ops-math/issues/4617 ；TriangularSolve 修复：https://gitcode.com/cann/ops-math/merge_requests/7205
+  behavior: NPU（Atlas A2/910B2）上以空 batch/空右端项调用这批 aclnn 反向算子时：接口两段均返回成功、无任何报错，但本应写入的输出（GroupNorm 反向 gradGamma/gradBeta、FusedLinear CE 反向 weightGrad、TriangularSolve 的 mOut）保持调用方缓冲区残留值（预填哨兵 123456/1.0/7.0 实测原样）。动态 shape 训练在空 batch 步（尾批/过滤后空批/全 mask）走反向时，梯度读到未初始化显存并直接参与参数更新，静默污染权重且随显存复用不可复现；非空批恢复正常，问题间歇出现。
+  trigger_surface: CANN aclnn 空输入快路径（GroupNormBackward N=0 / FusedLinearCrossEntropyLossGrad BT=0 / TriangularSolve 空 self）+ 动态 batch 训练空批步；910B2（A2）、CANN 9.2.0/9.3.0 实测，master（2026-11-07/08 拉取）缺陷仍在
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-17'
+    fields:
+    - status
+  - date: '2026-11-17'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    uncertain:
+    - effect
+merged_into: TRN-0641

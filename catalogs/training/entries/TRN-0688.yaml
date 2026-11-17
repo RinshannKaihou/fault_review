@@ -1,0 +1,58 @@
+id: TRN-0688
+legacy_ids: []
+slug: swift_label_smoothing_ga_renormalize
+aliases: []
+title: swift label smoothing 梯度累积下未按 token 归一
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: ms-swift
+    component: LabelSmoother 均值归一
+  behavior: label_smoothing_factor>0 时 Seq2SeqTrainer 对每个 microbatch 返回 mean 而不是 token 归一，transformers 跳过 fallback 累积除法
+effect:
+  objects:
+  - 训练信号
+  detail: 同一有效 batch 拆不同 microbatch 划分 loss/梯度不同；不同 response 长度样本相对权重错
+  visibility: 静默错误
+mitigation:
+  detect: 同 batch 两种 microbatch 划分对拍 loss/梯度；不等长样本权重检查
+  fix: 修复 PR https://github.com/modelscope/ms-swift/pull/10532（open，未发布）：用本地有效 token 数与 num_items_in_batch 归一化平滑均值
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-09'
+remarks: 与 TRN-0173（DAPO 族被二次除以 G）同为『归一化域与梯度累积窗口错配』族；方向相反：那边重除、这边漏归
+evidence:
+- url: https://github.com/modelscope/ms-swift/pull/10532
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0173
+pattern: PAT-TRN-0014
+original:
+  mechanism: 'ms-swift #10532（open PR，2026-11-08；AI 辅助代码分析 + CPU 构造实验复现）：label_smoothing_factor>0 时 Seq2SeqTrainer 对每个 microbatch 返回 mean（microbatch 内平均），却对外宣称支持 token 归一 loss——transformers 因此跳过 fallback 的累积除法。同一有效 batch 的不同 microbatch 划分改变 loss 与梯度；不同 response 长度的样本得到错误相对权重。修复：用本地有效 token 数与 trainer 的 num_items_in_batch 归一化平滑均值，count 沿用既有 causal/noncausal label shift，兼容旧 LabelSmoother 接口。测试：3 方法/20 场景（修复前上游 fail 12 场景），tiny GPT-2/T5 + 独立 PyTorch CE 参照；12 个 SwiftSft 构造 run 过真实预处理/模板编码/前反向。'
+  source: https://github.com/modelscope/ms-swift/pull/10532
+  behavior: swift SFT 开 label_smoothing_factor 且用梯度累积：loss 和梯度取决于 microbatch 怎么划分（同一有效 batch 换一种切分结果就不同）、长回复样本的相对权重不对——训练照常跑、无报错，收敛结果与划分方式耦合，对账不同划分的 loss 即可复现。
+  trigger_surface: ms-swift Seq2SeqTrainer/SFT + label_smoothing_factor>0 + gradient_accumulation_steps>1；不等长 completion 样本
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - labels.coverage
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

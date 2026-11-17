@@ -1,0 +1,68 @@
+id: TRN-0646
+legacy_ids: []
+slug: cann_weight_quant_batchmatmul_a16w8_pergroup_nd
+aliases: []
+title: WeightQuantBatchMatmulV2 PerGroup ND 静默错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: A16W8 G量化 ND 反量化
+  behavior: A16W8 PerGroup ND 路径接口返回成功但输出与全精度参考严重偏离（NRMS≈0.19），同权重切 PerChannel 即正常；报告者疑为反量化/数值实现缺陷或该场景未支持却未报错，根因待维护者定位。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B3/CANN 9.3.0/torch_npu 2.14.0，A16W8+PerGroup(128)+ND：vs FP64 参考 NRMS≈0.1935、allclose=False；M 19456→256（小 shape）仍≈0.1806；PerChannel allclose=True。
+  visibility: 静默错误
+mitigation:
+  detect: PerGroup vs PerChannel 对照 + FP64 反量化参考对拍（NRMS 一眼可辨 0.19 vs 0.0017）。
+  fix: 待定：issue open（2026-11-06），根因在反量化实现还是「实际未支持但未返回错误」待维护者定位，未见 MR。
+labels:
+  stage:
+  - shared
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: 量化训练/推理共有路径（W8A16 权重量化 Linear）；报告者提供了不依赖业务代码的最小独立复现脚本，机制定位（反量化实现 vs 静默不支持）未闭合。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8346
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2432
+original:
+  mechanism: 'cann/ops-nn issue #8346（2026-11-06 open）：Ascend 910B3 + CANN 9.3.0 + torch_npu 2.14.0，经 PTA 接口 torch_npu.npu_weight_quant_batchmatmul 走 WeightQuantBatchMatmulV2 A16W8 PerGroup（G量化）ND 路径：x bf16[8,2560]、weight int8 ND[2560,19456]、antiquantScale bf16[20,19456]（⌈k/128⌉×n）、antiquantGroupSize=128、antiquantOffset=None——参数全部满足官方文档约束，但接口返回成功、结果与同一份权重反量化后的 FP64 参考相比 NRMS≈0.1935、allclose(rtol=0.02,atol=0.00390625)=False；M 从 19456 缩到 256（小 shape）仍 NRMS≈0.1806（排除大 shape/尾块）；同接口同权重切 PerChannel（antiquantGroupSize=0）NRMS≈0.00166、allclose=True。最小独立复现脚本仅用公开 API 与随机数据（torch.manual_seed(20261106)，fp32 生成 bf16 权重按 group amax/127 量化）。报告者结论：A16W8 PerGroup ND 路径存在反量化/数值实现缺陷，或该场景实际未支持但未返回错误——根因定位待维护者。无关联修复 MR。'
+  source: https://gitcode.com/cann/ops-nn/issues/8346
+  behavior: NPU 上用 torch_npu.npu_weight_quant_batchmatmul 做 A16W8 权重量化 matmul、antiquantGroupSize=128（PerGroup）且 weight/scale 为 ND 布局时：接口返回成功，但输出与把权重反量化后的全精度 matmul 相差巨大（NRMS≈0.19，相当于结果基本不可用）；同一权重把 groupSize 改 0（PerChannel）结果立即正常。小 shape 也错，说明不是尾部分块问题；依赖该量化路径的训练/前向全程无报错但数值错。
+  trigger_surface: torch_npu npu_weight_quant_batchmatmul（WeightQuantBatchMatmulV2）A16W8 + PerGroup（antiquantGroupSize=128）+ ND 布局；910B3/CANN 9.3.0/torch_npu 2.14.0 复现
+  discovery: 2026-11-07 每日扫描
+  notes:
+  - 2026-11-08 回访：回访：#8346 open 有更新（快照 2026-11-07T00:19Z updated），正文无根因新定位；维持。
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence
+  - date: '2026-11-17'
+    fields:
+    - relations

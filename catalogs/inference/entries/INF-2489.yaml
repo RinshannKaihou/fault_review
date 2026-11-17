@@ -1,0 +1,55 @@
+id: INF-2489
+legacy_ids: []
+slug: triton_ascend_te_pointwise_four_dtype_silent
+aliases: []
+title: triton-ascend 编译路径 4 dtype 组合静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: TE/triton-ascend 编译路径（待定）
+  behavior: torch_npu triton_experimental 编译路径上 abs/int64 整型按 32 位截断、add/bool 结果翻转、hypot/f32 无溢出保护、pow/f64 底数降精度 f32，四机制各异且全部静默。
+effect:
+  objects:
+  - 数值结果
+  detail: torch.compile 后 |−8589934599| 输出 7（低 32 位）、25 元素布尔加 9 个翻转、±FLT_MAX 的 hypot 输出 inf/NaN、f64 pow 只剩 f32 精度；eager 与 CPU 参考零差异，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue 建议短期把 4 组合从 triton codegen 注册清单豁免走 extern aclnn 兜底、长期逐机制修 lowering/codegen 并补 dtype 契约单测；无修复 PR）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/3076
+  kind: github_issue
+relations:
+- kind: cross
+  target: TRN-0720
+original:
+  mechanism: 环境：CANN 9.2.0 / PyTorch 2.16.0a0 / torch_npu 2.16.0+git111ec0d / triton-ascend 3.6.0+gita176ab28 / 昇腾 910B4。abs/add/pow 在 torch_npu/_inductor/triton_experimental/lowering_override_list.py 的 GENERATE_LIST（abs:88 / add:25 / pow:30），hypot 不在名单但实测仍进编译器；register_pointwise_numeric 生成 triton kernel 后数值通道四机制各异：int64 值通道按 32 位截断（8589934599 低 32 位恰为 7）；bool 结果通道值相关翻转（真测试 seed 25 元素中 9 个 diff=1）；hypot/f32 为 naive sqrt(x²+y²) 无溢出保护（±FLT_MAX 输入注入 inf/NaN）；pow/f64 底数经 f32 计算（36549.93220051291→36549.92578125）。逐样本探针（2026-11-05，OpInfo sample_inputs + eager vs CPU 参考 + torch.compile dynamic=True + disable_cache_limit）证明 eager(aclnn) 与 CPU 四例全部零差异、四例全部在编译腿复现，排除 op-plugin/CANN eager 路径；对应上游测试 test_op_dtype_propagation_{abs_npu_int64,add_npu_bool,hypot_npu_float32,pow_npu_float64}。风险性质与 argmax/argmin 索引损坏（triton-ascend#2981=INF-2413）同类；分层定位（TE codegen vs triton-ascend lowering）待协查。
+  source: https://github.com/triton-lang/triton-ascend/issues/3076
+  behavior: 开启 TORCHINDUCTOR_NPU_BACKEND=triton_experimental 后用 torch.compile 跑 abs(int64)、add(bool)、hypot(float32)、pow(float64) 的边界/大值输入时得到静默错误数值：|−8589934599| 变成 7、布尔加法 25 个元素里 9 个翻转、±FLT_MAX 的 hypot 变 inf/NaN、f64 pow 底数只剩 f32 精度（36549.93220051291→36549.92578125）；全程无报错无警告，eager 路径同输入完全正确，只能靠逐样本对拍发现。
+  trigger_surface: TORCHINDUCTOR_NPU_BACKEND=triton_experimental（torch.compile）+ 对应 dtype 组合（abs→int64、add→bool、hypot→float32、pow→float64）；路由豁免落地前可触发。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - component

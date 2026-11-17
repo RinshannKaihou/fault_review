@@ -1,0 +1,58 @@
+id: TRN-0689
+legacy_ids: []
+slug: npu_inductor_flatten_unknown_axis_candidate
+aliases: []
+title: inductor 未知符号轴进 flatten 候选表
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: flatten 候选轴注册
+  behavior: FloorDiv 分支在查询轴注册表前调 init_new_vars，未知符号虽被跳过但返回值遗留 {size_only:{4:[None,None]}}；ModularIndexing 纯符号分支直接插入未知轴
+effect:
+  objects:
+  - 数值结果
+  detail: 后续 flatten/rebuild 处理没有 range-tree node 的符号，索引分析状态被污染（本层复现为注册表残留；端到端数值影响未验证）
+  visibility: 静默错误
+mitigation:
+  detect: 对 detect_flattened_dims 输入含未注册符号的 FloorDiv/ModularIndexing 断言返回空
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49261（open，未发布）：确认轴存在后才添加 flatten 候选
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: 主机索引分析层回归；CPU 提取原函数 5 测 3 败→修复后全过；端到端 NPU 数值影响未验证（原文自述）
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5950
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49261
+  kind: gitcode_pr
+relations: []
+pattern: PAT-TRN-0074
+original:
+  mechanism: 'Ascend/pytorch #5950（open；master ac0e1564，2026-11-07）：detect_flattened_dims 的 FloorDiv 分支在查询轴注册表之前调用 init_new_vars；未知符号随后被发现不在 active/removed 表并跳过，但返回值里遗留 {size_only:{4:[None,None]}}；ModularIndexing 纯符号分支也直接插入未知轴。后续 flatten/rebuild 因而可能处理没有 range-tree node 的符号。最小复现（CPU、SymPy 直接执行原函数，不依赖 NPU）：axis=sympy.Symbol(size_only, integer=True, nonnegative=True)，kernel range_tree_nodes/removed/axioms_index_map 全空，detect_flattened_dims(kernel, FloorDiv(axis,4)) 实际返回 {size_only:{4:[None,None]}}、期望 {}。修复 !49261（open）：只有确认轴存在后才添加 flatten 候选，不改原始符号索引与合法轴处理；CPU 回归修复前 5 测 3 败（含已注册 active/removed 轴、混合索引、复合基表达式覆盖）。这是主机索引分析回归，不等价于完整 Triton kernel 或模型的 NPU 执行验证。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5950 ｜ 修复 PR：https://gitcode.com/Ascend/pytorch/merge_requests/49261
+  behavior: torch.compile（inductor）对含 FloorDiv/ModularIndexing 符号索引的函数做索引分析时，未注册的符号轴被悄悄写进 flatten 候选表（值为 [None,None]，无 range-tree 节点）——后续 flatten/rebuild 拿到没有节点支撑的符号；本条在主机分析层直接复现（修复前 5 测 3 败），端到端落到具体 kernel 的数值影响原文未验证，以索引分析状态污染面收录。
+  trigger_surface: Ascend/pytorch master ac0e1564 inductor detect_flattened_dims；含未注册符号的 FloorDiv/ModularIndexing 索引表达式
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern

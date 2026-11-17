@@ -1,0 +1,52 @@
+id: INF-2557
+legacy_ids: []
+slug: ops_math_slice_with_axes_nonconstant_params_ignored
+aliases: []
+title: SliceWithAxes 非常量 offsets/size 被忽略
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: slice_with_axes tiling
+  behavior: GetConstIntToShape 取不到常量时跳过切片参数，保留零 offsets 与完整输入 shape，kernel 只读 tiling 的 fullOffsets/outShape。
+effect:
+  objects:
+  - 数值结果
+  detail: offsets/size 由运行时张量给出时算子按整块输入拷出：切片起点和长度都错，返回成功、无告警；仅常量参数的用例表现正常。
+  visibility: 静默错误
+mitigation:
+  detect: 用非常量 offsets/size 输入（值依赖张量）与等值常量版本对拍；检查 tiling 日志里的 fullOffsets/outShape 是否退化为 0/全 shape。
+  fix: 待定：issue 给出行号定位（slice_with_axes_def.cpp:41-52、tiling GetParams:132-157、kernel arch35 slice_with_axes.h:239-272），未核实修复 PR。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-14'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4752
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math 的 SliceWithAxes 在 op def 中把 offsets 与 size 声明为必需输入并允许 value dependence（conversion/slice_with_axes/op_host/slice_with_axes_def.cpp:41-52）。但 SliceWithAxesTiling::GetParams 调用 GetConstIntToShape 取常量时，任一输入不是常量就返回 false，代码随即跳过切片参数、保留默认零 offsets 和完整输入 shape（tiling 文件 132-157 行）。SetTilingData 把这些退化值传给 KernelSliceWithAxes::Process，kernel 仅按 td_->fullOffsets 与 td_->outShape 拷贝数据（arch35/slice_with_axes.h:239-272），运行期张量里的真实 offsets/size 从未被消费。结果是任何非恒定切片参数都被当成恒等切片，拷出错误区域或错误长度，接口不报错。
+  source: https://gitcode.com/cann/ops-math/issues/4752
+  behavior: 当 offsets 或 size 不是编译期常量、而是运行期张量时，SliceWithAxes 不做切片：输出等于整块输入（或按默认 0 偏移、全 shape 拷贝），本应取的那一段完全没取到。调用返回成功，日志里也没有异常；只有把非常量参数版本与等值常量版本逐元素对比，才会发现输出 shape 或内容不对。
+  trigger_surface: SliceWithAxes 的 offsets/size 以张量形式在运行时给出（value dependence）；常量参数路径不受影响。
+  discovery: 2026-11-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-14'
+  audit:
+    round: daily-audit-2026-11-15
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

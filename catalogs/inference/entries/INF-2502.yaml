@@ -1,0 +1,50 @@
+id: INF-2502
+legacy_ids: []
+slug: ttmetal_hw_dims_softmax_mask_geometry_unchecked
+aliases: []
+title: tt-metal hw-dims softmax 掩码几何未校验错读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: hw-dims softmax 掩码读取游标
+  behavior: hw-dims 路径校验布局/分片/朝向/scale 但不校验掩码宽高与输入/shard 几何；游标按模数前进且仅行尾回绕：窄掩码越界读、错行掩码被静默应用。
+effect:
+  objects:
+  - 数值结果
+  detail: 掩码几何与输入/shard 不匹配时越界读掩码内存或把错误掩码行应用到注意力上，scale+mask 在位 softmax 输出错值，无回绕无报错；#64681 明确不改本 hw-dims 路径。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（审计 issue open 带源码行号与复现形状，未见修复 PR）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/64840
+  kind: github_issue
+relations: []
+original:
+  mechanism: ttnn.scale_causal_mask_hw_dims_softmax_in_place + SoftmaxShardedMultiCoreProgramConfig（is_scale_causal_mask_hw_dims_softmax 分支）：softmax_device_operation.cpp 校验布局/sharding/朝向/scale 但不查掩码宽高；softmax_program_factory_attention_optimized_sharded.cpp 以 num_tiles_in_attn_mask=mask_H*mask_W/tile_hw 计算每核游标 (start+block_h*block_w)%num_tiles_in_attn_mask；kernels/attention/dataflow/reader_unary_sharded_sm_causal_mask_hw_dims.cpp 仅在行尾以等值测试回绕（if(mask_id==mask_num_tiles) mask_id=0）。Case A：掩码窄于输入时越界读掩码、无回绕无报错（复现：输入 [1,1,64,128] height-sharded ROW_MAJOR、shard [64,128]、block_h=2/block_w=4 单核、掩码窄于输入）；Case B：错行掩码被应用。通用非分片 TILE 校验只要求掩码跨 ≥1 tile；#64681 修的是另一路径并明确不动 hw-dims。
+  source: https://github.com/tenstorrent/tt-metal/issues/64840
+  behavior: 用 ttnn.scale_causal_mask_hw_dims_softmax_in_place（SoftmaxShardedMultiCoreProgramConfig）传入几何尺寸与输入/shard 布局不匹配的注意力掩码时不会报错：掩码比输入窄时内核越界读掩码内存，或把错误的掩码行应用到注意力分数上，softmax 输出错值；形状合法时结果正确，只能靠对拍发现。
+  trigger_surface: ttnn hw-dims softmax 在位算子 + 掩码宽高与输入/shard 几何不匹配（公开 API 可构造）；tt-metal main。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

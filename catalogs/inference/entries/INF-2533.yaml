@@ -1,0 +1,61 @@
+id: INF-2533
+legacy_ids: []
+slug: vllm_tower_lora_multiple_encoder_calls_mapping_reuse
+aliases: []
+title: Tower LoRA 单步多次编码复用映射错配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: tower/connector LoRA 映射
+  behavior: set_active_mm_loras 每步只建一份按模态排序的映射；每个 LoRA kernel 都从 index 0 读 mapping[:token_nums]，单步多次 encoder 调用时拿错 adapter 或越界索引。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: Qwen2.5-VL-3B image+video 同批：第 2 次调用 token_nums=9072 读 mapping[:9072]，前 988 行仍是 image adapter、sorted index 越界 → illegal access 或静默用错 adapter；单模态正常。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 engine step 提交 image+video（或模型内部多次 encoder 调用）并开 tower/connector LoRA，检查第二次 encoder 的 adapter 映射与 sorted index 是否越界；单模态同请求作对照。
+  fix: '待定（issue #67313 open；未见修复 PR，期望按 encoder 调用偏移切片映射或在每次调用前重建）。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-13'
+remarks: 与 INF-2500 共享 tower/connector LoRA 映射与编码器实际消费行不一致的失效面；INF-2500 是不等长 clip 的 padding stride 覆盖差，本条是单步多次 encoder 调用都从 mapping 起点读取。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/67313
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2500
+pattern: PAT-INF-0204
+original:
+  mechanism: 'vLLM issue #67313（vLLM main 1c4f8c41a3，2026-11-12；RTX A6000 单卡复现，Qwen2.5-VL-3B 与 Nemotron-3-Nano-Omni-30B-A3B TP=2 全矩阵）：开启 --enable-tower-connector-lora 后，只要一个 engine step 内 encoder 运行不止一次，LoRA kernel 就会 CUDA illegal memory access 或静默用错 adapter。set_active_mm_loras()（vllm/v1/worker/gpu/mm/lora.py）每步只建一份 tower 映射和一份 connector 映射，覆盖所有按模态排序的 multimodal item；每个 LoRA 层的 kernel metadata 每次前向都从 index 0 读 mapping（LoRAKernelMeta.meta_args 返回 token_lora_mapping[:token_nums]、token_indices_sorted_by_lora_ids[:token_nums] 和整步的 num_tokens_per_lora/lora_token_start_loc），调用之间没有偏移。单步多次 encoder 的两种来源：runner 对每个模态组调用一次 embed_multimodal（image+video 同 step 即两次 tower forward）；某些模型内部（如 NemotronH_Nano_VL_V2 对每个 video 调 _extract_video_embeddings_temporal、每 ≤128 帧 chunk 调 extract_feature）。Qwen2.5-VL-3B image@A+video@B 追踪：mapping 长度 10060、ids=[0,1]、counts=[9072,988]；encoder call 1(image) token_nums=988 读 mapping[:988] 正确；call 2(video) token_nums=9072 读 mapping[:9072]，前 988 行是 image adapter，sorted index 还包含 ≥9072 的行 → illegal memory access。'
+  source: https://github.com/vllm-project/vllm/issues/67313
+  behavior: 同一个 serving step 里同时处理图像和视频请求（或模型内部对视频分块多次调用视觉塔）并启用 tower/connector LoRA 时，第二次编码会拿第一次的 adapter 映射和越界的 sorted index：轻则整段视觉特征用了错误的 LoRA（输出内容偏离、图像/视频描述错），重则 CUDA illegal memory access 直接崩溃；单模态请求完全正常，所以只在混合 batch 偶发。
+  trigger_surface: vLLM --enable-tower-connector-lora + 多模态模型；同一 engine step 内 encoder 运行多次（image+video 同批，或模型内部按视频/chunk 多次调用）；Qwen2.5-VL-3B、Nemotron-3-Nano-Omni-30B-A3B；vLLM main 1c4f8c41a3。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  updates:
+  - date: '2026-11-14'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - effect

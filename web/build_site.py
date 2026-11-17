@@ -35,10 +35,10 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from fault_rag import parse as parse_mod                     # noqa: E402
-from fault_rag.index import BM25, bm25_text, mark_name_collisions   # noqa: E402
+from fault_rag.index import BM25, bm25_text, expand_latin_tokens, mark_name_collisions   # noqa: E402
 from fault_rag.search import _entry_type, _full, _summary    # noqa: E402
 
-TOKENIZER = "bigram-v1"
+TOKENIZER = "bigram-v2"
 _LATIN_RE = re.compile(r"[a-z0-9][a-z0-9_.\-/#]*")
 _CJK_RUN_RE = re.compile(r"[一-鿿]+")
 
@@ -51,10 +51,10 @@ VENDOR = {
 
 
 def tokenize(text):
-    """Latin/code tokens plus overlapping CJK bigrams (a lone CJK char stands for itself).
+    """Compound-aware Latin/code tokens plus overlapping CJK bigrams (a lone CJK char stands for itself).
     Must stay byte-identical to tokenize() in src/search.js; web/eval/check_web.py checks it."""
     text = text.lower()
-    toks = _LATIN_RE.findall(text)
+    toks = expand_latin_tokens(_LATIN_RE.findall(text))
     for run in _CJK_RUN_RE.findall(text):
         if len(run) == 1:
             toks.append(run)
@@ -98,6 +98,7 @@ def doc_row(e, y):
         "confidence": e.get("confidence"),
         "status": e.get("status"),
         "pattern": e.get("pattern"),
+        "pattern_title": e.get("pattern_title"),
         "neg": e["neg"],
         "entry_type": _entry_type(e),
         "name_ambiguous": e.get("name_ambiguous", False),
@@ -189,7 +190,8 @@ def main(argv=None):
 
     out = os.path.abspath(args.out)
     if os.path.isdir(out):
-        previous_build = os.path.exists(os.path.join(out, "data", "meta.json"))
+        previous_build = (os.path.exists(os.path.join(out, "data", "meta.json"))
+                          or os.path.exists(os.path.join(out, "data", "docs.json")))
         if os.listdir(out) and not previous_build:
             raise SystemExit(f"refusing to replace {out}: not empty and not a previous site build")
         shutil.rmtree(out)

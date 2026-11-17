@@ -1,0 +1,86 @@
+id: TRN-0670
+legacy_ids: []
+slug: aclnn_empty_input_early_return_unwritten_batch_1108
+aliases: []
+title: aclnn 空输入早退不写非空出参又五例
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn 空张量早退分支
+  behavior: 空输入早退返回 ACLNN_SUCCESS，不生成写非空输出的算子；判空针对特定张量（#7236 只判grad出参、#8389 indices 空且 offsets=[0]/[0,0]）；#7237 CheckShape 首行短路全部约束
+effect:
+  objects:
+  - 数值结果
+  detail: 空输入时非空输出（y/indices、probsGradOut、标量 loss、output）保持调用方预填 canary 未写，两段 API 均返回 0
+  visibility: 静默错误
+mitigation:
+  detect: 空输入用例下对非空输出预填 canary 并在调用后读回校验
+  fix: 待定（未见修复 PR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-09'
+remarks: 同族第三批（TRN-0275、TRN-0659 之后），ops-transformer 侧首批
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7237
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7236
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7238
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8387
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8389
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8729
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8743
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0275
+- kind: cross
+  target: INF-2522
+pattern: PAT-TRN-0069
+original:
+  mechanism: 'ops-transformer #7237 aclnnMoeFusedTopk：CheckShape 首行 if (x->IsEmpty()) return true 短路 topK>0、topK<=expertNum、y/x 第 0 维一致等全部约束，GetWorkspaceSize 在 :280-284 再次判空直接 return ACLNN_SUCCESS，不生成写 y/indices 的算子（x=[4,0]、y/indices=[4,2] 非空，实测 0/0 未写）。#7236 aclnnMoeTokenPermuteWithRoutingMapGrad：早退只判 permutedTokenOutputGrad/tokensGradOut 为空（aclnn_moe_token_permute_with_routing_map_grad.cpp:468），probsGradOut=[4,4] 一个字节未写（对照组 hidden=2 写出 1 3 0 0 0 4 5 0，probs 梯度与 hidden 无关本应逐值一致）。#7238 aclnnLightningIndexerKLLoss：targetScore=[4,0,8] 或 [0,8]（B/K 合法、S/T=0）时标量 loss=[1] 未写（对照 -88.7228；aclnn_lightning_indexer_kl_loss.cpp:146-150）。ops-nn #8387 aclnnSoftmaxCrossEntropyWithLogits：features=[4,0] 时 loss=[4] 未写（对照 0.823959×4；:122-126 早退分支无写 loss 算子；#1497 早年把空输入从拦截报错改为返回 SUCCESS 留下的另一半）。ops-nn #8389 aclnnEmbeddingBag：indices 空、offsets=[0]/[0,0] 时 output=(numBags,D) 整块保持未初始化（aclnn_embedding_bag.cpp:414-418；对照 10.0）。环境：Atlas A2 910B2、CANN 9.3.0；ops-transformer master 5adf800c、ops-nn master d1efef7c；复现日期 2026-11-08。与 TRN-0275/TRN-0659 同机制（host 侧空输入早退不写非空出参）第三批，ops-transformer 侧首批。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7237 ｜ https://gitcode.com/cann/ops-transformer/issues/7236 ｜ https://gitcode.com/cann/ops-transformer/issues/7238 ｜ https://gitcode.com/cann/ops-nn/issues/8387 ｜ https://gitcode.com/cann/ops-nn/issues/8389
+  behavior: 给这些 aclnn 算子传 0 元素张量（如空 indices、S=0 的 targetScore、C=0 的 features、空 x 的 MoeFusedTopk）：两段 API 都返回成功（0/0），但非空输出张量一个字节都没写——读回仍是调用方预填的 canary 值（3.39615e+38 / 0x7F）。若训练图里后续算子直接消费该输出，拿到的是未初始化内存里的值；全程无错误码、无告警，只有预填哨兵值或与 CPU 对账才能发现。
+  trigger_surface: Atlas A2 910B2、CANN 9.3.0；aclnnMoeFusedTopk / MoeTokenPermuteWithRoutingMapGrad / LightningIndexerKLLoss / SoftmaxCrossEntropyWithLogits / EmbeddingBag 空输入（0 元素）+ 非空输出组合
+  discovery: 2026-11-09 每日扫描
+  notes:
+  - 2026-11-13 回访：新增同机制两例（ops-nn，910B3/CANN 9.2.0，均 open）：#8729 aclnnAddRmsNormDynamicQuantV2 的 y2Out 传空 tensor（文档明写支持空 Tensor）触发第一段早退（:378-383 判据含 y2Out 不含 y1Out），outputMask 路由出的 y1Out/scale1Out/xOut 或 y2Out/scale2Out/xOut 全部 canary 保留、两段 rc=0/0；#8743 aclnnAddRmsNorm 在 x1 非空时 gamma 传空 tensor（违反组合表约束，应 161002）两段 rc=0/0 且 yOut/xOut/rstdOut 全未写，根因是 CheckGammaAndRstdShape 只在 IsRegbase 分支调用、非 regbase 平台无此校验、gamma numel=0 使 numCol=0 无写出任务。
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - pattern
+  - date: '2026-11-13'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-14'
+    fields:
+    - relations
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

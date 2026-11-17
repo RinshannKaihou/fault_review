@@ -1,0 +1,49 @@
+id: INF-2440
+legacy_ids: []
+slug: adaptivemaxpool2d_nhwc_transpose_missing
+aliases: []
+title: AdaptiveMaxPool2d NHWC 输出未转回布局，恒等池化即整块错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: adaptive_max_pool2d
+  behavior: ConvertNHWCtoNCHW 只转输入，ProcessAdaptiveMaxPoolResults 把 NCHW 结果直接 Reshape 成 NHWC 形状后 ViewCopy，缺 NCHW→NHWC 反向 transpose
+effect:
+  objects:
+  - 数值结果
+  detail: 恒等池化（outputSize 取输入 H/W）下，4 维 NHWC 且 C>1（C=8 用例）输出 126/128 元素与输入不一致；NCHW 输入与 NHWC C=1 对照全对；两段接口均返回 0，自包含 C++ 复现脚本在缺陷复现时退出码 1。
+  visibility: 静默错误
+mitigation:
+  detect: NHWC 路径恒等池化自检（输出应逐元素等于输入）
+  fix: 待定（应在 ProcessAdaptiveMaxPoolResults/ProcessAndCopyResults 中把结果含 indices transpose 回 NHWC 再 ViewCopy）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: 2026-11-05 留观转收：本轮已深读正文，恒等池化判别 + 源码定位（master 0fc301c67..ed6471cdb 无改动）齐备。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8180
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn pooling/adaptive_max_pool2d（Ascend950PR、CANN 9.3.0 libopapi 2026-10-21 构建；仓 master ed6471cdb 2026-11-05，0fc301c67..ed6471cdb 该目录无改动）：op_api/aclnn_adaptive_max_pool2d.cpp:282 ConvertNHWCtoNCHW() 只对输入做 NHWC→NCHW；:261 ProcessAdaptiveMaxPoolResults() 把 NCHW 结果直接 Reshape 成 outputOut->GetViewShape()（NHWC 形状）后 ViewCopy，缺少 NCHW→NHWC 的反向 transpose，导致 outputOut/indicesOut 整体错位。判别构造为恒等池化（outputSize 取输入 H/W），此时输出必须与输入逐元素相等、与池化算法无关：NHWC C=8 用例 126/128 不一致，NCHW 与 NHWC C=1 对照全对。资料参数表（L83/L103/L113）声明 self/outputOut/indicesOut 支持 NCHW/NCL/NHWC、维度 3-4，适用于 950PR。自包含 C++ 复现脚本直调两段接口，缺陷复现时退出码 1。
+  source: https://gitcode.com/cann/ops-nn/issues/8180
+  behavior: 在 950 上对 4 维 NHWC 输入（C>1）调用 aclnnAdaptiveMaxPool2d：输出与索引整体布局错位——即便恒等池化（输出尺寸=输入尺寸）输出也大面积与输入不符（126/128 元素不一致），两段接口均返回 0；NCHW 输入或 C=1 不受影响，NHWC 路径的使用者拿到静默脏数据。
+  trigger_surface: aclnnAdaptiveMaxPool2d+4 维 NHWC 输入且 C>1；Ascend950PR、CANN 9.3.0
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

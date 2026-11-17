@@ -1,0 +1,55 @@
+id: INF-2449
+legacy_ids: []
+slug: ops_math_abs_complex64_exponent_factor_normalization
+aliases: []
+title: abs complex64 指数因子归一化仅 A∈[1,2) 正确
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: abs_complex_dag.h 归一化
+  behavior: arch35 complex64 归一化：vA1=(A-2^k)+1.0=A/2^k 正确，vB1=(B-2^k)+1.0 并非 B/2^k，仅 k=0（A∈[1,2)）时成立；跨 binade 输入按错误公式计算模长。
+effect:
+  objects:
+  - 数值结果
+  detail: 实/虚部量级相差较大或两分量落在不同 binade（A 指数≠0）时偏差显著：A=3.0,B=1.0 kernel 得 4.0（真实 sqrt(10)≈3.162，相对误差 26.5%）；A=4.0,B=2.0 得 5.657（真实 4.472，同样 26.5%）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/cann/ops-math/merge_requests/7201 （open，未合入）：改为标准数值稳定公式 |z|=vA·sqrt(1+(vB/vA)²)，Reg::Div 直接计算比值；subnormal 2^24 scale up/down 与 B==0 边界保持不变；arch35 二级冒烟（同量级/跨 binade/subnormal/B=0）与 CPU 参考比对通过，complex32 路径无回归。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4607
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/7201
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0657
+original:
+  mechanism: math/abs/op_kernel/arch35/abs_complex_dag.h 的 complex64（T=float）路径先取 vA=max(|re|,|im|)、vB=min(|re|,|im|)，随后通过"提取 A 的指数因子"位运算（ShiftRights/ShiftLefts+Sub+Add）做归一化：vA0=A 尾数清零后的值（2^k，2^k≤A<2^(k+1)），vA1=(A-vA0)+1.0=A/2^k（正确），vB1=(B-vA0)+1.0（错误，正确应为 B/2^k）。正确恒等式 |z|=2^k·sqrt((A/2^k)²+(B/2^k)²)，实际计算 2^k·sqrt((A/2^k)²+(B-2^k+1)²)，其中 (B-2^k+1) 仅在 A∈[1,2)（k=0）时等于 B/2^k。数值验证：A=3.0,B=1.0 kernel 计算 2·sqrt(2²+0²)=4.0，真实 sqrt(10)≈3.162，相对误差≈26.5%；A=4.0,B=2.0 kernel 计算 4·sqrt(1²+1²)≈5.657，真实 sqrt(20)≈4.472，同样 26.5%。修复 !7201 改用 |z|=vA·sqrt(1+(vB/vA)²)（vA1=vB/vA∈[0,1)、vSumSq=1+(vB/vA)²、vResult=vA·sqrt(vSumSq)），删除指数因子提取块；arch35 二级冒烟覆盖同量级/跨数量级（跨 binade）/subnormal/B=0 与 CPU 参考一致，complex32 不涉及。环境：CANN ops-math arch35 路径。
+  source: GitCode issue https://gitcode.com/cann/ops-math/issues/4607 （open）；修复 PR https://gitcode.com/cann/ops-math/merge_requests/7201 （open）
+  behavior: 在 arch35 上对 complex64 张量取绝对值（模长）时，实部虚部量级相差较大或两者落在不同二进制区间（A 的指数不为 0）时结果明显错误且无任何报错：A=3.0,B=1.0 时 abs 返回 4.0，正确值 sqrt(10)≈3.162，相对误差约 26.5%；A=4.0,B=2.0 时返回≈5.657，正确值≈4.472。实虚部同量级且都在 [1,2) 内的输入结果正确，跨 binade 输入静默给错模长，任何依赖复数模的下游（归一化、能量、距离）数值全偏。
+  trigger_surface: CANN ops-math arch35 路径 abs 算子 complex64（T=float）输入；实/虚部量级相差大或两分量跨 binade（A 指数≠0）触发，A∈[1,2) 场景不触发；complex32 路径不涉及。
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

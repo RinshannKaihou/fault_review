@@ -1,0 +1,58 @@
+id: INF-2430
+legacy_ids: []
+slug: static_launcher_a5_repeated_inplace
+aliases: []
+title: A5 static launcher 重复执行 in-place kernel
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: static Triton launcher
+  behavior: static launcher 在 Ascend950 one-program-per-tile 形态下 grid 与参数处理不正确，同一 in-place pointwise kernel 被多次执行，输出每执行一次被缩放一次
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950+triton_experimental+默认 static launcher，「matmul+标量缩放」等 in-place pointwise 融合模式输出被反复缩放：最小复现最大绝对差 5.7~6.0；社区 107 模型 74/128 例精度不通过，无报错；910B 免疫。
+  visibility: 静默错误
+mitigation:
+  detect: ic.use_static_triton_launcher=False 做 A/B 对照；坏区比值呈 0.125 幂次可识别
+  fix: 规避：torch._inductor.config.use_static_triton_launcher=False（实测恢复 0.0/1.86e-06）；根治需修 static_launcher/compile_result.py 与 launcher_codegen.py（未提交）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5920
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0652
+original:
+  mechanism: torch_npu master 1913f4f2c2（torch 2.13/torch_npu 2.13.0+git5412c2f/CANN 9.2.0）：PR !45989 引入的 static Triton launcher（torch_npu/_inductor/triton_experimental/static_launcher/）在 Ascend950（device_props.py is_a5() soc>=250 → one-program-per-tile，group_size=1）形态下启动 kernel 的 grid/参数处理不正确，导致融合出的 in-place pointwise kernel 被重复执行。证据链：1) 关闭 static launcher 后最小复现 max_abs=0.0、AlbertForMaskedLM logits 1.86e-06；2) 生成 kernel 源码原样单独以同样 grid 跑完全正确，逐步复现编译流程也正确；3) 坏区域 compiled/raw≈0.0119（0.125 幂），证明是重复缩放而非算错；4) 尺寸阈值 [4,12,128,64] 起错 55%、[4,12,512,64] 错 91.6%，[1,1,≤256,64] 与 [4,12,64,64] 全对。910B（soc<250）走 group-dispatch 不受影响。
+  source: https://gitcode.com/Ascend/pytorch/issues/5920
+  behavior: 在 Ascend950 上以 TORCHINDUCTOR_NPU_BACKEND=triton_experimental 跑 torch.compile，含「matmul+标量缩放」等会融合成 in-place pointwise kernel 的模型时输出被反复缩放：最小复现 (eager-compiled).abs().max() 达 5.7~6.0（期望 ~1e-6），AlbertForMaskedLM logits max_abs 1.56；社区 107 模型中 74 个/128 case 精度不通过，全程无报错。
+  trigger_surface: Ascend950（soc≥250）+triton_experimental 后端+默认 static launcher+可融合为 in-place pointwise 的模式；910B 免疫
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

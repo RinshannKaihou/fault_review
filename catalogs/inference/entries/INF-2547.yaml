@@ -1,0 +1,54 @@
+id: INF-2547
+legacy_ids: []
+slug: triton_bf16_atomic_add_lost_updates
+aliases: []
+title: Triton bf16 atomic_add 丢更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: AtomicExpand 展开
+  behavior: Triton main、sm_80/sm_89 上 bf16 tl.atomic_add 被 AtomicExpand 展开为 32 位 cmpxchg 循环；指针带 align 16 时旧值仅循环前提取一次、重试不复取，并发更新被覆盖。
+effect:
+  objects:
+  - 数值结果
+  detail: '128 个线程各对同一地址加 1.0，结果只剩 1.0（期望 128.0），无报错；3.8.0/3.9.0 正确，main 上因 #12107 保留 align 16 触发。'
+  visibility: 静默错误
+mitigation:
+  detect: sm_80/sm_89 上让 128 个线程对同一 bf16 地址 atomic_add 1.0，检查结果是否 128.0；对 16 字节对齐与非对齐缓冲各跑一次。
+  fix: 未核实修复 PR；规避为改用 fp32 atomic_add 或去掉指针 tt.divisibility=16。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12740
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'Triton main 上 bf16 的 tl.atomic_add 在 sm_80/sm_89 被降为 LLVM atomicrmw fadd bfloat align 2，LLVM AtomicExpand 把它展开成 32 位 cmpxchg 循环。PTX 中旧 bf16 值从循环前 load 的 32 位字里提取一次（cvt.u16.u32 %rs2, %r7），循环体内每次重试都用 stale_old + v，新的比较值只写回 %r7 而不重新提取，因此任何并发更新都会被覆盖。触发条件是 #12107（Preserve pointer argument alignment）让带 tt.divisibility=16 的指针参数获得 align 16；没有该属性时（3.8.0/3.9.0，或输出非 16 字节对齐）同一循环正确。实测 128 线程各加 1.0 结果只剩 1.0。报告者从 AtomicExpandPass.cpp 的 insertRMWCmpXchgLoop 推断机制，未自行构建 LLVM 验证；缺陷本体在 LLVM，#12107 只是暴露它。'
+  source: https://github.com/triton-lang/triton/issues/12740
+  behavior: 在 sm_80/sm_89 上用 bf16 做 tl.atomic_add 累加到同一地址（例如统计量、直方图、MoE 计数），大量更新被静默丢弃：128 个线程各加 1.0 只剩 1.0；没有异常也没有 warning，直到结果明显偏小才发现。
+  trigger_surface: Triton main、bf16 tl.atomic_add、sm_80/sm_89，指针参数带 tt.divisibility=16；3.8.0/3.9.0 不受影响。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

@@ -1,0 +1,59 @@
+id: TRN-0708
+legacy_ids: []
+slug: torchtitan_generator_lmhead_reshard_uninitialized
+aliases: []
+title: generator 权重加载 reshard 读未初始化分片
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: torchtitan
+    component: generator FSDP reshard
+  behavior: lm_head/norm 组步间停留 FORWARD 态（norm 进 CUDA graph 无 hook），load 时 unshard 的 all-gather 在 prefetch stream 不等当前流填充分片
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  detail: 流式 LoRA adapter-only load 从未初始化分片 gather lm_head/norm——之后每个 rollout 全垃圾（reward 0、logprob diff -0.96，816B FULL CUDA graphs）
+  visibility: 质量退化
+mitigation:
+  detect: 每次权重同步后对 generator/trainer logprob 差监控（阈值远小于 1）；load 后抽查 lm_head/norm 与 trainer 权重一致
+  fix: 修复 PR https://github.com/pytorch/torchtitan/pull/5982 （open，2026-11-09）：_reshard 先 complete_fsdp_grouped_forward 再 reshard；Qwen3.5-35B LoRA 10 次 load 权重不变、logprob diff -0.001，816B 200 步保持 -0.004~-0.005
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: 当前阻塞式 fetch 暂不触发；LoRA adapter-only load（#5844 类流式设备填充）触发
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/5982
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'pytorch/torchtitan #5982（open PR，2026-11-09）：generator 用 lm_head 单独算 logits、norm 在 CUDA graph replay 内跑（无 FSDP hook），[norm,lm_head]（或 tied [tok_embeddings,norm,lm_head]）组在步间停留 FORWARD 态。权重 load 对每组 reshard→填充分片→unshard；FORWARD 态下 unshard() 的 all-gather 在 FSDP prefetch stream 执行，仅在 root pre-forward（FSDPCommContext.get_all_gather_streams）等当前流——不等 load 排在当前流上的填充分片设备工作。当前 fetch 阻塞式完成（blocking pinned copy / TorchStore 读前同步）暂无竞态；流式设备填充的 LoRA adapter-only load（#5844，冻结参数拷回重分配分片）触发：Muse Spark 816B（generator DP4×TP4×EP16、Dist-MoE、FULL CUDA graphs）第三次权重同步起 lm_head/norm 从未初始化分片 gather，此后所有 rollout 垃圾（reward 0、trainer/generator logprob diff -0.96）。修复 _reshard 先 complete_fsdp_grouped_forward（组回 IDLE、load 的 unshard 在当前流拷入并 all-gather）再 module.reshard()；验证 Qwen3.5-35B-A3B Geometry3K LoRA（DP2×EP2，FULL CUDA graphs）10 次 load lm_head/norm 不变、step6 logprob diff -0.593→-0.001。'
+  source: https://github.com/pytorch/torchtitan/pull/5982
+  behavior: RL 训练用 torchtitan generator（FSDP 分片 lm_head/norm + LoRA adapter-only 权重加载 + FULL CUDA graphs）：第三次及以后的权重同步把 lm_head/norm 从未初始化的分片 gather 出来——后续每个 rollout 输出全垃圾（reward 掉到 0、trainer/generator logprob 差 -0.96），无崩溃无报错；小规模验证中 lm_head/norm 在多次 load 间被观察到漂移。修复后 10 次 load 权重不变、logprob 差 -0.001。
+  trigger_surface: torchtitan generator：lm_head/norm（或 tied 组）FSDP 分片 + 流式设备填充的权重 load（LoRA adapter-only）+ FULL CUDA graphs
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: RL训练回路
+        to: 权重/检查点
+      visibility:
+        from: 静默错误
+        to: 质量退化

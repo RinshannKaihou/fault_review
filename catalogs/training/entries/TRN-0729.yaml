@@ -1,0 +1,63 @@
+id: TRN-0729
+legacy_ids: []
+slug: gntraining_reduce_tiling_wrap_mask_fail
+aliases: []
+title: GNTrainingReduce tiling 回绕与补偿归约掩码失效
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: GNTrainingReduce
+  behavior: tiling 预算判定写成乘法式比较且无元素总数门限，超大 shape 乘积在 int64 回绕后静默放过；Σx 补偿归约尾块掩码在 shape 特化编译产物中整块失效；group 分支直绑原始 workspace 踩系统 mailbox。
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: GroupNorm 训练统计量（补偿 two-sum 归约）在尾块路径（rProd%8==0 且 <64）数值算错、超大 shape 产出回绕 tiling 的错误执行计划，均无报错；机制由随 PR 新增 UT 覆盖。
+  visibility: 静默错误
+mitigation:
+  detect: 对尾块形状（rProd 非整向量宽）与超长归约轴用例做与 fp64 参考的对账；tiling 输入做元素总数上限断言
+  fix: 加固 PR https://gitcode.com/cann/ops-nn/pull/14145（open）：tiling 溢出校验、尾项标量 two-sum 续算+编译期常量掩码、group 分支绑定用户 workspace 起始地址；未发布
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: 缺陷由质量评审定位（无 NPU 运行日志，行为由 UT 覆盖）；tiling 溢出面与 TRN-0423 族同型但本条主缺陷是补偿归约掩码失效与 workspace 越界，独立成条。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8599
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/14145
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #8599（2026-11-11 open）+ 加固 PR !14145（open）。GNTrainingReduce（arch35，Ascend 950PR/950DT，CANN 9.0.0）四类缺陷：1) TilingForGNTrainingReduce 无元素总数门限，cacheline/rIMax/aUnitMax 预算判定为 product*axisSize>limit 乘法式，超大 shape 中间结果 int64 回绕，超限 shape 静默放过并产出回绕 tiling；2) InferShape 的 num_groups>=1 校验位于 IsUnknownRank 早退后，x=[-2] 时 G=0 不被拒绝；3) Σx 补偿归约（double-double two-sum）的向量化尾块用运行期 UpdateMask 掩码，实测在 shape 特化编译产物中整块失效，尾块参与错误求和；4) group 分支把原始 workspace 交 InitGroup，而 950 运行时在 workspace 头部保留 16MB 系统区（RESERVED_WORKSPACE，ffts 跨核同步 mailbox 在该区），带 SyncAll 硬同步直绑会踩 mailbox。另有 UnknownShapeFormat 与 Format 声明不一致、golden 单链 O(R) 累加噪声 33~99 ULP 超预算。修复 !14145：元素总数门限+确定性拒绝、尾项标量 two-sum 续算+编译期常量掩码、group 分支绑用户 workspace 起始、golden 8192 分块成对合并。来源：https://gitcode.com/cann/ops-nn/issues/8599 、修复 https://gitcode.com/cann/ops-nn/pull/14145 。训练面：GroupNorm 训练统计量算子，训练前向/更新路径直接消费。'
+  source: https://gitcode.com/cann/ops-nn/issues/8599 ｜修复 PR：https://gitcode.com/cann/ops-nn/pull/14145
+  behavior: 950PR/950DT 上跑 GroupNorm 训练：特定尾块形状（归约长度非整向量宽）下 batch 统计量的补偿归约按失效掩码求和，统计量与梯度用的均值/方差静默偏差；构造超大 shape 时 tiling 预算回绕后照常下发错误执行计划；group 分支可能踩跨核同步 mailbox。均无报错；缺陷证据为源码定位+随 PR 新增 UT（RejectNonZeroDimProductOverflow 等），无端到端训练任务影响实测。
+  trigger_surface: Ascend 950PR/950DT（arch35），CANN 9.0.0；尾块 rProd%8==0 且 rProd<64、超大 shape、group 分支 SyncAll；修复 !14145 open 未发布
+  discovery: 2026-11-12 每日扫描
+  notes:
+  - '2026-11-13 回访：回访：源 issue #8599 已 closed（2026-11-12 索引 state=closed），关联修复 !14145 未见 merged 标记；机制判定不变。'
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-13'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

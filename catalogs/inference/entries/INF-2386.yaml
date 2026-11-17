@@ -1,0 +1,73 @@
+id: INF-2386
+legacy_ids: []
+slug: glm_fp8_ignored_layers_prefix_mismatch_silent_quant
+aliases: []
+title: GLM 嵌套前缀失配致 FP8 排除层被静默量化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: AscendFp8Config 层排除匹配
+  behavior: 检查点以扁平前缀列出约 1150 个排除层，嵌套包装模型真实前缀多一层，exact 匹配全部失败，被排除层（若干层无 weight_scale_inv 张量）被静默路由到 FP8 块量化
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  - 输出内容
+  detail: 加载与服务正常、无报错无告警；11 层索引器每层 q_values 对所有 token、所有位置恒为零，稀疏索引 top-k 塌缩为与 query 无关的固定集；生成长而无效、大量撞 max_tokens，AIME2026 40%、GPQA 62.1%（修复后 93.3%/89.4%）
+  visibility: 质量退化
+mitigation:
+  detect: 对比修复前后基准分数；检查索引器 query 向量是否全零
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20861 （open，未发布）：exact 匹配失败时回退 suffix 匹配并告警一次
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20860
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/20861
+  kind: github_pr
+relations: []
+original:
+  mechanism: vllm-ascend AscendFp8Config.get_quant_method() 用 is_layer_skipped(..., match_mode="exact") 检查 ignored_layers。GLM-5.3-Flash 原生 FP8 检查点的 quantization_config.modules_to_not_convert 以扁平前缀（model.layers.3.self_attn.indexer.wq_b）列出约 1150 层，但 vLLM 以嵌套 Glm5NextForConditionalGeneration 包装加载，真实前缀是 language_model.model.layers.3...，精确匹配对所有条目全部失败。检查点明确排除（其中若干层根本没有 weight_scale_inv 张量）的层被静默路由到 FP8 块量化，无错误、无形状失配、无警告。直接实测：11 层索引器每层的 query 向量 q_values 对所有 token、所有位置恒为零，稀疏索引 top-k 选择塌缩为与 query 无关的固定集。修复 PR 20861 在 exact 失败后重试 suffix 匹配并一次性告警，测试 20/20 通过，量化 UT 489 passed。环境：Ascend 950DT、CANN 9.2.0.b080、vLLM 0.31.0、TP=8。
+  source: https://github.com/vllm-project/vllm-ascend/issues/20860 修复 https://github.com/vllm-project/vllm-ascend/pull/20861
+  behavior: GLM-5.3-Flash 原生 FP8 检查点在 vllm-ascend 服务时基准分数大幅低于预期区间（AIME2026 40% 对期望 ~90-93%，GPQA-Diamond 62.1% 对期望 ~89.9%），生成呈现长而无效、大量撞 max_tokens、与 W8A8-MXFP8 版本相比逐字重复率升高；模型加载与服务完全正常，无任何报错或警告。打修复后 AIME2026 93.3%、GPQA 89.4%。
+  trigger_surface: vllm-ascend main（vLLM 0.31.0）；GLM-5.3-Flash 原生 FP8 检查点 + 嵌套包装模型；Ascend 950DT TP=8。其他 exact 匹配已成功的检查点不受影响。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - '2026-11-05 回访：回访：#20860 已 closed（2026-11-05T08:59Z，修复 #20861 后续未核实是否合入/发布；closed 不自动证明已修复）'
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 模型权重
+        to: 数值结果
+      visibility:
+        from: 静默错误
+        to: 质量退化
+    rewritten:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

@@ -1,0 +1,51 @@
+id: INF-2529
+legacy_ids: []
+slug: hcomm_aiv_alltoallv_16card_hang_driver_fw
+aliases: []
+title: 910C AIV AllToAllV 16 卡集体挂死
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: HCCL AIV AllToAllV
+  behavior: AIV 展开下 16 rank AllToAllV 仅 rank6/7 完成，14 rank 的 AIV kernel 不退出；换 driver/FW 正常，锁定 driver 26.2.rc1/FW 9.2.0.2.200。
+effect:
+  objects:
+  - 可用性/进度
+  detail: torch_npu.npu.synchronize() 14/16 rank 永久不完成、AICore 100%；rank6/7 在 600s 后 EI0006/ERR00100；同用例关 AIV 或 8 rank 正常。
+  visibility: 挂起
+mitigation:
+  detect: 16 卡 910C 上开启 HCCL_OP_EXPANSION_MODE=AIV 跑等分 all_to_all_single，观察 sync 是否只有部分 rank 返回、AICore 是否空转；与关闭 AIV 及 8 rank 对照。
+  fix: 待定（issue open；规避=关闭 AIV 展开或回退 driver/FW 组合，升级修复未核实）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: 16 卡 AllToAllV 600s 超时报错退出（fail-loud 集合通信超时）
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/1278
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/hcomm issue #1278：单机 16 rank 910C（8 卡×2 die，SOC=ascend910_9391），torch.distributed.all_to_all_single（fp16、每 rank 2048 token、hidden=4096、等分 split=[128]*16），HCCL_OP_EXPANSION_MODE=AIV。16/16 rank 均进入算子且 API 均返回；随后 torch_npu.npu.synchronize() 只有 rank6/rank7 完成，其余 14 个 rank 的 stream 永不完成，卡死期间被占用 chip 的 AICore 持续 100%（kernel 设备侧空转）；rank6/7 在后续 dist.barrier() 等其余 rank，600s 后报 Communication_Error_Get_Socket(EI0006) → ERR00100 PTA call acl api failed。同用例关闭 AIV（默认 AICPU 展开）16/16 正常；8 rank + AIV 正常。故障机 OS openEuler 6.6.0-72、driver 26.2.rc1、FW 9.2.0.2.200；对照机 veLinux 5.15、driver 26.1.0、FW 9.0.0.6.200，相同 CANN 9.2.1 且 libhccl/libhcomm/libhccl_alg/libhccl_plf 四个 so 逐字节相同，16/16 正常。差异锁定在 driver/FW 组合与 16 卡 AIV 展开路径。'
+  source: https://gitcode.com/cann/hcomm/issues/1278
+  behavior: 在单机 16 卡 910C 上开启 AIV 展开做 AllToAllV，all_to_all_single 调用本身返回，但同步时只有 2 个 rank 能结束，其余 14 个 rank 永久卡住、对应 AICore 满载空转；约 10 分钟后才在 barrier 上报 socket 超时。关掉 AIV 或改用 8 卡就正常，属于特定 driver/FW + 16 卡 + AIV 组合下的集合通信挂死，推理服务会整体停摆。
+  trigger_surface: 单机 16 卡 910C、HCCL_OP_EXPANSION_MODE=AIV、torch.distributed.all_to_all_single 等分 16 rank；driver 26.2.rc1 / FW 9.2.0.2.200 + CANN 9.2.1；8 rank 或 AICPU 展开不复现。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

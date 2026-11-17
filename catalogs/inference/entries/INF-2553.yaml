@@ -1,0 +1,51 @@
+id: INF-2553
+legacy_ids: []
+slug: triton_experimental_linearize_rewrites_compare_constant
+aliases: []
+title: linearize 文本改写误改比较常量致越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: TE linearize pass
+  behavior: _apply_linearize 用文本替换改归约维槽位；npu_triton_helpers.lt(x, 0) 的常量 0 也命中 ', 0)' 被替换成 real_reduction_dim，负下标回绕判据失效。
+effect:
+  objects:
+  - 数值结果
+  detail: 合法下标 0 被判为负、加上整个维度后越界读；950DT 上 fractional_max_pool2d values maxdiff 16/32、indices 不一致，两段无报错；关 linearize 后 maxdiff 0。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 lowering 分别在 codegen_linearize=True/False 下编译，逐元素对比生成的 tmp = npu_triton_helpers.lt(..., 0) 是否被改写。
+  fix: 'PR #49690（open，2026-11-14 未合入，未核实发布）：在文本改写处排除 npu_triton_helpers.lt/gt/eq/le/ge/ne。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-14'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6112
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49690
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/pytorch/issues/6106
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu 的 triton_experimental 后端在 Inductor codegen 阶段执行 _apply_linearize：为修正归约维槽位变化，按文本匹配 `, {old_reduction_dim})` 替换成 real_reduction_dim，匹配条件只要求行内出现 triton_helpers. 子串。npu_triton_helpers.lt/gt/eq 等比较算子名同样含该子串，因此 `tmp21 = npu_triton_helpers.lt(tmp18, 0)` 这种间接索引的负下标回绕判据被改成 `lt(tmp18, 1)`（3 轴时 2）。复现环境 Ascend 950DT、torch 2.15.0+cpu、torch_npu 2.15.0+git7abfe3c、triton 3.6.0，恢复 aten.fractional_max_pool2d 原生 lowering 后编译：linearize=True 时 values maxdiff 16.0/32.0 且 indices 不一致，linearize=False 时 maxdiff 0、indices 全等，应用本修复后 maxdiff 0。错误形态为输出第 0 行整行越界读返回 0，其余格子正确。任何在归约上下文使用 npu_triton_helpers 比较算子的 kernel 都可能被污染，不报错只错值。
+  source: https://gitcode.com/Ascend/pytorch/issues/6112 ｜修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49690 ｜关联 https://gitcode.com/Ascend/pytorch/issues/6106
+  behavior: 在 triton_experimental 后端编译带间接索引/比较的算子时，生成代码里的 `npu_triton_helpers.lt(idx, 0)` 被改写成 `lt(idx, 1)` 或 `lt(idx, 2)`，合法下标 0 被当成负下标加上整个维度大小后越界读：输出某些行整行变成 0 或错行，其余格子看起来正常，编译和运行都不报错。fractional_max_pool2d 在 950DT 上 values 最大绝对偏差 16~32、indices 与 eager 不一致；关掉 codegen_linearize 或应用修复后偏差为 0，因此只有逐元素对拍才能发现。
+  trigger_surface: torch_npu triton_experimental 后端（TORCHINDUCTOR_NPU_BACKEND=triton_experimental）默认开启 codegen_linearize；kernel 在归约上下文调用 npu_triton_helpers.lt/gt/eq/le/ge/ne 做间接索引或 mask 比较；Ascend 950DT + torch 2.15/torch_npu 2.15 + triton 3.6.0。
+  discovery: 2026-11-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-14'
+  audit:
+    round: daily-audit-2026-11-15
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

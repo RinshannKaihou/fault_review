@@ -1,0 +1,61 @@
+id: INF-2518
+legacy_ids: []
+slug: sglang_eagle_graph_padding_nan_latch
+aliases: []
+title: sglang EAGLE 图 padding 触发 NaN 锁存
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: decode 图 padding 行
+  behavior: EAGLE+decode CUDA graph 下批大小不在捕获表被 pad 到下一桶：padding 行用 request-pool 行 0 与零填 Mamba 索引，线性注意力后端读该状态行，疑留 NaN 被后续共享（未确认）。
+effect:
+  objects:
+  - 输出内容
+  - 隐状态
+  detail: GLM-5.3-Flash+EAGLE+decode CUDA graphs：一旦出现 pad 批（9→bs-10 图）logits 变 NaN，此后所有请求返回 token id 0 直到重启；flush 无效、无日志、请求 200。需 EAGLE+图+pad 同时。
+  visibility: 数值异常
+mitigation:
+  detect: logprobs 全 null/最低 token id 的输出模式；SGLANG_VALIDATE_MAMBA_REPLAY_STATE_INDICES=1 验证开关存在但未在报告中试验。
+  fix: 规避：--cuda-graph-bs-decode 把运行上限内每个批大小逐桶捕获（1 2 … 16 全捕后原触发场景全部通过）；根因修复待定（issue open，1 条评论未读）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/49881
+  kind: github_issue
+relations: []
+original:
+  mechanism: sglang v0.5.23 GLM-5.3-Flash（4 GPU、fp8、dsa tilelang prefill/decode、triton linear-attn/moe、fp8_e4m3 KV、EAGLE 3 步 topk1 draft4）：默认投机解码 decode 捕获表跳过 8 以上奇数桶（1-8,10,12,14,16），9 running 被 _pad_to_bucket pad 到 bs-10 图后 logits 变 NaN 并永久锁存——此后所有请求（含批 8 已捕获尺寸）token id 0，/flush_cache 不救，仅重启恢复。受控变体矩阵：全捕获 1-16 全过；关投机解码（pad 到 12）过；--disable-cuda-graph 过；--disable-radix-cache 不救；默认 mamba 上限把 running 压到 9 时不显现。根因未立：报告者按 v0.5.23 源码指向 padding 行用 request-pool 行 0、零填充 Mamba track 索引/mask（cuda_graph_buffer_registry.py），hybrid_linear_attn_backend.py 读取这些行状态，猜测 EAGLE verify 步的 padding 行读写了不该碰的状态行留下 NaN 被后续前向共享；SGLANG_VALIDATE_MAMBA_REPLAY_STATE_INDICES=1 未试。同症状类（hybrid 状态模型+投机解码锁存垃圾、不同触发）：#48964（=INF-2447 1M 长请求后引擎状态损坏）、#49274、#43514。
+  source: 'https://github.com/sgl-project/sglang/issues/49881 '
+  behavior: GLM-5.3-Flash 开 EAGLE 投机解码和 decode CUDA graph 服务：并发数一旦使某步 decode 批大小落在未捕获的桶（如 9 running 被 pad 到 10），该步起 logits 变 NaN，之后不管发什么请求（哪怕单个请求）都返回一串 token id 0（文本全为'!!!!…'），logprobs 全 null；服务不报错不告警，flush 缓存也无效，只能重启恢复。把 1-16 每个批大小都捕获成图后同样负载全部正常。
+  trigger_surface: sglang v0.5.23 + GLM-5.3-Flash（hybrid 线性注意力）+ EAGLE + decode CUDA graphs + 批大小落在默认捕获表缺口（>8 奇数桶）；提高 --max-running-requests/--max-mamba-cache-size 后暴露。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: KV缓存
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    uncertain:
+    - effect
+    - detail

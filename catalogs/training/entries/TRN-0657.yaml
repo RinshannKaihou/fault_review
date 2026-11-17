@@ -1,0 +1,52 @@
+id: TRN-0657
+legacy_ids: []
+slug: abs_complex64_exponent_normalization
+aliases: []
+title: abs complex64 指数因子归一化仅 A∈[1,2) 正确
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: abs complex64 kernel
+  behavior: abs complex_dag 路径 vB1=(B−2^k)+1 仅 A∈[1,2) 时等于 B/2^k；两分量跨 binade 或量级差大时算 2^k·sqrt((A/2^k)²+(B−2^k+1)²)，偏离 sqrt(A²+B²)。
+effect:
+  objects:
+  - 数值结果
+  detail: A=3.0,B=1.0 得 4.0（真值 √10≈3.162，相对误差 26.5%）；A=4.0,B=2.0 得 5.657（真值 √20≈4.472，同样 26.5%）；同量级输入正常，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 跨 binade/量级差大的 complex64 abs 与 CPU sqrt(A²+B²) 对账；构造 A∈[2,4) 系列用例。
+  fix: 修复 PR https://gitcode.com/cann/ops-math/merge_requests/7201（open 2026-11-07）：改标准数值稳定公式 |z|=A·sqrt(1+(B/A)²)；arch35 验收标准含 subnormal/B=0 边界。未发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4607
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/7201
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2449
+original:
+  mechanism: 'cann/ops-math #4607（2026-11-07 open）+ 修复 !7201（open）：math/abs/op_kernel/arch35/abs_complex_dag.h 的 complex64（T=float）路径先取 vA=max(|re|,|im|)、vB=min(|re|,|im|)，随后「提取 A 的指数因子」位运算（ShiftRights/ShiftLefts+Sub+Add）做归一化：vA0=A 尾数清零后的 2^k；vA1=(A−vA0)+1.0=A/2^k 正确；vB1=(B−vA0)+1.0 错误（应为 B/2^k）。正确恒等式 |z|=2^k·sqrt((A/2^k)²+(B/2^k)²)，实际计算 2^k·sqrt((A/2^k)²+(B−2^k+1)²)，其中 (B−2^k+1) 仅 A∈[1,2)（k=0）时等于 B/2^k。数值验证：A=3.0,B=1.0 → kernel 2·sqrt(2²+0²)=4.0 vs 真值 3.162（26.5% 相对误差）；A=4.0,B=2.0 → 5.657 vs 4.472（26.5%）。修复 PR !7201：改标准数值稳定公式 |z|=A·sqrt(1+(B/A)²)（vA1=vB/vA、vSumSq=1+(vB/vA)²、vResult=vA·sqrt(vSumSq)；subnormal 的 2^24 scale 保持、B==0 直取 vA）；验收标准含两分量同量级/差多数量级/subnormal/B=0 边界与 CPU 参考一致，complex32 路径无回归。训练面：L2/复数域 loss、频域 FFT 链路用 complex64 abs 时静默错值。推理库 INF-2449 已收同源。'
+  source: https://gitcode.com/cann/ops-math/issues/4607 ｜修复 PR：https://gitcode.com/cann/ops-math/merge_requests/7201
+  behavior: NPU 上（arch35：Ascend 950 等）对 complex64 张量取 abs：当实/虚部量级相差较大、或两分量落在不同 binade（如 A=3.0,B=1.0、A=4.0,B=2.0）时结果显著偏离真值——实测相对误差 26.5%（4.0 vs 3.162；5.657 vs 4.472）；两分量同量级时正常。全程无报错，仅数值对账可见；下游范数/距离计算被静默带偏。
+  trigger_surface: CANN ops-math abs complex64 路径（arch35）+ 实/虚部跨 binade 或量级差大；Ascend 950/arch35、CANN master 实测；修复 !7201 open 未合
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

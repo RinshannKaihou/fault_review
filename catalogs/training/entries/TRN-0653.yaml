@@ -1,0 +1,62 @@
+id: TRN-0653
+legacy_ids: []
+slug: triton_experimental_rsplit_tail_mask_lost
+aliases: []
+title: triton_experimental 分核归约尾块 mask 丢失求和错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: 分核归约代码生成
+  behavior: 全局 numel 整除 block 但 ceil(numel/核数) 不整除时，load 阶段尾块 mask 已被删；分核改写只换循环边界无法恢复，跨分片重复读+末片越界；多轴改写不匹配仍生成 workspace combine 输出错。
+effect:
+  objects:
+  - 数值结果
+  detail: torch.compile 下普通大尺寸 sum 实测 1048576.0 得 3625399.0（偏差 3.5 倍）、外轴 sum 4/4 元素错；无报错，仅数值对账可见。
+  visibility: 静默错误
+mitigation:
+  detect: 编译结果与 eager 对账（sum/softmax 后求和定点检查）；watch 分核 rsplit 候选的尾块 mask 保留。
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49242（open 2026-11-07）：load 生成前识别分核候选保留 reduction mask、partial-body 改写限定单未映射归约轴；修复后 G02 20 方法/24 参数化实例 + 28 项专项回归全 PASS（910B3 实测）。未发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5938
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49242
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0280
+- kind: cross
+  target: INF-2450
+pattern: PAT-TRN-0066
+original:
+  mechanism: 'Ascend/pytorch #5938（2026-11-07 open）+ 修复 !49242（open）：G02 社区跟随测试（#190068 前反向区域配置用例）输出数值比较失败，抽离嵌套区域后普通大尺寸 sum 也错，根因在 triton_experimental 分核归约代码生成两处：① 全局 reduction numel 能整除 block，但 ceil(numel/核数) 未必整除 block——load 生成时尚未标记 rsplit，尾块 mask 被当作恒真删除；后续分核改写只替换循环边界，无法恢复已删除的 load mask，造成跨分片重复读取和末片越界（额外分配 65536 sentinel 区域稳定暴露 view 边界外读取）。② 多轴提升生成逐轴循环、常量边界和广播形式 store，现有 partial-body 改写无法匹配，却仍生成 workspace combine，导致输出错误。实测（910B3、CANN 9.1.0、PyTorch 2.15.0.dev、Triton 3.6.0/triton-ascend 3.6.0.post2、master 8fdb4b49b5）：test_scalar_sum_with_guarded_storage 期望 1048576.0 实得 3625399.0（相对差 2.46）、test_outer_sum_with_guarded_storage 4/4 元素错（最大绝对差 448951）。修复 PR !49242：load 代码生成前识别分核候选保留 reduction mask、改写为当前核 hi 边界；partial-body 限定单个未映射归约轴，多轴回落普通归约。修复后 20 测试方法/24 参数化实例全 PASS + 28 项专项回归全 PASS（910B3 实测，与 !49240/!49253/!49254/!49255 五笔组合验证）。关联 #5638 G02 跟随上游 pytorch#188976/#189320/#190068/#191672。与 TRN-0280（常量特化 r-numel 误编译）同属 triton_experimental 归约改写静默错值族，触发点不同（尾块 mask 删除 vs 常量烧入）。推理库 INF-2450 已收同源。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5938 ｜修复 PR：https://gitcode.com/Ascend/pytorch/merge_requests/49242
+  behavior: NPU 上用 TORCHINDUCTOR_NPU_BACKEND=triton_experimental 对含大尺寸归约（如 x.sum()、x.sum(dim=0)）的函数做 torch.compile：编译结果与 eager 明显不符——实测 1M 元素求和得 3625399（应 1048576，错 3.5 倍）、外轴归约 4/4 元素错；无任何报错或 NaN，只有把编译结果与 eager 对账才能发现。全局规模能整除 block 也会触发（分核后每核尾块不整除即中招）；多轴归约同样错。
+  trigger_surface: triton_experimental 后端 torch.compile + split reduction（大尺寸 sum/softmax 后求和等）；numel 整除 block 但 ceil(numel/核数) 不整除 block，或多轴提升归约；Ascend 910B3、CANN 9.1.0、Triton 3.6.0/triton-ascend 3.6.0.post2 实测（master 8fdb4b49b5）
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

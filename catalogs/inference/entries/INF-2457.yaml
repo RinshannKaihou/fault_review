@@ -1,0 +1,59 @@
+id: INF-2457
+legacy_ids: []
+slug: vllm_nvfp4_mxfp4_row_parallel_scale_group_misaligned
+aliases: []
+title: NVFP4/MXFP4 行并行加载错配 block scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: FP4 行并行分片加载
+  behavior: create_weights 按 K_r//G 分配 scale 不检查整除；加载按元素切 codes、按组切 scales，K_r 非 G 倍数时 rank>0 乘错组 scale，rank 0 尾列无 scale。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: Gemma-4-26B-A4B-NVFP4 TP=8 无错无警：dense 49920/63360 列错组+1920 无 scale，expert 1996800/2703360 列错组；非零 code 元素错 scale 68.7%/70.0%；GSM8K 24.3%→1.44%（TP=4→8）。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 'issue 建议加载期拒绝（复用 verify_group_size_divides_partition，如 WNA16 #46236 与 ModelOpt linear modelopt.py:2139）；ModelOpt MoE 同缺陷已有修复 PR #49951（open）；报告者持有带回归测试的 patch 可提 PR；未核实合入。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/66211
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/pull/49951
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vLLM compressed-tensors NVFP4（组 16）与 MXFP4（组 32）在行并行层（dense down_proj/o_proj、MoE w2）按 rank 切输入维 K：各 rank 取列 [r*K_r,(r+1)*K_r)，K_r=K/tp。create_weights（compressed_tensors_w4a4_nvfp4.py:56,76；compressed_tensors_w4a4_mxfp4.py:68,81）按 input_size_per_partition//2 分配 code 字节、按 //group_size 分配 scale，不检查整除；parameter.py:211-221 load_row_parallel_weight 对每个张量按自身单位在 tp_rank*shard_size 窄化——codes 取元素 r*K_r、scales 取组 r*(K_r//G)。K_r 非 G 整数倍时（如 K=2112 TP=8 得 264=16.5 组、K=704 得 88=5.5 组），rank>0 的 codes 乘错组 scale，rank 0 尾部 K_r%G 列无 scale。受影响（main 8176238c9）：CompressedTensorsW4A4Fp4/W4A4Mxfp4（Humming/Marlin kernel 均错，单层 TP=2 复现 rank0 8/360、rank1 184/360 列错）；CompressedTensorsW4A4Nvfp4MoEMethod 与 ModelOptNvFp4FusedMoE 的 w2（RoutedExperts._load_w2 routed_experts.py:635-636 同样切法，HUMMING 后端静默跑）；ModelOpt MoE 案例已报 #49949（修复 PR #49951 open，Marlin 报错暴露）；ModelOpt NVFP4 linear 已拒绝（modelopt.py:2139-2142）、compressed-tensors WNA16 已经 verify_group_size_divides_partition 拒绝（#46236）。真实 checkpoint：RedHatAI/gemma-4-26B-A4B-it-NVFP4 revision 5557756b，dense down_proj K=2112、expert K=704，TP=8 时 264/88 列/rank（16.5/5.5 组）；对照 30 层 ×8 rank 加载后 scale：dense 49920/63360 列错组+1920 无 scale（68.7% 非零 code 元素错 scale）、expert 1996800/2703360（70.0%）；TP=4 全对。GSM8K 1319 题 5-shot greedy：TP=8 1.44%、TP=4 24.34%/25.32%（两跑 p=0.51）、TP=2 22.82%、组对齐 shard TP=8 24.79%；TP=4 对 TP=8：315 题仅 TP=4 对、13 题仅 TP=8 对（McNemar p=2.4e-76）。unsloth 同形 checkpoint 同影响；tcclaviger/Qwen3.8-Flash-Next-MXFP4-FP8-GPTQ expert K=640（TP=8 2.5 组/rank）。环境：vLLM 0.33.0rc1.dev848（nightly 服务实测）、main 8176238c9（层复现）、torch 2.14.0+cu130、H20-3e×8、compressed-tensors 0.17.0、humming-kernels 0.1.18/0.1.19。'
+  source: 'GitHub issue https://github.com/vllm-project/vllm/issues/66211 （open）；同族已报 #49949/修复 PR https://github.com/vllm-project/vllm/pull/49951 （open）；对照修复先例 #46236'
+  behavior: 用 NVFP4/MXFP4 量化 checkpoint 在 vLLM 上以 TP 切到每组 block scale 边界不整除时（如 Gemma-4-26B-A4B NVFP4 TP=8），服务正常加载、正常推理、无任何警告，但模型输出质量崩塌：GSM8K 从 TP=4 的约 24% 掉到 1.44%（1319 题 5-shot greedy），错题模式经 McNemar 检验 p=2.4e-76 排除随机波动。单层复现可见 rank1 一半以上输入列读到错 scale（如 184/360 列 read 64 expected 128、read 0 expected 64）。换 TP=4/TP=2 或组对齐分片即恢复正常，是只在特定 TP 度下出现的静默精度崩塌。
+  trigger_surface: vLLM（0.33 nightly/main 8176238c9）+ compressed-tensors NVFP4 W4A4/W4A16、MXFP4、ModelOpt NVFP4 MoE w2 + RowParallelLinear 输入维被 TP 切且 K/tp 非组大小（16/32）整数倍（如 K=2112/704/640 @ TP=8）；Humming 与 Marlin kernel 均受影响；WNA16 与 ModelOpt linear 路径有既有拒绝不受影响。
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化
+    rewritten:
+    - detail

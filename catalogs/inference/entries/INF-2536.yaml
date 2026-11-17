@@ -1,0 +1,57 @@
+id: INF-2536
+legacy_ids: []
+slug: torchair_inductor_ascendc_rand_seed_ignored
+aliases: []
+title: AscendC 后端 rand/randn 忽略 seed/offset
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: pytorch
+    component: AscendC rand/randn
+  behavior: inductor_npu_ext ascendc 后端的 AscIR Rand/Randn 用固定 philoxKey/Counter；asc_ops.load_seed 返回常量 0，seed 成死边，每次 kernel 随机数相同。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: torch.manual_seed 不生效，dropout/randn 每次得到同一序列；随机采样退化为固定值，训练/推理的随机性与复现实验均失真，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 在同一进程内连续两次 torch.manual_seed(不同值) 后跑 randn/dropout，比较输出是否相同；检查 AscIR Rand/Randn 的 philoxKey/Counter 是否随 seed 变化。
+  fix: '修复 PR #4005（open，rand_decompose）：让 AscIR Rand/Randn 消费 seed/offset、load_seed 返回真实 seed；发布未核实。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/969
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/torchair/merge_requests/4005
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/torchair issue #969：inductor_npu_ext 的 ascendc（AF/AscIR）后端中，rand/randn 没有消费 Inductor 下发的 seed 和 offset。autofuse/ascir_api.py 中 AscIR Rand/Randn 使用固定 philoxKey={0,0}、philoxCounter={0,0,0,0} 的 continuous 模式；asc_ops.randn(seed, offset) 只生成 Op("Randn")，不把 seed/offset 作为输入；asc_ops.load_seed(name, offset) 直接返回 constant("0", torch.int64)，seed 成为死边。因此每次 kernel 执行得到相同随机数，torch.manual_seed 不生效，dropout/randn 失去随机性。期望参照 npu-triton 的 randn 实现（Philox(seed, offset)+Box-Muller），让新 CANN 把 seed/counter 作为输入（x1=seed、x2=offset），asc_ops.rand/randn 通过输入传递 seed/offset，load_seed 返回真实 seed。关联 PR #4005（rand_decompose）。'
+  source: https://gitcode.com/Ascend/torchair/issues/969 ｜https://gitcode.com/Ascend/torchair/merge_requests/4005
+  behavior: 用 torch.compile 的 AscendC 后端跑含 randn 或 dropout 的模型时，不管 torch.manual_seed 设成什么值，每次运行都得到完全相同的随机数序列；dropout 掩码固定、随机采样结果固定，实验无法通过换种子复现不同结果，也不会报任何错误。
+  trigger_surface: torchair/inductor_npu_ext ascendc（AF/AscIR）后端；Rand/Randn/dropout；torch.manual_seed 与 philox seed/offset；NPU。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 数值结果

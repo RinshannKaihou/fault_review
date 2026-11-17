@@ -43,14 +43,21 @@ function h(tag, attrs = {}, ...kids) {
   return el;
 }
 const safeUrl = (u) => (/^https?:\/\//i.test(u || "") ? u : null);
-const isTbd = (v) => v == null || v === "" || /^待定/.test(String(v));
-// Catalog prose uses `code` spans; render them as <code>, everything else as text.
+const isTbd = (v) => v == null || v === "" || (Array.isArray(v) && v.length === 0) || /^待定/.test(String(v));
+// Catalog prose uses `code` spans and occasional ```fenced``` blocks; render them cleanly as text/code.
 function prose(text) {
-  const parts = String(text).split(/`([^`]+)`/);
-  return parts.map((p, i) => (i % 2 ? h("code", {}, p) : p));
+  const parts = String(text).split(/(```[\s\S]*?```|`[^`\n]+`)/g);
+  return parts.map((p, i) => {
+    if (i % 2 === 0) return p;
+    if (p.startsWith("```") && p.endsWith("```")) {
+      const inner = p.slice(3, -3).replace(/^[a-z0-9_-]*\n/i, "");
+      return h("pre", {}, h("code", {}, inner));
+    }
+    return h("code", {}, p.slice(1, -1));
+  });
 }
 function value(v) {
-  if (isTbd(v)) return h("span", { class: "tbd" }, v == null || v === "" ? "未记录" : String(v));
+  if (isTbd(v)) return h("span", { class: "tbd" }, v == null || v === "" || Array.isArray(v) ? "未记录" : String(v));
   if (Array.isArray(v)) return v.join("、");
   if (typeof v === "object") return JSON.stringify(v);
   return prose(v);
@@ -84,8 +91,13 @@ const getJSON = (p) => fetch(p).then((r) => {
 });
 
 async function boot() {
-  [meta, docs] = await Promise.all([getJSON("data/meta.json"), getJSON("data/docs.json")]);
-  const bm25 = await getJSON("data/bm25.json");
+  const [m, d, bm25] = await Promise.all([
+    getJSON("data/meta.json"),
+    getJSON("data/docs.json"),
+    getJSON("data/bm25.json"),
+  ]);
+  meta = m;
+  docs = d;
   index = new Index(docs, bm25);
   renderSnapshot();
   initForm();
@@ -123,7 +135,8 @@ function initForm() {
     $("#semantic-size").textContent = "本次构建未包含语义检索";
   }
   const saved = localStorage.getItem("fault-rag-model-source");
-  if (saved) $("#model-source").value = saved;
+  const srcSel = $("#model-source");
+  if (saved && [...srcSel.options].some((o) => o.value === saved)) srcSel.value = saved;
   $("#model-source").addEventListener("change", (ev) => {
     localStorage.setItem("fault-rag-model-source", ev.target.value);
     if (semantic.state === "failed") { lastSearchKey = null; render(); }   // retry from the new source
@@ -177,8 +190,9 @@ function syncForm(s) {
   $("#f-confidence").value = s.confidence;
   $("#f-noneg").checked = !!s.no_neg;
   $("#f-pointers").checked = !!s.pointers;
-  form().querySelector(`input[name="mode"][value="${s.mode === "hybrid" ? "hybrid" : "bm25"}"]`).checked = true;
-  $("#source-wrap").hidden = s.mode !== "hybrid";
+  const wantHybrid = s.mode === "hybrid" && !!meta.semantic;
+  form().querySelector(`input[name="mode"][value="${wantHybrid ? "hybrid" : "bm25"}"]`).checked = true;
+  $("#source-wrap").hidden = !wantHybrid;
   const pf = $("#pattern-filter");
   pf.hidden = !s.pattern;
   if (s.pattern) {
@@ -495,8 +509,9 @@ function sheetNodes(d, row) {
   }
 
   if (d.pattern) {
+    const ptitle = docs[row]?.pattern_title;
     nodes.push(section("故障模式",
-      h("p", {}, "属于 ", h("code", {}, d.pattern), "。 ",
+      h("p", {}, "属于 ", h("code", {}, d.pattern), ptitle ? `（${ptitle}）` : "", "。 ",
         h("button", { type: "button", class: "more", onclick: () => writeState({ ...readState(), pattern: d.pattern, k: 0 }) }, "只看这一族")),
       h("p", { class: "note" }, "模式成员由变体关系派生，只表示同族，不等于已核实同机制。")));
   }

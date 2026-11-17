@@ -1,0 +1,57 @@
+id: TRN-0725
+legacy_ids: []
+slug: opsnn_group_norm_grad_mix_dtype_half_write
+aliases: []
+title: GroupNormGrad mix dtype 写半 dgamma 缓冲
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: group_norm_grad empty 模板
+  behavior: EmptyDgamma 按输入 dy 的 dtype 定宽：mix 组合（dy/x=fp16/bf16、mean 等=fp32）下 dgamma/dbeta 按 fp16 宽度只写 32B fp32 buffer 的前 16B，后半未定义
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: A5/950PR 实测：GroupNorm 反向空输入非空输出（N=0 或 HW=0）且 dy/x=fp16/bf16、mean/rstd/gamma=fp32 的 mix 组合下，dgamma/dbeta 每元素只写一半字节，后 16B 为未定义内存，对拍精度 50%；同 dtype 组合正常。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/14117 （open，未发布）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/pull/14117
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: ops-nn !14117（2026-11-10，open，A5/950PR ttk 实测）。group_norm_grad_apt.cpp EmptyDgamma<DTYPE_DY,2> 模板参数用错（应按输出 dtype）；README 与 binary json 规定 dgamma/dbeta 与 mean 同 dtype，tiling CheckShapeAndType 强制五者同 dtype，但 dy 可以不同——恰在 mix 组合触法。守护用例补 5 个空进非空出 ST。
+  source: https://gitcode.com/cann/ops-nn/pull/14117
+  behavior: GroupNorm 反向在空输入非空输出（N=0 或 HW=0，如全 mask 的空 batch）且 dy/x 是 fp16/bf16 而 mean/rstd/gamma 是 fp32 的 mix dtype 组合下，dgamma/dbeta 每个元素只写了一半字节：后 16B 是未定义内存，对拍精度 50%；同 dtype 组合完全正常，问题只在 mix+空输入组合出现。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 梯度
+        to: 数值结果
+    rewritten:
+    - detail

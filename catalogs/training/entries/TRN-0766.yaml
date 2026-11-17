@@ -1,0 +1,56 @@
+id: TRN-0766
+legacy_ids: []
+slug: opstransformer_normropeconcat_backward_half_permutation
+aliases: []
+title: NormRopeConcatGrad Half 置换与掩码错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: cann
+    component: NormRopeConcat Half 分支
+  behavior: ropeType=2(Half) 分支的交替置换与 negMask 未按资料实现：对照 Interleave max|diff|=0，Half 组 max|diff|=11。
+effect:
+  objects:
+  - 梯度
+  detail: B=1,H=1,D=8,seqQ=2,seqK=2,normType=0,concatOrder=0,fp32、gradQueryOutput 全 1、sin=i+1、cos=0 时两段 rc=0，查询梯度与资料语义不符（max|diff|=11）；Interleave 对照为 0。
+  visibility: 静默错误
+mitigation:
+  detect: 对 ropeType=Half 与 Interleave 两路输出做逐元素对拍；用 sin=i+1、cos=0 的构造放大符号差异。
+  fix: 待定（issue open 2026-11-15，无修复 MR）
+labels:
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7592
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #7592（2026-11-15，open，Ascend950PR_957c / CANN 9.3.0 / master a1e54cce）。aclnnNormRopeConcatBackward 在 ropeType=2（Half）分支的交替置换与 negMask 规则与资料不符：docs/aclnnNormRopeConcatBackward.md:64 要求 Half(x) 为交替重组 src=[4,0,5,1,6,2,7,3]，negMask 为逐位交替 [+,-,+,-,+,-,+,-]。实测 B=1,H=1,D=8,seqQuery=2,seqKey=2,seqEncoderQuery=1,seqEncoderKey=1,normType=0,normAddedType=0,ropeType=2,concatOrder=0,fp32，gradQueryOutput 全 1.0、ropeSin[i]=i+1、ropeCos=0：Interleave 对照组 max|diff|=0.000000，Half 缺陷组 max|diff|=11.000000，两段返回码均 0。纯 aclnn 直调复现。关联 #7523（文档幽灵入参）与 #7524/#7528（可选输出 nullptr 崩溃）触发点不同。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7592
+  behavior: 训练反向使用 NormRopeConcatBackward 且 ropeType=Half 时，查询梯度按错误的置换/negMask 组合计算：与 Interleave 参考相比最大绝对差 11（sin=i+1 的构造），形状正确、两段返回 0、无 NaN。梯度已经错但训练继续，只有与参考实现逐元素对拍才能发现；Interleave 路径正常。
+  trigger_surface: aclnnNormRopeConcatBackward，ropeType=2(Half)，fp32；Ascend950PR / CANN 9.3.0 实测。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 位置编码

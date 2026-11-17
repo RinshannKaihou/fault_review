@@ -1,0 +1,62 @@
+id: INF-2373
+legacy_ids: []
+slug: va_block_table_stale_rows_garbled_output
+aliases: []
+title: block_table 残留旧块号致前缀命中请求确定性乱码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: block_table 行残留清理
+  behavior: append_row 只写活区间、add_row 只重置长度、move_row 不清源行与目标尾，行内残留上一租户块号；消费方按请求长度索引行把残留单元当有效块号解引用
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 命中前缀缓存的请求输出确定性乱码或立即 EOS，冷请求正常；12/12 复现、两台 910B 位级同签名，损坏沿前缀扩散到后续命中请求
+  visibility: 静默错误
+mitigation:
+  detect: 同前缀双请求 A/B 对比（暖轮乱码冷轮正常）
+  fix: '修复 PR https://github.com/vllm-project/vllm-ascend/pull/20828 （open，未发布）；上游 vLLM #49757 已修 move_row 源行清理'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20827
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/20828
+  kind: github_pr
+relations: []
+original:
+  mechanism: vllm_ascend/worker/block_table.py 的行维护残留旧块号：append_row 只写 [start,start+n)，add_row 重建行时只重置长度计数，缩短/重建行的尾部单元保留上一租户的块号；move_row 复制行后不清空让出的源行，缩小移动时也不清目标行尾部。消费方（FIA 读 kv_len 列、Triton compute_slot_mapping 走扁平 GPU 缓冲、GDN/mamba 状态路径收集状态索引）按请求派生长度索引行而非 num_blocks_per_row，残留单元被解引用。残留值是此前有效的块号（通过一切值/结构校验），但底层页可能已释放并重分配给另一个 block-table 组：hybrid 模型把 attention 与 mamba 状态 id 经同一 LIFO 自由栈回收，dense 布局下同一物理页被 attention 按 bf16 KV 读、被 GDN 按 fp32 ssm 状态读，残留 id 污染循环状态，之后每个命中受影响前缀的请求继承损坏。证据：410 份算子级 FIA 参数 dump + 对每次 block-table 写的调用栈追踪，把每个失败单元映射到该行/单元上一租户的块号（如 GDN 行单元持有 0.1s 前结束请求的 mamba 状态块）；损坏窗口内 2802 个设备任务均为正常算子族，plog/dmesg 干净，排除内核/驱动/固件；两台不同 910B 设备位级同签名（软件缺陷）。真实 BlockTable 上的 fail-before 演示：add_row([0..9],0); add_row([7,8],0) 后尾部 2:10 仍持 [2..9]；move_row 后源行与目标尾部保留旧 id。环境：vllm-ascend 0.30.x（main 亦在）、vLLM 0.30.0、CANN 9.1.0、910B2×2、Qwen3.6-35B-A3B（~30 GDN 层混合）、prefix caching 开启、dense KV 布局。
+  source: https://github.com/vllm-project/vllm-ascend/issues/20827 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20828 上游对应 vllm-project/vllm#49757
+  behavior: 开启前缀缓存的服务上，命中缓存的请求（第二个共用前缀的请求）稳定输出乱码或直接 EOS，首个冷请求正常；同一负载下确定性复现（12/12，跨两台设备输出签名位级一致），换负载后看似间歇。损坏驻留在被回收复用的物理页上，随前缀命中向后续请求扩散。
+  trigger_surface: vllm-ascend 0.30.x/main；hybrid 模型（GDN+mamba 状态池与 KV 池共用统一池的 dense 布局）；prefix caching 开启；请求 churn/块回收顺序特定。
+  discovery: 2026-11-03 每日扫描
+  notes:
+  - '2026-11-04 回访：源 #20827 与修复 #20828 均仍 open（批次快照 11-04T22:59），无合入动向'
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

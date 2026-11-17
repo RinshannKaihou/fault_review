@@ -1,0 +1,56 @@
+id: INF-2495
+legacy_ids: []
+slug: npu_combo_kernel_rsplit_missing_combine
+aliases: []
+title: NPU 组合核双归约缺 combine 输出未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: combo codegen rsplit 配对
+  behavior: npu_rsplit_partial=True 有四处赋值，仅一处设置 rsplit_kernel（combine 依赖）；combo 路径无 combine 环节，partial 写入 workspace 后无人读回，输出未初始化。
+effect:
+  objects:
+  - 数值结果
+  detail: 同图两个归约轴长度不同的归约（如 r=128 与 r=2048 的 sum(dim=-1)）时第二个归约输出为未初始化显存（maxdiff 178.66、首元素 2.0039、多数元素 0），无任何报错；长度相同或单归约不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue 给出修复方向：standalone 路径 codegen 后补 _npu_emit_rsplit_combine hook（需扩返回结构）或把 rsplit 判定前移回 codegen_node_schedule；无修复 PR）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5990
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0719
+original:
+  mechanism: Ascend 910B4 / CANN 9.2.0 / torch 2.16.0a0+gitff4f371 / torch_npu 2.16.0+git111ec0d / triton-ascend 3.6.0。rsplit 的 partial/combine 成对：_npu_emit_rsplit_combine 生成 combine kernel、_npu_call_rsplit_kernels 调用，触发依赖 codegen_node_schedule 里的 rsplit_kernel 变量；但 npu_rsplit_partial=True 有四处赋值——triton.py:5976（codegen_node_schedule，接 combine）、7139/7636/7638（_apply_linearize 三处，置位不设 rsplit_kernel）。本用例经 generate_combo_kernel_code→_codegen_standalone_kernel（torch/_inductor/codegen/simd.py:4772，probe 证实 codegen_node_schedule 未被调用），该层无 rsplit 两段式概念。生成的 triton_unk_fused_1 把 partial 写进 ws_ptr（分配 12288=256×48）但全部 kernel 只有两个、无读 workspace 的 combine kernel，out_ptr0 从头到尾未被写。对 combine 构建失败的防御（error loud in debug）只在 rsplit_kernel 已非空时生效。对应用例 test_combo_kernel_per_config_subkernel_red_per（test/inductor/test_combo_kernels.py，NPU 失败于 Tensor-likes are not close）。与 rsplit 既有修复补丁（P9）无关：关掉后同样复现，fresh cache 稳定复现。
+  source: https://gitcode.com/Ascend/pytorch/issues/5990
+  behavior: torch.compile 的图里同时有两个 torch.sum(dim=-1) 且归约轴长度不同（如 [512,128] 与 [256,2048]）时，第二个归约的输出不是求和结果而是未初始化显存：多数元素为 0、首元素 2.0039、与参考 maxdiff 178.66；换序、清缓存、关掉 rsplit 修复补丁均复现，无报错无警告；两个归约长度相同（如 2048+2048）或只算一个归约时结果正确。
+  trigger_surface: torch.compile + 同图 ≥2 个归约 + 归约轴长度互不相同（触发 rsplit partial 的 combo 融合路径）；910B4 / torch_npu 2.16 / triton-ascend 3.6。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - relations

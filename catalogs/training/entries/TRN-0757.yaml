@@ -1,0 +1,70 @@
+id: TRN-0757
+legacy_ids: []
+slug: opstransformer_moe_init_routing_expert_scale_offset_missing
+aliases: []
+title: MoeInitRouting 大 H 分块漏专家偏移读错 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: MoeInitRouting scale 取址
+  behavior: INT8 动态量化按专家配置 smooth scale 时，H 维分块路径取 scale 漏掉 expertIdx*H 偏移，所有专家都读第 0 行 scale；两代共用该 kernel
+effect:
+  objects:
+  - 数值结果
+  - 训练样本流
+  detail: BF16 x=(1,14788)、FP32 scale=(3775,14788)、expertNum=7758、quantMode=1 时 expandedX 精度失败且调用正常返回；修复后 199/199 用例通过
+  visibility: 静默错误
+mitigation:
+  detect: 每专家给不同的 smooth scale，跑 MoeInitRouting 后逐专家比对 expandedX 与参考实现；用 ACLNN 用例 aclnnMoeInitRoutingV3_L1_0844 形态
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/pull/15813 （已合入，仓库回归 199/199 PASS；发布版本未核实）
+labels:
+  stage:
+  - pretrain
+  - sft
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: 同 issue 还含 INT4 未知 rank 校验与 V3 标杆比较缺陷（均为测试/校验面），本条只收『读错专家 scale』这一计算侧静默机制。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7469
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/pull/15813
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2527
+original:
+  mechanism: CANN ops-transformer 的 MoeInitRoutingV3/V4（Ascend950DT_9574、CANN 9.3.0、torch 2.14.0+cpu / torch_npu 2.14.0、TTK 3.0.0）在 INT8 动态量化（quant_mode=1）且传入按专家配置的 smooth scale 时，H 维分块路径读取 scale 遗漏 expertIdx * H 偏移，所有专家都读第 0 行 scale，导致 expandedX 精度失败；不分块路径写法正确，V3/V4 复用同一份 kernel 文件因此都受影响。issue 给出的定位用例：aclnnMoeInitRoutingV3_L1_0844，BF16 输入 x=(1,14788)、expertIdx=(1,7)、FP32 scale=(3775,14788)、expertNum=7758、有效专家区间 [2789,6564)、quantMode=1、expertTokensNumFlag=False，调用完成但 expandedX 精度失败，按 scale[0] 计算。修复把取址改为 expertIdx * H + j * perLoopCols，与不分块路径一致（INT4 共享 scale 路径 expertIdx 仍为 0）。同 issue 另两项属校验/标杆面：quant_mode=13 传 scale 时 GEIR 动态图把 scale 推成未知 rank {-2}，V3/V4 infershape 直接按二维 shape 报错（应为延后检查）；V3 标杆在 H=0 时对空数组 numpy.max 报错、FP8 非量化透传场景 dtype 提升/uint8 载体解释/4 位打包误触发/尾部落比较不一致。修复提交 b698ccaef64c7b567c757832acdd2fa8a99940b6，针对性复测通过后按当前提交回归：V3 Kernel 62/62、V3 E2E 62/62、V4 Kernel 32/32、V4 ACLNN 43/43，合计 199/199 PASS，内存越界检查全通过（本轮未重跑 GEIR 与 E2E 图模式）。
+  source: https://gitcode.com/cann/ops-transformer/issues/7469 ｜修复 https://gitcode.com/cann/ops-transformer/pull/15813
+  behavior: MoE 训练里给每个专家配了不同的量化 smooth scale、又走到大 H 的分块路径时，路由出来的 token 全部按第 0 号专家的 scale 做量化：算子照常返回成功，expandedX 的数值却整体偏掉，loss 能降但精度比参考实现差一截。只有按专家给不同 scale 并逐专家对拍才会暴露；把 H 调小走不分块路径就正常，容易被误判成量化本身的精度损失。
+  trigger_surface: aclnnMoeInitRoutingV3 / V4，Ascend950DT + CANN 9.3.0；INT8 动态量化 quantMode=1 且 smooth scale 按专家配置、H 较大走 H 分块路径；expertNum 大（示例 7758）、有效专家区间非从 0 开始。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 量化
+      effect:
+        from: 训练样本流
+        to: 数值结果
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - relations

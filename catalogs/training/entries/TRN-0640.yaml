@@ -1,0 +1,66 @@
+id: TRN-0640
+legacy_ids: []
+slug: aclnn_norm_eps_negative_nan_family
+aliases: []
+title: norm 族 eps<0 放行静默输出全 NaN（三算子同型）
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: norm 族 eps 值域校验缺失
+  behavior: aclnnLayerNorm/FastLayerNorm/BatchNorm 的 host 侧校验不含 eps 值域，eps<0 放行执行；Var+eps<0 时 rstd=1/sqrt(负数) 产出整块 NaN。
+effect:
+  objects:
+  - 数值结果
+  detail: eps=-1 且输入方差<1 时 out/rstdOut/saveInvstd 整块 NaN（512/512、256/256 元素实测），mean/saveMean 正常；同输入幅度大方差（Var>1）不触发——数据相关静默失败，两段 rc=0/0。
+  visibility: 数值异常
+mitigation:
+  detect: eps>0 前置断言；小方差输入 + 负 eps 冒烟用例对拍（mean 正常而 out 全 NaN 是该机理签名）。
+  fix: 待定：三单均 open（2026-11-06），同族 aclnnAddRmsNorm 已有 CheckAttr epsilon>=0 拒绝先例（161002），未见对齐 MR。
+labels:
+  stage:
+  - pretrain
+  - sft
+  confidence: verified
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: C++ aclnn 直调契约外非法入参（GIGO 负向测试），正常 PyTorch/LLM 框架路径不可达
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8304
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8309
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8310
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2434
+original:
+  mechanism: 'cann/ops-nn #8304/#8309/#8310（均 2026-11-06 open，同型缺陷不同接口）：① aclnnLayerNorm（norm/layer_norm_v4/op_api/aclnn_layer_norm.cpp:330-364）CheckParamsWithImplMode 签名不含 eps 参数、全文件无 eps 值域判断；② aclnnFastLayerNorm（同目录 aclnn_fast_layer_norm.cpp:278-320）CheckParams 实参表不含 eps（:391 调用处逐字核对）；③ aclnnBatchNorm（norm/batch_norm_v3/op_api/aclnn_batch_norm.cpp）eps 仅逐层透传给 l0op::BatchNorm/BNInfer 无校验。eps<0 放行后，输入方差 Var<|eps| 时 Var+eps<0 ⇒ rstd=1/sqrt(负值)=NaN ⇒ 整块输出 NaN 且确被写出（D2H 在同步后实测）。实测矩阵（A5/950PR，CANN 9.2.0-beta.2）：eps=-1+幅度 0.01 输入 → LayerNorm out 256/256 NaN、FastLayerNorm out 256/256 + rstdOut 16/16 NaN（meanOut 0/16 正常）、BatchNorm training=true output 512/512 + saveInvstd 4/4 NaN（saveMean 0/4 正常）；eps=0 被接受且结果有限、eps=-1+幅度 24（Var>1）不炸——缺失点精确落在 eps<0 支且数据相关。同仓同族 aclnnAddRmsNorm 对 eps=-1 返回 161002（aclnn_add_rms_norm.cpp:195,198,228 CheckAttr epsilon>=0.0，资料 :122 明写约束）；aclnnGroupNormSilu 实测同返 161002。三单均主张同族口径应对齐（无论收紧或放宽），未见修复 MR。'
+  source: https://gitcode.com/cann/ops-nn/issues/8304 ；同型：https://gitcode.com/cann/ops-nn/issues/8309 、https://gitcode.com/cann/ops-nn/issues/8310 ；同源推理条目：INF-2434
+  behavior: NPU 上调用 aclnnLayerNorm/aclnnFastLayerNorm/aclnnBatchNorm 且 eps 配置为负数（如 -1）时：接口两段均返回成功，输入方差小于 |eps| 的样本（如幅度 0.01 的小方差输入）输出整块 NaN——LayerNorm/FastLayerNorm 的 out 与 rstd 全 NaN，BatchNorm 的 output 与 saveInvstd 全 NaN，而 mean/saveMean 完全正常；同 eps 下大方差输入（幅度 24）结果正常。训练里 LN/BN 前向小方差 batch（如接近常数特征）会静默拿到 NaN 激活向后传播，无错误码、换 batch 可能又正常，高度难定位。
+  trigger_surface: CANN aclnn norm 族（LayerNorm/FastLayerNorm/BatchNorm，host 侧 eps 标量）+ eps<0 + 输入 Var<|eps|；Ascend950PR/CANN 9.2.0-beta.2 实测，缺陷在仓级 master（2026-11-06 拉取仍在）
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

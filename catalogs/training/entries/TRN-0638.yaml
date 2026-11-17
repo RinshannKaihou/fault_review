@@ -1,0 +1,60 @@
+id: TRN-0638
+legacy_ids: []
+slug: pytorch_npu_inductor_dynamic_sum_first_numel
+aliases: []
+title: NPU Inductor dynamic 归约长度固化首次值，变长输入静默算错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: NPUIndexTritonKernel 范围树
+  behavior: initialize_range_tree 把首次编译时归约轴具体长度写回 numels 并作为 kernel 调用参数，后续变长输入仍传首次长度。
+effect:
+  objects:
+  - 数值结果
+  detail: torch.compile(dynamic=True) 下同一编译函数首次输入 4096、后续 2048 时 sum 结果为 8386560（应为 2096128），n=512 时得 4208640，全程无异常；现场全局关闭 torch.compile 规避。
+  visibility: 静默错误
+mitigation:
+  detect: 同一编译函数多长度输入与 eager 对拍（4096/1024/2048/4096/512 序列即可 3/5 错）。
+  fix: 待定：issue open（2026-11-06），未见修复 MR。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-07'
+remarks: NPU Inductor 代码生成静默错值族（TRN-0280/0617/0623/0624）另一成员：符号长度被具体值替换（范围树写回），非 ASTSource 常量烧入、非文本改写。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5930
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0280
+- kind: cross
+  target: INF-2426
+pattern: PAT-TRN-0066
+original:
+  mechanism: 'Ascend/pytorch issue #5930（2026-11-06 open）：Atlas 910C + CANN 9.1.0 + torch-npu 2.10.0.post6 + triton-ascend 3.2.2，torch.compile(backend=inductor, dynamic=True) 编译 a.sum(dim=-1) 后，首次输入长度 4096、随后传入 2048/512 时结果为 8386560/4208640（eager 为 2096128/130816），无异常抛出。报告者源码定位：torch_npu/_inductor/codegen/triton.py 的 NPUIndexTritonKernel.initialize_range_tree()（.post6 38e483e 行 519）用首次编译的具体值替换符号长度，行 520 把结果写回 self.numels[k]，行 543 读回、行 676 加入 kernel 调用参数；并用官方 .post6 wheel 在 CPU 主机 FakeTensor 上运行 NPU 代码生成器验证：wrapper 已取得本次输入长度 s97，但调用求和 kernel 时仍传固定值 4096（triton_unk_fused_sum_0.run(arg1_1, buf0, 4096)），CPU Triton 解释器复现错值。触发面：dynamic=True 归约 + 变长输入；固定 shape 或 eager 不触发。推理库 INF-2426 同源同机制（同一 issue 推理侧重写），本条为训练范围条目。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5930 ；同源推理条目：INF-2426
+  behavior: 在 NPU 上用 torch.compile(dynamic=True) 编译含归约（如 sum(dim=-1)）的函数并首次喂长输入（如 4096），随后同一编译函数传入更短输入（如 2048）时：返回值按首次长度计算（2048 输入得到 8386560 而非 2096128，512 输入得到 4208640），进程无任何报错；回到首次长度时结果又正确。变长训练管线（动态 batch/序列长度的数据经编译图归约）会拿到静默错值，现场只能全局关闭 torch.compile 规避。
+  trigger_surface: torch_npu 2.10.0.post6（38e483e）Inductor 后端 + dynamic=True + 归约算子 + 变长输入；910C/CANN 9.1.0/triton-ascend 3.2.2 复现，代码定位不限于该硬件
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

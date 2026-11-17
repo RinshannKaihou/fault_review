@@ -1,0 +1,51 @@
+id: INF-2406
+legacy_ids: []
+slug: pool_key_indexer_sentinel_neg1_leak
+aliases: []
+title: PoolKeyIndexer 排序哨兵 -1 泄入输出放大为负索引垃圾段
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: PoolKeyIndexer top-k 哨兵过滤
+  behavior: NEG_INF 哨兵位型与 float32 -Inf 相同，合法溢出 score=-Inf 并列不可区分，哨兵索引 -1 泄入选中池；展开写入无负值过滤，-1×pool_size 放大为连续负索引段
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: indices 输出出现 [-pool_size,-1] 连续垃圾段（ps=128→[-128..-1] 精确缩放），破坏「无效槽位恰为 -1」契约；下游 >=0 判有效逻辑把 -2..-ps 当越界索引；双 API 返回 0 静默
+  visibility: 静默错误
+mitigation:
+  detect: issue 附 pytest 复现（mixed/allneg 权重 FAIL、allpos 对照 PASS）可作回归门禁；输出契约预检 neg!=−1 即 FAIL
+  fix: 待定（issue open 未见修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7158
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-transformer aclnnPoolKeyIndexer（CANN 9.3.0，910B3）。当某行全部可见池加权分数恰好等于排序哨兵初值 -Inf（合法溢出路径：query·poolKey 双侧同号大值使 128 维 dot 在累加站点溢出 +Inf，weights<0 的行 score=w×(+Inf)=-Inf）时：排序缓冲区哨兵对 (NEG_INF=0xFF800000, INVALID_INDEX=-1)（op_kernel/arch22/pool_key_indexer_vector.h:24-25）——NEG_INF 位型即 float32 -Inf，合法 score 与哨兵并列不可区分，哨兵索引 -1 泄入 top-k 选中池；展开写入循环（pool_key_indexer_service_vector_arch22.h:1144-1157）对选中池索引无负值过滤，base=-1×poolSize，把哨兵放大为 [-pool_size,-1] 连续垃圾段写入 indices 输出；垃圾幅值随 pool_size 精确缩放（实测 ps=128→[-128..-1]，ps=32→[-32..-1]）。5 个单变量探针：全负权重 FAIL 同签名、全正权重 PASS（w 符号门控证实）、q~k~U[1e18,2e18] 有限 dot×大|w| 在缩放站点溢出（触发阈值更低）、池数 1152/384 无关。510/511 各两次独立运行指纹一致，100% 确定性。双 API 返回 0。
+  source: https://gitcode.com/cann/ops-transformer/issues/7158
+  behavior: 当打分值经合法运算溢出成 -Inf（大数值 query/key 点积配负权重）时，选池算子内部排序用的哨兵标记（-Inf 配索引 -1）与真实得分无法区分，哨兵的 -1 索引被当成选中项写进输出，还被展开成 -pool_size 到 -1 的一整段负数索引垃圾。下游凡是「值>=0 当有效索引、-1 当无效」的判断全部被破坏——-2、-3 这些本不该出现的值会被当成越界索引去读 KV 池。全程无报错。
+  trigger_surface: CANN 9.3.0；aclnnPoolKeyIndexer；行内全部可见池 score=-Inf（如 q=k~U[1e19,1e20] 同号 + weights<0，或有限大 dot×大|w| 在缩放站点溢出）；arch22 路径。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

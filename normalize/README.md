@@ -6,7 +6,7 @@
 
 本目录现在只用于溯源和后续批量任务：
 
-- `out/entries/*.yaml`（1607 条：`INF-*` 1342 条、`TRN-*` 265 条）和 `id_registry.tsv` 是 10-12 迁移时的成品，之后**不再更新**。现行条目和编号登记表在上游的 `catalog/entries/`、`catalog/id_registry.tsv`，RAG 读的是它们的快照 `../catalogs/`。
+- `out/entries/*.yaml`（1607 条：`INF-*` 1342 条、`TRN-*` 265 条）、`run/`、`audit/votes/` 及 `baseline_*.tar.gz` 等约 30 MB 一次性迁移中间产物已于 2026-11-17 从工作树移除（均保留在历史提交中可按需检出），当前工作树仅保留迁移脚本与各阶段 `REPORT.md` / `CUTOVER.md` 溯源报告。现行条目和编号登记表在上游的 `catalog/entries/`、`catalog/id_registry.tsv`，RAG 读的是它们的快照 `../catalogs/`。
 - `SCHEMA.md`、`vocab.yaml` 是迁移时的版本；如与上游 `catalog/SCHEMA.md`、`catalog/vocab.yaml` 有出入，以上游为准。
 - 下表第 1–7 步读取的是上游已冻结的 Markdown，并会改写 `out/`；迁移已完成，不需要再重跑。
 

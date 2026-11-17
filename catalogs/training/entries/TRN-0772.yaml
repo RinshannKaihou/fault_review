@@ -1,0 +1,53 @@
+id: TRN-0772
+legacy_ids: []
+slug: lightning_indexer_grad_empty_query_leaves_dkout_unwritten
+aliases: []
+title: LightningIndexerGrad 空 query 早退不写 dkOut
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnLightningIndexerGrad
+  behavior: query 为空（S1=0）时两段接口直接返回 0、workspaceSize=0，不构建任何写 dkOut 的节点；而 dkOut 形状只由 key 决定，本身非空
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: dkOut [1,2048,1,128] 共 262144 个元素保持调用方预填的未初始化显存（双金丝雀 100% 残留），随后作为 key 梯度送进优化器
+  visibility: 静默错误
+mitigation:
+  detect: 对非空输出缓冲预填两种互斥金丝雀位型，用 S1=0 的空 query 调一次并回读；同探针在 S1=2 时应整块写出
+  fix: 待定（issue open 2026-11-17；建议首段对 S1=0 返回 161002，或在早退前把 dkOut 零化）
+labels:
+  stage:
+  - pretrain
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7743
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0275
+pattern: PAT-TRN-0069
+original:
+  mechanism: 'cann/ops-transformer issue #7743（2026-11-17，open）。aclnnLightningIndexerGrad 在 query 为空张量（S1=0）时走空输入早退：GetWorkspaceSize 与执行两段都返回 0，workspaceSize=0，host 侧没有建任何写 dkOut 的节点。但 op_host/lightning_indexer_grad_infershape.cpp L117 `*dkShape = *keyShape;` 决定 dkOut 形状只由 key 决定、与 query 无关，因此 dkOut=[1,2048,1,128] 仍有 262144 个元素需要写。资料 docs/aclnnLightningIndexerGrad.md L385 写明 S1 取值 1~128K，越界应在首段返回 161002；即便按空输入早退处理，也必须把非空输出写出来。实测（Atlas A2 910B2、CANN 9.2.0、ops-transformer 14d022b1）：合法对照 S1=2 时 canary_left=0.000、workspace=173018624，kernel 真跑并整块写出；S1=0 时两组互斥金丝雀（0xDEADBEEF / 0xC0FFEE01）均 100% 原样保留。与同接口 #7325（sparseMode=3 且 S1>S2 时死行 dweights 未零化）根因和触发条件不同。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7743
+  behavior: 训练或推理里 indexer 的 query 因为动态 batch/序列退化为空（S1=0）时，算子返回成功、日志无异常，但 key 的梯度 dkOut 整块是未初始化显存里的脏数据；它被直接送进优化器，权重在后续 step 才表现出 loss 抖动或发散。用预填金丝雀回读可直接看到 100% 残留。
+  trigger_surface: cann/ops-transformer aclnnLightningIndexerGrad，query 的 S1=0（空张量）而 key 非空；Atlas A2 910B2 / CANN 9.2.0 实测。
+  discovery: 2026-11-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-17'
+  audit:
+    date: '2026-11-17'
+    method: manual_stewardship_review
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - pattern

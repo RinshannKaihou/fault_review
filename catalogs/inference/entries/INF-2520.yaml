@@ -1,0 +1,61 @@
+id: INF-2520
+legacy_ids: []
+slug: inkling_router_bf16_ties
+aliases: []
+title: Inkling BF16 router 先并列后 Top-K 失真
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: transformers
+    component: InklingTopkRouter 精度路径
+  behavior: InklingTopkRouter 在 BF16 下做 sigmoid 与 bias 加法（bias/scale 参数加载时也舍入到 BF16），不同分数 Top-K 前并列，专家选择改变，无 NaN。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: bf16 加载或 BF16 autocast：8 个精确可表示的 sigmoid 分数全为 1.0，Top-2 专家集 CPU {5,6}/CUDA {0,1}，FP32 应为 {6,7}；三层小模型 19/48 token 专家集变而 loss 仅差 ~4.8e-7（合成，全模型未测）。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 FP32 路由决策（报告者用精确可表示的 logits 断言排除 GEMM 舍入）。
+  fix: issue 内给出三步修复方案（FP32 投影/sigmoid/bias 关 autocast、e_score_correction_bias 与 gate.global_scale 进 _keep_in_fp32_modules_strict、路由系数末步回转隐状态 dtype），作者待维护者意见后提 PR；未开 PR。SGLang 同名模型已用 FP32 输出 gate projection 作对照。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/50599
+  kind: github_issue
+relations: []
+original:
+  mechanism: transformers InklingTopkRouter.forward（models/inkling/modeling_inkling.py L359-379）：sigmoid 与 correction-bias 加法在模型 dtype（BF16）下执行，且从_pretrained(dtype=bfloat16) 加载时 e_score_correction_bias 与 gate.global_scale 参数被舍入到 BF16（事后 cast 无法恢复）。BF16 精度下不同 sigmoid 分数在 Top-K 前并列：报告者用 BF16 精确可表示的 logits（排除 GEMM 舍入，断言 float 线性与 BF16 逐位相等）展示 8 个分数全部变成 1.0，Top-2 选择退化为实现定义的 tie-break（CPU {5,6}、CUDA {0,1}，FP32/FP64 为 {6,7}）。三层 InklingForCausalLM save→load(dtype=bf16) 后 FP32 路由使 19/48 token 专家集改变、loss 差 ~4.8e-7（合成，非全模型质量实测）。与 INF-2465（Step-3.7 need_fp32_gate 被忽略）同为 router 精度 FP32 保持缺失类，但机制与代码路径不同（本条为路由算子内部 dtype 与加载舍入，非配置开关被忽略）。Transformers 5.23.0.dev0 b2556881、PyTorch 2.13.0+cu130、CPU 与 RTX A1000 复现。
+  source: 'https://github.com/huggingface/transformers/issues/50599 '
+  behavior: Inkling 模型以 bfloat16 加载（或 FP32 权重开 BF16 autocast）后，MoE router 打分在 Top-K 前被 BF16 舍入成并列值：同一输入选出的专家集合与 FP32 路由不同（示例中 8 个分数全为 1.0，CPU 与 CUDA 的并列解序还不一致），模型照常运行、无 NaN 无报错，小模型上 loss 变化极小，但专家分派已系统性偏离 FP32 语义。
+  trigger_surface: transformers Inkling MoE 模型 + dtype=bfloat16 加载或 BF16 autocast；CPU/CUDA 均复现；FP32 路由为对照。
+  discovery: 2026-11-11 每日扫描
+  notes:
+  - '2026-11-13 回访：transformers #50599 已 closed，stateReason=COMPLETED（关闭/合并日期未取得）；修复内容与发布版本未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 数值结果
+  updates:
+  - date: '2026-11-13'
+    fields:
+    - original.notes

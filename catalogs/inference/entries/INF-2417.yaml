@@ -1,0 +1,59 @@
+id: INF-2417
+legacy_ids: []
+slug: mxquant_aux_zero_dim_early_exit_y_unwritten
+aliases: []
+title: AntiMxQuant 辅输入 0 维早退非空输出未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: AntiMxQuant 维数校验
+  behavior: CheckShape 只比 mxscale 维数=x 维数+1 不校验各维 size，mxscale=[1,1,0] 放行后 IsEmpty 早退（ws=0），非空输出 y 整块未写
+effect:
+  objects:
+  - 数值结果
+  detail: 主输入 x 与输出 y 均非空，仅 mxscale 第三维 2→0：基线 [1,1,2] 为 rc 0/0、ws=512、y 4/4 写入；变异后 rc 0/0、ws=0、y 0/4，金丝雀 0x7E01 原样；A5 950PR 双设备独立复现
+  visibility: 静默错误
+mitigation:
+  detect: y 预填金丝雀写后读回；调用侧校验 mxscale 各维与 x 对应维匹配
+  fix: 待定（issue open；报告者给出 161002 拒绝或按语义写出两种处置）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8232
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-nn aclnnAntiMxQuant（Ascend950PR_9579 A5，CANN 9.3.0 B020 libopapi 2026-10-28 构建，源码 9.3.0-beta.1 @99a37ee3）。根因（行号实测）：quant/anti_mx_quant/op_api/aclnn_anti_mx_quant.cpp 的 CheckShape（:68 起）只取 mxscaleDimNum 做维数比较（:86，要求=x 维数+1），不校验各维 size，mxscale=[1,1,0]「维数对但含 0 维」被放行；:150 的 if (x->IsEmpty() || mxscale->IsEmpty()) 把 mxscale 含 0 维当作空走早退，第二段不再启动（ws=0），y 保持未写。基线 mxscale=[1,1,2]：rc 0/0、ws=512、y 4/4 写入；变异仅第三维 2→0：rc 0/0、ws=0、y 0/4（金丝雀 0x7E01 原样）。sweep-example（device5）与自写探针（device6，三阶段 hex）两路一致。与既往空态缺陷（#8108 RmsNormDynamicMxQuant 主输入空绕过校验、#8109/#8119）触发面不同：本条主输入 x 与输出 y 都非空，唯一变化是辅输入 mxscale 含 0 维。
+  source: https://gitcode.com/cann/ops-nn/issues/8232
+  behavior: MX 格式反量化算子：主输入和输出都非空、完全正常，只要辅助输入 mxscale 的形状里混进一个 0 维（如 [1,1,0]），算子就把它当「空输入」提前返回成功——输出一个字节都不写，读回是未初始化显存。调用方拿到 SUCCESS 和垃圾数据，无任何告警。与之前收过的「主输入为空」类缺陷不是同一个触发面。
+  trigger_surface: CANN 9.3.0（B020/beta.1）；aclnnAntiMxQuant；辅输入 mxscale 含 0 维（主输入/输出均非空）；A5 950PR 双设备独立复现。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

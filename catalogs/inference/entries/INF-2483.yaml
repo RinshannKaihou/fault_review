@@ -1,0 +1,47 @@
+id: INF-2483
+legacy_ids: []
+slug: moe_fused_swiglu_bias_drain_race
+aliases: []
+title: moe_fused_swiglu FUSE_BIAS 读写竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: moe_fused_swiglu bias 同步
+  behavior: FUSE_BIAS 下 down matmul 经 packer 写 out_interm，bias drain 直接 unpack 读它；scratch 无 push/wait，unpacker 可读 packer 还在写的 tile。
+effect:
+  objects:
+  - 数值结果
+  detail: test_moe_fused_swiglu.py 以 0.97 PCC 阈值通过，但 PCC 非确定（situglu 0.9787~0.9795、swigluoai 0.9815~0.9821 跨 run 波动）；加同步后数值稳定。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 待定（issue 给出加同步即稳定的结论；hybrid_routed_expert_ffn 下同名 kernel 无测试覆盖该路径，https://github.com/tenstorrent/tt-metal/issues/64678）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/64678
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal moe_fused_swiglu_compute.cpp（deepseek_prefill 与 hybrid_routed_expert_ffn 两份拷贝，后者无测试覆盖该路径）：FUSE_BIAS 下 down matmul 把块结果经 packer 累积到 out_interm；随后 bias drain（reconfig_data_format(cb_out_interm, cb_down_bias)、add_bcast_rows_init、add_tiles_bcast_rows）直接从 out_interm unpack。out_interm 是 scratch：matmul 从不 push 它、drain 从不 wait 它，unpacker 完全可能读到 packer 还在写的 tile。Blackhole p100、Metal 22.04 Docker、SFPI 7.94；测试 test_moe_fused_swiglu.py 因阈值 0.97 而通过，但 PCC 跨 run 非确定（situglu 0.9787~0.9795、swigluoai 0.9815~0.9821），加同步后数值一致。频率 Always（竞争窗口恒在）。
+  source: https://github.com/tenstorrent/tt-metal/issues/64678
+  behavior: MoE 专家 FFN 融合 kernel（moe_fused_swiglu 开 FUSE_BIAS）的计算结果依赖 pack/unpack 时序：同输入多次运行输出 PCC 在小数第三位波动，精度测试因阈值宽松而通过；下游模型输出在阈值边缘不确定，且无任何报错。
+  trigger_surface: tt-metal moe_fused_swiglu（deepseek_prefill 及 hybrid_routed_expert_ffn 拷贝）+ FUSE_BIAS 路径；Blackhole 实测，恒存在竞争窗口。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

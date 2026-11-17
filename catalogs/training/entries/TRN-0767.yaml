@@ -1,0 +1,62 @@
+id: TRN-0767
+legacy_ids: []
+slug: megatron_perform_rl_step_silently_ignored
+aliases: []
+title: pretrain 入口接受 --perform-rl-step 却静默不跑 RL
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: megatron-lm
+    component: RL 参数注册/pretrain
+  behavior: RL 参数对所有入口注册，但 perform_rl_step 只在 train_rl.py 读取；pretrain 入口不传 next_train_iterator，标志解析后无消费。
+effect:
+  objects:
+  - 训练轨迹
+  detail: 带 --perform-rl-step 的 pretrain 入口按普通预训练跑完，不执行 rollout/GRPO、无警告；RLConfig 校验仍生效（batch 不整除 128 报 GRPO 错、offload 开关改 grad_buffer）。
+  visibility: 静默错误
+mitigation:
+  detect: 入口启动时断言：若 perform_rl_step 为真且未走 train_rl.py 的 hooks，直接报错；检查 RLConfig 校验是否误作用到预训练 run。
+  fix: 未修复：issue 2026-11-09 closed as not_planned，0 评论，无 PR（未核实替代实现）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/9182
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0056
+pattern: PAT-TRN-0001
+original:
+  mechanism: 'NVIDIA/Megatron-LM #9182（2026-11-09，closed as not_planned，0 评论）。自 #4264（579f71084，把 RL 专用代码移出 training.py）后，RL 循环只在 train_rl.py 传入 next_train_iterator/run_eval/RL setup 回调时运行；train_rl.py 是唯一读取 perform_rl_step 的地方（train_rl.py:434 assert），training.py 不再引用该字段。但 RL 参数仍对所有入口注册（arguments.py:59 _add_rl_args），所以 pretrain_gpt.py --perform-rl-step 能解析、通过校验，然后按普通预训练跑完，没有任何提示。标志并非完全惰性：RLConfig.validate_run（rl_config.py:304-382）仍对预训练 run 生效（global batch 不整除 grpo_prompts_per_step*grpo_group_size*grpo_iterations=128 会被 GRPO 报错），--rl-offload-optimizer-during-inference 会打开 ddp.grad_buffer_offload（container.py:701）。报告者在 main 23a3025 / B300 SXM6 / torch 2.14.0a0 / TE 2.19.0 上按 1 GPU 命令复现。'
+  source: https://github.com/NVIDIA/Megatron-LM/issues/9182
+  behavior: 以为在跑 RL 的用户用 pretrain_gpt.py（或 pretrain_hybrid.py）加 --perform-rl-step 启动：参数被接受、日志正常、loss 正常下降，实际只跑了普通预训练，rollout/GRPO 一步都没执行，也没有任何警告。某些 RL 校验反而会作用到预训练 run 上（batch 不整除 128 直接报 GRPO 错误，或悄悄打开 grad_buffer offload），让人更难看出入口选错。
+  trigger_surface: pretrain_gpt.py / pretrain_hybrid.py + --perform-rl-step；Megatron-LM main 23a3025 复现。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  updates:
+  - date: '2026-11-16'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 配置/参数
+        to: RL训练回路

@@ -1,0 +1,60 @@
+id: INF-2375
+legacy_ids: []
+slug: va_balance_scheduler_sync_kv_load_order
+aliases: []
+title: BalanceScheduler 漏置同步 KV 装载标志致未装载先前向
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: BalanceScheduler 输出构造
+  behavior: BalanceScheduler.schedule() 构造 SchedulerOutput 时未填 has_sync_kv_loads，默认 False 使 start_load_kv 推迟到 forward 后，层等待时装载未初始化
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: HBM 前缀缓存清空仅外部缓存命中时输出损坏；全量重算与 HBM 命中场景正常；层等待提前返回读到未恢复 KV
+  visibility: 静默错误
+mitigation:
+  detect: 插桩记录 bind_connector_metadata/wait_for_layer_load/start_load_kv/clear_connector_metadata 时序；HBM 清空仅外部命中场景对比输出
+  fix: 待定（issue 建议恢复上游 has_sync_kv_loads 记账并检查其他复制调度器实现；connector 侧 workaround 已验证有效）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20725
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm_ascend/patch/platform/patch_balance_schedule.py 实现 BalanceScheduler.schedule() 但构造 SchedulerOutput 时不填 has_sync_kv_loads（上游在接纳需同步外部 KV 装载的请求时置位并传入 SchedulerOutput）。该字段默认 False；vllm/v1/worker/kv_connector_model_runner_mixin.py 中 start_after_forward = not scheduler_output.has_sync_kv_loads，False 时 start_load_kv() 推迟到 forward 后执行，当前 forward 需要外部 KV 时错误。层wise 装载被破坏：attention 调 wait_for_layer_load() 时 start_load_kv() 尚未初始化装载状态，每层等待提前返回，模型读未恢复的 KV cache。插桩实测同 worker/connector/metadata batch 内时序为 bind_connector_metadata → wait_for_layer_load(layer 0..77 均 loading not initialized) → start_load_kv → submit layer 0 → clear_connector_metadata（layer 0 仍 pending）。connector 侧 workaround（首次 attention 等待时初始化装载）恢复正确输出，支持该诊断。环境：vLLM 0.30.0、vllm-ascend 0.30.0rc2、4 台 A2 服务器×8 NPU、DP=4 TP=8 EP、GLM-5.3-W8A8C8 (GlmMoeDsaForCausalLM)、KV int8、prefix caching+async 调度、外部 KV connector 层wise 装载、enable_dsa_cp+enable_balance_scheduling。复现：440-token prompt、block 128 下全量重算/HBM 命中均正确，清空 HBM 保留外部缓存后命中 3 块输出损坏。
+  source: https://github.com/vllm-project/vllm-ascend/issues/20725
+  behavior: 开启 balance scheduling 且使用外部 KV connector 同步装载的服务上，清空 HBM 前缀缓存但外部缓存仍命中时，请求输出损坏（同 prompt 在全量重算与 HBM 命中下正常）。批量请求下表现稳定可复现。
+  trigger_surface: vllm-ascend 0.30.0rc2（另请确认 release 分支）；enable_balance_scheduling + 外部 KV connector 同步层wise 装载 + prefix caching + async 调度。
+  discovery: 2026-11-03 每日扫描
+  notes:
+  - '2026-11-04 回访：源 #20725 仍 open（11-04T08:42 更新）'
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

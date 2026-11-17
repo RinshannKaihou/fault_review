@@ -1,0 +1,56 @@
+id: TRN-0627
+legacy_ids: []
+slug: pytorch_npu_index_kernel_seed_offset_constexpr_missing
+aliases: []
+title: Index 路径静态 1 参数缺常量绑定回退慢核
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: NPUIndexTritonKernel 签名
+  behavior: codegen_kernel 生成 signature 后未为静态等于 1 的 SizeArg 补常量值：参数标记 constexpr 但 constants 无对应值，Index checker TTIR 生成失败。
+effect:
+  objects:
+  - 性能/资源
+  detail: 异常被吞后静默回落 no-linear 备用 kernel：Electra 首层 attention 16.79ms→0.97ms 差 17 倍，整步 kernel 时长多 15ms；无报错。
+  visibility: 性能退化
+mitigation:
+  detect: 检查生成 kernel 名（no-linear fallback 形态）与 kernel duration；回归 test_index_triton_constants.py（seed offset=0/1/2）。
+  fix: 修复 commit 20c8be63（issue 记录，修复分支）：equal_1_arg_indices(signature) 找静态 1 SizeArg 并设 constants=1；方法级回放 3 项失败→修复后 3 项通过。合入状态未核实。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: 缺常量绑定回退慢速备用 kernel，精度完全正常（纯性能退化）
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5855
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5855（2026-11-04 open）：NPU Inductor 的 NPUIndexTritonKernel.codegen_kernel 生成参数 signature 后，没有为静态等于 1 的 SizeArg 补齐常量值：Electra Train 首层 attention 的 load_seed_offset=1 被标记 constexpr 但 constants 中无对应值，Index checker 生成 TTIR 失败（ast_to_ttir AttributeError: NoneType），异常被吞后模型继续执行明显更慢的 no-linear 备用 kernel。社区 TritonKernel、NPU no-linear 父类路径、triton_experimental/template 路径已有 equal-to-one 常量绑定，Index 路径遗漏同一规则。基线 master 6c43e4db，修复 20c8be63：equal_1_arg_indices(signature) 后 triton_meta[''constants''][name]=1，无需按模型/shape/名字特判。方法级回放：原始 3 项失败、修复后 3 项通过（torch 2.13.0+cpu、torch_npu 2.13.0.dev20260915、Triton 3.6.0）。A/B 实测（Ascend950PR、Electra Train FP32/static、batch=32 seq=512、关 aclgraph、10 稳定 step）：首层 kernel 16.790405ms→0.974007ms，整步 device kernel duration 和 156.81ms→141.83ms 净省 14.98ms；FP32 训练 2 步 accuracy 通过。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5855
+  behavior: NPU torch.compile 训练含静态 1 尺寸参数的图（实测 Electra 首层 attention load_seed_offset=1）时，Index checker 静默失败回落 no-linear 备用 kernel：模型照常训练、loss 正常，但相关 kernel 慢约 17 倍（16.79ms vs 0.97ms）、整步多耗 15ms，无任何报错或日志提示；不对照 kernel duration 难以发现。修复后性能恢复。
+  trigger_surface: torch_npu Inductor Index 路径 + 静态等于 1 的 SizeArg（如 seed offset）；Ascend950PR/Electra Train FP32
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 性能退化
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

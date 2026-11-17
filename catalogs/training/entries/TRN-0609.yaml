@@ -1,0 +1,58 @@
+id: TRN-0609
+legacy_ids: []
+slug: ds_zero3_nontrainable_int8_frozen_weight_zero
+aliases: []
+title: ZeRO-3 冻结权重 int8 量化存储静默全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: deepspeed
+    component: zero_quantized_nontrainab
+  behavior: 初始化时对未初始化 buffer 量化取 scale，再用 dtype-cast 拷贝覆写，|w|<1 的 int8 存储被截断为 0；合并桶混 group 数按统一 group size 反量化算错 elems_per_group
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: LoRA+ZeRO-3 冻结基座权重变全零，前向输出 0、loss 停在 mean(label**2)、梯度为 0，全程无报错静默失效；合并桶路径 wrong elems_per_group 静默错值（NPU 上可触发整除断言）
+  visibility: 静默错误
+mitigation:
+  detect: 开该 flag 后检查冻结层权重直方图/前向输出是否全零；单 rank 拉取做 dequantize 对照
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/8995 （open，未合入）：初始化拷贝后再量化、quantizer 挂到 Init 类、按 param 逐个 scale 反量化再统一重量化；未核实发布
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8990
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/8995
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'DeepSpeed #8990（2026-11-03 open）+ 修复 PR !8995（open）。ZeRO-3 zero_quantized_nontrainable_weights（冻结权重 int8 存储，LoRA+ZeRO-3 场景）三个设备无关缺陷（CUDA/NPU 同发，平台无关 Python 代码）：1) 初始化量化是死代码且存储被截断为零——quantizer 跑在未初始化 buffer 上（scale 来自垃圾值），结果随后被真实权重的 dtype-cast 拷贝覆写，(-1,1) 内的值在 int8 存储里截断为 0，冻结权重全零、前向输出零、loss 停在 mean(label**2)、零梯度，完全静默；2) 单 rank 拉取 AttributeError：NoGatherHandle/NoGatherCoalescedHandle 读 Init.quantizer_module，但该属性只挂在 Init 实例上；3) 量化合并桶 mishandle：AllGatherCoalescedHandle.wait 把反量化 fp16 输出 cast 回 param.ds_tensor.dtype(int8)，flat 桶反量化假设统一 group size，各 param 存储 group count 不同时算错 elems_per_group（CUDA 静默错值、NPU 整除断言）。复现：LoRA 式模型（冻结 base 层 + 可训 head）+ config 开启该 flag。修复 !8995（open）：真实权重拷入后再量化分区、quantizer 挂 Init 类、合并桶内各 param 用自身 scale 反量化后统一重量化、CPU offload 与该 flag 组合在 init 时拒绝。与 11-03 收录的 TRN-0598（hysteresis=0 scaler 永不降 scale）/TRN-0595/TRN-0599/TRN-0603 同为 DeepSpeed 数值静默族但对象不同（本条冻结权重存储路径）。'
+  source: GitHub issue：https://github.com/deepspeedai/DeepSpeed/issues/8990 ；修复 PR：https://github.com/deepspeedai/DeepSpeed/pull/8995 （open）
+  behavior: LoRA 微调 + ZeRO-3 并开启 zero_quantized_nontrainable_weights 时，基座冻结权重被存成全零 int8：训练不报任何错，但模型输出恒为零、loss 从第一步起就停在 label 均方水平不动、所有梯度为零；用户看到的是『训练完全没学到东西但流程全绿』。单 rank 拉取冻结权重则直接 AttributeError 崩溃；多 rank 合并桶路径权重数值静默错。
+  trigger_surface: DeepSpeed ZeRO-3 + zero_quantized_nontrainable_weights=True + 冻结权重（LoRA 典型）；#8995 另拒绝 CPU offload 组合
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 量化

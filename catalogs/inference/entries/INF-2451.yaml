@@ -1,0 +1,63 @@
+id: INF-2451
+legacy_ids: []
+slug: ops_nn_maxpool_grad_argmax_nhwc_small_c_decode
+aliases: []
+title: MaxPoolGradWithArgmax NHWC 小 C 解码错位梯度散错
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: DoMulCNhwc 块内 C 解码
+  behavior: Argmax 用全局 (h*W+w)*C+c 编码，DoMulCNhwc() 用块内 C 作除数还原 h/w；Tiling 切 C 后块内 C<完整 C，解码错误，梯度散错位置或被 Range Check 丢弃。
+effect:
+  objects:
+  - 数值结果
+  detail: NHWC 小 C 场景精度 FAIL：fp32/bf16、int32/int64 共 4 条用例（完整 C=2/3/15/3，块内 C=1/2）命中 MergeHWC 模板（tiling Key 501）全部失败；块内 C==完整 C 的对照 PASS。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/13770 （open，未合入，Tiling 侧规避）：仅当完整 C 超过 BigC 阈值（vRegSize/(2*indexBytes)，int32=32/int64=16）才允许切 C；已完成静态分析，黄区回归与上板验证待做；Kernel 解码逻辑（DoMulCNhwc 用块内 C）根因保留未改。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: 非大模型（CV/传统ML/3D/RNN）算子缺陷，脱离 LLM 训推主路径
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8366
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13770
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0658
+original:
+  mechanism: Ascend950PR_958b/CANN 9.3.0 上 MaxPoolGradWithArgmax 的 NHWC 小 C 场景精度 FAIL。Argmax 使用全局 (h*W+w)*C+c 编码；DoMulCNhwc() 在还原 h/w 时使用块内 C（cOutputActual）作为除数，当 Tiling 把 C 切分后 cOutputActual<cOutput，解码出的 h/w 错误，梯度被散射到错误位置或被 Range Check 丢弃。Tiling 主流程 AdjustInnerSplitForMultiCore() 在 N/H/W 调整后仍无条件执行 SearchOuterSingle(splitData.cOutputInner,1)，把已等于完整 C 的 cOutputInner 继续收缩到 1/2 等小值触发解码错误。复现用例（均命中 NHWC MergeHWC 向量模板 tiling Key 501、块内 C 严格小于完整 C）：fp32_int64_NHWC_000023（C=2→1）、bf16_int64_NHWC_000093（C=3→1）、fp32_int32_NHWC_000101（C=15→2）、fp32_int64_NHWC_000103（C=3→1）全 FAIL；块内 C==完整 C 的 verifyN100 对照 PASS。修复 !13770 为 Tiling 侧规避：仅完整 C 超 BigC 阈值（baseData.vRegSize/(2*baseData.indexBytes)）才切 C，小 C 保持 cOutputActual==cOutput，MergeHWC/MergeWC 解码恢复正确；BigC Kernel 用完整 cOutput 做 TransHWC2HW 不依赖块内 C 不受影响；阈值与 BigC 模板 IsCapable() 边界一致。静态分析完成（4 条 FAIL 用例完整 C 均小于等于阈值），黄区回归与 Ascend950 上板验证待做；小 C 场景可能损失切 C 并行度存在性能回退风险。SIMT（801-804）、NCHW 路径不受影响。
+  source: GitCode issue https://gitcode.com/cann/ops-nn/issues/8366 （open）；修复 PR https://gitcode.com/cann/ops-nn/pull/13770 （open）
+  behavior: 在 Ascend950 上以 NHWC 布局、通道数 C 较小（如 C=2/3/15）跑 MaxPoolGradWithArgmax 反向时，梯度输出与参考精度比对 FAIL 且无报错：fp32/int64、bf16/int64、fp32/int32 四类用例全错，梯度被写到错误的空间位置或被 Range Check 直接丢弃（部分梯度丢失）。块内 C 与完整 C 相同的对照用例全部 PASS，故症状随 tiling 切分决策隐性出现，仅在做精度回归时暴露。
+  trigger_surface: CANN 9.3.0 ops-nn MaxPoolGradWithArgmax、Ascend950PR_958b；NHWC 布局 + 完整 C 较小（触发 MergeHWC/MergeWC 模板且 tiling 把 C 切到块内 C<完整 C，如 C=2/3/15）；BigC 大 C、SIMT、NCHW 路径不受影响。
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - relations
+  - date: '2026-11-17'
+    fields:
+    - status
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

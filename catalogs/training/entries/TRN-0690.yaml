@@ -1,0 +1,60 @@
+id: TRN-0690
+legacy_ids: []
+slug: torch_npu_rsplit_multiaxis_reduction_48x
+aliases: []
+title: torch_npu 编译含 dim0 多轴归约输出为正确值 48 倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: inductor rsplit 部分和改写
+  behavior: rsplit partial 循环改写只匹配扁平单层 r 循环，遇 promoted r-tree 嵌套双层循环零匹配静默跳过，lo/hi 切片悬空，每核各算全量部分和再被 combine 加总
+effect:
+  objects:
+  - 数值结果
+  detail: 归约轴含 dim 0 且 ≥2 轴的 torch.compile 归约输出恰为正确值×48（910B4 向量核数），无异常无告警；不含 dim 0 正确
+  visibility: 静默错误
+mitigation:
+  detect: 编译归约与 eager 对拍并检验整数倍关系（allclose(out, eager*N)）；多形状×归约轴矩阵回归
+  fix: 待定（issue open 2026-11-09，给出两条修改方向，未见修复 PR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: 推理库同源条目 INF-2475
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5972
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2475
+pattern: PAT-TRN-0076
+original:
+  mechanism: 'Ascend/pytorch #5972（2026-11-09 open）：Ascend 910B4、torch 2.16.0a0+gitff4f371、torch_npu 2.16.0+git111ec0d、CANN 9.2.0、triton-ascend 3.6.0。触发矩阵实测：归约轴包含 dim 0 且归约轴数 ≥2（如 x.sum(dim=[0,2,3])）时 torch.compile 结果 == eager×48（48=910B4 向量核数）；不含 dim 0 或单轴正确，仅个别形状碰巧正确。排除 split_reductions、NPU_RSPLIT_OUTER=0、combo_kernels 后定位：编译器把该归约拆成 partial（48 核各写一份 workspace）+combine 汇总；torch_npu/_inductor/triton_experimental/codegen/triton.py 的 _npu_rewrite_rsplit_partial_body() 只改写「for r0_offset in range(0, r0_numel,)」扁平单层形态，而多轴归约 body 已被 _npu_rewrite_promoted_rtree_body() 改写成 r0_2inner/r0_1inner 嵌套双层循环——锚点零匹配、改写静默跳过，生成的 r0_1_lo/r0_1_hi 从未被使用，每核遍历完整 64×64 各写全量结果，combine 再把 48 份加总得精确 48 倍。影响面：NCHW 沿 batch 与空间维求和等图像模型常见写法；组合核用例 test_combo_kernel_split_large_reductions 的失败由它引起。训练面：torch.compile 训练图中任何含 dim 0 的多轴归约（loss 归约、统计量）静默错值。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5972
+  behavior: 使用 torch_npu + torch.compile 的用户：对张量做归约轴包含 dim 0 且轴数 ≥2 的归约（如 x.sum(dim=[0,2,3])），编译后输出是正确值的精确 48 倍（910B4），allclose(out, eager) False 而 allclose(out, eager*48) True；不抛异常、无警告，loss/统计量数值看似合理但整体放大 48 倍。换不含 dim 0 的归约轴立即恢复正常；与 batch 大小和空间维无关（64~512、8×8~55×55 均复现），仅个别形状碰巧正确。
+  trigger_surface: Ascend 910B4、CANN 9.2.0、torch 2.16.0a0+gitff4f371、torch_npu 2.16.0+git111ec0d、triton-ascend 3.6.0；torch.compile 下归约轴含 dim 0 且 ≥2 轴
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - title
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - pattern

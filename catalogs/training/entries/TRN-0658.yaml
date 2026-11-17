@@ -1,0 +1,72 @@
+id: TRN-0658
+legacy_ids: []
+slug: maxpool_grad_argmax_nhwc_small_c_decode
+aliases: []
+title: MaxPoolGradWithArgmax NHWC 小 C 切分解码错梯度散
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MaxPoolGrad NHWC tiling
+  behavior: Argmax 用全局 (h·W+w)·C+c 编码，DoMulCNhwc 还原 h/w 却用块内 C 做除数；tiling 无条件收缩 cOutputInner，块内 C<完整 C 时解码错误，梯度散错位置或被丢弃。
+effect:
+  objects:
+  - 梯度
+  detail: 梯度被散射到错误位置或被 Range Check 丢弃；fp32/bf16 NHWC 小 C 用例（完整 C=2/3/15，块内 1~2）精度 FAIL，C≥阈值及 NCHW 路径正常。
+  visibility: 静默错误
+mitigation:
+  detect: NHWC 小 C 的 maxpool 反向与 CPU 对账；构造完整 C 小于 vRegSize/(2·indexBytes) 阈值的用例。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/13770 本批次快照 2026-11-09T03:46Z 已 merged（发布版本未核实）；仅完整 C 超过 BigC 阈值才继续切 C。黄区回归与蓝区上板状态未随快照更新。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-08'
+remarks: 非大模型（CV/传统ML/3D/RNN）算子缺陷，脱离 LLM 训推主路径
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8366
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/13770
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0648
+- kind: cross
+  target: INF-2451
+original:
+  mechanism: 'cann/ops-nn #8366（2026-11-07 open）+ 修复 #13770（open）：Ascend950PR_958b/CANN 9.3.0 上 MaxPoolGradWithArgmax NHWC 小 C 场景精度 FAIL。根因：Argmax 用全局 (h·W+w)·C+c 编码；DoMulCNhwc() 还原 h/w 时用块内 C（cOutputActual）做除数，而 tiling 主流程 AdjustInnerSplitForMultiCore() 在 N/H/W 调整后仍无条件执行 SearchOuterSingle(splitData.cOutputInner, 1)，把已等于完整 C 的 cOutputInner 收缩到 1/2——块内 C<完整 C 时解码 h/w 错误，梯度散射到错误位置或被 Range Check 丢弃。复现矩阵：fp32_int64 C=2 块内 1、bf16 C=3 块内 1、fp32_int32 C=15 块内 2（均 Tiling Key 501 MergeHWC）FAIL；对照 C=2 块内 2 PASS。修复 #13770：仅当完整 C 超过 BigC 阈值（vRegSize/(2·indexBytes)，int32=32/int64=16）才继续切 C，小 C 保持 cOutputActual==cOutput；BigC kernel 本身用完整 cOutput 做 TransHWC2HW 不受影响；静态分析 4 条 FAIL 用例（完整 C 2/3/15/3 均小于阈值）修复后不再切；待黄区回归、蓝区无 950 尚未上板。与 TRN-0648（batch_norm_grad_v3 arch35 dgamma 归约超阈）同为 BN/pool 训练反向算子 tiling 触发的精度族，受害面不同（池化梯度散错位置 vs 归约精度漂移）。推理库 INF-2451 已收同源。'
+  source: https://gitcode.com/cann/ops-nn/issues/8366 ｜修复 PR：https://gitcode.com/cann/ops-nn/pull/13770
+  behavior: NPU 上（Ascend 950）训练含 NHWC maxpool 的视觉/多模态模型时反向精度 FAIL：小 C（如 C=2/3/15）且命中 MergeHWC 向量模板的用例，池化梯度被散射到错误的 h/w 位置或直接被 Range Check 丢弃——同图 NCHW 布局或 C≥阈值时正常。无报错、无 NaN，只是梯度值/位置错；训练表现为该层参数学习异常或 loss 曲线异常，需逐层梯度对账才能定位到本算子。
+  trigger_surface: 'CANN ops-nn MaxPoolGradWithArgmax + NHWC + 完整 C 小于 BigC 阈值（vRegSize/(2·indexBytes)，int32=32/int64=16）且 tiling 切 C（Tiling Key 501 MergeHWC）；Ascend950PR/CANN 9.3.0 实测；修复 #13770 open 未合'
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - pattern
+  - date: '2026-11-10'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-17'
+    fields:
+    - status
+  - date: '2026-11-17'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

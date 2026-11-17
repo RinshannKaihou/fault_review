@@ -1,0 +1,51 @@
+id: INF-2387
+legacy_ids: []
+slug: adler32_request_id_collision_stale_kv_reuse
+aliases: []
+title: Adler32 请求 ID 碰撞致稀疏卸载残留 KV 被复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: sparse KV offload 常驻归属判定
+  behavior: fused-overlap 稀疏 KV 卸载用 Adler32 值做请求身份，两个不同请求 ID 碰撞时新请求复用旧请求物理行，跳过失效逻辑并把旧请求前缀 KV 当作常驻命中
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  detail: 新请求的 attention 直接消费上一请求残留的历史常驻 KV 槽位内容；把常驻槽位改 +8/-8 实验证实同时改变注意力输出与生成 token，破坏身份匹配或换非碰撞 ID 均恢复参考行为
+  visibility: 静默错误
+mitigation:
+  detect: 单 NPU 受控实验：碰撞 ID 对 + 常驻槽位 ±8 对照
+  fix: 待定（issue 2026-11-04 新开，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20904
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend releases/v0.30.0（8ab1a91d）稀疏 KV 卸载 + use_fused_overlap=true 时，常驻缓存归属以 Adler32(request_id) 为身份。Adler32 是 32 位校验和，存在不同请求 ID 同值碰撞（复现给出三个同值 585106354 的 ID）。碰撞发生时新请求被当作同一常驻 owner：优先复用上一请求物理行、跳过请求变更失效、把上一请求 512 个位置的前缀 KV 全部记为常驻命中（唯一 miss 是当前 token，正常应 513 miss）。单 NPU 受控实验（Ascend 910、CANN 9.2.0、vLLM 0.30.0 V1、tiny glm_moe_dsa dummy 模型）：把历史常驻槽位填 +8 与 -8 对比，投影前 attention 输出与生成 token 均随之改变，证明残留值被消费；破坏身份匹配或使用非碰撞 ID 均恢复重载参考。随机化后缀不能保证 32 位校验和无碰撞。
+  source: https://github.com/vllm-project/vllm-ascend/issues/20904
+  behavior: 稀疏 KV 卸载 + fused overlap 下，特定请求 ID 组合的后继请求生成内容被上一请求残留 KV 污染：输出看似正常但注意力读入了错误的历史 KV 内容，同一 prompt 结果不可复现且随前一个请求内容变化；无报错无告警，概率随请求量增长（32 位碰撞）。
+  trigger_surface: vllm-ascend releases/v0.30.0；sparse_kv_offload_config.enabled=true + use_fused_overlap=true；跨请求 Adler32 碰撞（32 位校验和固有概率）。
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

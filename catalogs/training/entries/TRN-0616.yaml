@@ -1,0 +1,57 @@
+id: TRN-0616
+legacy_ids: []
+slug: pytorch_npu_collective_fallback_buffer_reuse
+aliases: []
+title: NPU Inductor 通信 fallback 注册覆盖致复用改写在途数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: 通信 fallback 注册覆盖
+  behavior: 后端激活时批量注册的通用 fallback 覆盖 _c10d_functional 通信/等待 lowering，IR 丢失通信依赖与缓冲区生命周期，内存复用让第二次通信覆写在途的第一次通信结果。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: TP 分布式 cross-entropy 等 8 类 functional collective 编译图下数值静默错：双卡 zero-logits CE 均值 2055.6 正确约 7.62；关闭 buffer_reuse 掩盖问题。
+  visibility: 静默错误
+mitigation:
+  detect: 编译前后对拍分布式 log-prob 期望值（-log(local_vocab×world_size)）；8 类 functional collective 生命周期回归（torch_npu test_collective_wait_lifetime.py）。
+  fix: '修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/48875（open，未发布）；产品侧跟踪 torchtitan-ascend #19、适配 !85。'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5859
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/48875
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/torchtitan-ascend/issues/19
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5859（2026-11-04 open）+ 修复 !48875：torch_npu triton_experimental 后端激活时 _activate() 调 _register_npu_inductor_fallbacks() 批量注册通用 fallback，覆盖上游 torch/_inductor/comm_lowering.py 已注册的 _c10d_functional 通信与 wait lowering（_CollectiveKernel/_WaitKernel 专门依赖描述丢失），编译器不再知道两次通信间的数据依赖与缓冲区存活关系。正常 allow_buffer_reuse=True 下第二次通信（sum all_reduce）复用的存储覆盖仍将被后续计算使用的第一次通信（max all_reduce）结果。最小复现：分布式 log-prob 先 max 后 sum 两次 all_reduce，zero-logits 正确输出 -log(2048)≈-7.6246，未修复 compiled 得错误均值 2055.6244877；eager 正确、关闭 buffer reuse 掩盖。验证环境：A5 Ascend 950DT 双卡（补充四卡）、CANN 9.2.0、PyTorch 2.15.0+cpu、Triton Ascend 3.6，8 类 functional collective 48 项回归。最初发现于 Tensor Parallel cross entropy，产品侧 torchtitan-ascend #19 / 适配 !85。此为编译器依赖信息丢失类故障：通信算子数值本身正确，错在编译图允许复用改写在途数据。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5859 ｜修复 PR：https://gitcode.com/Ascend/pytorch/merge_requests/48875 ｜产品侧跟踪：https://gitcode.com/Ascend/torchtitan-ascend/issues/19
+  behavior: NPU 上用 torch.compile(triton_experimental 后端) 训 TP/DP 并行模型时，两次以上集合通信夹着计算的图（如分布式 cross-entropy 的 max+sum all_reduce）结果静默错：zero-logits 测试的 CE 均值约 2055 而非正确 7.62，loss 曲线异常但无报错；eager 模式正确，关掉 buffer reuse 后恢复正常，极易误判为模型 bug。多卡（2/4 卡 HCCL）实测复现，8 类 functional collective 均受影响。
+  trigger_surface: torch_npu Inductor triton_experimental 后端 + torch.compile + _c10d_functional 通信（TP/DP/FSDP）+ allow_buffer_reuse=True（默认）；A5 950DT、CANN 9.2.0、Triton Ascend 3.6
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 并行切分
+        to: 编译器

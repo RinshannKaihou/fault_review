@@ -1,0 +1,80 @@
+id: TRN-0617
+legacy_ids: []
+slug: torchair_addmm_split_bias_rounding_loss
+aliases: []
+title: TorchAir AddMM 拆分丢 bias 低精度舍入边界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torchair
+    component: AddMM lowering 拆分
+  behavior: 二维逐元素 bias 的 aten.addmm 被 lowering 拆成 MatMul+Add，bias 生产者 Mul 内联进 FP32 Add epilogue 丢失原 BF16/FP16 输出的舍入边界，融合后逐元素偏离融合前。
+effect:
+  objects:
+  - 数值结果
+  detail: BF16 五轮矩阵多项式图首轮 200252/1048576 元素不同、最大绝对差 3.05e-5，五轮更新放大，完整输出 83 判据回归失败；恢复 10 处 bias 舍入即逐位一致。
+  visibility: 静默错误
+mitigation:
+  detect: MM 融合开关 A/B 对拍完整网络输出（uint8 逐字节）；保留片段级真实中间输入回放。
+  fix: 修复载体更新：master 侧 https://gitcode.com/Ascend/torchair/merge_requests/3969 本批次快照 2026-11-09T22:58Z 已 merged（保留 MatMul bias 与别名语义、按原生 tiling 选择 BMM 输入布局，#939）；26.2.0 分支 !3950 状态未核实。发布版本未核实。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-05'
+remarks: 与 TRN-0280（triton_experimental 归约轴常量烧入错值）同为 NPU 编译器图优化静默错值族：此条是 torchair MM 融合拆分边界。
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/939
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/torchair/merge_requests/3950
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0280
+- kind: cross
+  target: INF-2396
+pattern: PAT-TRN-0066
+original:
+  mechanism: 'Ascend/torchair #939（2026-11-04 open）+ 修复 !3950（Fixes #939）：二维逐元素 bias 的 aten.addmm 在 lowering 中被拆成 MatMul 和 Add；当 bias 又来自 BF16/FP16 的 Mul 时，其生产者可能内联进 FP32 Add epilogue，丢失原 Mul 输出的低精度舍入边界。五轮 BF16 矩阵多项式图首个差异节点 bias=A*(-6.8946); B=addmm(bias,cA,A)：首轮 B 有 200252/1048576 元素不同、最大绝对差 3.0517578125e-5，后续五轮更新放大差异，完整输出按现有 83 判据失败。同输入 5 个 MM+Mul 融合 kernel 与原生 MM/Mul 逐 bit 一致；诊断中仅恢复 10 处 bias Mul 结果的 BF16 舍入（保留 MM 融合），完整网络最终输出就与关闭 MM 融合逐 bit 一致——定位到 bias 舍入边界丢失。无 NaN/Inf。环境：CANN 9.2.0、Ascend 950、torch/torch_npu 2.14.0、TorchAir 26.2.0、Inductor ascendc 后端自动融合开启。修复 PR !3950：AddMM/BAddBMM 模板保留完整 [a,b,bias] 原生算子与非向量 bias 整体 fallback；bias 纳入 dtype 一致性检查；CV 复用保护改按真实 storage 别名；四份完整图（普通/转置 MM、BMM±Add 五轮）连续执行与 83 判据全过、开关 MM 最大绝对差 0。'
+  source: https://gitcode.com/Ascend/torchair/issues/939 ｜修复 PR：https://gitcode.com/Ascend/torchair/merge_requests/3950
+  behavior: NPU 上开启 MM/BMM 自动融合训练 BF16/FP16 模型（含 addmm 且 bias 来自低精度逐元素运算）时，编译后的网络输出与关闭融合/原生执行不一致：实测五轮图首轮约 19% 元素偏差 3e-5 量级、逐轮放大，最终输出精度回归失败，全程无报错无 NaN；关掉 MM 融合或恢复 bias 的 BF16 舍入后逐位一致。
+  trigger_surface: torchair Inductor ascendc 后端 + MM/BMM 自动融合 + aten.addmm 二维逐元素 bias（来自 BF16/FP16 Mul）+ CANN 9.2.0/Ascend 950/torch_npu 2.14.0
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-07 回访：批次快照 !3950 仍 open（2026-11-06T22:58Z 更新，标题更新为「保留MatMul bias语义并保护CV共享输入（26.2.0，#939）」），维持。
+  - 2026-11-08 回访：回访：master 同步修复 !3969（保留 AddMM/BAddBMM 原子语义并保护 CV 别名输入，open 2026-11-07）基于 upstream/master 92e1e967 迁入 !3950 五项精度/布局修复；批注含 2026-11-08 泛化验证（master 10/10、26.2.0 10/10，20/20 组开关 MM 逐 bit 一致）。!3950 仍 open，fix 维持未发布。
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - pattern
+  - date: '2026-11-07'
+    fields:
+    - original.notes
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-10'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

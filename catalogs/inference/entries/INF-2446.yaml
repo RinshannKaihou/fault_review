@@ -1,0 +1,61 @@
+id: INF-2446
+legacy_ids: []
+slug: vllm_rocm_aiter_mla_gqa16_silent_garbage
+aliases: []
+title: ROCM_AITER_MLA gqa16 fp8 qlen3-4 静默算错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: rocm
+    component: aiter decode config remap
+  behavior: gqa_ratio=16+fp8 的 decode_qlen 3/4 落入无 persistent 无 arch 条件的分支，派发非 persistent kernel 并静默错误计算；gqa_ratio=32 同长度被既有检查正确拒绝
+effect:
+  objects:
+  - 数值结果
+  detail: gfx950 上 cos_diff 0.84-0.90（通过门限 0.03），输出与参考不相关；无崩溃无警告，shape/dtype 正确；bf16/gqa128/qlen≤2 对照均通过，确定性复现
+  visibility: 静默错误
+mitigation:
+  detect: cos_diff 门限自检或与参考后端 A/B
+  fix: 待定（aiter asm_mla.cu 派发分支需补 persistent/arch 条件；gqa_ratio=32 已有拒绝逻辑可对齐）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/66141
+  kind: github_issue
+relations: []
+original:
+  mechanism: gfx950 上 aiter csrc/py_itfs_cu/asm_mla.cu 的 decode config remap：gqa_ratio==16、q_type==fp8 时 qlen 3/4 落入 max_seqlen_q<=4 分支（无 persistent、无 arch 条件），sub_Q=64 并派发非 persistent kernel mla_a8w8_qh64_qseqlen4_gqaratio16；gqa_ratio==32 的同长度要求 persistent&&gfx950。同一不支持的组合在 gqa_ratio=32 被大声拒绝、在 16 被静默算错。ROCM_AITER_MLA 可达该配置。aiter 层实测（stock op_tests/test_mla.py 仅改打印）：qlen 1→0.000510、2→0.001044、3→0.840287（805 倍跳变）、4→0.897949，是悬崖不是斜率；三组单变量对照通过（bf16 通过、gqa_ratio=128 通过 0.000518、qlen≤2 通过）；确定性 2/2，ctx 8192/32768/131072/384000 一致，非长上下文累积。派发表：16,1→qh16_qseqlen1、16,2→qh16_qseqlen2、16,4→qh64_qseqlen4（缺 _ps 后缀）。根因在 aiter，vLLM 侧 ROCM_AITER_MLA 暴露。
+  source: https://github.com/vllm-project/vllm/issues/66141
+  behavior: AMD gfx950 上启用 ROCM_AITER_MLA 且 gqa_ratio=16、fp8 Q+KV、decode_qlen 3-4 时：MLA decode 输出与参考完全不相关（cos_diff 0.84-0.90，aiter 自身门限 0.03），无报错无警告，返回 shape/dtype 均正常；服务化后表现为该配置下生成内容整体错误。gqa_ratio=32 或 qlen≤2 不触发。
+  trigger_surface: ROCM_AITER_MLA+gqa_ratio=16+fp8 Q/KV+decode_qlen 3-4；gfx950；ROCM_AITER_MLA 可达
+  discovery: 2026-11-06 每日扫描
+  notes:
+  - 2026-11-07 回访：回访：vllm#66141 搜索窗口内仍 open 无后续变化。
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - component
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

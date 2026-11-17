@@ -18,19 +18,29 @@ if (isMainThread) {
   const passages = JSON.parse(fs.readFileSync(inPath, "utf8"));
   const k = Number(process.env.FAULT_RAG_WEB_EMBED_WORKERS) || Math.min(os.availableParallelism(), 16);
   const t0 = Date.now();
+  // Pre-warm the HuggingFace cache on the main thread BEFORE spawning workers so k workers never
+  // race to download and non-atomically write the 118 MB ONNX model on a cold CI cache.
+  await createEmbedder(await transformers(), modelConfig(), { device: DEVICE });
   let done = 0, dim = 0;
   const rows = new Array(passages.length);
-  await Promise.all(Array.from({ length: k }, (_, w) => new Promise((resolve, reject) => {
-    const idx = passages.map((_, i) => i).filter((i) => i % k === w);
-    const worker = new Worker(new URL(import.meta.url), { workerData: { texts: idx.map((i) => passages[i]) } });
-    worker.on("message", ({ n, vec }) => {
-      rows[idx[n]] = vec;
-      dim = vec.length;
-      if (++done % 200 === 0) process.stderr.write(`embed ${done}/${passages.length}\r`);
-    });
-    worker.on("error", reject);
-    worker.on("exit", (code) => (code ? reject(new Error(`embed worker exited ${code}`)) : resolve()));
-  })));
+  const workers = [];
+  try {
+    await Promise.all(Array.from({ length: k }, (_, w) => new Promise((resolve, reject) => {
+      const idx = passages.map((_, i) => i).filter((i) => i % k === w);
+      const worker = new Worker(new URL(import.meta.url), { workerData: { texts: idx.map((i) => passages[i]) } });
+      workers.push(worker);
+      worker.on("message", ({ n, vec }) => {
+        rows[idx[n]] = vec;
+        dim = vec.length;
+        if (++done % 200 === 0) process.stderr.write(`embed ${done}/${passages.length}\r`);
+      });
+      worker.on("error", reject);
+      worker.on("exit", (code) => (code ? reject(new Error(`embed worker exited ${code}`)) : resolve()));
+    })));
+  } catch (err) {
+    await Promise.allSettled(workers.map((w) => w.terminate()));
+    throw err;
+  }
   const all = new Float32Array(passages.length * dim);
   rows.forEach((v, i) => all.set(v, i * dim));
   fs.writeFileSync(outPath, Buffer.from(all.buffer));

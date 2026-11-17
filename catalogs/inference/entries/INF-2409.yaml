@@ -1,0 +1,50 @@
+id: INF-2409
+legacy_ids: []
+slug: mm_nz_format_silently_treated_as_nd
+aliases: []
+title: aclnnMm 把 NZ format 当 ND 静默计算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Mm format 校验
+  behavior: aclnnMm 对 FRACTAL_NZ 输入/输出完全不校验也不按 NZ 语义计算，把 NZ 当 ND 静默处理；同源 aclnnMatmul 首段即 161002 拒绝
+effect:
+  objects:
+  - 数值结果
+  detail: out=NZ 时输出与 out=ND 完全相同（NZ 被忽略，决定性证据）；fp16 下输入 NZ 组合 0/0 静默算错、fp32 下 561103 内部码，失败码随 dtype 漂移
+  visibility: 静默错误
+mitigation:
+  detect: 调用侧在传入前校验 format==ND；同输入用 aclnnMatmul 探测（返回 161002 即 NZ 混入）
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8182
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-nn aclnnMm（A2 910B3/CANN 9.2.0 与 A3 910_9362/CANN 9.3.0 两机逐字节一致，master cabf7c65）。M=32,K=64,N=64 同一 buffer 只改 aclFormat：T3（out=NZ，输入 ND）首段/执行均 0 且 out0 与 out=ND 基线完全相同——NZ format 被完全忽略，是「不校验也不按 NZ 计算」的决定性证据；fp32 下 T1（mat2=NZ）首段 561103（ACLNN_ERR_INNER_NULLPTR 内部码）、T2（双 NZ）0/561103；fp16 下 T1 变为 0/0（静默算错）、T2 0/561103——失败码随 dtype 漂移。对照 aclnnMatmul 对相同 NZ 输入全部首段 161002 正确拒绝（T2/T3）。aclnnMm 文档 self/out format 列只列 ND。
+  source: https://gitcode.com/cann/ops-nn/issues/8182
+  behavior: 矩阵乘接口收到 NZ（FRACTAL_NZ，NPU 蜂窝布局）格式的张量时不校验也不按 NZ 布局解读：输出声明为 NZ 时算子直接当 ND 写，结果与 ND 完全一样（布局信息被丢弃）；fp16 下输入混入 NZ 时静默算出错误结果，fp32 下则泄漏内部错误码 561103——同一错误在不同精度下表现不同。经 NZ 布局算子（如 matmul 融合输出）接续调用 mm 的链路会拿到静默错误数据。
+  trigger_surface: CANN 9.2.0/9.3.0；aclnnMm；self/mat2/out 任一为 ACL_FORMAT_FRACTAL_NZ；fp16 静默算错、fp32 内部码。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

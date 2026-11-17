@@ -1,0 +1,64 @@
+id: INF-2402
+legacy_ids: []
+slug: kimi_k3_hybrid_long_prompt_at_wall_degeneration
+aliases: []
+title: Kimi-K3 混合架构长 prompt 退化 @ token 墙
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: FLASHMLA+GDN 混合层状态管理
+  behavior: Kimi-K3（24 全注意力+69 线性注意力层）长 prompt 下部分请求输出退化为 @ token 墙直至 max_tokens；前缀细节决定触发，串行单请求可复现，根因未定位
+effect:
+  objects:
+  - 输出内容
+  detail: 输出为 @ token 重复墙或多语言垃圾碎片交替，直到撞 max_tokens（finish_reason=length）；同 prompt 多数请求正常，失败随前缀细节确定性切换，串行单请求即复现，请求内不可恢复，无错误日志；另一部署变体为混合乱码，指向 attention/KV 错位。
+  visibility: 静默错误
+mitigation:
+  detect: 长短 prompt + 前缀标记对照（24/24 vs 24/24）；已排除连接器 GET 路径、D2H 保存路径、CUDA 错误/OOM/抢占、pin 泄漏、block table 别名、驱动/Xid
+  fix: 待定（issue 2026-11-04 新开，向维护者求证 FLASHMLA+hybrid 线性注意力 recurrent state page 已知问题）
+labels:
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/65680
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.30.0、TP16（2×8 H20-3e）、FLASHMLA attention 后端 + marlin MoE + 内部 KimiK3ForConditionalGeneration（93 层=24 全注意力+69 GDN 线性注意力）。~9700 token 长 prompt temperature=0 下部分请求永不停止、输出 @ token 墙直到 max_tokens；变体输出为多语言垃圾交替（形似 attention/KV 错位而非采样问题）。确定性触发开关：prompt 前缀加 CJK 括号标记【轮次000】则 24/24 坏，ASCII R000\n 或半角括号则全对——报告者明确不称 CJK 为根因，只当复现句柄。串行单请求（并发 1）即复现，排除并发竞争。已测量排除（内部 UltraCacheConnector 侧插桩）：连接器对这些请求从不发 GET（get_req +0、num_external_hit_tokens<num_computed_tokens、无 LoadSpec/无 H2D）；D2H 只读 GPU；无 CUDA 错误/OOM/抢占（num_preemptions_total=0）；无 pin/refcount 泄漏（618 job×8 rank=4944 释放零失衡）；block table 无别名（token 长度界固定索引范围）；无 Xid/ECC；第二套独立双节点部署同现。根因未定位，issue 向维护者求证 FLASHMLA+hybrid（线性注意力 recurrent state page）长 prompt 已知问题。
+  source: https://github.com/vllm-project/vllm/issues/65680
+  behavior: Kimi-K3 混合架构（69 线性注意力层）在约万 token 长 prompt 服务时，部分请求输出完全退化为 @ token 重复墙或中英混垃圾碎片，直到撞 max_tokens（finish_reason=length）；同 prompt 多数请求正常，失败随 prompt 前缀细节确定性地切换，串行也能触发，请求内无法恢复。无任何错误日志。
+  trigger_surface: vLLM 0.30.0 + FLASHMLA + TP16/EP；Kimi-K3 hybrid（24 full-attn+69 GDN）；~9700 token prompt + 特定前缀；max_model_len 1M。根因未定位（已排除外部 KV 连接器/驱动/采样）。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - 2026-11-05 回访：回访：#65680 仍 open，根因未定位状态未变
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence

@@ -1,0 +1,47 @@
+id: INF-2503
+legacy_ids: []
+slug: sglang_gfx12_custom_allreduce_relaxed_stale
+aliases: []
+title: sglang gfx12 定制 all-reduce 松弛旗标读旧值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: sglang
+    component: all-reduce start 旗标可见性
+  behavior: 1-stage HIP 定制 all-reduce 的 start 旗标以 __ATOMIC_RELAXED 发布并松弛轮询；gfx12 经 PCIe 无缓存一致，旗标先于输入离开本 rank L2 可见，对端读到旧数据。
+effect:
+  objects:
+  - 数值结果
+  detail: 两张 R9700（gfx1201）PCIe 互联下 2000 次 all-reduce 约 250 万个错误元素且两 rank 结果互不一致；每次调用前 full device sync+barrier 仍发生，调用方无任何报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 报告者已在运行的修复：仅 gfx12 device code 改用 release 语义（main 的 custom_all_reduce_hip.cuh:169-171 未改）；上游合入未核实。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/49657
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'sglang HIP custom all-reduce 1-stage kernel（custom_all_reduce_hip.cuh）：start[blockIdx.x][rank] 的发布（__ATOMIC_RELAXED）与等待（松弛 device-scope load）在 gfx1201（RDNA4，Radeon AI PRO R9700）双卡 PCIe 互联下不成立——无缓存一致性保证，旗标可先于本 rank 输入数据离开 L2 对 peer 可见，peer 读到 stale 输入。实测：2000 次归约约 2.5M 错误元素、两 rank 间结果发散；每次调用前做完整 device sync 与 barrier 仍复现（同步不能弥补 device-side 松弛可见性）。相关 #43676（非 XGMI ROCm 跳过 IPC 设置）、#46900（RDNA main 跟踪）；XGFI/一致性域平台不受影响。'
+  source: https://github.com/sgl-project/sglang/issues/49657
+  behavior: 在 PCIe 互联的 AMD RDNA4 双卡（gfx1201）上跑 sglang 定制 all-reduce 1-stage 内核时，归约结果错误且各 rank 之间互不一致：2000 次调用累计约 250 万个错误元素，即使每次调用前做完整 device sync 与 barrier 也照样发生，上层无任何报错，分布式训练/推理结果静默损坏。
+  trigger_surface: AMD gfx12（RDNA4，如 R9700）双卡 + PCIe 互联（无 XGMI 一致性）+ sglang HIP custom all-reduce 1-stage；relaxed start-flag 代码 main 169-171 行未改。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

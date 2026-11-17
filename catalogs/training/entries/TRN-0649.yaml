@@ -1,0 +1,60 @@
+id: TRN-0649
+legacy_ids: []
+slug: deepspeed_autotp_replicated_kv_grad_norm_double_count
+aliases: []
+title: AutoTP 复制 K/V 行重复计入全局梯度范数，clip 系数被压低
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: clip_grad_norm_ TP 计数
+  behavior: K/V 块每 TP rank 复制一份且被标 tensor_model_parallel，clip_grad_norm_ 本地范数后对 TP 组 all-reduce 求和，复制行计 TP 次。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 全局梯度范数被多算 (TP-1) 份 K/V 行平方和，clip 系数被压低 → K/V 行有效学习率被低估、更新量被过度缩放；2-norm 默认路径受害，inf 分支不受影响；ZeRO-3 分区组跨 TP 时路径差异另述。
+  visibility: 静默错误
+mitigation:
+  detect: 关 clip 时 TP>1 与单卡梯度对齐（#8962 修复后已可对齐）再开 clip 对比范数；直接检查 all-reduce 前各 rank K/V 行范数是否重复。
+  fix: 待定：issue open（2026-11-06），明确指出为 pre-existing norm-accounting 问题、#8962 不改 clipping 路径，未见修复 PR。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-07'
+remarks: TRN-0472（AutoTP K/V 副本梯度不归约）的后续单：#8928 已把 K/V 梯度跨 rank 求和修好，但同一副本布局使 clip 的范数统计把 K/V 行计 TP 次——同布局不同受害机制（归约缺失→范数重复计数），var 关系。
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/9024
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8927
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0472
+pattern: PAT-TRN-0070
+original:
+  mechanism: 'DeepSpeed issue #9024（2026-11-06 open）：#8928（merged）修复 AutoTP GPTBigCode 多查询梯度归约、#8962（sharding fix）合入后，关 gradient clipping 时 TP 训练与单卡一致；但 K/V 块仍在每个 TP rank 复制，clip 用的全局梯度范数按 rank 重复计数：deepspeed/runtime/utils.py clip_grad_norm_（:462-478）本地算各参数范数后对 tensor-parallel 组 all-reduce 求和——AutoTP 把 fused c_attn weight/bias 标为 tensor_model_parallel，每 rank 的本地范数含自己的 query 行（跨 rank 不相交、求和正确）+完整 K/V 块（跨 rank 重复，求和后多计 TP-1 份）。标准 disjoint DP×TP 布局下 ZeRO-1/2/3 的 DP sum 重建各 TP rank full-shard 范数再 model-parallel all-reduce（stage_1_and_2.py:2706-2719、stage3.py:2464-2481），K/V 重复同样存在；ZeRO-3 的 _grad_norm_counts_every_rank 在分区组跨 TP 时跳过 model-parallel all-reduce（如 zero.Init 下）为另一路径。影响默认 2-norm 分支；inf 分支不受影响。报告者源码定位、机制自洽，未见量化实测数值。'
+  source: https://github.com/deepspeedai/DeepSpeed/issues/9024 ；前序：https://github.com/deepspeedai/DeepSpeed/issues/8927 （TRN-0472）
+  behavior: DeepSpeed AutoTP（TP>1）训练 GPTBigCode 类 multi-query 模型并开 gradient clipping 时：全局梯度范数把每个 rank 复制的 K/V 行计了 TP 次，范数偏大 → clip 系数被压低 → 整个更新步（含 K/V 行）被过度缩放；训练无报错、loss 正常下降，但有效学习率与预期不符、调参结论失真。关 clip 后（#8928/#8962 已修）梯度本身对齐——只有开 clip 的路径受害。
+  trigger_surface: DeepSpeed AutoTP + GPTBigCode multi_query + gradient clipping（默认 2-norm 分支）；标准 DP×TP 布局的 ZeRO-1/2/3 clipping 路径，ZeRO-3 跨 TP 分区组另述；issue 未列硬件/版本
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - title

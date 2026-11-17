@@ -1,0 +1,50 @@
+id: INF-2563
+legacy_ids: []
+slug: ops_transformer_moe_token_permute_v2_out_rows_silent_truncation
+aliases: []
+title: MoeTokenPermuteV2 出参行数偏小静默截断
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MoeTokenPermuteV2 参数校验
+  behavior: 只校验 permuteTokensOut 的 dtype 不校验 shape；kernel 按调用方声明行数写，行数小于文档 M 时其余行不写、两段返回 0。
+effect:
+  objects:
+  - 数值结果
+  detail: tokens[4,8]、indices[4,2] 声明 [4,8] 时后 4 行 canary 全保留（32/64），声明 [2,8] 保留 48/64，rc 0/0；列数或维度错则首段 0、次段 561103。
+  visibility: 静默错误
+mitigation:
+  detect: permuteTokensOut 预填 -777.0/555.0 两种互斥 canary，按 tokens.shape[0] 而非 indices.numel() 声明行数，回读未写行数。
+  fix: '待定（issue #7582 open，建议在 CheckParamsV2Regbase 补输出 shape 校验）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7582
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer master a1e54cce（Ascend950PR、CANN 9.3.0）的 aclnnMoeTokenPermuteV2 只校验 permuteTokensOut 的 dtype，不校验 shape。文档要求 M=min(numOutTokens, flatten_size) 或 max(numOutTokens+flatten_size,0)、H=tokens.shape[1]。报告者用 tokens[4,8]、indices[4,2]、numOutTokens=0 扫 7 组：声明 [8,8] 两段 0/0 且输出与 golden 逐字节一致；声明 [8,4]/[8,16]/[64]/[8,1,8] 首段 0、次段 561103；声明 [4,8]/[2,8] 两段均 0，canary 残留 32/64 与 48/64，即只写声明行数、其余保持调用方内存。561103 对应 ACLNN_ERR_INNER_NULLPTR，不在该接口文档声明的 161001/161002/561002 集合内。
+  source: https://gitcode.com/cann/ops-transformer/issues/7582 （open，2026-11-15）
+  behavior: MoE permute 调用方如果按 tokens.shape[0]（而不是 indices.numel()）声明输出行数——topK>1 时很常见的写法——算子只写前一半行就返回成功：后一半是未初始化的显存残留，既不是零也不报错。下游 attention/FFN 读到半份有效数据加半份垃圾，精度异常但形状完全正常；列数写错时又在第二段才报 561103，与文档错误码表对不上。
+  trigger_surface: aclnnMoeTokenPermuteV2；permuteTokensOut 声明行数小于 flatten_size（topK>1 按 tokens 首维声明）；Ascend950PR + CANN 9.3.0。
+  discovery: 2026-11-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-15'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,73 @@
+id: INF-2438
+legacy_ids: []
+slug: fp8_silent_bf16_fallback
+aliases: []
+title: 原生 FP8 checkpoint 在 A2/A3 静默以 BF16 运行
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: fp8_block 平台分支
+  behavior: fp8_block.py 以 is_950() 决定 mxfp8_method，非 950 时为 None，process_weights_after_loading 把整块 FP8 权重反量化成模型 dtype 走非量化 GEMM，不报错
+effect:
+  objects:
+  - 性能/资源
+  - 输出分布
+  detail: A2/A3 无 FP8 matmul 却静默降级 BF16：权重显存翻倍（fp8 1B→bf16 2B）、加载峰值更高，27B FP8 单卡属性破坏；唯一痕迹一条看似正常的 info 日志；文档 quantization.md:117 写成 intended
+  visibility: 性能退化
+mitigation:
+  detect: 对比加载后权重大小/显存占用；查 fp8_block.py mxfp8_method 是否 None
+  fix: 已有修复 PR/MR：https://github.com/vllm-project/vllm-ascend/pull/21516（发布状态待核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: A2/A3 无硬件 FP8 GEMM 文档化回退 BF16 占显存，非静默计算故障
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21157
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/21516
+  kind: github_pr
+relations: []
+original:
+  mechanism: vllm-ascend main@ac6405d9e 的 vllm_ascend/quantization/methods/w8a8/fp8_block.py：服务原生 block-wise FP8 checkpoint（quant_method=fp8+weight_block_size）时，:180/:270 以 self.mxfp8_method = AscendW8A8MXFP8DynamicLinearMethod() if is_950() else None 决定路径。mxfp8_method 为 None 时 process_weights_after_loading 用 resolve_block_scales(...) 把整块 FP8 权重反量化进模型 dtype、经非量化 GEMM 服务（:226-228/:247-249）；MoE 方案经 _resolve_experts/bf16_method/quant_type=QuantType.NONE 同样处理。A2/A3（910B/910C）无 FP8 matmul，降级不买吞吐且权重足迹翻倍、加载峰值更高（fp8 权重与 weight_scale_inv 仍存活时物化稠密副本）。A5 attention 后端确需稠密解析（sfa_v1.py:544 断言 kv_b_proj.weight.dtype==act_dtype），错的是硬件条件默认值。该行为当前被文档 quantization.md:117 写成 intended。
+  source: https://github.com/vllm-project/vllm-ascend/issues/21157
+  behavior: 在 910B/910C 上加载原生 FP8 模型（如 Qwen/Qwen3.8-27B-FP8、GLM-5.3-Flash FP8）：服务正常启动、可对话，但全程 BF16 计算——显存占用翻倍导致「27B FP8 单卡可部署」失效或 OOM，服务数值为 bf16(fp8_weight*scale) 而非 checkpoint 的 FP8 算术；除一条读起来像 FP8 在运行的 info 日志外无任何提示，跨平台对比结果差异无从归因。
+  trigger_surface: A2/A3（910B/910C）+原生 block-wise FP8 checkpoint（quant_method=fp8+weight_block_size）；950 正常
+  discovery: 2026-11-06 每日扫描
+  notes:
+  - 2026-11-11 回访：回访：修复 PR !21516（open）——在 scheme 构造期（vLLM config 查找与权重缓冲分配之前）拒绝非 950 设备的原生 block-FP8 路径并给出改用 BF16/ModelSlim/LLM-Compressor checkpoint 的指引；linear/MoE 构造器回归测试（修复前 NotImplementedError 未抛出）+ Atlas 800T A2 实机 is_950 检查验证。合入未核实。
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 性能退化
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-17'
+    fields:
+    - status

@@ -1,0 +1,69 @@
+id: TRN-0635
+legacy_ids: []
+slug: mindspeed_pp_shape_batch_isend_irecv_race
+aliases: []
+title: MindSpeed+Megatron0.18 PP shape 交换读未写入内存
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: mindspeed
+    component: P2PCommunicator shape 交换
+  behavior: Megatron 0.18 非 ring 分支 batch_isend_irecv 交换 shape，HCCL batch 内部流竞态使 wait() 返回时 buffer 未写入；MindSpeed 兜底补丁挂旧函数名静默失效。
+effect:
+  objects:
+  - 可用性/进度
+  detail: 4 机 TP=2/PP=2/EP=16 + variable_seq_lengths：recv_prev_shape 读到垃圾整数（实测 -4.58e17），torch.empty 抛 SymInt 错误训练中断；EP=16 必现、EP=8 正常；synchronize 兜不住内部通信流
+  visibility: 报错
+mitigation:
+  detect: variable_seq_lengths/mtp_standalone + EP≥16 多机配置下监控 shape 交换后的张量合法性；开 use_ring 或 batch_comm=False
+  fix: 修复 MR https://gitcode.com/Ascend/MindSpeed/merge_requests/4132 （批次快照 closed，2026-11-05）：P2PCommunicator 类方法补丁改用 _p2p_ops 逐条 send/recv 绕开 batch 通信竞态；合入与否未核实
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: 形状通信竞态立即触发 SymInt 异常中断训练（fail-loud），未写出坏检查点
+evidence:
+- url: https://gitcode.com/Ascend/MindSpeed/merge_requests/4132
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: Ascend/MindSpeed MR !4132（2026-11-05 批次快照 closed，正文含完整根因链）。NPU 上开 variable_seq_lengths=True（或 mtp_standalone=True）时，Megatron 0.18 P2PCommunicator._communicate_shapes 非 ring 分支无条件用 batch_isend_irecv 交换 shape 张量（p2p_communication.py:234-263）；HCCL batch 类算子走独立内部通信流，req.wait() 返回时 recv buffer 可能尚未写入，随后 .tolist() 读到未初始化内存。torch.npu.synchronize() 只同步当前流、与内部流无 event 依赖，设备同步兜不住该竞态。MindSpeed 0.18 的 variable_seq_length 特性补丁仍注册在 Megatron 0.16 的模块级函数名（_communicate/_communicate_shapes）上，0.18 已重构为 P2PCommunicator 类方法、模块中不存在这些属性，Patch.parse_path 对缺失属性静默 setattr(...,None) 返回 None——整套兜底（batch_p2p_comm=False、batch/non-batch 分流）在 0.18 上未执行，实际跑的是 Megatron 原生 batch 路径。佐证：模块级副本无 import 的死代码、flexible_schedules.py:35-40 import 模块级 _communicate_shapes 在 0.18 直接 ImportError、单测以 need megatron-0.17.0 adapt 为由整体 skip。触发：4 机 TP=2/PP=2/EP=16 + variable_seq_lengths，EP=16 必现、EP=8 正常。报错形态：动态 shape 分支 torch.empty(recv_prev_shape) 收到垃圾整数（实测 -457896411108976908）抛 expected to contain only concrete integers。修复：adaptor.py 追加类方法实现改用 _p2p_ops 逐条收发绕开 batch 竞态。与 verl 无关：任何 MindSpeed 0.18 + variable_seq_lengths 训练都会命中。故障形态为读到未初始化内存的偶发竞态（manifest 为 crash 前的垃圾 shape），机制本身是通信正确性缺陷。
+  source: https://gitcode.com/Ascend/MindSpeed/merge_requests/4132 （批次快照 closed；含根因分析与复现配置）
+  behavior: NPU 多机流水线并行训练（Megatron 0.18 + MindSpeed 0.18，开 variable_seq_lengths 或 MTP standalone，EP=16 时必现）在 PP 通信阶段崩溃：torch.empty 报「expected to contain only concrete integers」，根因是 shape 交换的 batch 通信在 wait() 返回后缓冲区还没写入、读到了未初始化的垃圾整数；MindSpeed 自己的兜底补丁因挂在旧版函数名上静默失效。表现为训练偶发中断（竞态），EP=8 不触发、EP=16 必现。
+  trigger_surface: MindSpeed 0.18 + Megatron 0.18、variable_seq_lengths/mtp_standalone、非 ring P2P 分支 batch_isend_irecv、EP=16（4 机 TP=2/PP=2 实测）
+  discovery: 2026-11-06 每日扫描
+  notes:
+  - '2026-11-07 回访：hcomm #1242 显示「回退标卡（standardCard）识别相关变更（回退 !4099 与 !5367）」已 closed——与 MindSpeed PP 形状交换竞态条目无直接关联（不同组件），仅记录标卡回退动向。'
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 报错
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - status

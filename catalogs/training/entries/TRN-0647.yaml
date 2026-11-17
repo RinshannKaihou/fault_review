@@ -1,0 +1,52 @@
+id: TRN-0647
+legacy_ids: []
+slug: opsnn_matmul_fusion_pass_arch_type_gate
+aliases: []
+title: matmul 融合 pass 真机 950 平台判断失效
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: 融合 pass 平台判断 arch_type
+  behavior: 平台门控读 soc_info.arch_type，真机 950 ini 无该字段，比较恒 false，3510 系列被误判不支持。
+effect:
+  objects:
+  - 性能/资源
+  detail: 真机 950 上 FusedMatMul 融合/PostCube 派发不走、量化类 infershape 判断与 anti_quant/transpose 融合门控失效——优化静默不生效，数值不受损。
+  visibility: 性能退化
+mitigation:
+  detect: 融合日志（FusedMatMul 命中计数）与预期平台对照；直接断点 IsNpuArch3510Series 返回值。
+  fix: 修复方案（issue 正文）：平台判断改用运行时 API aclplatformGetDeviceInfo(ACL_PLATFORM_NPU_ARCH) 取 arch 字符串 atoi 比较，配 UT stub；关联修复 MR 见 issue（状态未在批次快照核实）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: 融合 pass 平台字符串未命中退回普通算子，数值不受损（纯性能退化）
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8308
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #8308（2026-11-06 open）：matmul 域图融合 pass 的平台门控（IsNpuArch3510Series 及 flat_quant/rotate_quant infershape、anti_quant、batch_matmul_to_transpose_batch_matmul 等同类判断，matmul_fusion_utils_pass.cpp:126 及 4 处同类）通过 fe::PlatformInfo 的 soc_info.arch_type 字段判断 NPU arch；线上真机 Ascend950 环境 ini 配置不含 arch_type 字段，GetPlatformInfoWithOutSocVersion 返回的 arch_type 不可靠，比较恒为 false——3510 系列平台被误判不支持：FusedMatMul 直接融合路径/PostCube 派发被误判不走、flat_quant/rotate_quant 的 hif4/mxfp4/mxfp8 等 3510 专属 dtype infershape 支持判断失效、anti_quant/transpose_batch_mat_mul 融合 pass 门控失效。仓内注释自证该字段真机不可靠（fused_mat_mul_fusion_pass.cpp: the Ascend950 ini has no arch_type at all, which blocked the real 950 device）。修复方案：改用运行时 API aclplatformGetDeviceInfo(ACL_PLATFORM_NPU_ARCH, buf) 取 arch 字符串（3510/9201/9202）atoi 比较，配 acl_platform_stub.cpp UT 桥接。环境 Ascend950/CANN 9.3.0。后果是融合/派发优化静默不生效（数值正确性不受影响）。'
+  source: https://gitcode.com/cann/ops-nn/issues/8308
+  behavior: 在真机 Ascend950 上跑含 MatMul 融合 pass 的算子库：IsNpuArch3510Series() 恒返回 false，FusedMatMul 融合不生效、量化类 infershape 支持判断失效——本应自动获得的算子融合/派发优化静默不生效，性能落后预期且无任何告警；图算结果数值本身不受损，用户只见吞吐/时延不达预期。
+  trigger_surface: 真机 Ascend950（ini 无 arch_type）+ matmul 域融合 pass（libopgraph_nn.so）；CANN 9.3.0
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

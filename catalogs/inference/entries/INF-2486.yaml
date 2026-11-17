@@ -1,0 +1,54 @@
+id: INF-2486
+legacy_ids: []
+slug: humming_w4a16_group_size_wrong
+aliases: []
+title: Humming W4A16 组尺寸不整除 K 块错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: Humming W4A16 组 scale
+  behavior: 组 scale 在 k%group_size==0 应用并在 warp-tile 末强制 flush；组边界与 128 行 K-tile 不可交换时 flush 落组中间用错 scale。
+effect:
+  objects:
+  - 数值结果
+  detail: GPTQ uint4b8、N=256、fp16/bf16 实测：G∈{24,40,48,56,80,96,112,160,192,224,320,448} 输出静默错误，rel L2 0.17~1.10，零点路径更大；M=1时 ≤112 坏尺寸返回 NaN；16/32/64 及 128 倍数正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: '待定（发现于核对 #60608/#59783 回退故事；humming_kernels 0.1.19，vLLM 0.33.0rc1 main fd0c471b 纯 Python 选择代码，https://github.com/vllm-project/vllm/issues/66437）。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/66437
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM CUDA W4A16 的最低优先 kernel HummingLinearKernel（humming_kernels 0.1.19 include/humming/arith/mainloop_arith.cuh）：组 scale 在 in-tile k 索引为 group_size 倍数时应用、并在每个 warp-tile 末强制 flush。组边界与 128 行 K-tile 网格可交换（G 整除 128 或是其倍数）时 flush 都落在真实边界；否则 flush 在组中间触发，部分和取到错误 scale（零点路径错误更大，错零点移动整组）。can_implement 只查平台/安装/激活 dtype、从不看 group size，因此被正常选中。实测（GPTQ uint4b8、N=256、两种 K 深度、fp16/bf16、对称/零点）：G∈{16,32,64}、全部 128 倍数、单组跨 K 正确（≤4e-4）；G∈{24,40,48,56,80,96,112,160,192,224,320,448} 错（rel L2 0.17~1.10），M=1 对 ≤112 的坏尺寸返回 NaN；G=8 被 Humming schema 拒绝，24 是最小可接受坏尺寸。fp16/bf16 边界一致。RTX 5060（sm_120）、vLLM 0.33.0rc1.dev970。
+  source: https://github.com/vllm-project/vllm/issues/66437
+  behavior: 加载 group size 不整除 128 也非 128 倍数（如 48/96）的 GPTQ W4A16 模型且落到 Humming kernel 时，线性层输出静默错误（相对 L2 最高 1.10），batch=1（M=1）解码直接 NaN；无任何告警，G=16/32/64 等常见尺寸正确故难归因。
+  trigger_surface: vLLM CUDA W4A16 + HummingLinearKernel 被选中（更低优先 kernel 不可用）+ group_size 与 128 K-tile 不可交换（24/40/48/56/80/96/112/160/192/224/320/448…）。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - title

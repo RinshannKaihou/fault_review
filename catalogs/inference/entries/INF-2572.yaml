@@ -1,0 +1,58 @@
+id: INF-2572
+legacy_ids: []
+slug: cann_npu_quant_matmul_m_tier_bitwise_inconsistent
+aliases: []
+title: npu_quant_matmul w8a8 跨 M 档不逐位一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: torch_npu
+    component: npu_quant_matmul
+  behavior: npu_quant_matmul 对逐位相同的输入行，M≤256 与 M≥257 两档输出不逐位一致；同档内任意 M、任意行位置逐位一致，差异确定、不随 seed 变化，npu_dynamic_quant 全形状 M-不变。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: Ascend910B4+CANN 9.1.0/9.2.0+torch_npu 2.10，w8a8 int8 权重 NZ、输出 bf16，档界 T_max=257；prefix cache 冷/温两路对同一 token 给出不同 logprob，margin 窄会翻转工具调用，关闭该缓存即不可见。
+  visibility: 不可复现
+mitigation:
+  detect: 同一段 N 行输入分别置于 M≤256 与 M≥257 的批尾，逐字节比较输出；同档内应一致，跨档不一致即命中。
+  fix: 应用层零填充 +256 行抬档规避（prefill +2.7~3.2ms/step），非根因修复；issue open，报告者请求 batch-invariant 选项或可强制 tiling。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 与 INF-1505（msprobe 比对跳过 int8 输出）不同：本条是 GEMM 本体跨 M 档数值差异。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8881
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu.npu_quant_matmul（Ascend910B4-1 dav-2201、CANN 9.1.0/9.2.0、torch_npu 2.10.0、ATB 9.0.1，27B w8a8 hidden=5120 intermediate=17408、int8 per-channel 权重、NZ 布局、输出 bf16）：同一段逐位相同的 48 行输入放在 M≤256 小批与 M≥257 大批计算，输出不逐位一致；同一档内任意 M、任意行位置逐位一致；差异确定性、不随 seed 变化；npu_dynamic_quant 全形状 M-不变，差异来自 npu_quant_matmul 本体。CANN 9.1.0 与 9.2.0 档界同构（T_max=257，NZ；5120×16384 在 ND 下为 238）。复现只需 torch+torch_npu，脚本 gemm_m_tier_repro.py：M 扫描 48/53/…/256/257/…/8064，与 M=2048 基准逐元素比较。
+  source: https://gitcode.com/cann/ops-nn/issues/8881 （open，2026-11-16，含 M 档扫描与端到端 logprob band）
+  behavior: prefix cache 部分重算时，同一 token 在冷/温两条路径上算出不同的 logprob，业务 margin 窄时会翻转工具调用；差异是确定性的、可复现，但不是随机噪声，关掉 prefix cache 就看不到。
+  trigger_surface: Ascend910B4（dav-2201）+ CANN 9.1.0/9.2.0 + torch_npu 2.10；w8a8 per-channel、int8 权重 NZ 布局；npu_quant_matmul+pertoken_scale，输出 bf16；ND 与 NZ 档界不同（5120×16384：ND 238、NZ 257）。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 输出分布
+        to: 数值结果
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    rewritten:
+    - behavior
+    - detail

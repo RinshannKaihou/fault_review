@@ -1,0 +1,51 @@
+id: INF-2517
+legacy_ids: []
+slug: layernorm_fusion_eps_detection
+aliases: []
+title: LayerNorm 融合 pass epsilon 探测错回退
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: LayerNorm 图融合 pass 常量探测
+  behavior: 融合 pass 用 add0/add1 探测 epsilon 而非子图边界输入；Add 操作数随 config 分支交换时探测可能落在 mean 等非 epsilon 端口，读不到常量时 inference pass 静默回退 1e-7。
+effect:
+  objects:
+  - 数值结果
+  detail: epsilon 为子图外部输入且 Add 操作数交换分支命中时：layernorm_inference_fusion_pass 融合后 epsilon 静默变默认 1e-7 与原图不一致，输出静默偏移；另一 pass 放弃融合。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 https://gitcode.com/cann/ops-nn/pull/14106 （epsilon 从匹配子图边界 inputs[kInputEps] 的 NodeIo 精确读取，读取失败时行为明确：前者不融合、后者用默认并打日志）；issue 已 closed，合入与随版发布未核实。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8593
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/14106
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn conversion 层 LayerNorm 两个图融合 pass（layer_norm_fusion_pass、layernorm_inference_fusion_pass，concat_v2_infershape 同目录 op_host 域）：匹配到 ReduceMean/SquaredDifference/ReduceMean/Add/Rsqrt/Mul/Sub 子图后，通过 add0/add1 输入 0/1 探测 epsilon 常量，而非从匹配子图边界输入（kInputEps=3）读取。pattern 中 Add 操作数顺序随 config 分支交换，探测可能落在 mean 等非 epsilon 端口：layer_norm_fusion_pass 读不到 epsilon 常量直接放弃融合（功能性退化为不融合）；layernorm_inference_fusion_pass 读不到常量时静默回退默认 1e-7，融合后 LayerNorm 的 epsilon 与原图不一致，数值静默偏移。修复 PR 14106：按索引识别边界输入精确读取，读取失败行为明确化。issue 已 closed（2026-11-11）。
+  source: https://gitcode.com/cann/ops-nn/issues/8593 （修复 https://gitcode.com/cann/ops-nn/pull/14106 ）
+  behavior: 构图时把 epsilon 作为子图外部输入（Const/Enter）传入 LayerNorm 融合 pattern、且命中 Add 操作数交换的 config 分支：走 layernorm_inference_fusion_pass 的图融合后，LayerNorm 实际使用的 epsilon 静默变成默认 1e-7 而不是原图配置值，融合输出与未融合计算不一致，无任何报错或日志提示 epsilon 被替换；走另一条 pass 的图则静默少了一次融合。
+  trigger_surface: GEIR 图编译 infershape/融合 pass 路径（不依赖具体硬件与 CANN 版本）；条件：epsilon 为子图外部输入且 Add 操作数顺序交换分支命中。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

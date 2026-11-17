@@ -1,0 +1,50 @@
+id: INF-2562
+legacy_ids: []
+slug: ops_transformer_moe_token_unpermute_with_ep_range_start_subtracted
+aliases: []
+title: MoeTokenUnpermuteWithEp range 起点非 0 时错址
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MoeTokenUnpermuteWithEp
+  behavior: kernel 用 (sortedIndices 的全局行号 − range.start) 乘 hidden_size 取址，range 起点非 0 时整体读到前一段 token 行。
+effect:
+  objects:
+  - 数值结果
+  detail: range=[8,16] 输出 0,0,0,0,1000,5000,9000,13000（应 0,0,0,0,17000,…），max|diff|=16000；6000 条用例中 range[0]>0 的 1782 条有 1594 条 FAIL（89.5%），rc 全 0。
+  visibility: 静默错误
+mitigation:
+  detect: permutedTokens 第 i 行全置 1000*i，range 起点取 0/2/4/8，按全局行号断言输出；官方 ST 的 200 条用例均 start=122 可作阳性对照。
+  fix: 'issue #7604 closed，未给修复 PR 与发布版本（closed 不证明已修复）；建议删去 kernel 取址中的 -start'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7604
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer master a1e54cce（Ascend950PR、CANN 9.3.0）的 aclnnMoeTokenUnpermuteWithEp 在 rangeOptional[0]!=0 时，op_kernel/moe_token_unpermute_with_ep.h:322-338 以 offset=(in_token_index-this->start)*hidden_size 取址，而文档规定 sortedIndices 是 permutedTokens 的全局行号、range 只用于判断该条是否贡献。报告者用 pt[i][0]=1000*i、si=[0..15]、numTopk=2、out=(8,1) 构造：range=[0,16] 输出 1,5,9,13,17,21,25,29（正确），range=[8,16] 输出 0,0,0,0,1000,5000,9000,13000（应 0,0,0,0,17000,21000,25000,29000），起点 2/4/8 均与 idx-start 模型逐位一致；官方 examples 零改动编译运行也给出错误值。6000 条精度用例中 range[0]>0 的 1782 条 1594 条 FAIL，range[0]=0 的 3049 条仅 1 条 FAIL；官方 ST 200 条全为 range=[122,874]，但其期望值由脚本重新生成 permutedTokens，只验能跑通。
+  source: https://gitcode.com/cann/ops-transformer/issues/7604 （closed，2026-11-15）
+  behavior: EP 推理按分片窗口调用 unpermute 时，只要 range 的起点不是 0（EP 切分的第 2 个及以后分片），输出就整体错位：前 (end-start) 个 token 变成 0，后面每个 token 读到的都是上一段的行。形状对、返回码 0/0、没有 NaN 也没有日志，表现为模型输出整体质量下降或某些 token 拧成别的词，定位时很难怀疑到 unpermute 环节。
+  trigger_surface: aclnnMoeTokenUnpermuteWithEp；rangeOptional[0]!=0（EP 分片第 2 段起）；Ascend950PR + CANN 9.3.0。
+  discovery: 2026-11-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-15'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

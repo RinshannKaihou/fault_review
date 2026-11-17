@@ -1,0 +1,59 @@
+id: INF-2391
+legacy_ids: []
+slug: chunkcat_empty_input_skip_out_validation
+aliases: []
+title: ChunkCat 空输入早退跳过 out 校验返回脏数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ChunkCat 空输入早退次序
+  behavior: 空 tensorList 与全空 tensor 两条早退路径排在参数校验之前，既不校验 out 空指针/shape 也不写任何数据，直接返回成功
+effect:
+  objects:
+  - 数值结果
+  detail: out 预填 qNaN 在空列表/全空输入下 12/12 全部残留，调用方拿到返回码 0 但 out 是未初始化内容；161001/161002 两类参数错误在空态全部失效
+  visibility: 静默错误
+mitigation:
+  detect: 空输入 + out 预填哨兵的写回检查
+  fix: 待定（issue 2026-11-04 新开，未见修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4460
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-math aclnnChunkCat（master 2026-11-04 拉取，CANN 9.3.0，Ascend 950PR）：aclnn_chunk_cat.cpp:235-238 在 tensors->Size()==0 时于 CheckParams（:240，含 out 非空与 dtype/format/rank 校验）之前直接 return ACLNN_SUCCESS；tensorList 全空 tensor 时 :207-208 在 CheckShapeAndScalarSame（:210）之前 return ACLNN_SUCCESS。两条路径不校验 out 空指针（资料 161001）也不校验 out shape 与期望输出 [numChunks, 0] 一致（资料 161002），且不写出任何数据。真机复现：空 tensorList + out fp32[2,6] 预填 qNaN → 两段 0/0，out 12/12 NaN 残留；tensors=[fp32[0,6]] 同样；out 传 nullptr 也返回 0。期望输出 shape 由 infershape 决定，空输入时为 [numChunks, 0]。
+  source: https://gitcode.com/cann/ops-math/issues/4460
+  behavior: 调用 ChunkCat 传空输入列表（或全空 tensor）时接口返回 0 表示成功，但输出张量保持申请时的未初始化内容（预填 NaN 全残留），非法 out（空指针、shape 不符）也不再被拦截；下游把脏数据当拼接结果使用，每次内容随内存残留不同。
+  trigger_surface: CANN 9.3.0 ops-math master（2026-11-04）；aclnnChunkCat；空 tensorList 或全空 tensor 输入。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - 2026-11-05 回访：回访：#4460 仍 open（11-05T11:28 有更新，状态未核）
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

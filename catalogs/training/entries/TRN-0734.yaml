@@ -1,0 +1,51 @@
+id: TRN-0734
+legacy_ids: []
+slug: actulq_clampmin_grad_formula_error
+aliases: []
+title: ActULQClampMinGrad 公式实现错误输出 Inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: ActULQClampMinGrad 公式
+  behavior: 原 mask 计算公式实现有误（未统一为 sum(y_grad*(x_clamped_loss+abs(clamp_min_mask)))），FP32 严格三方比较有舍入误差，有限加数相加溢出直接输出 Inf。
+effect:
+  objects:
+  - 梯度
+  detail: QAT 低比特量化 clamp 的梯度按错误公式静默计算；旧算子包实测单元素 0.25*(2^127+2^127) 错误输出 Inf（应为有限 2^126），NaN/Inf 传播语义未定义。
+  visibility: 静默错误
+mitigation:
+  detect: clamp 梯度与修正后动态公式的三方参考（torch/TF）对账；单元素大值哨兵用例（0.25*(2^127+2^127) 应有限）
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/14168（open，CANNBot）：统一动态公式、TwoSum/FMA 高低位补偿、加数减半梯度加倍二次幂缩放保有限结果、跨核归约部分和；GPU 三方 4/4、NPU 22 项定向回归通过；未发布
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: '同族前向 ActsULQ 曾按『推理量化 kernel 族、训练面未证实』留观（2026-11-11 #8459/!14157 口径）；本条为 Grad 算子（QAT 反向专用），公式错误+旧包复现错误 Inf，按训练反向路径收录。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/14168
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn 修复 PR !14168（2026-11-11 open，CANNBot，无关联 issue）。ActULQClampMinGrad（激活均匀低比特量化 clamp-min 的梯度算子，QAT 反向路径）原计算公式实现有误——两条 mask 计算路径未统一为 sum(y_grad*(x_clamped_loss+abs(clamp_min_mask)))；同时存在 FP32 加法/乘法/归约的严格三方比较舍入误差、类型推导放行非法组合、shape 与切块边界整数溢出风险、跨核 workspace 越界（系统 workspace 偏移）。修复：公式统一；TwoSum/FMA 高低位误差补偿，跨核保存高低位部分和；有限加数相加溢出时按加数减半、梯度加倍的二次幂缩放保留有限结果及真实 NaN/Inf 传播——旧算子包已复现单元素 0.25*(2^127+2^127) 错误输出 Inf（应有限 2^126）；取消未用系统 workspace 预留。验证：Torch CPU golden 自动 Promote 4 用例 8 次三方比较通过、真实 GPU 三方 4/4、Host UT 25/25、NPU 定向回归 22 项（覆盖负/零梯度、最大有限值、尾块、跨核、NaN/Inf）。来源：https://gitcode.com/cann/ops-nn/merge_requests/14168 。训练面：QAT（量化感知训练）反向的 clamp 梯度，公式错则可学习量化参数的梯度静默错。
+  source: https://gitcode.com/cann/ops-nn/merge_requests/14168
+  behavior: 做低比特量化感知训练（QAT）时，激活 clamp 相关梯度算子的公式实现有误：梯度按错误表达式静默计算，极端但有限的输入（如单元素 0.25*(2^127+2^127)）在旧版本实测输出 Inf（正确应为有限值 2^126），NaN/Inf 传播语义未定义——可学习量化步长/clamp 参数的训练信号无报错地错，量化后的模型质量受损而无任何日志。
+  trigger_surface: CANN ops-nn ActULQClampMinGrad（QAT 反向）；修复 !14168 open 未发布；具体 SoC/CANN 版本未注明
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

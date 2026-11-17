@@ -1,0 +1,66 @@
+id: INF-2401
+legacy_ids: []
+slug: deepseek_v4_beam_search_compression_cache_misreorder
+aliases: []
+title: DeepSeek-V4 beam search 压缩缓存未随 beam 重排
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: transformers
+    component: HCA/CSA reorder_cache 继承
+  behavior: HCA/CSA 层在普通滑动窗 KV 外存压缩状态，但继承的 reorder_cache() 只按 beam 父选择重排 keys/values 行，压缩状态留在旧行未随 beam 移动
+effect:
+  objects:
+  - 输出内容
+  - KV状态
+  detail: num_beams>1+use_cache 时 beam 候选与 use_cache=False 不一致：CSA 改变首序列、HCA 改变候选顺序、混合 HCA/CSA 改变候选集，无报错；补上压缩状态的 batch 选择后与全上下文 forward 及无缓存 beam 生成一致
+  visibility: 静默错误
+mitigation:
+  detect: seeded 小模型上 reorder_cache([2,0,0]) 逐步与全上下文 forward 对比；beam generate 与 use_cache=False 对照
+  fix: 待定（issue 2026-11-04 新开，报告者已验证补齐 batch 选择可恢复一致，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/50336
+  kind: github_issue
+relations: []
+original:
+  mechanism: transformers 5.23.0.dev0（e540ae45，main 同）：DeepseekV4 的 HCA/CSA 层在普通滑动窗 KV cache 之外存储压缩状态（compression state），但继承的 reorder_cache() 只从 keys/values 中按 beam 父选择取行。beam search 选中不同父时普通 KV 跟随父 beam，而压缩状态停留在旧行。CPU FP32 eager 复现（2 层小模型，sliding_window=8、index_topk=2，CSA=4/HCA=128 默认压缩率）：reorder_cache([2,0,0]) 后 5 步单 token forward 与所选历史+续写的完整 forward 不一致；实际 generate(num_beams=3) 对比原实现/诊断补丁/use_cache=False，CSA 改变首序列、HCA 改变候选顺序、混合 HCA/CSA 改变候选集。仅补上压缩状态的 batch 选择即恢复与全上下文 forward 和无缓存 beam 生成一致。普通 generate() 自动创建 dynamic cache 即可触达。
+  source: https://github.com/huggingface/transformers/issues/50336
+  behavior: DeepSeek-V4（含 HCA/CSA 压缩注意力层）用 beam search + KV cache 生成时，返回的 beam 候选与不用缓存时不一致：首选序列、候选排序或候选集错误，随 beam 父选择漂移；无报错，正常单请求生成不受影响。
+  trigger_surface: transformers 5.23.0.dev0/main；DeepseekV4ForCausalLM（HCA/CSA 层）+ generate(num_beams>1) + use_cache；任意硬件（CPU 复现）。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - 2026-11-05 回访：回访：#50336 仍 open
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: KV缓存
+      effect:
+        from: KV状态
+        to: 输出内容
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

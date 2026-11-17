@@ -1,0 +1,66 @@
+id: INF-2389
+legacy_ids: []
+slug: index_add_v2_empty_index_output_unwritten
+aliases: []
+title: IndexAddV2 空 index 返回成功但输出未写入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: IndexAddV2 空 index 分支缺失
+  behavior: index 长度 0（source 在 dim 维同 0，满足资料约束）时两条实现路径都没有把 self 拷到 out 或早退写输出，两段接口返回 0 但 out 完全未写
+effect:
+  objects:
+  - 数值结果
+  detail: out 保持调用方预填的 0xA5 哨兵 48/48 字节未变，读回未初始化脏数据；V1 接口 aclnnIndexAdd 同输入输出正确等于 self，四种 dtype/mode/dim 组合均复现
+  visibility: 静默错误
+mitigation:
+  detect: 空 index + out 预填哨兵的写回检查（V1 对照正确）
+  fix: 待定（issue 2026-11-04 新开；相关 ops-nn#8069 覆盖 IndexAdd 族值域校验但未含本条空 index 输出未写）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8102
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0622
+original:
+  mechanism: CANN ops-nn aclnnIndexAddV2（master 0fc301c67，CANN 9.3.0，Ascend950PR）：index=int64[0]、source=fp32[0,3] 是满足资料「index 的 shape 大小与 source 在 dim 维上的 shape 相等」的合法退化输入。aclnn_index_add_v2.cpp 的 UnDeterministicImpl（约 170-213 行）分 mode==0 走 l0op::InplaceScatterAddAiCore 与 mode!=0 走 l0op::InplaceIndexAddAiCpu 两条路径，均无「index 为空 → self 拷到 out / 早退写输出」处理。真机 NPU 2 复现：dim=0/-1、fp32/fp16、mode=0/1 四组合下两段 rc=0、out 48/48 字节保持 0xA5 哨兵；V1 aclnnIndexAdd 同输入输出正确（out=self）。报告者按 P0 处理建议：调用方拿到成功码但 out 是脏内存，反向/优化器链路会直接污染梯度或权重更新，结果不可复现（依赖分配器残留）。
+  source: https://gitcode.com/cann/ops-nn/issues/8102
+  behavior: 调用 IndexAddV2 传空 index（合法退化输入）时返回码全 0 表示成功，但输出张量一个字节都没写，读回的是申请时的未初始化内存或预填值；同一输入换 V1 接口结果正确。下游若信任返回码会把脏数据当计算结果，且每次运行内容随内存残留变化。
+  trigger_surface: CANN 9.3.0 ops-nn master 0fc301c67；aclnnIndexAddV2；index 长度 0（source dim 维同为 0）；fp32/fp16、mode 0/1、dim 0/-1 均触发。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - 2026-11-05 回访：回访：#8102 仍 open（11-05T06:44 有更新，状态未核）
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - relations
+  - date: '2026-11-05'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

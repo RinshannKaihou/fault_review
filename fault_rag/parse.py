@@ -42,9 +42,13 @@ ROOT = os.path.dirname(HERE)
 CATALOGS = os.path.join(ROOT, "catalogs")
 
 INFERENCE_MASTER = os.path.join(CATALOGS, "inference", "FAULT_MASTER_REFERENCE.zh.md")
+INFERENCE_REJECTED = os.path.join(CATALOGS, "inference", "rejected.md")
+INFERENCE_BLINDSPOTS = os.path.join(CATALOGS, "inference", "blindspots.md")
+INFERENCE_PATTERNS = os.path.join(CATALOGS, "inference", "patterns")
 TRAINING_MASTER = os.path.join(CATALOGS, "training", "FAULT_MASTER_REFERENCE.zh.md")
 TRAINING_REJECTED = os.path.join(CATALOGS, "training", "rejected.md")
 TRAINING_BLINDSPOTS = os.path.join(CATALOGS, "training", "blindspots.md")
+TRAINING_PATTERNS = os.path.join(CATALOGS, "training", "patterns")
 INFERENCE_ENTRIES = os.path.join(CATALOGS, "inference", "entries")
 TRAINING_ENTRIES = os.path.join(CATALOGS, "training", "entries")
 NARRATIVE_KEYS = ("mechanism", "behavior", "source", "trigger_surface", "signature", "repro", "discovery", "locus", "priority")
@@ -271,6 +275,7 @@ def parse_negative_doc(path, repo, kind):
         lines = f.readlines()
 
     base = os.path.basename(path).replace(".md", "").upper().replace("_", "-")
+    id_prefix = f"NEG-INF-{base}" if repo == "inference" else f"NEG-{base}"
     chunks = []
     cur_title, cur_start, cur_lines = None, 1, []
 
@@ -279,7 +284,7 @@ def parse_negative_doc(path, repo, kind):
         text = "".join(cur_lines).strip()
         if cur_title is not None and text:
             chunks.append({
-                "id": f"NEG-{base}-{len(chunks) + 1}",
+                "id": f"{id_prefix}-{len(chunks) + 1}",
                 "name": f"{kind}:{cur_title.strip()}"[:120],
                 "repo": repo,
                 "category": f"neg_{kind}",
@@ -372,10 +377,57 @@ def _join(values, sep="；"):
     return sep.join(str(v) for v in values if v not in (None, "", "N/A")) if isinstance(values, list) else (values or "")
 
 
-def parse_yaml_entries(path, repo):
+def load_pattern_meta(path):
+    """Read optional catalog/patterns/PAT-*.yaml metadata ({id: {title, shared_mechanism}})."""
+    import yaml
+
+    if not path or not os.path.isdir(path):
+        return {}
+    out = {}
+    for name in sorted(os.listdir(path)):
+        if not name.endswith(".yaml"):
+            continue
+        with open(os.path.join(path, name), encoding="utf-8") as fh:
+            d = yaml.safe_load(fh) or {}
+        if d.get("id") and d.get("status") not in SKIP_STATUSES:
+            out[d["id"]] = {
+                "title": d.get("title") if d.get("title") not in (None, "", "待定") else None,
+                "shared_mechanism": d.get("shared_mechanism") if d.get("shared_mechanism") not in (None, "", "待定") else None,
+            }
+    return out
+
+
+def load_inactive_entries():
+    """Return {id: {repo, id, status, merged_into, title, remarks}} for merged/retired entries so
+    exact `lookup` can explain why an ID is absent instead of silently returning []."""
+    import yaml
+
+    out = {}
+    for path, repo in ((INFERENCE_ENTRIES, "inference"), (TRAINING_ENTRIES, "training")):
+        if not os.path.isdir(path):
+            continue
+        for name in sorted(os.listdir(path)):
+            if not name.endswith(".yaml"):
+                continue
+            with open(os.path.join(path, name), encoding="utf-8") as fh:
+                y = yaml.safe_load(fh) or {}
+            if y.get("status") in SKIP_STATUSES and y.get("id"):
+                out[y["id"]] = {
+                    "repo": repo,
+                    "id": y["id"],
+                    "status": y.get("status"),
+                    "merged_into": y.get("merged_into"),
+                    "title": y.get("title"),
+                    "remarks": y.get("remarks"),
+                }
+    return out
+
+
+def parse_yaml_entries(path, repo, patterns=None):
     """One entry per catalog/entries/<ID>.yaml, in the schema the index and search already use."""
     import yaml
 
+    patterns = patterns or {}
     entries = []
     for name in sorted(os.listdir(path)):
         if not name.endswith(".yaml"):
@@ -407,6 +459,8 @@ def parse_yaml_entries(path, repo):
             "mitigation_fix": (y.get("mitigation") or {}).get("fix", ""),
         })
         stage = labels.get("stage")
+        pat_id = y.get("pattern")
+        pat_info = patterns.get(pat_id) or {}
         entries.append({
             "id": y["id"],
             "name": y["slug"],
@@ -427,7 +481,8 @@ def parse_yaml_entries(path, repo):
             "coverage": labels.get("coverage"),
             # 模式层（PAT-xxxx）只做投影与过滤，不进嵌入文本也不进 BM25：结构化字段加进
             # 检索文本会让近似主题条目反超（独立集 Recall@5 0.952 -> 0.937 的旧教训）。
-            "pattern": y.get("pattern"),
+            "pattern": pat_id,
+            "pattern_title": pat_info.get("title"),
             "confidence": None if labels.get("confidence") in (None, "N/A", "待定") else labels.get("confidence"),
             "relations": list(y.get("relations") or []),
             "fields": fields,
@@ -439,50 +494,69 @@ def parse_yaml_entries(path, repo):
 def build_links(entries):
     """Wire cross-references between entries.
 
-    Sources: explicit `relations` (var / cross, by current id) and exact mentions of current ids in
-    the narrative text. Text written before the 2026-10-13 cut-over (migrated entries, negative
-    docs) cites entries by old Markdown id (「与 6.192（…）」); those mentions are resolved here
-    through the snapshot's legacy_ids to the entry that now carries the id. Text written after the
-    cut-over is not decoded: its old-id-shaped hits were all decimals and model versions (3.6,
-    K2.7) when checked on 2026-10-26. Only ids that exist in the corpus are kept.
+    Sources: explicit `relations` (var / cross, by current id — wired symmetrically so pattern
+    parents also reach their var children) and exact mentions of current ids in the narrative text.
+    Text written before the 2026-10-13 cut-over (migrated entries, negative docs) cites entries by
+    old Markdown id (「与 6.192（…）」); those mentions are resolved within the same repo and guarded
+    against decimal/version false positives (e.g. 1.4%, x=-4.5, Nemotron-3.5).
     """
-    by_id, by_legacy = {}, {}
+    by_id, by_legacy_repo = {}, {}
     for e in entries:
         by_id.setdefault(e["id"], []).append(e)
         for old in e.get("_legacy_ids", []):
-            by_legacy.setdefault(old, []).append(e)
+            by_legacy_repo.setdefault(e["repo"], {}).setdefault(old, []).append(e)
 
-    def id_pattern(ids):
+    def id_pattern(ids, legacy=False):
         # long ids first so `RL-RO.01` wins over a bare `1.1` style prefix clash
         ids = sorted(ids, key=len, reverse=True)
-        return re.compile(
-            r"(?<![\w.])(" + "|".join(re.escape(i) for i in ids) + r")(?![\w.])"
-        ) if ids else None
+        if not ids:
+            return None
+        body = "|".join(re.escape(i) for i in ids)
+        if legacy:
+            # Exclude version strings (`Nemotron-3.5`, `v1.4`), negatives/assignments (`-4.5`, `=1.2`),
+            # and percentages/units (`1.4%`, `3.2s`) while keeping prose citations (`与 6.192（`).
+            return re.compile(r"(?<![A-Za-z0-9_.\-=~<>])(" + body + r")(?![\w.%])")
+        return re.compile(r"(?<![\w.])(" + body + r")(?![\w.])")
 
-    current_pat, legacy_pat = id_pattern(by_id), id_pattern(by_legacy)
+    current_pat = id_pattern(by_id, legacy=False)
+    legacy_pats = {repo: id_pattern(tbl, legacy=True) for repo, tbl in by_legacy_repo.items()}
+    prio = {"var": 3, "cross": 2, "mentions": 1}
+    link_maps = {id(e): {} for e in entries}
+
+    def add_edge(src, kind, dst):
+        if src is dst:
+            return
+        key = (dst["repo"], dst["id"])
+        m = link_maps[id(src)]
+        if prio[kind] > prio.get(m.get(key), 0):
+            m[key] = kind
 
     for e in entries:
-        links = {}  # (repo, id) -> kind, strongest wins
-        prio = {"var": 3, "cross": 2, "mentions": 1}
-
-        def add(kind, t):
-            if t is e:
-                return
-            key = (t["repo"], t["id"])
-            if prio[kind] > prio.get(links.get(key), 0):
-                links[key] = kind
-
         for rel in e.get("relations", []):
+            kind = "var" if rel.get("kind") == "var" else "cross"
             for t in by_id.get(rel.get("target"), []):
-                add("var" if rel.get("kind") == "var" else "cross", t)
+                add_edge(e, kind, t)
+                add_edge(t, kind, e)
         text = e["raw"] if e["neg"] else "\n".join(str(v) for v in e["fields"].values())
         scans = [(current_pat, by_id)]
         if e["neg"] or e.get("_legacy_ids"):
-            scans.append((legacy_pat, by_legacy))
+            lpat = legacy_pats.get(e["repo"])
+            ltbl = by_legacy_repo.get(e["repo"], {})
+            if lpat:
+                scans.append((lpat, ltbl))
         for pat, table in scans:
             for m in pat.finditer(text) if pat else ():
-                for t in table.get(m.group(1), []):
-                    add("mentions", t)
+                hit = m.group(1)
+                if pat is not current_pat and re.fullmatch(r"\d+\.\d+", hit):
+                    # Guard against hyphenated model versions like `Qwen-2.5` or `GLM-4.5`
+                    start = m.start(1)
+                    if start >= 2 and text[start - 1] == "-" and text[start - 2].isalnum():
+                        continue
+                for t in table.get(hit, []):
+                    add_edge(e, "mentions", t)
+
+    for e in entries:
+        links = link_maps[id(e)]
         e["links"] = sorted(
             ({"kind": k, "repo": r, "id": i} for (r, i), k in links.items()),
             key=lambda d: (d["kind"], d["repo"], d["id"]),
@@ -532,11 +606,17 @@ def embed_text(e):
 
 
 def parse_all():
+    inf_pats = load_pattern_meta(INFERENCE_PATTERNS)
+    trn_pats = load_pattern_meta(TRAINING_PATTERNS)
     entries = []
-    entries += parse_yaml_entries(INFERENCE_ENTRIES, "inference")
-    entries += parse_yaml_entries(TRAINING_ENTRIES, "training")
+    entries += parse_yaml_entries(INFERENCE_ENTRIES, "inference", patterns=inf_pats)
+    entries += parse_yaml_entries(TRAINING_ENTRIES, "training", patterns=trn_pats)
     entries += parse_negative_doc(TRAINING_REJECTED, "training", "rejected")
     entries += parse_negative_doc(TRAINING_BLINDSPOTS, "training", "blindspot")
+    if os.path.exists(INFERENCE_REJECTED):
+        entries += parse_negative_doc(INFERENCE_REJECTED, "inference", "rejected")
+    if os.path.exists(INFERENCE_BLINDSPOTS):
+        entries += parse_negative_doc(INFERENCE_BLINDSPOTS, "inference", "blindspot")
     entries += parse_appendix(INFERENCE_MASTER, "inference")
     entries = build_links(entries)
     for e in entries:

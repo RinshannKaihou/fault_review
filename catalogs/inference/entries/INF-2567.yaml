@@ -1,0 +1,55 @@
+id: INF-2567
+legacy_ids: []
+slug: vllm_fp8_dynamic_amax_stale_padding_rows
+aliases: []
+title: vLLM FP8 动态 per-tensor amax 混入 padding 行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: vllm
+    component: V2 model runner 输入缓冲
+  behavior: CUDA graph 补到捕获尺寸却只写有效 token 行，padding 行保留上一请求的 input_ids/positions；动态 per-tensor FP8 整块求 amax 时计入这些陈旧行。
+effect:
+  objects:
+  - 输出分布
+  - 数值结果
+  detail: 同一 prompt+seed 的 greedy logits 随引擎请求历史变化；padding 行的大离群值抬高 amax、压缩有效 token 量化精度；无报错无 NaN。
+  visibility: 不可复现
+mitigation:
+  detect: 同一 prompt 在不同请求历史/不同 padding 长度下重跑，比较 greedy logits 与每层 amax；把 padding 行预填大离群值做阳性对照。
+  fix: '待定（issue #67802 open；报告者给出 model_runner.py:1450、input_batch.py:329-475 等根因行号）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/67802
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM V2 model runner（main cf5cea2d；RTX A5000、PyTorch 2.13+cu130）为 input_ids/positions 分配持久缓冲，并把 CUDA graph batch 补到捕获尺寸；GPUModelRunner.prepare_inputs 用 num_tokens_after_padding=max(num_tokens,batch_desc.num_tokens)，但 prepare_prefill_inputs/prepare_pos_seq_lens/combine_sampled_and_draft_tokens 的 Triton kernel 只写真实请求的有效区间（input_batch.py:329-475），_prepare_pos_seq_lens_kernel 的补零线程只清 seq_lens、不清 positions/input_ids。之后 InputBatch 取 [:num_tokens_after_padding] 整段。FP8ScaledMMLinearKernel.apply_weights 用 x.view(-1,K) 做动态 per-tensor 量化（ScaledMMLinearKernel.py:159-165 → input_quant_fp8.py:125/209 的 x.abs().max()），padding 行的陈旧 token 参与 amax 归约。影响 Quark W8A8-FP8 等 per_tensor 动态输入量化配置，FULL decode graph 与 PIECEWISE prefill/混合 batch 均命中。
+  source: https://github.com/vllm-project/vllm/issues/67802 （open，2026-11-15）
+  behavior: 同一个 prompt、同一个 seed，在同一台引擎上重复跑会得到不同的 greedy logits——差异取决于这台引擎在此之前跑过什么请求：CUDA graph 的 padding 行没被清掉，上一请求残留的大数值 token 被算进动态 per-tensor FP8 的 amax，把当前请求的量化 scale 抬高，有效 token 的量化精度随之变粗。没有报错、没有 NaN，只有对比多次运行或换请求顺序才能发现，表现为长上下文/混合 batch 下答案漂移、复现性丢失。
+  trigger_surface: vLLM V2 model runner + CUDA graph（FULL_DECODE_ONLY 或 PIECEWISE）+ 动态 per-tensor FP8 输入量化（Quark W8A8-FP8 等）；batch 补 padding 后请求历史不同。
+  discovery: 2026-11-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-15'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 量化
+        to: 运行时/执行
+      visibility:
+        from: 静默错误
+        to: 不可复现

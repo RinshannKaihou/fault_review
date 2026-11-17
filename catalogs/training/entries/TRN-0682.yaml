@@ -1,0 +1,72 @@
+id: TRN-0682
+legacy_ids: []
+slug: megatron_mfsdpv1_bucket_free_before_reduce
+aliases: []
+title: MFSDPv1 梯度桶在归约完成前被释放复用
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: GradReducePipeline 桶生命周期
+  behavior: 1F1B overlap 下部分梯度 hook 跑在通信流上释放了默认流分配的桶；caching allocator 立即向分配流归还内存，默认流可在归约仍在读时复用
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: 临时桶内存被提前复用导致梯度损坏——wrong losses 或 NaN
+  visibility: 数值异常
+mitigation:
+  detect: overlap_moe_expert_parallel_comm + MFSDPv1 下 watch 无故 loss 错/NaN；asan/流依赖检查
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9114（open，未发布）：DataParallelBuffer 记录分配流，释放前使该流等待归约事件
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-09'
+remarks: 与 TRN-0286 共享『异步归约在飞时 buffer 被复用』机制；触发点不同（MFSDPv1 1F1B hook 流 vs ZeRO-2 IPG swap）
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9114
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0286
+pattern: PAT-TRN-0071
+original:
+  mechanism: 'Megatron-LM #9114（open PR，2026-11-08）：overlap_moe_expert_parallel_comm 的 1F1B overlap schedule 下，Megatron-FSDP v1 可在临时梯度桶的归约执行前复用其内存，corrupting gradients（wrong losses or NaN）。机制：sharded gradients（optim_grads/optim_grads_params）下每桶未归约梯度进临时桶；桶由第一个梯度 hook 的流（通常默认流）分配，reduce-scatter 在独立流上执行；GradReducePipeline 在后续归约 launch 前让当前流等待先前归约再释放该桶。但 1F1B overlap 让部分梯度 hook（含 MTP 的 mtp.eh_proj 与 decoder.final_layernorm）跑在通信流上——通信流的 hook 可释放默认流分配的桶，而只有通信流等过归约；CUDA caching allocator 立即把内存归还给分配流（默认流），默认流可在归约仍在读时复用。修复：DataParallelBuffer 记录桶分配流；释放前若非当前流则使分配流等待归约 event。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/9114
+  behavior: MFSDP v1 + 1F1B overlap（overlap_moe_expert_parallel_comm）+ sharded gradients 训练：梯度临时桶的内存在其 reduce-scatter 还在读时被默认流复用——loss 无故变错或直接 NaN、训练可能崩或静默用坏梯度继续；MTP 场景（mtp.eh_proj/final_layernorm 的 hook 跑在通信流）是明确触发点；无显式报错指向桶生命周期。
+  trigger_surface: Megatron-LM MFSDP v1 + overlap_moe_expert_parallel_comm（1F1B overlap schedule）+ optim_grads/optim_grads_params sharded gradients；含 MTP 时触发面更大
+  discovery: 2026-11-09 每日扫描
+  notes:
+  - '2026-11-11 回访：回访：源 issue #9114 已 closed（search 快照）；合并修复载体未逐条核验（core 配额受限）。'
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - pattern
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.coverage
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

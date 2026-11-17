@@ -1,0 +1,45 @@
+id: TRN-0774
+legacy_ids: []
+slug: sparse_segment_mean_fp16_accumulation
+aliases: []
+title: SparseSegmentMean FP16 累加致长段均值错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: sparse_segment_mean
+  behavior: AICPU kernel 用 FP16 累加分段和再除以段长，长段的部分和在 2048 处停止增长，65536 的除数还会溢出为 inf
+effect:
+  objects:
+  - 数值结果
+  - 训练信号
+  detail: 4096 个 1、单段输入返回 0.5；[65536,256] 分列路径返回 0；FP32/DOUBLE 路径正常，合法输入无报错
+  visibility: 静默错误
+mitigation:
+  detect: 用全常量 1 的长分段输入（4096/65536 行、单段）检查输出是否恒为 1；或与 FP64 独立累加参考对拍
+  fix: 修复提交 781f656aadc9（issue 给出）：为每个活跃列区间增加 FLOAT 暂存行，累加与除法都用 FLOAT，最后转回 FP16；是否已合入发布未核实
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8954
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #8954（2026-11-17，open）。sparse_segment_mean 的 AICPU 实现在 index/sparse_segment_mean/op_kernel_aicpu/sparse_segment_mean_aicpu.cpp 中以 FP16 累加每个 segment 的部分和（:104 累加、:365/:369 分列计算、:120 除法），再除以段长。FP16 只有约 11 位有效位，长段的部分和在 2048 左右就停止增长；分列路径的除数在 65536 时还会溢出为 inf。实测（Ascend910B2、NpuArch2201、CANN 9.1.0、AICPU GCC7.3.0）：FLOAT16 输入 [4096,1] 全 1、indices=range(4096)、segment_ids 全 0，Compute 成功却返回 0.5；[65536,256] 的分列路径返回 0；作为对照的 1024 行单段返回 1。修复提交 781f656aadc9 为每个活跃列区间加一行 FLOAT 暂存，累加与除法都用 FLOAT 再转回 FP16；仓内回归用例 float16_long_segment_mean / float16_parallel_long_segment_mean 未在本轮运行，真实 A2 结果来自独立自定义 AICPU 夹具（原版 2 组 1 组通过，修复版 2/2 通过），未覆盖 ACLNN / GE / 框架端到端。'
+  source: https://gitcode.com/cann/ops-nn/issues/8954
+  behavior: 训练里用 SparseSegmentMean 做 embedding 分段聚合（同一 id 的多条样本取均值）时，短段看起来正常，段一长输出就开始偏小：4096 个 1 的段均值返回 0.5，65536 行的分列路径直接返回 0；不报错、不产生 NaN，只有和 FP32 参考对拍或检查常量输入才发现，聚合后的 embedding 与梯度整体被压低。
+  trigger_surface: cann/ops-nn sparse_segment_mean 的 FP16 输入 + 长 segment（≥2048 行，65536 行分列路径溢出）；Ascend910B2 / CANN 9.1.0 实测。
+  discovery: 2026-11-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-17'
+  audit:
+    date: '2026-11-17'
+    method: manual_stewardship_review

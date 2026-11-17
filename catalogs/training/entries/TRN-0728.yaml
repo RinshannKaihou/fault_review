@@ -1,0 +1,59 @@
+id: TRN-0728
+legacy_ids: []
+slug: lstm_backward_recompute_rounding_divergence
+aliases: []
+title: SingleLayerLstmGrad 反向重算前向门值舍入分叉
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SingleLayerLstmGrad 反向重算
+  behavior: 950 系列 regbase 小形状与大形状 wide 路径下，FP16/BF16 反向此前在 kernel 内用 x/w/init_h/init_c/b 重算 FP32 门值与状态再递推，与调用方保存的前向状态存在舍入差异。
+effect:
+  objects:
+  - 梯度
+  detail: FP16/BF16 反向 dw/db 参数梯度超精度限值：仓内注释实测 T=64 B=2 I=128 H=128 bfloat16 下 dw mare=11.4、db=14.9（限值 2.0，FP32 通过），无报错，带偏梯度进优化器。
+  visibility: 静默错误
+mitigation:
+  detect: bf16 LSTM 反向 dw/db 与「消费保存前向状态」的参考实现对账；固定形状 bf16 用例做 mare 看护
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/14259（open）：移除 kernel 内前向重算、改为消费调用方保存状态并在公共 dtype 边界显式舍入，FP32 加跨块舍入残差补偿；未发布
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: 非大模型（CV/传统ML/3D/RNN）算子缺陷，脱离 LLM 训推主路径
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8641
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/14259
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn issue #8641（2026-11-11 open）+ 修复 PR !14259（open）。aclnnLstmBackward（SingleLayerLstmGrad 算子）在 950 系列 regbase 小形状路径与大形状 wide 路径中，FP16/BF16 反向此前在 kernel 内用 x/w/init_h/init_c/b 重算 FP32 门值与状态再执行反向递推，重算值与调用方实际保存的前向状态存在舍入差异，导致 dw/db 等参数梯度精度超限——仓内代码注释（single_layer_lstm_grad_regbase_small.h）记录历史实测：T=64 B=2 I=128 H=128 bfloat16 下 dw mare 达 11.4、db 达 14.9，超出 2.0 限值；同形状 FP32 通过。附带两类隐患：numLayers<=0 仅 ASCEND950 分支校验（非 950 平台越界风险）；tiling workspace 字节数 int64 直乘可溢出。修复 PR !14259：反向直接消费调用方提供的前向保存状态（i/j/f/o/tanhct/c/h）在 UB 拓宽参与 FP32 计算，窄类型按公共 dtype 边界舍入，FP32 加跨块舍入残差补偿；numLayers 校验提升至公共路径；workspace 改带溢出检查乘加链。来源：https://gitcode.com/cann/ops-nn/issues/8641 、修复 https://gitcode.com/cann/ops-nn/merge_requests/14259 。训练面：LSTM/RNN 反向是标准训练路径，bf16 训练梯度静默带偏。'
+  source: https://gitcode.com/cann/ops-nn/issues/8641 ｜修复 PR：https://gitcode.com/cann/ops-nn/merge_requests/14259
+  behavior: 在 950 系列 NPU 上以 FP16/BF16 训练含 LSTM 的模型时，反向算子内部重新计算前向门值（而非使用前向真正保存的状态），两者舍入路径不同，参数梯度 dw/db 的平均相对误差可达限值的 5~7 倍（实测 mare 11.4/14.9 vs 限值 2.0）；全程无报错、无 NaN，loss 曲线无显式异常，梯度偏差静默进入优化器并累积到权重。
+  trigger_surface: Ascend 950 系列 regbase/wide 路径，FP16/BF16 aclnnLstmBackward；CANN 版本未知（基于仓 master 代码）；修复 !14259 open 未发布
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

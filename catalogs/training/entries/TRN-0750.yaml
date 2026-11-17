@@ -1,0 +1,60 @@
+id: TRN-0750
+legacy_ids: []
+slug: verl_clip_cov_microbatch_dependent_selection
+aliases: []
+title: verl Clip-Cov 选点随 PPO 微批大小变化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: clip_cov loss 统计配额
+  behavior: 协方差统计与 clip 配额都按到达 loss 函数的 microbatch 张量计算，配额 max(int(ratio*n_mb),1) 每微批各保底 1，选点再用未固定种子的 randperm
+effect:
+  objects:
+  - 训练信号
+  detail: ratio=0.0002 时全批裁 1 个 token、8 微批共裁 8 个：pg_clipfrac 0.000977→0.007812，pg_loss +0.001451→-0.005974（变号）；ratio=0.05 时反向欠裁
+  visibility: 不可复现
+mitigation:
+  detect: 固定同一 minibatch，改变 ppo_micro_batch_size 后比对 pg_clipfrac 与 pg_loss；两者应一致
+  fix: '修复 PR https://github.com/verl-project/verl/pull/8635 （open，fixes #8634：把协方差统计、配额与选点移到 optimizer minibatch 上，同 KL-Cov #7829/#7830 的做法）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/8634
+  kind: github_issue
+- url: https://github.com/verl-project/verl/pull/8635
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'verl/trainer/ppo/core_algos.py 的 compute_policy_loss_clip_cov 在到达函数的张量上直接算协方差统计与裁剪配额：cov_all = (advantages - masked_mean(advantages, response_mask)) * (log_prob - masked_mean(log_prob.detach(), response_mask))，clip_num = max(int(clip_cov_ratio * response_mask.sum().item()), 1)。在梯度累积下每个 microbatch 单独调用一次，于是同一 optimizer minibatch 切成不同数量的 microbatch 会同时改变配额（每个微批保底 1，切得越碎总配额越大）和参与统计的均值（按微批而非全批），另外 torch.randperm 让选点在固定微批大小下也不可复现。这与 KL-Cov 在 #7829/#7830 修掉的是同一类缺陷，但 clip_cov 分支没被那次 PR 覆盖。issue 给 CPU-only 复现（B=16 序列 × T=64 token，全部有效，ratio 置 1 使 vanilla PPO 项不裁剪）：clip_cov_ratio=0.0002（上游默认）时全批裁 1 vs 8 微批各裁 1 共 8，pg_clipfrac 0.000977 vs 0.007812（约 8 倍过裁），pg_loss +0.001451 vs -0.005974（符号翻转）；ratio=0.05 时配额 51 vs 8×6=48（欠裁），pg_loss -0.005124 vs +0.005173。修复 PR #8635（open）把统计、配额与选点移到 optimizer minibatch 上。'
+  source: https://github.com/verl-project/verl/issues/8634 ｜修复 https://github.com/verl-project/verl/pull/8635
+  behavior: 开 Clip-Cov 的 RL 训练里，调 ppo_micro_batch_size（本应只影响显存和吞吐）会改变被裁剪的 token 集合：小 ratio 下切得越碎裁得越多，pg_clipfrac 成倍上升、pg_loss 甚至变号；大 ratio 下又变成欠裁。同一份数据的训练结果因此取决于并行/显存配置，且因为选点用未固定种子的 randperm，同样配置重跑两次结果也不同，只能靠固定微批数比对才发现。
+  trigger_surface: verl actor.policy_loss.loss_mode="clip_cov"（DAPO 风格 Clip-Cov）；ppo_micro_batch_size > 1 或改变梯度累积切分；ratio 取默认 0.0002 时最敏感。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    uncertain:
+    - subsystem

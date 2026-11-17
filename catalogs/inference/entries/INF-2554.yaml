@@ -1,0 +1,53 @@
+id: INF-2554
+legacy_ids: []
+slug: vllm_ascend_mooncake_push_kv_slot_reuse_race
+aliases: []
+title: Mooncake Push 未在 KV 槽复用前 fencing
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: Mooncake Push 共享 KV 槽
+  behavior: 共享层 KV 通过轮转 NPU 槽逐层写出时，Push 的 WRITE 可能在模型推进到下一层后才提交；源页先被复用覆盖，WRITE 读到的 KV 已不是原层内容。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: P/D 分离 + AscendStore 逐层 prefill offload + MooncakePushConnector 时，前缀命中的共享层 KV 在 WRITE 完成前被复用，decode 端收到的 KV 错误，输出静默偏离。
+  visibility: 静默错误
+mitigation:
+  detect: 对 shared-layer offload 的每个 WRITE future 在复用前检查完成状态；对比同一 prompt 开/关 layerwise offload 的 decode 输出与 KV 内容。
+  fix: 'PR #21891（open，依赖 #21256；未核实合入与发布）：在 layer hook 提交 shared-layer 读，复用前 fence WRITE futures，并把 KDA 层名传入 save hook。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/21891
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/pull/21256
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend 的 Mooncake Push 在 AscendStore 逐层 prefill offload 场景下，模型已经把共享 NPU KV 槽轮转给下一层时，前一层的 WRITE 仍可能尚在提交；Push scheduler 在前缀命中时又未拿到 producer block tables，导致 WRITE 按错误页提交。PR #21891 的修复是：即使 AscendStore 提供前缀命中，也把 producer block tables 交给 Push scheduler；shared-layer 读在 layer hook 中提交，并在槽复用前 fence 其 WRITE futures；resident cache 保持既有 deferred 路径；KDA 层名透传到 save hook，使最终 prompt state 在槽复用前发出。依赖 #21256 的 model-aware shared layout，二者需一起使用。测试：Push/AscendMultiConnector 套件与 4 项 shared-slot 回归共 708 例通过；单机 950 TP8 九个 A/B/C benchmark cell（1008 请求、131072 输入、1 输出）通过，端到端 P/D WRITE 验证仍待做。'
+  source: https://github.com/vllm-project/vllm-ascend/pull/21891 ｜依赖 https://github.com/vllm-project/vllm-ascend/pull/21256
+  behavior: 在 P/D 分离、AscendStore 逐层 prefill offload 与 MooncakePushConnector 同时开启时，前缀缓存命中的层 KV 可能在 Push 的远端 WRITE 完成前就被下一层复用覆盖：decode 节点收到的是被覆写后或错页的 KV，生成结果偏离而服务端无报错、无告警。短请求或未命中前缀缓存时不易触发，长上下文、逐层 offload、共享槽轮转时风险最高。
+  trigger_surface: vllm-ascend MooncakePushConnector + AscendStore layerwise prefill offload（producer MultiConnector）；共享 NPU KV 槽逐层轮转；P/D 分离部署。
+  discovery: 2026-11-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-14'
+  audit:
+    round: daily-audit-2026-11-15
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

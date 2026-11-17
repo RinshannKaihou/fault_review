@@ -1,0 +1,59 @@
+id: INF-2463
+legacy_ids: []
+slug: sglang_amd_mla_decode_ragged_64split_nan_wrong_rows
+aliases: []
+title: sglang AMD MLA decode ragged 批 NaN/错行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: MLA decode 64-split 路径
+  behavior: gfx1151 上 kv splits 选 64 时，同一 ragged 批内 ≥3 条序列跑满 64-split 即触发未初始化/竞态内存读；GQA shape 全干净、launch hints 无关，竞态点未定位。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: Lk 576/Lv 512 MLA decode 在 ragged 批（≥3 条 9000-token 序列混批）输出 NaN 或错误行，误差约 4（bf16 舍入仅 1e-2）；坏行逐 run 变化（8 seed 全坏）；双服务器 greedy 输出仅 4/64 一致（GQA 24-30/64）。
+  visibility: 数值异常
+mitigation:
+  detect: 跑 issue 附 mla_decode_nan_repro.py（ragged MLA 批 × 8 seeds，对 fp32 参考比对）；或双服务器 greedy 一致性探针。
+  fix: 待定（issue open，未见修复；触发依赖 64-split 满额混批，临时可限制 kv splits 上限规避——未验证）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/48967
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'sglang #48967（2026-11-06，main 0afb736d，11-06 留观本轮深读转收）：gfx1151（Strix Halo，40 CU，_mla_decode_kv_splits_cap 选 max 64 splits）上 decode_attention_fwd(has_mla=True)、Lk 576/Lv 512（v 别名 k 的 MLA KV cache）在 ragged 批中 ≥3 条序列同时跑满 64-split 时读未初始化/竞态内存，返回 NaN 或严重错误行（误差 ~4 vs bf16 舍入 1e-2）。触发矩阵实测：均匀批（[1000]*24 等）0/8、0/3 坏；[9000]*3+[3] 3/3 坏（9000-token 序列行）、[3,700,9000]*2 3/3、六长度混合×4 8/8。GQA（head_dim 64/128/256）全干净；waves_per_eu/kpack hints 无关。同输入不同 run 哪些行坏会变（NaN vs 有限错值切换），指向未初始化或竞态读；具体竞态点未定位。服务侧 DeepSeek-V2-Lite-Chat（Triton 后端）GSM8K 0.661 正常，但两新服务器 greedy c=64 仅 4/64 一致（GQA 24-30/64），符合真实批偶发触发但未证实。与 10-28 gfx1151 留观项（#12038 spill 错值已 closed）同平台不同机制。'
+  source: GitHub issue https://github.com/sgl-project/sglang/issues/48967 （open，2026-11-06 创建；含触发矩阵、8-seed×5-run 实测、fp32 参考比对、复现脚本）
+  behavior: 在 AMD gfx1151 上用 SGLang Triton 后端跑 MLA 模型（DeepSeek-V2-Lite 类，Lk 576）：当解码批是 ragged 且 ≥3 条长序列（如 9000 token）同时以 64-split 满额并行时，部分序列的 decode 输出 NaN 或大幅错误（误差 ~4）；同一批每次运行坏的行不同。负载轻或均匀批不触发，GQA 模型不受影响；线上表现为同代码双服务器 greedy 输出大比例不一致。
+  trigger_surface: AMD gfx1151（Strix Halo）；SGLang Triton MLA decode（decode_attention_fwd has_mla=True）；ragged 批 ≥3 条序列 64-split 满额（长序列 9000 级混批）；Lk576/Lv512；main 0afb736d。
+  signature: ragged MLA 批 NaN/错行且坏行逐 run 变化；GQA 形状同批干净；uniform 批不触发。
+  repro: issue 附 mla_decode_nan_repro.py（SGLANG_DISABLE_LEAN_ATTENTION=1，8 seeds × 多 run 实测输出）。
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 数值异常
+    uncertain:
+    - detail

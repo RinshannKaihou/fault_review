@@ -1,0 +1,55 @@
+id: TRN-0743
+legacy_ids: []
+slug: swift_streaming_resume_replays_consumed
+aliases: []
+title: ms-swift streaming resume 从头重放已训样本
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: _prepare_dataloader
+  behavior: streaming 分支在 build_streaming_dataloader 后直接 return，不带任何 resume 信息；skip_batches 快进基础设施已存在但不可达，构造 dispatcher 时未传入。
+effect:
+  objects:
+  - 训练样本流
+  detail: 断点续训把流从位置 0 重启，静默重训上次 ckpt 以来全部样本：生产实测 1200 步间隔 ~74 分钟数据/rank 被重放，唯一症状是 resume 后 loss 回退。
+  visibility: 静默错误
+mitigation:
+  detect: resume 后首个 batch 与 ckpt 时消费位置对账；监控 resume 后 loss 是否出现回退跳变
+  fix: 修复 PR https://github.com/modelscope/ms-swift/pull/10520（open）：streaming 路径接 skip_batches 快进
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: '与 DeepSpeed #8405/TRN-0239 族（采样流 RNG 恢复错）同效不同因：本条是流位置不快进而整段重放，流式数据无法事后 seek 核对。'
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10519
+  kind: github_issue
+- url: https://github.com/modelscope/ms-swift/pull/10520
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'ms-swift issue #10519（2026-11-05 open；main @ 9853e46）+ 修复 PR !10520（open）。--streaming true + Megatron 后端 resume 时，训练流从位置 0 重启而非快进过已消费样本。根因：swift/megatron/trainers/base.py 的 _prepare_dataloader 在 streaming 分支 build_streaming_dataloader 后直接 return，不带任何 resume 信息（非 streaming 路径用 consumed_samples 线程进 batch sampler）；skip 基础设施已存在但不可达——DataLoaderDispatcher.__init__(skip_batches=0) 与 _skip_batches 已能按 world_size 基批快进，而 build_streaming_dataloader（swift/megatron/trainers/utils.py）构造 MegatronDataLoaderDispatcher 时不传 skip_batches。影响：生产中断恢复后静默重训上次 ckpt 以来全部样本——1200 步 ckpt 间隔、~3.7s/step 下每 rank 重放约 74 分钟数据；流式数据集无法事后 seek，唯一症状是 resume 后 loss 回退。来源：https://github.com/modelscope/ms-swift/issues/10519 、修复 https://github.com/modelscope/ms-swift/pull/10520 。训练面：所有中断的流式训练作业的默认 resume 路径。'
+  source: https://github.com/modelscope/ms-swift/issues/10519 ｜修复 PR：https://github.com/modelscope/ms-swift/pull/10520
+  behavior: 用 ms-swift Megatron 后端跑流式数据集（--streaming true）并从 checkpoint 恢复训练时：数据流从第 0 条重新开始而不是跳过已训练的部分，上次保存 checkpoint 之后看过的每个样本都被再训一遍——无报错无警告（流式数据不能回看，事后也无法核对），唯一可见症状是 resume 后 loss 突然回退再降；生产实测一次恢复静默重放约 74 分钟/卡的数据。
+  trigger_surface: ms-swift --streaming true + Megatron 后端 + resume；修复 !10520 open 未合
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

@@ -18,7 +18,7 @@ STRICT_RECALL = ("recall_at_5", "recall_at_10")   # no regression tolerance
 ALLOWED_MODES = {"hybrid", "dense", "bm25"}
 ALLOWED_FILTERS = {
     "repo", "category", "confidence", "include_neg",
-    "include_pointers",
+    "include_pointers", "pattern",
 }
 
 

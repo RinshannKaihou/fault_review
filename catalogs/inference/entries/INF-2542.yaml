@@ -1,0 +1,55 @@
+id: INF-2542
+legacy_ids: []
+slug: quant_lightning_indexer_fp8_topk_querylen_dependent
+aliases: []
+title: FP8 QuantLightningIndexer TopK 随 Q 长度变
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FP8 indexer 分数累加
+  behavior: arch35 单行路径分别累加偶数/奇数 head 再相加，双行路径按 head 顺序逐项累加；FP32 舍入差异改变 BF16 排序分数，TopK 集合随 query 长度变化。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Q 长度 314 时倒数第二行选中索引 2047，5688 时改选 2048；四种长度因果可见范围相同但 TopK 不同，GLM-5.3 完整/分块 prefill 差异可传播到生成 token。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 Q/K/权重/因果范围，用 Q 长度 2/64/314/5688 分别跑，比较倒数第二行 TopK 集合是否恒含 2047 且排除 2048。
+  fix: PR !15878（open）统一累加顺序；修复版四种 Q 长度均通过，原版在 5688 时回归失败。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7497
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/pull/15878
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: Ascend 950DT 上调用 FP8 E4M3 QuantLightningIndexer（ops-transformer 提交 4197a29c 单独构建）：同一 query 的 Q、有效 K、权重、反量化系数和因果可见范围相同，只把 TND 的 query 长度从 314 改为 5688，倒数第二行的 TopK 集合就从索引 2047 变成 2048。合成测试 test_quant_lightning_indexer_fp8_consistency.py 固定 K 长度 5688、TopK=2048、sparse_mode=3，Q 长度 2/64/314 时选中 2047，5688 时选中 2048，断言失败。根因：arch35 单行路径分别累加偶数与奇数 head 后再相加，双行路径按 head 顺序逐项累加，FP32 舍入差异改变了 BF16 排序分数；GLM-5.3 完整 prefill 与分块 prefill 对照中也观察到该差异并可传播至生成 token。修复 PR !15878 统一累加顺序。环境：950DT、CANN 9.2.1、torch_npu 2.10.0.post7。
+  source: https://gitcode.com/cann/ops-transformer/issues/7497 ｜https://gitcode.com/cann/ops-transformer/pull/15878
+  behavior: 同一 query、同一有效 K、同一权重和因果范围，只改变本次 prefill 的 Q 行数（314 行 vs 5688 行），indexer 选出的 TopK 集合就变了；下游 sparse attention 读到不同 KV，完整 prefill 与分块 prefill 结果不一致，最终生成的 token 也随之改变，全程没有报错。
+  trigger_surface: Ascend 950DT、CANN 9.2.1、torch_npu 2.10.0.post7；FP8 E4M3 Q、TND，K PA_BSND，sparse_mode=3，TopK=2048。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

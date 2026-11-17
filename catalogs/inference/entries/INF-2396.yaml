@@ -1,0 +1,53 @@
+id: INF-2396
+legacy_ids: []
+slug: torchair_addmm_split_loses_bias_rounding
+aliases: []
+title: torchair AddMM 拆分丢失 bias 低精度舍入边界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: torchair addmm 拆分
+  behavior: 二维逐元素 bias 的 aten.addmm 在 lowering 中被拆成 MatMul+Add，bias 来自 BF16/FP16 Mul 时其生产者内联进 FP32 Add epilogue，丢失原 Mul 输出的低精度舍入边界
+effect:
+  objects:
+  - 数值结果
+  detail: 五轮 BF16 矩阵多项式图首轮 B 即 200252/1048576 元素不同，最大绝对差 3.05e-5，五轮放大后完整输出超 83 判据；恢复 10 处 bias Mul 的 BF16 舍入后与关闭 MM 融合逐 bit 一致
+  visibility: 静默错误
+mitigation:
+  detect: 同输入多轮图对比 + 关闭 MM 融合逐 bit 对照；已保留失败节点真实中间输入可单片段验证
+  fix: 待定（issue 2026-11-04 新开；建议保留带 bias MatMul IR 或拒绝后融合走 late fallback，未出修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/torchair/issues/939
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0617
+original:
+  mechanism: torchair 维护分支 26.2.0 + Inductor ascendc 后端自动融合（CANN 9.2.0，Ascend 950，torch/torch_npu 2.14.0）：二维逐元素 bias 的 aten.addmm 在 lowering 被拆成 MatMul 与 Add。当 bias 又来自 BF16/FP16 Mul（如 bias=A*(-6.8946)）时，Mul 生产者内联进 FP32 Add epilogue，丢失原 Mul 输出的低精度舍入边界。五轮 BF16 矩阵多项式图实测：首轮 B=addmm(bias,cA,A) 有 200252/1048576 元素不同、最大绝对差 3.0517578125e-5；后续五轮更新放大差异，完整输出按现有 83 判据回归失败。诊断中仅恢复 10 处 bias Mul 结果的 BF16 舍入、保留 MM 融合，完整网络输出就与关闭 MM 融合逐 bit 一致——因果闭合。5 个 MM+Mul 融合 kernel 与原生 MM/Mul 逐 bit 一致，排除 kernel 本身。当前复现无 NaN/Inf（同事另报的 NaN 不归因本问题）。失败节点同批真实中间输入已保留，无需重编完整五轮 FX 图。
+  source: https://gitcode.com/Ascend/torchair/issues/939
+  behavior: Ascend 950 + torchair 图模式下，含 addmm(bias, A, B) 且 bias 由低精度 Mul 生成的 BF16 网络输出精度回归失败：同输入首轮即约 19% 元素与基准差（最大 3.05e-5），多轮迭代后差异放大至整网判据失败；无报错无 NaN，常规精度抽样可能漏过，需逐元素对比或恢复舍入边界才能定位。
+  trigger_surface: torchair 26.2.0 维护分支；Inductor ascendc 后端 + 自动融合；CANN 9.2.0 / Ascend 950 / torch_npu 2.14.0；bias 为二维逐元素且来自 BF16/FP16 Mul 的 aten.addmm。
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - relations

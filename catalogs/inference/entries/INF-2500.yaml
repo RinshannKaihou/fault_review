@@ -1,0 +1,64 @@
+id: INF-2500
+legacy_ids: []
+slug: vllm_mm_lora_unequal_clip_row_mapping
+aliases: []
+title: vLLM 多模态 LoRA 不等长 clip 行漏适配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: vllm
+    component: 多模态 LoRA 行映射
+  behavior: 激活 LoRA 映射按 per-item 有效行数生成，而投影消费带 padding stride 的展平张量；不等长 clip 批中部分有效帧的展平索引超出映射覆盖，长 clip 尾部收不到所请求的 LoRA。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: 单请求两段 1s/2s 音频（25/50 有效行）批中，长 clip 后 25 个有效行 RMS 对适配参考 2.18（对 base 投影仅 0.00026）即完全未加 LoRA，贪心首 token 改变（分组修复实验 96077→24286）。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open；诊断性规避：按等长分组请求或单 clip；生产修复方案与 batching 成本未定）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/66801
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0204
+original:
+  mechanism: 'vLLM 0.34.0rc1.dev139+gd9f94a98b、NVIDIA A10、transformers 5.22.2、enable_tower_connector_lora=True。机制：active LoRA 映射使用 per-item 有效计数（[25,50] 覆盖 75 条），而 embedding_projection 消费带 padded stride 的展平张量（最后一个有效帧在展平索引 99）→ 覆盖差集内的有效帧走 base 投影。诊断实验：把不等长编码 item 分组并逐组刷新激活映射后，同权重同 prompt 全部 50 行匹配适配参考、贪心首 token 从 96077 变为 24286，定位失败于映射而非 LoRA 本身。两请求编码器批中 audio_tower.output_proj 同形态。相关 #61608；完整预训练权重与 HTTP serving 未测，为 reduce checkpoint 上的受控测量。'
+  source: https://github.com/vllm-project/vllm/issues/66801
+  behavior: 开 tower/connector LoRA 对 Gemma 4 做多模态推理时，同一请求里两段不等长音频中较长一段的尾部有效帧收不到所请求的 LoRA（按 base 投影计算），编码输出错误并改变贪心生成的 token；两段等长或长音频单独编码都正常，只在混合不等长批时静默出错，日志无任何提示。
+  trigger_surface: vLLM + enable_lora/enable_tower_connector_lora + Gemma 4 多模态 + 同批不等长 clip（音频/视觉塔）+ 单 adapter；0.34.0rc1.dev139 复现。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 权重/检查点
+    issue_unfixed:
+    - detail
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-11-14'
+    fields:
+    - pattern

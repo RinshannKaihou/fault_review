@@ -1,0 +1,70 @@
+id: TRN-0611
+legacy_ids: []
+slug: opsnn_bn_reduce_grad_catastrophic_cancel
+aliases: []
+title: BNTrainingReduceGrad 大 diff_scale 抵消成噪声
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: bn_training_reduce_grad a
+  behavior: 主循环按『先乘后加』计算 multiplier*x 与 addend 首项两个 ~1e37 量级项再相加，fp32 无法保真表示该量级中间值，本应精确相消的两项相减成灾难性抵消，输出退化为噪声
+effect:
+  objects:
+  - 梯度
+  detail: '|diff_scale| 接近 FLT_MAX 且 x==batch_mean 时输出退化为舍入噪声（fp64 参考严重不符）；x!=batch_mean 常规用例正常，Ascend 950 arch35 逐 plane 与 R==1/R==2 合并路径同受影响'
+  visibility: 静默错误
+mitigation:
+  detect: 构造 x==batch_mean 且大 diff_scale 用例与 fp64 参考对拍（Sterbenz 论证相近数相减精确）
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13555 （open）：主循环改『先差后乘』等价式 y=((grads+multiplier*(x-batch_mean))+addend)*mulScale，代数恒等重排不改语义；未核实合入
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8050
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13555
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0536
+pattern: PAT-TRN-0055
+original:
+  mechanism: 'cann/ops-nn #8050（2026-11-03 open）+ 修复 MR !13555（open）。BNTrainingReduceGrad（arch35/Ascend 950，op_host/bn_training_reduce_grad_def.cpp AddConfig(ascend950)，dtype fp16/fp32/bf16，CANN 版本未标注）大 diff_scale 灾难性抵消。原实现 y=((grads+multiplier*x)+addend)*mulScale，其中 multiplier=(diff_scale*negNumRecip)/sqrtVar、addend 首项=(batch_mean/sqrtVar)*(diff_scale*numRecip)。当 |diff_scale| 接近 FLT_MAX 且 x==batch_mean 时两项均为 ~1e37 量级、数学上应精确相消（(batch_mean/sqrtVar)*(diff_scale/num)==-batch_mean*multiplier，代码注释自带推导），但 fp32 无法保真表示该量级中间结果，舍入噪声淹没真值，输出退化为噪声；x!=batch_mean 常规用例正常。修复 !13555（open）：代数恒等重排为先算 x-batch_mean（Sterbenz 引理保证相近数相减精确）再乘 multiplier，addend 简化为 diff_offset*negNumRecip；覆盖逐 plane 路径与 R==1/R==2 合并路径，UB 侧新增 batch_mean staging TBuf（COEFF_PRECOMPUTE_BYTES 3 路→4 路），golden.py 与三方 compose 路径同步改。定位依据为代码注释推导+fp32 舍入性质（issue 自述未附设备侧对比日志）。与 TRN-0536（mhc 1-σ(z) 灾难性消去）同『大数相减本应相消、fp32 保真丢失成噪声』机制，算子与训练面不同（BN 梯度 kernel vs 推理 mhc kernel），标 var。'
+  source: GitCode issue：https://gitcode.com/cann/ops-nn/issues/8050 （open）；修复 MR：https://gitcode.com/cann/ops-nn/merge_requests/13555 （open）
+  behavior: 在 Ascend 950 上跑带 BNTrainingReduceGrad 的同步 BatchNorm 反向（如大 batch 统计 + 冻结/仿射 diff_scale 数值极大的配置），当某通道输入恰好等于 batch_mean 且 diff_scale 量级接近 FLT_MAX 时，该通道梯度输出变成纯噪声（与 fp64 参考完全不符），而 x≠batch_mean 的通道一切正常：无报错、无 NaN，只有特定输入关系的通道梯度静默全错，下游权重被噪声梯度更新。
+  trigger_surface: aclnnBNTrainingReduceGrad（Ascend 950 arch35；逐 plane 与 merged R==1/R==2 路径），|diff_scale|~FLT_MAX 且 x==batch_mean
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - 2026-11-06 回访：回访：修复 MR !13555 批次快照 merged（2026-11-05T01:18Z）；发布版本未核实。
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - pattern
+  - date: '2026-11-06'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

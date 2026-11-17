@@ -1,0 +1,55 @@
+id: TRN-0736
+legacy_ids: []
+slug: verl_linear_attn_packing_state_leak
+aliases: []
+title: verl 线性注意力 packing 无 FLA 时状态跨样本泄漏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: verl
+    component: qwen3_5 packing 分发
+  behavior: _call_accepts_kwarg 见 transformers 纯 PyTorch 实现签名带 **kwargs 即判可传 cu_seqlens，传入后被静默吞掉，逐样本切分路径被跳过。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出分布
+  detail: packed 微批被当一个序列，门控 delta 网络循环状态从一样本带入下一样本：单层对照后续样本相对误差 20%~90%+，trainer/rollout logprob 不再一致，训练无告警继续。
+  visibility: 静默错误
+mitigation:
+  detect: step 1（未更新策略）校验 trainer/rollout logprob 一致性；packed vs 逐样本调用对照；FLA 可用性启动期显式检查
+  fix: 待定（issue open；规避=安装 FLA 或禁用 remove_padding；触发环境 Ascend NPU 无 FLA Triton 内核）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: NPU 相关触发面：Ascend 上 FLA（Triton）不可用即落入缺陷路径。签名探测以 VAR_KEYWORD 兜底判『支持』是通用反模式，其他 **kwargs 型 fallback 实现同类风险。
+evidence:
+- url: https://github.com/verl-project/verl/issues/8629
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'verl issue #8629（2026-11-11 open；verl 0.10.0.dev0，qwen3_5.py @ f78fd053 与 main 一致）。use_remove_padding=True 且未安装 flash-linear-attention（报告环境为 Ascend NPU，FLA Triton 内核不可用）时，Qwen3.5 的 gated-delta-net（线性注意力）层把整个 packed 微批当一个序列：循环状态跨样本携带。根因：_packed_chunk_gated_delta_rule 用 _call_accepts_kwarg 探测被调函数签名——FLA 缺失时 chunk_gated_delta_rule 解析为 transformers 的 torch_chunk_gated_delta_rule，其签名以 **kwargs 结尾，VAR_KEYWORD 分支使探测返回 True，cu_seqlens 被传入后被纯 PyTorch 实现静默吞掉（从不读取），紧邻的正确逐样本切分路径被跳过；FLA 的实现有显式 cu_seqlens 参数并在边界重置状态，故 GPU+FLA 环境不受影响、同配置跨环境行为不同。证据：同权重同输入单层 packed 调用 vs 逐样本调用，首样本一致、后续每个样本都不同（相对误差 ~20% 到 >90%）；端到端 step 1（策略未更新、trainer 与 rollout 应一致）修复前后指标对照表见 issue。来源：https://github.com/verl-project/verl/issues/8629 。训练面：GRPO/FSDP 训练 logprob 与 rollout 不一致，advantage/IS 全链被污染。'
+  source: https://github.com/verl-project/verl/issues/8629
+  behavior: 在没有 flash-linear-attention 的环境（如 Ascend NPU）用 verl 训练 Qwen3.5 类线性注意力模型并开 remove_padding：整个 packed 微批被当成一条序列，门控 delta 网络的循环状态从上一个样本带进下一个样本——训练全程无报错无警告，但后续样本的隐状态已被污染（单层对照相对误差 20%~90%+），trainer 算出的 logprob 与 rollout 引擎不再一致，step 1 即可观测到双方分歧，RL 信号整体失真。
+  trigger_surface: verl use_remove_padding=True + Qwen3.5 gated-delta-net + FLA 未安装（Ascend NPU 典型）；GPU+FLA 不受影响；issue open
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - effect

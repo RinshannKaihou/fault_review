@@ -1,0 +1,54 @@
+id: TRN-0776
+legacy_ids: []
+slug: npu_fusion_attention_dropout_seed_offset_ignored
+aliases: []
+title: FA dropout seed 恒为 1、offset 进程级累加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: npu_fusion_attention_v2
+  behavior: keep_prob<1 时传入 seed 恒被改写为 1，offset 被进程级全局计数器按 +12 递增且 base/v2 共享，调用方传入值被忽略
+effect:
+  objects:
+  - 输出分布
+  - 梯度
+  detail: 同 seed/offset 连调输出 hash 全不同；返回的 (1,0) 无法复现该次前向，反向据此重建 dropout mask 与前向不一致
+  visibility: 不可复现
+mitigation:
+  detect: 固定 seed/offset 连续调用两次比较输出 hash；用官方 gen_dropmask(seed,offset) 生成 mask 显式传入对拍
+  fix: 待定（issue open 2026-11-17；建议 seed 直接作 Philox key、offset 按算子参数而非进程级全局累加，并补确定性 UT）
+labels:
+  stage:
+  - pretrain
+  - sft
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7733
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0661
+pattern: PAT-TRN-0082
+original:
+  mechanism: 'cann/ops-transformer issue #7733（2026-11-17，open），torch_npu 2.12.0.post3 + torch 2.12.0 + CANN 9.2.0，ops-transformer master 87663d62。torch_npu.npu_fusion_attention 与 npu_fusion_attention_v2 在 keep_prob<1（启用 dropout）时，传入的 seed 与 offset 参数不生效：seed 恒被改写为 1（传入 0/1/5/100/-1 返回均为 1），offset 被进程级全局计数器按 +12 递增，base 与 v2 共享同一个计数器（先调 base 4 次返回 0/12/24/36，再调 v2 返回 48/60/72/84）。资料 constraints 写明「默认确定性实现，keep_prob<1 时 dropout mask 由随机数生成，结果的确定性受 seed、offset 控制」，与官方 Philox 参考 tests/pytest/test_utils.py 的 gen_dropmask（seed 直接入 key、offset 按 16 对齐）不符：实测目标 hash 0e22c7baeb vs 官方 70c3e648fa，seed∈{0,1}×offset∈{0..16} 共 34 组命中 0。已排除 gen_mask_parallel/sync 设置、dropout 本体（显式传全 1 mask 时 hash 稳定）与 v2 专属路径（base 同样失效）。影响：训练不可复现；返回的 (1,0) 无法复现当前前向，反向据此重建的 mask 与前向不一致。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7733
+  behavior: 带 dropout 的 attention 训练里，明明固定了 seed 和 offset，同数据同超参两次 run 的 loss 与输出仍逐次不同；返回的 seed/offset 看起来是 (1,0) 之类的小值，但拿它重跑无法复现当前输出。反向用不一致的 dropout mask，梯度与真实前向不匹配，表现为训练抖动、复现实验失败，而 loss 曲线本身不会给出明显异常。
+  trigger_surface: torch_npu.npu_fusion_attention / npu_fusion_attention_v2 + keep_prob<1（dropout）+ 传入 seed/offset；Ascend 910B2 / CANN 9.2.0 / torch_npu 2.12.0.post3 实测。
+  discovery: 2026-11-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-17'
+  audit:
+    date: '2026-11-17'
+    method: manual_stewardship_review
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - pattern

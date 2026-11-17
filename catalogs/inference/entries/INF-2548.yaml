@@ -1,0 +1,50 @@
+id: INF-2548
+legacy_ids: []
+slug: triton_f64_bf16_rtz_garbage
+aliases: []
+title: Triton f64→bf16 rtz 编译成功写垃圾
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: PTX 生成忽略 LLVM 错
+  behavior: f64→bf16 带 rtz 被降到 llvm.fptrunc.round，sm_90 以下无对应指令；translateLLVMIRToASM 只跑 pass 不检查 LLVM 报错，仍用丢转换的 PTX 启动。
+effect:
+  objects:
+  - 数值结果
+  detail: sm_80/sm_89 上 16/16 元素写成 -5.3e36，编译 stderr 有 unsupported conversion 但不抛异常；3.8.0/3.9.0 会编译期拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: sm_80/sm_89 上用 fp_downcast_rounding='rtz' 做 f64→bf16 cast，与 numpy 参考对拍；同时抓取编译 stderr 中的 LLVM error。
+  fix: 未核实修复 PR；规避为不用 rtz 转 bf16（默认 rtz 之外的舍入路径正确），或升级到会拒绝该 cast 的版本。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12741
+  kind: github_issue
+relations: []
+original:
+  mechanism: '自 #12237 起，NVIDIA tt.fp_to_fp 带 rounding mode 的窄化被降到 llvm.fptrunc.round。f64→bf16 且 round.towardzero 时，NVPTX 只在 sm_90+ 选择 cvt.rz.bf16.f64，sm_90 以下没有该指令，NVPTX 后端报 error: unsupported conversion or rounding mode for llvm.fptrunc.round。Triton 的 translateLLVMIRToASM（python/src/llvm.cc）只运行 codegen pass manager 并返回 PTX，不检查 LLVM 是否报错，于是使用一个转换被丢弃的函数的 PTX：该 PTX 根本不 load 输入（%rs1 从未写），16/16 元素写成 -5.3e36。同一 issue 中 f64→f16、f64→f32 的 RTZ 已正确；3.8.0/3.9.0 对 f64→bf16 RTZ 直接编译期拒绝（#12260）。'
+  source: https://github.com/triton-lang/triton/issues/12741
+  behavior: 在 sm_80/sm_89 上用 fp_downcast_rounding='rtz' 把 float64 转 bfloat16，kernel 能编译能启动，但写出的是固定垃圾值（实测每个元素 -5.3e36）；编译日志里只有一行 LLVM error，不抛异常，只有和参考实现对拍才发现。
+  trigger_surface: Triton main，f64→bf16 + rtz，sm_80/sm_89；f64→f16/f32 已修，3.8.0/3.9.0 会拒绝编译。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,62 @@
+id: INF-2519
+legacy_ids: []
+slug: gated_rmsnorm_pdl_branch_early_read
+aliases: []
+title: gated RMSNorm PDL 提前读 branch 出 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: Cake PDL 程序序（rows≤128）
+  behavior: Cake PDL 程序（rows≤128）在 griddepcontrol.wait 之前的 prologue 加载 branch（>128 行程序在 wait 后加载）：生产者触发依赖后仍覆写 branch，消费者读到覆写前数据。
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: vLLM Muse Spark 默认参数构建 DSpark draft 辅助隐状态（DP+EP TP=1、批 8-48 行）：draft 收 NaN——greedy 全拒（接受长度 ~1.0）、温度采样全收输出垃圾（AIME25 0% vs 100%）。
+  visibility: 数值异常
+mitigation:
+  detect: 独立复现内核（producer launch_dependents 后自旋再覆写 NaN→有限值，正确的 PDL 消费者输出必须有限）在 50 次试验中稳定区分好坏配置；rows 1-128 全坏、129+/cute/关 PDL 全好。
+  fix: 规避：enable_pdl=False 或 backend='cute'（接受长度恢复 ~3.6-4.0、输出正确）。建议修复（issue open，0 评论）：branch 加载移到 griddepcontrol.wait 后并重渲染 cake_muse_spark_norm backend，同时排查其他 Cake PDL 程序同类 prologue 预取生产者输出。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/9343
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2399
+pattern: PAT-INF-0200
+original:
+  mechanism: flashinfer 0.7.3（commit 775207de）norm.gated_residual_rmsnorm Cake 生成程序 cake_muse_spark_norm_8418dc5f50dc570d66db_kernel.cu：rows≤128 的 PDL 程序在 L156-183 加载 branch、L214 才 griddepcontrol.wait——PDL 语义下生产者在 launch_dependents 后仍可继续写 branch（报告者的独立 producer 内核：触发依赖后自旋再以有限值覆写 NaN 预填的 branch），消费者在 wait 前读到的可能是覆写前数据。B300 SM103 实测 50 试验×rows{1,8,16,17,48,64,65,128,129,256,1024}×mode{0,1}×backend/pdl 组合：rows≤128 且 PDL 开时稳定读到旧值，129+ 行程序（wait 后加载）、backend=cute、enable_pdl=False 均正确。与 INF-2399（trtllm_fp8_block_scale_routed_moe PDL 默认开读到未写完 scratch 返回错行）共享机制：PDL 消费者在依赖就绪前读生产者输出；触发差异：MoE scratch 未写完 vs RMSNorm branch 输入未写完、本条限定 Cake 程序 rows≤128 变体。影响面：vLLM Muse Spark 默认参数即命中（DSpark draft 辅助隐状态、DP+EP TP=1、批 8-48 行、紧跟让其提前启动的生产者）。
+  source: 'https://github.com/flashinfer-ai/flashinfer/issues/9343 '
+  behavior: 使用 flashinfer gated_residual_rmsnorm（Cake 后端、PDL 默认开）且批行数不超过 128 的服务：紧跟生产者内核执行时该归一化会读到生产者尚未写完的 branch 输入，输出含旧值/NaN 的辅助隐状态；下游 DSpark draft 在 greedy 下所有 draft token 被拒（接受长度掉到 1.0，吞吐塌缩），温度采样下 NaN 概率让所有 draft 被接受、输出彻底变成垃圾（AIME25 从 100% 掉到 0%）。关 PDL 或换 cute 后端即恢复正常接受长度。
+  trigger_surface: flashinfer 0.7.3 gated_residual_rmsnorm Cake PDL 程序（rows≤128）+ 生产者允许消费者提前启动的 PDL 流水（vLLM Muse Spark DSpark 辅助隐状态路径，DP+EP、TP=1、decode/verify 批 8-48 行）；B300 SM103 实测。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  updates:
+  - date: '2026-11-12'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常

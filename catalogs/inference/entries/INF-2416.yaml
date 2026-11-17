@@ -1,0 +1,66 @@
+id: INF-2416
+legacy_ids: []
+slug: pd_disagg_prompt_logprobs_garbage_and_overflow_crash
+aliases: []
+title: PD 分离 prompt_logprobs 返回垃圾并致引擎崩溃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: PD 分离 prompt_logprobs 对齐
+  behavior: /v1/completions + prompt_logprobs 在 PD 分离架构下返回未初始化/索引错位的垃圾 logprobs；KV transfer 路径下 token id 错位溢出抛 OverflowError 致引擎崩溃
+effect:
+  objects:
+  - 输出内容
+  - 可用性/进度
+  detail: prompt_logprobs 全位置恒 (logprob 0.0, rank 5, decoded_token "!")（必现）；PD+Mooncake KV transfer 下 OverflowError 崩溃退出（崩溃前稳定运行 15 天）
+  visibility: 静默错误
+mitigation:
+  detect: prompt_logprobs 各位置值应各不相同，恒同值即中招；崩溃有明确 OverflowError 栈
+  fix: 待定（issue open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21103
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend 0.30.0rc2 + vLLM 0.30.0，GLM-5.3-Flash-w8a8（deepseek_mtp，num_speculative_tokens=1），PD 分离部署（TP8/DP2/EP），KV 传输 MultiConnector（MooncakeConnectorV2 + AscendStoreConnector）。(1) /v1/completions + prompt_logprobs=5：返回的 prompt_logprobs 全部为相同错误值 {logprob:0.0, rank:5, decoded_token:"!"}——未初始化或索引错位的垃圾数据，每个 prompt token 位置应各不相同，必现（HTTP 200 无任何异常）。(2) 完整 PD 分离（prefiller+decoder+proxy+Mooncake KV transfer）下向 prefiller 直接发同请求，token id 发生错位/溢出，抛 OverflowError: out of range integral type conversion attempted，整个 vLLM 引擎崩溃退出（async_llm.py:843 output_handler 栈，2026-11-05 02:35 崩溃日志）。服务崩溃前稳定运行 15 天。环境 torch 2.10.0+cpu / torch_npu 2.10.0.post7 / transformers 5.14.1 / CANN 9.2.0。根因未定位（issue 无维护者回应）。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/21103
+  behavior: PD 分离部署的 vLLM-Ascend 服务上请求 /v1/completions 并带 prompt_logprobs 参数：返回 200 正常，但 prompt_logprobs 字段全是同一个垃圾值（logprob 0.0、rank 5、token "!"），完全不可用；在带 Mooncake KV 传输的完整架构下同请求还会触发 token id 溢出异常，整个推理引擎崩溃重启。服务此前已稳定跑 15 天，仅这个参数组合触发。
+  trigger_surface: vllm-ascend 0.30.0rc2 / vLLM 0.30.0；PD 分离 + GLM-5.3-Flash-w8a8 + MTP；/v1/completions + prompt_logprobs；崩溃需 Mooncake KV transfer 路径。
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-06 回访：#21103 仍 open（11-06T09:00 更新，状态未变）
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - effect
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence

@@ -1,0 +1,58 @@
+id: TRN-0686
+legacy_ids: []
+slug: ds_oversized_grad_stream_lifetime
+aliases: []
+title: ZeRO-1/2 超大梯度内存提前归还流复用坏梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: 超大梯度流生命周期
+  behavior: 超大梯度保留自身存储且从不重绑到 IPG bucket；归约入队后非 owner rank 立即清引用，allocator 归还存储被计算流复用而归约流仍在读
+effect:
+  objects:
+  - 梯度
+  detail: 归约流读到被复用内存（如重计算的激活）corrupt 梯度；8 卡 0.19.1 step3 权重 NaN，master 上归约梯度出现 3.4e38（bf16 max）致更新被跳过
+  visibility: 数值异常
+mitigation:
+  detect: overlap_comm=true + 参数大于 reduce_bucket_size 的配置 watch 早期 NaN/跳步；对超大参数梯度做归约前后 checksum
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/9031（open，未发布）：超大梯度的归约记录 reduction stream
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-09'
+remarks: 与 TRN-0286 共享『overlap 异步归约在飞时存储被 allocator 归还复用』机制；触发点是超大参数旁路而非 IPG bucket swap
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/9031
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0286
+pattern: PAT-TRN-0071
+original:
+  mechanism: 'DeepSpeed #9031（open PR，2026-11-07）：overlap_comm=true 下 ZeRO-1/2 在 reduction_stream 入队梯度归约并立即返回不同步。大于 reduce_bucket_size 的参数跳过 contiguous IPG buffer、保留自身梯度存储（extra_large_param_to_reduce）。average_tensor() 入队归约后，不拥有该参数的 rank 立即走 clear_grad_attribute(param)（param.grad=None）：普通参数安全（grad.data 已重绑到持久 IPG bucket buffer，清引用无害），超大梯度从未重绑——存储回到 caching allocator，而归约流可能仍在读；allocator 把它复用给计算流张量（复现中是梯度检查点重计算的激活）→梯度损坏。8 GPU 0.19.1 于 step3 权重 NaN；master 上归约梯度含 3.4e38（bf16 max）导致更新被跳过。修复：为超大梯度记录 reduction stream。'
+  source: https://github.com/deepspeedai/DeepSpeed/pull/9031
+  behavior: ZeRO-1/2 + overlap_comm=true 且存在大于 reduce_bucket_size 的参数（超大 embedding/线性层）：非 owner rank 提前释放梯度存储，归约流仍在读时内存被复用（典型复用者是重计算激活）——归约出的梯度是垃圾、bf16 下出现 3.4e38 或 NaN，8 卡实测第 3 步权重即 NaN（0.19.1）或更新被持续跳过（master）；无显式报错指向释放时机。
+  trigger_surface: DeepSpeed ZeRO-1/2 + overlap_comm=true + param>reduce_bucket_size（extra_large_param_to_reduce 路径）；0.19.1 实测 step3 NaN
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

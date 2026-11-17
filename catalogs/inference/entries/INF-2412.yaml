@@ -1,0 +1,59 @@
+id: INF-2412
+legacy_ids: []
+slug: flash_attention_score_a6_dn_tail_stride_mismatch
+aliases: []
+title: FlashAttentionScore A6 DN 尾块行距不一致精度错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FA DN 尾块 dstStride
+  behavior: A6（CV_RATIO==1）DN 路径 cube 侧 fixpipe dstStride 写死 s1BaseSize，vec 侧按 Align32(s1RealSize) 行距读取，尾块两侧行距不一致致 softmax 数据错位
+effect:
+  objects:
+  - 数值结果
+  detail: TND varlen 尾块（s1RealSize≤32 而 s1BaseSize=64）时输出从尾块首行起错误，batch 内前面行正确；A5（CV_RATIO=2）恒等不受影响
+  visibility: 静默错误
+mitigation:
+  detect: 变长序列尾块行单独与参考实现对齐比对；规避可用等长 padding 消除尾块
+  fix: 修复 MR !15352 已挂（CV_RATIO==1 分支 dstStride 改跟随 nSize），open 未合入
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7138
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0636
+original:
+  mechanism: CANN ops-transformer FlashAttentionScore（A6 ascend960dt DAV_9201，CANN 9.3.0）。d=192>128 时 tiling 选 S1Base=64；无可选输入时 A6 上 IsDnForTrain=true 走 classic DN 路径（IterateBmm1DnSplitK + ProcessVec1Dn）。cube 侧 DN fixpipe 的 CV_RATIO==1 分支 dstStride 写死 s1BaseSize；vec 侧以 m=Align32(s1RealSize)/CV_RATIO 为行距读取 bmm1 UB 瓦片；尾块 Align32(s1RealSize)<s1BaseSize（如 s1RealSize≤32 时 nSize=32≠64）时写入行距与读取行距不一致，softmax（max/sum/exp）数据错位。复现场景（B=2,headNum=1,seq_q=[250,1],seq_kv=[41,40],d=192,dv=128,bf16）：batch1 唯一输出行（第 250 行）起错误，batch0 前 250 行正确。A5（CV_RATIO=2）dstStride=nSize/2 恒等于 vec 侧 m，无此问题。
+  source: https://gitcode.com/cann/ops-transformer/issues/7138
+  behavior: 昇腾 A6 上变长序列注意力计算：当某个 batch 的 query 长度不是对齐基数的整数倍（存在尾块，如 250 和 1 混批）时，注意力输出从尾块对应的行开始悄悄算错，前面的行正常。修复 MR 已提交但未合入。同负载在 A5 上正确。
+  trigger_surface: CANN 9.3.0；FlashAttentionScore DN 路径；A6 ascend960dt；d>128（S1Base=64）+ 变长 TND 存在尾块（Align32(s1RealSize)<s1BaseSize）；bf16 复现。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - relations
+  - date: '2026-11-06'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,53 @@
+id: TRN-0761
+legacy_ids: []
+slug: opstransformer_moe_token_permute_grad_default_range_zero
+aliases: []
+title: MoeTokenPermuteWithEpGrad 缺省 range 全零梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MoeTokenPermute 梯度 tiling
+  behavior: rangeOptional 为空时 tiling 把 start/end 都置 0（应 end=R），kernel needCopyIn 恒 false，任何 token 梯度都不搬运。
+effect:
+  objects:
+  - 梯度
+  detail: rangeOptional=nullptr 时 tokenGradOut 全 0（两段/sync 均 0）；同输入传 [0,6] 输出正确 [4.5,6.5,12.375,15.125,20.75,23.25]，5 次重复逐位一致。
+  visibility: 静默错误
+mitigation:
+  detect: rangeOptional 缺省与显式 [0,R] 两路对拍；输出预填哨兵检查是否整块未写。
+  fix: 待定（issue open 2026-11-15，无修复 MR）
+labels:
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 与 TRN-0419（同算子族缺值域校验）同族但机制不同：本条是缺省区间的实现错误，不是非法输入校验缺失。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7602
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer #7602（2026-11-15，open，Ascend950PR_957c / CANN 9.3.0 / master a1e54cce）。aclnnMoeTokenPermuteWithEpGrad 在 rangeOptional 传 nullptr 时，op_host/moe_token_permute_with_ep_grad_tiling.cpp:215-216 把 param.input.start=0、param.input.end=0（不是 end=R）；op_kernel/moe_token_permute_with_ep_grad.h:291 的 needCopyIn = acl_token_idx >= start && acl_token_idx < end 在 start==end==0 时恒 false，所有 token 都不搬运，tokenGradOut 保持初值 0。资料 docs/aclnnMoeTokenPermuteWithEpGrad.md 明确 rangeOptional 为空时忽略 permutedProbsOutputGradOptional 和 probsGradOut、回退到 aclnnMoeTokenPermuteGrad；仓内 tests/assets/golden.py 也按 range_value is None 时 start,end=0,total_len 处理。实测 tokens(6,2)、indices len=6、numTopk=2、输出 (3,2)：rangeOptional=[0,6] 得 [4.5,6.5,12.375,15.125,20.75,23.25]；nullptr 得 [0,0,0,0,0,0]，两段与 sync 均 0，5 次重复逐位一致。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7602
+  behavior: EP MoE 训练反向调用 MoeTokenPermuteWithEpGrad 且不传 rangeOptional（按文档应等价全量范围）时，token 梯度整块为 0：两段接口和 sync 都返回成功，shape 正确，没有 NaN/告警。上游若正好用缺省 range，反向等于没有梯度，专家侧更新静默缺失；只有把 rangeOptional 显式传 [0,R] 才恢复正常。
+  trigger_surface: aclnnMoeTokenPermuteWithEpGrad，rangeOptional=nullptr，FP32/FP16 通用；Ascend950PR / CANN 9.3.0 实测。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 算子/内核

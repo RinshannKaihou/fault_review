@@ -1,0 +1,53 @@
+id: INF-2488
+legacy_ids: []
+slug: npu_template_gemm_epilogue_missing_cast
+aliases: []
+title: NPU 模板 GEMM 融合 epilogue 缺 fp32 截断 cast
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: 模板 GEMM epilogue codegen
+  behavior: codegen_template 漏调 _compute_fusion_metadata，跳过 fp32→fp16/bf16→fp32 截断 cast，epilogue 全程 fp32 计算写回。
+effect:
+  objects:
+  - 数值结果
+  detail: max_autotune Triton 模板 GEMM（mm/addmm+relu/sub 等）开 epilogue 融合且输出 fp16/bf16 时，融合与未融合路径数值不一致，无任何报错。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 MR https://gitcode.com/Ascend/pytorch/merge_requests/49099 已提交（render() 前补调 _compute_fusion_metadata，并对齐 prologue 参数、显式拒绝不支持的 prologue 融合），合入状态未核实。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5960
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0696
+original:
+  mechanism: Ascend950PR、torch 2.13.0+cpu、torch_npu 2.13.0.dev20261105、triton-ascend 3.6.0：NPU Inductor max_autotune 生成 Triton 模板 GEMM 并融合 epilogue 时，生成的 triton_tem_fused_* kernel 缺少 fp32 累加器到输出 dtype 的截断 cast（acc.to(tl.float16).to(tl.float32) 模式不存在），epilogue 直接在 fp32 精度下计算写回。根因是 torch_npu/_inductor/codegen/scheduling.py 的 NPUTritonScheduling.codegen_template 复刻上游模板 codegen 但漏掉上游 TritonTemplateKernel.codegen_template_body 在 render() 前的 _compute_fusion_metadata 调用（PyTorch 2.12.0 起引入），导致 store_output 里 _epilogue_nodes_by_subgraph 不存在、has_epilogue_fusion 恒为 False，跳过 acc_dtype≠output_dtype 时的两次 to_dtype。mm 与 addmm（bias 加在 epilogue）均命中。
+  source: https://gitcode.com/Ascend/pytorch/issues/5960
+  behavior: 开 max_autotune（Triton 后端）+ epilogue_fusion 后，(x@x).relu()-1.0 这类带 epilogue 的 GEMM 融合 kernel 与 eager/未融合路径的输出数值不一致（fp16/bf16 输出时融合路径保留了本应截断的 fp32 精度），无报错无警告，只能靠对拍发现；影响 Ascend/pytorch master/dev（配套 PyTorch 2.13.0~2.16.0）。
+  trigger_surface: torch.compile max_autotune + Triton 模板 GEMM + epilogue 融合 + fp16/bf16 输出；mm/addmm 均触发。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

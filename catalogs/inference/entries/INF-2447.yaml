@@ -1,0 +1,70 @@
+id: INF-2447
+legacy_ids: []
+slug: sglang_mamba_state_poisoned_after_m_request
+aliases: []
+title: sglang GLM-5.3 长请求后引擎状态损坏后续全退化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: mamba/KDA 状态池
+  behavior: '~1M token 请求（约 127 个 chunk）后引擎状态损坏，怀疑 #44098 删 KDA 状态池 NextN 层（35→34）而 prefill 模式 draft 仍读写 KDA 致槽位错位；根因未定位'
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  - 可用性/进度
+  detail: 长请求后所有后续请求输出垃圾（空内容或单 token 重复至 max_tokens）、MTP 接受率 0.00（正常 0.6-0.8）、json_schema 请求 HTTP 500；/flush_cache 无效，仅重启恢复；v0.5.22 干净、v0.5.23/nightly 复现
+  visibility: 质量退化
+mitigation:
+  detect: MTP 接受率骤降+后续请求退化作为金丝雀；长请求后跑短探针
+  fix: 待定（回退 v0.5.22 可规避；#44098 嫌疑待验证，报告者愿意无补丁复测）
+labels:
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: 跨请求状态污染域，与已收 INF-2414（vllm-ascend#21103）不同库不同机制。
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/48964
+  kind: github_issue
+relations: []
+original:
+  mechanism: sglang v0.5.23-cu130（nightly-dev-cu13-20261028-586355a8 同样复现；v0.5.22-cu130 干净）+GLM-5.3-Flash w4afp8、TP4/H100、EAGLE num_steps=3/topk=1/draft_tokens=4、speculative_attention_mode=prefill、--max-mamba-cache-size 72、--mamba-radix-cache-strategy extra_buffer_lazy、fp8_e4m3 KV、dsa tilelang、hierarchical cache、chunked_prefill 8192、context_length 1048576：处理一个 ~1.04M token 请求（约 127 chunk）后引擎持续损坏——后续请求输出垃圾（空内容或单 token 重复）、MTP 接受率 0.00（正常 0.6-0.8）、json_schema 请求 HTTP 500（GrammarMatcher cannot accept special token id）。/flush_cache 无效，仅重启恢复。对照实验（同集群同晚）：v0.5.22 5/5 needle 检索、pod 健康；v0.5.23 长请求本身成功但 pod 中毒；nightly 长请求本身即 0/5 退化。短上下文行为正常，需要深 prefill 触发。嫌疑提交：#44098 从 KDA 状态池删 NextN 层（35→34 slot），前提是 draft 不读写 KDA 状态，但本部署 speculative_attention_mode=prefill 下 draft 会跑；报告者带两个与 mamba/KDA/draft 无关的小补丁，同补丁在 v0.5.22 正常。
+  source: https://github.com/sgl-project/sglang/issues/48964
+  behavior: sglang v0.5.23 服务处理一个约百万 token 的长请求后：之后的所有请求输出持续退化——内容为空或同一 token 重复到 max_tokens、MTP/EAGLE 接受率跌到 0.00、结构化输出请求直接 HTTP 500；flush_cache 无法恢复，只能重启进程。长请求本身在 v0.5.23 可能成功（5/5 needle）也可能在 nightly 上直接退化（0/5），短请求在其前一切正常。
+  trigger_surface: sglang v0.5.23/nightly+GLM-5.3 类 mamba/KDA 混合模型+MTP（speculative_attention_mode=prefill）+~1M token 深度 chunked prefill；v0.5.22 干净
+  discovery: 2026-11-06 每日扫描
+  notes:
+  - 2026-11-07 回访：回访：sglang#48964 仍 open（11-06 创建），本轮搜索窗口内无根因定位新评论，维持留观根因。
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: KV状态
+    uncertain:
+    - visibility
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence

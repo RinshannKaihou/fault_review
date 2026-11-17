@@ -1,0 +1,53 @@
+id: TRN-0769
+legacy_ids: []
+slug: torchtitan_flexattention_compile_history_resume_nondeterminism
+aliases: []
+title: FlexAttention 编译历史使 resume 与非中断训练不逐位一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torchtitan
+    component: FlexAttention 编译
+  behavior: torch.compile 未固定 dynamic，首个 shape 决定静态 kernel、变 shape 再重编译；resume 进程无编译历史，同一步可能用不同 kernel。
+effect:
+  objects:
+  - 训练轨迹
+  detail: Qwen3.8-Flash-Next、GB300×2、FSDP2/EP2、seed 42：不中断 10 步逐位一致；step5 resume 后 step9 起 loss 差至 9.9e-4、grad_norm 差 6.3e-3；两次 resume 彼此一致。
+  visibility: 不可复现
+mitigation:
+  detect: resume run 与不中断 run 逐步对比 loss/grad_norm；固定 torch._dynamo.config.automatic_dynamic_shapes=False 复测。
+  fix: 待定（issue open 2026-11-13；建议 dynamic=True/False 或显式标记动态维，未实现）
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/6093
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'pytorch/torchtitan #6093（2026-11-13，open）。torchtitan/models/common/attention/attention.py 的 FlexInnerAttention._compiled_flex_attn 调 torch.compile(flex_attention, ...) 时没有指定 dynamic，Dynamo 默认 automatic_dynamic_shapes 让首调用编译静态 shape kernel、首次 shape 变化再重编译为动态；某一步用哪个 kernel 取决于进程此前见过的 shape。resume 进程从零编译，因此同一步可能与不中断 run 用不同 kernel。复现：Qwen3.8-Flash-Next multimodal debug 模型（#6046），GB300×2、FSDP2/EP2、seed 42、严格确定性、vision image size 随 step 变化；两次不中断 10 步逐位一致；从 step5 checkpoint resume 后 step8 前一致、step9 起 loss 差至 9.9e-4、grad_norm 差 6.3e-3；两次 resume 彼此逐位一致。设 torch._dynamo.config.automatic_dynamic_shapes=False 后，save run（1-5）与 resume run（6-10）都与不中断 run 逐位一致。'
+  source: https://github.com/pytorch/torchtitan/issues/6093
+  behavior: 训练带可变输入 shape 的模型（VLM vision encoder、qwen3_5、Muse、Flash-Next 等）时，从 checkpoint 恢复的训练在若干步后与不中断训练分叉：loss 最多差约 1e-3、grad_norm 差约 6e-3，且两次 resume 彼此一致，看起来像正常噪声。严格确定性下也无法 bitwise 复现，排查会误以为是数据或并行不确定性；只有固定 dynamic 或关掉 automatic_dynamic_shapes 才对齐。
+  trigger_surface: torchtitan FlexAttention + torch.compile 默认 automatic_dynamic_shapes + 变长输入 shape；GB300×2 / FSDP2 EP2 实测。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

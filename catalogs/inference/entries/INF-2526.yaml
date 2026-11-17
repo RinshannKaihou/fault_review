@@ -1,0 +1,56 @@
+id: INF-2526
+legacy_ids: []
+slug: fast_hadamard_quant_group_tensor_shape_unvalidated
+aliases: []
+title: FastHadamardQuant 分组参数未校验越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: FastHadamardQuant 分组量化
+  behavior: Host 用 group_size 算 groupsPerRow=n/groupSize，不校验 scale/offset 的 rank、组数与 batch 维；二维 scale 按行 stride 读取，仅 1 个 scale 时越界。
+effect:
+  objects:
+  - 数值结果
+  detail: x fp16[1,128]、group_scales [1,1]、group_size=64 时 groupsPerRow=2，kernel 读 scales[1] 越界；量化输出用越界 scale，无报错。!14357 增加 rank/组数/batch/dtype/连续性校验。
+  visibility: 静默错误
+mitigation:
+  detect: group_size 与 group_scales/offsets 的组数不匹配（如 x [1,128]、scales [1,1]、group_size=64）时调用，检查是否拒绝；mssanitizer 观察 device 越界读。
+  fix: 修复 PR !14357（open，未发布）：kernel launch 前校验 group tensor 设备/dtype/连续/rank 与最后一维==groupsPerRow，二维首维==展平 batch。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8738
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/14357
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-nn FastHadamardQuant（commit ae873b119fb5499c41a6893f920171551fb0a197）的 host 侧 GroupStride 把首维等于 batch 的二维张量按 [batch, groups] 处理（fast_hadamard_quant.cpp 约 221-231 行），Host 接受 group_size 后计算 groupsPerRow = n / groupSize，却没有核对 scale/offset 张量的 rank、组数和 batch 维（约 256-275 行）；device 函数 ApplyGroupedQuant 以 groupsPerRow 循环，并读取 scales[(scale_stride == 0) ? g : row_index * scale_stride + g]（约 79-99 行），offsets 使用同一索引策略。最小问题输入：x FP16/连续 [1,128]、group_scales FP16/连续 [1,1]、group_size=64、out INT8/连续 [1,64]；groupsPerRow=2，二维 scale 因首维等于 batch 被设为逐行 stride 2，kernel 对该行读取索引 0 和 1，而输入只分配了 1 个 scale，第二次读取越界。修复 PR !14357 在 kernel launch 前校验可选 group tensor 的 NPU 设备与 x 一致、FP16 dtype、连续布局、rank 为 1 或 2，并核对最后一维等于 groupsPerRow；二维输入还要求首维等于展平后的 batch。README 同步说明约束，回归覆盖错误组数、错误 batch、dtype、设备和连续性，保留合法 [batch, groups] 正向用例。'
+  source: https://gitcode.com/cann/ops-nn/issues/8738 ｜修复 https://gitcode.com/cann/ops-nn/merge_requests/14357
+  behavior: 对 FastHadamardQuant 传显式 group_size 但分组 scale/offset 的组数比 n/group_size 少时（例如 x 最后一维 128、group_size=64 却只给 1 个 scale），接口不报错，kernel 会按两组去读越界的第二个 scale，量化输出用了缓冲区外的值；结果看起来仍是合法 INT8，只有和 CPU 参考对比或 mssanitizer 才暴露。
+  trigger_surface: cann/ops-nn FastHadamardQuant；显式 group_size 与 group_scales/group_offsets 组数或 batch 维不一致；FP16 输入、INT8 输出；NPU 连续布局。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化

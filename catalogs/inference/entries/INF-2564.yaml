@@ -1,0 +1,56 @@
+id: INF-2564
+legacy_ids: []
+slug: vllm_ascend_310p_splitfuse_future_v_at_2049
+aliases: []
+title: 310P 压缩 SplitFuse 在 2049 上下文读到未来 V
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: 310P compressed attention
+  behavior: 上下文长度 2049 时压缩 SplitFuse 的因果掩码只挡住 +1..+3，因果截断后 +4..+19 的未来 V 被计入当前 query 行；2048 正常。
+effect:
+  objects:
+  - 数值结果
+  detail: Q/K 全零、只把截断后 +4..+19 的 16 个 V 改成 64：目标行 0→0.5674（应保持 0），2048 时仍 0；block128/head_dim128 变体 23/384 行同样读到未来 key；无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 固定 [2048,2048] 上三角 mask + mask_type=5，Q/K 置零，只扰因果截断之后的 V，并对最后一行做阳性对照；对比 legacy 与 compressed 两条路径。
+  fix: '待定（issue #21902 open；报告者附独立复现脚本）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21902
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 的 310P 压缩 SplitFuse（Atlas 300I DUO / Ascend 310P3，CANN 9.2.1、torch-npu 2.10.0.post7，镜像 revision 76ea9d24；dispatch 与 mask 构造读自 main 4b3bd7eb）在 context length 2049 下违反因果性：FP16、物理 KV block 64、8 query heads、1 KV head、head_dim 256、query length 384，传入与服务路径相同的固定 [2048,2048] 上三角 ND mask 与 mask_type=5（vllm_ascend/_310p/attention/attention_mask.py:24、attention_v1.py:44）。报告者把 Q/K 置零、只改 query 行 123 因果截断后 +4..+19 的 16 个 V 为 64，目标行本应保持 0，实测 compressed 路径 0→0.5673828125，legacy 路径 0→0；per-key 探针显示 2049 时 +1..+3 仍被拒、+4..+19 被放行。block 128/head_dim 128 变体在 context 32774、query 384 下 23/384 行同样读到未来 key；两张卡结果一致。
+  source: https://github.com/vllm-project/vllm-ascend/issues/21902 （open，2026-11-15）
+  behavior: 310P 上开压缩 SplitFuse 做长上下文 prefill 时，一旦序列长度越过 2048 边界（实测 2049、32774），部分 query 行会把因果截断之后 4~19 个位置的 V 算进来：Q/K 全零、只有未来 V 被扰动时，这些行的输出从 0 变成非零。模型仍正常出 token、无报错、无 NaN，但 attention 结果违反因果性，表现为长 prompt 的回答内容悄悄跑偏；只有把 mask 与 V 单独做探针、并比对 legacy 路径才能看见。
+  trigger_surface: Ascend 310P3（Atlas 300I DUO）+ CANN 9.2.1 + vllm-ascend 压缩 SplitFuse；context length 2049（或 32774 等跨 2048 边界）；FP16、block 64/128、head_dim 256/128；固定 [2048,2048] mask、mask_type=5。
+  discovery: 2026-11-15 每日扫描
+  notes:
+  - 2026-11-16 回访（2026-11-16）：vllm-project/vllm-ascend#21902 仍 open（updated 2026-11-16T11:59:43Z，批次索引），未见修复 PR 或发布说明；结论不变。
+migration:
+  method: scan
+  scanned: '2026-11-15'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-16'
+    fields:
+    - original.notes

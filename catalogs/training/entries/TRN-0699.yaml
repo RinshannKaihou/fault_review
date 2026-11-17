@@ -1,0 +1,63 @@
+id: TRN-0699
+legacy_ids: []
+slug: conv3dv2_output_channel_mismatch_oob
+aliases: []
+title: Conv3DV2 出参通道数不符被接受越界写
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Conv3DV2 CheckOutputShape
+  behavior: CheckOutputShape 只校验输出 D/H/W 限值，不比 y.C 与 filter.N；tiling 按 oriWeightN 推 co 而输出描述符保留调用方通道维
+effect:
+  objects:
+  - 数值结果
+  detail: y.C<filter.N 时输出缓冲不足被 kernel 按 filter.N 通道写出界；偏大时 shape/语义错配；均无报错
+  visibility: 静默错误
+mitigation:
+  detect: 下发前对账 y.C==filter.N；host UT 回归 check_output_shape_channel_mismatch_fail
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/14004 （open 2026-11-09）：CheckOutputShape 拒绝 oriOutputC != oriWeightN，回归 37/37 通过（confirmed_bug）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-10'
+remarks: 非大模型（CV/传统ML/3D/RNN）算子缺陷，脱离 LLM 训推主路径
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8440
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0671
+original:
+  mechanism: 'cann/ops-nn #8440+!14004（open，2026-11-09，源码 d1efef7c30ca）：Conv3dBaseTilingV2::CheckOutputShape() 只校验输出 D/H/W 限值，y 通道数与 filter.N 不一致照进 tiling；tiling setup 以 oriWeightN 推 shapeInfo_.co，而输出描述符保留调用方 y.C——y.C 偏小时输出缓冲装不下 kernel 按 filter.N 写的通道数（越界写），偏大时 shape/语义错配。修复在 CheckOutputShape 拒绝 oriOutputC != oriWeightN 并报 y 与 filter；回归用例 input[1,16,8,16,16]/filter[16,16,1,1,1]/output[1,15,8,16,16] 基线接受、修复后拒绝，TestConv3dCheckInput 37/37 通过（outcome confirmed_bug，host UT）。适用 DAV_3510/Ascend950 与已注册 DAV_9201/9202 路径；正常 InferShape 生成的 y.C==filter.N 不受影响，缺陷面对静态畸形输出描述符。与 TRN-0671（出参 shape 未校验按推导 shape 越界写）同族，触发点为 tiling 入口输出通道校验。'
+  source: https://gitcode.com/cann/ops-nn/issues/8440
+  behavior: 下发 Conv3DV2 时输出张量 y 的通道维与 filter.N 不一致（如 y=[1,15,...] 配 16 通道 filter）：接口不报错、tiling 正常产出；y.C 偏小时 kernel 按 16 通道写入只够 15 通道的缓冲区，越界写到相邻 device 内存；y.C 偏大时输出 shape/语义错配。无错误码，静态图里形参写错只在越界破坏显式化（memcheck/相邻张量异常）后才可定位。
+  trigger_surface: arch35 Conv3DV2 tiling（DAV_3510/950、9201/9202 注册路径）；y.C != filter.N 的静态畸形输出描述符
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - status
+  - date: '2026-11-17'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

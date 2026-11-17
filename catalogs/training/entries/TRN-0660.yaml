@@ -1,0 +1,57 @@
+id: TRN-0660
+legacy_ids: []
+slug: op_plugin_bool_add_arithmetic_sum
+aliases: []
+title: op-plugin bool add 算术和写入 bool 字节
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: bool add 路由
+  behavior: NPU bool 张量 add 被路由到算术 aclnn add 内核，整数和直接写入 bool 字节（True+True 字节=2），未按 CPU 语义（bool 加法=逻辑或）路由到逻辑内核。
+effect:
+  objects:
+  - 数值结果
+  detail: torch.add(bool,bool).to(int64) NPU 得 2、CPU 得 1；广播 (5,1)+(5,) 25 元素 12 个失配（最大差 1）；eager 全形态（广播/标量/add_/alpha）受影响；OpInfo 测试中编译输出正确、eager 参考侧错误。
+  visibility: 静默错误
+mitigation:
+  detect: bool 张量 add 后转 int 对账 CPU；OpInfo test_comprehensive___radd___npu_bool 样本 2 可复现。
+  fix: 修复 PR https://gitcode.com/Ascend/op-plugin/merge_requests/6187（open 2026-11-07）：bool add 路由 aclnnLogicalOr/aclnnInplaceLogicalOr 对齐 CPU 语义。未发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/691
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/op-plugin/merge_requests/6187
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2448
+original:
+  mechanism: 'Ascend/op-plugin #691（2026-11-07 open）+ 修复 !6187（open）：NPU 上 bool 张量 torch.add 走算术 aclnn add 内核，整数和直接写入 bool 字节：True+True 底层字节为 2（非零字节），CPU 参考定义 bool 加法为逻辑或（True+True==True）。复现：torch.add([True],[True]).to(torch.int64) NPU 得 2、CPU 得 1；(5,1)+(5,) 广播（OpInfo test_comprehensive___radd___npu_bool 样本 2）25 元素 12 个失配、最大差 1；广播、标量、add_、alpha 各形态均受影响。影响面：所有 eager bool 加法数值正确性（含 __radd__、sum 后处理等下游链路）；OpInfo 测试中编译输出正确、eager 参考侧错误。环境：torch_npu master（op-plugin master 3dbf199a）、CANN 9.2.0-beta.2。修复 PR !6187：bool 张量 add（含广播/CPU 标量/add_/标量重载）路由 aclnnLogicalOr/aclnnInplaceLogicalOr。训练面：数据管线中 bool mask 的算术聚合（mask 求和、计数）在 NPU 上静默错值。推理库 INF-2448 已收同源。'
+  source: https://gitcode.com/Ascend/op-plugin/issues/691 ｜修复 PR：https://gitcode.com/Ascend/op-plugin/merge_requests/6187
+  behavior: NPU 上对 bool 张量做 torch.add：结果底层字节是算术和（True+True 字节=2）而非逻辑或（1）。直接 print 显示 True（非零字节），但 .to(int64) 得 2（CPU 1）；广播形态 25 元素 12 个失配。add_/alpha/标量全受影响，无任何报错——凡 eager 路径上把 bool mask 做加法聚合（如 token 计数）的结果被静默抬高。
+  trigger_surface: torch_npu/op-plugin master + bool 张量 add（eager 全形态）；CANN 9.2.0-beta.2 实测；修复 !6187 open 未合
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

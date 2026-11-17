@@ -1,0 +1,51 @@
+id: INF-2482
+legacy_ids: []
+slug: sdpa_exp_approx_false_zero_rows
+aliases: []
+title: SDPA 精确模式输出整行静默为零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: sdpa exp/fp32 dest 路径
+  behavior: exp_approx_mode=False 在行内分数跨度大的 bf16 输入上输出整行精确 0（29/32 行零、RMS 误差 96.2%）；fp32_dest_acc_en=True 单开同样出零行。两者都应是更精确设置。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Blackhole p300c、main 573f4b35 实测：默认 exp_approx=True 正确（0.03% RMS）、float64 与 CUDA PyTorch 无零行；无 inf/nan。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（main 的 ttt_compat causal prefill 调用方正在使用 exp_approx_mode=False 配置，模型端是否命中该分数分布未证实，https://github.com/tenstorrent/tt-metal/issues/64411）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/64411
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal ttnn.transformer.scaled_dot_product_attention：Blackhole 仿真器合成算子测试 + 单芯片确认（p300c、main 573f4b35）。SDPAProgramConfig(exp_approx_mode=False)（本应更精确）在行内 attention 分数跨度大的 bf16 输入上返回精确为 0 的输出行：29/32 行为零、相对 RMS 误差 96.2%，无任何 inf/nan；对照组 exp_approx_mode=True 仅 0.03% RMS，float64 参考与 CUDA PyTorch SDPA bf16 均无零行。单独开 fp32_dest_acc_en=True（HiFi2、math_approx=True）在混合尺度因果注意力上同样出零行（1/64 行、15.2% RMS；关闭则 0.76% 无零行）。机制未进一步定位（报告明确尚未证实 main 上任何模型实际产生该分数分布/零行）。main 的 ttt_compat causal prefill 调用方（attention.py:1407-1415，model_config.py:1717-1728）使用 exp_approx_mode=False 配置。
+  source: https://github.com/tenstorrent/tt-metal/issues/64411
+  behavior: 把 SDPA 设为理论上更精确的模式（exp_approx_mode=False 或 fp32_dest_acc_en=True）后，某些输入（行内分数跨度大的 bf16）的注意力输出整行变成精确 0，错误幅度可达 96% RMS 且无 NaN/Inf、无报错——比默认近似模式错得多且完全静默。
+  trigger_surface: ttnn SDPA + exp_approx_mode=False 或 fp32_dest_acc_en=True + 行内 attention 分数跨度大的输入；Blackhole 实测。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,59 @@
+id: INF-2421
+legacy_ids: []
+slug: allreduce_nda_inter_template_noop_compile_guards
+aliases: []
+title: AllReduce NDA inter 模板被裁剪为 no-op 致精度错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: AllReduce NDA inter 模板
+  behavior: '#3652 后 sequence NDA 两个 inter 模板被 #ifndef AICPU_COMPILE 包裹，在 kernel 编译单元剪成 no-op：step2/step3 返回成功但跨 rank 数据不搬运'
+effect:
+  objects:
+  - 数值结果
+  detail: AllReduce NDA 精度错误而 ReduceScatter/AllGather 正常；ACK/DATA_SIGNAL/FIN_ACK 握手对称置空不死锁，流程正常完成但结果静默错误
+  visibility: 静默错误
+mitigation:
+  detect: 跨 rank AllReduce NDA 数值校验（重点 ≤4MB sequence 路径）；对比 ReduceScatter/AllGather 正常可作定位线索
+  fix: 修复 MR !3919 已挂（移除 5 处包裹共 10 行，纯删除；open，待上板验证）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/merge_requests/3919
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/hccl master，#3652 合入后 AllReduce NDA 出现精度问题而 ReduceScatter/AllGather 正常。根因：DpuAllReduceSequenceMeshNHRNDA（sequence NDA，小数据量路径）的 4 个模板中，中间两个 inter NDA 模板被 #ifndef AICPU_COMPILE 包裹——ins_temp_reduce_scatter_mesh_1D_nda_inter.cc（KernelRun 整段 body + REGISTER_TEMPLATE_V2）与 ins_temp_all_gather_nhr_nda_inter.cc（KernelRun body + RunNHR body + REGISTER_TEMPLATE_V2）。NDA 算法经 STARS(AICPU_TS) 在 kernel 侧执行，包裹使这两个模板在 hccl_aicpu_kernel 编译单元被剪成 no-op：step2（inter ReduceScatter NDA）与 step3（inter AllGather NDA）直接返回成功，ACK/DATA_SIGNAL/FIN_ACK 握手与 HcommWrite 数据写均不执行；notify Record/Wait 对称置空不死锁，表现为流程正常完成但跨 rank 数据未搬运 → AllReduce 精度错误。单独 ReduceScatter/AllGather 的 NDA 模板无该包裹不受影响（板上现象一致：sequenceNDA 选中后仅中间两个 inter 模板无执行痕迹）。修复 !3919 移除模板层 5 处包裹（纯删除 10 行），与 SendRecvWriteForNda 既有去裁剪处理一致。'
+  source: https://gitcode.com/cann/hccl/merge_requests/3919
+  behavior: HCCL AllReduce 在 NDA（跨 DIE 互连）小数据量路径上，特定合入后版本把中间两个跨 rank 搬运模板在 kernel 编译时误裁剪成空操作：集合通信流程正常走完、不挂起不报错，但数据根本没有跨 rank 搬运，AllReduce 结果静默错误。同版本的 ReduceScatter/AllGather 不受影响，可作定位线索。修复 MR 已提交（纯删除 10 行 guard），待上板验证。
+  trigger_surface: cann/hccl master（#3652 之后、!3919 合入前）；AllReduce sequence NDA 小数据量路径（≤4MB）；NDA 环境经 STARS(AICPU_TS) kernel 侧执行。
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-06 回访：修复 MR !3919 仍 open 未合入（11-06T04:11 更新），发布状态未核实
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

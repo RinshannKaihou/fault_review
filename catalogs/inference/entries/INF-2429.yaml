@@ -1,0 +1,49 @@
+id: INF-2429
+legacy_ids: []
+slug: aot_i64_args_packed_as_i32
+aliases: []
+title: AOT i64 参数按 int32 打包致参数块错位，输出 25% 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: CppWrapperNpu 参数声明
+  behavior: generate_args_decl 先走默认整数分支固定 int32_t 后才查 signature，i64 符号参数提前入默认分支：前两字段合计少占 8 字节，Y0BLOCK 偏移从 48 提前到 40 后续错位
+effect:
+  objects:
+  - 数值结果
+  detail: AOTInductor+unbacked 符号尺寸+use_static_size=True 下，wrapper 把 i64 尺寸参数按 int32 打包致参数块错位，输出约 1/4 元素静默错误、无报错，最大差近 14，最大错误点 (85,399) 位于拼接第二分块 [256,512)
+  visibility: 静默错误
+mitigation:
+  detect: 生成 wrapper 与 kernel 签名逐字段核对偏移
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49186（open 未合入）：默认整数/浮点分支移到 signature 分支之后（+8/-8 行）；候选 8 组全 PASS、i64/u64/fp64 三组恢复基线后再次失败
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5925
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu/_inductor/codegen/cpp_wrapper_npu.py 的 CppWrapperNpu.generate_args_decl（Ascend_950、torch_npu 2.13）：先处理默认整数类型固定 int32_t，随后才检查 Triton signature。unbacked 符号表达式被简化为整数后，应按 i64 签名打包的参数提前进入默认分支。失败 kernel 的 y0_numel/x1_numel/Y0BLOCK 均要求 i64，调用端打包为 int32_t/int32_t/int64_t，前两字段合计少占 8 字节，Y0BLOCK 从应有偏移 48 提前到 40，后续 grid 字段错位；kernel 用 Y0BLOCK 计算行偏移/循环次数/写入掩码，写入受影响。该 kernel 负责拼接输出第二分块 [256,512)，300×256=76800 个元素与 25% 错误数一致，最大错误点 (85,399) 位于该分块。基线与候选用相同三项诊断前置、新进程、独立缓存对照；另 6 组标量检查覆盖 int+i32/i64/u64、float+fp64、bool+i1、无签名整数。修复分支顺序与上游 CppWrapperGpu 一致。
+  source: https://gitcode.com/Ascend/pytorch/issues/5925
+  behavior: AOTInductor + unbacked 符号尺寸 + use_static_size=True 的组合下，编译出的 C++ wrapper 把 i64 尺寸参数按 int32 打包，参数块整体错位：输出张量约 1/4 元素值静默错误（最大差近 14），无报错；同一 kernel 源码逻辑本身正确，错误仅在 wrapper 参数布局。
+  trigger_surface: AOTInductor+unbacked 符号表达式+use_static_size；Ascend_950、torch_npu 2.13
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

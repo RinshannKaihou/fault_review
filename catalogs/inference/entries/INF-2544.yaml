@@ -1,0 +1,52 @@
+id: INF-2544
+legacy_ids: []
+slug: npu_inductor_triton_scan_noninnermost_wrong
+aliases: []
+title: NPU Inductor scan 族非最内维错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: NPUTritonKernel.scan 扫描轴
+  behavior: NPUTritonKernel 继承上游 scan，按 ndim-num_reduction_dims 假定归约轴在 tile 末位；NPU 布局把归约树放在非最末维时仍扫 axis1。
+effect:
+  objects:
+  - 数值结果
+  detail: cummax/cummin/cumprod/logcumsumexp 沿 dim=0 生成错值（cummax max_abs_diff≈3.5，2D/3D/4D 均中），4D mid-dim 编译崩溃；最内维正确。
+  visibility: 静默错误
+mitigation:
+  detect: 对 (4,4)、(2,3,4)、(2,3,4,5) 的每个 dim 与 eager 对拍；检查生成 kernel 的 tl.associative_scan 轴与归约树所在 tensor_dim 是否一致。
+  fix: 'PR #49637（open）新增 NPUTritonKernel.scan，按归约树实际 tensor_dim 取扫描轴；4D mid-dim 编译崩溃另案跟踪，未修复。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6088
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/pull/49637
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'torch_npu 的 triton_experimental 后端中，NPUTritonKernel 继承上游 TritonKernel.scan，扫描轴按 dim = triton_tensor_ndim() - num_reduction_dims 计算，假定归约轴在 tile 最末位。NPU linearized 布局可以把归约（r）树放在非最末 tensor_dim：cummax (4,4) dim=0 时 r 在 tile axis0，dense_size_list=[''R0_BLOCK'',''XBLOCK'']，但生成的 kernel 仍 tl.associative_scan((tmp3,tmp6), 1, helper) 扫 axis1（x 轴），结果错误。维度矩阵：dim=0 的 (4,4)、(2,3,4)、(2,3,4,5) 均 BAD（cummax max_abs_diff≈3.5）；4D dim=1/2 编译崩溃；最内维 OK 0。910B2 与 950DT 均复现。修复 PR #49637 覆盖错值部分（dim=0 与最内维 max_abs_diff≈0）；4D mid-dim 崩溃是另一处 codegen 问题（dense_size_str() 只返回 2D 而最终 tile 为 3D）。'
+  source: https://gitcode.com/Ascend/pytorch/issues/6088 ｜https://gitcode.com/Ascend/pytorch/pull/49637
+  behavior: torch.compile 后对 (B,T,D) 沿 T 或任意非最内维做 cumprod/cummax/cummin/logcumsumexp，结果与 eager 不一致（cummax 最大差 3.5 量级），没有报错；同一 shape 沿最内维又完全正确，只有逐维对拍才看得出。4D 张量沿中间维还会直接编译崩溃。
+  trigger_surface: TORCHINDUCTOR_NPU_BACKEND=triton_experimental，910B2/950DT，scan 族 dim≠最内维；4D mid-dim 另触发编译崩溃。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

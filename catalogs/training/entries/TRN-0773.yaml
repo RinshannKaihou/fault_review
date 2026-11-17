@@ -1,0 +1,54 @@
+id: TRN-0773
+legacy_ids: []
+slug: foreach_addcdiv_list_noncontiguous_out_partial_write
+aliases: []
+title: ForeachAddcdivList 非连续 out 只写一半
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnForeachAddcdivList
+  behavior: List 版既不校验 out 各 tensor 连续性，也不按 stride/storageDims 回写，直接按连续布局写 storage 前缀；同族 Scalar 版已有 stride 回写路径
+effect:
+  objects:
+  - 模型权重
+  - 优化器状态
+  detail: 4 槽中 2 槽非连续时 48/80 元素未写、仅 2 个正确（连续槽 80/80 正确），两段仍返回 0/0，非连续槽保持调用方旧值
+  visibility: 静默错误
+mitigation:
+  detect: out 列表混入非连续 view（每槽独立 stride）并预填互斥金丝雀；读回统计未写元素数，同时保留连续槽作同调用对照
+  fix: 待定（issue open 2026-11-17；建议首段校验 out 连续性返回 161002，或按 strides 回写；同族 Scalar 版可作参照）
+labels:
+  stage:
+  - pretrain
+  - sft
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8936
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0524
+pattern: PAT-TRN-0058
+original:
+  mechanism: 'cann/ops-nn issue #8936（2026-11-16，open）。aclnnForeachAddcdivList / aclnnForeachAddcmulList 的 out 是非连续的 tensor 列表时，首段不校验连续性、kernel 按连续布局写每个 out 的 storage 前缀，导致只有落在前缀里的元素被写对，其余元素保持调用方旧值。资料 docs/aclnnForeachAddcdivList.md 参数表（表头「非连续Tensor」）把 x1/x2/x3/scalars 标为 √、out(:128→:135) 标为 ×，按契约首段应返回 161002；实测两段均 0/0 且非连续槽 48/80 未写、仅 2 个正确。同族阴性对照：aclnnForeachAddcdivScalar / AddcmulScalar 的 out 标 √，同一夹具下 80/80 全对，证明夹具与期望公式正确且算子族具备 stride 回写能力。A5（950PR，CANN 9.3.0）实测，canary 用 -777000 与 -123456 两种互斥填充得到相同残留计数（48/80、2/80），排除值域重合。'
+  source: https://gitcode.com/cann/ops-nn/issues/8936
+  behavior: 用 foreach 系列把优化器更新写进非连续的参数/状态 view 时（参数被切出子视图、按列分组的参数组），算子返回成功，但大约一半的输出元素根本没被写，仍是上一步的旧值或调用方缓冲里的残留；优化器看起来每步都执行了，实际只有部分参数在更新，loss 下降变慢且与预期不符，没有任何报错。
+  trigger_surface: cann/ops-nn aclnnForeachAddcdivList / aclnnForeachAddcmulList + out 列表中含非连续 tensor；A5（950PR）/ CANN 9.3.0 实测。
+  discovery: 2026-11-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-17'
+  audit:
+    date: '2026-11-17'
+    method: manual_stewardship_review
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - pattern

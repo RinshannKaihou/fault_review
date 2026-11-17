@@ -1,0 +1,50 @@
+id: INF-2568
+legacy_ids: []
+slug: cann_msa_index_score_sparse3_mask_ignored
+aliases: []
+title: MsaIndexScore sparse_mode=3 无视 mask
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MsaIndexScore
+  behavior: sparse_mode=3 分支把 atten_mask 入参直接丢弃（kernel 中 (void)attenMask），tiling 只校验形状，mask 内容不参与可见性判定。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: sparseMode=3 且 mask 非空时，全0/全1/上三角三组输出 FNV-1a64 同为 9c5eb0d6ea069383、score[0][0][blk1]=12416；sparseMode=0 不传 mask 为 16384。bf16/fp16 均复现，两段接口均成功、无日志告警。
+  visibility: 静默错误
+mitigation:
+  detect: 同一输入分别传全 0、全 1、上三角 mask，输出哈希应不同；当前三者逐字节相同。
+  fix: 待定（issue open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 与 INF-2161（同算子 N2>1 只读 KV head0）机制不同：本条是 mask 入参被丢弃，不建 var 关系。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7674
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer master 5851adf648cd5877a664189047e867d405165f49（Ascend910B2、CANN 9.2.0）的 aclnnMsaIndexScore：op_kernel/msa_index_score.cpp:52 显式 `(void)attenMask;`，task.h:15-17 自述不加载 [2048,2048] 模板，tiling.cpp:885-903 只校验 mask 形状。报告者用 key[n]=1+n、D=128 的探针，同一 shape/seed 只改 atten_mask 内容：sparseMode=3 下全 0、全 1、上三角三组输出 FNV-1a64 均为 9c5eb0d6ea069383、score[0][0][blk1]=12416；sparseMode=0 不传 mask 时为 16384/332404adfbd91b83。MASKHASH（device 4MB 原样回读）证明三组 mask 确实传到 device 且互不相同；bf16（Hq=2,D=64,qLen=16,kvLen=512）与 fp16（Hq=4,D=128,qLen=8,kvLen=256）结论一致。资料 :144/:365 与 README:47 明确 1 表示不参与、0 表示参与，全 1 与全 0 必须给出不同可见集合。
+  source: https://gitcode.com/cann/ops-transformer/issues/7674 （open，2026-11-16，含 repro.cpp、哈希与源码锚点）
+  behavior: 注意力索引打分时传入的 mask 完全不起作用：把本该全部屏蔽的 mask（全 1）换成全 0，得到的分数逐字节一致，模型仍会看到本应被因果/稀疏约束排除的 key。接口两段都返回成功，没有日志或告警，只有在对比不同 mask 的输出时才能发现；在依赖 mask 控制可见域的稀疏注意力/索引器里，这会直接改变选中的 key 集合。
+  trigger_surface: Atlas A2 910B2 + CANN 9.2.0；aclnnMsaIndexScore；sparseMode=3 且 atten_mask 非空；bf16/fp16、Hq=2/4、D=64/128、qLen 8/16、kvLen 256/512 均可复现；与 seed、页大小无关。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

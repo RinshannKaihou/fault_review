@@ -1,0 +1,67 @@
+id: INF-2478
+legacy_ids: []
+slug: mxfp8_kv_cache_indexed_gather_corruption
+aliases: []
+title: 量化 KV cache 任意槽位索引读返回损坏数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: 量化 KV 索引读通路
+  behavior: mxfp8/fp8 量化 KV cache 按槽位张量 gather 读回位级损坏数据；同一缓存顺序分页读正确、bf16 cache 索引读精确，缺陷仅在量化 cache 张量索引访问路径。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 量化 KV 下任何按索引 gather 选槽位的稀疏/检索式读路径静默拿到损坏 K/V，无报错无 NaN；LSA 式 top-k 读全坏。950DT、vllm-ascend v0.30.0-a5 实测。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 社区规避：写 cache 时另存 bf16 镜像、从镜像 gather（16 层 65536 行约多占 4GB，https://github.com/vllm-project/vllm-ascend/issues/21285）；上游修复未见。
+labels:
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21285
+  kind: github_issue
+relations: []
+original:
+  mechanism: Ascend 950DT、vllm-ascend v0.30.0-a5（CANN 9.2.1、torch_npu 2.10.0.post7）上以 Qwen3.8-27B-w8a8c8-mxfp8 加 --kv-cache-dtype mxfp8 运行：单层经 reshape_and_cache 写入已知 K/V 行后，用乱序 int64 slot_ids 张量 gather 读回，值为位级损坏（量化 payload 损坏）；对同一 cache 顺序切片读（key_cache[0:N]）完全正确；bf16 cache 重复同实验精确匹配，排除调用方索引代码问题。缺陷只出现在量化（fp8/mxfp8）KV cache 张量的任意槽位索引读路径，根因未定位，报告方向上游确认该路径是否受支持。
+  source: https://github.com/vllm-project/vllm-ascend/issues/21285
+  behavior: 使用 mxfp8/fp8 KV cache 的服务，任何按槽位索引 gather 的读法（稀疏注意力、LSA 式 top-k 检索读）拿到的 K/V 值是错的——位级损坏、无报错、无 NaN，服务照常运行；同一批数据改成分页顺序读则完全正确。要恢复正确需为相关层额外维护一份 bf16 镜像并从镜像 gather，代价是显存翻倍（16 层 65536 行约 4GB）。
+  trigger_surface: --kv-cache-dtype mxfp8/fp8 的量化 KV cache + 按槽位张量索引 gather 的读路径；分页 attention 顺序读不受影响。
+  discovery: 2026-11-09 每日扫描
+  notes:
+  - '2026-11-11 回访：回访：#21285 分立出子单 #21529（MTP 接受率回退 49%->41.6%，v0.30.0-a5 vs v0.32.0rc-a5，报告者声明与 KV layout 问题独立），已另立编目 INF-2506；本条仍覆盖量化 KV 索引读损坏本体，注意关联避免重复计数。'
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 量化
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence

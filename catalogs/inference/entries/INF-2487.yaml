@@ -1,0 +1,52 @@
+id: INF-2487
+legacy_ids: []
+slug: detokenize_oov_silent_drop
+aliases: []
+title: /detokenize 词表外 ID 静默丢弃
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 分词/模板
+    stack: vllm
+    component: detokenize ID 校验
+  behavior: create_detokenize() 把 request.tokens 直接交 tokenize_prompt_async()，未调用 validate_token_ids()，词表外正数 ID 无校验（负值仍被请求校验拦截）。
+effect:
+  objects:
+  - 输出内容
+  detail: POST /detokenize 对 [9707,999999999] 返回 200 与只含合法 ID 的文本；[151936]（词表+1）/[999999999] 返回 200 空串；同一 ID 在 /v1/completions 被 400 拒绝。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: '建议在 create_detokenize() 渲染前调用 renderer.validate_token_ids（未提交）；Rust 前端已有同类修复 #62775，https://github.com/vllm-project/vllm/issues/66610。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/66610
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM main（0.33.0rc1.dev1110+g56e5608d0，CPU 后端、Qwen2.5-0.5B-Instruct，vocab 151936，非硬件相关）：POST /detokenize 不校验 token ID。OpenAIServingTokenization.create_detokenize()（vllm/entrypoints/serve/tokenize/serving.py）把 request.tokens 直接传给 renderer.tokenize_prompt_async()，没有调用 renderer.validate_token_ids()；生成路径在 InputProcessor._validate_model_input()（vllm/v1/engine/input_processor.py）有校验，仅 /detokenize 跳过。实测：[9707,999999999]→200 且无效 ID 被静默丢弃、[151936] 与 [999999999]→200 空串、[-1] 被请求校验 400；同一 ID 在 /v1/completions 得 400 Token id out of vocabulary。服务器零日志零 traceback。
+  source: https://github.com/vllm-project/vllm/issues/66610
+  behavior: 调 /detokenize 接口时传入词表外 token ID（越界、负值以外的非法正数），接口返回 HTTP 200，但非法 ID 对应的文本被静默丢掉——客户端拿到缺内容的文本且无任何错误；同样的 ID 走 /v1/completions 会被 400 明确拒绝，两端行为不一致。
+  trigger_surface: vLLM API server /detokenize 端点 + 请求 tokens 含 ≥ 词表大小或非法 ID；与硬件无关。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

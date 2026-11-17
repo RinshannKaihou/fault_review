@@ -1,0 +1,60 @@
+id: TRN-0651
+legacy_ids: []
+slug: megatron_moe_aux_loss_substring_misreport
+aliases: []
+title: aux_loss 子串误判上报伪 0 指标
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: megatron-lm
+    component: aux loss 键名子串判断
+  behavior: training_log 用 "aux_loss" in <type字符串> 子串测试，seq_/global_aux_loss 均命中；router 从不记录该指标，tracker 预创建为全 0。
+effect:
+  objects:
+  - 指标/日志
+  detail: 控制台/TensorBoard/W&B 在真实 seq/global_load_balancing_loss 旁恒 0 上报（实测 tensor(0.) vs 真实 0.5）；误导读表与基于日志的均衡性告警。
+  visibility: 静默错误
+mitigation:
+  detect: 检查 tracked 键集合是否只含配置类型对应指标；日志里出现恒 0 且与真实指标并存的 load_balancing_loss 即该缺陷签名。
+  fix: 待定：issue open（2026-11-01，comments=1 未取），未见修复 PR；aux_loss 列表值、sinkhorn、none、quantile_balancing 行为正确。
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: OBS 面（指标伪值）：路由器实际没算 load_balancing_loss 却上报 0——训练可继续、监控面被污染。substring 误判是机制级根因（非笔误）。
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/8808
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'NVIDIA/Megatron-LM issue #8808（2026-11-01 open）：--moe-router-load-balancing-type seq_aux_loss 或 global_aux_loss 时，training_log 在真实 seq/global_load_balancing_loss 旁上报伪 load_balancing_loss: 0（控制台、TensorBoard、W&B 三处）。机制：validate_args 把 load balancing type 存为普通字符串，training_log 检查 "aux_loss" in args.moe_router_load_balancing_type（megatron/training/training.py）——对字符串是子串测试，seq_aux_loss/global_aux_loss 也为真 → load_balancing_loss 加入 track_names → MoEMetricsTracker.report(force_initialize=True) 把它预创建为全 0（router 对这些类型从不记录该指标）。复现：任一 MoE 配置 + seq_aux_loss，真实 tracker（gloo、world size 1）显示 {''load_balancing_loss'': tensor(0.), ''seq_load_balancing_loss'': tensor(0.5000)}。aux_loss 本体、列表值、sinkhorn、none、quantile_balancing 行为正确，仅单字符串 seq_/global_ 变体受害。comments=1（2026-11-03 后无更新，本轮未取评论内容）。'
+  source: https://github.com/NVIDIA/Megatron-LM/issues/8808
+  behavior: Megatron-LM MoE 训练配 --moe-router-load-balancing-type seq_aux_loss（或 global_aux_loss）时：控制台日志、TensorBoard、W&B 里在真实的 seq_load_balancing_loss 之外多出一条恒为 0 的 load_balancing_loss 指标——训练本身正常，但读表的人/脚本会把 0 当真实均衡损失，基于日志的 MoE 均衡性监控与告警被静默污染（如以 load_balancing_loss 阈值告警的管道永不触发）。
+  trigger_surface: Megatron-LM MoE + 单字符串 --moe-router-load-balancing-type seq_aux_loss/global_aux_loss；版本未列（main 行为）
+  discovery: 2026-11-07 每日扫描
+  notes:
+  - 2026-11-08 回访：轮巡：#8808 open（updated 2026-11-07T20:44Z、comments 1）；aux_loss 子串匹配缺陷维持。
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

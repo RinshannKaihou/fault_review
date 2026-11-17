@@ -1,0 +1,51 @@
+id: TRN-0666
+legacy_ids: []
+slug: search_sorted_dtype_mismatch_oob_read
+aliases: []
+title: SearchSorted dtype 不匹配越界读错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SearchSorted dtype 校验
+  behavior: 记录 values_dtype_ 但从不与 sequence_dtype_ 比较；Compute 只按 sequence_dtype_ 选实现并 cast values——INT64 配 INT32 时每值按 8 字节读越出缓冲。
+effect:
+  objects:
+  - 数值结果
+  detail: values 元素被按 8 字节解释（含越界读到相邻内存），输出索引静默错；无错误码。
+  visibility: 静默错误
+mitigation:
+  detect: values 与 sequence dtype 不一致的组合与 CPU 对账；越界读可用 guard region 探测。
+  fix: 修复 PR https://gitcode.com/cann/ops-math/issues/4616（标题为修复方向：reject mismatched input dtypes before reading values，open 2026-11-07，未见代码落地）。未发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: issue 标题即修复方向（读取前拒绝不匹配 dtype），一行正文给出三处源码定位；数值影响为 dtype 语义推论（8 字节解释 int32 缓冲），无实测矩阵——按 documented 收录，机制清晰。
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4616
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math #4616（2026-11-07 open）：SearchSortedKernel::GetInputAndCheck 记录 values_dtype_ 但从不与 sequence_dtype_ 比较；SearchSortedKernel::Compute 只按 sequence_dtype_ 选 CalSearchSorted（相关行 252–265），且 CalSearchSorted 把 values 缓冲 cast 到该类型（行 180）。算子定义（math/search_sorted/op_kernel_aicpu/search_sorted_aicpu_def.cpp:19–22）允许两个输入各自多种 dtype 组合——DT_INT64 sequence 配 DT_INT32 values 时每个值按 8 字节整数读，包括读越 values 缓冲的内存。训练面：数据管线中 searchsorted 用于分桶/采样边界查找时 dtype 混传静默错值（越界读还可能读到相邻张量内存）。issue 标题即修复方向：读取 values 前拒绝不匹配 dtype；未见修复 MR 落地。'
+  source: https://gitcode.com/cann/ops-math/issues/4616
+  behavior: NPU 上调用 aclnnSearchSorted 且 values 与 sequence dtype 不一致（如 sequence INT64、values INT32）：values 缓冲按 sequence 的 8 字节类型解释，每个元素读 8 字节（越出 values 缓冲读到相邻内存），输出索引静默错误，接口无任何报错。分桶/边界查找结果被带偏；越界读的取值随内存内容变化、难复现。
+  trigger_surface: CANN ops-math SearchSorted（aicpu kernel）+ values 与 sequence dtype 不一致（算子定义允许的组合）；源码定位 def.cpp:19-22/kernel :180/:252-265；修复未落地
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

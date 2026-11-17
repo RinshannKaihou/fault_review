@@ -1,0 +1,60 @@
+id: TRN-0654
+legacy_ids: []
+slug: pad_lane_divf_nan_grad
+aliases: []
+title: pad-lane 格缺除法族传播反向梯度 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: pad-lane 抽象格
+  behavior: _pad_transform 未覆盖除法族：truediv 落默认规则「全操作数 finite→结果 finite」，掩码外 lane 以 0.0 填充、1/0=inf 被误判 finite，累加器守卫被错删，0*inf=NaN 入累加器。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 同进程序列下 (5,)÷rank-0 样本反向对 rank-0 除子的标量梯度为 NaN；单样本单独运行通过、跨进程复现率约 50%（autotune 决定），状态依赖不稳定失败。
+  visibility: 数值异常
+mitigation:
+  detect: 同批样本逐样本重放 + 对除子梯度 NaN 断言；R0_BLOCK 候选固定复现（R0_BLOCK=1 正确、2/4/8/16/32 全 NaN 可实证）。
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49252 本批次快照 2026-11-09T13:44Z 已 merged（发布版本未核实）；修复内容：lattice 补除法族一律 _PAD_TOP，fill 求解器可为除子选 other=-inf，冷/热混合多轮全过（910B3/CANN 9.1.0 实测）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5943
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49252
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2454
+original:
+  mechanism: 'Ascend/pytorch #5943（2026-11-07 open）+ 修复 !49252（open）：OpInfo test_comprehensive___rdiv___npu_float32 完整方法不稳定失败（torch-npu master、torch 2.16.0.dev nightly、triton-ascend 3.6.0.post2、CANN 9.2.0-beta.2）。根因一（NaN）：torch_npu/_inductor/triton_experimental/codegen/triton.py 的 _pad_transform 抽象格未覆盖除法族，truediv 落入默认规则「全操作数 finite → 结果 finite」；掩码外 lane 以 other=0.0 填充，1/0=inf 被误判 finite → 归约累加器的 tl.where 守卫被错删 / fill 求解器误证 other=0.0 → pad lane 的 0*inf=NaN 进入累加器。当 autotune 为 5 元素归约选 R0_BLOCK>5（R0_BLOCK=5 因非 2 的幂编译失败被跳过）时必然 NaN；R0_BLOCK=1 恰好正确——不稳定来源。独立最小内核实证：R0_BLOCK=1 正确，2/4/8/16/32 全 NaN。现象：样本 3 (5,)÷rank-0 的 rank-0 除子标量反向梯度 NaN（Expected -0.495 got nan）。根因二（SympifyError）：legacy group_fn 返回 per-dim 结构违反上游 canonical 标量契约，default 后端融合规划器对 [10,5] 抛 InductorError——编译期 fail-loud，本条只收根因一。修复 PR !49252：lattice 补除法族（精确常量商可证；truediv 非精确、reciprocal/rsqrt/log 非常量、fmod/pow 等 + 可从 finite pad 产生 inf/NaN 的 op 一律 _PAD_TOP；fill 求解器可为除子负载安全选 other=-inf，0*(1/-inf)=-0.0 为和恒等）+ group_fn 对齐上游 canonical。修复后完整方法冷/热混合多轮全过、lattice 单元测试 pre-fix 2/2 红。推理库 INF-2454 已收同源。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5943 ｜修复 PR：https://gitcode.com/Ascend/pytorch/merge_requests/49252
+  behavior: NPU 上跑 torch.compile 的除法+归约用例（如 OpInfo __rdiv__ 完整方法）时：整批序列运行出现某样本的反向标量梯度为 NaN（Expected -0.495 got nan），同一样本单独跑又通过；跨进程复现率约 50%，由 autotune 候选选择决定——表现为「不稳定失败」。实证 R0_BLOCK=1 正确、2/4/8/16/32 全 NaN，可定位到分块大小选择。
+  trigger_surface: triton_experimental 后端 torch.compile + 除法进入归约累加（__rdiv__ 等）；归约元素数 < R0_BLOCK（autotune 选 2 的幂块）时 pad lane 填 0 触发；Ascend 910B3/CANN 9.2.0-beta.2/torch 2.16.0.dev 实测
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - mitigation.fix

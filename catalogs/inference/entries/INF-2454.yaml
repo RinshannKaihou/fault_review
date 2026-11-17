@@ -1,0 +1,64 @@
+id: INF-2454
+legacy_ids: []
+slug: npu_inductor_pad_lane_div_nan_and_group_fn_sympifyerror
+aliases: []
+title: Inductor pad-lane 除法 NaN 与 group_fn 违约
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: pad-lane 抽象格与 group_fn
+  behavior: _pad_transform 缺除法族传播：掩码外 lane other=0.0 使 1/0=inf 被误判 finite，守卫错删、NaN 进累加器；group_fn 违反 canonical 契约致融合期 SympifyError。
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  - 训练信号
+  detail: rank-0 除法反向梯度为 NaN（跨进程复现率约 50%，由 autotune 选择决定）；(10,1,5)÷(10,5) 广播 backward 在 default 后端融合期确定性崩溃（3/3 复现）。同进程单样本均通过，序列状态依赖。
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49252 （open，未合入，标题「sound pad-lane division facts and canonical group_fn」）：lattice 补除法族（非精确情形一律 _PAD_TOP、fill 求解器可为除子负载选 other=-inf）+ group_fn 对齐上游 canonical 展平 numel。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5943
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49252
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0654
+original:
+  mechanism: 两个独立根因，均在 torch_npu/_inductor：根因一，triton_experimental/codegen/triton.py 的 _pad_transform 抽象格缺失除法族传播：truediv 落入默认规则"全操作数 finite→结果 finite"，掩码外 lane 以 other=0.0 填充时 1/0=inf 被误判 finite，导致归约累加器的 tl.where 守卫被错删、fill 求解器误证 other=0.0，pad lane 的 0*inf=NaN 进入累加器；独立最小内核实证 R0_BLOCK=1 恰好正确、2/4/8/16/32 全 NaN（R0_BLOCK=5 候选因非 2 的幂编译失败被跳过，autotune 因此选大块）——不稳定的来源。根因二，default 后端注册的 legacy 调度类把 torch_npu/_inductor/codegen/scheduling.py 的 group_fn（返回 per-dim NumelList 如 ((5,),1)、((10,5),1)）暴露给上游 SchedulerNode._compute_attrs（节点创建时 self.group=(device, group_fn(sizes))），违反上游 canonical 契约（SIMDScheduling.group_fn 应返回展平 numel 标量对 (numel,rnumel)），上游融合规划器 statically_known_equals 对 [10,5] 抛 SympifyError，npu 自身 12 处 _,(numel,rnumel)=n.group 解包也被喂坏值；triton_experimental 后端不定义 group_fn 继承上游 canonical 故无恙。环境：torch-npu master、torch 2.16.0.dev nightly、triton-ascend 3.6.0.post2、CANN 9.2.0-beta.2。修复验证：完整方法修复后 default 后端冷/热混合多轮全过（SympifyError 绝迹）、triton_experimental 无回归；lattice 单元测试 pre-fix 2/2 红。
+  source: GitCode issue https://gitcode.com/Ascend/pytorch/issues/5943 （open）；修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49252 （open）
+  behavior: '运行期看到 OpInfo test_comprehensive___rdiv___npu_float32 样本 3（(5,)÷rank-0）反向对除子的标量梯度为 NaN（Expected -0.495… got nan），跨进程复现率约 50%（取决于 autotune 选择）；样本 6（(10,1,5)÷(10,5) 广播）backward 在 default 后端（未设 TORCHINDUCTOR_NPU_BACKEND）融合期抛 InductorError: SympifyError: [10,5]，3/3 确定性复现。同进程序列内跑才失败、单样本单独运行均通过，表现为不稳定且难归因的编译期崩溃与运行期 NaN 梯度。'
+  trigger_surface: torch.compile（default 后端或 triton_experimental 后端）+ 归约除法反向（rank-0 除子）或广播除法 backward；torch-npu master/torch 2.16.0.dev/triton-ascend 3.6.0.post2/CANN 9.2.0-beta.2。NaN 依赖 autotune 选块大小（R0_BLOCK>5 触发），SympifyError 仅 default 后端。
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度

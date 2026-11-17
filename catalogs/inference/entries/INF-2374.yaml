@@ -1,0 +1,59 @@
+id: INF-2374
+legacy_ids: []
+slug: va_engram_quarot_missing_file_identity_rotation
+aliases: []
+title: QuaRot 旋转文件缺失静默用单位阵致知识塌缩
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: engram 旋转基加载
+  behavior: 检查点声明了 QuaRot 全局旋转但 optional/quarot.safetensors 缺失时，load_engram_rotation_block 不校验声明路径存在性，返回单位阵且无日志；声明过旋转与从未声明两种情况不可区分
+effect:
+  objects:
+  - 输出内容
+  - 输出分布
+  detail: 服务无报错运行，语言能力保留但知识/算术塌缩（3*4=9,216、法国首都接 7 世纪内容）、prompt_logprobs 近随机（rank 68232）、中文 prompt 输出全 ASCII、content 空而 reasoning 载错误文本
+  visibility: 静默错误
+mitigation:
+  detect: 加载后对比正确 prompt 的 prompt_logprobs rank；检查镜像是否拷贝 optional/ 子目录
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20830 （声明路径缺失时抛 FileNotFoundError，open 未发布）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20829
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/20830
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm_ascend/utils.py::get_rotation_path() 从 quant_model_description.json 的 optional.quarot.rotation_map.global_rotation 解析 Path(model)/"optional/quarot.safetensors"，不检查文件存在；vllm_ascend/models/deepseek_v41/model.py 见非 None 路径即设 engram_rotated=True 并调用 load_engram_rotation_block；common.py::load_engram_rotation_block() 内 `if not rotation_path.is_file(): return torch.eye(_ROTATION_BLOCK_SIZE)`——无法区分「检查点从未声明 QuaRot 基（单位阵正确）」与「声明了但文件不在盘上（单位阵错误）」。镜像常只拷顶层文件跳过 optional/ 子目录，第二种情况易发生。CPU 最小复现：对不存在路径调用 load_engram_rotation_block 返回单位阵且无警告。环境：vllm-ascend v0.30.0、vLLM v0.30.0、Atlas 800I A2 (910B)×4 PD 分离、DeepSeek-V4.1-Flash W8A8 QuaRot export、--quantization ascend、dspark 投机、engram cpu_offload+dp_shared_memory。行为确定性、跨重启与拓扑不变。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/20829 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20830
+  behavior: 部署后服务正常起、无任何报错日志，但模型知识/算术明显塌缩：问 3*4 答 9,216；问法国首都接「建于 7 世纪」类错误文本；1,2,3…11 能正确接 12（语言流畅性保留）。正确 prompt 的 prompt_logprobs 接近随机（capital 排 rank 68232，健康模型应个位数）；中文 prompt 输出全 ASCII、content 为空而 reasoning 载错误文本（不发 end-of-reasoning 标记）。
+  trigger_surface: vllm-ascend v0.30.0；DeepSeek-V4.1-Flash W8A8 QuaRot export；检查点镜像缺 optional/quarot.safetensors（quant_description 声明了该文件）。
+  discovery: 2026-11-03 每日扫描
+  notes:
+  - '2026-11-04 回访：源 #20829 与修复 #20830 均仍 open，无合入动向'
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

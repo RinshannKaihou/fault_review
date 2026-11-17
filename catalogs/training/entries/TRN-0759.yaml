@@ -1,0 +1,55 @@
+id: TRN-0759
+legacy_ids: []
+slug: cann_ops_math_acosh_grad_wrong_formula
+aliases: []
+title: AcoshGrad 用错前向输入反向公式致梯度错
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: AcoshGrad 反向公式
+  behavior: AcoshGrad 把前向输出 y 当成前向输入，反向实现为 dy/sqrt(y*y-1) 而非 dy/sinh(y)，正常输入也会得到错误梯度。
+effect:
+  objects:
+  - 梯度
+  detail: acosh 反向在正常有限输入上梯度与真值不符；修复 MR 改为 dy/sinh(y) 并补 dtype/shape 校验，FP16/BF16 舍入对齐 TensorFlow，原精度用例 025/026 修复后 TTK PASS。
+  visibility: 静默错误
+mitigation:
+  detect: 与 autograd/TensorFlow acosh 反向逐元素对拍；覆盖 y 接近 1 与大 y 两段。
+  fix: 修复 MR https://gitcode.com/cann/ops-math/merge_requests/7412（open 2026-11-13，未合入）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 非大模型（CV/传统ML/3D/RNN）算子缺陷，脱离 LLM 训推主路径
+evidence:
+- url: https://gitcode.com/cann/ops-math/merge_requests/7412
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-math !7412（2026-11-13，open，PR 描述）。AcoshGrad 的输入 y 是前向 acosh 的输出，按链式法则反向应为 z = dy / sinh(y)；原实现写成 dy / sqrt(y*y - 1)，把前向输入 x 的公式套在输出 y 上，正常输入也会得到错误结果。PR 改为 dy/sinh(y)，并调整零点附近舍入顺序，FP16/BF16 中间舍入对齐 TensorFlow；同时补图模式动态 shape/未知 rank 推导、运行时 dtype 一致/元素数相等/输出 shape 校验，取消算子内部额外 rank/format 拦截、保留 ND 注册。验证：原精度用例 025/026 静态图与动态图 TTK PASS；容量用例 018/020 保持 2^31 元素；mssanitizer 扫描 43 条内核执行未检出错误；FP16/BF16/FP32 rank 1/8/9/17/25 共 15 组输出与 rank1 逐位一致。PR 未给修复前数值误差，也未声明硬件/CANN 版本，关联 issue 尚未填写。
+  source: https://gitcode.com/cann/ops-math/merge_requests/7412
+  behavior: 使用 acosh 作为前向、反向走 AcoshGrad 的训练图（自定义损失/激活）在正常有限输入上就会拿到错误梯度：梯度幅度与真值不符，但 loss 曲线、返回码、NaN 检查都正常。错误不依赖边界输入，也不报错，只有与 autograd 参考实现或 TensorFlow 对拍才能发现；修复后原精度用例 025/026 在静态图与动态图均 TTK PASS。
+  trigger_surface: AcoshGrad 反向，任意正常有限输入；版本/硬件 PR 未写明（未知）。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

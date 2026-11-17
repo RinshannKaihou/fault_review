@@ -1,0 +1,64 @@
+id: TRN-0612
+legacy_ids: []
+slug: opsnn_foreach_norm_pow_cross
+aliases: []
+title: foreach Norm 非 1/2 阶静默错 + NaN 幂返 1
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: foreach norm/幂族适配
+  behavior: ForeachNorm 只实现 p=1/2 两分支，其余 p 静默落相邻分支返回 L1/L2；foreach 幂族把 NaN 指数当 0 次幂处理，非负底数 x^nan 返 1.0；同机单算子 pow/norm 均正确
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: p=3/2.5/0.5/±inf/nan 全部静默返回 L1 或 L2 结果（p=0.5 差 1 万倍，nan 返有限值）；x^nan 非负底数返 1.0（IEEE/torch 应返 nan），torch._foreach_norm/_foreach_pow 直接可达，两段返回 0
+  visibility: 静默错误
+mitigation:
+  detect: foreach 路径与单算子路径结果对照（同机 torch.linalg.vector_norm(x,1.5) 正确）；NaN 指数哨兵用例
+  fix: 待定（两 issue 2026-11-03 open，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: 推理库 INF-2377（ForeachNorm 非 1/2 阶）/INF-2379（NaN 指数当 0 次幂）已按推理范围收录；本条为训练侧重申合并条目：torch._foreach_norm/_foreach_pow 是训练侧 fused 优化器/梯度裁剪/clip_grad_norm_ 的 foreach 路径入口，训练侧影响成立（clip_grad_norm_ 的 foreach 实现即调 _foreach_norm）。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8012
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8013
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2377
+- kind: cross
+  target: INF-2379
+original:
+  mechanism: 'cann/ops-nn #8012/#8013（均 2026-11-03 open，同一报告者系列，A3 910+CANN 9.2.0-beta.2、A2 910B3 交叉验证一致、ops-nn@118c0c71）。#8012 ForeachNorm：资料给通用公式 y=(Σ|x|^p)^(1/p)，实测仅 p∈{1,2} 正确，其余 p 静默返回 L1/L2 结果且两段返回 0：p=1.5 返 p=1 值（249.809）、p∈{2.5,3,0.5,±inf,nan} 返 11.5266（L2）；关键反证：同机同输入 torch._foreach_norm 与 torch.linalg.vector_norm(npu,1.5) 对全部 p 正确——缺陷在 foreach 适配层（host 分派只落 L1/L2 两分支）而非硬件或 Power 基础实现。#8013 foreach 幂族（PowScalar/V2/PowScalarList/PowScalarAndTensor/PowList）：指数为 NaN 时非负底数返 1.0（x^0=1），NaN 指数被静默当 0 次幂；边界矩阵仅 exp=nan 一列出错（inf/-inf/0/-1/0.5 全对），负底数仍正确返 nan（另一支路）；混合指数用例把缺陷精确限定在 NaN 指数路径（foreach_one_scalar_binary.h→PowerAdapter 适配链）；同机 torch.pow 标量版/tensor 版 NPU 全对。推理库 INF-2377/INF-2379 已按推理范围收录同源两 issue；本条训练侧影响：torch._foreach_norm 是 clip_grad_norm_/fused optimizer 的 foreach 路径（p=2 默认正确，自定义 p 或经此实现的归约路径受影响），_foreach_pow 进入 fused 优化器/自定义训练循环时 NaN 处理错值。同报告者同日系列还有 #8006（roundMode=6 未初始化残值→INF-2376）/#8007（ForeachSin 大参数 inf→INF-2378），推理库均已收，训练侧单独证据面弱（无训练路径报告）不重复建条。'
+  source: GitCode issue：https://gitcode.com/cann/ops-nn/issues/8012 ；https://gitcode.com/cann/ops-nn/issues/8013 （均 open，自包含 C++ 复现+实测矩阵）；推理库同源：INF-2377、INF-2379
+  behavior: 训练脚本用 foreach 路径算非 1/2 阶范数（如自定义 p 的梯度归一化）时，拿到的静默是 L1 或 L2 的值（p=0.5 时差 1 万倍、p=nan 时返回有限值而非 nan），无报错；用 foreach 幂族做含 NaN 指数的运算（如污染数据的 pow 变换）时非负底数返回 1.0 而不是 NaN，NaN 不再传染、被静默洗成合法数值进入训练；同一台机器上单算子 norm/pow 完全正确，只有 foreach 路径错。
+  trigger_surface: aclnnForeachNorm（任意非 1/2 的 p）/ aclnnForeachPow*（指数含 NaN），A3+A2 实测、CANN 9.2.0-beta.2、ops-nn@118c0c71；torch._foreach_norm/_foreach_pow 入口
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 梯度
+        to: 数值结果
+    uncertain:
+    - behavior

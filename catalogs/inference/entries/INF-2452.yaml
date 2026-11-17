@@ -1,0 +1,64 @@
+id: INF-2452
+legacy_ids: []
+slug: vllm_ascend_sw_kv_stale_blocks_cross_request_corruption
+aliases: []
+title: vllm-ascend 滑窗 KV 陈旧块跨请求污染输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: BlockTables 滑窗屏蔽缺失
+  behavior: Ascend 重写 initialize_kv_cache 未传 sliding_window_reach，滑窗屏蔽永不激活，窗口下已释放重分配的块 ID 未置空，attention 读到其他请求 KV。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 输出内容
+  - KV状态
+  detail: 并发 decode 换血负载下部分请求输出损坏：GSM8K 探针 4/6 由对转错，尾部乱码；块表 dump 显示重复块 ID 仅限滑窗 draft 层，首个重复恰出现在首请求越过 4096 窗口边界的解码步。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/21252 （open，未合入）：镜像上游推导 sliding_window_reach 并以 kernel block size 计算 null-block 数；修复后重复块 ID 消失、6/6 探针对齐基线、输出与无换血基线逐字节一致。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21251
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/21252
+  kind: github_pr
+relations: []
+original:
+  mechanism: vllm-ascend 的 vllm_ascend/patch/worker/patch_model_runner.py 是对上游 vllm ced6857afa（initialize_kv_cache 及 gather_block_tables 的 MASK_SLIDING_WINDOW 屏蔽）的 Ascend 重写，但未构造/转发 per-group sliding_window_reach，导致 has_sliding_window_groups 保持 False、MASK_SLIDING_WINDOW 从不启用，滑窗边界以下的块 ID（含滑窗管理器已释放并重分配给其他请求的块）不被置空；attention 处理跨越窗口边界的 KV tile 时读到其他请求的 KV。另外 Ascend 把块表行扩展到 kernel-block 粒度（blocks_per_kv_block 条目/管理块），null-block 计数必须用 kernel block size 而非管理块大小，否则漏计留下陈旧条目。证据：重复块 ID 仅限 5 个滑窗 draft 层（full-attn 层干净）；首个重复恰在首请求跨 4096 窗口边界的 decode step 316，符合驱逐路径而非分配器双分配；604 个权重文件两臂逐字节一致排除乱写；两文件修复后重复块 ID 消失、drift 4/6→0/6、输出与无换血基线逐字节一致。环境：vllm-ascend main@28e9e97、vllm v0.26.1rc1、Atlas 910B、V1 引擎 v2 worker 栈、Qwen3.6-35B-A3B 类 hybrid GDN（10 层 full-attn+30 层 GDN）、DFlash 式 draft（5 层滑窗、窗口 4096）、投机解码。
+  source: GitHub issue https://github.com/vllm-project/vllm-ascend/issues/21251 （open）；修复 PR https://github.com/vllm-project/vllm-ascend/pull/21252 （open）
+  behavior: 在请求持续完成、KV 块不断释放再分配的并发 decode 换血负载下，部分请求返回损坏输出：temperature 0 固定种子的 GSM8K 探针在换血前后 6 个中 4 个由正确答案变为错误答案，受影响请求尾部出现乱码文本。块表 dump 可见重复块 ID 只出现在 5 个滑窗 draft 层，全注意力层正常，首个重复恰在首个请求越过 4096 token 窗口边界时（trace 中 decode step 316）。无报错、无 NaN，服务不中断，仅输出内容静默劣化。
+  trigger_surface: vllm-ascend + 投机解码（draft 含滑窗注意力层）+ 并发 decode 换血负载；管理块释放重分配后滑窗边界以下块未被屏蔽。触发配置：滑窗层（如 DFlash 式 draft 5 层 SWA、窗口 4096）+ 请求持续完成使块回收再分配。无滑窗层模型不受影响。
+  discovery: 2026-11-07 每日扫描
+  notes:
+  - '2026-11-08 回访：#21251 仍 open 无状态变化，修复 PR #21252 仍 open（批次快照）'
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 输出内容
+        to: 跨请求/跨样本数据
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

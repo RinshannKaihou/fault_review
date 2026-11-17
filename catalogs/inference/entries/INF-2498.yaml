@@ -1,0 +1,55 @@
+id: INF-2498
+legacy_ids: []
+slug: vllm_multi_module_mtp_slot_state_leak
+aliases: []
+title: vLLM 多模块 MTP speculator 槽位残留泄漏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: MTP speculator 槽位缓存
+  behavior: 每 request 槽位缓存（draft input ids/hidden states/MM embeds）在槽位复用时无重置、短窗只覆写尾部、拒绝后重灌不查有效数量，前一请求数据进入新请求 draft 上下文并写入其 draft KV。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  detail: 开多模块 MTP（num_speculative_tokens>1）时，新请求复用刚结束请求的槽位，draft 模型跑在上一请求残留数据上，draft 质量与接受率受影响，全程无报错；触发依赖槽位复用、短 draft 窗口与拒绝路径的组合。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue open 附 POC，未见修复 PR）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/66886
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.31.0 V2 GPU model runner；MultiModuleMTPSpeculator（SpeculativeConfig 在 method="mtp"、draft 多于一个 MTP 模块且 num_speculative_tokens>1 时选用）。三类缓存 cached_draft_input_ids[max_num_reqs,S-1]（speculator.py:56-61）、cached_target_hidden_states[:63-69]、cached_draft_input_embeds[:91-97]（MM 模型 load_model 分配）。三问题组合：1) 未覆写 add_request，BaseSpeculator.add_request（spec_decode/speculator.py:129-132）为空操作，GPUModelRunner.add_requests（model_runner.py:1290）每次槽位分配无任何重置；2) _cache_inputs_kernel（:912-921）只写 range(max(window_start,query_start), last_token_index+1)，短于 S-1 的 draft query 只覆写窗口尾部，低槽位保留前一占用者条目；3) _prepare_input_buffers_kernel（:520-527,:590-606）与 _prepare_input_hidden_states_and_embeddings_kernel（:708,:739-771）下一步重灌 R=max(0,num_rejected-1) 条（至多 S-1）不检查有效数量，位置 first_position-R+i。附 TRITON_INTERPRET=1 POC：请求 A（ids 900x、hidden 7.0）用槽 0 完成后，请求 B（ids 5xxx、hidden 3.0）复用槽 0、2 token prompt、首步拒绝全部 4 个 draft 即复现。
+  source: https://github.com/vllm-project/vllm/issues/66886
+  behavior: 开多模块 MTP 投机解码（num_speculative_tokens>1）时，新请求复用刚结束请求的槽位后，draft 模型的输入混入上一个请求的 token ids、target hidden states（多模态模型还包括 input embeds），并被写进新请求后续 MTP 模块的 draft KV：draft 质量与接受率受跨请求脏数据影响，全程无报错；触发依赖槽位复用、短 draft 窗口与拒绝路径的组合。
+  trigger_surface: vLLM V2 + method="mtp" 多模块 MTP + num_speculative_tokens>1 + 槽位复用（新请求分到刚释放槽）+ 短 prompt/全拒绝触发重灌；v0.31.0。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    issue_unfixed:
+    - behavior

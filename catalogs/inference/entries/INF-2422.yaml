@@ -1,0 +1,73 @@
+id: INF-2422
+legacy_ids: []
+slug: forearch_expm1_tensornum_over_256_tail_skip
+aliases: []
+title: ForeachExpm1 超 256 张量尾部静默不计算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ForeachExpm1 数量校验
+  behavior: 缺 tensorNum>256 校验：n>256 的列表被接受，尾部张量静默不算，host 侧结构体越界写
+effect:
+  objects:
+  - 数值结果
+  detail: 超过 256 个成员的 foreach 列表：前面成员算对、尾部成员保持原值静默不算（无错误码），host 侧还有结构体越界写；调用方无感知
+  visibility: 静默错误
+mitigation:
+  detect: 调用侧按 256 上限分批；输出与逐个 expm1 对拍
+  fix: 待定（issue open）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8254
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/14059
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0631
+original:
+  mechanism: 'CANN ops-nn aclnnForeachExpm1 缺 tensorNum>256 校验：传入超过 256 个 tensor 的列表被接受而非拒绝，尾部张量静默不算（输出保持输入原值，无错误码），且 host 侧 tiling/executor 结构体按 256 定长分配发生越界写。与同仓 aclnnForeach 家族其余成员（有 256 上限校验返回 161002）行为不一致。foreach 族是 torch._foreach_* 优化器/参数批量算子路径的底层接口。详细正文见批次缓存 issue #8254。'
+  source: https://gitcode.com/cann/ops-nn/issues/8254
+  behavior: 批量指数运算（foreach expm1）一次传超过 256 个张量时：接口不报错，前面 256 个算对了，第 257 个往后的张量原样返回、根本没算——静默漏算；同时 host 侧还有越界写风险。torch 优化器大批量参数分组场景（如大 MoE 模型分组更新）会静默拿到未计算的参数值。
+  trigger_surface: CANN ops-nn aclnnForeachExpm1；tensorNum>256 的 TensorList；与 dtype 无关。
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - '2026-11-10 回访：回访：公共 tiling 修复 PR !14059（CheckInputTensorlistCount 对 tensor list 成员数>256 报 561002）补齐 A2/A3 公共路径缺口，覆盖全部走 ForeachCommonTiling 的 foreach 算子（eager+图模式）；与 #8254 的 910C 侧尾部未写证据同源，A5/arch35 侧已由 6dd561aca 修复；PR open 未合入。'
+  - '2026-11-11 回访：回访：issue #8254 已 closed、公共 tiling 修复 PR !14059 已 merged（2026-11-11，A2/A3 全部 foreach 公共路径补齐 + A5/arch35）；随 CANN 版本发布未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - evidence
+  - date: '2026-11-10'
+    fields:
+    - original.notes
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - relations

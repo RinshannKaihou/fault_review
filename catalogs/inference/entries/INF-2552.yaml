@@ -1,0 +1,57 @@
+id: INF-2552
+legacy_ids: []
+slug: vllm_ascend_310p_gdn_ragged_mtp_state_flatten
+aliases: []
+title: 310P GDN ragged MTP 压平 state 表取错请求
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: 310P 独立 GDN 算子 state 索引
+  behavior: 按当前 query 长度压平 [B,W] state 索引表会丢弃历史槽；accepted_prev 大于 current_len 时读 row_start+accepted_prev-1 落到其它请求的 state，写回也错。
+effect:
+  objects:
+  - KV状态
+  - 跨请求/跨样本数据
+  detail: 310P GDN + ragged MTP 验证，接受 token 数超过当前 query 长度时用到别的请求历史 state 并写回；原实现直接拒绝该合法输入，仅去掉 guard 仍会选错 state。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 accepted_prev>current_len 的 ragged MTP batch，混排不同请求、打乱物理 state 槽，与 FP32 CPU recurrence 逐元素比较输出和整个 state pool。
+  fix: 'PR #21864（open，原 #18730 重提；未核实合入与发布）：保留完整 [B,W] state 索引表，host tiling 传行 stride，按 row_start+accepted_prev-1 读历史、row_start+current_token_offset 写当前。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-14'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/21864
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/issues/17856
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/18730
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend 的 Ascend 310P 独立 recurrent GDN 算子在 ragged MTP 验证下，已接受 token 数（accepted_prev）可能大于当前 query 长度。旧 kernel 把这种情况当非法直接 return，未完成 state/output 更新；仅删除 guard 不够：按当前 query 长度压平 state 表会丢弃历史槽，并可能选中另一个请求的 state。PR #21864 的修复保留完整 [B, W] state 索引表，host tiling 把行 stride 传给 kernel，kernel 在 row_start + accepted_prev - 1 读历史、在 row_start + current_token_offset 写当前 state；接受边界用历史行宽而非 packed query offset；零长度 padding 请求在访问 state 前跳过；保留原 1D packed-index 路径。新增回归覆盖历史宽度 2/3/4、accepted 超过 current、打乱物理槽、异构 batch、不同位置零长 padding、尾部 query buffer padding 与旧 1D 路径，并用 graph replay 改设备侧长度/接受数/state 索引、毒化输出缓冲暴露未写值。'
+  source: https://github.com/vllm-project/vllm-ascend/pull/21864 ｜原 issue https://github.com/vllm-project/vllm-ascend/issues/17856 ｜前身 PR https://github.com/vllm-project/vllm-ascend/pull/18730
+  behavior: 310P 上开启 GDN 线性注意力与 MTP 投机解码时，如果一次 verify 接受的 token 数超过当前 query 长度（ragged 合法 batch），旧算子要么直接报错不更新，要么在去掉 guard 后按当前长度压平 state 表：后续 token 读到别的请求或更早轮次的历史 state，生成内容静默偏离，state pool 被写乱且无告警。普通等长 batch 或未开启 MTP 时不触发。
+  trigger_surface: Ascend 310P 独立 GDN 算子；ragged MTP 验证且 accepted_prev > current query length；异构 batch、零长 padding、shuffled state slots。
+  discovery: 2026-11-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-14'
+  audit:
+    round: daily-audit-2026-11-15
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

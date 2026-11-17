@@ -1,0 +1,53 @@
+id: INF-2505
+legacy_ids: []
+slug: ttmetal_norm_factories_2dgrid_dtype_noc_bugs
+aliases: []
+title: tt-metal 归一化工厂三缺陷错值/错dtype/挂死
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: layernorm/groupnorm 工厂
+  behavior: 2D 宽分片 post_all_gather 误开 two_stage_reduce（绑不存在 STATS、关 enable_sqrt、坏参数）；interleaved 输出 dtype 被忽略；GroupNorm NOC1 交换错致挂死。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 2D 宽分片 post_all_gather layernorm 静默错值（缺 1/sqrt(Var+ε)）；指定 dtype 的 interleaved 归一化静默输出输入 dtype；非矩形 core group 的 GroupNorm NOC1 组播挂死。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（审计 issue open 带文件行号，未见修复 PR）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/64740
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal 审计（issue #64740，main）：Bug1——DistributedLayerNormStage::POST_ALL_GATHER 输入强制单 tile 高（M=32，layernorm_device_operation.cpp:285）使 block_ht=1、mcast_1d=true；宽分片 2D 网格（gs.x>1&&gs.y>1）下 GridParams::compute 未检查 !is_post_all_gather 即调 should_use_two_stage_reduce 置 true（layernorm_op_multi_core_sharded.cpp:166 等），绑定不存在的 STATS shard、width_index≥1 被置 is_second_stage_reader=false 使 enable_sqrt=false（layernorm_sharded_post_allgather.cpp:104，跳过 1/sqrt(Var+ε)），all_to_all NOC varargs 被 reader 读错。Bug2——compute_output_specs sharded 分支用 operation_attributes.dtype.value_or(input)（:533）而 interleaved 分支硬编码 input_tensor.dtype()（:542），dtype=float32/bfloat8_b 被静默忽略。Bug3——三个 GroupNorm 工厂（sharded/mcast/no_mcast）在 NOC1 调整中 swap(mcast_start,mcast_end) 而非 first/last 对（groupnorm_*_program_factory.cpp），非矩形 core group 下组播挂死或主矩形交换被撤销；sharded 工厂 COL_MAJOR 校验查 num_groups_per_core 而非 num_batches_per_core（:288）。'
+  source: https://github.com/tenstorrent/tt-metal/issues/64740
+  behavior: 在 2D 宽分片网格上跑 ttnn layernorm/rms_norm post_all_gather 时输出静默错误（two-stage 统计路径被错误启用且 sqrt 项被关闭）；interleaved 张量上给 ttnn.layer_norm/rms_norm 传 dtype=float32/bfloat8_b，返回的输出仍是输入 dtype（请求被无声忽略）；非矩形 core group 的 GroupNorm 在 NOC1 上直接组播挂死。
+  trigger_surface: ttnn layernorm/groupnorm：2D 宽分片 post_all_gather（Bug1）、interleaved + 显式 dtype（Bug2）、非矩形 core group + NOC1（Bug3）；tt-metal main。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - behavior

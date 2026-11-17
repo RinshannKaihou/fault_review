@@ -1,0 +1,53 @@
+id: INF-2418
+legacy_ids: []
+slug: npu_dropout_rand_ops_cse_merge
+aliases: []
+title: npu._npu_dropout 未入 rand_ops 被 CSE 合并
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: fx_graph_cse rand_ops 名单
+  behavior: npu._npu_dropout 内部用 RNG 但不在 fx_graph_cse 的 rand_ops 名单（aten.native_dropout 在），fallback_random=True 时相同 dropout 调用被错误合并
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 两次 dropout 共用同一 mask（torch.equal(a,b)==True），随机性丢失、分支强相关、RNG 序列错位；npu-triton/npu-ascendc 后端均复现，纯推理与默认 fallback_random=False 不受影响
+  visibility: 静默错误
+mitigation:
+  detect: 对两个独立 dropout 输出做 torch.equal 断言；关闭 fallback_random
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49092 （把 _npu_dropout、npu_dropout_gen_mask、npu_dropout_do_mask、npu_dropout_with_add_softmax 补进 rand_ops，状态未核实是否合入）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5880
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu（torch 2.10.0 / torch_npu 2.10.0.post7.dev20261016，Ascend910_9362 A3）。torch._inductor.config.fallback_random=True 时 native_dropout 下沉为 npu._npu_dropout；torch._functorch.compile_utils.fx_graph_cse 只跳过 rand_ops 名单中的算子，aten.native_dropout 在名单内而 npu._npu_dropout 不在。训练路径经 AOTAutograd min-cut 分区调用 fx_graph_cse，两个结构相同的 dropout 调用被合并为一个：共用同一 mask/output、随机性丢失分支强相关、RNG 只消费一次后续序列错位、训练梯度噪声/统计特性不正确。复现（issue 附最小代码）：M 内两次 F.dropout(x,0.5) 后 torch.equal(a,b)==True（期望 False）。npu-triton 与 npu-ascendc 均复现（CSE 发生在 AOTAutograd 阶段与后端无关）；纯推理路径和 fallback_random=False 默认路径不受影响。修复 PR !49092 在 torch_npu 侧补 4 个 dropout 算子进 rand_ops。
+  source: https://gitcode.com/Ascend/pytorch/issues/5880
+  behavior: NPU 上开 fallback_random 用 torch.compile 编译训练图：两个独立的 dropout 被编译器公共子表达式消除当成同一个（因为它不知道这个 NPU dropout 内部带随机数），两次丢使用完全相同的 mask，输出 torch.equal 为 True。模型正则化失效、随机性丢失，训练出的模型质量受损且无任何报错。默认配置不受影响，仅 fallback_random=True 时触发。
+  trigger_surface: torch_npu 2.10.0；torch.compile + fallback_random=True；同一图中结构相同的多个 dropout（经 AOTAutograd/fx_graph_cse，训练路径）；npu-triton/npu-ascendc 均受影响。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

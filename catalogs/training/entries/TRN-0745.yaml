@@ -1,0 +1,57 @@
+id: TRN-0745
+legacy_ids: []
+slug: verl_rollout_tq_cache_drops_relabel
+aliases: []
+title: verl rollout_tq 缓存重放丢轨迹并跨会话改标
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: RolloutTqSkip 重放
+  behavior: 缓存重放循环把轨迹键硬编码 index=0 后缀，并按新 prompt 数强行填 rollout.n 行、以循环计数当 session_id 选组——不读缓存键的真实 session/index 语义。
+effect:
+  objects:
+  - 训练样本流
+  detail: agentic RL 单会话产多条轨迹时，index>0 的缓存轨迹被静默丢弃；n=2 下 old_0_1 被重放为 new_1_0，即会话 0 的 index=1 轨迹被标为会话 1，old_0_2 与 old_1_0 丢失；重放尺寸由新 prompt 数推导，训练无报错但数据错位。
+  visibility: 静默错误
+mitigation:
+  detect: 缓存重放步对 dump 的键集合与重放产出键集合做全量 diff；单会话多轨迹回归（old_0_0..2+old_1_0）断言无丢行不错标
+  fix: 待定（issue open；触发功能 skip.rollout_tq.enable=True + action=cache + steps 含该步）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: 缺陷 2（尺寸按新 prompt 数推导）同样静默；代码行定位 verl/utils/skip/rollout_skip.py:423-428 与 agent_loop_tq.py:198。skip.rollout_tq 为 opt-in 缓存重放功能。
+evidence:
+- url: https://github.com/verl-project/verl/issues/8651
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'verl issue #8651（2026-11-11 open；main @ 1e125260）。skip.rollout_tq（enable=True, action=cache, steps=[N]）重放缓存步时，RolloutTqSkip.load_dump_data（verl/utils/skip/rollout_skip.py:339）重写轨迹键：循环 for session_id in range(n) 选 group[session_id % len(group)]，new_keys.append(f"{new_uid}_{session_id}_0")——index 后缀恒为 0，session_id 来自循环计数而非缓存行。agentic RL 一个会话可产多条轨迹（agent_loop_tq.py:198 按输出序号 i 写键 {uid}_{session_id}_{i}），因此：1) 缓存里 index>0 的轨迹全部被静默丢弃；2) 行跨会话改标——缓存组 [old_0_0,old_0_1,old_0_2,old_1_0]（会话 0 三条+会话 1 一条）在 n=2 下重放出 new_0_0=old_0_0、new_1_0=old_0_1，old_0_2 与 old_1_0 丢失、会话 0 的第 1 条被标为会话 1。2) 缓存重放尺寸由新 prompt 数推导（rollout.n 行/prompt），与缓存内容解耦。sync/colocate_async/separate_async 共用该路径。来源：https://github.com/verl-project/verl/issues/8651 。训练面：开 rollout 缓存重放的 agentic RL 训练步数据静默错位/丢失。'
+  source: https://github.com/verl-project/verl/issues/8651
+  behavior: 在 verl 开启 rollout_tq 缓存重放（skip.rollout_tq）训练 agentic RL 时：一个会话产出多条轨迹的话，重放出的缓存步里第 2 条及以后的轨迹被悄悄丢掉，剩下的行还会被贴到错误的会话编号下（内容与标签错位）、行数由新 prompt 数硬性决定——训练无报错，但这些缓存重放步的样本流已残缺错位，梯度喂的是错的数据。
+  trigger_surface: verl V1 trainer + TransferQueue + skip.rollout_tq.enable/action=cache/steps 命中该步 + 单会话多轨迹（agentic）；issue open 无修复
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 数据管线
+        to: RL训练回路
+    rewritten:
+    - detail

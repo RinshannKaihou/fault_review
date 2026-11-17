@@ -1,0 +1,72 @@
+id: TRN-0618
+legacy_ids: []
+slug: opstransformer_flashattn_masked_sink_lse
+aliases: []
+title: FlashAttn 全 masked 块跳过致 sink 行 LSE 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: flash_attn sink 初始化
+  behavior: ClearOutput 把 LSE 全部初始化为 +inf，GetTaskDealMode 整块跳过无可见 KV 的 query 块，跳过块不经过 sink 初始化与 LSE 写回，保留 +inf 而非 sink[head]。
+effect:
+  objects:
+  - 数值结果
+  detail: 滑动窗口+因果 mask 下全 masked 有效 query 行 LSE 返回 +inf（应 sink[head]），同类行结果依赖分块边界；原始 case LSE 匹配率 73.66%，错 24576/93312 元素，attention 匹配率 99.9988%。
+  visibility: 数值异常
+mitigation:
+  detect: 构造 win_left/win_right 使部分 query 全 masked 的 LSE 用例（原始 case Prefill_FP16_..._Mask_200029：seqused_kv=[5184,67,67]、win 2166/2996）；新增回归 test_masked_sink_lse.py 48 例。
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/15277（open）：有 sink 时初始 LSE 为 head 的 sink、被跳过块自然保留正确值；arch35 已实测恢复 100%，arch92 待真机；附 100-case 性能回归存在可复现劣化。未发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-05'
+remarks: 与 TRN-0608（FA 反向确定性 TND 梯度错）同 FlashAttention 家族不同层：此条是前向 LSE 输出在 learnable sink + 全 masked 块跳过路径的分块依赖错误。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7101
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15277
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0608
+pattern: PAT-TRN-0051
+original:
+  mechanism: 'cann/ops-transformer #7101（2026-11-04 open）+ 修复 !15277：FlashAttn 同时启用 learnable sink、滑动窗口/右下角因果 mask 和 LSE 输出时：(1) ClearOutput() 把全部 LSE 初始化为 +inf，不区分有无 sink；(2) GetTaskDealMode 直接跳过无可见 KV 的整块 query，跳过块不进入 ResetSoftmaxBuffer 的 sink 初始化与 LSE 写回；(3) 落在实际执行块内的全 masked 行经 sink 初始化正确保留 sink 贡献——同类行结果依赖分块边界。数学上有限 sink 下全 masked 有效行分母仍有 exp(sink[head])，LSE 应=sink[head]、attention=0。原始 case（FP16 B3H6 S5184 D128，mask_mode=4，win_left=2166/win_right=2996）LSE 匹配率 73.66255%，恰为 2 batch×6 head×2048 行被跳过/93312 元素，逐点检查错误值均为 +inf、golden 为 sink。引入于 sink 功能提交 0063705c58（2026-09-07），arch35（Ascend950PR）真机复现、arch92 存在同路径待验证。对照 Dao-AILab flash-attention CuTe（5f7b05a7）空块处理后仍调 softmax.finalize(sink_val)。修复后原 case LSE 100%、attention 与旧包逐位一致；新增 48 例回归（FP16/BF16、BNSD/BSND/TND、mask 0/3/4）；但 100-case 性能回归存在可复现劣化（作者自述尚不能认为无性能代价）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7101 ｜修复 PR：https://gitcode.com/cann/ops-transformer/merge_requests/15277
+  behavior: 训练用 FlashAttention 带 learnable sink、LSE 输出且 mask（滑动窗口/因果）使部分有效 query 的 KV 全被 mask 时，这些行的 LSE 输出为 +inf 而不是 sink 值，且哪些行错取决于分块边界；实测原始 case 26% LSE 元素错（匹配率 73.66%）、attention 输出本身基本不受影响（99.9988% 匹配）——依赖 LSE 的下游（如 normalization/蒸馏目标）静默拿到 inf。
+  trigger_surface: CANN flash_attn + learnable sink + return_softmax_lse + mask_mode=4/滑窗使整块 query 全 masked；Ascend950PR arch35 真机复现（CANN 9.3.0），arch92 同路径
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-07 回访：批次快照 !15277 仍 open（2026-11-04T08:09Z 后无更新），维持。
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - pattern
+  - date: '2026-11-07'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常

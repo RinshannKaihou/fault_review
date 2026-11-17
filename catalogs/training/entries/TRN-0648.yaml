@@ -1,0 +1,76 @@
+id: TRN-0648
+legacy_ids: []
+slug: opsnn_batch_norm_grad_v3_arch35_dgamma_rounding
+aliases: []
+title: batch_norm_grad_v3 arch35 dgamma 多次舍入超阈
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: dgamma/dx 归约舍入
+  behavior: dgamma 归约被加项三次分立舍入（(x−mean)→×dy→×rstd，rstd 混在段内逐项相乘）舍入源偏多；dx 强抵消元素误差由 dgamma 误差主导。
+effect:
+  objects:
+  - 梯度
+  detail: arch35 fp32 训练反向部分用例误差比值超阈（dx 12.28>10、dgamma 2.32>2.0）；绝对精度正常（~1e-7）。修复后 90/90 PASS，小 C 长 R 形状仍有约 1/5 超阈残留。
+  visibility: 静默错误
+mitigation:
+  detect: fp64 真值对照的三方精度 benchmark（cv_fused_double_benchmark）；dgamma 误差比值按形状分布监控。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/10979（merged，2026-11-06 快照）：dgamma 先归约后乘 rstd（全 6 条 kernel 路径）、FullLoad 对折乘加改 MulAddDst 单次舍入、dx 标量结构预合并 grad_scale、SplitR1 FoldVF tail 修复；残留小 C 长 R 约 1/5 超阈待后续（融合乘加覆盖 LessThanVL 或长归约升级累加精度）。发布未核实。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-07'
+remarks: TRN-0564（BN 归约精度族，INTrainingUpdateV2/BN3D 等成员 TRN-0573/0637）新成员：batch_norm_grad_v3 arch35 fp32 反向，机制同为 FP 舍入残差丢失（dgamma 三次分立舍入）。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8290
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/10979
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0564
+pattern: PAT-TRN-0062
+original:
+  mechanism: 'cann/ops-nn issue #8290（closed 2026-11-06）+ 修复 PR #10979（merged 2026-11-06 快照）：batch_norm_grad_v3 arch35（Ascend950PR，__NPU_ARCH__ 3510）fp32 训练反向在 cv_fused_double_benchmark 精度标准下部分用例失败——均为误差比值超阈：[16,8,64,48] dx 比例 12.28>10、[8,1,64,64] dgamma 比例 2.32>2.0；绝对精度正常（vs fp64 真值误差 ~1e-7 量级，CPU 标杆全 PASS）。根因：dgamma 归约被加项为三次分立舍入（(x−mean)→×dy→×rstd，rstd 混在段内逐项相乘），舍入源偏多；dx 在强抵消元素上的误差由 dgamma 误差主导。修复 #10979：dgamma 先归约后乘 rstd（全 6 条 kernel 路径）、FullLoad/RA FullLoad 对折乘加改 MulAddDst（vmula 单次舍入）、dx 标量结构预合并 grad_scale=rstd·gamma、SplitR1 FoldVF tail 项构造修复；PR 前后各 30 组随机输入×3 形状对照：CPU 标杆 2 FAIL→90/90 全 PASS，dgamma 误差分布整体左移（max 1.77→1.22）。残留：小 C 长 R 形状（如 [8,1,64,64]）dgamma 比值随输入波动约 1/5 概率超阈，后续方向为融合乘加覆盖 LessThanVL 子路径或 C=1 类长归约升级累加精度。'
+  source: https://gitcode.com/cann/ops-nn/issues/8290 ；修复 PR：https://gitcode.com/cann/ops-nn/pull/10979
+  behavior: 在 Ascend950（arch35）上做 fp32 BN 训练反向时，部分形状的 dx/dgamma 梯度误差比值超出三方精度判据（如 [16,8,64,48] 的 dx 12.28、[8,1,64,64] 的 dgamma 2.32）——绝对误差不大（1e-7 量级）但相对比值超阈，BN 参数更新从源头带系统性偏差；训练无报错，靠 fp64 对照 benchmark 才能发现。修复后 90/90 全 PASS，小 C 长 R 形状仍有约 1/5 概率超阈的残留。
+  trigger_surface: batch_norm_grad_v3 arch35（Ascend950PR）fp32 训练反向 + 阈值敏感形状（小 C 长 R 如 [8,1,64,64]）；CANN 9.3.0
+  discovery: 2026-11-07 每日扫描
+  notes:
+  - '2026-11-08 回访：回访：同仓 #8366 MaxPoolGradWithArgmax NHWC 小 C 解码错位（详见 TRN-0658）为训练反向 tiling 精度族又一例——不占本条证据，family 面记录。'
+  - '2026-11-08 回访：修复载体：本条修复 #10979 merged（快照 2026-11-06T01:34Z）、issue #8290 closed——发布未核实；小 C 长 R 约 1/5 超阈残留面以 issue 关闭为准，后续版本回归再核。'
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - pattern
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 优化器
+        to: 算子/内核

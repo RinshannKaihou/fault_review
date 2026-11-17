@@ -1,0 +1,51 @@
+id: INF-2404
+legacy_ids: []
+slug: pool_key_indexer_int32_row_base_wraparound
+aliases: []
+title: PoolKeyIndexer 段内行基址 uint32 回绕双端损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: PoolKeyIndexer 行基址位宽
+  behavior: indices 输出段内行基址按 uint32 计算，当 (S1-1)×W ≥ 2^32（W=topk+pool_size-1）且 pool_size≥2 时回绕，高段行写入翻转到低段并错位覆写低段行
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 段内行基址≥2^32 且 pool_size≥2 时，indices 高段行整段未写（最高 18.23% 元素缺失）、低段行被错位覆写（31.15% 行损坏，损坏行数=2U+1）；算子返回成功、无运行时报错，下游按索引读 KV 池取到错位或垃圾数据，精度比对整批 FAIL
+  visibility: 静默错误
+mitigation:
+  detect: issue 附自包含复现脚本（三臂 trigger/boundary/ps1_immunity，exit 0=复现）可直接作回归门禁；预测公式首未写行=ceil(2^32/W)、损坏行=2U+1
+  fix: 待定（issue open 未见修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7156
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-transformer aclnnPoolKeyIndexer（libopapi.so，CANN 9.3.0，Atlas 800I A2 910B3）。当 indices 输出段内行基址 (S1-1)×W ≥ 2^32（W=topk+pool_size-1；BSND 布局按每 batch 段内行数独立基址）且 pool_size≥2 时，行基址 uint32 回绕产生双端损坏：高段 U=S1-fb 行（fb=ceil(2^32/W)）写入落点翻转到低段 r×W-2^32，行内容整体落空；低段 U+1 行被错位覆写（行 j 尾槽←行 fb+j 头槽）。损坏行合计 2U+1。判别细节：跨 2^32 边界的行内元素正常（行 836,410 末尾 3,189 元素下标≥2^32 仍写入）——故障在行基址而非逐元素偏移；ps=1（纯 TopK 路径）免疫，numel≥2^32 的 ps=1 用例全 PASS；BSND 段内偏移≈5.4e8≪2^32 的 8-batch 反例 PASS；values 输出不受影响（输出偏移链路独立）。两轮独立测试：第一轮 1400 几何×3 套件 4233 用例 24 id×3=72 FAIL；第二轮 1000 用例（含边界带对照、BSND 反例、ps=1 免疫对照）9 FAIL。24/24 用例 62 次哨兵观测与预测公式逐字段 0 偏差，100% 确定性复现。覆盖 fp16/bf16、TND/PA_BBND/BSND、mask 0/3、ps 1..128、topk 128..8192、T1 至 1,032,704——dtype/layout/mask/rv 与触发无关，触发维度仅段内行基址与 ps。
+  source: https://gitcode.com/cann/ops-transformer/issues/7156
+  behavior: 稀疏注意力 lightning indexer（DeepSeek 系 SAL）选池几何较大（段内行基址超过 2^32 字节级）时，算子返回成功，但 indices 输出高段行整段没写（最高 18.23% 元素缺失）、低段行被别行的数据错位覆盖（31.15% 行损坏）；损坏模式可用公式精确预测（损坏行数=2U+1）。下游按这些索引寻址读 KV 池会拿到错位或垃圾数据，精度比对整批 FAIL 但无任何运行时报错。
+  trigger_surface: CANN 9.3.0；aclnnPoolKeyIndexer；段内行基址 (S1-1)×W≥2^32（如 S1=520000/topk=8192/ps=128→numel≈4.03Gi 元素）∧ pool_size≥2；与 dtype/layout/mask/rv 无关。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+    - detail

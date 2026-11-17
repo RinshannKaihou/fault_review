@@ -1,0 +1,47 @@
+id: INF-2394
+legacy_ids: []
+slug: w4a16_moe_group_size_ignored_defaults_32
+aliases: []
+title: W4A16 MoE 忽略 group_size 静默按 32 量化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: W4A16 工厂丢弃组大小
+  behavior: 工厂解析出每层 weight_quant.group_size 却构造 scheme 时不传入，scheme 读无关的顶层配置，标准 group 64/128 静默变 32
+effect:
+  objects:
+  - 模型权重
+  detail: group128 应得 w13 scale (2,512,4)/w2 (2,512,2)，default32 路径生成 (2,512,16)/(2,512,8)，检查点 scale 形状无法匹配加载
+  visibility: 静默错误
+mitigation:
+  detect: AST 加载生产代码的 CPU 回归（合成张量核对 scale 形状）
+  fix: 待定（issue 2026-11-04 新开，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20973
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend main 0f85ed44：compressed_tensors_config.py:119-125 把 config_groups.*.weights 解析进 QuantizationArgs（含 group_size），_is_w4a16 接受静态 grouped INT4（group64/128）；但工厂（316-324 行）以 scheme_cls() 构造 scheme 丢弃每层 group_size，w4a16.py:187-193 读 quant_description.get("group_size", 32)——顶层无关配置。group128 检查点（2 专家、hidden 512、intermediate 256）应得 w13_weight_scale=(2,512,4)、w2=(2,512,2)，default32 路径生成 (2,512,16)/(2,512,8)，与检查点 scale 不兼容无法加载。CPU/AST 加载生产代码 + 合成张量复现（无 NPU，source-level；不声称端到端服务结果）。影响 compressed-tensors W4A16 MoE 注册 scheme 的 group64/128 检查点。
+  source: https://github.com/vllm-project/vllm-ascend/issues/20973
+  behavior: 加载 compressed-tensors W4A16 group_size=64/128 的 MoE 检查点时，scale 张量形状按 group 32 生成（w13 (2,512,16) 而非 (2,512,4)），与检查点不匹配，加载失败或量化结构静默错误；无配置告警提示 group_size 被忽略。
+  trigger_surface: vllm-ascend main 0f85ed44（2026-11-04）；compressed-tensors W4A16 MoE + 嵌套 group_size 64/128 检查点。
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,52 @@
+id: TRN-0771
+legacy_ids: []
+slug: torchtitan_parallelize_unties_tied_embeddings
+aliases: []
+title: torchtitan 并行化拆开 tied 权重致 embedding 不更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: torchtitan
+    component: _spmd_distribute_state
+  behavior: _spmd_distribute_state 注册 nn.Parameter，断开 tok_embeddings 与 lm_head 的别名；init_states 在 to_empty() 后才重新 tie，FSDP2 已按两份参数切分
+effect:
+  objects:
+  - 模型权重
+  - 梯度
+  detail: vocab/tp 不能被 dp_shard*cp 整除时两份 tied 权重各打 padding，优化器只更新 lm_head 副本，padded shard 上的 embedding 行永不更新；无 padding 时 tied 权重被 all-gather/reduce-scatter 两次
+  visibility: 静默错误
+mitigation:
+  detect: 对比 embedding 与 lm_head 权重在若干 step 后是否仍逐位相同；检查 FSDPParam 数量（tied 组应为 2 而非 3）与 padded shard 行的更新情况
+  fix: 修复 PR https://github.com/pytorch/torchtitan/pull/6144（open，未合入）：在 _parallelize 中保持 tie，使 FSDP2 只看到一个参数
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-17'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/pull/6144
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0237
+pattern: PAT-TRN-0081
+original:
+  mechanism: 'pytorch/torchtitan PR #6144（2026-11-16，open）。torchtitan 的 Module._spmd_distribute_state 在分布参数时会为每个模块注册新的 nn.Parameter，因此 _parallelize 在所有 enable_weight_tying=True 的 decoder（Qwen3 debugmodel/0.6B/1.7B/4B、Llama 3 1B/3B、Qwen3.5 0.8B/2B/4B）上把 tok_embeddings.weight 与 lm_head.weight 拆开，且发生在 FSDP 看到模型之前；Decoder.init_states 在 to_empty() 之后才重新 tie，FSDP2 因而为同一个权重保留两个 FSDPParam（组 [tok_embeddings, norm, lm_head] 里 3 个而不是 2 个）。后果有三：① 当 (vocab/tp) % (dp_shard*cp) != 0 时 FSDP 给两份副本各打 padding，embedding 的 FSDPParam 持有一份私有 lm_head 分片，优化器只更新 lm_head 的副本，embedding 一直 all-gather 自己的副本，padded shard 上的 embedding 行永不更新（Qwen3 vocab 151936 在 FSDP degree 6/12/24 及 TP8×FSDP32/64；Qwen3.5 vocab 248320 在 degree 6/12/24；Llama3 vocab 128256 在 TP8×FSDP64、TP4×FSDP128）；② 无 padding 时 tied 权重被 all-gather 两次、有 lm_head 前向时再 reduce-scatter 两次；③ 不重读参数的 sharder（如 FlexShard）会用 wrap 时的旧参数训练，与优化器持有的权重分叉。PR 用 tied Qwen3 debugmodel（vocab 2049、FSDP 2）在 GPU 上给出 rank1 padded 行不再更新的对照。'
+  source: https://github.com/pytorch/torchtitan/pull/6144
+  behavior: 训练开启 enable_weight_tying 的 Qwen3/Qwen3.5/Llama3 小模型时，loss 与 grad_norm 都正常下降，不报任何错；但 checkpoint 里 input embedding 与 lm_head 的权重不再一致，且在 vocab 不能被 FSDP 分片整除的配置下，部分 embedding 行从训练开始就没有被优化器更新过。排查通常要等到评测异常或直接比对两份权重才发现。
+  trigger_surface: torchtitan decoder 的 enable_weight_tying=True + FSDP2 分片（FSDP degree 为 3 的倍数且 vocab/tp 不能整除，或 TP8×FSDP64 等组合）；Qwen3 0.6B/1.7B/4B、Qwen3.5 0.8B/2B/4B、Llama3 1B/3B。
+  discovery: 2026-11-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-17'
+  audit:
+    date: '2026-11-17'
+    method: manual_stewardship_review
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - pattern

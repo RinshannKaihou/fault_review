@@ -1,0 +1,68 @@
+id: TRN-0639
+legacy_ids: []
+slug: pytorch_npu_inductor_argmax_nan_index
+aliases: []
+title: NPU Inductor argmax/argmin 全 NaN 归约索引错误
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: triton_helpers 极值/索引归约
+  behavior: 浮点极值归约未传播 NaN（tl.max/min 无 propagate_nan），索引阶段只按 value==extremum 匹配而 NaN!=NaN 恒假，索引匹配全败后返回填充用最大索引。
+effect:
+  objects:
+  - 数值结果
+  detail: 32×32 输入含全 NaN 列时 argmax/argmin 编译结果返回索引 31（eager 为 0），2/32 索引不一致；无报错。训练图出现 NaN 后依赖 argmax/argmin 的路径（异常检测、指标、采样）与 eager 分叉。
+  visibility: 静默错误
+mitigation:
+  detect: 含 NaN 输入的 argmax/argmin 编译 vs eager 对拍（test_argmax_argmin_with_nan_npu 原节点）。
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49185（open，未合入）：极值阶段改 arith.maximumf/minimumf 原生 NaN 传播，索引阶段补「输入与极值均为 NaN」匹配并选最低索引；初版上游比较器在 910B 编译路径报 LLVM ERROR 已修订。发布未核实。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-07'
+remarks: TRN-0626（!49041 online softmax NaN 语义）同文件 triton_helpers 同族：此条为独立 issue 载体（#5924）+ 独立修复 PR（!49185），NaN 索引取错的具体机制（返回填充最大索引）在两条中互补。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5924
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49185
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0626
+- kind: cross
+  target: INF-2427
+pattern: PAT-TRN-0066
+original:
+  mechanism: 'Ascend/pytorch issue #5924 + 修复 PR !49185（均 2026-11-06 open）：test_argmax_argmin_with_nan_npu 检查含 NaN 输入的 argmax/argmin——32×32 输入全 NaN 列应返回最低索引 0，NPU 编译结果返回 31，2/32 索引不一致、退出码 1。源码定位 torch_npu/_inductor/runtime/triton_helpers.py 的 _extremum、max_with_index、min_with_index：浮点极值归约（tl.max/tl.min）未传播 NaN，随后索引阶段只判断 value==peak/valley，NaN 与自身比较为假导致匹配全部失败，返回用作填充值的最大索引。修复沿用两次单源归约：极值阶段以 propagate_nan=PropagateNan.ALL 的原生极值运算（IR 直接表达 arith.maximumf/minimumf；初版用比较器组合在 910B 编译报 LLVM ERROR: Not implemented，故改原生运算）、索引阶段补「输入值与极值均为 NaN」匹配条件并选携带的最小原始索引。验证环境 torch_npu 2.13/Ascend_950：原节点复现→补丁通过，覆盖 6×6/32×32/1028×1028 与两归约轴，5 项既有回归+原节点 6 PASS；另 FP32/FP16/BF16 × NaN 位于首/中/末/多个/全 NaN/重复极值/无穷/零均通过，两个 argmax CI 节点在 950 通过。与 TRN-0626（!49041）同 helper 文件同族但独立 issue/PR 载体、机制细节互补（该条掩码缺 value!=value，本条索引匹配 NaN 失败返回填充索引）。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5924 ；修复 PR：https://gitcode.com/Ascend/pytorch/merge_requests/49185
+  behavior: NPU 上 torch.compile 后对含 NaN 的张量做 argmax/argmin（如 32×32 输入中的全 NaN 列）：编译图返回的索引是 31（填充最大索引），eager 返回 0，且无任何报错；含 NaN 列占比越高错得越多（实测 2/32 列索引错）。训练出现 NaN（SDC/溢出后）时，依赖 argmax/argmin 的编译路径（异常定位、指标统计、采样选择）静默拿错位置，掩盖或放大 NaN 影响。
+  trigger_surface: torch_npu 2.13 Inductor + 含 NaN 输入的浮点 argmax/argmin；Ascend_950 验证，helper 位于仓级代码不限于该硬件；torch_npu 2.13/CANN 版本未列
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence
+  - date: '2026-11-17'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,71 @@
+id: TRN-0645
+legacy_ids: []
+slug: opstransformer_inplace_rotary_backward_alias_ownership
+aliases: []
+title: Rotary backward 空切片未克隆致上游梯度被改写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: cann
+    component: backward 空切片未克隆
+  behavior: 非空切片分支 clone 后返回本层自有缓冲（!15409 修复），空切片分支（partial_slice[0]==[1]）仍直接 return grad_output 未克隆，两分支所有权约定不一致。
+effect:
+  objects:
+  - 梯度
+  detail: 空切片时上游 grad_output 原样成为本层输入梯度；缓冲被多分支/多输出节点共享或 create_graph=True 时，autograd 后续梯度累加就地写入该缓冲，上游梯度被改写。常规用例数值断言不覆盖（修复前恒等直通仍通过），需 data_ptr 断言暴露。
+  visibility: 静默错误
+mitigation:
+  detect: data_ptr 断言（返回梯度不得与 grad_output 共享存储）；多分支共享 grad 缓冲/create_graph=True 用例下检查上游梯度是否被改写。
+  fix: 修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/15424（merged，2026-11-06 快照）：空切片分支改 return grad_output.clone() 统一所有权约定；回归测试补 data_ptr 断言（修复前失败/修复后通过）。发布未核实。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: 梯度缓冲别名/所有权类首条：与空输入早退族（TRN-0275）不同机制（无早退、是 autograd 缓冲所有权），独立建条。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7173
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15424
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-transformer issue #7173（2026-11-06 closed）+ 修复 MR !15424（merged）：posembedding/inplace_partial_rotary_mul/torch_extension/inplace_partial_rotary_mul.py 的 backward 对同一上游梯度张量所有权处理不一致——非空切片分支（43~47 行）grad_output.contiguous() 后若仍为自身则 clone()（!15409 修复点：确保原地反向算子写回不改写调用方上游梯度）；空切片分支（38~42 行，partial_slice[0]==partial_slice[1] 的退化配置：不旋转任何元素）直接 return grad_output 未克隆。空切片时该张量原样返回给 autograd 成为本层输入梯度缓冲，若同时被其它分支/节点持有（上游 op 多输出共享同一 grad 缓冲、多分支网络、create_graph=True 二次求导），autograd 后续梯度累加可能就地写入，重新引入 !15409 已修的「上游梯度被改写」。修复 !15424：空切片分支改 return grad_output.clone() 并注释所有权约定；test_backward_empty_slice_is_identity 补 data_ptr 断言（此前数值断言修复前后均通过，覆盖不了别名问题；修复前 data_ptr 断言失败、修复后通过）。NPU 真机回归由 CI 执行。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7173 ；修复 MR：https://gitcode.com/cann/ops-transformer/merge_requests/15424
+  behavior: NPU 训练使用 InplacePartialRotaryMul（部分旋转位置编码原地算子）且某层 partial_slice 为空（不旋转任何元素的退化配置）时：该层 backward 把上游传来的 grad_output 原样返回，autograd 后续把这个缓冲当本层输入梯度继续累加——若该缓冲还被其它分支共享（多分支网络/上游多输出/二次求导），上游梯度被就地改写，训练无报错但梯度值错。常规单路用例数值全对、问题潜伏，只在共享缓冲场景爆发。
+  trigger_surface: InplacePartialRotaryMul backward 空切片分支（partial_slice[0]==partial_slice[1]）+ 上游梯度缓冲被多处共享（多分支/多输出 op 共享 grad 缓冲/create_graph=True）；常规用例难直接复现（报告者注明）
+  discovery: 2026-11-07 每日扫描
+  notes:
+  - '2026-11-08 回访：回访：修复 !15424 状态 merged（快照 2026-11-06T01:57Z updated）——issue #7173 closed 由修复闭环；发布版本未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 位置编码
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence

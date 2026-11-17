@@ -1,0 +1,70 @@
+id: TRN-0709
+legacy_ids: []
+slug: megatron_rl_refit_sequential_mlp_local_index
+aliases: []
+title: RL refit 局部专家索引错配 rollout 权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: megatron-lm
+    component: refit EP 名字重写
+  behavior: refit 名字重写只识别 TEGroupedMLP weightK/biasK；SequentialMLP 的 local_experts.K 局部名不改写，训练/推理 EP 尺寸不同时按名字拷错专家权重
+effect:
+  objects:
+  - 模型权重
+  - 输出分布
+  detail: 训练 EP1→推理 EP2 静默拷错专家权重无报错（--rl-verify-model-weights-swap 报 max_diff=1.54）；EP2→EP1 反向 planner 报缺参数
+  visibility: 静默错误
+mitigation:
+  detect: RL 独立推理并行度下开 --rl-verify-model-weights-swap 对拍 logits；refit 后抽查专家权重 checksum
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9141 （closed 2026-11-09，合入未核实）：SequentialMLP 专家名解析为全局索引
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-10'
+remarks: 与 TRN-0244 同族（refit 权重映射错静默写错权重进 rollout），触发点为 EP 尺寸变化+命名
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/9140
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0244
+pattern: PAT-TRN-0002
+original:
+  mechanism: 'NVIDIA/Megatron-LM #9140（closed IS 2026-11-09，修复 #9141）：独立 RL 推理模型（--rl-inference-*-parallel-size）refit 按参数名把训练权重拷入推理模型；EP 下名字先由 assign_ep_resolved_name_inplace（megatron/core/resharding/utils.py:214-254）从局部重写为全局索引，但 _EXPERT_PARAM_RE（:202）只认 TEGroupedMLP 的 weightK/biasK；SequentialMLP（无 --moe-grouped-gemm）专家名 ...mlp.experts.local_experts.K.weight（K 为局部索引）保持原样（:238 注释 "Fused experts tensor: leave name as-is"）。训练 EP1（专家参数用 dense process group、不被标记 EP、local_experts.0-3 即全局索引）→推理 EP2：推理 rank1 持全局专家 2、3 为 local_experts.0-1，这些名字在源里存在，refit 把全局 0、1 的权重拷入——无任何报错，该 rank rollout 用错专家；--rl-verify-model-weights-swap（rl_utils.py:857-863）对拍两模型 logits 报 max_diff=1.539062e+00（atol 0.1）。训练 EP2→推理 EP1：planner RuntimeError 缺参数（fail-loud）。修复 #9141 把 SequentialMLP 专家名解析为全局索引。'
+  source: https://github.com/NVIDIA/Megatron-LM/issues/9140
+  behavior: 用独立推理并行度跑 Megatron RL（训练 EP1、推理 EP2、SequentialMLP MoE）：refit 后部分 rank 的 rollouts 静默用错专家权重——训练照常、无报错，受害 rank 的 rollout 质量下降；只有开 --rl-verify-model-weights-swap 对拍（AssertionError max_diff=1.54）或奖励异常才暴露。反向组合（EP2→EP1）在 planner 直接 RuntimeError 缺参数（fail-loud）。
+  trigger_surface: Megatron-LM RL refit + SequentialMLP（非 grouped GEMM MoE）+ 训练/推理 EP 尺寸不同
+  discovery: 2026-11-10 每日扫描
+  notes:
+  - '2026-11-11 回访：回访：修复 #9141 closed 未标 merged（2026-11-09T20:20Z），维持跟踪。'
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - behavior

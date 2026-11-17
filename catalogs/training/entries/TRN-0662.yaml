@@ -1,0 +1,51 @@
+id: TRN-0662
+legacy_ids: []
+slug: triton_ascend_precise_divf_downgrade_vdiv
+aliases: []
+title: triton-ascend precise_divf 降级 vdiv 边界整值错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: PreciseDivConverter
+  behavior: PreciseDivConverter 把 tt.precise_divf（IEEE RN 除法）改写为普通 arith.divf，A5 后端只能发射 vdiv（至多 1 ulp），整数边界处误差经 trunc/floor 改变结果。
+effect:
+  objects:
+  - 数值结果
+  detail: 0x3ff2b021/0.001 精确值 1895.9998779296875，vdiv 得 1896.0 → trunc 1896（参考 1895）；flag_gems test_div.py -k trunc 6 failed；边界样本+1Mi 随机 21818 个商中 14 个错。
+  visibility: 静默错误
+mitigation:
+  detect: div_rn 结果与 CPU 对账（整数边界样本）；flag_gems test_div trunc 子集可复现。
+  fix: 修复 PR https://github.com/triton-lang/triton-ascend/pull/3033（open 2026-11-07）：TritonToHFusion 把 precise divide 转到 hivm VDivOp isHP（divfhp）高精度路径，f32 张量+寄存器目标生效；修复后 6 failed→132 passed、14/21818→0。未合。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/pull/3033
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'triton-ascend #3033（2026-11-07 open PR，含问题与修复）：tt.precise_divf 是 Triton 的 IEEE round-to-nearest 除法（tl.math.div_rn、flag_gems div_rn）。PreciseDivConverter 把它改写为普通 arith.divf，A5 后端只能发射 llvm.hivm.vdiv，精度至多 1 ulp；整数边界处该误差经 trunc/floor 存活并改变结果：0x3ff2b021/0.001 精确值 1895.9998779296875，vdiv 得 1896.0 → trunc 1896（参考 1895）。AscendNPU-IR 已有高精度除法：hivm VDivOp isHP（mathExt.divfhp / hfusion.elemwise_binary divfhp → vdiv_float_hp），f32 mod normalization 已依赖。修复：TritonToHFusion 中紧挨 mod 转换把 precise divide 转到 divfhp（f32 张量操作数+仅寄存器目标；普通 / 保持快速路径）。实测（Ascend950DT_9582，16Mi 元素、除数 0.001）：plain vdiv 0.0643ms vs divfhp 0.0659ms（几乎无代价）；flag_gems tests/test_div.py -k trunc：6 failed → 132 passed；14 个已知边界样本+1Mi 随机输入商失配 14/21818 → 0。训练面：Triton 内核（含 flag_gems 类库）中 div_rn/precise divide 的整除边界语义在 A5 上静默错——索引计算/整值判定受影响。'
+  source: https://github.com/triton-lang/triton-ascend/pull/3033
+  behavior: A5（Ascend 950 系）上跑含 tl.math.div_rn / tt.precise_divf 的 Triton 内核（flag_gems 类）：商在整数边界比 CPU/参考错 1 个截断单位——实测 0x3ff2b021/0.001 得 1896.0、trunc 后 1896（参考 1895）；flag_gems test_div trunc 子集 6 例失败、21818 商中 14 个错。无报错；任何依赖整除边界（索引、整值判定、离散化）的计算被静默带偏。
+  trigger_surface: 'triton-ascend A5 寄存器目标 + tt.precise_divf/div_rn（被 PreciseDivConverter 降级）；Ascend950DT_9582 实测；修复 #3033 open 未合'
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

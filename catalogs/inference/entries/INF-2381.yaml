@@ -1,0 +1,63 @@
+id: INF-2381
+legacy_ids: []
+slug: mindspore_string_enum_cross_mapping
+aliases: []
+title: MindSpore 字符串枚举跨枚举静默映射错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: op_enum 字符串转枚举表
+  behavior: op_enum.cc 的 AddValues(map) key 默认空串，所有 COMMON 枚举 merge 进同一张表；GetValues 找不到专用 key 也返回合并表，跨枚举名字被接受并当作当前参数的枚举值
+effect:
+  objects:
+  - 数值结果
+  detail: ops.fft2(norm='none') 按 ortho 计算、'mean'按 forward、binary_cross_entropy/smooth_l1_loss 的 reduction='ortho'/'floor' 按 none、'forward' 按 mean；真正不存在的名字才报错
+  visibility: 静默错误
+mitigation:
+  detect: 传其他枚举的名字（如 norm='none'）看是否被接受
+  fix: 待定（issue open，未见修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://atomgit.com/mindspore/mindspore/issues/29710
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: MindSpore 字符串枚举参数（fft 的 norm、loss 的 reduction 等）接受其他枚举类型的名字并静默映射为本参数某取值而非报 ValueError。根因：mindspore/ops/op_def/op_enum.cc 中 REG_STRING_TO_ENUM_COMMON 调用 AddValues(map) 时 key 默认为空串，所有 COMMON 枚举（Reduction、NormMode、PadMode、RoundingMode……）被 merge 进同一张表；GetValues 找不到专用 key 时也返回这张合并表，字符串只要出现在任一 COMMON 枚举里就被接受，得到的整数再被当成当前参数的枚举值。实测（CPU）：ops.fft2 norm='none' 结果与 'ortho' 相同（[5,-1,-2,0]）、'mean' 同 'forward'、'sum'/'tanh'/'zeros' 同 'backward'，而文档写 norm 仅支持 backward/forward/ortho 且非法值应 ValueError；ops.binary_cross_entropy reduction='ortho'/'floor' 返回逐元素损失（同 'none'）、'forward' 返回均值（同 'mean'），ops.smooth_l1_loss 相同；真正不存在的 'foo' 才报 Failed to convert ... to enum。附完整可运行复现脚本与逐值输出表。
+  source: https://atomgit.com/mindspore/mindspore/issues/29710
+  behavior: 给算子字符串参数传本参数不支持的取值（但属于其他枚举的名字，如 norm='none'、reduction='ortho'）时，不报 ValueError，而是静默按另一个语义计算：fft2 按 ortho 归一化、BCE/smooth_l1 的 reduction 被换算成 none 或 mean，结果数值与调用者意图不同。拼写完全错误的值仍会报错，掩盖了枚举校验的存在感。
+  trigger_surface: MindSpore（issue 未标注具体版本，最新版本未修复）；PyNative/图模式通用；字符串枚举入参（norm/reduction 等）传入跨枚举取值。
+  discovery: 2026-11-03 每日扫描
+  notes:
+  - 2026-11-04 回访：#29710 仍 open
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 配置/参数
+        to: 算子/内核
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

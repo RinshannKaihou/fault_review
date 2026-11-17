@@ -1,0 +1,53 @@
+id: TRN-0730
+legacy_ids: []
+slug: ce_loss_ignoreindex_int32_truncation
+aliases: []
+title: CE loss ignoreIndex 截断误吞合法 target
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: cann
+    component: cross_entropy_loss 路径
+  behavior: arch35 FullLoad 与 BigC 路径把 ignoreIndex 按 int32 截断后与 target 比较，超 int32 范围的合法配置值回绕撞上真实类索引。
+effect:
+  objects:
+  - 训练信号
+  detail: 大词表/字节级词表场景 ignoreIndex 取超 int32 值时被截断，被截断值恰为某真实类索引的话该类全部样本被静默当作 ignore 从 loss 与梯度中剔除。
+  visibility: 静默错误
+mitigation:
+  detect: ignoreIndex 配置超 int32 的用例做 loss 与逐类梯度贡献对账；FullLoad/BigC + int32/int64 target 回归
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/14223（open）：FullLoad 对 int64 target 用 64 位比较、int32 加超范围保护并在 Gather 前屏蔽；BigC 用 int64 保存 ignoreIndex；新增回归用例，未执行上板 ST；未发布
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: 与 TRN-0367（CELossGrad target 越界错值）同算子族不同机制：本条为前向 ignoreIndex 截断误吞合法类。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/merge_requests/14223
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn 修复 PR !14223（2026-11-11 open，无关联 issue）：CrossEntropyLoss 在 arch35（950）FullLoad 与 BigC 路径中，ignoreIndex 超出 int32 表示范围时被截断，截断后的回绕值若等于某真实 target 类索引，该类样本被误判为『需忽略』，loss 与梯度静默剔除非 ignore 样本。修复：FullLoad 路径对 int64 target 使用 64 位 ignore 比较、对 int32 target 增加超范围保护并在 Gather 前屏蔽被忽略索引；BigC 路径用 int64 保存 ignoreIndex，int32 比较加范围保护，忽略目标在 ASSERT/Gather 前直接置零；新增 FullLoad/BigC 与 int32/int64 target 回归用例（CSV 校验通过，未执行上板 ST）。来源：https://gitcode.com/cann/ops-nn/merge_requests/14223 。训练面：CE 是最常用训练损失；字节级/多语大词表或显式大 ignoreIndex 配置可触发。
+  source: https://gitcode.com/cann/ops-nn/merge_requests/14223
+  behavior: 在 950（arch35）上训练用 CrossEntropyLoss 且 ignoreIndex 配置超出 int32（如字节级词表或特殊大类索引）时：该值在 kernel 内被截断回绕，若撞上真实类索引，这一类的样本被当成『忽略』从 loss 里剔除——训练不报错、loss 看似正常但该类监督信号整体消失，模型对该类不学习；截断未撞号时行为可能与预期一致，问题随词表内容漂移出现/消失。回归用例已加但未上板验证。
+  trigger_surface: Ascend 950 arch35 FullLoad/BigC 路径；ignoreIndex 超 int32 且截断值命中真实类索引；修复 !14223 open 未发布
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

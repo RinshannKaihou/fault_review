@@ -1,0 +1,52 @@
+id: INF-2471
+legacy_ids: []
+slug: isin_regbase_double_promotion_flip
+aliases: []
+title: IsIn RegBase 推导 double 边界翻转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: IsIn PromoteType 推导
+  behavior: testElements 整型 + element 浮点且元素个数<10 的分支，RegBase 系列上 PromoteType 推导为 double 而非 torch.isin 的 float32，舍入边界结果翻转。
+effect:
+  objects:
+  - 数值结果
+  detail: element=16777216.5、testElements=int32[9] 含 16777217：float32 语义舍入后相等应 True，实测 False；torch.isin 返回 True。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 对应 PR https://gitcode.com/cann/ops-math/merge_requests/7139 ：该分支按默认浮点 DT_FLOAT 推导、非 RegBase 行为不变，并补 UT 与 torch.isin 数值金标准（合入状态未核实）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4637
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/7139
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-math math/equal/op_api/aclnn_isin.cpp 的 PromoteTypeScalar 在「testElements 整型 + element 浮点 + 元素个数小于阈值 10」分支调用 op::PromoteType(testElements dtype, element dtype)，在 RegBase 系列（Ascend 950PR/950DT）上推导为 double，与 docs/zh/context/deduction_relationship.md 表2「浮点 Scalar 与整型 Tensor 推导为 f32」及 torch.isin 小规模路径的 float32 语义不一致。在 float32 舍入边界上结果翻转：element=16777216.5、testElements=int32[9] 含 16777217 时，float32 语义两者舍入后相等应返回 True，实测返回 False；参考实现 torch.isin 返回 True。另附资料未声明 950 支持的不一致（次要）。环境：CANN master d06d00a0。
+  source: https://gitcode.com/cann/ops-math/issues/4637 对应 PR https://gitcode.com/cann/ops-math/merge_requests/7139
+  behavior: 在 Ascend 950 上调用 aclnnIsInScalarTensor 判断「浮点标量是否在小整型张量里」，恰好在 float32 舍入边界（如 16777216.5 对 16777217）会得到与 torch.isin 相反的布尔结果，无任何报错；只有小规模（<10 元素）+整型张量+浮点标量组合触发。
+  trigger_surface: Ascend 950PR/950DT + aclnnIsInScalarTensor + 整型 testElements(<10 元素) + 浮点 element，值处 float32 舍入边界。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,56 @@
+id: INF-2400
+legacy_ids: []
+slug: ttnn_permute_uint32_padded_volume_overflow
+aliases: []
+title: ttnn.permute 2^32 tile 填充体积 uint32 溢出全错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: permute 分块体积 uint32
+  behavior: MultiCoreTiledGeneric 工厂以 uint32_t 累乘 tile 填充体积 padded_xw_volume 并除以 tile 面积得 xw_blocks，达到 2^32 时回绕为 0，后续任务切分全错
+effect:
+  objects:
+  - 数值结果
+  detail: n=2047（填充体积 0.999*2^32）位级正确；n=2048（恰好 2^32）20971520/20971520 元素全错且非有限值为 0（静默垃圾值），输入仅 21M 元素、只有 tile 填充输出达到 2^32
+  visibility: 静默错误
+mitigation:
+  detect: n=2047/2048 边界对照（位级正确 vs 全错）
+  fix: 待定（issue 2026-11-03 报告，main 上源码未变，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/63940
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal ttnn.permute（ttnn 0.81.1，Blackhole P150）TILE 布局同时移动两个 tile 维（MultiCoreTiledGeneric program factory）时，permute_tiled_program_factory.cpp（v0.81.1 L665-673，main 2026-11-02 L667-675 未变）以 uint32_t 累乘 padded_xw_volume=X_p*W_p*input_shape[i] 再除以 tile_shape[0]*tile_shape[1] 得 xw_blocks，积达 2^32 回绕为 0，split_work_to_cor 据此切分全错。确定性复现：permute(n,5,n,1) dims=[2,0,3,1] 输出 (n,n,1,5) tile 填充为 (n,n,32,32)；n=2047（4,290,774,016=0.999*2^32）mismatched 0/20,951,045 位级正确；n=2048（4,294,967,296=2^32）mismatched 20,971,520/20,971,520 全错、non-finite 0（垃圾值非 NaN）。无错误无警告，always 确定性触发。输入仅 21M 元素（84MB fp32），只有 tile 填充体积越过阈值。
+  source: https://github.com/tenstorrent/tt-metal/issues/63940
+  behavior: 在 Blackhole 上对约 2^32 tile 填充元素量级（如 n=2048 的 4 维 permute）调用 ttnn.permute，输出全部元素为错误值（垃圾数据而非 NaN），无任何报错或警告；略低于阈值（n=2047）位级正确。大张量数据搬运结果静默全错，下游计算随之污染。
+  trigger_surface: ttnn 0.81.1（main 同）；Blackhole P150；TILE 布局 permute 且 tile 填充体积 ≥ 2^32（约 n≥2048 的 4 维场景）。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - 2026-11-05 回访：回访：#63940 仍 open，main 未修
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

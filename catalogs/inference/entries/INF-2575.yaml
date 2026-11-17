@@ -1,0 +1,48 @@
+id: INF-2575
+legacy_ids: []
+slug: cann_linspace_int_output_fp32_compute
+aliases: []
+title: aclnnLinspace 整数输出按 fp32 计算错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnLinspace
+  behavior: OutPromoteType 把 INT64 降为 FLOAT，INT32 kernel 模板也是 <int32_t,float>，整条等差序列在 float32 域计算后截断。
+effect:
+  objects:
+  - 数值结果
+  - 输入编码
+  detail: linspace(1e8,1e8+6,4,int64) 得 [1e8,1e8,1e8+8,1e8+8]（应 1e8,1e8+2,1e8+4,1e8+6）；步长小于该量级 fp32 ULP 即触发；float out 正确。
+  visibility: 静默错误
+mitigation:
+  detect: 大偏移整数 linspace 与 CPU/int64 参考逐元素比较；检查结果是否全部落在 float32 网格上（on_float32_grid）。
+  fix: 待定（issue open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4786
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math tag v9.2.1 commit 5d4daae8（master 02ebd8f9 行号一致）的 aclnnLinspace：math/lin_space/op_api/aclnn_linspace.cpp:104 OutPromoteType、:110-111 把 DT_INT64→DT_FLOAT，:206-209 用该 promoteType 生成 start/end tensor；math/lin_space/op_kernel/lin_space.cpp:97 为 LinSpaceNeedCast<int32_t,float>，:101/:105 大小 shape 变体同为 <int32_t,float>，计算落在 T2=float32（lin_space_need_cast.h:167-177），最后 Cast(..., CAST_TRUNC)（:179）。实测 910B4/CANN 9.2.1/torch_npu 2.10.0.post7：torch.linspace(1e8,1e8+6,4,dtype=int64) NPU 得 [100000000,100000000,100000008,100000008]，CPU 得 [100000000,100000002,100000004,100000006]；aclnn 两段 rc=0；double 标量同样错；阈值随量级变化（2^25 步长 2 错、2^24 步长 2 对）。
+  source: https://gitcode.com/cann/ops-math/issues/4786 （open，2026-11-16，含 torch 与 aclnn 直调、源码锚点）
+  behavior: 用整数 linspace 生成 position_ids、坐标或分箱边界时，序列出现重复值和跳值，量级越大越明显；无报错、无回退、无日志，float 版本则完全正常。
+  trigger_surface: CANN 9.2.1/9.2.0、Ascend910B4；aclnnLinspace 或 torch.linspace(dtype=int32/int64)；起点 ≥2^23 且步长 < float32 ULP（如 2^25 步长 2）。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

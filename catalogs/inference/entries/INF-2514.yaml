@@ -1,0 +1,54 @@
+id: INF-2514
+legacy_ids: []
+slug: nvfp4_routed_moe_hidden_unaligned
+aliases: []
+title: NVFP4 路由 MoE 隐维不对齐静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: flashinfer
+    component: trtllm_fp4_routed_moe
+  behavior: per-token NVFP4 路径在 hidden_size 为 128 倍数但非 256 倍数（如 2688）时无有效配置也不拒绝，静默错值；vLLM 靠 pad 到 256/512 规避，直传 2688 即 garbage。
+effect:
+  objects:
+  - 数值结果
+  detail: GB200/SM107 一致：hidden=2688 时 7/256 token 平均绝对误差约 5 倍于对齐隐维（ReLU2 diff 102.5~132.8、max 1896；SwiGLU 256-token NaN），单 token 对；2816/3072/4096 过；仅对齐性决定；无错误。
+  visibility: 静默错误
+mitigation:
+  detect: 对 hidden 非 256 对齐的调用与参考实现对数比对（报告者复用 tests/moe 既有 helper 即稳定复现）。
+  fix: 建议（issue open，1 评论未读）：拒绝非 256 对齐 hidden_size 或内部 pad；vLLM 0.33 因已 pad 不受影响。FlashInfer 0.7.3（vLLM 0.33.0 容器内）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/9333
+  kind: github_issue
+relations: []
+original:
+  mechanism: flashinfer trtllm_fp4_block_scale_routed_moe（per-token NVFP4 activation scale 路径）：hidden_size 为 128 倍数但非 256 倍数（2688/2816 中仅 2688 触发——2816=256×11 对齐）时无有效 kernel 配置但不拒绝。实测（FlashInfer 0.7.3，vLLM 0.33.0 容器，GB200 SM100 与 SM107 一致）：hidden=2688、7/256 token 下 mean abs diff 达对齐隐维 ~5 倍（表：ReLU2 266.7→102.5/132.8，max 1896；SwiGLU 72.5 及 256-token NaN），单 token 正确；ReLU2/SwiGLU 双激活、E=128/top-6 与 E=32/top-4、intermediate 1920/2048 均同样触发，仅 hidden 对齐性决定。vLLM 不受影响：per-token 非 gated pad 到 512、其余 256（trtllm_nvfp4_hidden_alignment），其注释明言该 kernel 在 2688 无有效配置。最小复现复用 tests/moe/test_trtllm_gen_per_token_moe.py 的 _per_token_routed_case 与 check_accuracy，hidden∈{2688,2816,3072,4096} 参数化，2688 全败其余全过。
+  source: 'https://github.com/flashinfer-ai/flashinfer/issues/9333 '
+  behavior: 直接调用 flashinfer 的 trtllm_fp4_block_scale_routed_moe 且 hidden_size 是 128 的倍数但不是 256 的倍数（如 2688，Nemotron-3 Nano 的隐维）：MoE 输出大幅偏离参考（平均绝对误差约为对齐情况的 5 倍，个别配置还出 NaN），单 token 请求看起来正常；全程无错误无警告，只有与参考比对才能发现。走 vLLM 的调用因框架内部 pad 到 256/512 而幸免。
+  trigger_surface: flashinfer 0.7.3 trtllm_fp4_block_scale_routed_moe per-token NVFP4 路径 + hidden_size≡128 (mod 256)（2688 等）；SM100/SM107 一致；token 数≥7 触发，单 token 不显。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - behavior
+    uncertain:
+    - subsystem

@@ -1,0 +1,52 @@
+id: INF-2392
+legacy_ids: []
+slug: v1_runner_pp_mtp_silent_token_corruption
+aliases: []
+title: V1 runner PP+MTP 三重缺陷静默错 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: PP+MTP 草稿与接受计数通路
+  behavior: V1 runner + PP>1 + MTP 下 draft token 永不到达调度器、非末级 PP stage 接受计数陈旧、batch queue 让调度器超前消费三重缺陷叠加，需同时修复任一子集仍输出错误
+effect:
+  objects:
+  - 输出内容
+  detail: 输出 token 被静默污染；drafts=0 时 PP2 输出与 PP1 完全一致（投机静默失效，看似正确）；async_scheduling 组合仍观察到静默错 token 由启动守卫拒绝
+  visibility: 静默错误
+mitigation:
+  detect: PP2 与 PP1 输出一致性不构成验证（drafts=0 时同样一致）；需断言 drafts>0
+  fix: '修复 PR https://github.com/vllm-project/vllm-ascend/pull/20844 （open，未发布，Fixes #14207；同时为未覆盖的 V1+PP>1+spec+async 组合加启动拒绝守卫）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/20844
+  kind: github_pr
+- url: https://github.com/vllm-project/vllm-ascend/issues/14207
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend VLLM_USE_V2_MODEL_RUNNER=0（V1 runner）+ pipeline_parallel_size>1 + MTP 投机解码时输出 token 被静默污染（#14207 报告，#17149 曾加 fail-fast 守卫拒绝该组合）。修复 PR 20844 定位三重叠加缺陷：(1) patch_pp_mtp 在 PP 下跳过 EngineCore.post_step，V1 runner 构造 ModelRunnerOutput 不填 spec_token_ids，调度器收不到草稿，spec_decode_num_drafts 恒 0——该失效模式「不可见地正确」：PP2 输出与 PP1 完全一致，因为根本没投机；(2) 非末级 PP stage 不采样，上一步 verify 接受数不在本地，hybrid GDN/Mamba 循环状态漂移（同一 step 末级 acc=[4] 而 rank0 仍 [1]）；(3) batch queue 下请求在上一 verify 输出被消费前推进，草稿写回落在已变异的 Request 状态。只修任一子集输出仍分歧。修复以 per-request num_computed_tokens_cpu 快照差分写 num_accepted_tokens_cpu、_fill_pp_spec_token_ids 填草稿、batch_queue_size=1 等组合实现。
+  source: https://github.com/vllm-project/vllm-ascend/pull/20844 Fixes https://github.com/vllm-project/vllm-ascend/issues/14207
+  behavior: V1 runner + 流水线并行>1 + MTP 投机解码服务时，生成 token 被静默污染：输出内容错误但无报错；其中一种子状态是投机完全静默失效（PP2 与 PP1 输出逐 token 一致，看似正确实为未投机）；GDN/Mamba 混合架构下状态漂移直接产生错 token。async scheduling 组合则静默错 token 由新启动守卫拒绝。
+  trigger_surface: 'vllm-ascend（main，2026-11-04）；VLLM_USE_V2_MODEL_RUNNER=0 + pipeline_parallel_size>1 + MTP；修复前 #17149 守卫直接拒绝该组合。'
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

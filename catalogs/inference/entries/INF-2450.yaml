@@ -1,0 +1,55 @@
+id: INF-2450
+legacy_ids: []
+slug: npu_triton_experimental_split_reduction_tail_mask_loss
+aliases: []
+title: triton_experimental 分核归约尾块 mask 丢失求和错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: 分核归约代码生成
+  behavior: 分核归约：numel 整除 block 但 ceil(numel/核数) 不整除时尾块 mask 被当恒真删除，分核改写无法恢复，跨分片重复读取与末片越界；多轴 partial-body 失配仍生成 workspace combine。
+effect:
+  objects:
+  - 数值结果
+  detail: 最小复现：size=1048576 的 x.sum()，expected 1048576.0 但 got 3625399.0（相对差 2.46）；外轴 sum(dim=0) 4/4 元素全错，最大差 448951（相对差 6.85）。哨兵区暴露 view 边界外读取。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49242 （open，未合入）：load 代码生成前识别分核候选并保留 reduction mask（改写为当前核 hi 边界）；partial-body 改写限定单个未映射归约轴，多轴形式继续普通归约。标量/外轴求和修复后实测通过。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5938
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49242
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0653
+original:
+  mechanism: 'triton_experimental 分核（rsplit）归约代码生成两处缺陷。其一：全局 reduction numel 能整除 block，但 ceil(numel/核数) 未必能整除 block；load 生成时尚未标记 rsplit，尾块 mask 被当作恒真删除；后续分核改写只替换循环边界，无法恢复已删除的 load mask，造成跨分片重复读取和末片越界。其二：多轴提升生成逐轴循环、常量边界和广播形式 store，现有 partial-body 改写无法匹配，却仍生成 workspace combine，导致输出错误。最小复现用额外分配 65536 元素哨兵区稳定暴露 view 边界外读取。实测（未修改归约代码的失败日志）：test_scalar_sum_with_guarded_storage Expected 1048576.0 got 3625399.0（相对差 2.4574）；test_outer_sum_with_guarded_storage 4/4 元素失配、最大绝对差 448951、相对差 6.85。发现于 G02 社区跟随测试中 #190068 前反向区域配置用例数值比较失败，抽离嵌套区域后普通大尺寸 sum 也算错（#5638 关联；非上游 PR 错误）。修复 !49242 方向：load 生成前识别分核候选保留 mask；partial-body 改写限定单轴；多轴不启用分核优化。2026-11-07 完整适配验证（联合提交 bd7f724b）：G02 上游 20 方法/24 参数化实例全 PASS、28 项专项回归全 PASS。环境：910B3、CANN 9.1.0、PyTorch 2.15.0.dev20260902、Triton 3.6.0/Triton-Ascend 3.6.0.post2，master 基线 8fdb4b49b5。'
+  source: GitCode issue https://gitcode.com/Ascend/pytorch/issues/5938 （open）；修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49242 （open）
+  behavior: 在 NPU 上用 torch.compile（triton_experimental 后端）做大尺寸张量归约求和时结果严重错误且无任何报错：x.fill_(1.0) 后 x.sum()（1048576 个 1）期望 1048576.0，实际得到 3625399.0，相对差 2.46 倍；x.sum(dim=0) 输出 4/4 元素全部失配，最大绝对差 448951（相对差 6.85）。存储 view 边界外相邻数据被计入求和（哨兵区可稳定观测越界读），assert_close 失败是唯一线索，eager 结果正确。
+  trigger_surface: torch_npu master + TORCHINDUCTOR_NPU_BACKEND=triton_experimental + torch.compile 归约（大尺寸 sum/softmax 内求和/外轴归约），numel 整除 block 但 ceil(numel/核数) 不整除 block 的形状；910B3/CANN 9.1.0/PyTorch 2.15.0.dev20260902/Triton-Ascend 3.6.0.post2。
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

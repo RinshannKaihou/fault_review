@@ -1,0 +1,125 @@
+id: INF-2521
+legacy_ids: []
+slug: aclnn_autogen_out_stride_silent_halfwrite
+aliases: []
+title: 自动生成 aclnn 出参 stride 静默半写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: 自动生成 aclnn 出参回写
+  behavior: 无 op_host/op_api 的接口回写时按连续布局写 storage 前 numel 个元素，出参 stride 不参与寻址，GetWorkspaceSize 也不拒绝非连续出参。
+effect:
+  objects:
+  - 数值结果
+  detail: 非连续出参两段均返回 0/0，写入落在 storage 连续前缀：按自身 stride 读回时一半位置仍是旧值、另一半错位；TopKTopPSample 64 个有效值只剩 32 个；资料标 × 的接口同样放行而非返回 161002。
+  visibility: 静默错误
+mitigation:
+  detect: 出参构造 stride 带空洞的合法 view（max_offset<storage numel），与连续基线逐元素比对并按 stride 读回；输入非连续与连续基线作对照。
+  fix: 逐算子修补中：!14347 拒绝 DynamicBlockQuant 非连续出参、!14290 修正 RmsNorm 文档；系统性 op_api 生成修复未核实。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: 训练库同机制条目 TRN-0755；本条按推理面（RmsNorm/CrossEntropyLoss/TopKTopPSample/SwiGlu 等）单独收录，不重复计数。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8663
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8674
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8685
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8688
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8702
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8736
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8746
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8747
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8748
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8769
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8796
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8800
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7488
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7489
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7490
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7491
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7493
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7494
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7495
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7496
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7522
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7534
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7552
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4730
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8814
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8819
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8689
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8750
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0755
+original:
+  mechanism: 'CANN ops-nn 中一批算子的 aclnn 接口没有 op_host/op_api 目录、由 op def 自动生成；这些接口回写结果时按连续布局把 numel(view) 个元素写到 storage 起始处，出参 stride 完全不参与寻址，也不在 GetWorkspaceSize 返回 161002 拒绝。issue #8663 在 Atlas A2 910B3 + CANN 9.2.0、A3 + 9.3.0 实测 4 个接口 6 个出参：aclnnRmsNorm rstdOut [4,1]/{4,2}/{4,4} 时 3/4 元素为 0；aclnnGemmaRmsNorm yOut 30/32 超差（worst=3.58）、rstdOut 3/4 为 0；aclnnRmsNormGrad dxOut 16/32 为 0；aclnnAddLayerNormGrad dxOut 16/32、dgammaOut/dbetaOut 4/8 为 0，全部两段返回 0/0。对照：同接口入参非连续（x 切片、gamma 切片）全部 PASS，全连续基线全部 PASS；无 op_host/op_api 的 7 个接口 7/7 失败，有手写实现的 Hardswish 与 ForeachMulList 2/2 正常，说明根因在自动生成接口的出参回写路径而非非连续布局本身。同族细粒度单：aclnnExpandIntoJaggedPermute #8683（6 个位置错 3 个）、aclnnMaskedSoftmaxWithRelPosBias #8684（64 元素中 32 未写）、aclnnTopKTopPSample #8685（有效值 64 个只剩 32 个）、aclnnCrossEntropyLoss #8702（logProbOut 物理前 40 个全对、按 stride{10,2} 读回 20/40 未写、38/40 超差）、aclnnForeachDivScalarList/aclnnForeachMulScalarList #8746（两段 0/0 且一半未写）。#8674 另显示 aclnnAddRmsNormCast 的 4 个出参在 def 中显式调用 .AutoContiguous()，实测仍不生效、y1Out 16/32 未写；#8688 aclnnSituGlu、#8699 aclnnSwiGluQuant 等资料标 × 的接口同样放行而非返回 161002。#8663 更新说明指出 RmsNorm/RmsNormGrad 文档已把出参非连续列从 √ 改为 ×（b4db407），这两者属于该拒未拒；GemmaRmsNorm/AddLayerNormGrad 仍是承诺支持却算错。'
+  source: https://gitcode.com/cann/ops-nn/issues/8663 ｜https://gitcode.com/cann/ops-nn/issues/8674 ｜https://gitcode.com/cann/ops-nn/issues/8685 ｜https://gitcode.com/cann/ops-nn/issues/8688 ｜https://gitcode.com/cann/ops-nn/issues/8702 ｜https://gitcode.com/cann/ops-nn/issues/8736 ｜https://gitcode.com/cann/ops-nn/issues/8746
+  behavior: 推理服务把输出写进预分配 buffer 的切片或带 stride 的视图时（例如往 paged KV/拼接 logits/loss 缓冲的某一段写结果，或把 TopKTopPSample 的索引写进大 buffer 的一半），接口两段都返回成功，但结果按连续布局落到 buffer 开头：按自己的 stride 读回时一半位置还是旧值、另一半错位；采样算子的有效值可能只剩一半，生成的 token 因此改变。日志没有任何报错，只有把同一调用改成连续出参再逐元素对拍才能发现。
+  trigger_surface: CANN ops-nn 无 op_host/op_api 的自动生成接口（RmsNorm、GemmaRmsNorm、RmsNormGrad、AddLayerNormGrad、CrossEntropyLoss、MaskedSoftmaxWithRelPosBias、TopKTopPSample、ExpandIntoJaggedPermute、SwiGlu/SituGlu、Foreach*ScalarList 等）；出参为非连续 view（stride 有空洞但 max_offset < storage numel）；Atlas A2/A3、CANN 9.2.0/9.3.0。
+  discovery: 2026-11-13 每日扫描
+  notes:
+  - '2026-11-13 回访：回访：同族新增 18 单（ops-nn #8746/#8747/#8748/#8769/#8796/#8800、ops-transformer #7488/#7489/#7490/#7491/#7493/#7494/#7495/#7496/#7522/#7534/#7552、ops-math #4730）。其中 #8800 为 aclnnBatchNorm 资料标 √ 却静默漏写（反向口径），#7496 为版本回归（原拒绝改为静默错值），#4730 aclnnHansEncode 三个出参同族。'
+  - '2026-11-14 回访：回访：同族新增 ops-nn #8814（aclnnBatchNormBackward）、#8819（aclnnFastBatchNormBackward）非连续 gradInput 视图仅写首块、其余保留调用方旧值（各 4/8 视图位写对，两段 0/0）；#8689 aclnnSituGluGrad 出参非连续一半未写，维护者确认与 #8663 同根因（生成模板只校验 dtype/shape），修复 PR #14455 改为手写接口按 strides 回写。三类均属出参/视图回写忽略 stride。'
+  - '2026-11-14 回访：回访：#8663 仍 open（批次 updated 2026-11-14T06:35）。同族再补 #8750（aclnnAddLayerNorm 在 950PR/CANN 9.3.0 非连续出参 yOut 8/16 超差、物理 dump 100% 相同）与 #8800（aclnnBatchNorm 资料标 √ 的非连续 output 静默漏写，两段 0/0）；#8800 此前只在 11-13 备注里出现，本轮补为 evidence。'
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  updates:
+  - date: '2026-11-13'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-14'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-14'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

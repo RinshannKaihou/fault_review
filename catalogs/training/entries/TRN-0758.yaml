@@ -1,0 +1,59 @@
+id: TRN-0758
+legacy_ids: []
+slug: ops_nn_geglu_noncontiguous_layout_silent_wrong
+aliases: []
+title: GeGlu 伪转置入参静默错值且出参部分写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnGeGlu 布局校验
+  behavior: ge_glu_v2 手写 Contiguous+ViewCopy 只按连续布局物化，合法伪转置入参静默算错；出参描述符不一致时部分写入并越过声明 numel，输入侧与出参侧校验不对称。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: FP32 self=[2,4,8] strides=[1,32,8] 时 rel=5.8e+02；出参 strides=[1,16,4]/storage numel=32 仅写 9/32 且触达 addr=32；同型描述符输入侧拒 561103、出参侧放行。
+  visibility: 静默错误
+mitigation:
+  detect: 出参预填哨兵，非连续 stride 组合与连续布局对拍；校验出参描述符跨度与 numel 一致。
+  fix: 待定（issue open 2026-11-14，无修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8846
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0524
+pattern: PAT-TRN-0058
+original:
+  mechanism: 'cann/ops-nn #8846（2026-11-14，open，Atlas A2 910B3 / CANN 9.3.0_weekly.20261112.01 / master 1338f06d，activation/ge_glu_v2 最后提交 8ea43791）。aclnnGeGlu 与 aclnnGeGluV3 共用同一 host 路径，op_host/op_api/aclnn_geglu.cpp 的 CheckShape 不检查出参布局；实现沿用 #7668（gelu_mul 非连续 out 静默错值）的 Contiguous+ViewCopy 手写模式（该模式由 22373485 引入 ge_glu_v2）。三组 FP32、self=[2,4,8]、dim=-1、approximate=1 实测：A 输入 strides=[1,32,8]、storage=[2,8,16]（最大偏移 153 < numel 256，合法描述符）→ rc=0/0，out 相对误差 5.8e+02；同形状 strides=[1,8,32] 的合法隔位输入 rel=2.8e-07，缺陷与维度顺序相关、与 storage 形状无关（[2,8,16]/[16,8,2]/[256] 同量级错值）。B 出参 strides=[1,16,4]、storage numel=32（视图跨度 61）→ rc=0/0，视图 32 个元素只写 9 个（地址 [0,4,8,...,32]），其余 23 个保留调用方旧值，写入触达 addr=32 越出声明 numel；写入数随 storage numel 线性变化（32→9、40→11、48→13、56→15、64→全量）。C 同型不一致描述符用于输入侧第一段拒 561103（表外码），用于出参侧 rc=0/0 放行。纯 aclnn C 两段式直调复现，未接训练框架。'
+  source: https://gitcode.com/cann/ops-nn/issues/8846
+  behavior: 训练 FFN 的 GeGLU 激活在输入是非连续视图（转置/切片后的 [B,S,H]）时可能静默算错，输出数值看似正常但相对误差可达 5.8e+02；出参 buffer 若按非连续描述符创建，只有部分元素被写、其余保留旧值，甚至写到声明的 numel 之外。两段接口全部返回 0，无 NaN、无告警，只有与连续布局参考对拍或精度回归才能发现。
+  trigger_surface: aclnnGeGlu / aclnnGeGluV3，FP32，非连续 strides 或出参描述符不一致；A2 910B3 / CANN 9.3.0 weekly 实测。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  updates:
+  - date: '2026-11-16'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

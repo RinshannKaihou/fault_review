@@ -1,0 +1,54 @@
+id: INF-2516
+legacy_ids: []
+slug: fia_mla_gsize_transpose_offset_zeroing
+aliases: []
+title: FIA MLA gSize 折叠偏移未分解输出清零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: arch35 MLA 转置偏移计算
+  behavior: CalcAIVMlaAttentionOutOffset 只实现 gSize==128 与 ≤32 两档分解，32<gSize<128 仍按旧口径算偏移，与写回端按 gSize 分解不一致，head>32 输出清零。
+effect:
+  objects:
+  - 数值结果
+  detail: arch35 FIA MLA decode（hasRope+Aligned576）、输出 layout 选 BSND_NBSD/BSH_NBSD/TND_NTD 转置且 gSize∈(32,128)（如 51/72 头）时，attentionOut 中 head>32 的输出为 0，与预期值不一致。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 https://gitcode.com/cann/ops-transformer/merge_requests/15724 已 merged（commit 4374ff420，修改 attention/fused_infer_attention_score/op_kernel/arch35/infer_flash_attention_kvcache_fused_infer.h；问题单 2026102351553）；随 CANN 版本发布未核实。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7369
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15724
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer FIA（fused_infer_attention_score）MLA decode 场景：MLA decode 将 51/72 头折叠到 S1 轴（gSize 落在 32<gSize<128）时，CalcAIVMlaAttentionOutOffset 仅实现 gSize==128 与 gSize<=32 两档折叠轴分解，中间区间仍按 goIdx/s1TemplateType 计算输出转置 layout（BSND/BSH/TND→NBSD/NTD）基准偏移，与写回端 MlaTransposeDataCopyOut 按 gSize 分解（curGIdx=cubeSOuterOffset%gSize、curS1Idx=/gSize）的口径不一致，head>32 的输出被清零。环境：arch35、CANN master 基线 2952062a4，kernel 侧问题。issue 已 closed，修复 PR !15724 merged（commit 4374ff420）。
+  source: https://gitcode.com/cann/ops-transformer/issues/7369 （修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/15724 ）
+  behavior: 使用 FIA 算子 MLA decode 场景（hasRope+Aligned576）、输出 layout 选择 NBSD/NTD 转置、gSize 取 32 到 128 之间（如 51 或 72 头）时，attentionOut 里 head>32 部分的输出直接变成 0，与预期值不一致；上层表现为 MLA 注意力输出大面积为零导致的静默错误，无报错日志。
+  trigger_surface: arch35 FIA MLA decode；条件：输出 layout 为转置（BSND_NBSD/BSH_NBSD/TND_NTD）且 32<gSize<128（51/72 头折叠）；decode 场景。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

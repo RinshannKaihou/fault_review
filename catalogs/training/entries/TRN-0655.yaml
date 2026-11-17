@@ -1,0 +1,70 @@
+id: TRN-0655
+legacy_ids: []
+slug: triton_experimental_slice_scatter_out_of_slice_write
+aliases: []
+title: triton_experimental slice_scatter 误写片外数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: slice_scatter 融合改写
+  behavior: slice_scatter 融合的 masked load/select 形式在负偏移钳制后丢失未选中前缀，切片外元素被静默写成 0（0.5 变 0，而非源值 -3）；嵌套区域运行时输入写回重复修改 x[1:5] 时误改切片外 x[0]。
+effect:
+  objects:
+  - 数值结果
+  detail: torch.slice_scatter(x, src, 0, 1, 5) 编译执行把 x[0] 的 0.5 写成 0（eager 保留）；无报错，输入侧数据被静默改坏。
+  visibility: 静默错误
+mitigation:
+  detect: slice_scatter 结果与 eager 对账；嵌套区域用例对输入写回前后快照比对。
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49255（open 2026-11-07）：先物化输入副本再向视图写入 src，保留切片外数据与原输入；正/负边界、步长、空切片、非连续输入、来源别名 2 项 NPU 测试通过。未发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5946
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49255
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: INF-2453
+original:
+  mechanism: 'Ascend/pytorch #5946（2026-11-07 closed，issue 由修复闭环）+ 修复 !49255（open）：关联 #5638 G02、上游 pytorch#191672。将嵌套区域的运行时输入写回验证接到真实 triton_experimental 后端后，重复修改 x[1:5] 会误改切片之外的 x[0]；独立复现定位到 slice_scatter：融合的 masked load/select 形式在负偏移钳制后丢失未选中前缀，0.5 被写成 0。最小复现（910B3、CANN 9.1.0、PyTorch 2.15.0.dev、Triton 3.6.0/triton-ascend 3.6.0.post2、master 8ca098a3fd）：x=arange(8)+0.5、src=full((4,),-3.)、fn=torch.slice_scatter(x,src,0,1,5)，torch.compile(fn) 与 eager assert_close 失败（切片外 x[0] 被改）。修复 PR !49255：先物化输入副本再向指定视图写入 src，保留切片外数据以及原输入；复用切片边界规范化并验证 src 与目标视图尺寸；独立分支 2 项 NPU 测试通过（正/负边界、步长、空切片、非连续输入及来源别名），组合验证中真实 Triton 路径输入写回/重复视图修改/有序副作用 3 项全过。推理库 INF-2453 已收同源。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5946 ｜修复 PR：https://gitcode.com/Ascend/pytorch/merge_requests/49255
+  behavior: NPU 上 triton_experimental 后端 torch.compile 执行 torch.slice_scatter（或嵌套区域编译图的输入写回）时：切片之外的元素被静默改写——实测 8 元素张量 x[1:5] 写入 src 后，x[0] 的 0.5 变成 0（eager 保留原值）；无报错无异常，只有与 eager 对账或检查切片外数据才能发现。输入缓冲被写坏后，后续依赖该输入的计算全部受污染。
+  trigger_surface: triton_experimental 后端 torch.compile + slice_scatter / 嵌套区域（regional compile）运行时输入写回 + 重复视图修改；Ascend 910B3、CANN 9.1.0、Triton 3.6.0/triton-ascend 3.6.0.post2 实测
+  discovery: 2026-11-08 每日扫描
+  notes:
+  - '2026-11-08 回访：issue #5946 closed（快照 2026-11-07T10:33Z）——由修复闭环（!49255 open）；closed 非 merged，fix 维持未发布。'
+  - '2026-11-09 回访：修复载体 !49255 批次快照（2026-11-08T23:01Z）显示 closed（2026-11-07T10:32Z updated；merged 状态快照未标——与 11-08 报告『仍 open』不一致，以本批次为准）。issue #5946 已 closed 修复闭环；发布版本未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-09'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

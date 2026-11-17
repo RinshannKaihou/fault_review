@@ -1,0 +1,60 @@
+id: INF-2423
+legacy_ids: []
+slug: gmsq_v2_n0_outputscale_unwritten
+aliases: []
+title: GMSQ V2 n==0 时 outputScale 整块未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: GMSQ 空输出早退
+  behavior: n==0（weightScale 末维 0）时 output [m,0] 命中空 Tensor 早退返回 SUCCESS 且 ws=0，但非空 outputScale [m]（per-token scale）整块不写
+effect:
+  objects:
+  - 数值结果
+  detail: ret 0/0、ws=0、outputScale 256/256 保持金丝雀 0x7E017E01；调用方拿到 SUCCESS+未初始化显存的 per-token 反量化 scale；slog ERROR 行数=0（静默成功非报错）
+  visibility: 静默错误
+mitigation:
+  detect: outputScale 预填金丝雀、写后读回；或调用侧拦截 N=0 组
+  fix: 待定（issue open；根因定位至 A5 DAV_3510 守卫 grouped_matmul_swiglu_quant_utils.h:409-419）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7164
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-transformer aclnnGroupedMatmulSwigluQuantV2（ND 入口，Ascend950PR_9579 DAV_3510，CANN 9.3.0.B020，master 537d738a）。A8W8 per-token 基线（E=1,M=256,K=1024,N=512，groupList=[0,256]，dequantMode=0，quantMode=0）：ret 0/0、ws=17039872、output 65536/65536 与 outputScale 256/256 均写入，两次运行逐位一致。仅把 N 改 0（weight=[1,1024,0]、weightScale=[1,0]）：output 期望 [256,0] 空张量命中 IsEmpty 早退，ret1=0、ret2=0、ws=0，但 outputScale 期望 [256] 非空，0/256 写入、256 元素全部保持金丝雀 0x7E017E01（head/mid/tail 采样全同）。两方在 device 2 与 device 6 独立写探针复现，每 rep 独立进程 3/3 一致；打开 slog 后 ERROR 行数=0。根因：gmm/grouped_matmul_swiglu_quant_v2/op_api/grouped_matmul_swiglu_quant_utils.h 的 A5 专属守卫（master :409-419）以 output->IsEmpty() 作为整体早退判据，未考虑 outputScale 独立非空。
+  source: https://gitcode.com/cann/ops-transformer/issues/7164
+  behavior: MoE 分组 matmul+SwiGLU+量化融合算子在某个专家/分组的输出宽度 N 为 0 时：接口返回成功，主输出确实没东西可写（空），但每个 token 的反量化 scale 输出（outputScale，256 个元素非空）也整块没写——读回全是未初始化显存里的旧值。下游拿这些垃圾 scale 去反量化，数值静默错误，日志里一行错误都没有。
+  trigger_surface: CANN 9.3.0.B020；aclnnGroupedMatmulSwigluQuantV2（ND 入口）；weightScale 最后一维 n==0（输出 [m,0] 但 outputScale [m] 非空）；A5 950PR 实测（根因守卫为 DAV_3510 专属）。
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-06 回访：#7164 仍 open（11-06T02:15 更新，状态未变）
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 量化
+        to: 算子/内核
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

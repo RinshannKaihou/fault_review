@@ -1,0 +1,58 @@
+id: INF-2540
+legacy_ids: []
+slug: is_inf_int32_offset_overflow_writes_input
+aliases: []
+title: is_inf 超 2^31 元素偏移溢出写坏输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: is_inf 偏移计算
+  behavior: host 的 totalDataCount、tiling 字段与 kernel 的 CopyOut offset 都用 32 位；元素数超 2^31 后偏移回绕为负，出参尾部不写并越界写进输入。
+effect:
+  objects:
+  - 数值结果
+  detail: fp16 n=2^31+8192 时 out 有 7296 个元素未写或错位（首个 2147484544），只读输入 x 被污染 3648 个元素（首个 1073750464）；两段 rc=0，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 用 >2^31 元素的 fp16 全 +inf 输入跑 aclnnIsInf，out 预置哨兵并校验 x 只读不变，与 n=2^31-8192 对照。
+  fix: PR !7391（merged 2026-11-13）把 host 计数、tiling 字段与 kernel 偏移统一为 uint64；910B3/CANN 9.3.0 实测 out bad 7296→0、x bad 3648→0（含 2^32 回绕用例），发布版本未核实。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/merge_requests/7391
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/ops-math/issues/4530
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0630
+original:
+  mechanism: 'cann/ops-math 的 is_inf 在 host 侧用 uint32_t totalDataCount 逐维相乘，perCoreDataCount/tailDataCoreNum/lastCoreDataCount 及对应 tiling 字段也是 32 位；kernel op_kernel/is_inf.h 的 CopyOut offset 形参为 int32_t，blockOffset/actualInOffset/actualOutOffset 为 uint32_t。元素数超过 2^31 后输出偏移变为负值或回绕，out 尾部不写、越界写到 x 区域。修复参考同构的 math/is_finite（计数与偏移均为 64 位），把 host 计数、tiling 字段与 kernel 偏移全部改为 64 位，不改变分核策略。PR !7391 在 Ascend910B3 + CANN 9.3.0、fp16/bf16 全 +inf 下实测：n=2^31-8192 对照 out bad=0、x bad=0；n=2^31+8192 缺陷组 out bad=7296 firstBadIdx=2147484544、x bad=3648 firstBadIdx=1073750464；修复后 fp16/fp32/bf16 与 n=2^32+8192 用例均 out bad=0、x bad=0。关联 issue #4530。'
+  source: https://gitcode.com/cann/ops-math/merge_requests/7391 ｜https://gitcode.com/cann/ops-math/issues/4530
+  behavior: 对超大张量做 IsInf/有限性检查时（例如量化前或 silent-check 扫整模型激活），调用返回成功，但结果数组尾部一段没有写、按索引读回是调用方预置的旧值；更严重的是本应只读的输入张量被改写，后续算子拿到被污染的激活，数值全错却没有任何日志。
+  trigger_surface: 元素数 > 2^31 的 IsInf 调用（fp16 约 4.3GB 以上，如 [2^31+8192]）；910B3/CANN 9.3.0 实测，host/tiling 的 32 位字段在更大规模同样回绕。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - relations

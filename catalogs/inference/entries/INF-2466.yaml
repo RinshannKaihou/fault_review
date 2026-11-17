@@ -1,0 +1,70 @@
+id: INF-2466
+legacy_ids: []
+slug: msmodelslim_kv_perchannel_calibration_observer_reset
+aliases: []
+title: msmodelslim KV per-channel 校准观察器每批重置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: KV 校准观察器生命周期
+  behavior: ActPerChannelMinmax.forward 每次 reset 观察器再 update，历史幅值统计被丢弃；deploy 又把最后一批参数固化为部署 scale——校准统计只覆盖最后一批。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 连续输入幅值 100 与 1 两批 KV 样本，per-channel max scale 从 0.78740156 变 0.007874016（前批幅值被丢）；官方 dynamic_cache 配置即 per_channel，部署 scale 只反映末批，更大幅值输入即溢出/截断，质量静默退化。
+  visibility: 质量退化
+mitigation:
+  detect: 连续跑两个已知幅值（100、1）的 KV 样本过 DynamicCacheQuantizer，检查 scale 是否只剩末批统计；issue 附最小复现脚本。
+  fix: 已有修复 PR/MR：https://gitcode.com/Ascend/msmodelslim/merge_requests/1168（发布状态待核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/667
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/msmodelslim/merge_requests/1168
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/msmodelslim issue #667（2026-10-31 创建，本轮 10-31 漏项补判；commit db54ee）：msmodelslim/core/quantizer/impl/minmax.py#L126 的 ActPerChannelMinmax.forward 每次调用先 self.minmax_observer.reset() 再 update(x_reshaped)——aggregation_type=max 的跨批统计被清零，只有当前批参与；attention.py#L42 的 KV 量化 wrapper 走该 forward；DynamicCacheQuantizer.deploy 用最后得到的 q_param 构造固定量化 IR。实测连续输入幅值 100 和 1 的两个 KV 样本：L10 first scale≈0.78740156 → L10 final≈0.007874016，前一批最大幅值被丢弃。官方 dynamic_cache 配置正是 per_channel，故该路径为默认部署链路。影响：部署 scale 仅反映最后一批校准样本的幅值分布，真实推理中更大幅值的 KV 激活超出 scale 覆盖即溢出/饱和截断，KV 量化输出质量静默退化。同批 #664/#666 已收（INF-2326/2333），本条为独立机制（观察器生命周期 vs 舍入/布局）。'
+  source: GitCode issue https://gitcode.com/Ascend/msmodelslim/issues/667 （open，2026-10-31 创建；含最小复现脚本、源码行锚点、实测 scale 演变输出）
+  behavior: 用 msmodelslim dynamic_cache per-channel 配置做 KV cache 量化校准：每送入一批样本，之前所有批的幅值统计都被清零，最终部署 scale 只由最后一批决定。连续输入幅值 100、1 两批后 scale 从 0.787 掉到 0.0079；部署后一旦真实请求的 KV 幅值超过末批范围，量化即饱和截断，回答质量静默变差，无任何报错。
+  trigger_surface: msmodelslim（commit db54ee）core/quantizer/impl/minmax.py ActPerChannelMinmax；KV cache per-channel 校准（官方 dynamic_cache 配置）；多批校准输入；deploy 固化末批 scale。
+  signature: 多批校准后 scale 逐批跳变、与批次顺序强相关（末批幅值决定一切）；单批校准不可见。
+  repro: issue 附仓库根目录完整脚本（连续两样本 L10 first/final scale 输出）。
+  discovery: 2026-11-08 每日扫描
+  notes:
+  - 2026-11-11 回访：回访：修复 PR !1168（open）——ActPerChannelMinmax 相同通道数跨批累积 minmax 统计（通道数变化时重置），新增 9 例真实 CPU 回归（修复前 6 败 3 过、修复后 9/9 过）；跨批幅值 100→1 场景 scale 不再从 0.7874 掉到 0.007874。合入未核实。
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix

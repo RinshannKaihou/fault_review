@@ -1,0 +1,53 @@
+id: TRN-0738
+legacy_ids: []
+slug: ds_zero1_window_sum_comm_dtype_rounding
+aliases: []
+title: DeepSpeed ZeRO-1 窗口和在归约前舍入到通信 dtype
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: deepspeed
+    component: ZeRO-1 allreduce_bucket
+  behavior: ZeRO-1+16bit 模型+fp32 梯度累积时，fp32 窗口和在 all-reduce 边界被一次性舍入到 communication_data_type（默认随模型 bf16），累积精度丢弃。
+effect:
+  objects:
+  - 梯度
+  detail: '16 个微步、梯度本身在 bf16 精确的构造下，step() 前窗口和相对最大误差 2.4e-3（ZeRO-2 同配置为 0；a4c989b7 起既有，非 #9044 回归）。'
+  visibility: 静默错误
+mitigation:
+  detect: 对 ZeRO-1 fp32 累积配置在 step() 前读取窗口和与 fp64 参考对账（tests/unit/v1/zero/test_zero_offload_accum_precision.py 已有该测试形态）
+  fix: 待定（issue open；提案：communication_data_type 未显式设置时 ZeRO-1 按 gradient_accumulation_dtype 归约，显式设置保留现义——代价是这些配置 all-reduce 字节翻倍）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: '审阅 #9044 表格（stage1/fp32 masters/fp32 accumulation 行）时发现；与 ZeRO-2 同配置行为不一致是判错依据。'
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/9047
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'DeepSpeed issue #9047（2026-11-10 open，审阅 #9044 时发现）。ZeRO-1 + 16bit 模型 + grad_accum_dtype: fp32：每 rank 的梯度窗口在 param.grad_accum（fp32，use_grad_accum_attribute）中累加，setup_buckets/_gradient_reduction_buffer_dtype 把 IPG bucket 也配成 fp32（拷贝精确）；但窗口边界 average_tensor/allreduce_bucket（DeepSpeedZeroOptimizer.allreduce_bucket 与 gradient_reduction_w_predivide）把和 cast 到 communication_data_type（bf16 模型默认 bf16）再 all_reduce——fp32 窗口和在归约前被一次性舍入，额外累积精度在归约处丢弃。ZeRO-2 同配置逐微步 reduce 后累加进 fp32 分区，对 bf16 精确输入窗口和精确；ZeRO-1 不精确。复现：tests/unit/v1/zero/test_zero_offload_accum_precision.py，16 微步、梯度在 bf16 精确：stage2 误差 0，stage1 相对最大误差 2.4e-3；同值在 a4c989b7 已存在（非 #9044 回归）。提案：communication_data_type 未显式设置时按 gradient_accumulation_dtype 归约。来源：https://github.com/deepspeedai/DeepSpeed/issues/9047 。训练面：所有 ZeRO-1+fp32 梯度累积的 16bit 训练每步窗口和带 ~1e-3 级相对偏差。'
+  source: https://github.com/deepspeedai/DeepSpeed/issues/9047
+  behavior: 用 ZeRO-1 训练 16bit 模型并显式配 fp32 梯度累积时：每 rank 的 fp32 累积看似生效（IPG bucket 也是 fp32），但在 all-reduce 边界整个窗口和被舍回 bf16（通信 dtype 默认跟随模型 dtype）再归约——fp32 累积的精度收益在每步归约处静默丢失，实测窗口和相对最大误差 2.4e-3（ZeRO-2 同配置为 0），无报错，梯度长期带偏。
+  trigger_surface: DeepSpeed ZeRO-1 + 16bit 模型 + grad_accum_dtype fp32 + communication_data_type 未显式设置；issue open 无修复
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

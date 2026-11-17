@@ -1,0 +1,50 @@
+id: INF-2537
+legacy_ids: []
+slug: aclnn_roll_launch_failure_reported_success
+aliases: []
+title: aclnnRoll 启动失败被当成功返回
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnRoll op_api
+  behavior: l0op::Roll 在 RollAiCore 返回 null（加算子失败）后仍返回已分配的 rollOut，aclnnRollGetWorkspaceSize 只判空，于是 workspace 准备成功但 Roll 算子没有下发。
+effect:
+  objects:
+  - 数值结果
+  detail: AiCore 平台加算子失败时两段接口返回成功，Roll 未执行，输出保持调用方原值/未初始化；无错误码，调用方以为滚动已完成。
+  visibility: 静默错误
+mitigation:
+  detect: 在 AiCore 平台人为制造 launcher 加算子失败（或注入 fault），检查 aclnnRoll 两段返回码与输出是否实际写出；对比 CPU/小算子参考。
+  fix: '待定（issue #4726 open；建议 l0op::Roll 在 RollAiCore 失败时返回 null 或错误码，不要用已分配 tensor 掩盖）。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4726
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math issue #4726：aclnnRollGetWorkspaceSize 在 conversion/roll/op_api/aclnn_roll.cpp:284 和 :291 调用 l0op::Roll 并检查返回值是否为空。在 AiCore 支持的平台上，l0op::Roll（conversion/roll/op_api/roll.cpp:72）先分配 rollOut，再在 :74 调用 RollAiCore，然后 :77 无条件返回 rollOut，不看调用结果；RollAiCore 在 :46-49 把算子加入 launcher 失败时返回 null，但非空的已分配 tensor 掩盖了失败，导致 workspace 准备成功、Roll 算子却从未下发。调用方拿到成功的 workspace 和 execute 返回，输出保持原值或未初始化。期望 l0op::Roll 在 RollAiCore 失败时向上返回失败，不要用已分配输出掩盖调度失败。'
+  source: https://gitcode.com/cann/ops-math/issues/4726
+  behavior: 在 AiCore 平台上调用 aclnnRoll（例如按轴滚动张量）时，如果底层 launcher 加算子失败，接口仍返回成功，但滚动根本没执行：输出还是调用前的值或未初始化内存，调用方按成功继续后序计算，结果静默错误且没有错误日志。
+  trigger_surface: cann/ops-math aclnnRoll；AiCore 支持平台；RollAiCore 加算子失败（launcher 资源/流异常等）；CANN 9.x。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

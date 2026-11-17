@@ -1,0 +1,63 @@
+id: INF-2410
+legacy_ids: []
+slug: batch_matmul_quant_noncontig_quant_param_misread
+aliases: []
+title: BatchMatmulQuant 非连续 quantParam 静默按连续读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: BatchMatmulQuant 输入连续化
+  behavior: PreInputProcess 按值传递形参，l0op::Contiguous 的连续化产物只写入局部副本，建图仍用原始非连续指针，kernel 按连续内存顺序读取量化参数
+effect:
+  objects:
+  - 数值结果
+  detail: quantParam stride≠1 时两段返回 0/0 结果错误（实测末列预测 16 实测 64，交错 8/32 相位读错）；文档标支持非连续，量化推理结果静默污染
+  visibility: 静默错误
+mitigation:
+  detect: 调用侧对非连续 quantParam 显式 contiguous()；同值负例（间隔位与逻辑位同值）输出正常可作探针
+  fix: 待定（issue open；根因定位 aclnn_batchmatmul_quant.cpp:157 值传递，改引用传递即可用）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8260
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-nn aclnnBatchMatmulQuant（A3 Ascend910_9362，CANN 9.3.0，master 46ff6fdb，本地检出 754a2ee9）。quantParam 为真非连续张量（stride≠1）时接口返回 0/0 但结果错误：kernel 按连续内存顺序读取，把 stride 间隔里的元素当成相邻逻辑元素。根因：aclnn_batchmatmul_quant.cpp:157 PreInputProcess 为值传递（static aclnnStatus PreInputProcess(const aclTensor* inputTensor, ...)），l0op::Contiguous 产物只写入局部副本，:201 建图仍用原始指针。实测（x1/x2 全 1 fp16，逻辑位 qA(scale0.5→8)、间隔位 qB(scale2.0→32)，stride=2）：连续组 ws=0 全 8；非连续组 ws=512（证明 Contiguous 确实识别并注册拷贝）但输出 8/32 交替——读的是连续下标 i 而非 i*stride；同值负例（间隔与逻辑同值）全一致，排除虚假偏置。单变量对照：CTL stride=1 末列 16（对），TST stride=2 末列 64（错，读到了间隔位的 scaleB）；TST storageShape 声明 64 实际只分配 32 时结果不变，证明只读前 N 个连续元素、非越界读垃圾。文档参数表该参数非连续列标「√」。3 次连跑逐位一致。
+  source: https://gitcode.com/cann/ops-nn/issues/8260
+  behavior: 量化 batch matmul 的量化参数张量如果是切片/视图等非连续布局（stride≠1），算子不报错、正常返回，但内部把内存里相邻的元素当成逻辑相邻来读——本该用第 i 个 scale 的地方用了第 2i 个。实测输出在两组 scale 之间交错取值，整批量化结果静默算错。文档明确标支持非连续输入，用户无从预期。
+  trigger_surface: CANN 9.3.0；aclnnBatchMatmulQuant；quantParam 真非连续（stride≠1，如按通道分片加载的上游切片）；A3 910_9362。
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-06 回访：#8260 仍 open（11-06T03:01 更新，状态未变）
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

@@ -1,0 +1,61 @@
+id: INF-2460
+legacy_ids: []
+slug: pytorch_te_welford_epilogue_unmasked_oob
+aliases: []
+title: TE 后端 Welford epilogue 无掩码 mean/var 损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: TE codegen 归约 epilogue 掩码
+  behavior: triton_experimental codegen 的 Welford epilogue 无归约维掩码，R0_BLOCK=64 大于内层 extent=8 时 weight/bias 越界读、lane 8..63 散写进行首相邻行。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: triton_experimental 后端跑 F.layer_norm/var_mean（归约维 64、内层 extent 8）：约 86.5% 元素失配、最大绝对差 23074，越界写破坏相邻行；default 后端或强制 R0_BLOCK=8 完全正确。无报错无 NaN，损坏输出静默扩散下游。
+  visibility: 静默错误
+mitigation:
+  detect: 对 (381,8,80,8) float32 → permute/contiguous/view → F.layer_norm((64,)) 跑 test_var_mean，比对 default 后端结果；失配比例随 R0_BLOCK 增大。
+  fix: 修复方向 issue 已给出（epilogue 按 R0_BLOCK 与内层 extent 关系补掩码，或 R0_BLOCK_HINT 作硬约束），未实施；相关组修复 PR !49240-!49255 系列 open，本条具体修复未见
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5954
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0674
+original:
+  mechanism: 'Ascend/pytorch issue #5954（2026-11-08）：triton_experimental 后端（TORCHINDUCTOR_NPU_BACKEND=triton_experimental）codegen 生成的 fused layer_norm 归约 kernel（triton_unk_fused_clone_native_layer_norm_permute_view_0）把归约索引拆为 r0_2=r0_4+8*r0_5（内层 extent=8）；autotuner 选中 R0_BLOCK=64（XBLOCK=128, grid=40）时：归约循环内 tl.load 带掩码（r0_index<8）mean/var 累加正确，但 epilogue 无掩码——in_ptr1+(r0_2) 对 64 元素 weight/bias 读到偏移 119（越界），且 tl.store(out_ptr1+(r0_2+64*x0+5120*x1)) 把 lane 8..63 散写进行首相邻行破坏无关数据。wrapper 发射的 R0_BLOCK_HINT [8,8] 在 torch_npu/_inductor/triton_experimental/npu_triton_heuristics.py ~2831 被当作候选补充而非硬约束。最小复现：同 kernel R0_BLOCK=64→79.5% 失配、R0_BLOCK=8→0.0%。CI torch213 车道与本地逐位一致（86.5%）。与 11-07 已收 INF-2450/#5938（分核归约尾块 mask 被删）同属 torch_npu 编译器归约掩码缺陷密集期但缺陷位置不同（epilogue 无掩码 vs 分核尾块 mask 删除），分立编号。'
+  source: GitCode issue https://gitcode.com/Ascend/pytorch/issues/5954 （open，2026-11-08 创建；含 CI 逐位对齐证据、R0_BLOCK 对照、源码行锚点、修复方向）
+  behavior: 用 torch_npu triton_experimental 后端跑 F.layer_norm/var_mean（归约维 64、内层 extent 8 的 shape）：约 86.5% 输出元素数值失配、最大绝对差达 23074，且越界写会破坏相邻行数据；换成 default 后端或强制 R0_BLOCK=8 则完全正确。全程无报错无 NaN，损坏输出静默扩散到下游。
+  trigger_surface: torch_npu triton_experimental 后端（TORCHINDUCTOR_NPU_BACKEND=triton_experimental）；归约 extent 小于 autotuner 选中的 R0_BLOCK 的 Welford/var_mean 融合 kernel；torch213 CI 车道默认配置。
+  signature: mean/var 融合 kernel 输出大面积失配且 R0_BLOCK=8 时消失；weight/bias 读取偏移越过声明长度。
+  repro: issue 附最小复现（(381,8,80,8) f32 → permute(0,2,1,3).contiguous().view(381,80,64) → F.layer_norm((64,), eps=1e-6)，R0_BLOCK=64 vs 8 对照）。
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

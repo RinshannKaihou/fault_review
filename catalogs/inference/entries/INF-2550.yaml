@@ -1,0 +1,62 @@
+id: INF-2550
+legacy_ids: []
+slug: vllm_custom_ops_innermost_stride_unchecked
+aliases: []
+title: vLLM 自定义算子未校验最内维 stride
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: 自定义算子 stride 校验
+  behavior: host 只检查 residual 行 stride 或只下发 token/head stride，kernel 按最内维连续寻址；stride(-1)!=1 时地址算错并写错 residual。
+effect:
+  objects:
+  - 数值结果
+  detail: fused_add_rms_norm 转置 input（stride 1,4）4035/4096 超差 max 8.75、residual max 4.89；rotary_embedding 2D 转置 q 512/512 错，3D 仅末维 stride=4 时仍 512/512 错（max≈9）。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一逻辑张量分别用连续与转置/列切 view 调用 fused_add_rms_norm / rotary_embedding，与 native PyTorch 参考逐元素比对；行 padding、head padding 作为对照。
+  fix: 未核实修复 PR；规避为调用前 .contiguous()，或在 wrapper 显式拒绝 stride(-1)!=1。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-13'
+remarks: 与 INF-2530 共享“自定义算子只校验部分 stride、kernel 假定连续寻址”，触发差异：INF-2530 是 FlashInfer JIT silu_and_mul 的行 stride，本条是 vLLM 算子的最内维 stride。
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/67411
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm/issues/67401
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2530
+pattern: PAT-INF-0205
+original:
+  mechanism: vLLM 的两个自定义 CUDA 算子都只校验/传递部分 stride：fused_add_rms_norm 的 host 代码有 STD_TORCH_CHECK(residual.stride(-1)==1)，但没有检查 input.stride(-1)，kernel 用 input[blockIdx.x*input_stride+idx] 寻址（input_stride=input.stride(-2)，idx 沿特征维连续），转置或列切片输入的地址即错，且转置时 input_stride==1 使不同 block 的写区间重叠；rotary_embedding 的 wrapper 传 token stride 和（3D 时）head stride，kernel 始终假定最内维连续、2D 展平时 head block 连续。实测：fused_add_rms_norm fp32 转置 input（stride 1,4）input max diff 8.748、4035/4096 超差、residual max diff 4.885；列切片（stride 2048,2）max diff 9.425、4022/4096 超差；bf16 转置同样复现。rotary_embedding 2D 转置 q max diff 9.14（512/512 超 1e-4）、k 8.22（256/256）；3D shape (4,2,64) stride (512,256,4) 仅末维 stride=4 时 q/k 仍 512/512、256/256 全错。对照：2D/3D 连续、行 padding、head padding 均为 0 或 1e-7 量级。
+  source: https://github.com/vllm-project/vllm/issues/67411 ｜https://github.com/vllm-project/vllm/issues/67401
+  behavior: 把已经转置或列切片的张量（stride(-1)!=1，但逻辑 shape 合法）直接传给 vllm._custom_ops.fused_add_rms_norm 或 rotary_embedding，调用成功、无告警，但归一化后的 input、被更新的 residual、旋转后的 q/k 全部错位：4096 个元素里 4000 多个超差，最大误差 8~9；只有改成 .contiguous() 才对得上。
+  trigger_surface: vLLM 自定义算子 fused_add_rms_norm / rotary_embedding，输入最内维 stride != 1（转置、列切片）；行 padding 与 head padding 已支持。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  updates:
+  - date: '2026-11-14'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - labels.coverage
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,61 @@
+id: INF-2465
+legacy_ids: []
+slug: transformers_step37_need_fp32_gate_ignored
+aliases: []
+title: Step-3.7 need_fp32_gate 被忽略路由错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: transformers
+    component: Step3p7TopKRouter 计算精度
+  behavior: 官方要求 router matmul 前两操作数 cast 到 FP32；transformers 的 Step3p7TopKRouter 按 weight dtype（BF16）计算、仅事后 upcast，改变 top-k 选择。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  - 输出内容
+  detail: BF16 权重下随机权重测试 1024 token 中 38 个 top-8 专家集合与 FP32 参考不同（need_fp32_gate=True）；路由错误静默改变 MoE 专家分派与生成输出，无告警，autocast 关闭也复现。
+  visibility: 静默错误
+mitigation:
+  detect: issue 附 CPU 复现：need_fp32_gate=True + BF16 router 权重，比对 router(x) top-k 与 F.linear(x.float(), weight.float()) 参考，统计 changed token 数。
+  fix: '待定（issue open，未见修复 PR；相关 #50002/#50003 处理 bias/加载精度与 autocast 但 #50002 明确保留 BF16 gate 计算未改）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/50440
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'transformers #50440（2026-11-08，transformers 5.23.0.dev0 @22c26e79）：官方 Step-3.7-Flash config（stepfun-ai HF 仓库 5f62440）设 need_fp32_gate=true，官方 modeling_step3p7.py 把两操作数 cast 到 FP32 再做 router matmul；transformers 的 Step3p7TopKRouter（src/transformers/models/step3p7/modeling_step3p7.py#L581-L601）改为按 weight dtype 计算后才 upcast。随机权重 CPU 复现（hidden 128、288 专家、top-8、BF16）：logits 为 bfloat16（参考 float32），1024 token 中 38 个的 top-8 专家集合与 FP32 参考不同——两路径输入/权重逐位一致、correction bias 置零，隔离出 matmul 精度单变量。相关 issue #50002/#50003（bias/加载精度、autocast）存在但 #50002 明确保留 Step-3.7 的 BF16 gate 计算未改。不需要下载 checkpoint 或 autocast 即可复现。'
+  source: GitHub issue https://github.com/huggingface/transformers/issues/50440 （open，2026-11-08 创建；含无 checkpoint 的 CPU 复现脚本与实测计数）
+  behavior: 用 transformers 加载 Step-3.7 类 MoE 模型（need_fp32_gate=true，BF16 权重）推理：router gate matmul 实际在 BF16 里做，约 3.7% token 的 top-8 专家选择与模型定义要求的 FP32 计算不同，MoE 专家分派与生成内容随之静默偏离官方实现，无任何报错或告警，autocast 开关不影响。
+  trigger_surface: transformers 5.23.0.dev0（22c26e79）Step3p7TopKRouter；Step-3.7 系 config need_fp32_gate=true 且权重 BF16/FP16；MoE 路由 gate 计算路径。
+  signature: router(x) logits dtype=bfloat16（应 float32）；top-k 专家集合 vs FP32 参考逐 token 差异计数 >0。
+  repro: issue 附完整 CPU 脚本（随机权重，torch CPU，无 checkpoint 依赖）。
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 模型定义
+        to: MoE路由
+      effect:
+        from: 输出分布
+        to: 数值结果

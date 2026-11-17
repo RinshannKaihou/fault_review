@@ -1,0 +1,49 @@
+id: TRN-0698
+legacy_ids: []
+slug: concat_pure_copy_blockcount_truncation
+aliases: []
+title: Concat pure_copy blockCount 截断静默丢行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: Concat pure_copy 行批次
+  behavior: rowFactor=bufferSize/colFactor 可超 65535，DataCopyPad 的 blockCount 为 uint16，超限 copyRows 被截断（65536→0）实际拷贝行数不足
+effect:
+  objects:
+  - 数值结果
+  - 训练样本流
+  detail: dim1 极小、行数极大的一维拼接输出静默丢行、结果不完整，无报错
+  visibility: 静默错误
+mitigation:
+  detect: 拼接前后元素总数对账；构造 totalCols 极小且总行数>65535 的用例
+  fix: 已修（issue closed 2026-11-09：minDim1==0 提前禁用 SIMT、rowFactor>UINT16_MAX 钳制；合入版本未核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: 同 issue 另一处 SIMT tiling 除零为 fail-loud 崩溃（host 进程异常），非静默面
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4630
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-math #4630（closed 2026-11-09，arch35 专属路径 op_host/op_kernel/arch35）：OneAxisConcatPureCopy::ProcessSingleTensor 的 rowFactor=bufferSize/colFactor，bufferSize 为 UB 容量按 dtypeSize 折算的元素数（concat_tiling_arch35.cpp:1414）；totalCols 极小（如 dim1=1）时 rowFactor 可超 65535，而 CopyInSingleTensor/CopyOutSingleTensor 下发 DataCopyPad 的 blockCount（copyInParam_/copyOutParam）为 uint16，超限 copyRows 截断（如 65536→0），实际拷贝行数不足，输出静默丢行、结果错误。同 issue 另一处：IsEnableUsedSimt（concat_tiling_arch35.cpp）遍历 tensorListDim1 时直接 maxDim1/minDim1，输入含 dim1=0 的 tensor 时 host 侧整数除零、tiling 进程异常终止（fail-loud）。修复：循环内 minDim1==0 提前 return false 禁用 SIMT 模板；rowFactor>UINT16_MAX 钳制为 UINT16_MAX 保证批次行数不越界。训练面：数据/特征拼接大行数小列数场景。'
+  source: https://gitcode.com/cann/ops-math/issues/4630
+  behavior: 对行数极大、列数极小（如 dim1=1）的张量做一维 Concat（pure_copy 路径）：输出比输入少行——blockCount 按 uint16 截断（65536→0），实际拷贝行数不足，结果张量内容不完整且无任何报错；训练数据被静默截断，下游 loss/指标异常时才被发现。另一路径（输入含 0 维 tensor）表现为 host tiling 进程除零崩溃（fail-loud，易见）。
+  trigger_surface: arch35（Ascend 950 系）；one-axis concat pure_copy，totalCols 极小且行数使 bufferSize/totalCols>65535
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

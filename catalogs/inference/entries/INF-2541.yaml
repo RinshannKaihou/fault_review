@@ -1,0 +1,62 @@
+id: INF-2541
+legacy_ids: []
+slug: mm_device_do_normalize_logprob_parity_break
+aliases: []
+title: 设备侧多模态预处理破坏 logprob 一致
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: 设备侧多模态预处理
+  behavior: v0.30.0 默认把 Qwen3.5-VL 的 resize/patchify/rescale+normalize 下沉到 NPU worker，预处理边界输出 bf16，与训练侧 HF CPU fp32 预处理数值不同。
+effect:
+  objects:
+  - 输入编码
+  - 输出分布
+  - 输出内容
+  detail: rollout 与训练重算 logprob 的 MAE 0.0138→0.0479、prob diff 0.0055→0.0172、greedy 准确率 0.6005→0.5720；首步解码即分叉，关掉开关恢复。
+  visibility: 质量退化
+mitigation:
+  detect: 同一批图文 prompt 分别用设备侧与 CPU 预处理跑 rollout，与训练侧 HF 处理器重算的 chosen-token logprob 比对 MAE/pearson，并在视觉塔前 dump 预处理边界统计。
+  fix: 修复 PR 未核实；规避为 --no-mm_device_do_normalize 回到 CPU 预处理（MAE 0.0143、准确率 0.6020）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: 纯训练期反向/梯度/RL故障，已迁入训练编目 TRN-0802
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21797
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend v0.30.0 起（#16996 on main、#18443 on release）默认开启 mm_device_do_normalize，把 Qwen3.5-VL 的 resize/patchify/rescale+normalize 从 CPU 下沉到 NPU worker。报告者在 950DT×8、TP=8、CANN 9.2.0、torch 2.10.0、torch_npu 2.10.0.post7、Qwen3.5-35B-A3B BF16、verl GRPO 下做三臂对照：A=main@15ec5601（CPU 预处理），B=v0.30.0（设备预处理），C=v0.30.0+--no-mm_device_do_normalize。三臂的 vllm core、CANN、torch、权重、数据、采样种子相同。Step-1（同一 θ0，纯数值）：logprob MAE 0.0138/0.0479/0.0143，prob diff 0.0055/0.0172/0.0057，pearson 0.9983/0.9799/0.9989，601 样本 greedy 准确率 0.6005/0.5720/0.6020。逐边界 dump 显示分歧在预处理带内产生：B 有 FusedInputNorm 边界（[288,1536] fp32 raw pixels → bf16 输出），A/C 没有；tokenization/embedding 逐位一致。首个 decode step 起采样 token 统计就不同。
+  source: https://github.com/vllm-project/vllm-ascend/issues/21797
+  behavior: 在 RL 训练回路里用 vLLM-Ascend 生成 rollout，再用训练侧 HF 处理器重算同一批 chosen token 的 logprob：两者平均差从 0.0138 涨到 0.0479、greedy 评测准确率掉约 3 个点，从第一步解码开始采样 token 就分叉；把预处理切回 CPU（--no-mm_device_do_normalize）后两个指标都回到基线，期间没有任何报错。
+  trigger_surface: 'vllm-ascend v0.30.0（含 #18443）、Qwen3.5-35B-A3B BF16、950DT TP=8、CANN 9.2.0；mm_device_do_normalize 默认开启、图文混合 prompt。'
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出分布
+        to: 输入编码
+    uncertain:
+    - behavior
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

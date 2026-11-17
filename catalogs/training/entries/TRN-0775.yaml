@@ -1,0 +1,46 @@
+id: TRN-0775
+legacy_ids: []
+slug: recurrent_kda_seq_len_over_limit_silent_zero
+aliases: []
+title: RecurrentKda 序列长度超 8 静默输出全 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnRecurrentKda
+  behavior: host 侧 CheckShape 不校验文档规定的单序列长度上限 8，kernel 在 T>8 时把 attnOut 写成全 0 仍返回成功
+effect:
+  objects:
+  - 隐状态
+  - 数值结果
+  detail: TND T=12/18 与 BSND T=16 时 attnOut 非零元素 0/6144、0/9216、0/8192，两段 rc=0/0；T≤8 与 fp64 标杆 matched_ratio=1.0
+  visibility: 静默错误
+mitigation:
+  detect: 扫单序列长度 T=1..24，统计 attnOut 非零元素数并与 fp64 标杆比对；输出缓冲预填非零 canary 以区分「写成 0」与「未写」
+  fix: 待定（issue open 2026-11-17；建议 CheckShape 增加 denseSeqLen 与 cuSeqlens 段长 ≤8 校验并返回 161002）
+labels:
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-17'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7749
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer issue #7749（2026-11-17，open）。aclnnRecurrentKda 的资料 docs/aclnnRecurrentKda.md §约束说明写明「dense 单序列长度与 varlen 单序列长度均必须小于等于 8」，但 host 侧 CheckShape 没有实现这条上限。单序列长度 T>8 时两段接口都返回 0，kernel 把 attnOut 整块写成 0（不是未写：输出缓冲预填 0xA5，实测 canary 残留为 0）。实测（Atlas A2 910B2、CANN 9.3.0、ops-transformer 9ef8ee69）：TND T=12 → attnOut 非零 0/6144；BSND T=16 → 0/8192；TND T=18 → 0/9216，均 rc=0/0。对照组 T=1~8 与 fp64 标杆 matched_ratio=1.0000、max_abs≈3e-5、attnOut 全部非零，证明探针在已知正确答案上工作。建议 host 侧补 denseSeqLen 与每条 cuSeqlens 段长的 ≤8 校验、越界返回 161002，并补一条「T>8 必须 161002 且 attnOut 不被改写」的 UT。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7749
+  behavior: 训练 KDA/线性注意力模型时，如果单序列长度超过 8（把 prefill 与 decode 混跑、或误把 MTP 步长当序列长度），算子不报错、loss 仍能算出有限值，但该段 attention 输出整块为 0，相当于这段序列没有参与注意力；只有逐段核对 attnOut 非零元素或与 fp64 对拍才会发现，错误静默传到后续层与梯度。
+  trigger_surface: cann/ops-transformer aclnnRecurrentKda，TND/BSND 单序列长度 >8（文档上限 8）；Atlas A2 910B2 / CANN 9.3.0 实测。
+  discovery: 2026-11-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-17'
+  audit:
+    date: '2026-11-17'
+    method: manual_stewardship_review

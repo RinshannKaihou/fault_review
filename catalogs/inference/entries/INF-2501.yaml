@@ -1,0 +1,56 @@
+id: INF-2501
+legacy_ids: []
+slug: flashinfer_radix_topk_row_race_wrong_index
+aliases: []
+title: flashinfer radix top-k 跨行竞态写错索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: topk.cuh 行循环共享内存
+  behavior: CTA 组逐行循环里非确定 collect 后无 __syncthreads：快 warp 提前开始下一行 LoadToSharedOrdered 覆写 shared_ordered 而慢 warp 仍在读，写出错误 top-K 索引。
+effect:
+  objects:
+  - 数值结果
+  detail: racecheck 对 top_k 的另三个形状与 top_k_ragged_transform 报 1-2 hazards；坏输出仅见 bf16 B=192 V=65536 k=4096：8/300 种子、9/57600 行各一个错 tie 元素，余形状 0/300 潜伏，无崩溃无警告。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 一行 __syncthreads() 修复（行循环末尾补 barrier；作者验证修复后 0 hazard、0/300 坏种子、既有 900 测试通过），PR 待维护者意见。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/9316
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'include/flashinfer/topk.cuh 的 RadixTopKKernel_Unified：一个 CTA 组循环处理多行，非确定 collect pass 结束后没有 __syncthreads()，先完成的 warp 开始下一行 LoadToSharedOrdered 覆写 shared_ordered，仍在 collect 中读它的慢 warp 写出错误索引；deterministic collect 末尾本就有 barrier 故不受影响。与 #8832/#4131 的跨 CTA barrier 竞态不同（本条为行间 shared 内存复用）。实测 RTX 5070 Laptop（SM120、36 SM）FLASHINFER_TOPK_ALGO=default：racecheck 对 top_k（bf16 B=512 V=8192 k=256、fp32 B=256 V=16384 k=512、bf16 B=40 V=65536 k=4096）与 top_k_ragged_transform（共享同一 kernel）报 1-2 hazards；坏输出仅出现在 bf16 B=192 V=65536 k=4096 一个形状（8/300 种子、9/57600 行、每行一个错误 tie 元素），其余形状 0/300 为潜伏态。'
+  source: https://github.com/flashinfer-ai/flashinfer/issues/9316
+  behavior: 用 flashinfer 默认 radix top-k（非 deterministic 模式）在大词表大批次（如 bf16 B=192 V=65536 k=4096）做采样/筛选时，偶发某一行返回一个错误的并列元素索引（300 种子约 8 个坏种子、每坏行一个错元素），采样因此偶尔选错 token 或 ragged transform 得到坏行；无崩溃无警告，只有 racecheck 或对拍能发现。
+  trigger_surface: flashinfer top_k/top_k_ragged_transform（radix 非 deterministic 路径）+ 大 V 大 k 批形状；SM120 实测，机制为通用 CUDA shared 内存竞态。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 解码/采样
+        to: 算子/内核
+    rewritten:
+    - detail

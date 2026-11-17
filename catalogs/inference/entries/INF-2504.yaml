@@ -1,0 +1,55 @@
+id: INF-2504
+legacy_ids: []
+slug: flashinfer_trtllm_moe_small_batch_finalize_batchdep
+aliases: []
+title: flashinfer trtllm MoE 小批 finalize 输出随批变
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: 小批 finalize topK 分裂归约
+  behavior: 小批 finalizeKernelSmallBatch top-6 时 kSplit=2，topK 部分和经共享内存合并，与大批路径按 k=0..topK-1 顺序累加不同，使同一 token 的 MoE 输出随批大小改变、不再位级一致。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: ≥0.7.2.post1 的 trtllm-gen MoE，hidden 4096 时 batch<74 且 4<topK≤64：prefill/decode logprob KL 达 3.5e-4~1.6e-3（0.7.2 为 0），useSmallBatch=false 归零，确定性推理失败。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: '待定（issue 列出三选一方案：统一归约顺序/加禁用开关/加 deterministic 参数；0.7.2.post1 revert #6555 或 useSmallBatch=false 可规避，均未进正式修复）。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/8831
+  kind: github_issue
+relations: []
+original:
+  mechanism: '#6546/#6555 为 trtllm-gen MoE finalize 增加 finalizeKernelSmallBatch（csrc/fused_moe/trtllm_backend/trtllm_fused_moe_dev_kernel.cu），launcher 在 numBlocksX*numBlocksY<1184 && vectorWidthAligned && 4<topK≤64 时选用（hidden 4096 即 batch<74）；top-6 时 kSplit=2，topK 部分和经 shared memory 合并，而大批的 finalizeKernel/finalizeKernelVecLoad 按 k=0..topK-1 顺序累加。端到端：GB200 TP2、Inkling-Small-NVFP4（hidden 4096、256 routed experts、top-6、Situ 激活、trtllm_fp4_block_scale_routed_moe），SGLang test_input_output_logprobs_match（prefill vs decode，KL 阈 1e-9）：0.7.2 三轮 0.0；0.7.2.post1 JIT 3.5e-4 / jit-cache 2.6e-4；revert #6555 5.0e-5；useSmallBatch 强制 false 0.0；0.7.3rc1/0.7.3 为 5e-6~1.6e-3。op 级隔离探针（小批 vs 1024-token 批）位级相同未命中端到端路径；已排除 MoE autotune、enable_pdl、GEMM 后端切换。DeepSeek 式 top-8 同类暴露；SGLang --enable-deterministic-inference 依赖 prefill/decode 位级一致被破坏。'
+  source: https://github.com/flashinfer-ai/flashinfer/issues/8831
+  behavior: 用 flashinfer 0.7.2.post1/0.7.3 的 trtllm-gen 融合 MoE 跑小批量 decode（hidden 4096 时 batch<74、4<topK≤64）时，同一 token 的 MoE 输出与大批 prefill 不再位级一致：依赖 batch invariance 的确定性推理（SGLang --enable-deterministic-inference 的 prefill/decode logprob 比对 KL 达 1e-4~1e-3）失败，投机解码的接受率一致性被破坏；0.7.2 无此现象，输出仍正确只是逐位结果随批大小改变。
+  trigger_surface: 'flashinfer ≥0.7.2.post1（含 #6555）+ trtllm-gen MoE + 4<topK≤64 + 小批量（hidden 4096 时 batch<74）；GB200/B200 实测。'
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 输出分布
+        to: 数值结果
+    rewritten:
+    - behavior
+    - detail

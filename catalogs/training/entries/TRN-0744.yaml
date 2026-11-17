@@ -1,0 +1,60 @@
+id: TRN-0744
+legacy_ids: []
+slug: meg_gtp_external_ga_incomplete_gradient
+aliases: []
+title: Megatron GTP 外部改 GA 提前发布不完整梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: GTP 输出头梯度累积优化
+  behavior: 输出头梯度累积优化假设反向贡献数恒定，microbatch calculator 显示固定调度或未初始化时复用上一迭代计数触发提前归约；外部 RL 框架改 GA 不更新该 calculator，假设被打破。
+effect:
+  objects:
+  - 梯度
+  detail: GA 增大时在重叠 DDP 同步下发布不完整梯度（可多次 RS、DDP 梯度错），GA 减小时归约延迟到 finalization——RL+GTP 训练梯度静默错或同步退化。
+  visibility: 静默错误
+mitigation:
+  detect: 外部改 GA 的回归（2→4 带重叠 DDP）比对梯度与逐份累积参考；GTP+RL 下监控每步 RS 次数
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9349（open）：改为在当前累积窗口内正向计数，非流水 schedule 自动在最后一次 backward 前调 finish_gtp_wgrad_forward() 保早归约与重叠；含外部改 GA（2→4）回归测试
+labels:
+  stage:
+  - rl
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: '仅输出头/embedding 梯度走该优化路径（#7573），其他层权重不受影响；与 #9134（GTP+PP 发散 tracking，机制未定位）是否同源未证实，不挂 var。'
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9349
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'Megatron-LM PR #9349（2026-11-11 open）。#7573 引入的输出头梯度累积优化把 microbatch/MTP 梯度贡献合并为每训练步一次 RS；原实现假设反向贡献数恒定——当 Megatron 全局 microbatch calculator 指示固定调度或未初始化时，复用上一迭代的计数触发提前归约。外部 RL 框架可以改 GA（gradient accumulation 步数）而不更新该 calculator，打破假设：GA 增大时在重叠 DDP 同步下发布不完整梯度（可能出现多次 RS、DDP 梯度错）；GA 减小时 RS 延迟到 finalization。修复：在当前累积窗口内正向计数；非流水 schedule 自动在最后一次 backward 前 finish_gtp_wgrad_forward() 保持早归约与重叠，自定义循环可省略该调用并在最终 GTP fence 安全 flush（重叠减弱）；finalization 仍必需。回归测试覆盖外部 GA 2→4 带重叠 DDP。来源：https://github.com/NVIDIA/Megatron-LM/pull/9349 。训练面：Megatron GTP（gradient time ... 输出头优化）+ 外部 RL 框架动态改 GA 的训练。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/9349
+  behavior: 在 Megatron 上开 GTP 输出头梯度优化、并由外部 RL 框架在训练中途改变梯度累积步数（GA）时：优化复用陈旧的贡献计数提前触发归约——GA 调大的那步会在重叠 DDP 同步尚未完成时发布不完整梯度（DDP 梯度错），GA 调小则归约被拖到收尾。训练不报错，表现为该步梯度错/同步行为退化；预训练固定 GA 与 Megatron 自管动态 GA 不受影响。
+  trigger_surface: 'Megatron-LM #7573 输出头梯度累积优化 + 外部 RL 框架改 GA 不更新 microbatch calculator；修复 #9349 open 未合'
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - labels.stage
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence

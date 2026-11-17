@@ -1,0 +1,57 @@
+id: INF-2515
+legacy_ids: []
+slug: add_rms_norm_quant_singlen_ub_overrun
+aliases: []
+title: AddRmsNormQuant SingleN UB 记账漏项越界
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: SingleN 模板 UB 布局
+  behavior: initSingleNUbSize 的 optionNum 对 scales2 非空时实配的 inQueueBeta 等（12F）仅记 8F，UB 越界写：numCol≤256 落尾部 1KB 预留区，>256 触发 VEC 异常。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: A2 上 numRow≤40（SingleN 模板）且 scales2 非空：fp16 组合 numCol>256 同步报 507035 AI Core fault（两段 rc 均 0）；numCol≤256 越界写落 UB 尾部 1KB 预留区静默存活；全 bf16 组合任意 numCol 即崩。
+  visibility: 报错
+mitigation:
+  detect: msSanitizer memcheck 在 bf16[8x1] 合法组合用例上抓到现行：illegal write of size 32 at 0x33280 on UB（超出 910B3 UB 预算 196608），同用例另报 GM 侧 illegal read；设备侧错误串『The address for the VEC instruction to read/write UB is out of bounds』。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/14264（account for all SingleN UB buffers，open，未发布）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: UB 超限直接触发 507035 崩溃退出（fail-loud），未超限路径精度正常
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8642
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn aclnnAddRmsNormQuant SingleN 模板（numRow≤40 tiling 分支，故障 kernel AddRmsNormQuant_fp16/bf16_high_performance_3）UB 预算记账错误：initSingleNUbSize（add_rms_norm_quant_single_n.h 行 68-91）的 optionNum 只计入 scales2/zeroPoints2 两项（8F），而 scales2 非空时实际还分配 inQueueBeta(4F)+scales2Buf(4F)+zp2Buf(4F)=12F（本 aclnn 接口无 beta 入参、hasBeta 恒 0），UB 总分配=191KB+4F。numCol≤256 时 4F≤1024B 落在 UB 尾部 1KB 预留区静默存活（fp16[8x256] PASS / [8x257] 崩的精确分界吻合）；numCol>256 物理越界触发 VEC 异常。边界矩阵 7 崩 6 过全部按根因预测命中（fp16[8x6976] 满配崩、[8x8128] 改走 SplitD 过、[40x4096] 崩 [41x4096] 改走 Normal 过、bf16 任意 numCol 崩）。环境：Atlas A2（910B3）、CANN 9.2.0 商用、ops-nn master c090cedd，纯 aclnn 两段直调复现脚本。
+  source: 'https://gitcode.com/cann/ops-nn/issues/8642 （同接口同日第三报，与 #8643/#8644 构成 AddRmsNormQuant 家族）'
+  behavior: 在 Atlas A2 上满足 numRow≤40 且传入 scales2 时调用 aclnnAddRmsNormQuant：接口两段都返回 0，但流同步返回 507035（AI Core kernel fault），任务崩溃；fp16 组合 numCol 不超过 256 时不崩、看似正常，实际越界写落在 UB 尾部预留区；全 bf16 的 scales/zp 组合任何列数（哪怕 2 列）都直接崩。崩溃前后均无参数级报错提示原因。
+  trigger_surface: Atlas A2（910B3）、CANN 9.2.0；条件：numRow≤40（SingleN 模板）+ scales2Optional 非空 + numCol≤singleUbFactor（满配 6976/仅 s2 8128）；fp16 组合边界 numCol=256/257，bf16 组合无下限。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

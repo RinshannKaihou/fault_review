@@ -1,0 +1,75 @@
+id: TRN-0652
+legacy_ids: []
+slug: pytorch_npu_static_launcher_a5_repeat_inplace
+aliases: []
+title: static launcher A5 重复执行 in-place kernel
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: static launcher 派发
+  behavior: static Triton launcher（!45989）在 A5 one-program-per-tile 形态下 grid/参数处理不正确，in-place pointwise kernel 被重复执行。
+effect:
+  objects:
+  - 数值结果
+  detail: triton_experimental 后端 mm_div 被多次缩放：max_abs 5.7~6.0（应 ~1e-6），128 起错 55%、512 时 91.6%；AlbertForMaskedLM(train) logits 偏 1.56；关 launcher 立即正确。
+  visibility: 静默错误
+mitigation:
+  detect: ic.use_static_triton_launcher=False 的 A/B 对拍；in-place kernel 输出按 0.125 幂次缩放是该缺陷签名（compiled/raw≈0.125^n）。
+  fix: 规避已验证：torch._inductor.config.use_static_triton_launcher=False（最小复现与真实模型均恢复 1e-6 量级）；上游修复未见（issue open 2026-11-06）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-07'
+remarks: NPU Inductor 静默错值族（TRN-0280/0617/0623/0624/0638）另一成员：static launcher 运行时派发层（非编译期常量、非文本改写）；910B（A2）不受影响（dispatch 形态不同）。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5920
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0280
+- kind: cross
+  target: INF-2430
+pattern: PAT-TRN-0066
+original:
+  mechanism: 'Ascend/pytorch issue #5920（2026-11-06 open）：Ascend950DT（soc version 260）、torch 2.13.0/torch_npu 2.13.0+git5412c2f/CANN 9.2.0、TORCHINDUCTOR_NPU_BACKEND=triton_experimental：torch.compile(mm_div)（matmul 后除 8.0）与 eager 相比 max_abs 5.7~6.0；AlbertForMaskedLM（train）logits max_abs=1.56（dvm 后端 1.7e-06）。根因：static Triton launcher（torch_npu/_inductor/triton_experimental/static_launcher/，PR !45989 引入）在 A5（Ascend950，soc>=250）one-program-per-tile dispatch 形态下启动 kernel 的 grid/参数处理不正确，in-place pointwise kernel 被重复执行（输出被多次缩放）。证据链：① ic.use_static_triton_launcher=False 后最小复现 max_abs=0.0、Albert 1.86e-06；② 生成的 kernel 源码单独跑、逐步复现编译器完整流程（extern bmm→reinterpret→kernel）均完全正确；③ 坏区域 compiled/raw≈0.0119（0.125 的若干次幂）证明同一 in-place kernel 跑了多次；④ 尺寸阈值：[1,1,≤256,64]、[4,12,64,64] 全对，[4,12,128,64] 起错（55%），[4,12,512,64] 错 91.6%。910B（A2）不受影响（one-program-per-tile 仅 A5 形态）。issue 提供完整最小复现。推理库 INF-2430 同源，本条为训练范围条目（真实训练模型 AlbertForMaskedLM train 实测）。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5920 ；同源推理条目：INF-2430
+  behavior: 在 Ascend950 上用 torch.compile（triton_experimental 后端）训练/前向时：含 in-place pointwise kernel 的编译图输出被反复缩放——matmul 后除以 8 的操作结果偏差 5.7~6.0（应 ~1e-6），真实模型（AlbertForMaskedLM train）logits 偏差 1.56；输入大到 [4,12,128,64] 起开始错（55% 元素），512 时 91.6% 错。全程无报错；把 use_static_triton_launcher 关掉或换 dvm 后端立即恢复正确，数值上表现为输出被 0.125 的幂次缩放。
+  trigger_surface: torch_npu 2.13 triton_experimental 后端 + static launcher + A5（Ascend950，soc>=250）one-program-per-tile + in-place pointwise kernel + 较大 shape（≥[4,12,128,64] 量级）；CANN 9.2.0
+  discovery: 2026-11-07 每日扫描
+  notes:
+  - 2026-11-08 回访：回访：#5920 open 无更新（快照 2026-11-06T06:07Z）；同族 !49246（repair triton-ex launchers and profiler autotune timing，open 2026-11-07）修复 A5 static launcher 的 dispatch 约束（普通 kernel 用 vector core 分组、避免逻辑 tile 数直接作物理 grid）——A5 launcher 面修复载体新增，未合。
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - pattern
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 编译器

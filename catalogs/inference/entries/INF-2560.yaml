@@ -1,0 +1,51 @@
+id: INF-2560
+legacy_ids: []
+slug: ops_transformer_dequant_rope_quant_kvcache_nkv1_scale_skipped
+aliases: []
+title: DequantRopeQuantKvcache Nkv=1 跳过 K/V 量化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: DequantRopeQuantKvcache
+  behavior: Nkv==1 特化分支跳过整条 scaleK/scaleV/offset 量化通路，kCacheRef/vCacheRef 直接写 clamp(round(kOut))，未除以 scale 也未加 offset。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: Nkv=1、scaleK=4 时 kCache 写 10（应 2），scale=0.5 时写 10（应 20）；Nkv=2/4 同配置正确；两段 rc=0 无告警。
+  visibility: 静默错误
+mitigation:
+  detect: kCacheRef/vCacheRef 预填 -128 哨兵，按 Nkv=1/2/4 × scale 0.5/1/4 × 有无 offset 扫，与 clamp(round(x/scale)+offset) 对拍。
+  fix: '待定（issue #7589 open，未附修复 PR）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-15'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7589
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer master a1e54cce（Ascend950PR、CANN 9.3.0、驱动 25.7.rc1）的 aclnnDequantRopeQuantKvcache 在 kvHeadNum==1 时走 rope/quant 特化分支：op_kernel/dequant_rope_quant_kvcache.h 的量化段按 onceS*kvHeadNum<MAX_UINT8 走并行分支，Nkv==1 时该分支不再执行 Div(scaleK)/Add(offsetK)，kCacheRef/vCacheRef 被写成 clamp(round(kOut))。报告者用 B=2,S=3,D=32,fp16,cos=1,sin=0、k 段置 10.0 的探针，扫 Nq/Nkv 与 scale/offset：Nq=4/Nkv=1、Nq=1/Nkv=1 均为 10（应 2/20/3），Nkv=2/4 全部正确；5 张卡各 3 次共 15/15 一致。文档要求 scaleK/scaleV 元素数为 Nkv*D 且 Nkv 无最小值，Nkv=1 属合法配置；仓内 ST 参考实现为 clamp(round(key/scale)+offset)。
+  source: https://gitcode.com/cann/ops-transformer/issues/7589 （open，2026-11-15）
+  behavior: 用量化 KV cache 的推理在 KV 头数为 1（MQA/GQA 的极端配置）时，写进 kCache/vCache 的是没有除 scale、没有加 offset 的原始值：scale=4 时 10.0 被原样写成 10 而不是 2，scale=0.5 时仍是 10 而不是 20。后续 attention 反量化读到的 KV 整体偏移，输出逐步偏离但接口始终返回成功，没有 NaN、没有日志，只有对比 golden 才能发现。
+  trigger_surface: Ascend950PR + CANN 9.3.0；aclnnDequantRopeQuantKvcache；Nkv==1（scaleK/scaleV 必选、元素数 Nkv*D）；cacheMode=contiguous、quantMode=static；与 B/S/D/cacheMode/kvOutput 无关。
+  discovery: 2026-11-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-15'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

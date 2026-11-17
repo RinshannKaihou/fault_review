@@ -1,0 +1,72 @@
+id: TRN-0691
+legacy_ids: []
+slug: torch_npu_inductor_index_symbolic_unsound
+aliases: []
+title: inductor 索引符号化简不可证等价仍改写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: inductor 索引符号分析
+  behavior: eliminate_modular 用单轴代入结果判定完整乘法表达式，(6*i)%3 被错化简为 6*i；父子轴替换按结构比较漏判复合符号等价，repeat 场景 load 换子轴 store 留父轴
+effect:
+  objects:
+  - 数值结果
+  detail: 编译后 load 地址/行映射错：buffer 用例 eager 24 编译得 22；repeat 两用例行映射 FAIL，均无报错
+  visibility: 静默错误
+mitigation:
+  detect: 编译图与 eager 全图对拍；取模索引/repeat 符号轴专项用例（社区用例 test_buffer_use_after_remove_npu 等）
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49132 、https://gitcode.com/Ascend/pytorch/merge_requests/49133 （open 2026-11-09，dev 仓 qindong0/PTA !90/!91 已合入）；主仓 CI 待完成、未发布
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-10'
+remarks: 与 TRN-0689 同为 NPU inductor 主机端索引/符号分析不健全
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5961
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/issues/5962
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0689
+- kind: cross
+  target: INF-2474
+- kind: cross
+  target: INF-2468
+pattern: PAT-TRN-0074
+original:
+  mechanism: 'Ascend/pytorch #5961/#5962（2026-11-09 open，均含修复 PR）两条同层缺陷：①eliminate_modular() 对乘法索引用单个轴长的代入结果判断完整表达式，(6*i)%3 被错误化简为 6*i 产生错误 load 地址——社区用例 test_torchinductor.py::test_buffer_use_after_remove_npu 历史失败记录 eager 前向 24、编译 22；修复 !49132（同补丁已入 dev 仓 PTA !90），离线符号检查覆盖 560 表达式/1960 取值无不等价、17 项符号检查+12 组 load 地址检查通过，NPU 整图回归与主仓 CI 待完成。②父子轴替换直接比较范围表达式结构，漏判 s*u+s*z 与 s*floor((s*u+s*z)/s) 的数值等价，repeat 场景 load 已替换为子轴、store 仍用旧父轴，行映射错——test_size_with_unbacked_add_expr_transitive_npu / test_size_with_unbacked_add_and_mul_expr_npu FAIL；修复 !49133（dev 仓 PTA !91），2026-11-05 NPU 源码 A/B 两用例 FAIL→PASS，test_repeat/test_repeat_as_strided 及动态索引/梯度检查通过。与 TRN-0689（detect_flattened_dims 未知符号轴遗留 flatten 候选）同族：主机端索引/符号分析在无法证明等价时不保守保留而错误改写。训练面：torch.compile 训练图内取模索引/repeat 直接错值。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5961 ｜ https://gitcode.com/Ascend/pytorch/issues/5962
+  behavior: torch_npu 上用 torch.compile 编译含取模索引或 repeat 的模型：编译版本前向输出与 eager 不一致（社区用例 eager 得 24、编译得 22），或 repeat/带符号 shape 的操作后 load/store 行映射错、输出张量内容错位；无报错、无 NaN，数值看似合理，只有与 eager 对拍或下游指标异常时才暴露。同一代码关掉 compile 即恢复正确。
+  trigger_surface: torch_npu master/dev（配套 PyTorch 2.13~2.16）inductor 路径；乘法取模索引、repeat 复合符号轴替换
+  discovery: 2026-11-10 每日扫描
+  notes:
+  - 2026-11-11 回访：回访：修复 !49132 已 merged（2026-11-09T09:17Z，批次快照）；!49133 无更新，维持 open 待核。
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

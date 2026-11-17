@@ -1,0 +1,51 @@
+id: TRN-0739
+legacy_ids: []
+slug: verl_gspo_seq_is_includes_rejected_tokens
+aliases: []
+title: verl GSPO 序列 IS 比率混入被拒 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: compute_policy_loss_gspo
+  behavior: 序列级 importance ratio 在 rollout-correction 权重应用前对全部有效 token 求均值，IcePop 置 0 的 token 的 log-ratio 仍进入序列 KL 均值。
+effect:
+  objects:
+  - 训练信号
+  detail: 复现：1 个被拒 token（log-ratio +3.0）使序列 IS 均值 0.75（正确 0），pg_loss -0.90（应 -1.00）、pg_clipfrac 1.00（应 0.00）——被拒 token 反转全部幸存 token 的裁剪判定与损失幅度。
+  visibility: 静默错误
+mitigation:
+  detect: rollout_correction 开启时对 IS 权重为 0 的 token 构造单边复现（序列其余 token on-policy）断言 clipfrac=0；单测化 seq IS 只含幸存 token
+  fix: '待定（issue open；同语义问题在 GMPO/geo_mean #8406 已由 PR #8421 修复，GSPO 路径未同步）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: negative_approx_kl_seq 已 detach，无梯度泄漏进被拒 token——缺陷是序列统计被污染。CPU 张量复现器用未改动的 compute_policy_loss_gspo。
+evidence:
+- url: https://github.com/verl-project/verl/issues/8636
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'verl issue #8636（2026-11-11 open；main @ 63913d1d，CPU 复现）。compute_policy_loss_gspo（verl/trainer/ppo/core_algos.py）中序列级 importance ratio 对全部有效 response token 计算，早于 rollout-correction 权重应用：negative_approx_kl = log_prob - old_log_prob 在 response_mask 上求均值得 negative_approx_kl_seq；其后 pg_losses 取 max 后才乘 rollout_is_weights——IcePop 置 rollout_is_weights=0 的 token 自身损失项被清零，但其 log-ratio 仍贡献序列 KL 均值，继续操纵序列 importance ratio 与幸存 token 的 clip 判定/损失幅度。与 #8406（GMPO/geo_mean，PR #8421 修复）同语义：IS 权重为 0 应表示 token 完全退出目标。最小复现（真实函数）：1 序列 4 token，token0 被拒（w=0，log-ratio +3.0）、token1-3 完全 on-policy——上游 seq IS mean 0.75 vs 正确 0.00，pg_loss -0.90 vs -1.00，actor/pg_clipfrac 1.00 vs 0.00；被拒 token 单独把 exp(0.75)=2.12 推过 1+clip_ratio，把所有幸存 token 翻进裁剪区。来源：https://github.com/verl-project/verl/issues/8636 。训练面：GSPO + rollout_correction（IcePop 阈值）训练的 IS/裁剪语义错。'
+  source: https://github.com/verl-project/verl/issues/8636
+  behavior: 在 verl 里用 GSPO 损失并开 rollout correction（IcePop 式 IS 阈值）训练时：被阈值拒绝的 token 名义上已从目标中剔除，但其 train-vs-rollout log-ratio 仍被计入序列级 importance ratio——一条序列里只要有一个被拒且偏离大的 token，整条序列的 IS 与裁剪判定就被它带偏（复现中 clipfrac 从应为的 0 变成 1），幸存 token 的更新方向与幅度失真；训练无报错，指标仅表现为 clipfrac 异常升高。
+  trigger_surface: verl actor.policy_loss.loss_mode=gspo + algorithm.rollout_correction（rollout_is IcePop 阈值）；issue open 无修复
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

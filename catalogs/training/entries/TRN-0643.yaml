@@ -1,0 +1,56 @@
+id: TRN-0643
+legacy_ids: []
+slug: cann_moe_gating_topk_softmax_missing_k_check
+aliases: []
+title: MoeGatingTopKSoftmax 漏校验末维==k 致越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: CheckOutShape 漏末维==k
+  behavior: CheckOutShape 只比维数/dim0/3D 时 dim1，从不比较最后一维==k；yOut 末维小于 k 时第一段放行（ret=0），kernel 按 k 列写越界覆盖调用方 buffer。
+effect:
+  objects:
+  - 数值结果
+  - 模型权重
+  detail: k=2 而 yOut=[8,1] 时第一段返回 0，kernel 按 2 列写、越界写 GM 无错误码（一轮 memcheck 观测，参数不可追溯已如实标注）；gating 是 MoE 每层必经算子。
+  visibility: 静默错误
+mitigation:
+  detect: 调用前本地断言 out 末维==k（三输出 host 侧 shape 可得，比较零成本）。
+  fix: 待定：issue open（2026-11-06），建议 CheckOutShape 补 GetDim(dimNum-1)==k（一处改动三输出全覆盖）+ 负向回归用例，未见 MR。
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: 与 TRN-0421（索引/可选输入 shape 校验缺失族）同为「校验不完整」，但对象是 MoE gating 输出、后果是 kernel 越界写而非仅放行；训练 MoE 前向+反向 gating 必经。推理库 INF-2437 同源已收。 本库内独立建条（TRN-0421 为入参校验族且无越界写实测），跨库同源 cross→INF-2437。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7222
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7155
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2437
+original:
+  mechanism: 'cann/ops-transformer issue #7222（2026-11-06 open）：aclnnMoeGatingTopKSoftmax 资料要求 yOut 末维等于 k（docs/aclnnMoeGatingTopKSoftmax.md:131），实现侧 moe_gating_top_k_softmax_tiling_base.cpp:46-72 的 CheckOutShape 只比较维数、dim0、3D 时 dim1，从未比较最后一维==k；:127/:132/:137 三个输出（yOut/expertIdxOut/rowIdxOut）都过该函数，证明「校验输出 shape」是既定意图、漏的只是末维比较。实测（自包含 C++ 直调）：k=2 时 yOut=[8,2] 合法基线 ret=0；yOut=[8,1]（末维少 1）ret=0 应拒未拒、ws=16777216 相同——kernel 按 k 列写而调用方 buffer 只有 1 列，越界写 GM 且无任何错误码（一轮挂 debug .o 的 memcheck 中目标 kernel 报连续越界；报告者如实标注该轮参数不可追溯、不作为主证据）。同接口 k 超上界正确返回 561103，证明仅末维比较缺失。关联 #7155（MoeFusedTopk IsEmpty 早退跳 19 项校验）为同仓 Moe 族 shape 校验系统性盲点的另一实例，两者互引。训练侧：MoE gating 是每层必经（gating_top_k_softmax 输出 yOut/expertIdx/rowIdx 进 expert 分派），aclnn 直调的 MoE 训练框架受害。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7222 ；同族盲点：https://gitcode.com/cann/ops-transformer/issues/7155 ；同源推理条目：INF-2437
+  behavior: NPU 上调用 aclnnMoeGatingTopKSoftmax（或其 PTA 封装）时若 yOut 的最后一维因广播/切片/视图被写错成小于 k 的值：第一段接口返回 0（成功），随后 kernel 按 k 列写入而 buffer 不足，越界写显存、不产生任何错误码——轻则 gating 概率/专家索引数据被覆盖错乱，重则踩坏相邻张量（含其他梯度/权重 buffer）。gating 是 MoE 模型每层必经算子，错误会随训练持续累积且无报错。
+  trigger_surface: aclnnMoeGatingTopKSoftmax + yOut 末维 < k 的非法出参（合法入参）；真机实测定位于 ops-transformer master（2c193867 已 fetch 仍在），硬件型号未列（C++ 直调复现）
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

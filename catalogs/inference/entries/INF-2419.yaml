@@ -1,0 +1,71 @@
+id: INF-2419
+legacy_ids: []
+slug: dspark_aux_state_one_based_capture_misalignment
+aliases: []
+title: DS V4.1 DSpark 辅助层捕获错位一层
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: vllm
+    component: V4.1 aux 层捕获条件
+  behavior: Ascend target 对零基 layer_ids 仍用 V4 一基条件（layer_idx+1 in ids），捕获残差比意图早一层；且在 Engram 注入前采样、末边界永不捕获
+effect:
+  objects:
+  - 隐状态
+  - 输出内容
+  detail: DSpark draft 以早一层的隐藏态为条件，接受率下降：对齐修复后 TPOT -3.25%（14.35→13.89ms）、加权验证产出 +3.13%（3.445→3.553）；输出仍看似合理，静默劣化
+  visibility: 性能退化
+mitigation:
+  detect: '对比开启/关闭 DSpark 下接受率或运行修复 PR #21023 自带三层层级单测核验捕获层索引'
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/21023 （open，含 unit 级复现；未发布）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21022
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend main@40b3842d3 + vLLM v0.32.0，DeepSeek-V4.1-Flash-1017-w4a8-Ascend，A3 910_9392，CANN 9.2.0，1P1D decode DP8/TP2，DSPark 5 spec tokens，V2 runner。DeepSeek V4.1 检查点 dspark_target_layer_ids=[37,38,39] 为零基 attention-input 边界；MRV2 上 vLLM set_eagle3_aux_hidden_state_layers()→get_eagle3_aux_layers_from_config() 已按 V4.1 语义原样返回，但 Ascend target 模型（vllm_ascend/models/deepseek_v41/model.py）仍用 V4 一基条件 if layer.layer_idx+1 in self.aux_hidden_state_layers: aux=hidden_states.mean(dim=1)——以 (37,38,39) 为配置时实际捕获进入层 36/37/38 的残差，比意图早一层。附带两个问题：循环顶部采样发生在 Engram 注入之前（Engram 层边界返回注入前状态）；等于 end_layer 的末边界无后继层永不捕获。V1 runner 用 +1 掩码巧合地捕获到 37/38/39，但仍在 Engram 前采样且漏末边界；decoder-replay 路径重复一基条件，replay 与正常前向可能不一致。固定 v0.30 下游 replay 栈 4 轮 ABBA：对齐修复使 TPOT 14.3520→13.8861ms（-3.25%）、加权验证产出 3.4452→3.5530（+3.13%）（同栈测量，非历史对比）。修复 #21023 保持 V4.1 原始 ID、Engram 后捕获、补末边界、统一 zero-based，附三层层级单测（aux=(1,3) 断言导出的是层 1/3 输入）。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/21022
+  behavior: DeepSeek V4.1 用 DSpark 投推解码时，Ascend 侧目标模型给 draft 模型喂的辅助隐藏态取错了层——差一层。draft 以错误状态为条件，接受率系统性偏低， speculative 解码净收益缩水（同栈修复对照：吞吐类指标差 3% 左右）。生成内容本身看不出异常，只是变慢，属于典型的静默配置级劣化。修复 PR 已提交待合入。
+  trigger_surface: vllm-ascend main（40b3842d3）；DeepSeek V4.1 系检查点（dspark_target_layer_ids 零基语义）；DSpark speculative decoding；MRV2/V1 runner 均受影响（V1 因 +1 掩码巧合对齐但仍有 Engram/末边界问题）。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 解码/采样
+      effect:
+        from: 输出内容
+        to: 隐状态
+      visibility:
+        from: 质量退化
+        to: 性能退化
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - mitigation.detect

@@ -1,0 +1,59 @@
+id: INF-2508
+legacy_ids: []
+slug: mooncake_layerwise_push_early_done
+aliases: []
+title: Mooncake 层间 PUSH 提前报完成漏前缀
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: layerwise connector 完成门控
+  behavior: 各 prefill stage 自行入队 KV 传输；完成回调与失败清理被 last_layer_idx=-1 门控在最终 stage，wait_for_save() 为空、接收侧计数无 PP quorum——一个 DONE 即判整体完成。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: prefill PP>1 的 layerwise PUSH：早 stage 写阻塞或写失败时，最终 stage 一 DONE 即 finished_recving，解码消费不完整前缀 KV 且看不到失败上报；CPU 组件级复现（PP=2 两案例、PP=1 对照），端到端 NPU 与精度待验证。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 'issue 已 closed（2026-11-11，关闭说明/关联修复未读）；该行为随 PR #21517（Mooncake layerwise connector prefill 侧流水线并行支持）引入，PR head 2e8033a75。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21558
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend Mooncake layerwise PUSH connector（kv_p2p/mooncake_layerwise_connector.py）：每个 prefill stage 自己入队 KV 传输，其后台线程在队列内做同步写；流水线 activation sends 不排空 KV 队列，wait_for_save() 为空（L889-891）。PR #21517 给非最终 stage 设 last_layer_idx=-1，完成回调与失败清理都被该层索引门控（L1569-1573、L292-328）——最终 stage 成功时看不到早 stage 的未完成写或失败。接收侧用源自 TP 与 context-parallel 映射的 trans_count 判完成，无 PP stage quorum，测试拓扑里一个 DONE 就够。受控复现（Windows/Py3.12/CPU-only 组件测试，执行 pin 的 Python 传输映射/sender/完成回调/接收跟踪，模拟 I/O、ACK 与设备事件；prefill PP=2 decode PP=1，TP=PCP=DCP=1）：stage0 写阻塞时 stage1 DONE 即 finished_recving（Layer0 在门释放后才到）；stage0 写失败同样判完成（失败请求留在 stage0 failed_reqs）；PP=1 对照首层写失败则正确报 FAILED。端到端 NPU 执行与输出精度待验证。'
+  source: 'https://github.com/vllm-project/vllm-ascend/issues/21558 '
+  behavior: 开启 prefill 流水线并行（PP>1）的 Mooncake layerwise KV 传输场景：最后一个 prefill stage 完成传输就上报整请求 KV 完成，前面 stage 还没写完（甚至写失败）时 decode 侧即认为收完并恢复解码，请求在不完整的前缀 KV 上继续生成，输出错误内容且看不到失败上报；组件级测试里 stage0 阻塞约 6 秒的案例中 decode 已在只有 Layer1 的目的端恢复。
+  trigger_surface: 'vllm-ascend Mooncake layerwise PUSH + prefill pipeline parallelism>1（PR #21517 引入的路径）；早 stage 写慢或写失败时触发；PP=1 不受影响。'
+  discovery: 2026-11-11 每日扫描
+  notes:
+  - '2026-11-13 回访：回访：vllm-ascend #21558 已 closed，state_reason=not_planned（2026-11-11T07:57Z），关闭说明未读，修复未采纳/未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-13'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

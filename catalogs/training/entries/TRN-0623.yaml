@@ -1,0 +1,57 @@
+id: TRN-0623
+legacy_ids: []
+slug: pytorch_npu_rsplit_outer_double_count
+aliases: []
+title: NPU Inductor rsplit 重写越界重复计数静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: rsplit_outer 文本重写
+  behavior: 自研 rsplit 对已生成 partial body 文本改写重绕 ragged-tail mask；extent 与 tile 对齐时 mask 已折叠为常量，重绕循环边界使每 core 最后 tile 越入下一 core 切片。
+effect:
+  objects:
+  - 数值结果
+  detail: ragged 归约重复计数+越过张量末尾读：定算例结果 1.03125=33/32（正确 1.0），编译期运行期均无报错；默认 rsplit_outer=True 时开启。
+  visibility: 静默错误
+mitigation:
+  detect: ragged 归约（如 14866848 元素、split 182 非整除）compile vs eager 对拍 sum/mean；holey 行归约对照。
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49015（open）：rsplit_outer 默认 True→False，删除强制 split_reductions=False 恢复上游默认；开关保留可回切。未发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-05'
+remarks: 与 TRN-0280（常量特化 r-numel 误编译）、TRN-0617（AddMM 拆分舍入）同 NPU Inductor 归约/融合代码生成静默错值族：此条是 rsplit 文本改写重复计数。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49015
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/pytorch/issues/5520
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0280
+pattern: PAT-TRN-0066
+original:
+  mechanism: 'Ascend/pytorch !49015（2026-11-04 open，关联 issue #5520，从 !48170 拆出）：torch_npu 后端自有 rsplit_outer 是对已生成 partial body 的文本改写，只能重绕文本中仍存在的 ragged-tail mask；当 extent 与 tile 对齐时 mask 已被折叠为常量，重绕后的循环边界使每个 core 的最后一个 tile 越界进入下一 core 的切片——重复计数（定算例 1.03125=33/32，正确 1.0）+ 越过张量末尾读，静默算错数。修复：config.py rsplit_outer 默认 True→False；删除 __init__.py 强制 inductor_config.split_reductions=False，跨核并行度交回上游 split_reductions（split 轴为 stage-1 kernel 自由轴，bound/mask/index 由标准归约 codegen 生成）。验证：ragged 归约 14866848 元素、上游 split 182 非整除，sum diff 6.1e-05（相对 ~1e-7）、mean diff 2.9e-11；holey 行归约 diff 1.19e-07；最新 master Super_SloMo 从编译失败变为可跑（38.53 ms/iter）；2.13/2.15 双栈验证；e2e 数值守护 max rel err 3.40e-05（阈值 1e-3）。'
+  source: https://gitcode.com/Ascend/pytorch/merge_requests/49015 ｜关联 issue：https://gitcode.com/Ascend/pytorch/issues/5520
+  behavior: NPU 上 torch.compile 训练遇到元素数与切分数不对齐的 ragged 归约（sum/mean 等全程规约）时，编译结果比 eager 多算一份重叠数据（实测结果 1.03125 而正确 1.0）并越界读张量尾部，无编译期/运行期任何报错；loss/统计量静默偏大。默认配置（rsplit_outer=True）即触发，关掉该开关或升级修复版后恢复。
+  trigger_surface: torch_npu Inductor + rsplit_outer=True（默认）+ ragged 归约 extent 与 tile 对齐（mask 已折叠常量）+ 跨核 split
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

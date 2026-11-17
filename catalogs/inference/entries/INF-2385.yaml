@@ -1,0 +1,65 @@
+id: INF-2385
+legacy_ids: []
+slug: fla_chunk_scaled_dot_kkt_fwd_nondeterministic
+aliases: []
+title: GDN Triton/FLA 预填充非确定错误结果
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: sm90 loop-carried 归约代码生成
+  behavior: BK<K 且 num_warps>=4 的 12/27 autotune 配置输出错误且 run 间不同，autotune 恰选中坏配置；疑似 triton 3.6 sm90 loop-carried 累加 codegen 缺陷
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: 同 prompt（同进程、关前缀缓存、temperature 0）每次 forward 的 logprobs 不同：均值 |Δ|≈1.0-2.3 nat/token、尾部 20-35 nat；RL rollout 偶发立即 EOS、连发 token 0 与 NaN logprob。
+  visibility: 不可复现
+mitigation:
+  detect: 同输入多次 forward 比对 prompt logprobs；逐 autotune 配置隔离测试
+  fix: 待定（BK=K(=128) 或 num_warps=2 的配置确定性且 rel 1.7e-3，可作规避；根因修复未见）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/65385
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM GDN（Triton/FLA）预填充路径在 Hopper H20 + triton 3.6 下非确定且错误：同 prompt（同进程、关前缀缓存、temperature 0）每次 forward prompt logprobs 不同（8-9k token 上均值 |Δlogprob|≈1.0-2.3 nat/token，尾部 20-35 nat），两个新进程的首次请求也不同，enforce_eager=True 无效。对 chunk_gated_delta_rule 各子步二分（同输入）：l2norm/cumsum 逐位一致，首个出错子步是 chunk_scaled_dot_kkt_fwd——严格下三角输出 ~87% 元素 run 间不同（相对差 0.53）、比 float32 参考偏 ~54%；solve_tril 本身确定。隔离跑 27 个 autotune 配置（T=4096,H=32,K=128,BT=64）：BK<num_warps>=4 的 12/27 配置（BK∈{32,64}×num_warps∈{4,8}）非确定且错（rel 0.18-0.70），BK=128(=K) 与 BK 小+num_warps=2 全部确定且 rel 1.7e-3——缺陷精确落在 BK<K（K 维 loop-carried 累加）+ num_warps>=4；autotune 在该 GPU 上恰好选中坏配置。报告者猜测（未在 PTX 级验证）为 triton 3.6 sm90 codegen 的 loop-carried 累加问题；关 TMA（is_tma_supported=False）无变化。环境：vLLM + torch 2.10.0+cu126、H20×8、triton 3.6。
+  source: https://github.com/vllm-project/vllm/issues/65385
+  behavior: GDN/线性注意力模型走 Triton/FLA 预填充时，同样的 prompt 每次前向给出的 prompt logprobs 都不一样（每 token 平均差 1-2.3 nat，尾部最高 35 nat）；RL rollout 中表现为偶发的立即 EOS、连发 token 0 与 NaN logprob。换 eager 模式、关 TMA 均不解决。
+  trigger_surface: vLLM GDN Triton/FLA prefill；Hopper H20（sm90）；triton 3.6；autotune 选中 BK<K 且 num_warps>=4 的配置。
+  discovery: 2026-11-03 每日扫描
+  notes:
+  - 2026-11-04 回访：#65385 仍 open
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem
+    - effect
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

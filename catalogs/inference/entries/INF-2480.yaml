@@ -1,0 +1,50 @@
+id: INF-2480
+legacy_ids: []
+slug: ttnn_pad_sharded_reshard_corruption
+aliases: []
+title: ttnn.pad 分片重切版图静默损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: pad 分片工厂准入
+  behavior: can_use_sharded_optimized_factory 不查输入/输出 shard_spec 的 grid/朝向/shard 高度一致，重切分 pad 被派到只做核内本地拷贝的工厂，静默损坏数据。
+effect:
+  objects:
+  - 数值结果
+  detail: HEIGHT_SHARDED ROW_MAJOR 张量做合法重切分 pad：输出静默损坏（核间数据不搬运）；UINT16 width-only pad 恒用 0 而非 pad_value。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（issue 给出三处源码定位，https://github.com/tenstorrent/tt-metal/issues/64834）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/64834
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal ttnn.pad 在 HEIGHT_SHARDED ROW_MAJOR 张量上有三处缺陷（pad_device_operation.cpp:36-70 与 pad_rm_sharded_width_only_program_factory.cpp）：1) can_use_sharded_optimized_factory 只查 memory_layout 与宽度条件，从不检查 input_tensor.shard_spec() 与 output_mem_config.shard_spec() 的 core grid、orientation、shard_height(shape[0]) 是否一致；准入通过后 PadRmShardedWidthOnlyProgramFactory 只在每个输入核的 grid 内做本地 stick 拷贝，合法的重切分（reshard）pad 因此静默返回损坏数据；2) BFLOAT16 时对 uint16 栈变量做 *reinterpret_cast<uint32_t*> 4 字节读（2 字节栈越界读），UINT16 时 pad 值装进错误 16 位半区、width-only pad 恒补 0；3) 输出为 ND_SHARDED 时无 has_value 检查直接解引用 shape[1] 崩溃。
+  source: https://github.com/tenstorrent/tt-metal/issues/64834
+  behavior: 对高度分片张量调用 ttnn.pad 且输出分片规格（核网格/朝向/shard 高度）与输入不同这种完全合法的用法，输出数据静默损坏——因为优化工厂只在原核内拷贝、不做跨核搬运；UINT16 dtype 的宽度 pad 恒填 0 而不是给定 pad_value。均无报错；ND_SHARDED 输出则直接崩溃。
+  trigger_surface: ttnn.pad + HEIGHT_SHARDED ROW_MAJOR 输入 + 分片输出（重切分场景触发静默损坏；BF16/UINT16 触发越界读/恒 0 pad；ND_SHARDED 输出触发崩溃）。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,51 @@
+id: TRN-0765
+legacy_ids: []
+slug: openrlhf_unbiased_kl_forward_value_rounding
+aliases: []
+title: OpenRLHF unbiased KL 前向值被大代理项舍掉
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: compute_approx_kl
+  behavior: 返回式先算 value+grad_surrogate 再减 detached surrogate；有限但很大的代理项把裁剪后的前向 KL 值舍掉，前向 loss 改变。
+effect:
+  objects:
+  - 训练信号
+  detail: logprob -12000/-1 时有限平方代理远大于裁剪 k2 值 10，loss 与预期不同；44 个新测试在原实现 42 失败、修复后 44 通过；默认 unbiased_gradient=False 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: unbiased_gradient=True 时对前向 loss 与所选估计器公式对拍；覆盖大 logprob 差距与 k1/k2/k3。
+  fix: 修复 PR https://github.com/OpenRLHF/OpenRLHF/pull/1416（open 2026-11-13，未合入）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1416
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'OpenRLHF/OpenRLHF #1416（2026-11-13，open PR，基于 26494490bc237f6c3af62dab6117e6bbb0a78dba）。compute_approx_kl 在 unbiased_gradient=True 时承诺保留所选估计器的前向值、只用修正的反向 KL 梯度；原实现返回 value + grad_surrogate，再在外面减 detached surrogate，大而有限的 surrogate 会在减法前把裁剪后的前向值舍掉。示例：current/reference logprob 为 -12000/-1 时有限平方 surrogate 远大于裁剪 k2 值 10，前向 loss 与预期不同；归一化 categorical policy 与真实 GPT2 训练同样复现。修复改为 value.detach() + (grad_surrogate - grad_surrogate.detach())，前向为零、反向保留 surrogate 梯度。验证：44 个新测试在原实现 42 失败/2 通过，修复后 44 通过；既有套件原实现 203 passed/2 skipped，修复后含新测试 247 passed/2 skipped；覆盖 k1/k2/k3、on/off-policy 权重、FP16/BF16/FP32/FP64、GPT2 SGD/AdamW 与解析 KL 梯度参考。'
+  source: https://github.com/OpenRLHF/OpenRLHF/pull/1416
+  behavior: RL 训练用 unbiased_gradient=True 的 KL 估计、且 current/reference logprob 差距很大（例如 -12000 vs -1）时，前向 loss 会被大代理项改写：裁剪后的 KL 值被舍掉，训练信号与所选估计器不一致，但 loss 仍是有限值、无 NaN、无报错。默认 unbiased_gradient=False 不受影响；问题只在特定数值范围出现，靠 loss 曲线很难发现。
+  trigger_surface: OpenRLHF compute_approx_kl，unbiased_gradient=True，大 logprob 差距；CPU/GPU 通用。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

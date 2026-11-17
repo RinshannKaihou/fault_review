@@ -1,0 +1,62 @@
+id: INF-2581
+legacy_ids: []
+slug: cann_qkv_rms_rope_cache_mx_e8m0_zero_scale_nan
+aliases: []
+title: QkvRmsNormRopeCache MX 小 amax 静默 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: QkvRmsNormRopeCache
+  behavior: M-RoPE MX 路径把 D32 block 的 amax 编码成 E8M0 时，极小 amax 得到码字 0（应为 max(-127,ceil(log2(a/448)))+127），x/0 产出 FP8 NaN。
+effect:
+  objects:
+  - 数值结果
+  - KV状态
+  detail: amax≤2^-118.19（另一提交实测 e_b=-125/-126）时 qScale/kScaleCache 恒 0，qOut/kCache 全 0x7E/0xFE；amax 更大时正确；两段 rc=0/0。
+  visibility: 数值异常
+mitigation:
+  detect: 扫 amax=2^k（k=-110…-130），核对 E8M0 码字是否等于 max(-127,ceil(log2(a/448)))+127，并统计 qOut 的 0x7E/0xFE。
+  fix: 待定（两条 issue 均 open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 两条同接口报告合成一条：症状与算子相同、边界实测不同；未把不同边界写成同一确定阈值，根因是否同源待维护者确认。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7637
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7646
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnQkvRmsNormRopeCacheWithKScale 在 M-RoPE + qQuantMode/kQuantMode=Mx 下，D32 block 的 amax 极小时 E8M0 scale 静默为 0。两条独立报告：#7646（Ascend950PR、CANN 9.3.0、master 6ba3026e）实测 a_b≤0x04600001≈2^-118.19 时 qScaleOptional/kScaleCacheRef 恒 0、qOut/kCacheRef 全 0x7E/0xFE，a_b=3.762e-37 时饱和 1536/2048，a_b=7.523e-37 时 0/2048；#7637（master 811b0f2e）实测 e_b>=-124 全对（3/3），e_b∈{-125,-126} 全部输出 0（2/2），e_b=-127 理论码字本就是 0。两报告边界不同，但都指向同一条 E8M0 编码路径未按资料 L219-239 的 max(-127,…) 处理极小 amax；是否同根因未经维护者确认。0x7E 为 FP8 E4M3FN 的 NaN 编码，说明 x/0 无保护。
+  source: https://gitcode.com/cann/ops-transformer/issues/7637 与 https://gitcode.com/cann/ops-transformer/issues/7646 （均 open，2026-11-16）
+  behavior: 当某一 D32 block 的激活幅度很小（RMSNorm 后 amax 约 1e-36 量级）时，量化 scale 被写成 0，qOut 与写进 kCache 的 FP8 字节全变成 NaN；接口成功、无日志，后续 attention 整块 NaN。混合精度 M-RoPE 推理在长尾小激活上会出现整段输出异常。
+  trigger_surface: Ascend950PR + CANN 9.3.0；aclnnQkvRmsNormRopeCacheWithKScale；qQuantMode/kQuantMode=Mx；D=128、BlockSize=4、mropeSection=[22,12,10]；#7646 基线 6ba3026e，#7637 基线 811b0f2e。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: KV状态
+        to: 数值结果
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    issue_unfixed:
+    - behavior

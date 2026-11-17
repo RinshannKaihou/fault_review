@@ -1,0 +1,50 @@
+id: INF-2411
+legacy_ids: []
+slug: w4a4_dynamic_per_group_dequant_layout_transpose
+aliases: []
+title: msmodelslim W4A4 per-group 反量化转置布局错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: W4A4 per-group 反量化布局
+  behavior: forward 直接 dequantize(w,p)，公共实现先转置再分组，[out,in] 权重分组轴错位；应 dequantize(w.T,p).T
+effect:
+  objects:
+  - 数值结果
+  detail: 全 1 权重 group_size=2、scale 逐行不同时输出 [16,16,20,20]（期望 [6,14,22,30]），伪量化推理输出不正确；现有单测用均匀 scale 无法识别
+  visibility: 静默错误
+mitigation:
+  detect: 不均匀 scale/非对称 offset/非方阵的数值回归（issue 附 10 行复现）
+  fix: 待定（issue open；报告者计划提交独立修复 PR，与 !1150 W8A8 修复同根因不同实现）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/678
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: msmodelslim master a2007518（PyTorch 2.9.0+cpu 复现，无需 NPU）。W4A4DynamicPerGroupFakeQuantLinear.forward 直接调用 dequantize(w_q_storage, w_q_param)，而公共 int_per_group_dequantize 内部先转置再按 group_size 分组（INT4/INT8 共用），因此 [out_features,in_features] 存储的 INT4 权重沿错误轴分组；应调用 dequantize(w_q_storage.T, w_q_param).T（与 W4A4 per-channel、W8A16 per-group 既有布局约定一致）。确定性复现：4×4 全 1 权重、group_size=2、scale=[[1,2],[3,4],[5,6],[7,8]]、offset=0、输入全 1 → 输出 [16,16,20,20]，期望 [6,14,22,30]。非对称 offset 同样受影响；group_size 等于整行时只要各输出行 scale 不同即错。发现于 W8A8 修复 PR !1150 检视讨论（同根因独立 W4A4 缺陷，#666/!1150 只处理 W8A8）。验证限于 CPU IR/API 小张量，未跑真实模型量化或 NPU 部署，不推断所有 W4A4 模式或 MXFP4 受影响。
+  source: https://gitcode.com/Ascend/msmodelslim/issues/678
+  behavior: W4A4 动态 per-group 量化做伪量化（fake-quant）推理验证时，反量化把分组轴搞反了：不同输出行 scale 不同时，伪量化输出直接不正确。量化流程校准/评估阶段拿到的线性层输出数值静默错误，导致量化方案评估结论失真；且现有单测用均匀 scale 权重根本测不出来。
+  trigger_surface: msmodelslim master a2007518；W4A4DynamicPerGroupFakeQuantLinear（动态 per-group 路径）；各输出行 scale 不等即触发（group_size 整行也错）；CPU 可复现。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

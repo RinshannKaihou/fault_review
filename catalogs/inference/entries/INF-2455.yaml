@@ -1,0 +1,51 @@
+id: INF-2455
+legacy_ids: []
+slug: humming_mxfp4_e8m0_range_window_reencode_weight_loss
+aliases: []
+title: Humming MXFP4 E8M0 窗口重编码静默清零权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: Humming fused E8M0 重编码
+  behavior: SM90 Humming MXFP4 以 FP8 激活开 fused E8M0 路径，code 钳到 [max-11,max] 并重编码 E2M1：距最大 scale 12-15 binade 块粗化，≥16 binade 解码为 0。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: 无错误无警告： fused 投影邻接小 scale 部件被 qkv/gate_up 最大 scale 窗口化，N padding 行 E8M0=1.0 抬高窗口顶；Marlin 同层精确解码。层输出偏离 checkpoint 意图，精度损失取决于权重动态范围。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 规避：VLLM_DISABLED_KERNELS=HummingMxFp4LinearKernel 回退 Marlin（精确解码，已实测同层对照）。上游修复未核实（issue open，humming-kernels 0.1.19 / vLLM v0.33.0 pin）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/66074
+  kind: github_issue
+relations: []
+original:
+  mechanism: Hopper（SM90）上 vLLM 默认用 HummingMxFp4LinearKernel 服务 compressed-tensors MXFP4 线性层（priority.py#L11、kernels/linear/__init__.py#L625-629）。checkpoint 要求 MXFP4 激活、Marlin 用 BF16 跑激活，而 Humming 输入 schema 回退到 FP8 E4M3 per-token 激活（mxfp4/humming.py#L81-88、humming/schema.py#L292-296/361-373）。FP8 激活+E8M0 组 scale 时 humming-kernels 开启 fused-E8M0 权重路径（config.py#L373-381）：check_and_pad_tensors（humming transform.py#L192-208）对 weight_scale 的 K 侧按每行最大填充、N 侧填充 1.0；process_fused_e8m0_scale（transform.py#L242-275）把每张量 code 钳到 [max-max_range_val,max]（FP8 激活 max_range_val=11），再对被抬块重编码 E2M1（process_mxfp4_w4a8_weight）。窗口按整张量取最大（weight_scale_2_type=CHANNEL 时按行），故 fused 投影（qkv_proj/gate_up_proj/in_proj_qkvz/fused_qkv_a_proj）中 scale 较小的部件被邻居的最大 scale 窗口化；输出 N 非 256 倍数时 padding 行 E8M0=1.0（code 127）进一步抬高窗口顶。实测（H20-3e）：12 binade 以下 0.5→1、1.5→2；15 binade 下仅 4/6 存活且都成 8、其余成 0；≥16 binade 块内全部权重解码为 0。无错误或警告；VLLM_DISABLED_KERNELS=HummingMxFp4LinearKernel 切 Marlin 对同层精确解码。环境：vLLM 0.33.0（pin humming-kernels 0.1.19，4ba787ec）、torch 2.14.0+cu130、compressed-tensors 0.17.0。
+  source: GitHub issue https://github.com/vllm-project/vllm/issues/66074 （open）
+  behavior: 在 Hopper 上用 vLLM 服务 compressed-tensors MXFP4 模型（SM90 默认 Humming kernel）时，权重动态范围超过 11 binade 的层被静默破坏：scale 距全张量最大 scale 12-15 个 binade 的块权重被四舍五入到更粗的格点（0.5 变 1、1.5 变 2；15 binade 时只剩 4/6 两个值且都变 8），16 binade 以下的块权重全部变 0。服务不报错不警告，输出质量随受损层权重占比下降；qkv/gate_up 等 fused 投影里 scale 小的部件会被邻居部件的最大 scale 拖进窗口而额外受损。设置 VLLM_DISABLED_KERNELS=HummingMxFp4LinearKernel 换 Marlin 后同层解码完全精确。
+  trigger_surface: vLLM v0.33.0（SM90/Hopper 默认 kernel 选择）+ compressed-tensors MXFP4 线性层 + humming-kernels 0.1.19 FP8 激活 fused E8M0 路径；权重 E8M0 scale 距张量最大 scale ≥12 binade 的块受损（fused 投影与 N padding 会扩大窗口）；Marlin 路径与 SM100+ 不受影响。
+  discovery: 2026-11-07 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

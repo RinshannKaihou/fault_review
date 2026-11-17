@@ -1,0 +1,49 @@
+id: TRN-0702
+legacy_ids: []
+slug: megatron_lite_overlap_param_gather_stale
+aliases: []
+title: Lite overlap_param_gather 读上一步参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: DDP 参数预取 hook 覆盖
+  behavior: 分布式优化器分片下 forward pre-hook 只覆盖被调用模块的参数；router gate 权重与 embedding 以 functional 方式使用绕过 hook；ckpt 保存/导出在 forward 外读参数
+effect:
+  objects:
+  - 模型权重
+  - 隐状态
+  detail: 非持有 rank 的 router gate 与 embedding 用上一步参数计算，前向静默偏差；保存/导出可能写入未完成 all-gather 的分片值
+  visibility: 静默错误
+mitigation:
+  detect: optimizer step 后强制 sync 再前向对拍；保存的 ckpt 与训练态参数 checksum 对账
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9056 （[dev] open，2026-11-06）：gate/embedding 移入 _RouterGate/_LookupEmbedding 模块 forward；保存前 sync_overlapped_params；774/771 单测通过
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: Megatron Lite（experimental/lite，dev 分支）默认开 overlap_param_gather，影响全部 Lite 模型
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9056
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'NVIDIA/Megatron-LM #9056（[dev] lite，open PR，2026-11-06）：Megatron Lite + 分布式优化器 + overlap_param_gather（默认开）下，optimizer step 后各 DP rank 只持有自己分片的更新参数；Megatron-Core DDP 在 forward pre-hook 里 gather 其余分片，但 hook 只覆盖被调用模块的参数。三处绕过：①TopKRouter/SigmoidTopKRouter 以 functional 方式使用 router gate 权重；②VocabParallelEmbedding functional 使用 embedding 表；③checkpoint 保存与权重导出在 forward 之外读参数。非持有 shard 的 rank 使用上一步的值；保存/导出读到未完成 gather 的分片。修复：把 GEMM/lookup 移入 _RouterGate/_LookupEmbedding 各自模块的 forward（参数名/初始化/数值不变）、保存前强制 pending all-gather（sync_overlapped_params，对齐 Megatron-LM 训练侧）；新增 test_param_sync_hooks_unit / test_sync_overlapped_params_unit，experimental/lite 774 通过（dev@c4220af 771）。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/9056
+  behavior: Megatron Lite 开 overlap_param_gather（默认）训练：router gate 与 embedding 在非持有分片的 DP rank 上用的是上一步的参数值，router 概率与前向输出有一步滞后的静默偏差，无报错、loss 正常；checkpoint 保存与权重导出也可能写入未完成 all-gather 的分片参数——导出权重与训练态不一致，最终模型质量受损且难归因。
+  trigger_surface: Megatron Lite（experimental/lite dev）+ 分布式优化器 + overlap_param_gather（默认开）；全部 Lite 模型
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

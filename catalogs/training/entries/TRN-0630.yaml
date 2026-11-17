@@ -1,0 +1,68 @@
+id: TRN-0630
+legacy_ids: []
+slug: opsmath_isinf_gt2p31_int32_offset_oob
+aliases: []
+title: aclnnIsInf 元素数超 2^31 偏移溢出写坏输入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnIsInf GM 偏移位宽
+  behavior: kernel GM 偏移用 int32_t/uint32_t 计算，元素数超 2^31 后偏移回绕变负：out 尾部不写（保持预填 0 即全非 inf 错值），且越界写把正确结果写进只读输入 x 区。
+effect:
+  objects:
+  - 数值结果
+  detail: fp16 全 +inf 输入、n=2^31+8192：out 错值 7296 个（首个 @2147484544）、x 被污染 3648 个（首个 @1073750464≈2^31/2，符合 int32 负偏移落点）；两段 rc=0
+  visibility: 静默错误
+mitigation:
+  detect: 超大张量 isinf/isfinite 结果抽查；同族 is_finite.h 已是 uint64 位宽，可对照两算子输出差异定位
+  fix: 待定（issue open，未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-06'
+remarks: ；与 TRN-0271 同属偏移/计数 32 位宽度回绕静默错值族
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4530
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0271
+- kind: cross
+  target: INF-2540
+pattern: PAT-TRN-0013
+original:
+  mechanism: 'cann/ops-math issue #4530（2026-11-05 open）。aclnnIsInf 的 kernel GM 偏移用 int32_t/uint32_t 计算并溢出（元素数>2^31），两个后果同时发生：(1) out 尾部未写——仍为调用方预填值（本复现置 0，即「全非 inf」的错误结果）；(2) 输入 x 被越界写坏——int32 偏移变负后落点回到 x 区，把 out 的正确结果写进了输入。实测（fp16、x 全 +inf 0x7C00、正确应 out 全 1）：控制组 n=2^31-8192 无错；缺陷组 n=2^31+8192 execute rc=0 但 out 错值 7296 个（首个 @2147484544=2^31-1-8191）、x 污染 3648 个（首个 @1073750464≈2^31/2，符合负偏移落点）。报告者指出同族 math/is_finite/op_kernel/is_finite.h 逐行同构、只差位宽（perCoreDataCount/blockOffset 是 uint64_t，is_inf 是 uint32_t）。环境：A2 910B3/CANN 9.2.0、A3 910_9362/9.3.0 复测一致；仓库 ops-math master be4f2d5f（2026-11-05 fetch）。fp16 元素数 2^31 仅需 4GB 输入+2GB 输出，A2/A3 均可达（已实测），资料未声明元素数上限。附完整复现脚本（x 与 out 同块分配以检测写回 x 区）。'
+  source: https://gitcode.com/cann/ops-math/issues/4530 （open，附完整复现脚本）
+  behavior: NPU 上对超过 2^31（约 21.5 亿）元素的 fp16 张量做 isinf 检查时：接口返回成功，但判定结果尾部一大段还是预填的旧值（比如全 0=「没有 inf」，实际上全都是 inf），同时只读的输入张量本身被越界写入污染——同一个 buffer 里的输入数据悄悄变值。训练中用它做 inf/NaN 健康检查会漏报，且输入数据（如 loss/梯度统计张量）被无声改写。
+  trigger_surface: aclnnIsInf、fp16、元素数>2^31（4GB 输入+2GB 输出，A2/A3 HBM 可达）；A2 910B3 CANN 9.2.0、A3 910_9362 CANN 9.3.0
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - relations
+  - date: '2026-11-06'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

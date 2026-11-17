@@ -1,0 +1,63 @@
+id: INF-2388
+legacy_ids: []
+slug: scatter_pa_kv_cache_32bit_offset_wraparound
+aliases: []
+title: ScatterPaKvCache 超 2^32 元素 32 位写偏移回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ScatterPaKvCache 写偏移位宽
+  behavior: SIMT 路径位宽选择只看输入元素数而非 cache 偏移上界，cache 超过 2^32 元素时整条写偏移链在 uint32 域计算回绕
+effect:
+  objects:
+  - KV状态
+  detail: cache 49.15 亿元素（>2^32）时合法 slot=76,799,999 两段返回 0 但目标位置一个字节未写，写入回绕落到 cache 中部约第 75760 block，静默覆盖其他 block
+  visibility: 静默错误
+mitigation:
+  detect: 对照写后读回目标 slot（对照 NB=1024 正常、NB=600000 未写）
+  fix: 待定（issue 2026-11-04 新开，未见修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7088
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-transformer aclnnScatterPaKvCacheWithKScale（master f5e07d37，CANN 9.3.0）SIMT 路径 simt.h:263-264 以 total=nT*nH*max(kH,vH)（本例 1×1×64=64）与 INT32_MAX 比较决定 IDX_T=uint32_t，位宽不看 cache 偏移上界 numBlocks*blockSize*numHead*headSize；simt.h:82-115 的 keyCache[blk*kcStride0+head*kcStride1+off*kcStride2+elem*kcStride3] 整条偏移链在 uint32 下计算。NB=600000、BS=128、D=64（约 10GB 显存）时 blk*kcStride0=599999*8192=4,915,191,808 > 2^32，回绕落到元素 620,224,512（约第 75760 block），目标 cache[599999][0][127][:] 完全未写。对照 NB=1024（<2^32）写对。slot=76,799,999 < num_blocks*block_size=76,800,000 属合法输入，资料 L314 明确其值域。触发前置：SIMT 路径（IsSimdCapable 不满足如 kHeadSize<128B）且 cache ≥ 4GiB；SIMD 路径不用该 VF 索引运算不受影响。真机 Ascend950PR 复现，返回码 0/0/0。
+  source: https://gitcode.com/cann/ops-transformer/issues/7088
+  behavior: 超大 KV cache（元素数超过 2^32，约 4GiB 以上）下调用该 scatter 算子写入指定 slot：接口返回成功（两段 0），但目标 block 内容保持旧值未被写入，实际数据被写到 cache 中部其他 block 位置；无任何报错，长上下文服务的 KV 内容静默错位。
+  trigger_surface: CANN 9.3.0 ops-transformer master f5e07d37；aclnnScatterPaKvCacheWithKScale SIMT 路径（headSize<128B 等不满足 SIMD 条件）+ cache 元素数 ≥ 2^32。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - '2026-11-05 回访：回访：#7088 仍 open；修复 MR !15405（Fixes #7063/#7086/#7087/#7088）已挂出，use32 判定改为按各 tensor 最大访问偏移 uint64 上界，MR open 未合入'
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 算子/内核
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

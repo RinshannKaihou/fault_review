@@ -1,0 +1,58 @@
+id: TRN-0727
+legacy_ids: []
+slug: megatron_flashinfer_processed_logprobs_inf
+aliases: []
+title: FlashInfer processed logprobs 下溢报 -inf
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: megatron-lm
+    component: FlashInfer sampler
+  behavior: processed_logprobs 模式对过滤后分布用「重归一化 fp32 概率再取 log」：kept token 概率低于 fp32 最小正规数时下溢为 0，log 得 -inf；torch sampler 无此问题
+effect:
+  objects:
+  - 训练信号
+  detail: 低温+top-k/top-p 请求下 kept token 的 processed logprob 变 -inf，top-N 榜单被 -inf 的无关 token 占位；训练默认用 FlashInfer sampler，喂给 IS/KL 污染训练信号，无报错，torch sampler 数值正常
+  visibility: 数值异常
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9296 （open，未合入）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9296
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'NVIDIA/Megatron-LM PR #9296（2026-11-10，open）。机制与场景来自 PR：修复为先 top_k_mask_logits 再 log_softmax（kept token 保有限 logprob），再从 logprob 重归一 top-p 核；未过滤行与采样行为不变。RL rollout 的 processed logprobs 进入训练信号（log-prob refit/IS 修正），-inf 属训练信号污染。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/9296
+  behavior: RL 训练用 Megatron InferenceSetupConfig（默认 FlashInfer sampler）取 processed logprobs 时，低温+top-k/top-p 请求里 kept token 的 logprob 变 -inf（fp32 概率下溢后取 log），top-N 榜单被 -inf 的无关 token 占位；这些值喂给重要性采样/KL 后训练信号被污染，过程无报错，torch sampler 路径数值正常。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail
+    uncertain:
+    - effect

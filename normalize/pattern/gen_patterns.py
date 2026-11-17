@@ -29,7 +29,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_patterns as B  # noqa: E402
 
-API = "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1/chat/completions"
+API = os.environ.get("JUDGE_API_URL", "")
 WRITER = "qwen3.8-max"
 VERIFIERS = ("kimi-k3", "doubao-seed-2.1-pro")
 MODEL_OPTS = {"kimi-k3": {"temperature": 1.0}, "doubao-seed-2.1-pro": {"reasoning_effort": "low"}}

@@ -1,0 +1,59 @@
+id: INF-2398
+legacy_ids: []
+slug: dspark_draft_kv_unrotated_context_keys
+aliases: []
+title: DSpark draft KV 上下文键未旋转致接受率跌半
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: Ascend RoPE 非就地语义失配
+  behavior: 上游 DFlash 假定原地 rotary 语义，Ascend RoPE 实现返回旋转后张量，返回值被丢弃后未旋转的上下文 key 写入 draft KV cache
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: draft token 接受率实测仅 50% 出头（正常应显著更高），投机解码加速失效；位置编码错配无报错
+  visibility: 性能退化
+mitigation:
+  detect: 对比投机接受率与无投机基线；draft KV 中上下文 key 与主模型 KV 比对
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/20002 （open）：forward_oot 把旋转后 q/k 拷回原缓冲并带回归测试
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20924
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/pull/20002
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend 0.30.0rc2 + Ascend 910B 的 DSpark/DFlash 投机解码：据 PR #20002 记录，上游 DFlash 假定原地（in-place）rotary embedding 语义，而受影响的 Ascend RoPE 实现返回旋转后张量；返回值被丢弃后未旋转的上下文 key 进入 draft KV cache，位置编码错配损害投机接受。跟踪 issue #20924：实测接受率仅 50% 出头，PR 记录 Qwen3.8-27B+DSpark 接受长度同样偏低。修复在 AscendMRotaryEmbedding.forward_oot 把旋转后 q/k 拷回原缓冲，保持调用方可见的就地语义。注意：报告者声明完整启动命令、draft 检查点、原始接受率统计尚未包含在本报告中，端到端数字以 PR 与后续跟踪为准。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/20924 修复 https://github.com/vllm-project/vllm-ascend/pull/20002
+  behavior: 910B 上用 DSpark/DFlash 投机解码时 draft token 接受率掉到 50% 出头：吞吐提升远低于预期甚至负收益，生成质量本身不变；无报错，只有接受率指标异常偏低。修复 PR 合入后预期恢复。
+  trigger_surface: vllm-ascend 0.30.0rc2（releases 谱系）；Ascend 910B + DSpark/DFlash 投机解码；非原地 RoPE 返回值被丢弃路径。
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 质量退化
+        to: 性能退化
+    uncertain:
+    - detail

@@ -1,0 +1,54 @@
+id: INF-2436
+legacy_ids: []
+slug: int4pack_group_offset_overlap
+aliases: []
+title: ConvertWeightToINT4Pack 后组覆盖前组
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: convert_weight_to_int4
+  behavior: 组间写偏移 idxG*k*n 使用未填充 ND 尺寸而非 NZ 填充后尺寸 k1*CUBE_BLOCK_SIZE*n1*c0SizeInt8，K 非 16 对齐时 k*n 小于组区大小，后组数据写进前组已排好区域
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  detail: int32[2,17,16] 用例后组首字节实际落在 136 而非 256，与前组区重叠 120B，前组 [136,256) 被覆盖；对齐对照组 [2,16,16] 无重叠；A2/A5 一致，两段 rc=0
+  visibility: 静默错误
+mitigation:
+  detect: 打包后按 group 边界抽查首字节偏移；与逐 group 参考布局比对
+  fix: 待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8338
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn（master 25cc786b27，2026-11-06；A2 910B2 与 A5 950PR 双平台、CANN 9.3.0 weekly 20261104）matmul/convert_weight_to_int4_pack/op_api/aclnn_convert_weight_to_int4_pack.cpp:353：weightNzArray[... + idxG*k*n] 的组间偏移 idxG*k*n 使用未填充的原始尺寸；单 group 目标区按 k1*CUBE_BLOCK_SIZE*n1*c0SizeInt8 计算并整体分配。K 非 16 对齐时 k*n < k1*16*n1*c0SizeInt8，后组写入起点落入前组区域。实测 int32[2,17,16]：单组 NZ 区 256B，后组首字节 136B，与前组 [0,256) 重叠 120B，前组 [136,256) 被覆盖；对照组 [2,16,16] 后组从 128B 正确开始。入参校验 CheckShapeValid 只要求末维偶数/与 pack 末维一致，不约束 K 对齐，[2,17,16] 是合法输入。
+  source: https://gitcode.com/cann/ops-nn/issues/8338
+  behavior: 做 INT4 NZ 权重打包时，weight 为 3 维（多 group）且 K 维非 16 对齐的层（如 K=17）：接口返回成功，但后组数据覆盖前组尾部、整体布局损坏；下游量化 Linear 直接装载损坏的 packed 权重，推理输出静默错误，且损坏方式随 K 取值变化难以用固定 pattern 识别。
+  trigger_surface: aclnnConvertWeightToINT4Pack+3 维 weight+K 非 16 对齐+多 group；A2/A5、CANN 9.3.0
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect
+    - detail

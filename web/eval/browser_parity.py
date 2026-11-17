@@ -40,15 +40,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         m = re.match(r"^/_models/(.+?)/resolve/[^/]+/(.+)$", self.path)
         if not m:
             return super().do_GET()
-        path = os.path.join(MODEL_DIR, m.group(1), m.group(2))
-        if not os.path.isfile(path):
+        if not MODEL_DIR:
+            self.send_error(404)
+            return
+        base_dir = os.path.realpath(MODEL_DIR)
+        path = os.path.realpath(os.path.join(base_dir, m.group(1), m.group(2)))
+        if not path.startswith(base_dir + os.sep) or not os.path.isfile(path):
             self.send_error(404)
             return
         size = os.path.getsize(path)
-        start, end = 0, size - 1
+        start, end = 0, max(0, size - 1)
         rng = re.match(r"bytes=(\d+)-(\d*)", self.headers.get("Range") or "")
-        if rng:
-            start, end = int(rng.group(1)), int(rng.group(2) or size - 1)
+        if rng and size > 0:
+            start = min(int(rng.group(1)), size - 1)
+            end = min(int(rng.group(2)) if rng.group(2) else size - 1, size - 1)
             self.send_response(206)
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         else:

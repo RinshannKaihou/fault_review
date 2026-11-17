@@ -1,0 +1,66 @@
+id: INF-2453
+legacy_ids: []
+slug: npu_triton_experimental_slice_scatter_out_of_slice_write
+aliases: []
+title: triton_experimental slice_scatter 改坏片外数据
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: slice_scatter 代码生成
+  behavior: 融合的 masked load/select 形式在负偏移钳制后丢失未选中前缀，把 src 写入视图时误改切片之外的元素（x[1:5] 重复修改会把 x[0] 的 0.5 写成 0）。
+effect:
+  objects:
+  - 数值结果
+  detail: 最小复现：x=arange(8)+0.5、src=full(4,-3)、torch.slice_scatter(x,src,0,1,5) 经 torch.compile 后，切片外 x[0] 由 0.5 变 0；原输入被破坏、输出错误。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49255 （关联 issue 已 closed、PR 带 2026-11-07 完整验证，合入未核实）：先物化输入副本再向指定视图写入 src，保留切片外数据与原输入；正/负边界、步长、空切片、非连续输入及来源别名 2 项 NPU 测试通过。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-07'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5946
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49255
+  kind: gitcode_pr
+relations:
+- kind: cross
+  target: TRN-0655
+original:
+  mechanism: 'triton_experimental 后端对 slice_scatter 的代码生成：融合的 masked load/select 形式在负偏移钳制后丢失未选中前缀，向视图写回 src 时把切片之外的元素一并改写。独立复现定位到 slice_scatter 本身（关联 #5638 G02、上游 pytorch/pytorch#191672 嵌套区域运行时输入写回验证接到真实 triton_experimental 后，重复修改 x[1:5] 会误改 x[0]）。修复方向：先物化输入副本，再向指定视图写入 src，复用切片边界规范化并验证 src 与目标视图尺寸，原有 unbacked 边界 fallback 不变。验证：独立分支 2 项 NPU 测试通过（覆盖正/负边界、步长、空切片、非连续输入及来源别名）；2026-11-07 完整适配验证：上游 G02（#188976/#189320/#190068/#191672）20 个测试方法/24 个参数化实例全 PASS、28 项专项回归全 PASS（910B3/CANN 9.1.0/PyTorch 2.15.0.dev20260902/Triton-Ascend 3.6.0.post2，master 8ca098a3fd 基线，联合提交 bd7f724b）。这是五笔独立修复（!49240/!49242/!49253/!49254/!49255）之一。'
+  source: GitCode issue https://gitcode.com/Ascend/pytorch/issues/5946 （closed）；修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49255 （closed）
+  behavior: 在 NPU 上用 torch.compile（TORCHINDUCTOR_NPU_BACKEND=triton_experimental）编译含 torch.slice_scatter 的函数并重复修改切片时，切片之外的数据被悄悄改坏：x=arange(8)+0.5、src=full(4,-3)，编译执行 torch.slice_scatter(x,src,0,1,5) 后 x[0] 从 0.5 变成 0，assert_close 对 eager 失败。无任何报错或警告，编译路径结果与 CPU/eager 参考不一致，调用者拿到被污染的原输入与错误输出。
+  trigger_surface: torch_npu master + TORCHINDUCTOR_NPU_BACKEND=triton_experimental + torch.compile 编译 slice_scatter（含嵌套区域/控制流场景重复修改视图）；910B3/CANN 9.1.0/PyTorch 2.15.0.dev20260902/Triton-Ascend 3.6.0.post2。
+  discovery: 2026-11-07 每日扫描
+  notes:
+  - 2026-11-08 回访：issue 已 closed（修复 !49255 含 11-07 完整验证 20 方法/24 实例全 PASS），合入主线未核实，维持 documented
+migration:
+  method: scan
+  scanned: '2026-11-07'
+  updates:
+  - date: '2026-11-08'
+    fields:
+    - relations
+  - date: '2026-11-08'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,60 @@
+id: TRN-0692
+legacy_ids: []
+slug: ascend950_sdpa_dropout_bwd_rng_meta_zero
+aliases: []
+title: 950 SDPA dropout 编译反向 RNG 状态丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: SDPA v1 反向 RNG 元信息
+  behavior: 950 回落 v1 npu_fusion_attention，其 schema 返回 int seed/offset/numels 而 meta 实现写死 0，AOT 反向图取默认 0 重新生成 dropout 掩码
+effect:
+  objects:
+  - 梯度
+  detail: 前向逐位一致、反向约 310k/311k 元素超差（max_abs 0.68~4.75）；dropout_p=0 或 910B3 恢复一致
+  visibility: 静默错误
+mitigation:
+  detect: 保存/恢复 npu RNG 状态后编译与 eager 梯度对拍（aot_eager/inductor × dynamic）；950 上 SDPA+dropout 训练加梯度抽检
+  fix: 修复 MR https://gitcode.com/Ascend/op-plugin/merge_requests/6179 （open 2026-11-09）：新增 npu_fusion_attention_tensor_rng/_grad_tensor_rng 把 int RNG 状态以 int64 Tensor 暴露；Python 同语义原型验证 4 组合 max_abs=0，未合入
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: npugraphs/reduce-overhead 的 v1 philox 捕获限制为独立问题（issue 内注明）
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/694
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49537
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/op-plugin #694（2026-11-09 open）+MR 6179（open）：Ascend950PR_9589、torch_npu 2.13.0、CANN 9.2.0-beta.2。950 上 aclnn fused attention v3 不可用（npu_fusion_attention_v3 直接 RuntimeError: Ascend950 not support），SDPA 在 ScaledDotProductAttentionKernelNpuOpApi.cpp 回落 v1 npu_fusion_attention；v1 schema 返回 (Tensor×4, int seed, int offset, int numels)，其 meta 实现（_meta_registrations.py）把三个 int 写死 0；torch.compile 的 AOTAutograd 用 meta/fake 值追踪反向图，int 返回值无法携带运行时值→反向图 npu_fusion_attention_grad 不带 seed/offset/numels（取默认 0）→反向用 seed=0/offset=0 重新生成 dropout 掩码，与 forward 真实掩码不同→梯度错。对照 910B3 走 v3（seed/offset 是 Tensor 输出、经 getitem 串入反向图）8/8 组合通过。图级证据：950 反向图为 npu_fusion_attention_grad.default(..., scale_value, keep_prob) 无 seed/offset；910B3 为 npu_fusion_attention_grad_v3.default(..., seed=getitem_4, offset=getitem_5)。影响 950 上所有 SDPA+dropout>0+反向+torch.compile 训练；前向逐位一致故推理/数值用例无法发现。修复 MR 6179 新增 tensor RNG 包装算子对（forward 把 v1 int 以 int64 Tensor 暴露、backward 内部还原），Python 同语义原型验证 aot_eager/inductor×dynamic 4 组合梯度 max_abs=0。'
+  source: https://gitcode.com/Ascend/op-plugin/issues/694
+  behavior: Ascend950 上用 torch.compile 训练含 attention dropout 的 Transformer：前向输出与 eager 逐位一致，反向 q/k/v 梯度约 310k/311k 元素超差、max_abs 0.68~4.75、allclose(1e-4) False；训练照常运行、loss 无异常，只有对拍 eager 梯度或最终模型质量下降时才暴露。dropout_p=0 或 910B3 上全部逐位一致；aot_eager/inductor × dynamic 组合均复现。
+  trigger_surface: Ascend950PR/9589、torch_npu 2.13.0、CANN 9.2.0-beta.2；SDPA dropout_p>0 + 反向 + torch.compile
+  discovery: 2026-11-10 每日扫描
+  notes:
+  - 2026-11-13 回访：回访：torch_npu 侧修复 MR !49537（open）出现，改 tensor-RNG 包装并接线 apply_sdpa_950_dropout_fix，安全子集（950+4D BNSD+fp16/bf16/fp32+无 mask+非 causal+dropout>0+grad）路由到 InductorNpuAttentionFunction，TORCH_NPU_SDPA_950_FIX=0 可关；op-plugin !6179 状态未变。机制判定不变。
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-13'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

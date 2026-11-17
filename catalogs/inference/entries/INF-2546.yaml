@@ -1,0 +1,52 @@
+id: INF-2546
+legacy_ids: []
+slug: toolcall_parser_nonfinite_json_arguments
+aliases: []
+title: tool-call 解析器输出非法 JSON 参数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 输出解析
+    stack: sglang
+    component: tool-call 参数转换
+  behavior: 参数值经 float()/json.loads()/ast.literal_eval() 转换后直接 json.dumps，不校验 NaN/Infinity 或 set 等非 JSON 类型。
+effect:
+  objects:
+  - 输出内容
+  detail: 参数含 NaN/Infinity 时 arguments 非合法 JSON，orjson.loads 抛 ValueError，agent 回传该轮消息即被拒；set 字面量使 json.dumps 抛 TypeError：流式下异常逃出，非流式丢弃全部 tool call，原始标记文本当正文返回。
+  visibility: 静默错误
+mitigation:
+  detect: 构造参数为 NaN/Infinity/1e999 与 {1,2,3} 的 tool call，用 orjson.loads 校验 arguments；流式与非流式各跑一遍，检查是否丢 call 或抛 TypeError。
+  fix: 未核实修复 PR；#48143 只修 qwen3_coder 的 number 分支，数组/对象与 Granite 路径未修。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/50377
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang 的 Qwen3CoderDetector._convert_param_value 与 GraniteToolCallDetector._coerce 把每个 <parameter=...> 值用 float()、json.loads() 或 ast.literal_eval() 转换后直接 json.dumps，不校验结果能否表示为 JSON。json.loads 接受 NaN/Infinity 并把 1e999 读成 inf，json.dumps 又原样写回 NaN/Infinity，于是 arguments 不是合法 JSON；orjson.loads 在 serving_chat.parse_tool_call_arguments 中抛 ValueError（Assistant tool call function.arguments must be valid JSON），agent 回传该轮消息时请求被拒。参数为 Python set（如 {1,2,3}）时 ast.literal_eval 返回 set，json.dumps 抛 TypeError：流式下异常逃出 parse_streaming_increment，非流式下 detect_and_parse 在整个循环外捕获，丢掉该响应全部 tool call（含之前的合法 call）并把原始标记文本当正文返回。报告者直接调用函数验证，未跑 HTTP 路径；#48143 仅覆盖 number 分支，Granite 解析器（#49600）未修。
+  source: https://github.com/sgl-project/sglang/issues/50377
+  behavior: 模型在 tool call 参数里给出 NaN、Infinity 或 1e999 时，服务端 200 返回的 arguments 里带着 NaN/Infinity 字面量，严格的 JSON 解析器（orjson、JSON.parse）直接拒收，agent 把这一轮 assistant 消息回传时整条请求被拒。若参数是 Python 的 set 字面量，流式响应直接抛 TypeError，非流式则把这次输出里所有 tool call 都丢掉、把原始标记文本当正文返回。
+  trigger_surface: SGLang qwen3_coder / granite_toolcall_parser，参数值含非有限浮点或 Python-only 字面量；#48143 只覆盖 number 分支。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

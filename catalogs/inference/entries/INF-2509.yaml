@@ -1,0 +1,53 @@
+id: INF-2509
+legacy_ids: []
+slug: mrope_pcp_position_misalign
+aliases: []
+title: M-RoPE PCP 位置准备错位精度暴跌
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 位置编码
+    stack: vllm
+    component: RopeState 位置准备 PCP 路径
+  behavior: prepare_positions 假设 rank 本地行与全局请求 1:1 连续映射；PCP 切成非连续片段且位置非单调时，M-RoPE 3D 位置按错误全局偏移重建，图像 H/W 坐标与视觉 token 错位。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  detail: M-RoPE 模型 + ModelRunner V2 PCP>1：Qwen3-VL-8B MMMU TP2=58 → PCP2 无修复 ≈34.33（相对掉 ~40%），加修复 58.2 恢复持平；非 PCP 或非 M-RoPE 路径不变，全程无报错。
+  visibility: 质量退化
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://github.com/vllm-project/vllm-ascend/pull/21551（新增 prepare_positions_pcp：prefill 按片段全局区间切片 3D 位置表、decode 用 1D scheduled positions+prefill_delta 广播；2×Atlas A3 A/B 验证；PR 已 closed 未合入，关闭原因未读，后续可能重提）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/21551
+  kind: github_pr
+relations: []
+original:
+  mechanism: vllm-ascend M-RoPE + PCP（prefill context parallel，ModelRunner V2）：PCP 把长 prefill 请求拆到多个 rank，RopeState.prepare_positions() 的 1:1 rank 本地行→全局请求映射假设被破坏——请求碎片化为非连续 rank 本地片段、位置跨 rank 可非单调，原路径从错误全局偏移重建 M-RoPE 3D（T/H/W）位置，图像输入的空间 H/W 坐标与所索引视觉 token 错位。受影响类：use_mrope 且 prefill_context_parallel_size>1 的全部模型（Qwen2-VL/Qwen2.5-VL 原生 M-RoPE、Qwen3-VL（本 PR 验证目标）、GLM-4.6V、MiniCPM-V-4.7 canvas 变体及一切声明 SupportsMRoPE 走到 PCP prefill 的模型）。修复：prepare_positions_pcp() 按片段实际全局 start/length 逐区间切片全局 prefill_positions 表（[3,total_prefill_len]），decode 用 1D scheduled positions+prefill_delta 广播到 3 维；仅 prefill_context_parallel_size>1 且 use_mrope 时走新路径。证据：Qwen3-VL-8B-Instruct、MMMU、输出长度 8192、2×Atlas A3：TP2=58、PCP2+修复=58.2、PCP2 无修复≈34.33。
+  source: https://github.com/vllm-project/vllm-ascend/pull/21551 （Bugfix PR，附 A/B 精度证据；PR closed 未合入）
+  behavior: 多模态 M-RoPE 模型开 prefill context parallel（PCP2）后精度大幅下滑：Qwen3-VL-8B 在 MMMU 上从 TP2 基线 58 掉到约 34.33（相对跌约四成），图像 token 的行列位置与实际像素错位；换回 TP 或打上位置准备修复即恢复到 58.2，与基线持平。服务全程无报错。
+  trigger_surface: M-RoPE 模型 + ModelRunner V2 + prefill_context_parallel_size>1（PCP）；非 M-RoPE 模型或非 PCP 路径不受影响。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

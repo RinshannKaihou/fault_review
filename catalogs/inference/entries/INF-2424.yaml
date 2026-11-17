@@ -1,0 +1,54 @@
+id: INF-2424
+legacy_ids: []
+slug: sglang_tbo_prefill_offset_and_aux_state_drop
+aliases: []
+title: sglang TBO 微批偏移错置与辅助态丢失
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: sglang
+    component: Two-Batch Overlap 微批切分
+  behavior: TBO 切 token 缓冲为微批但 extend_start_loc 保持父批相对，第二微批读错 KV 槽/越界；分级层执行绕过普通前向的辅助态捕获点，EAGLE3 解包失败
+effect:
+  objects:
+  - 输出内容
+  detail: 真实 HTTP 推理 4/8 请求输出 token 与 TBO 关闭时不同（Qwen3-0.6B fixture）；EAGLE3 target 输出解包失败、混合执行返回不完整特征
+  visibility: 静默错误
+mitigation:
+  detect: TBO 开/关输出对拍（含 top-5 logprobs）；EAGLE3 解包报错即第二个缺陷特征
+  fix: 修复 PR https://github.com/sgl-project/sglang/pull/48659 （含两个子修复：extend_start_loc rebase 到切片缓冲、辅助态按微批快照合并；修复后 8/8 请求与参考一致含 logprobs，状态未核实合入）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/48660
+  kind: github_issue
+relations: []
+original:
+  mechanism: sglang --enable-two-batch-overlap（TBO），commit 1305b1830a，2×H100 BF16 TP2/attention-DP2/EP2，DeepEP normal + Triton attention，CUDA graph 关闭，EAGLE3 step=3。两个正确性缺陷：(1) TBO 把 token 缓冲切成微批但 extend_start_loc 保持父批相对——第二微批在确定性 Triton prefill 中读错 KV 槽或越界；真实 HTTP 推理（预训练 Qwen3-0.6B fixture 转等专家 MoE）4/8 请求输出 token 与 TBO 关闭不同。修复：把每个子批的 extend_start_loc rebase 到其切片 token 缓冲；修复后 8/8 与参考完全一致（含输出 token 与 top-5 logprobs）。(2) TBO 分级层执行绕过普通前向的辅助捕获点——EAGLE3 解包 target 输出失败；混合普通/分级执行返回不完整特征。修复：在同一 attention 边界捕获、按微批收集快照、按层与父 token 序合并（排除 padding），保留普通层与末端捕获；修复后 EAGLE3 推理与 TBO-off 对照一致，tiny Qwen3-MoE/DeepSeek/MiMo 辅助特征逐位一致。DFlash 验证仅覆盖 target 特征捕获。
+  source: https://github.com/sgl-project/sglang/issues/48660
+  behavior: sglang 开 Two-Batch Overlap 后：一是 prefill 第二微批的起始位置算错（还是按整个大批次算的），读错 KV 槽位——真实推理 8 个请求里 4 个输出和不开 TBO 时不一样；二是投推解码的辅助隐藏态在分级执行时根本没捕获，EAGLE3 直接报错或拿到不完整特征。修复 PR 已提交（含两个子修复），修复后全部对齐。
+  trigger_surface: sglang 1305b1830a；--enable-two-batch-overlap；确定性 Triton prefill（第二微批）与 EAGLE3/DFlash 辅助态路径；H100 BF16 TP2/DP2/EP2 复现。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 调度/服务
+        to: 运行时/执行

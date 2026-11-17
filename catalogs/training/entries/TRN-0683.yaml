@@ -1,0 +1,70 @@
+id: TRN-0683
+legacy_ids: []
+slug: ds_gptbigcode_kv_rows_double_counted_clip
+aliases: []
+title: TP 下 GPTBigCode K/V 复制行范数重复计数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: deepspeed
+    component: clip_grad_norm 复制行标记
+  behavior: 融合 attention 投影的 K/V 行在每个 TP rank 都存在，clip 范数的 all-reduce 把每份都加进去；K/V 行跨 rank 是同一份复制而非互斥分片
+effect:
+  objects:
+  - 梯度
+  detail: TP>1 且 K/V 占比越高，报告范数越大、clip_coef 被压小，有效更新比单卡弱，多卡结果与单卡不可比；梯度值本身与单卡一致，无报错或指标异常。
+  visibility: 静默错误
+mitigation:
+  detect: 同一步 TP>1 vs TP=1 对比 clip_coef/grad_norm（梯度值应相同、范数偏大）
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/9030（open，未发布）：融合层 weight/bias 记录首复制行/行数/TP world size，范数累加按复制标记去重
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-09'
+remarks: 与 TRN-0472（AutoTP multi-query K/V 梯度不归约漂移）同一受体不同缺陷：那边梯度本身漏归约、这边梯度对但 clip 参考范数重复计数；与 TRN-0113 同为 clip 几何假设被复制/分片语义打破
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/pull/9030
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0472
+pattern: PAT-TRN-0070
+original:
+  mechanism: 'DeepSpeed #9030（open PR，2026-11-07）：tensor-parallel multi-query GPTBigCode 训练 clip 比单卡更激进。融合 attention 投影的 key/value 行在每个 TP rank 都有，范数 all-reduce 把每份都计入——query 行跨 rank 互斥合并成一份，K/V 块每 rank 相同却被加了 TP 次，报告范数偏大、clip 系数偏紧。融合线性层的 weight/bias 标记 model-parallel，每 rank 分片含自身 query 行+完整 K/V 块（backward hook 已归约）。梯度值与单卡一致，错的只是 clip 参考范数，随 K/V 占比与 TP 度增长。修复：融合层在 weight/bias 存复制标记（首复制行/复制行数/TP world size），有限范数累加时按标记只计一次。与 TRN-0472 同受体（GPTBigCode c_attn K/V 复制行）不同缺陷；与 TRN-0113（EP 下平均互不相交专家范数）同为 clip 几何假设失效族。'
+  source: https://github.com/deepspeedai/DeepSpeed/pull/9030
+  behavior: GPTBigCode 类 multi-query 模型 TP>1 训练开梯度裁剪：梯度值本身与单卡一致，但 clip 参考范数把每 rank 复制的 K/V 行加了 TP 次——clip_coef 被压小、有效更新比单卡弱；TP 度越大、K/V 占比越高偏得越多，多卡结果与单卡不可比；无任何报错或指标异常。
+  trigger_surface: DeepSpeed clip_grad_norm + tensor-parallel multi-query GPTBigCode（c_attn 融合投影，weight/bias 标记 model-parallel）；TP>1
+  discovery: 2026-11-09 每日扫描
+  notes:
+  - '2026-11-13 回访：回访：修复 PR #9030（open，Count replicated GPTBigCode K/V rows once in clip_grad_norm_）与本条同机制，补作证据；状态未合入。'
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - pattern
+  - date: '2026-11-13'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - effect

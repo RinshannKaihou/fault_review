@@ -1,0 +1,67 @@
+id: INF-2395
+legacy_ids: []
+slug: stem_oam_prep_paged_kv_kflat_oob_write
+aliases: []
+title: StemOamPrepPagedKv kFlat 形状未校验越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: StemOamPrepPagedKv 输出形状校验
+  behavior: tiling 只读取 kFlat 末维不与 stemStride*D 比较，CheckParams 只校验输入不校验输出；kernel 每行固定写 2048 个 bf16，kflat_dim 偏小时行 stride 错配越界写
+effect:
+  objects:
+  - 数值结果
+  - KV状态
+  detail: kflat_dim 传 1024（应为 2048）时两段返回 0，越过调用方 kFlat 缓冲区末尾写 2048 字节，canary 实测 2048/4096 被踩；同函数 vBias 写入同样不校验末维
+  visibility: 静默错误
+mitigation:
+  detect: kFlat 尾部 4KB canary 预填检查（对照 2048 正常 / 1024 被踩）
+  fix: 待定（issue 2026-11-04 新开，未见修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7089
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7085
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2162
+pattern: PAT-INF-0192
+original:
+  mechanism: 'CANN ops-transformer aclnnStemOamPrepPagedKv（master f5e07d37，CANN 9.3.0，Ascend950PR）：arch35 tiling_simd.cpp:355-356 只读取 kflatDim_=kFlatOutShape->GetDim(DIM_3)，不与 stemStride_*dimQk_ 比较；CheckParams()（:29-205）只校验输入形状不校验输出形状。kernel stem_oam_prep_paged_kv_simd.h:322-329 按调用方声明的 kflatDim 计算行偏移，CopyOut 每行一次写 stemStride*dimQk=2048 个 bf16；kflat_dim=1024 时行间 stride 与写入长度不匹配，最后一行越界；:341-349 的 vBias 写入（numStemBlocks 个 float）同样不校验 vBias 末维。真机复现（资料 L258 要求 kflat_dim=stemStride*D=2048）：传 1024 时两段 0/0/0，kFlat 尾部 4KB canary（预填 0xAB）2048/4096 被改写；对照 2048 时 canary 完好。资料 L241-263 规定参数不合法应返回 161002。与 #6814/#6812（INF-2214/INF-2213）同属 host/tiling 入参与输出校验缺失族，但本条是输出形状校验缺失且后果为越界写。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7089 关联 https://gitcode.com/cann/ops-transformer/issues/7085
+  behavior: 调用 StemOamPrepPagedKv 时若 kFlat 末维传成小于 stemStride*D 的值（如 1024 对 2048），接口返回成功，但 kernel 每行仍按 2048 元素写入，越过输出缓冲区末尾踩坏相邻内存（实测 canary 2048/4096 字节被改写）；无报错，被踩内存的后续消费产生不可预测错误。
+  trigger_surface: CANN 9.3.0 ops-transformer master f5e07d37；aclnnStemOamPrepPagedKv；kFlat 末维 != stemStride*D（vBias 末维同理）。
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 算子/内核
+      effect:
+        from: KV状态
+        to: 数值结果

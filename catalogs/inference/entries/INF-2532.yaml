@@ -1,0 +1,50 @@
+id: INF-2532
+legacy_ids: []
+slug: sglang_gdn_cutedsl_newton_bf16_nan
+aliases: []
+title: GDN CuTe 逆矩阵 BF16 截断长文 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: GDN CuTe DSL prefill
+  behavior: CuTe DSL GDN prefill 的 Newton–Schulz 迭代每次 MMA 前把 FP32 逆迭代与 -AiM 转 BF16；病态 I+A 下逆误差按 cond×2^-8 放大，长上下文多 chunk 传播成非有限值。
+effect:
+  objects:
+  - 数值结果
+  detail: Qwen3.5-35B-A3B BF16、SM10x、head_dim=128、65536 token：第 18 层首次出现非有限值并污染后续 chunk；Triton 后端或补偿 BF16 修复保持有限。
+  visibility: 数值异常
+mitigation:
+  detect: 用 Qwen3.5-35B-A3B BF16、SM10x、--linear-attn-prefill-backend cutedsl、65536 token 固定请求，在 _extend_fn 后加 NaN 检查；与 Triton GDN prefill 后端对拍。
+  fix: '待定（issue #50037 open，提出 compensated-BF16 修复；规避=改用 Triton GDN prefill 后端）。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/50037
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'sgl-project/sglang issue #50037：Qwen3.5 在 NVIDIA Blackwell SM100/SM103 上使用 CuTe DSL GDN prefill 后端时，python/sglang/kernels/ops/attention/linear/gdn_blackwell/kernel_kkt_inv_uw.py 的 Newton–Schulz 迭代近似 M=I+A 的四个 16×16 对角块逆。kernel 把持久逆迭代保存在 FP32 的 Ai_f32，但每次 MMA 前转成 BF16（Ai_bf16.store(Ai_f32.load().to(BFloat16))），中间积 -AiM 也在第二次 MMA 前转 BF16；虽然累加是 FP32，两个牛顿-舒尔茨矩阵操作数都被反复截断。病态 I+A 下逆迭代元素变大，BF16 舍入误差约按 cond(I+A)×u_bf16（u_bf16≈2^-8）放大，再由门控循环更新传播；长上下文包含许多 64-token 内部 GDN chunk，增加命中病态 chunk 的机会。复现：Qwen/Qwen3.5-35B-A3B BF16、单张 SM10x、65536 token 固定请求、--linear-attn-prefill-backend cutedsl、chunked-prefill 16384、关闭 prefill CUDA graph；第 18 层首次出现非有限张量（_extend_fn 输出），后续 chunk 继续传播。Triton GDN prefill 后端或 compensated-BF16 修复保持有限。'
+  source: https://github.com/sgl-project/sglang/issues/50037
+  behavior: Qwen3.5 长上下文推理选 CuTe DSL GDN prefill 后端时，某些 65536 token 的 prefill 会在中间层（实测第 18 层）产生 NaN/Inf 并沿后续 chunk 传播，最终输出非有限值；短上下文或换 Triton 后端正常。服务不报错，表现为生成乱码、空回复或评测分数骤降。
+  trigger_surface: SGLang Qwen3.5 + CuTe DSL GDN prefill（--linear-attn-prefill-backend cutedsl）、NVIDIA Blackwell SM100/SM103、head_dim 128、长上下文（65536）且命中病态 GDN chunk。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

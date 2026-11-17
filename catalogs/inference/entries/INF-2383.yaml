@@ -1,0 +1,69 @@
+id: INF-2383
+legacy_ids: []
+slug: vllm_l2_sleep_queued_request_before_reload
+aliases: []
+title: vLLM level-2 sleep 排队请求在权重重载前执行出错误输出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 调度/服务
+    stack: vllm
+    component: wake_up 无 tag 立即恢复调度
+  behavior: POST /wake_up 不带 tags 时立即恢复调度，睡眠期间排队的请求在 reload_weights 恢复被丢弃权重之前执行，用丢弃的权重算出与 prompt 无关的输出并 HTTP 200 返回
+effect:
+  objects:
+  - 输出内容
+  detail: 睡眠期间排队请求在 wake_up 后、reload_weights 完成前执行，输出与 prompt 无关但仍 HTTP 200；重载完成后请求恢复正常。分步唤醒可避开：wake_up?tags=weights → reload_weights → wake_up?tags=kv_cache
+  visibility: 静默错误
+mitigation:
+  detect: 唤醒后先发对照 prompt 校验输出
+  fix: 规避：分步唤醒 wake_up?tags=weights → reload_weights → wake_up?tags=kv_cache（issue 已给）；代码修复待定
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/65325
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM（0.33.0 pip wheel 与 main 9a519c058/97c198cd4）level-2 sleep 模式下，睡眠期间到达的请求排队等待；POST /wake_up 不带 tags 时立即恢复调度，排队请求在 POST /collective_rpc {"method":"reload_weights"} 恢复被丢弃权重之前执行，以丢弃权重计算输出并 HTTP 200 返回；重载后发送的请求正确。与 #29341（当时未重载权重被关闭）不同，本例权重确实会重载，请求运行在 wake_up 与 reload_weights 之间的窗口内。复现（VLLM_SERVER_DEV_MODE=1，Qwen3-1.7B，RTX PRO 6000 Blackwell SM120，--enable-sleep-mode --kv-cache-memory-bytes 2g）：sleep?level=2&mode=wait 后排队 completions 请求，POST /wake_up 再 reload_weights，queued.json 返回 HTTP 200 但文本由丢弃权重计算。分步唤醒可避开：wake_up?tags=weights（返回 sleeping，排队请求继续等待）→ reload_weights → wake_up?tags=kv_cache。'
+  source: 'https://github.com/vllm-project/vllm/issues/65325 相关 #65324（同内容另一报告）与已关闭 #29341'
+  behavior: 对开启 level-2 sleep 的引擎：睡眠期间进来的请求在唤醒后被立即执行，但权重尚未重载，返回 HTTP 200 且输出与 prompt 完全无关（由丢弃的权重算出）；稍后重载完成后的请求恢复正常。影响睡眠期间仍能收到请求的部署。
+  trigger_surface: vLLM 0.33.0/main；--enable-sleep-mode level=2；POST /wake_up 不带 tags；睡眠期间有排队请求。
+  discovery: 2026-11-03 每日扫描
+  notes:
+  - 2026-11-04 回访：#65325/#65324 仍 open
+  - '2026-11-13 回访：vllm #65325 仍 open（2026-11-13 GitHub HTML 核对）；core API 403 未能读评论与关闭说明。'
+  - '2026-11-13 回访：回访：vllm #65325 仍 open（updated 2026-11-03T07:15Z），窗口内无新活动；评论仍未读。'
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - original.notes
+  - date: '2026-11-13'
+    fields:
+    - original.notes
+  - date: '2026-11-13'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

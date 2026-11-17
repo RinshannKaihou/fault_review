@@ -4,20 +4,24 @@
 # Aborts without touching anything if any base model still fails the quota probe.
 set -uo pipefail
 cd "$(dirname "$0")"
-API=https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1/chat/completions
+API="${JUDGE_API_URL:?JUDGE_API_URL must be set}"
+: "${JUDGE_API_KEY:?JUDGE_API_KEY must be set}"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
+PROBE_OUT="$(mktemp "${TMPDIR:-/tmp}/quota_probe.XXXXXX.json")"
+trap 'rm -f "$PROBE_OUT"' EXIT
 
 if pgrep -f "^python3 audit_judge.py" >/dev/null; then echo "judges already running; refusing"; exit 1; fi
 
-# 1. quota probe: one tiny call per base model
+# 1. quota probe: one tiny call per base model (pass Bearer token via stdin config, not argv)
 for m in qwen3.8-max kimi-k3 glm-5.3; do
   temp=0.0; [ "$m" = kimi-k3 ] && temp=1.0
-  code=$(curl -s -m 120 -o /tmp/quota_probe.json -w "%{http_code}" -H "Authorization: Bearer $JUDGE_API_KEY" \
+  code=$(printf 'header = "Authorization: Bearer %s"\n' "$JUDGE_API_KEY" | \
+    curl -s -m 120 -K - -o "$PROBE_OUT" -w "%{http_code}" \
     -H 'Content-Type: application/json' "$API" \
     -d "{\"model\":\"$m\",\"messages\":[{\"role\":\"user\",\"content\":\"回复OK\"}],\"max_tokens\":2048,\"temperature\":$temp}")
   echo "probe $m HTTP $code"
   if [ "$code" != 200 ]; then
-    python3 -c "import json;print(json.load(open('/tmp/quota_probe.json')).get('error'))" 2>/dev/null
+    python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('error'))" "$PROBE_OUT" 2>/dev/null
     echo "$(date -u +%FT%TZ) resume aborted: $m probe HTTP $code"; exit 2
   fi
 done

@@ -1,0 +1,73 @@
+id: TRN-0613
+legacy_ids: []
+slug: opsnn_kl_div_grad_golden_scalar_broadcast
+aliases: []
+title: KL 梯度 golden 标量/广播参考错误
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: cann
+    component: kl_div 两算子 CPU golden
+  behavior: 两 golden 无条件读 shape[0]（标量 IndexError）；广播输入 mean 分母用未广播元素数、batchmean 未按 self batch 维，参考梯度错
+effect:
+  objects:
+  - 测试判定
+  detail: 标量输入四种 reduction 全部无法生成参考；混合广播输入 mean 梯度放大 2 倍、batchmean 分母错——kernel 与 golden 同错时 UT 给假阳性，kernel 对 golden 错时给假阴性，精度回归判定失真
+  visibility: 静默错误
+mitigation:
+  detect: golden 与真实 PyTorch autograd 对拍（修复 PR 以 336 例 autograd 对照验证）
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13570 （open）：mean 分母按 pointwise 广播 shape、batchmean 按 self batch 维（标量 self 按 1）、保持标量输出 shape/dtype，20 个 ST CSV 用例；336 例 autograd 对照 210→336 全过；未核实合入
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-04'
+remarks: 单测参考脚本 golden.py 缺陷，非训练算子故障（归入 blindspots.md）
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8064
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13570
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0600
+original:
+  mechanism: 'cann/ops-nn #8064（2026-11-03 open）+ 修复 MR !13570（open）。loss/kl_div_loss_grad 与 kl_div_target_loss_grad 的 tests/assets/golden.py 两个同类问题：1) 无条件读取 input_.shape[0]/target.shape[0]，标量 shape=() 时四种 reduction 生成参考即 IndexError（非空张量问题；arch35 tiling 侧有 EnsureNotScalar 处理标量，golden 没有）；2) 混合广播输入下用原 self/target 的元素数归约：mean 应按 pointwise 广播结果元素数、batchmean 应按原 self 的 batch 维（标量 self 按 1）——self=(2,3)、target=(1,3) 时 target 梯度 mean 分母实为 3、正确 6，batchmean 分母实为 1、正确 2，原版 mean 梯度放大 2 倍。验证：master 0ee229d8、直接跑仓内 CPU golden 与真实 PyTorch 2.8.0+cpu autograd 对照（Windows CPU、无 NPU 执行）。修复 !13570（open）：mean 分母取广播 shape、batchmean 取 self batch 维、保标量输出 shape/dtype/NumPy 类型，新增 20 个 ST CSV；336 例（fp16/fp32/bf16 × 同形/广播 × 4 reduction × 2 log_target）autograd 对照从原版 210 过 126 败改到 336 全过；同时校验 pointwise 参考与归约回原 shape 的 API 梯度。与 TRN-0600（foreach log 族 UT 无条件 PASSED：diff_idx 丢弃+无退出码传播+golden 与被测同源）同『golden/UT 与被测实现同错互证或参考本身错，精度回归给出错误判定』机制，对象不同（KL 梯度参考公式错 vs UT 框架不传播失败），标 var。影响面：KL 散度梯度是 RLHF/DPO 相邻训练面的常用损失；该 golden 错误本身不直接污染训练，但使 kernel 精度回归判定失真（错 kernel 可能通过、对 kernel 可能被拒）。'
+  source: GitCode issue：https://gitcode.com/cann/ops-nn/issues/8064 （open，附标量 NumPy 最小复现与 PyTorch autograd 对照方法）；修复 MR：https://gitcode.com/cann/ops-nn/merge_requests/13570 （open）
+  behavior: 开发者在 Ascend 上开发或验证 KL 散度梯度算子（kl_div_loss_grad/kl_div_target_loss_grad）时：标量输入的精度用例根本跑不出参考结果（golden 直接 IndexError）；广播输入（如 self=(2,3)、target=(1,3)）的 mean/batchmean 梯度参考值是错的（mean 梯度放大 2 倍）——被测 kernel 与错误 golden 同错时精度用例照样 PASS（假阳性），kernel 实际正确时反而可能判 FAIL（假阴性），算子精度回归的通过/失败结论不可信。
+  trigger_surface: cann/ops-nn kl_div_loss_grad 与 kl_div_target_loss_grad 的 CPU golden（tests/assets/golden.py），标量与广播输入
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - 2026-11-07 回访：批次快照 !13570 仍 open（2026-11-06T08:49Z 更新），维持。
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - pattern
+  - date: '2026-11-07'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - status
+  - date: '2026-11-17'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

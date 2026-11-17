@@ -1,0 +1,70 @@
+id: TRN-0710
+legacy_ids: []
+slug: megatron_padded_vocab_below_tokenizer_silent_zero
+aliases: []
+title: padded-vocab 低于 tokenizer 静默零嵌入
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: megatron-lm
+    component: vocab 填充校验
+  behavior: 显式 padded_vocab_size 不与 tokenizer.vocab_size 比对；TP>1 时各 rank 切片外 id 被 mask 为零嵌入，CE 又把这些位置 mask 出 label
+effect:
+  objects:
+  - 输入编码
+  - 训练样本流
+  detail: TP>1 时超出 padded vocab 的 token 静默变零嵌入且不进 loss，训练无错误继续；TP=1 首 forward 设备 assert
+  visibility: 静默错误
+mitigation:
+  detect: 启动后断言 padded_vocab_size >= tokenizer.vocab_size；抽查高频 token 嵌入非零率
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9209 （closed 2026-11-09，"Reject a padded vocabulary smaller than the tokenizer's"；合入未核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-10'
+remarks: 与 TRN-0086 同族（padded vocab 与真实 vocab 不一致静默错位），本条 TP>1 路径静默丢 token
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/9149
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0086
+pattern: PAT-TRN-0029
+original:
+  mechanism: 'NVIDIA/Megatron-LM #9149（closed IS 2026-11-09，修复 #9209）：megatron/training/vocab_utils.py:99-113 只在 padded_vocab_size 未设时计算填充；显式值（--padded-vocab-size 或 ckpt 恢复）直接使用、无与 tokenizer.vocab_size 的比较，模型 vocab 取该值（argument_utils.py:664-666）。TP=1：VocabParallelEmbedding 直接 gather（layers.py:486/501），首 forward 设备侧 assert（language_model_embedding.py:118，fail-loud）；TP>1：layers.py:479-484/503-504 把各 rank 切片外 id mask 为零嵌入，cross_entropy.py:44-58 同样把它们 mask 成 label——越界 token 嵌入为 0 且不进 loss，训练无错误继续。复现：NullTokenizer --vocab-size 1024 + --padded-vocab-size 512（mock 数据用满全部 id）。修复 #9209 在构建 tokenizer 时拒绝低于 tokenizer 词表的 padded vocab。'
+  source: https://github.com/NVIDIA/Megatron-LM/issues/9149
+  behavior: 把 --padded-vocab-size（或 ckpt 恢复值）设得比 tokenizer 词表小、TP>1 训练：所有 id ≥ padded vocab 的 token 静默变成零向量嵌入、并被 loss mask 当无效 label 丢弃——训练不报错、loss 正常下降，但一部分词表静默不参与训练（模型对这些 token 的行为退化）；TP=1 时才在第一个 forward 以设备 assert 失败（IndexKernelUtils vectorized_gather_kernel 报错）。
+  trigger_surface: Megatron-LM；显式 padded_vocab_size < tokenizer.vocab_size（flag 或 ckpt 恢复）；TP>1
+  discovery: 2026-11-10 每日扫描
+  notes:
+  - '2026-11-11 回访：回访：修复 #9209 closed 未标 merged（2026-11-09T20:17Z），维持跟踪。'
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - effect

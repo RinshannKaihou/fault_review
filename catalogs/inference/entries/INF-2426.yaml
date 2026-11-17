@@ -1,0 +1,58 @@
+id: INF-2426
+legacy_ids: []
+slug: inductor_dynamic_sum_first_length
+aliases: []
+title: Inductor dynamic 归约长度固化首次值，输入变短后静默算错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: NPUIndexTritonKernel 范围树
+  behavior: initialize_range_tree 用首次编译的具体长度替换符号长度并写回 numels，随后固化进 kernel 调用参数，后续不同长度的输入仍按旧长度归约
+effect:
+  objects:
+  - 数值结果
+  detail: 910C 上 dynamic=True 编译 sum(dim=-1)，首输入长度 4096 后再传 2048，应得 2096128 实得 8386560；传 512 应得 130816 实得 4208640，全程无报错无 NaN
+  visibility: 静默错误
+mitigation:
+  detect: 编译结果与 eager 逐输入长度对照可发现
+  fix: 上游符号形状修复 commit 8695719 / v2.10 分支 9f2455f（910C 回归待完成，未核实发布）；现场以全局关闭 torch.compile 规避
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5930
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0638
+original:
+  mechanism: torch-npu 2.10.0.post6 的 torch_npu/_inductor/codegen/triton.py：NPUIndexTritonKernel.initialize_range_tree() 第 519 行用首次编译的具体值替换符号长度，第 520 行写回 self.numels[k]，第 543 行读取、第 676 行把该长度加入 kernel 调用参数。用官方 wheel+FakeTensor 在 CPU 主机运行 NPU 代码生成器复现：wrapper 已取得本次输入长度 s97，调用求和 kernel 仍传固定 4096。CPU Triton 解释器进一步验证：逻辑输入 2048 个 1、底层存储容纳 4096 时，把视图外 2048 个元素从 0 改 7，结果从 2048 变 16384，证明 kernel 把逻辑输入之外元素计入求和。只删 517-520 行会在原 907 行触发符号比较 TypeError，需配套 statically_known_gt；二维动态输入还需 split_tiling.py 修复。环境：Atlas 910C、CANN 9.1.0、torch-npu 2.10.0.post6、triton-ascend 3.2.2；报告者已全局关闭 torch.compile 规避并请求维护者回移修复。
+  source: https://gitcode.com/Ascend/pytorch/issues/5930
+  behavior: 在 Atlas 910C 上用 torch.compile(dynamic=True) 编译 a.sum(dim=-1) 这类归约，同一个编译函数先跑长度 4096 再跑 2048/512：第二次起返回值明显偏大（2048 应得 2096128 实得 8386560，512 应得 130816 实得 4208640），无报错无 NaN，训练/推理数值随之静默错误，现场只能全局关闭 torch.compile。
+  trigger_surface: torch.compile(dynamic=True)+归约；torch-npu 2.10.0.post6/CANN 9.1.0/Atlas 910C/triton-ascend 3.2.2；首次与后续输入长度不同时触发
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  updates:
+  - date: '2026-11-07'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

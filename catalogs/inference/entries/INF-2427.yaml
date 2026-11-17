@@ -1,0 +1,59 @@
+id: INF-2427
+legacy_ids: []
+slug: argmax_nan_index_wrong
+aliases: []
+title: NPU argmax/argmin 全 NaN 归约返回错误索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: triton_helpers 极值归约
+  behavior: _extremum/max_with_index/min_with_index 索引阶段只判断 value==极值，NaN 与自身比较为假可能全部匹配失败，返回用作填充值的最大索引；极值阶段未完整保留 NaN 传播与最低索引语义
+effect:
+  objects:
+  - 数值结果
+  detail: 含 NaN 输入做 argmax/argmin（如 mask 或脏数据产生全 NaN 列）时，NPU torch.compile 路径对该列返回最大索引 31 而非期望的最低索引 0；32×32 用例 2/32 索引不一致、最大绝对差 31、相对差 inf，测试断言失败但业务侧无报错
+  visibility: 静默错误
+mitigation:
+  detect: 含 NaN 输入的 argmax/argmin 与 eager/CPU 对照
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49185（open 未合入）：极值阶段复用上游比较器传播 NaN，索引阶段补「输入值与极值均为 NaN」匹配并取最小原始索引；6 项回归 PASS
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: 与 INF-2412（triton-ascend#2981 lowering 索引通道损坏、fp16/bf16 返回非极值索引）同为 argmax/argmin 索引域但缺陷位置与机制不同：本条在 torch_npu triton_helpers 的 NaN 匹配语义，非 lowering 通道损坏。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5924
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0639
+original:
+  mechanism: torch_npu/_inductor/runtime/triton_helpers.py 的 _extremum/max_with_index/min_with_index（Ascend_950、torch_npu 2.13）：浮点极值归约与索引匹配未完整保留 NaN 传播与最低索引语义——原索引阶段只判断 value==peak/valley，NaN 与自身比较为假可能全部匹配失败，返回用作填充值的最大索引。修复沿用两次单源归约：极值阶段复用上游 maximum/minimum 比较器传播 NaN，索引阶段补「输入值与极值均为 NaN」的匹配条件再选携带的最小原始索引。新进程+独立缓存补丁前后对照：原节点通过，覆盖 6×6/32×32/1028×1028 及两个归约轴的 argmax/argmin，生成代码确认使用 NPU helper；与另 5 项既有回归合计 6 PASS。完整 wheel、其他硬件、完整 dtype 覆盖待验证。
+  source: https://gitcode.com/Ascend/pytorch/issues/5924
+  behavior: 含 NaN 输入做 argmax/argmin（如 mask 或脏数据产生全 NaN 列）时，NPU torch.compile 路径对该列返回最大索引 31 而非期望的最低索引 0：32×32 用例 2/32 索引不一致、最大绝对差 31、相对差 inf，测试断言失败但业务侧无任何报错，下游按错误索引取值。
+  trigger_surface: NPU 编译路径 argmax/argmin+输入含全 NaN 归约段；Ascend_950、torch_npu 2.13
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - relations

@@ -1,0 +1,53 @@
+id: INF-2384
+legacy_ids: []
+slug: tt_celu_neg_alpha_nan_band
+aliases: []
+title: ttnn.celu 负 alpha 临界带返回 NaN/正无穷
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: SFPU expm1_cw_clamped 重构
+  behavior: expm1_cw_clamped 重构中 k=128 时 two_k=setexp(1.0,k+127) 为 +inf，r<0 得 inf+(-inf)=NaN；89 截断保 k<=128 但 k=128 仍可达该路径
+effect:
+  objects:
+  - 数值结果
+  detail: alpha<0 且 x/alpha∈(88.376,88.723) 时 float32 返 NaN、bfloat16 返 +inf，torch 给有限值/-inf；alpha=-0.5/-1/-4 均触发；带外 <88.376 与 torch 差 1 ULP，>ln(FLT_MAX) 均 -inf
+  visibility: 数值异常
+mitigation:
+  detect: 负 alpha 下 x/alpha 扫过 88.4-88.7 带比对 torch
+  fix: 待定（issue open；#61029 的截断已合入但 k=128 残留）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/64021
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'tt-metal Wormhole/Blackhole SFPU celu（ckernel_sfpu_celu.h 与共享 expm1_cw_clamped helper，ckernel_sfpu_expm1_cw.h）在 alpha<0 且 x<0 时（celu=alpha*(exp(x/alpha)-1)，x/alpha 为正）对 x/alpha∈(127.5 ln2, 128 ln2)=(88.3763,88.7228) 带：float32 返回 NaN、bfloat16 输出舍入把 NaN 变 +inf。根因（main 863b43dd33 源码级）：1) expm1_cw_clamped 以 x=k ln2+r 重构，two_k=setexp(1.0,k+127)，k=128 时指数域 255 零尾数=+inf；r<0（k=128 bin 下半）时 (two_k-1)+two_k*h 为 inf+(-inf)=NaN，r>=0 为 +inf（真溢出）。2) celu_loop<NEG_ALPHA> 参数截断在 89（#61029 修 #61021 指数回绕），保 k<=128 但 k=128 本身仍可达重构路径。实测 alpha=-1,x=-88.5：torch fp32 -2.723e38 (0xff4cdcc4) vs 设备 NaN；bf16 torch -2.725e38 vs 设备 +inf (0x7f80)；alpha=-4 bf16 x=-354：torch -inf vs 设备 +inf。带内每元素错、试过的每个负 alpha（-0.5/-1/-4）均触发；带外 <88.376 与 torch 差 1 ULP，>ln(FLT_MAX) 两边 -inf（#61029 后）。Wormhole 仿真器 float32 测试全 abort 属另一无关问题。'
+  source: https://github.com/tenstorrent/tt-metal/issues/64021
+  behavior: ttnn.celu 在负 alpha 且 x/alpha 落在 88.38~88.72 窄带时，float32 返回 NaN、bfloat16 返回 +inf，而 torch 返回正确的有限大负值（或 -inf）；带外数值正常。该带内每个元素都错，任何负 alpha 配置都可能踩到。
+  trigger_surface: tt-metal main（863b43dd33，Wormhole/Blackhole LLK）；ttnn.celu alpha<0 且 x/alpha∈(88.376,88.723)。
+  discovery: 2026-11-03 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - detail

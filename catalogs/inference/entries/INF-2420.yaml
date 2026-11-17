@@ -1,0 +1,49 @@
+id: INF-2420
+legacy_ids: []
+slug: histc_minmax_expansion_fp32_rounding_collapse
+aliases: []
+title: torch.histc min==max 适配层展开坍缩静默错 bin
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: histc 适配层展开
+  behavior: min==max 时适配层 aminmax 后按 double ±1 展开经 x dtype 舍入，fp32 |m|≥2^24 坍缩为不等宽 range；标量一律转 double payload 回传，int64 遇 >2^53 丢精度
+effect:
+  objects:
+  - 数值结果
+  detail: histc(full(2^24), bins=4, min=0, max=0) NPU 输出 [0,0,0,5]（CPU 正确 [0,5,0,0]）；|m|≥2^25 双端坍缩 0/0→bin0；int64 标量 2^53+1 坍缩 2^53 输出全 0
+  visibility: 静默错误
+mitigation:
+  detect: 与 CPU histc 对拍（min==max+大值构造一查即中）
+  fix: 修复 MR !6182 已挂（min==max 原样透传+int64 payload 保留，open）；配套 CANN 侧 HistogramV2 kernel 修复见 ops-math#1916（状态未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/op-plugin/issues/686
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu op_plugin HistcKernelNpuOpApi.cpp 的 histc_check_and_get_min_max 在 min==max 时自行 aminmax 后按 double 裸 ±1 展开再调 aclnnHistc（Ascend950PR，torch 2.13.0+cpu + torch_npu 2.13.0.rc1，CANN 9.3.0 weekly）。两个缺陷：(1) 展开结果经 x dtype tensor 舍入时坍缩：fp32 |m|≥2^24 时 [m-1,m+1] 舍入为 [m-1,m]（width=1）不等宽 range，kernel idx 越界 clamp 到末 bin——torch.histc(full((5,),2.0**24),bins=4,min=0,max=0) 输出 [0,0,0,5]，CPU 正确 [0,5,0,0]；|m|≥2^25 时两端均坍缩，旧 kernel 0/0→bin0 静默错分。直调 aclnnHistc 输出正确 [0,5,0,0]，证明缺陷在适配层展开而非 kernel。(2) 标量一律转 double payload 回传：int64 输入遇 >2^53 的 Python int 标量丢精度（2^53+1 坍缩 2^53，输出全 0）。修复 MR !6182：min==max 原样透传（aclnn 重算范围+HistogramV2 按 CPU 语义位级 nextafter 展开）、保留 int64 payload、aminmax 仅留 NaN/±inf 有限性校验；配套 CANN 侧 ops-math#1916。
+  source: https://gitcode.com/Ascend/op-plugin/issues/686
+  behavior: NPU 上做 torch.histc 且 min==max（让算子自己推数据范围）时：数据是大数值（fp32 ≥2^24，如 1677 万以上）时，适配层在 min/max 两侧各展开 1 再转回 fp32，相邻大值被舍入坍缩，直方图全部落进错误的 bin——实测 5 个 2^24 全部落 bin3（正确是 bin1）；更大值直接全落 bin0。int64 大整数标量（>2^53）也经 double 中转丢精度输出全 0。CPU 上同样的调用结果完全正确。
+  trigger_surface: torch_npu 2.13.0.rc1 / op-plugin；torch.histc min==max；fp32 |m|≥2^24 或 int64 标量 >2^53；Ascend950PR + CANN 9.3.0 weekly。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

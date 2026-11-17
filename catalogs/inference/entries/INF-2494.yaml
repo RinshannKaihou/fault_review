@@ -1,0 +1,59 @@
+id: INF-2494
+legacy_ids: []
+slug: lightning_indexer_v2_metadata_gqa_zero_load
+aliases: []
+title: LightningIndexerV2Metadata GQA 配比静默全零负载
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: GenMetaData（910B 分支）
+  behavior: groupSize_=nhq/nhk 整除向零截断且无校验：nhq<nhk 时 mBaseSize_=0，除零使 s1GBaseNum 恒 0，isKvSeqAllZero 恒真，调度走全零 KV 捷径产出无效 metadata。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: numHeadsQ<numHeadsK（GQA 头数配比写反）时两段接口与同步全返回 0，metadata 输出与全零序列长度输入逐 int 一致（哨兵预填 957/1024 未写），下游 V2 按空负载调度，算力空转/结果为空，极难定位。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（建议 910B 分支补 groupSize_==0/非整除校验报参数错误、两版文档补头数配比约束；无修复 PR）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7319
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0714
+original:
+  mechanism: Ascend 910B3、镜像 cann:9.1.0-910b-torch2.10.0_npu-atk26.7.8（v9.1.0 tag 实装，master 00d581ae 同逻辑），复现 2026-11-09。lightning_indexer_v2_metadata/op_kernel_aicpu/lightning_indexer_v2_metadata_aicpu.cpp：L246 groupSize_=nhq/nhk 整除向零截断；L248-250 ASCEND910B 分支 mBaseSize_=s1BaseSize_*groupSize_ 无任何校验；全文件唯一 groupSize_ 判断在 950/960 分支 L252 且只是调参缩小分块，910B 不走；L321-322 除以/模 mBaseSize_=0（AArch64 整除除零不陷入、结果退化为 0）使 s1GBaseNum 恒 0；L325-327 条件永假使 isKvSeqAllZero 保持初值 true，GenMetaData 走全零 KV 序列捷径。v9.1.0 与 master 文档均未写头数配比约束。ctypes 三 case 探针（2026-11-09）：D(nhq=2/nhk=1) 输出有效调度；E(nhq=1/nhk=2，序列长度真实非零) 与 F(全零长度参照) 输出前 16 int 完全一致、哨兵 0xDEADBEEF 下 957/1024 未写；两段接口与同步全程返回 0。1000 用例套件生成约束 nhq%nhk==0 完全排除触发域（851 可比用例位级一致）。非整除配比（如 3/2）同样无校验（未实测）。
+  source: https://gitcode.com/cann/ops-transformer/issues/7319
+  behavior: 调 aclnnLightningIndexerV2Metadata 时若 numHeadsQ<numHeadsK（如 GQA 头数配比写反 1/2）或非整除配比，接口不报任何错误（GetWorkspaceSize/执行/同步全 0），但输出的负载调度 metadata 完全退化为全零——与所有序列长度都是 0 的输入输出完全一致；下游 aclnnLightningIndexerV2 按空负载调度，算力空转/结果为空，输入侧看似一切合法，极难定位。
+  trigger_surface: aclnnLightningIndexerV2Metadata + numHeadsQ<numHeadsK（groupSize 截断为 0）或非整除头数配比；910B 分支无 groupSize 校验；v9.1.0 与 master 均在。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - component
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - relations

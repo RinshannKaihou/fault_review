@@ -1,0 +1,55 @@
+id: INF-2481
+legacy_ids: []
+slug: sdpa_decode_mask_batch_index_wrong
+aliases: []
+title: sdpa_decode 掩码批维索引错用 user0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: sdpa_decode 掩码索引
+  behavior: reader 从 attn_mask dim0 取批数（Bmask），[1,b,nh,s] 文档版式下 Bmask=1，%Bmask 恒 0，所有 user 都读 user 0 的掩码行；校验只查 dim2/dim3 不拒绝。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: 按文档版式 [1,b,nh,s] 传掩码时批量 decode 每个 user 用 user0 的掩码：Llama 3.2 Vision 批量解码交叉注意力会关注 padding tile 或丢真实 tile；同批相同图片或 b=1 不受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（仓内自带 batch_2 用例可覆盖但 CI 从未运行，https://github.com/tenstorrent/tt-metal/issues/64811）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/64811
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal ttnn.transformer.scaled_dot_product_attention_decode（含 paged 版）：文档（sdpa_decode_nanobind.cpp:44）与技术报告（llms.md:543,559）均声明 attn_mask 版式 [1 x b x nh x s]，但 reader 从 dim0 取批数：sdpa_decode_program_factory.cpp:108 Bmask=attn_mask.padded_shape()[0]，reader_decode_all.cpp:300 以 (cur_batch/…)%Bmask 取偏移。[1,b,nh,s] 掩码 Bmask=1，%1 恒 0——每个 user 都读 user 0 的掩码行；校验（sdpa_decode_device_operation.cpp:184-221）只查 dim2/dim3，dim0/dim1 不设防（dim0 非 1 非 b 时掩码回绕错用、dim1>1 的多余数据永不读）。技术报告声称掩码不匹配是硬 assert 崩溃而非静默错误，dim0/1 不成立。影响路径：Llama 3.2 Vision 的 decode 交叉注意力掩码正是该版式（llama_vision_model.py 构造 [1,B,nh,S] → reshape）；仓内 test_llama_cross_attention.py 的 batch_2 用例覆盖此场景但唯一运行它的 CI job 以 -k 过滤掉 batch 用例。
+  source: https://github.com/tenstorrent/tt-metal/issues/64811
+  behavior: 按官方文档版式给 decode attention 传每用户不同的 [1,b,nh,s] 掩码时，批量里每个用户实际用的都是用户 0 的掩码，交叉注意力因此关注错误 tile（多余 padding 或丢失真实 token），输出静默错误；同批图片相同或 batch=1 时无现象，越难在测试中暴露。
+  trigger_surface: ttnn sdpa_decode/paged sdpa_decode + 按 [1,b,nh,s]（或 dim0≠b）版式传 attn_mask + batch≥2 且各 user 掩码不同。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 数值结果

@@ -28,7 +28,11 @@ remarks: ''
 evidence:
 - url: https://gitcode.com/cann/ops-nn/merge_requests/12304
   kind: gitcode_pr
-relations: []
+- url: https://gitcode.com/cann/ops-nn/issues/7357
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0457
 original:
   mechanism: ops-nn PR !12304（c2026-10-19，修复单含完整根因+验证）：DAV3510（Ascend950）上 WeightQuantBatchMatmulV2 走 N_FIRST_TAIL_RESPLIT 模板时，部分限核场景输出非确定性错误。实测：perchannel int4 weight（转置）+ bf16 x（非转置），M=256/K=6144/N=6912，图模式限核 16 核（或 22 核）与 eager rel_l2 偏差 0.2~0.6，同进程重复执行结果互不相同（竞态特征）；8/9/10/12/14/20/24/28/32 核及不限核正常。根因：BlockMmad::PreloadA（matmul/common/cmct/block/block_mmad_a_prefetch_b_prologue.h）按 host 下发 aPreloadSize（约 M*K/核数，host 仅以 aSize<核数×256KB 为准入）把 A 预载进 L1 的 A 区但不校验 L1 A 区实际容量。L1 布局 Weight_P0|A双缓冲|Weight_P1，A 区可用 = 512KB−2×(weightL1+biasL1)。核数变化触发尾块重切分 baseN 扩展（16 核 352/22 核 384）后 weight 双缓冲占用增大（176/192KB）、A 区被压缩（160/128KB），preload（192/140KB）越界（32/12KB）踩进 WeightL1_P1；kernel 启动时 AIC preload（MTE2）与 AIV 反量化写第一块 WeightL1_P1 并发执行互相覆盖，每核第一个 main N 块对应输出列区间（[0, cubeN*256)）全 M 行错且随时序波动。修复：PreloadA 钳制到 L1 A 区实际容量 + host SetPreLoad 同公式封顶 + ST 回归。验证：16/22 核各 3 连跑与 eager 逐 bit 一致、同进程 4 连跑逐 bit 一致、8~32 核回归全部逐 bit 一致。cmct 公共头被多个 matmul 类算子共用，修复对其它走 A-prefetch 模板的算子同样生效。
   source: 2026-10-19 GitCode cann/ops-nn merge request https://gitcode.com/cann/ops-nn/merge_requests/12304 （open）
@@ -36,7 +40,8 @@ original:
   trigger_surface: Ascend950 + WeightQuantBatchMatmulV2（N_FIRST_TAIL_RESPLIT 模板）+ 图模式限核 16/22 核；perchannel int4 转置 weight + bf16 x；CANN 9.3.0
   discovery: 2026-10-19 每日扫描
   notes:
-  - 2026-10-20 回访 2026-10-20：ops-nn PR !12304 索引状态 merged（共享批次），发布未核实
+  - 2026-10-20 回访：ops-nn PR !12304 索引状态 merged（共享批次），发布未核实
+  - 2026-11-17 归并吸收 INF-2215（WQBMV2 tiling L1 预算缺陷非确定错值）：host tiling 三处 L1 预算缺陷：预载粗估未扣 WeightL1 与 bias 致越界踩 WeightL1；无符号减法下溢误放行 L1 扩展；全载按 baseM×CeilAlign(K,32)×2B 低估占用。
 migration:
   method: scan
   scanned: '2026-10-19'
@@ -57,3 +62,12 @@ migration:
   - date: '2026-10-20'
     fields:
     - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - evidence
+  - date: '2026-11-17'
+    fields:
+    - relations

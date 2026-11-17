@@ -1,0 +1,57 @@
+id: INF-2431
+legacy_ids: []
+slug: reppad_backward_double_undefined
+aliases: []
+title: ReplicationPad 反传 DOUBLE 放行结果错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: pad_v3_grad_replicate def
+  behavior: op_host .DataType() 只注册 FLOAT/FLOAT16/BF16 未注册 DOUBLE，资料却声明支持；DOUBLE 输入两段 rc=0 放行，无对应 kernel 可选走未定义执行路径
+effect:
+  objects:
+  - 梯度
+  - 数值结果
+  detail: 官方示例改 ACL_DOUBLE 后两段 rc=0，gradInput=[0,2.25,0,2.25]，既非 FLOAT 结果 [4,4,4,4] 也不符合合理 fp64 语义；对照算子 MoeTokenUnpermuteWithRoutingMap 对 DOUBLE 返回 161002
+  visibility: 静默错误
+mitigation:
+  detect: fp64 路径与 fp32/FP64 手工参考对照
+  fix: '待定（期望删除资料 DOUBLE 或补 DT_DOUBLE 注册；关联 #4527 为同接口空 tensor 误拒，机理不同）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4595
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math（master dd85135684，2026-11-06 复现，Atlas A2 910B2、CANN 9.3.0）aclnnReplicationPad2dBackward 与 aclnnReplicationPad3dBackward：资料参数表（L99）声明 self 支持 DOUBLE，但 op_host/pad_v3_grad_replicate_def.cpp 的 .DataType() 只注册 DT_FLOAT/DT_FLOAT16/DT_BF16。把官方示例所有 ACL_FLOAT 改 ACL_DOUBLE（std::vector<double>）实测两段均 rc=0 放行，gradInput=[0,2.25,0,2.25]，既非 FLOAT 结果 [4,4,4,4] 也不符合任何合理 fp64 语义——DOUBLE 进入未定义路径（AiCore 无 float64 单元、既未模拟也未拦截，FP-A11 形态）。对照同仓 aclnnMoeTokenUnpermuteWithRoutingMap 对 DOUBLE 正确返回 161002，证明放行是本算子缺陷而非全局行为。
+  source: https://gitcode.com/cann/ops-math/issues/4595
+  behavior: 按官方资料参数表选 DOUBLE dtype 调用 aclnnReplicationPad2dBackward/3dBackward 的使用者：接口返回成功（两段 rc=0），但梯度输出值完全错误（示例 [0,2.25,0,2.25]，fp32 同输入为 [4,4,4,4]），无报错无 NaN，fp64 训练/校验管线拿到的反传梯度静默失真。
+  trigger_surface: ACL_DOUBLE 输入+ReplicationPad2d/3dBackward；Atlas A2、CANN 9.3.0
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 梯度
+    rewritten:
+    - detail

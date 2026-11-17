@@ -1,0 +1,53 @@
+id: TRN-0684
+legacy_ids: []
+slug: verl_bf16_topk_tail_kl_gradient_flip
+aliases: []
+title: verl bf16 top-k tail-KL 梯度方向反转
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: verl
+    component: forward_kl_topk_tail 精度
+  behavior: use_chunked_topk=True 且 BF16 logits 时，被选 logprob 舍回 BF16 使被选集质量超 1（0.9999→1.0017），student tail 质量为负，tail clamp 删掉梯度甚至反号
+effect:
+  objects:
+  - 梯度
+  detail: 梯度方向反转：CPU 对 FP64 参照的梯度余弦 -0.9999976；蒸馏/RL 的 KL 项推向错误方向
+  visibility: 静默错误
+mitigation:
+  detect: BF16 下对 tail-KL 梯度与 FP64 参照比余弦；logits 接近均匀时重点检查
+  fix: 修复 PR https://github.com/verl-project/verl/pull/8548（open，未发布）：被选 logprob 保 FP32（chunked helper 可选输出 dtype；非 chunked 路径显式 FP32 log_softmax）
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: 60 loss/梯度用例 ×CPU/CUDA/BF16 autocast 对照 FP64 独立参照验证
+evidence:
+- url: https://github.com/verl-project/verl/pull/8548
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'verl #8548（open PR，2026-11-05）：BF16 logits 下 forward_kl_topk_tail 在 use_chunked_topk=True 时可算出负的 student tail mass 并反转 logit 梯度。例：logits [0,0,-9,-9]、teacher [0.45,0.45,0.05,0.05]，被选 logprob 舍回 BF16 后质量从 0.9998766 变 1.0017425，tail clamp 删掉其梯度；CPU 对 FP64 参照梯度余弦 -0.9999976。修复：被选 logprob 保 FP32（chunked helper 可选输出 dtype、空输入也支持；非 chunked tail 路径显式 FP32 log_softmax 不依赖 autocast；chunked 仍逐词表块 cast，保留的 [B,T,K] 输出用 FP32）。验证：compute_forward_kl_topk 公共入口 60 loss/梯度用例 × CPU/CUDA/BF16 autocast 对照独立 FP64 参照，覆盖 BF16/FP16/FP32、两路径、多 chunk 尺寸、集中分布、teacher/student 支持不匹配、全词表。'
+  source: https://github.com/verl-project/verl/pull/8548
+  behavior: verl FSDP 蒸馏/RL 用 BF16 logits + top-k tail-KL（use_chunked_topk）：被选 logprob 的 BF16 舍入使 student tail 质量可能为负——梯度被 clamp 删除或方向整个反转（对 FP64 参照余弦 -0.9999976，即近乎精确反向），KL 项把策略推向背离 teacher 的方向；无 NaN、无报错，loss 数值看起来正常。
+  trigger_surface: verl forward_kl_topk_tail + BF16 logits + use_chunked_topk=True；teacher/student 分布接近均匀、被选集质量敏感时最易触发
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

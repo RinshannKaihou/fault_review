@@ -1,0 +1,56 @@
+id: TRN-0704
+legacy_ids: []
+slug: msrun_signal_exit_success_deception
+aliases: []
+title: msrun 中断信号退出码 0 假成功
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: mindspore
+    component: msrun 进程管理信号处理
+  behavior: SIGINT 处理函数 sys.exit(0) 且 SIGTERM 未注册不进清理路径；worker-only 节点 msn_process 为 None 时 kill_all_processes 直接 poll() 抛错
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: 被中断的分布式任务以退出码 0 结束、调用方误判成功；worker 节点 SIGTERM 后本地进程不清理（残留占卡）
+  visibility: 静默错误
+mitigation:
+  detect: 编排层不信任 msrun 退出码，另查 checkpoint 步数/日志尾；CI 用 130/143 期望退出码回归
+  fix: 修复 PR https://gitcode.com/mindspore/mindspore/merge_requests/93390 （open 2026-11-09，master 基线 27ea853f523，修复提交 b924fddb507 未合入）：注册 SIGINT/SIGTERM、退出码 130/143、scheduler 判空；7 参数化回归用例，Linux 多机实测待验证
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: OBS 口径：job 状态骗过调用方（中断当成功），无训练步错误
+evidence:
+- url: https://gitcode.com/mindspore/mindspore/issues/29730
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'mindspore/mindspore #29730+!93390（open，2026-11-09，master，python/mindspore/parallel/cluster/process_entity/_api.py）：msrun（MindSpore 分布式启动器）_ProcessManager 的 join_processes()/kill_all_processes() 三缺陷：①当前只注册 SIGINT 处理函数、未注册 SIGTERM，发 SIGTERM 不进统一的本地 worker/scheduler/log-tail 清理路径；②SIGINT 处理函数调用 sys.exit(0)，被中断的分布式任务被调用方（脚本/CI）误判为成功；③多机场景 worker 节点没有本地 scheduler、self.msn_process 为 None，kill_all_processes() 直接 self.msn_process.poll() 抛 AttributeError。本地以 mock 复现三现象（修复前 AttributeError、SIGTERM registered False、SIGINT exit code 0）；修复同时注册 SIGINT/SIGTERM、执行本地清理并分别以 130/143 退出、无 scheduler 时跳过 scheduler 清理，7 个参数化回归用例；SIGKILL 不可捕获不在范围。Linux 多机实测尚待验证。'
+  source: https://gitcode.com/mindspore/mindspore/issues/29730
+  behavior: 用 msrun 启动 MindSpore 分布式训练后按 Ctrl-C 或发 SIGTERM：进程以退出码 0 退出，上游脚本/CI 判定任务成功（实际训练被中断、checkpoint 未到预期步数）；SIGTERM 场景 worker 节点本地 worker/日志尾随进程不被清理（残留进程占卡）；无本地 scheduler 的 worker 节点清理路径直接 AttributeError。中断被伪装成成功，依赖退出码的编排层全部被骗。
+  trigger_surface: MindSpore master _api.py 进程管理；多机 msrun、worker-only 节点；SIGINT/SIGTERM 中断
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 观测/评测
+        to: 运行时/执行
+      effect:
+        from: 指标/日志
+        to: 可用性/进度

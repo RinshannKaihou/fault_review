@@ -1,0 +1,67 @@
+id: INF-2538
+legacy_ids: []
+slug: hcomm_getnetlayers_count_mismatch_oob
+aliases: []
+title: GetNetLayers 层数不一致越界读
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: HCCL RankGraph 层级查询
+  behavior: HcclRankGraphGetLayers 的 netLayers 取本 rank 层集合，netLayerNum 却取整个通信域非空层总数；非对称组网下前者小于后者，调用方按数量遍历越界。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: 非对称组网（部分 rank 在超节点内有 layer0+layer1，另一部分仅挂外层网络）下 netLayerNum 大于 netLayers 实际元素数，cluster_monitor.cc、my_rank.cc、coll_comm.cc 按该数量遍历越界，读出垃圾层号；对称组网下不出现。
+  visibility: 静默错误
+mitigation:
+  detect: 构造非对称拓扑（本 rank 仅 layer0、远端仅 layer1）后调用 HcclRankGraphGetLayers，检查 netLayerNum 是否等于返回列表元素数；按 netLayerNum 遍历看是否读到垃圾层号。
+  fix: 修复（issue closed）：netLayerNum 改取本 rank 层集合大小 levels.size()；同步 PR !6618（open，9.2.0 分支），合入/发布未核实。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/1279
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/hcomm/merge_requests/6618
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/hcomm issue #1279（closed）：HcclRankGraphGetLayers（及内部 IRankGraph::GetNetLayers、CommunicatorImpl::GetNetLayers）返回的 netLayers 列表来自 RankGraph::GetLevels(myRank)，即本 rank 所属的网络层集合；netLayerNum 却来自 RankGraph::GetLayerNum()，即整个通信域内非空网络层总数（构建 RankGraph 时所有 rank 的层级都写入 netInsts_）。对称组网下两者恰好相等，问题被掩盖；非对称组网下（部分 rank 在超节点内有 layer0+layer1，另一部分仅挂外层网络），netLayerNum > netLayers 实际元素数。API 契约要求 netLayerNum 为返回列表数量且列表为包含当前 rank 的拓扑层级编号，当前不一致会导致调用方按 netLayerNum 遍历 netLayers 时越界读缓存 vector（读出垃圾层号），受影响消费方包括 cluster_monitor.cc 的 assign(netLayers, netLayers+netLayerNum)、my_rank.cc 与 coll_comm.cc 的按 netLayerNum 循环。UT 构造非对称拓扑：修复前 netLayerNum=2 而列表仅 1 个元素，修复后 netLayerNum=1；修复为取本 rank 层集合 levels.size()。同步 PR !6618（同步 master PR#6593 至 9.2.0）当前 open。'
+  source: https://gitcode.com/cann/hcomm/issues/1279 ｜https://gitcode.com/cann/hcomm/merge_requests/6618
+  behavior: 多机/非对称组网下调用 GetNetLayers 查询本 rank 的通信层级时，返回的层数比列表实际元素多；调用方按这个数量遍历列表就会读出 vector 之外的垃圾层号，后续拓扑判断/集群监控拿到不存在的层，可能配置错通信路径或崩溃。对称组网完全正常，所以只在部分 rank 挂不同层级的集群里出现。
+  trigger_surface: cann/hcomm HcclRankGraphGetLayers / IRankGraph::GetNetLayers；非对称组网（不同 rank 所属网络层集合不一致）；CANN 9.x。
+  discovery: 2026-11-13 每日扫描
+  notes:
+  - '2026-11-13 回访：回访：hcomm #1279 已 closed（2026-11-12T09:04Z），修复 !6618 状态未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  updates:
+  - date: '2026-11-13'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - effect
+    - behavior

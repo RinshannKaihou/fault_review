@@ -1,0 +1,47 @@
+id: INF-2551
+legacy_ids: []
+slug: sglang_xpu_gdn_recompute_w_u_uninitialized
+aliases: []
+title: XPU GDN recompute_w_u 留未初始化 u
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: GDN recompute_w_u
+  behavior: '#47944 用 masked pointer load/store 替换 block pointer 后，XPU 的 recompute_w_u masked store 在 K!=V 时只写部分 u，其余保留旧内存。'
+effect:
+  objects:
+  - 数值结果
+  detail: K!=V 时 u 的部分元素为未初始化值（NaN 及最高约 1e38），污染后续 chunk 输出；同源码 A100 逐位正确；该 kernel 在 XPU 还慢 6.9x。
+  visibility: 数值异常
+mitigation:
+  detect: K!=V 的 GDN 模型在 XPU 上跑 chunk prefill，先 memset u 的分配区再比对；A100 同源码作对照，检查 NaN/1e38 与输出逐位一致。
+  fix: '未核实修复 PR；规避：XPU 回退 #47944 或补全 recompute_w_u 的 masked store。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/50249
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'sglang 的 GDN chunk prefill kernel（python/sglang/kernels/ops/attention/fla/）在 #47944 中把 tl.make_block_ptr 换成 masked pointer loads（因上游 Triton 移除 block pointer）。在 Intel 的 triton-xpu 3.8.0 后端，block pointer/tensor descriptor 会降为带 prefetch 的 2D block load，masked pointer load 不会，于是每个 2D tile 变成 gather；编译后 chunk_fwd_kernel_o、recompute_w_u_fwd_kernel、kkt_solve 的 Subgroup2DBlockLoad 调用降为 0，性能回退 2.3-2.9x。正确性上，recompute_w_u 的 masked-store 版本在 K!=V 时让 u 的一部分没写，而 u 由 torch.empty_like 分配，保留未初始化内存（NaN、最高约 1e38）；同一源码在 A100 上逐位正确。实测 Arc Pro B60：PPLX-Decider-v1-27B TP=4 每 4K token chunk 2.22→5.65ms，recompute_w_u kernel 0.23→1.59ms（6.9x）。'
+  source: https://github.com/sgl-project/sglang/issues/50249
+  behavior: 在 Intel XPU 上做 GDN 模型的 chunk prefill，当 key 与 value 的 head dim 不相等（K!=V）时，recompute_w_u 的输出 u 有一块没有写，里面是未初始化的显存：可能是 NaN，也可能到 1e38；这些值进入后续 chunk 后输出出现 NaN 或离谱数值，而同一份代码在 A100 上逐位正确。
+  trigger_surface: 'Intel XPU（Arc Pro B60、triton-xpu 3.8.0），sglang GDN chunk prefill，K != V，自 #47944 起。'
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

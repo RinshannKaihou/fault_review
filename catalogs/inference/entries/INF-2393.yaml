@@ -1,0 +1,51 @@
+id: INF-2393
+legacy_ids: []
+slug: camem_sleep_wake_memcpy_error_ignored
+aliases: []
+title: CaMem sleep/wake 忽略 memcpy 失败丢弃权重
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: vllm
+    component: CaMemAllocator 拷贝返回值未检查
+  behavior: sleep 的 device→host 拷贝失败仍提交未初始化备份并释放有效 device 存储；wake 先标 awake 再拷贝，host→device 失败被忽略且清空唯一 CPU 备份
+effect:
+  objects:
+  - 模型权重
+  detail: ACL memcpy 返回非零被当成功：失败的 sleep 丢掉有效设备数据换入残缺备份；失败的 wake 权重显示已恢复但内容是坏拷贝且无重试来源；权重内容静默损坏
+  visibility: 静默错误
+mitigation:
+  detect: AST 加载生产代码 + mock 注入非零返回的 CPU 复现（5 测试用例）
+  fix: 待定（issue 2026-11-04 新开，未见修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/20972
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend main 0f85ed44 的 vllm_ascend/device_allocator/camem.py：直接导入裸 acl.rt.memcpy（ACL Python 契约返回整数状态，0 为成功），不复刻上游 cudaMemcpy 包装的 CUDART_CHECK 检查。sleep（199-209 行）：device→host 拷贝忽略返回值后仍保存新备份、解除映射并释放有效 device 分配、标记 asleep——拷贝报错时把未初始化/部分备份提交为唯一数据并丢弃有效源。wake_up（270-281 行）：先标 awake 再恢复，host→device 失败被忽略且清空有效 CPU 备份——分配看似已恢复但无重试来源。另发现 dest_max 传地址推导值（cpu_ptr+size*2）而非分配容量（64B 目标传 8320B），但拷贝计数仍 64，该参数缺陷单独不构成溢出证据。CPU/AST 加载生产代码 + mock 注入非零返回复现（无 NPU 环境，不声称端到端服务结果）；报告者自述 source-level 复现，置信度 documented。
+  source: https://github.com/vllm-project/vllm-ascend/issues/20972
+  behavior: 使用 CaMem 睡眠/唤醒（device offload）特性时若 ACL 拷贝失败，接口不报错：睡眠失败后有效权重已被释放、只剩坏备份；唤醒失败后权重标记已恢复但内容是坏拷贝且 CPU 备份被清空无法重试。后续推理用损坏权重静默产出错误输出，日志无拷贝失败痕迹。
+  trigger_surface: vllm-ascend main 0f85ed44（2026-11-04）；CaMemAllocator sleep/wake_up + ACL memcpy 失败（如对端/内存压力）；触发依赖真实拷贝错误，源码级 mock 复现。
+  discovery: 2026-11-04 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 重计算/卸载

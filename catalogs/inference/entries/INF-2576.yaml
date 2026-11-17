@@ -1,0 +1,52 @@
+id: INF-2576
+legacy_ids: []
+slug: cann_topk_v2_d_tolerance_ties_wrong_index
+aliases: []
+title: TopKV2D 近值按容差判并列致错误索引
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: TopKV2D AICPU
+  behavior: AICPU TopKV2D 的排序、单调分组、选择与堆路径统一以数值容差 IsValueEqual 判并列，把接近但不相等的值当作相等处理。
+effect:
+  objects:
+  - 数值结果
+  detail: '[1,1+2e-6,1+4e-6] k=1 largest 返回 index=0（应 2）；k=2 时 values[j]≠input[indices[j]]；修复版 4/4 组通过，原版 0/4；FLOAT/DOUBLE 均受影响。'
+  visibility: 静默错误
+mitigation:
+  detect: 构造相差 1~2 ULP 的近似值，检查 top-k 索引与值是否仍与输入对应；比较 values[j] 与 input[indices[j]]。
+  fix: 修复提交 f13883ba（报告者给出，仓内 UT 本轮未运行，发布状态未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4797
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math math/top_k_v2_d/op_kernel_aicpu/top_k_v2_d_aicpu.cpp:64/:89/:129/:151 的排序、单调分组、选择与堆路径都用数值容差 IsValueEqual 判并列。实测 Ascend910B2（CANN 9.1.0、基线 02ebd8f9）：FLOAT [1,1+2e-6,1+4e-6]、largest=true、k=1 返回 index=0（应为 2）；k=2 时 values[j] 与 input[indices[j]] 不一致。DOUBLE 近值同样受影响。报告者把基线与修复提交 f13883ba 的完整 AICPU 生产翻译单元分别编译为独立 .so，经 aclrtBinaryLoadFromData/aclrtRegisterCpuFunc 在真实设备执行：原版 4 组定向用例 0/4 通过，修复版 4/4；完整 Host 回归 1200 组原版 819/381、修复后 1200/0。
+  source: https://gitcode.com/cann/ops-math/issues/4797 （open，2026-11-16，含修复提交与设备对照）
+  behavior: 取 top-k 时选到错误的元素，且返回值与索引对不上：k=1 时最大的元素根本没被选中，k=2 时 values[j] 与 input[indices[j]] 不是同一个数。下游采样、阈值筛选或多标签选择会基于错误的集合继续计算，接口无报错、无日志，只有在与严格排序参考对拍时才暴露。
+  trigger_surface: AICPU TopKV2D；FLOAT/DOUBLE 近值输入；dim=0 等非末轴；Ascend910B2 + CANN 9.1.0；基线 02ebd8f9。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

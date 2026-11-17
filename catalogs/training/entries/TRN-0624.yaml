@@ -1,0 +1,71 @@
+id: TRN-0624
+legacy_ids: []
+slug: triton_ascend_i64_i32_floor_divide_zero
+aliases: []
+title: triton-ascend 混合整数除法正数静默返 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton-ascend
+    component: i64//i32 整数除法编译
+  behavior: triton-ascend 对 i64//i32 混合整数除法误编译：正数操作数静默返回 0（7//3→0），编译期不报错、运行期才暴露数值错误。
+effect:
+  objects:
+  - 数值结果
+  detail: 正数整除结果全为 0，索引/掩码/分桶等整数逻辑静默错；AOTI/cpp_wrapper 的 triton_experimental 后端场景被 torch_npu 路由规避。
+  visibility: 静默错误
+mitigation:
+  detect: 整数 floor_divide 边界单测（7//3、SymInt/sympy 整型除数）；host 契约 UT 验证整数路径走 ATen 回退。
+  fix: 规避 PR https://gitcode.com/Ascend/pytorch/merge_requests/49022（open）：triton_experimental lowering.py 整数 floor_divide 与 div(floor) 整体回退 ATen/aclnn，浮点保持 triton 融合；牺牲整数除法融合机会换正确性。triton-ascend 侧根因未定位。未发布。
+labels:
+  stage:
+  - shared
+  confidence: speculative
+  coverage: var
+  discovered: '2026-11-05'
+remarks: 与 TRN-0280/TRN-0617/TRN-0623 同 NPU 编译器静默错值族：此条是 triton-ascend 整数语义误编译，torch_npu 侧规避。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49022
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/pytorch/issues/5467
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0280
+pattern: PAT-TRN-0066
+original:
+  mechanism: 'Ascend/pytorch !49022（2026-11-04 open，关联 RFC #5467）：triton-ascend 对 i64//i32 混合整数除法误编译——正数操作数静默返回 0（7//3→0），编译期不报错、运行期才暴露数值错误。本 PR 为 triton-experimental 后端 AOTI/cpp_wrapper 场景的规避修复：_npu_floor_divide 改用 is_integer_type 对操作数本身判定（TensorBox 判 dtype、int 字面量、sympy.Expr is_integer），整数走 fallback_handler(op) 回退 ATen/aclnn，浮点保持 div_mode 融合；覆盖 aten.floor_divide.default/.Scalar 与 div.Tensor_mode/.Scalar_mode 的 floor rounding；convert_symint_to_expr 归一化 SymInt 除数。已知权衡：整数 floor 除法统一回退牺牲融合机会换数值正确性。验证：host 契约 UT 9 条断言（无 device）。triton-ascend 侧 7//3→0 的根因 pass 未定位（对照 TRN-0280 模式）。训练侧：torch.compile 图中整数除法广泛用于索引计算/桶边界/掩码偏移，错值直接错索引。'
+  source: https://gitcode.com/Ascend/pytorch/merge_requests/49022 ｜关联 RFC：https://gitcode.com/Ascend/pytorch/issues/5467
+  behavior: NPU torch.compile（triton_experimental 后端，含 AOTI/cpp_wrapper）里整数 floor 除法（i64//i32、含 SymInt 除数）的正数结果静默变 0（如 7//3 得 0），无编译错误，运行期表现为索引/掩码/分桶逻辑整体错乱、loss 异常，难定位；规避 PR 把整数除法整体回退 ATen 后恢复。
+  trigger_surface: triton-ascend（Triton Ascend 3.6）+ triton_experimental 后端 + i64//i32 混合整数 floor_divide（含 SymInt/sympy 整型）；正数操作数
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-07 回访：批次快照显示 !49022 已 closed（2026-11-06T02:34Z，未 merged），修复载体关闭，维持待新载体。
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - pattern
+  - date: '2026-11-07'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

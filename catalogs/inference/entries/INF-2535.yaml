@@ -1,0 +1,49 @@
+id: INF-2535
+legacy_ids: []
+slug: dspark_rejected_draft_tokens_not_zeroed_logprob_gather_oob
+aliases: []
+title: DSpark 拒绝草稿 token 未清零致 logprob 越界
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: sglang
+    component: DSpark sample 输出缓冲
+  behavior: build_out_tokens_triton 只覆盖 bonus 位，拒绝的 draft 后缀原样保留；DSpark logprob gather 不按 correct_len 裁剪，把每个位置当词表索引，越界 ID 触发越界或错值。
+effect:
+  objects:
+  - 输出分布
+  detail: draft=[10,11,12]、correct_len=1、bonus=99 输出 [10,99,12,0] 而非 [10,99,0,0]；词表 100 时 gather 用 101 越界（CPU 复现 index 101 out of bounds）；接受前缀与 bonus 不变。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 correct_len<gamma 的 DSpark 输出，检查 bonus 之后是否清零；给 return_logprob 请求用词表边界外的 draft token 观察 compute_spec_logprobs 是否按越界索引 gather。
+  fix: '修复 PR https://github.com/sgl-project/sgl-kernel-npu/pull/1025 （open，未发布）：按 col<GAMMA 且 col<correct_len 屏蔽 draft 加载、尾部位清零，同步 Torch 参考与 64 个回归；SGLang 主仓 #37472 已 merged c4b6338f。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sgl-kernel-npu/pull/1025
+  kind: github_pr
+- url: https://github.com/sgl-project/sglang/commit/c4b6338f3e7d5282420fa730c04c0a9006d026a4
+  kind: other
+relations: []
+original:
+  mechanism: 'SGLang 主仓 commit c4b6338f（PR #37472，已 merged）把 Torch/CUDA 实现的 build_out_tokens 改为在 bonus token 之后清零被拒绝的 draft token，防止它们进入下游 token gather；sgl-kernel-npu 的 NPU 实现 sample.build_out_tokens_triton 仍继续拷贝整行 draft、只覆盖 bonus 位置。sgl-kernel-npu PR #1025 的复现：draft=[10,11,12]、correct_len=1、bonus=99 时 NPU 输出 [10,99,12,0]，而主仓契约要求 [10,99,0,0]。下游调用链（SGLang d9c52c3140eb5ca232c8c580fdbee402dd8a5438）：build_accept_outs() 把完整 [batch, gamma+1] 缓冲存进 accept.out_tokens；开 return_logprob 时 dspark_worker_v2.py 把 accept.out_tokens.reshape(-1) 传给 compute_spec_logprobs(..., chain_stride=...)，不按 correct_len 裁剪；logprob_processor.py 的 chain 分支 accepted_token_ids=predict 后执行 gathered_logprobs.gather(1, accepted_token_ids.long().view(-1,1))，把每个输出位置（包括拒绝后缀）当词表索引。目标词表 100、correct_len=1、输出 [10,99,101,0] 时有效前缀只有 [10,99]，gather 仍索引 101 越界；清零后 [10,99,0,0] 全部在范围内。CPU 复现使用抽取的 community compute_spec_logprobs：旧后缀报 index 101 is out of bounds，清零后通过；这是孤立 CPU 检查，不是端到端模型或 NPU 崩溃复现。PR #1025 同时按 col<GAMMA 且 col<correct_len 屏蔽 draft 加载、保留 CANN 9.1 的 int64 bonus 选择、更新 Torch 参考并加 64 个回归，覆盖 int32/int64、空 batch、零 draft、奇数宽度、全部接受长度与 strided 输入。'
+  source: https://github.com/sgl-project/sgl-kernel-npu/pull/1025 ｜上游契约 https://github.com/sgl-project/sglang/commit/c4b6338f3e7d5282420fa730c04c0a9006d026a4
+  behavior: DSpark 投机解码在部分接受（correct_len 小于草稿数）且请求 logprobs 时，被拒绝的草稿 token 没有被清零，仍留在输出缓冲里；下游 logprob 处理器把整个缓冲的每个位置都当词表索引去 gather，遇到超出词表范围的残留 token 就会索引越界（CPU 复现报 index 101 out of bounds）或取到错误 logprob。不开 logprobs 时接受前缀和 bonus 都正常，所以问题只在特定请求参数下出现。
+  trigger_surface: sgl-kernel-npu sample.build_out_tokens_triton（DSpark/NPU 投机解码）；correct_len<gamma、bonus 之后残留被拒绝 draft token；请求 return_logprob 触发 compute_spec_logprobs chain gather；SGLang revision d9c52c31、CANN 9.1/9.2、Triton-Ascend 3.2.2/3.6。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

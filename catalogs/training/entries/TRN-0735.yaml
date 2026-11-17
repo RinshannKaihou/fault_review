@@ -1,0 +1,59 @@
+id: TRN-0735
+legacy_ids: []
+slug: concatv2_infershape_pointer_base_misjudge
+aliases: []
+title: ConcatV2 InferShape 指针比较误判基底漏加轴维
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: concat_v2 infershape 基底
+  behavior: 推导 concat 维大小时以实例指针相等（shapeI==baseShape）识别并跳过基底，运行时同形多输入 desc 同源共享同一 ge::Shape 对象时后续输入被误判为基底跳过求和。
+effect:
+  objects:
+  - 数值结果
+  detail: 输出 concat（axis）维尺寸漏加：两输入 {16,4,8} 沿 axis=2 拼接，正确输出 16、实际推导 8——图编译按偏小 shape 推导/分配，无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 同形多输入 ConcatV2 图构图后断言输出 axis 维=各输入之和；对比 eager 路径输出 shape
+  fix: 修复 PR https://gitcode.com/cann/ops-math/merge_requests/7301（open WIP）：基底识别改按索引 baseIdx，求和循环按 i==baseIdx 跳过
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: '触发前提是运行时同形输入 desc 同源共享 Shape 对象（报告者给的机制条件）；报告者为 cumsum #4574（TRN-0629）同源贡献者，缺陷有代码定位（concat_v2_infershape.cpp 收集/求和两段），共享前提未见真机日志展示。'
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4685
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/merge_requests/7301
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'cann/ops-math issue #4685（2026-11-11 open）+ 修复 PR !7301（open WIP）。conversion/concat_v2/op_host/concat_v2_infershape.cpp 的 InferShape4ConcatV2 在推导 concat 维大小时，基底（首个已知秩输入）识别使用实例指针相等比较：收集阶段以 baseShape 指针记录首个已知秩输入，求和阶段 if (shapeI == baseShape) continue 跳过基底自身。运行时多个 shape 相同的输入实例可能返回同一个 ge::Shape 对象（输入 desc 同源共享）——后续同形输入被指针比较误判为『基底』而跳过求和，输出 concat（axis）维尺寸漏加。报告者给出重现：两输入 {16,4,8}/{16,4,8} axis=2，正确输出该维 16，缺陷下推导为 8。修复 !7301：改为按索引标识基底（baseIdx=i），不做实例指针比较。来源：https://gitcode.com/cann/ops-math/issues/4685 、修复 https://gitcode.com/cann/ops-math/merge_requests/7301 。训练面：Concat 是训练图最常见算子之一，GEIR 图模式下 shape 推导错直接传导到下游分配与构图。'
+  source: https://gitcode.com/cann/ops-math/issues/4685 ｜修复 PR：https://gitcode.com/cann/ops-math/merge_requests/7301
+  behavior: 图模式（GEIR）下对多个 shape 完全相同的张量做 ConcatV2 时：若这些输入的描述符同源共享同一个 Shape 对象，推导出的输出 shape 的拼接维会少加一份（如两个 {16,4,8} 沿第 3 维拼接，输出该维被推成 8 而非 16）——编译期无报错，下游按错误 shape 分配缓冲/构图，错误是否显式取决于消费方；是否触发取决于运行时对象共享，问题随构图路径漂移。
+  trigger_surface: GEIR 图编译 infershape 路径；同形多输入且 desc 同源共享 Shape 对象；修复 !7301 open 未发布
+  discovery: 2026-11-12 每日扫描
+  notes:
+  - 2026-11-13 回访：回访：修复 MR !7301 已 merged（batch 索引 state=merged），#4685 仍 open；机制判定不变，发布版本未核实。
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-13'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

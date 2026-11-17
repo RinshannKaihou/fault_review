@@ -1,0 +1,76 @@
+id: INF-2382
+legacy_ids: []
+slug: scatter_pa_cache_scene2_third_seg_offset
+aliases: []
+title: ScatterPaCache 场景二第三段从 key[0] 起写致静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: cann
+    component: ScatterPaCache 场景二写入偏移
+  behavior: 场景二第三段 KV 从 key[0] 重新开始写而非从 key[compressSeqOffset+compressLens] 起写，keyCacheRef 被写入重复历史 token，违反文档与 IR 约束
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: 注意力结果静默错误；自包含 C++ 复现（./repro 1 2 4 0 1 观察 row[2]）确认写入位置与契约不符
+  visibility: 静默错误
+mitigation:
+  detect: 场景二调用后校验第三段起始 slot 内容
+  fix: '修复 MR https://gitcode.com/cann/ops-transformer/merge_requests/15405 已挂（Fixes #7063/#7086/#7087/#7088，open 未合入；含 arch35 Omni 内核 step2 同源修复；CPU 仿真 UT 6/6，整数模型复现 off=1,cl=2,sl=4,slot=0 修复后 row[2]=key[3]）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-03'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7063
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnScatterPaCache（Ascend 950PR、CANN 9.2.0-beta.2、libopapi.so 构建 2026-08-26）cacheMode=Norm、key 4 维（场景二）下，第三段 KV 写入位置错误：按 ACLNN 文档（attention/scatter_pa_cache/docs/aclnnScatterPaCache.md 场景二公式 keyCache=slotMapping(key[:compressSeqOffset], ReduceMean(key[compressSeqOffset:compressSeqOffset+compressLens]), key[compressSeqOffset+compressLens:seqLens])）与仓内 IR 约束（scatter_pa_cache_proto.h：compress_lens[b][i]+compress_seq_offset[b*i]<seq_lens[b]），第三段应从 key[compressSeqOffset+compressLens] 开始写；实测从 key[0] 重新开始写，keyCacheRef 中被写入重复的历史 token，注意力结果静默错误。附自包含 C++ 复现程序（g++ 编译两段直调，./repro 1 2 4 0 1 观察 row[2] 打印值）。
+  source: https://gitcode.com/cann/ops-transformer/issues/7063
+  behavior: 使用 aclnnScatterPaCache 场景二（带压缩段偏移）时，压缩段之后的 KV 数据被写到缓存开头而不是接在压缩段之后，缓存里出现重复的历史 token，后续注意力计算结果错误但无任何报错，接口返回成功。
+  trigger_surface: Ascend 950PR；CANN 9.2.0-beta.2；aclnnScatterPaCache cacheMode=Norm + key 4 维场景二（传 compressLens/compressSeqOffset）。
+  discovery: 2026-11-03 每日扫描
+  notes:
+  - 2026-11-04 回访：#7063 仍 open（11-03T08:45 后无更新）
+  - '2026-11-05 回访：回访：修复 MR !15405 出现，同时覆盖 #7086/#7087/#7088（后者=INF-2388 写偏移回绕，use32 判定改为按各 tensor 最大访问偏移 uint64 上界）；MR open 未合入'
+  - 2026-11-06 回访：#7063 仍 open，修复 MR !15405 合入状态未核实
+migration:
+  method: scan
+  scanned: '2026-11-03'
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: KV缓存
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - original.notes
+  - date: '2026-11-05'
+    fields:
+    - mitigation.fix
+    - original.notes
+  - date: '2026-11-06'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

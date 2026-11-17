@@ -11,6 +11,8 @@ import json
 import os
 import pickle
 import re
+import sys
+import tempfile
 import time
 
 import numpy as np
@@ -32,16 +34,48 @@ META_JSON = os.path.join(DATA, "meta.json")
 # ---------------------------------------------------------------------------
 
 _LATIN_RE = re.compile(r"[a-z0-9][a-z0-9_.\-/#]*")
+_SUB_RE = re.compile(r"[a-z0-9]+")
+_SPLIT_ALNUM_RE = re.compile(r"[a-z]+|[0-9]+")
 _CJK_RE = re.compile(r"[一-鿿]")
+_URL_STRIP_RE = re.compile(r"https?://\S+")
+EN_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "to", "in", "on", "for", "with", "by", "from", "as", "at",
+    "into", "over", "while", "every", "that", "this", "is", "are", "be", "or", "and", "when", "after", "makes",
+})
+
+
+def expand_latin_tokens(raw_tokens):
+    """Emit trimmed whole token plus compound/alnum sub-tokens, skipping English function words.
+    Shared design with web/build_site.py & web/src/search.js so `Qwen2-VL`, `batch_size`,
+    `bf16/fp16`, and `importance_sampling_ratio` match both whole and component queries."""
+    toks = []
+    for raw in raw_tokens:
+        t = raw.rstrip(".")
+        if not t or t in EN_STOPWORDS:
+            continue
+        toks.append(t)
+        subs = _SUB_RE.findall(t)
+        if len(subs) > 1:
+            for s in subs:
+                if len(s) >= 2 and s not in EN_STOPWORDS:
+                    toks.append(s)
+                    for p in _SPLIT_ALNUM_RE.findall(s):
+                        if len(p) >= 2 and p != s and p not in EN_STOPWORDS:
+                            toks.append(p)
+        else:
+            for p in _SPLIT_ALNUM_RE.findall(t):
+                if len(p) >= 2 and p != t and p not in EN_STOPWORDS:
+                    toks.append(p)
+    return toks
 
 
 def tokenize(text):
-    """jieba for CJK + regex for code/latin tokens, lowercased.
+    """jieba for CJK + compound-aware regex for code/latin tokens, lowercased.
 
     Also emits CJK bigrams so zh terms jieba splits badly still match.
     """
     text = text.lower()
-    toks = _LATIN_RE.findall(text)
+    toks = expand_latin_tokens(_LATIN_RE.findall(text))
     cjk_runs = re.findall(r"[一-鿿]+", text)
     import jieba
 
@@ -63,10 +97,15 @@ def bm25_text(e):
     # Not the other structured fields (cause_behavior / effect_detail / component /
     # effect_objects): their repeated technical terms let near-topic entries outrank
     # the right one (independent set Recall@5 0.952 -> 0.937). Revisit notes stay in.
+    # Strip raw http(s) URLs from `source` so thousands of unique URL path strings do not
+    # bloat the BM25 vocabulary while preserving prose citations in `source`.
     for key in ("title", "mechanism", "behavior", "signature", "trigger_surface",
                 "repro", "source", "notes", "content"):
-        if f.get(key):
-            parts.append(f[key])
+        val = f.get(key)
+        if val:
+            if key == "source":
+                val = _URL_STRIP_RE.sub(" ", val)
+            parts.append(val)
     return "\n".join(parts)
 
 
@@ -142,6 +181,17 @@ def _aligned_matrix_present(entries):
     return all(_hash(o) == n["embed_hash"] for o, n in zip(old_rows, entries))
 
 
+def _atomic_write_bytes(path, writer_fn):
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=os.path.dirname(path))
+    os.close(fd)
+    try:
+        writer_fn(tmp)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def build(full=False, progress=True, lexical=False):
     """Build the index. lexical=True writes only entries.jsonl + bm25.pkl (no
     embeddings.npy, no model needed) — enough for mode=bm25 / lookup / related /
@@ -162,11 +212,13 @@ def build(full=False, progress=True, lexical=False):
         if os.path.exists(EMB_NPY) and not kept_vectors:
             os.remove(EMB_NPY)
         bm25 = BM25().fit([tokenize(bm25_text(e)) for e in entries])
-        with open(ENTRIES_JSONL, "w", encoding="utf-8") as f:
-            for e in entries:
-                f.write(json.dumps(e, ensure_ascii=False) + "\n")
-        with open(BM25_PKL, "wb") as f:
-            pickle.dump(bm25, f)
+        _atomic_write_bytes(
+            ENTRIES_JSONL,
+            lambda p: open(p, "w", encoding="utf-8").writelines(
+                json.dumps(e, ensure_ascii=False) + "\n" for e in entries
+            ),
+        )
+        _atomic_write_bytes(BM25_PKL, lambda p: pickle.dump(bm25, open(p, "wb")))
         meta = {
             "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "n_entries": len(entries),
@@ -187,15 +239,17 @@ def build(full=False, progress=True, lexical=False):
                         for r in ("inference", "training")},
             "pending_audit": sum(e.get("status") == "pending_audit" for e in entries),
         }
-        with open(META_JSON, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=1)
+        _atomic_write_bytes(
+            META_JSON,
+            lambda p: json.dump(meta, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1),
+        )
         if progress:
             msg = f"index built (lexical only): {len(entries)} entries, "
             if kept_vectors:
                 msg += "embeddings.npy still aligned and kept"
             else:
                 msg += "no embeddings (run a plain `reindex` with models present)"
-            print(msg + f", {time.time() - t0:.1f}s")
+            print(msg + f", {time.time() - t0:.1f}s", file=sys.stderr)
         return meta
 
     # load previous vectors for incremental reuse
@@ -229,7 +283,7 @@ def build(full=False, progress=True, lexical=False):
     if need:
         if progress:
             print(f"embedding {len(need)} new/changed entries "
-                  f"({len(entries) - len(need)} reused)...", flush=True)
+                  f"({len(entries) - len(need)} reused)...", file=sys.stderr, flush=True)
         new_vecs = embed_mod.embed(
             [texts[i] for i in need], show_progress=progress
         )
@@ -247,12 +301,20 @@ def build(full=False, progress=True, lexical=False):
 
     bm25 = BM25().fit([tokenize(bm25_text(e)) for e in entries])
 
-    with open(ENTRIES_JSONL, "w", encoding="utf-8") as f:
-        for e in entries:
-            f.write(json.dumps(e, ensure_ascii=False) + "\n")
-    np.save(EMB_NPY, mat)
-    with open(BM25_PKL, "wb") as f:
-        pickle.dump(bm25, f)
+    # Write embeddings.npy atomically BEFORE replacing entries.jsonl so an interrupted write
+    # never leaves a new entries.jsonl paired with an old misaligned embeddings.npy.
+    def _save_npy(tmp_path):
+        with open(tmp_path, "wb") as f:
+            np.save(f, mat)
+
+    _atomic_write_bytes(EMB_NPY, _save_npy)
+    _atomic_write_bytes(
+        ENTRIES_JSONL,
+        lambda p: open(p, "w", encoding="utf-8").writelines(
+            json.dumps(e, ensure_ascii=False) + "\n" for e in entries
+        ),
+    )
+    _atomic_write_bytes(BM25_PKL, lambda p: pickle.dump(bm25, open(p, "wb")))
     meta = {
         "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "n_entries": len(entries),
@@ -272,11 +334,13 @@ def build(full=False, progress=True, lexical=False):
         "by_repo": {r: sum(e["repo"] == r for e in entries) for r in ("inference", "training")},
         "pending_audit": sum(e.get("status") == "pending_audit" for e in entries),
     }
-    with open(META_JSON, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=1)
+    _atomic_write_bytes(
+        META_JSON,
+        lambda p: json.dump(meta, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1),
+    )
     if progress:
         print(f"index built: {len(entries)} entries, dim={mat.shape[1]}, "
-              f"{len(need)} re-embedded, {time.time() - t0:.1f}s")
+              f"{len(need)} re-embedded, {time.time() - t0:.1f}s", file=sys.stderr)
     return meta
 
 

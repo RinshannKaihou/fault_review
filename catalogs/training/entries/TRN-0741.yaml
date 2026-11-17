@@ -1,0 +1,50 @@
+id: TRN-0741
+legacy_ids: []
+slug: orl_grade_answer_equal_marked_wrong
+aliases: []
+title: OpenRLHF grade_answer 数学等价答案判错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: grade_answer_sympy 短路
+  behavior: 元素循环里双侧分数形式走 gt_elem==given_elem 字符串比较、单侧整数字面量直接判 False，两分支都在 are_equal_under_sympy 符号等价判定之前短路。
+effect:
+  objects:
+  - 训练信号
+  detail: 实测 2/4 vs 1/2、8/2 vs 4、2*2 vs 4、sqrt(4) vs 2、0.5+0.5 vs 1 全判 False——数学 RLVR 中写法不同的正确答案得零奖励，模型学到形式大于值。
+  visibility: 静默错误
+mitigation:
+  detect: 等价形式答案对（分数/根号/算式）作为 grader 回归用例；抽查零奖励样本里 sympy 可证等价的比例
+  fix: 修复 PR https://github.com/OpenRLHF/OpenRLHF/pull/1395（open）：短路前先符号化归约，9**9**9 指数防护不变
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: '与 verl #8656（__eq__ 恒真骗满奖励）互为镜像：本条是正确答案被误拒（假阴性）、那条是错误答案被骗过（假阳性），同为 grader 正确性缺陷但机制不同，各自成条。'
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/issues/1394
+  kind: github_issue
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1395
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'OpenRLHF issue #1394（2026-11-05 open；main @ 2649449）+ 修复 PR #1395（open）。openrlhf.utils.math_utils 的 grade_answer_sympy 元素循环：if _is_frac(gt) and _is_frac(given) 走字符串相等比较（不约分）、elif _str_is_int(gt) != _str_is_int(given) 直接判 False——两分支都在 are_equal_under_sympy 之前短路，sympy 符号等价判定从未到达。实测 grade_answer("\\frac{2}{4}", "\\frac{1}{2}")=False、("8/2","4")=False、("2*2","4")=False、("\\sqrt{4}","2")=False、("0.5+0.5","1")=False，全部应为 True；are_equal_under_sympy 可证全部等价。该函数是数学 RLVR 的奖励：正确答案因写法得零奖励，教会模型形式比值重要；等价分数与 sqrt(4) 式答案在 GSM8K/MATH rollout 常见。修复 #1395：短路前先符号化归约，保留 9**9**9 指数防护不重引入挂起。来源：https://github.com/OpenRLHF/OpenRLHF/issues/1394 、修复 https://github.com/OpenRLHF/OpenRLHF/pull/1395 。训练面：数学 RLVR 奖励分布系统性偏低并扭曲。'
+  source: https://github.com/OpenRLHF/OpenRLHF/issues/1394 ｜修复 PR：https://github.com/OpenRLHF/OpenRLHF/pull/1395
+  behavior: 用 OpenRLHF 做数学 RLVR 时，答案判分器把数学上等价但写法不同的正确答案判为错：2/4 对 1/2、8/2 对 4、sqrt(4) 对 2、0.5+0.5 对 1 全部得 0 分——这些写法在 GSM8K/MATH 的模型输出里很常见。训练无报错，只是奖励比应有的低、且模型被引导去模仿特定答案格式而不是解对题，真实能力与奖励曲线脱节。
+  trigger_surface: 'OpenRLHF grade_answer/grade_answer_sympy 数学 RLVR 计分；双侧分数形式或单侧整数字面量输入；修复 #1395 open 未合'
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,52 @@
+id: INF-2441
+legacy_ids: []
+slug: groupnormsiluquant_rstd_nan
+aliases: []
+title: GroupNormSiluQuant rstd 整块 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: group_norm_silu_quant
+  behavior: group_norm_silu_quant_b16.h 把 E[x²]−E[x]²+eps 直接塞进 sqrt，|mean| 远大于组内扰动时灾难性抵消为负，sqrt(负数) 得 NaN；quant 入口未同步钳位修复
+effect:
+  objects:
+  - 数值结果
+  detail: aclnnGroupNormSiluQuant(fp16)+组内方差极小的合法输入(如近常数channel/真实方差≈0)+小eps：rstdOut整块或按组选择性NaN，两段接口返回0无报错；eps=1e-5/1e-2均NaN×256，eps=1恢复2.82812；A2/A3双机逐位一致
+  visibility: 数值异常
+mitigation:
+  detect: 常数/近常数组输入下检查 rstdOut 是否 NaN；eps 抬升可判别
+  fix: 待定（期望把 51ed92dd3 的 var 钳位同步到 group_norm_silu_quant 全部 kernel）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: '2026-11-05 留观转收：本轮深读正文，eps 单调判别+分组跟随判别+双机逐位一致+修复 commit 范围核验齐备。与已关闭 #6068 同处代码，本单主张 #7334 钳位修复未覆盖 quant 入口。'
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8209
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn norm/group_norm_silu_quant（A2 910B3/CANN 9.2.0 与 A3 910_9362/CANN 9.3.0 双机逐位一致；master ed6471cdb 2026-11-05 fetch，:219/:259 保持原样）：op_kernel/group_norm_silu_quant_b16.h 把 rstd = 1.0f/sqrt(rstd*numRec - mean*mean + tiling->epsilon) 直接塞进 sqrt，E[x²]−E[x]² 在 |mean| 远大于组内扰动时灾难性抵消为负，sqrt(负数) 得 NaN。同族非量化 aclnnGroupNormSilu 已在 51ed92dd3 加钳位（var=(var>0.0f)?var:0.0f，9 个 kernel 文件 15 处），git show --stat 证实 12 个文件全在 norm/group_norm_silu/ 与 activation/，不含 group_norm_silu_quant/ 任一路径。三判据：1) eps 单调——eps=1e-5/1e-2 均 NaN×256，eps=1 恢复 2.82812、eps=100 得 0.100464，反推 |var|∈(0.01,1) 且 1/2.828125²−1=−0.875 精确落入；2) channel 交替常数（偶 1023/奇 512）→ NaN=128 有限=128 精确按组跟随，求和顺序差异无法产生分组选择性 NaN；3) aclnn 侧 :262 无条件 Contiguous，连续性已在 kernel 前消除，连续/非连续构造结果逐位一致。shape=[4,64,8192]、group=64、gamma=1/beta=0/quantScale=1，四例 ret1=ret2=0。
+  source: https://gitcode.com/cann/ops-nn/issues/8209
+  behavior: 组内方差极小的合法输入（如近常数 channel、真实方差≈0）走 aclnnGroupNormSiluQuant（fp16）时：rstdOut 整块 NaN 或按组选择性 NaN，两段接口返回 0 无报错；NaN 随量化输出向下游扩散，若下游无 NaN 检查则训练/推理静默污染；同族非量化 GroupNormSilu 已修复，quant 入口仍触发。
+  trigger_surface: aclnnGroupNormSiluQuant+组内方差极小（近常数输入）+小 eps；A2/A3、CANN 9.2.0/9.3.0
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail

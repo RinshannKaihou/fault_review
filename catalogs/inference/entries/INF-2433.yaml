@@ -1,0 +1,53 @@
+id: INF-2433
+legacy_ids: []
+slug: padconv2d_fusion_same_overwrite
+aliases: []
+title: PadConv2dFusionPass 融合后 SAME 覆盖显式 pads
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: cann
+    component: PadConv2dFusionPass
+  behavior: 融合把 Pad 填充量累进 Conv2D pads 后，dn2nz 能力缺失平台仍将 padding 写成 SAME；InferConv2DPadsWithPadding 按 SAME 重算并覆盖 pads，融合进来的显式填充丢失
+effect:
+  objects:
+  - 数值结果
+  detail: dn2nz 缺失平台 + 可融合 Pad+Conv2D（A2/A3、CANN 9.2.0）：SAME(512,k=7,s=2) 得 pads [2,3] 而非 [4,4,4,4]，输出 256 vs 257；Conv2D 及后续 MaxPool 尺寸比未融合小 1，shape 静默改变、无报错
+  visibility: 静默错误
+mitigation:
+  detect: 融合前后输出 shape 对照；检查融合后 Conv2D 的 padding/pads 属性
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13841（open）：融合后统一写 padding=EXPLICIT/auto_pad=NOTSET 保留 pads；nn_op_graph_ut 19 项用例通过（same_padding_fused_pads 验证 SAME[2,3]+Pad[3,3] 合并为 [5,6,5,6]）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8322
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn PadConv2dFusionPass（A2/A3、CANN 9.2.0、Python 3.10.12）：融合时把 Pad 的填充量累加进 Conv2D 的 pads 属性，但在不满足 Intrinsic_data_move_out2l1_dn2nz（dn2nz）能力的平台上融合后仍将 Conv2D 的 padding 写成 SAME。Conv2D shape 推导（InferConv2DPadsWithPadding，conv2d_infer_fns.cc）遇 padding=SAME 按输入/kernel/stride/dilation 重算并覆盖 pads，融合进来的显式填充丢失：SAME(512,k=7,s=2) 只得 [2,3]（有效填充 5），正确应为 pads=[4,4,4,4]（有效填充 8），输出 256 vs 257。修复（MR !13841）：融合后的前向 Conv2D 统一写 padding=EXPLICIT、auto_pad=NOTSET 并清理不再使用的 dn2nz 平台判断。
+  source: https://gitcode.com/cann/ops-nn/issues/8322
+  behavior: A2/A3 上 Pad+Conv2D 图被 PadConv2dFusionPass 融合后，Conv2D 及后续 MaxPool 的输出尺寸比未融合时小 1（如 257→256、128→127），张量 shape 静默改变、无报错；下游算子按错位 shape 继续计算，CNN 推理输出整体错位，且同一模型在支持 dn2nz 的平台上行为不同。
+  trigger_surface: dn2nz intrinsic 缺失平台（hasDn2Nz=false）+Pad+Conv2D 可融合 pattern；A2/A3、CANN 9.2.0
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 编译器
+    rewritten:
+    - detail

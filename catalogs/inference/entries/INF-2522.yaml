@@ -1,0 +1,54 @@
+id: INF-2522
+legacy_ids: []
+slug: add_rms_norm_empty_tensor_early_return_unwritten
+aliases: []
+title: AddRmsNorm 空 tensor 早退致输出全未写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: AddRmsNorm 空张量早退
+  behavior: 空张量路径未按 outputMask/参数组合判断：V2 在 y2Out 空时第一段直接早退，AddRmsNorm 在 gamma 空且 x1 非空时放行后 numCol=0，均返回成功但不写任何输出。
+effect:
+  objects:
+  - 数值结果
+  detail: 两段 rc=0/0；#8729 中 outputMask 路由的有效输出（xOut/scale2Out 或 y1Out/xOut）全部保持金丝雀；#8743 中 yOut/xOut/rstdOut 32768 个元素全部未写，调用方读到未初始化内存。
+  visibility: 静默错误
+mitigation:
+  detect: 对空 tensor 组合用例给所有非空输出预填 canary，调用后按输出 mask 逐块读回；同时校验空张量组合是否按文档返回 161002。
+  fix: 待定（#8729/#8743 均 open，未见修复 MR；期望按 outputMask 与参数组合拒绝或写满有效输出）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: 训练库同机制批次 TRN-0670；本条按推理侧 AddRmsNorm 两个接口单独收录，不重复计数。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8729
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8743
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0670
+original:
+  mechanism: 'cann/ops-nn 两个空 tensor 早退缺陷，环境均为 Atlas A2（910B3）+ CANN 9.2.0、纯 aclnn C 两段式直调。① #8729 aclnnAddRmsNormDynamicQuantV2：文档《aclnnAddRmsNormDynamicQuantV2.md》:233 声明 y2Out 支持空 Tensor，:403-406 要求 outputMask 路由出的有效输出必须写出；x1/x2/gamma 非空、仅 y2Out 传 [0,64] 时，第一段 op_host/op_api/aclnn_add_rms_norm_dynamic_quant_v2.cpp:378-383 的早退判据 x1->IsEmpty()||x2->IsEmpty()||gamma->IsEmpty()||y2Out->IsEmpty() 不看 :365-368 已算出的 processOut1/processOut2 路由，直接 *workspaceSize=0; return ACLNN_SUCCESS。实测 outputMask=[0,1] 时 xOut 512/512、scale2Out 8/8 canary 保持；outputMask=[1,0] 时 y1Out 512/512、xOut 512/512 保持；y1Out 传空的反向对照返回 561002，显示判据只覆盖 y2Out。② #8743 aclnnAddRmsNorm：x1=x2=(8,4096) 非空、gamma=(0,) 时两段均返回 0，但 yOut/xOut/rstdOut 全部 32768 个 canary 未写；根因是 gamma 形状校验 CheckGammaAndRstdShape 仅在 IsRegbase() 分支调用（aclnn_add_rms_norm.cpp:189-191），非 regbase 平台无「x1 非空时 gamma numel>0」校验，gamma numel=0 进入 tiling 后 numCol=0，kernel 无写出任务。全空 x1=x2=(0,4096) 的空进空出形态两段 0/0 正常，说明缺陷只在空/非空混合组合。'
+  source: https://gitcode.com/cann/ops-nn/issues/8729 ｜https://gitcode.com/cann/ops-nn/issues/8743
+  behavior: 推理侧调用 AddRmsNorm/AddRmsNormDynamicQuantV2 时，只要某个输出占位或 gamma 传成空 tensor（框架在可选输出、动态 batch 或空序列场景里很自然会这样传），接口返回成功，但本应写出的 y/x/rstd/scale 等输出一个字节都没写；调用方按成功处理，读到的是分配器残留或预填 canary，表现为随机数值或全 0/NaN，且没有任何错误码。
+  trigger_surface: aclnnAddRmsNormDynamicQuantV2 + y2Out 空 tensor（outputMask 路由有效输出）；aclnnAddRmsNorm + x1 非空而 gamma 为空；Atlas A2（910B3）、CANN 9.2.0、ops-nn master c090cedd/50bdfe72。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

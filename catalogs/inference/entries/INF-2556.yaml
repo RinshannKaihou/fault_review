@@ -1,0 +1,58 @@
+id: INF-2556
+legacy_ids: []
+slug: mhc_pre_sinkhorn_normout_odd_slices_never_written
+aliases: []
+title: MhcPreSinkhorn 列归一 slice 从未写出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: mhc_pre_sinkhorn m_split
+  behavior: stage2 只对偶数 slice 做 CopyOut；列归一结果留在 combFragLocal 后直接写 stage3 workspace，normOut 奇数 slice 在整个分支里没有写路径。
+effect:
+  objects:
+  - 数值结果
+  detail: needBackward=true 且 B·S 非空时 681/681 用例 normOut 奇数 slice 全未写，读回 0.0 或 1e9 量级残留（case 612/528）；偶数 slice 与 golden 一致；接口返回成功、无告警；与 dtype、B/S、迭代次数无关。
+  visibility: 静默错误
+mitigation:
+  detect: needBackward=true 跑非空 B·S，对 normOut 每个 slice 预填 canary 并检查是否被写；同时核对同目录 m_k_split 实现的奇数写出分支作为对照。
+  fix: 待定：issue 定位到 mhc_pre_sinkhorn_m_split_core.h stage2 缺奇数 slice CopyOut、tiling 固定 SetTilingKey(0)；未核实修复 PR。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-14'
+remarks: 与 INF-1699 共享「MHC 家族 kernel 输出路径缺失、返回成功但某块输出从未写」；本条是前向 MhcPreSinkhorn 的列归一 slice，INF-1699 是反向 grad_x。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7565
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7566
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1699
+pattern: PAT-INF-0206
+original:
+  mechanism: cann/ops-transformer 的 aclnnMhcPreSinkhorn（Atlas A2 910B3、CANN 9.3.0-910b-weekly.20261104）在 needBackward=true 且 B·S 非空时，910b tiling 恒走 m_split 分支。op_kernel/mhc_pre_sinkhorn_m_split_core.h 的 stage2：L467-475 CopyOut 写 slice 0（首轮行归一）；L496 DivABABrcInline 把首轮列归一结果只存入 combFragLocal，无 CopyOut；迭代循环 L518-544 写 slice 2*iter（偶数），L560-561 列归一结果仍只存 combFragLocal；L568 的 CopyOut 写的是 stage3 workspace combFragGm，不是 normOut。对照同目录 mhc_pre_sinkhorn_m_k_split_core.h L587-596 存在 needGrad_ 下的奇数 slice 写出，证明是 m_split 分支遗漏。ATK 1000 规则用例实测 681/681 needBackward=true 且非空用例的 normOut 奇数 slice 全未写（case 612 精确 0.0，case 528 为 1e9 残留），偶数 slice 与 golden 一致；唯一 PASS 的 needBackward=true 用例都是 B·S=0 空张量。dtype（fp32/bf16/fp16）、B/S/numIters 组合不影响触发。
+  source: https://gitcode.com/cann/ops-transformer/issues/7565 ｜同批 https://gitcode.com/cann/ops-transformer/issues/7566
+  behavior: 训练/推理里调用 aclnnMhcPreSinkhorn 且 needBackward=true 时，normOut 里每个 Sinkhorn 迭代的列归一结果（奇数下标 slice）永远不会被写：读回来是 0.0 或 1e9 量级的旧显存残留，偶数的行归一 slice 却完全正确。接口返回成功、无任何告警；下游 MhcPreSinkhornBackward 拿这些 slice 当归一化分母，训练链路直接损坏。触发与 dtype、B/S、迭代次数无关，只要非空 batch 就 681/681 命中。
+  trigger_surface: aclnnMhcPreSinkhorn；needBackward=true 且 B·S 非空；910b（arch22）走 m_split tiling；CANN 9.3.0 周包。
+  discovery: 2026-11-14 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-14'
+  updates:
+  - date: '2026-11-15'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-15
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

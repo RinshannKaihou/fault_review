@@ -1,0 +1,61 @@
+id: INF-2464
+legacy_ids: []
+slug: sglang_quantized_moe_router_weight_silently_skipped
+aliases: []
+title: SGLang 量化 router 权重静默不加载或无 scale 加载
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: sglang
+    component: MoE router 构建量化配置传递
+  behavior: Qwen3-MoE 仅 ModelSlim 格式给 router 传 quant_config，Mixtral/Llama4 全格式不传；量化存储的 router 张量无参数可落被静默跳过，或 FP8 codes 无 scale 拷入。
+effect:
+  objects:
+  - 模型权重
+  - 输出内容
+  detail: router 权重未加载时对全部专家输出 NaN，服务器无错启动，回答全是反斜杠/换行垃圾：GSM8K 0.0%（修复构建后 85.7%）；FP8 codes 无 scale 时 router logits 偏差 scale 倍（相对误差 301~7394），路由错误，服务静默错答。
+  visibility: 静默错误
+mitigation:
+  detect: 加载后取 layer 0 router 真实张量过 SGLang load 步骤，比对 checkpoint 反量化参考（x@(codes*scale)^T）；或跑 GSM8K 探针；加载日志中 weight_scale not found 警告（Mixtral/Llama4 有、Qwen3-MoE 无）。
+  fix: 'PR #49187（#49185 报告者提交，compressed-tensors 路径传 quant_config）open；#49198 指出还需按 checkpoint 实际存储决定是否建量化 router（10/238 个 checkpoint config 会量化但 router 存 BF16，盲目建反而 NaN），完整修复未合'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/49185
+  kind: github_issue
+- url: https://github.com/sgl-project/sglang/issues/49198
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'sglang #49185 + #49198（2026-11-08，v0.5.23/main 4003bf1）：三个 MoE 模型族构建 router 时不带量化配置——Qwen3MoeSparseMoeBlock（qwen3_moe.py#L268-284）仅 ModelSlim 格式传 quant_config；MixtralMoE（mixtral.py#L86-93）与 Llama4 router（llama4.py#L97-103）全格式不传。后果两条路径：(1) compressed-tensors checkpoint（RedHatAI/Qwen3-30B-A3B-Instruct-2507-quantized.w4a16，38,425 下载/30 天）把 router 存为 weight_packed/weight_scale/weight_shape，非量化 router 唯一参数 weight 匹配不上，load_weights 在 qwen3_moe.py#L1246-1247 静默 continue（#L1256 的无参数告警因 continue 永不触达）——router 权重从未写入，layer 0 实测对 128 专家全 NaN（参考 9.5），同 checkpoint o_proj 相对误差 0.002 正常；H20 v0.5.23 GSM8K 0.0%（每答全无效），router 带配置构建后 85.7%，vLLM 0.33.0（带配置）85.4%。(2) FP8 checkpoint（anyisalin/Mixtral-8x7B-FP8-D 等 8 个公开 checkpoint）把 FP8 codes 当数字拷进 weight（±448 范围）、weight_scale 被跳过——router 输出偏差 scale 倍（Mixtral 相对误差 1431、Llama4 1196、Qwen3 301，sh0ck0r/L3-Arcania 达 7394），token 路由到错误专家；Mixtral/Llama4 每层有一条 weight_scale not found 警告，Qwen3-MoE 完全静默。#49198 进一步指出修复须按 checkpoint 实际存储决定：238 个公开 checkpoint 中 10 个 config 会量化但 router 存 BF16（如 AngelSlim/Qwen3-30B-A3B_fp8_static），盲目建量化 router 反而 NaN（vLLM 0.33.0 在该 checkpoint 上同样读错，相对误差 1.0）。维护者 Kylinny 已认领 #49185 修复方向。与已收 vllm#66211（INF-2457，行并行 codes/scales 切分错配）同为量化权重加载错配但机制不同：本条是 router 构建时量化配置未传递导致权重跳过/无 scale。'
+  source: 'GitHub issue https://github.com/sgl-project/sglang/issues/49185 与 https://github.com/sgl-project/sglang/issues/49198 （均 open，2026-11-08；含 8/238 个公开 checkpoint 存储扫描、layer 0 逐张量相对误差实测、GSM8K 对照、修复 PR #49187）'
+  behavior: 用 SGLang v0.5.23 服务量化 MoE checkpoint：compressed-tensors 格式且 router 被量化的（如 RedHatAI Qwen3-30B w4a16）——服务器正常启动无报错，但所有 prompt 都回答反斜杠或换行符垃圾，GSM8K 0%；FP8 格式 router（如 Mixtral-8x7B-FP8-D）——服务可用但 router logits 偏差数百到数千倍，token 被路由到错误专家，输出质量静默退化，多数仅有一条参数告警甚至完全无告警。
+  trigger_surface: SGLang v0.5.23/main 4003bf1；Qwen3-MoE（compressed-tensors 与 fp8 格式）、Mixtral、Llama 4 的量化 checkpoint 中 router 被量化存储（约 8+ 公开 checkpoint）；默认启动 flags。
+  signature: compressed-tensors：加载后 router 输出全 NaN、GSM8K 0%、无告警；fp8：weight_scale not found 警告 + router 输出相对误差 10^2~10^4、o_proj 同 checkpoint 正常。
+  repro: 两 issue 附无 GPU 复现（读 config.json+safetensors index 判定 router 存储与构建决策）与服务端 GSM8K 实测表。
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 权重/检查点
+        to: 量化
+    uncertain:
+    - visibility

@@ -1,0 +1,64 @@
+id: TRN-0629
+legacy_ids: []
+slug: opsmath_cumsum_gt2p30_silent_identity
+aliases: []
+title: aclnnCumsum 元素数超 2^30 静默返回恒等
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnCumsum 块间 carry
+  behavior: aclnnCumsum（fp32、1 维、dim=0）S>2^30 时静默退化为恒等（out==x），接口返回 0/0；报告者疑因 arch35 两遍式实现 blockCount/blockFactor 为 32 位宽度，但未定位到具体行。
+effect:
+  objects:
+  - 数值结果
+  detail: fp32 1 维 dim=0、S≥2^30+1 起输出==输入（x[0]=1 构造应全 1.0，实测 out[1:]=0.0；交叉构造应 1024,1026,1030 实测 1024,2,4），A3 910_9362/CANN 9.3.0 实测，9.2.0 逐值一致
+  visibility: 静默错误
+mitigation:
+  detect: 对 S>2^30 的 cumsum 结果做首尾元素断言（前缀和末元素应≈总和）；阈值仅由 host 侧 shape 决定，可静态排查
+  fix: 待定（issue open，未见修复 MR；报告者提示 cumsum_twoway_ss.h 的 blockCount/blockFactor 32 位宽度疑点，未坐实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-06'
+remarks: 推理库 INF-2403 已收同源；训练侧重申合并条目：大规模 cumsum 用于长序列累计统计/扫描线/概率累积，下游静默拿到恒等结果继续训练
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/4574
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0271
+- kind: cross
+  target: INF-2403
+pattern: PAT-TRN-0013
+original:
+  mechanism: 'cann/ops-math issue #4574（2026-11-05 open）。aclnnCumsum（fp32、1 维、dim=0）在输入元素数 S>2^30 时结果退化为恒等（out==x）：GetWorkspaceSize 与执行均返回 0/0（ws=16777728），输出非哨兵值，说明 kernel 确实写了输出、写进去的是 x 本身。实测矩阵：S=1024/2^30-65536/2^30 全 1.0 正确；S=2^30+1 与 2^30+65536 起 out[0]=1.0、out[1:]=0.0 恒等；独立交叉构造 {1,2,4} 前缀应 1024,1026,1030，S=2^30 正确、S=2^30+65536 实测 1024,2,4。「首元素正确、后续全 0」与「块内前缀正确、块间 carry 未叠加」形状一致；报告者提示 arch35 cumsum_twoway_ss.h 两遍式实现（块内前缀+块间 carry）中 blockCount/blockFactor 为 32 位宽度（:60/:73），阈值形态符合 32 位自然截断，但未定位到具体行（报告者明示不作结论）。环境：A3 Ascend910_9362、CANN 9.3.0，aclnn 两阶段 C++ 直调不走 torch；交叉版本 9.2.0 与 9.3.0 逐值一致（非单版回归）；源码基准 ops-math master 84f3256f。附完整约 110 行自包含复现程序。判据只依赖 shape（host 侧 GetShapeSize 可得）。训练影响：长序列累计统计/扫描线/概率分布累积等大规模 cumsum 场景结果静默错误并传播到最终结果。'
+  source: https://gitcode.com/cann/ops-math/issues/4574 （open，附完整复现程序与实测矩阵）
+  behavior: NPU 上对超过 2^30（约 10.7 亿）元素的张量做 cumsum（如长序列的累计统计、概率分布累积、扫描线计算）时，结果不报错地变成输入本身——本应全 1.0 的前缀和只剩第一个元素是 1、后面全是 0，下游拿到看似正常的张量继续算，错误传播到最终结果且无法定位；2^30 及以下完全正常，跨 CANN 9.2/9.3 一致。
+  trigger_surface: aclnnCumsum（间接 torch.cumsum NPU 路径）fp32 1 维 dim=0、元素数>2^30；A3 910_9362、CANN 9.2.0/9.3.0
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - component

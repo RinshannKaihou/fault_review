@@ -1,0 +1,55 @@
+id: INF-2539
+legacy_ids: []
+slug: hccl_aiv_reduce_push_cross_write_small_msg
+aliases: []
+title: HCCL AIV reduce 跨卡写致小数据错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: AIV 归约跨卡写
+  behavior: AIV Reduce/AllReduce 归约前用 push 语义把本 rank 数据写到对端 scratch 再本地归约；小数据量下该跨卡写通路使部分 rank 输出错误。
+effect:
+  objects:
+  - 数值结果
+  detail: 16 卡 fp32 256B 的 Reduce 与 AllReduce TwoShot 少核路径部分 rank 结果错误；改为接收方跨卡读后同一场景一次通过，补齐 32B 访存粒度错误计数不变。
+  visibility: 静默错误
+mitigation:
+  detect: 16 卡小消息（≤256B）fp32 Reduce/AllReduce 与 CPU/fp64 真值逐元素比对，分别覆盖 Reduce 多核、少核与 AllReduce TwoShot 少核路径。
+  fix: 'PR !4058（open，9.2.0 反合 master #3856，原提交 9da39c101）；master 已合入，9.2.0 基线 c0c93df8 此前不含该修复；发布未核实。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/hccl/issues/961
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/hccl/pull/4058
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'HCCL 的 AivReduceSoleMesh 与 AivAllReduceSoleMeshTwoShot 在归约前采用 push 语义：每个 rank 把自己数据写到对端 scratch，写完由对端从本地 scratch 读取归约。master PR #3856 的对照实验把根因定位到跨卡写通路本身：把跨卡写补齐到 32B 粒度后错误计数与位置完全不变，改为接收方跨卡读后同一场景一次通过。修复删除 Reduce ProcessMultiCore 的 WriteDataToAllPeers 与 ClearGM，改为核 i 跨卡读 peer i 发布区；ProcessMultiRank 由核 c 负责 peer c,c+n,c+2n… 各读到独立槽；AllReduce TwoShot SmallCoreReduceScatter 同样改 pull。新增发布区/工作区分离，CalcScratchMultiple 由 Reduce 2→3、AllReduce TwoShot 4→5。9.2.0 分支缺少该修复（基线 c0c93df8），PR !4058 做反合并新增 13 例 CPU 桩 UT。AllReduce OneShot 不在范围内（原 PR 已整体回退）。'
+  source: https://gitcode.com/cann/hccl/issues/961 ｜https://gitcode.com/cann/hccl/pull/4058
+  behavior: 多卡推理或训练执行 Reduce/AllReduce 时，小消息（十几张卡、几百字节，例如 allreduce 一个标量 loss 或很小的梯度张量）下部分 rank 的归约结果与其它 rank 不一致；没有报错也没有 NaN，后续层用的已经是错的激活或梯度，只能和单卡或 fp64 对拍才发现。
+  trigger_surface: HCCL AIV Reduce/AllReduce（SoleMesh、TwoShot 少核路径），16 卡 fp32 256B 小消息，9.2.0 商用分支；master 已含 pull 修复。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior
+    - detail

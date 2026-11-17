@@ -34,7 +34,7 @@ from pathlib import Path
 import requests
 import yaml
 
-API = "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1/chat/completions"
+API = os.environ.get("JUDGE_API_URL", "")
 BASE = ("qwen3.8-max", "kimi-k3", "doubao-seed-2.1-pro")
 PANEL = ("deepseek-v4-pro", "MiniMax-M3", "hy3", "glm-5.3")
 # kimi-k3 只接受 temperature=1；doubao 的 reasoning 预算要压低才不吃满 max_tokens。

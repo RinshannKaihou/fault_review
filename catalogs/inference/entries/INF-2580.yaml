@@ -1,0 +1,55 @@
+id: INF-2580
+legacy_ids: []
+slug: cann_gsa_metadata_random_nowrite_zero_output
+aliases: []
+title: GSAMetadata 前置算子随机不写出致全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BlockSparseAttnMetadata
+  behavior: aclnnGenericBlockSparseAttentionMetadata 随机不写出，metadata header 全缺失；主算子仍返回 SUCCESS 且不写输出，attentionOut/softmaxLse 全零
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: 24/200 例 SUCCESS 但 attentionOut/softmaxLse 全零、lse 停在预分配 0.0；随机值探针 12/41 不写，同 case 两次调用翻转；队列级复跑 18/24 转 PASS，失败子集每轮不同；910b3+CANN 9.3.0 weekly，无输入侧触发条件。
+  visibility: 不可复现
+mitigation:
+  detect: 校验 metadata header（magic/version/usedSize/configSignature）是否写出，并对同一 case 同进程重复调用两次；当前可出现一次写一次不写。
+  fix: 待定（issue open，报告者建议 metadata 写出与 stream 完成同步后再返回）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: 面 (c) 的 136 例 runfail 属 fail-loud，本条只收面 (a) 随机零输出；面 (b) 作为放大因素写在 mechanism。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7699
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnGenericBlockSparseAttention 1000 例 ATK 精度测试（cann:9.3.0-910b-weekly.20261104、Atlas A2 910b3）中 18 zero-sig + 136 runfail 溯源到前置算子：round-1 200 例中 24 例 execution success 但 attentionOut/softmaxLse 全零（lse 保持预分配 0.0 而非 -FLT_MAX），metadata header 全缺失。探针三段式：v1 全零输入时 24 例 metadata 均产出合法 header（magic 0x5341534d、version 8、usedSize 272、configSignature 与源码 FNV 公式逐例吻合）→ 排除结构/标量触发；v2a 随机值 12/41 不写（≈29%），含 round-1 全部通过的参照组；v2b case 78 第 1 次写第 2 次不写、case 89 相反。队列级复跑 24 例中 18 转 PASS、6 再失败，失败子集与 round-1 不同。面 (b)：全零 metadata 时主算子仍 SUCCESS 且不写输出；面 (c)：两配置块 AICPU 崩溃 136 例。
+  source: https://gitcode.com/cann/ops-transformer/issues/7699 （open，2026-11-16，含探针三段式与队列级复跑）
+  behavior: 调用方拿到成功返回，但整段 attention 输出为 0、lse 保持预分配的 0 而不是 -FLT_MAX；下一轮同样的输入可能又正常。失败率随调用在 12%~30% 间波动，重跑无法稳定复现同一 case，监控上表现为精度用例随机失败。
+  trigger_surface: A2 910b3 + CANN 9.3.0 weekly 20261104；aclnnGenericBlockSparseAttentionMetadata + 主算子；TND/BNSD/BSND/PA_* 全布局、各 dtype 与 mask/count 组合均出现（无输入侧触发条件）。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    rewritten:
+    - behavior
+    - detail

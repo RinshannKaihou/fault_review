@@ -1,0 +1,81 @@
+id: TRN-0671
+legacy_ids: []
+slug: aclnn_out_shape_inferred_overwrite_oob
+aliases: []
+title: aclnn 出参 shape 未校验按推导 shape 越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn InferShape 输出覆写
+  behavior: InferShape 无条件用推导 shape 覆写调用方传入的 out，不读取也不比对；A2 !IsRegbase 分支不做 shape 校验即委托，NormRopeConcat 第一段纯透传
+effect:
+  objects:
+  - 数值结果
+  detail: out 声明维偏小时算子按推导维写到声明缓冲区之外 8~16 字节，尾部 canary 被覆盖，两段均返回 0
+  visibility: 静默错误
+mitigation:
+  detect: 输出缓冲后追加 canary 区，调用后校验区外字节不变；对账输出 shape 与声明 shape
+  fix: 待定（未见修复 PR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: 五个算子同族同日（#7239/#7240/#7241/#7242/#7244），同机理：第一段不校验输出 shape → 按推导 shape 越界写
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7239
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7240
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7241
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7242
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7244
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/7250
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer（master 5adf800c，Atlas A2 910B2、CANN 9.3.0，2026-11-08 实测）同族五例：#7239 aclnnMoeTokenUnpermute——out=[4,3]（声明 12 float）按 hidden=4 写 16 float，多写 16 字节、尾部 canary 覆盖、两段 0/0；moe_token_unpermute_infershape.cpp:34-38 直接 SetDim 不读调用方 out，aclnn_moe_token_unpermute.cpp:90-94 A2 !IsRegbase 无 shape 校验即委托。#7240 MoeTokenUnpermuteWithEp——out=[3,1] 写 6 float 多写 12 字节（infershape:55-59 同款）。#7241 MoeTokenUnpermuteGrad、#7242 MoeTokenPermuteGrad——out hidden 维写小后按推导维多写 8 字节（moe_token_permute_grad_infershape.cpp:36-40 不比对 out）。#7244 aclnnNormRopeConcat——第一段接口纯透传 33 个参数无任何判空/dtype/shape 校验（aclnn_norm_rope_concat.cpp:52-57），queryOutput 末维 5（应 6）声明 1600 字节被写 1920 字节，区外 canary 覆盖。关联 #6294/#6132/#3562/#5235 为同接口其它缺口。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7239 ｜ https://gitcode.com/cann/ops-transformer/issues/7240 ｜ https://gitcode.com/cann/ops-transformer/issues/7241 ｜ https://gitcode.com/cann/ops-transformer/issues/7242 ｜ https://gitcode.com/cann/ops-transformer/issues/7244
+  behavior: 把 MoE unpermute/permute 梯度类算子或 NormRopeConcat 的 out 张量最后一维（hidden 维）故意写小（如 [4,3] 代替 [4,4]、末维 5 代替 6）：两段 API 都返回 0 成功，算子按推导出的正确维数把结果写到调用方只声明了更小元素的缓冲区之外——紧邻的 device 内存（含尾部 canary）被静默覆盖，相邻张量/数据被破坏；无越界报错、无错误码，A2 910B2 CANN 9.3.0 每次必现。
+  trigger_surface: Atlas A2 910B2、CANN 9.3.0、ops-transformer master 5adf800c；aclnnMoeTokenUnpermute / UnpermuteWithEp / UnpermuteGrad / PermuteGrad / NormRopeConcat 出参 hidden 维与推导不一致
+  discovery: 2026-11-09 每日扫描
+  notes:
+  - 2026-11-10 回访：补证据：#7250 aclnnMoeComputeExpertTokens 输出长度校验漏 == numOfExpert（CheckParamsShape 只判 out 1D，:112；numOfExpert :103 已取到、:124 校验过值域但未比对 GetDim(0)）——out 元素数小于 numOfExpert 时首段返回 0，kernel 按 numOfExpert 写满 int32 数组越界写；Ascend950PR 实测 memcheck illegal write size 恒等于 numExperts×4−outBytes（FP-005 12B/EX-004 8B），与 MoeTokenUnpermute 族同机理（第一段不校验输出 shape→按推导量越界写）。
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - evidence
+  - date: '2026-11-10'
+    fields:
+    - original.notes
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - pattern

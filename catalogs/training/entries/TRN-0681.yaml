@@ -1,0 +1,56 @@
+id: TRN-0681
+legacy_ids: []
+slug: mindspore_addcdiv_mixed_dtype_grad
+aliases: []
+title: mindspore addcdiv 混合类型输出与梯度 dtype 错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: mindspore
+    component: AddcdivExt 类型推导
+  behavior: InferType 固定返回第一个输入的类型而非 PTA result_type 提升；Bprop 广播归约后缺少把梯度 cast 回对应输入 dtype 的处理
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: fp16/fp32/fp16 输入 PTA 应返回 fp32，MS 返回 fp16；混合类型下 float32 梯度返回给 float16 输入、零维 float32 输入收到 float16 梯度
+  visibility: 静默错误
+mitigation:
+  detect: 混合 dtype 输入 (fp16,fp32,fp16) 的前向 dtype 与各输入梯度 dtype 对拍 PTA
+  fix: 修复 PR https://atomgit.com/mindspore/mindspore/merge_requests/93380（open，未发布）：新增公共 ResultType 推导 + Bprop 归约后 Cast 回输入 dtype
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: op-plugin test_addcdiv_high_type_cast 对拍发现；普通 fp32 场景通过、广播与零维混合场景均错
+evidence:
+- url: https://atomgit.com/mindspore/mindspore/merge_requests/93380
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'mindspore #93380（open；Ascend 910B3、CANN 9.0.0、torch 2.13.0+cpu、torch_npu 2.13.0）：mint.addcdiv 混合输入类型（fp16/fp32/fp16）下 PTA（op-plugin 经 at::native::result_type）返回 float32，MS 修复前返回 float16——AddcdivExt 的 InferType 固定返回第一个输入类型。反向对拍补充发现：MS 会将 float32 梯度返回给 float16 输入；零维 float32 输入也可能收到 float16 梯度；普通 fp32 通过，普通形状/广播/零维三组混合类型场景梯度 dtype 均不一致。根因：Bprop 的 BinopGradCommon 只负责广播归约不做 dtype 恢复，AutoCastAndReduce 不替普通算子修正每个输入梯度。修复（open）：ops_utils/result_type.h 新增公共 ResultType 按 PTA 优先级提升；AddcdivExt InferType 调用之；Bprop 归约后 Cast 回相应输入 dtype（类型相同直接返回原节点）。'
+  source: https://atomgit.com/mindspore/mindspore/merge_requests/93380
+  behavior: mindspore 上对 mint.addcdiv 传混合 dtype 输入（如 x/y=fp16、z=fp32）：前向输出 dtype 与 PyTorch NPU 对拍不一致（fp16 vs 应为 fp32）；反向各输入收到的梯度 dtype 也和输入本身不一致——fp16 输入拿到 fp32 梯度、零维 fp32 输入拿到 fp16 梯度，普通同 dtype 场景不受影响；训练全程无报错，跨框架迁移或梯度精度检查时才暴露。
+  trigger_surface: mindspore（Ascend 910B3、CANN 9.0.0 验证）；mint.addcdiv / ops.addcdiv 混合 dtype 输入（fp16+fp32 组合、广播、零维 Tensor）
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 梯度
+        to: 数值结果

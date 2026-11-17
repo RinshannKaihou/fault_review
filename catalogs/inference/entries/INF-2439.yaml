@@ -1,0 +1,55 @@
+id: INF-2439
+legacy_ids: []
+slug: scatterpakvcache_pa_nz_oob
+aliases: []
+title: ScatterPaKvCache PA_NZ 缺 slot 上界过滤越界写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: cann
+    component: scatter_pa_kv_cache PA_NZ
+  behavior: arch35 PA_NZ 模板只过滤负 slot 未过滤上界，slot=numBlocks*blockSize 时直接换算成 cache 元素偏移写入，DataCopyPad 越过 cache 张量 32 字节
+effect:
+  objects:
+  - 数值结果
+  - KV状态
+  detail: 950 实测 slot=39168(=306×128) 两段返回 0/0，keyCache 尾部哨兵被改写 32 字节；slot=100000 时 507035 设备拦截；合法 slot=0 不越界；CANN 9.2.0-beta.2、master fcd915a42（2026-11-06 仍存在）
+  visibility: 静默错误
+mitigation:
+  detect: cache 张量尾部署 guard 哨兵字节检测越界写
+  fix: '待定（要求与 #6571 修复一致：kernel 侧 slot<0||slot>=numBlocks*blockSize 跳过）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: 与已收 INF-2171（#6636 PoolKeyIndexer poolTailK 越界）不同算子；本条为 KV cache 写入算子、#6571 部分修复遗漏的 PA_NZ 模板。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7210
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/6571
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-transformer aclnnScatterPaKvCache cacheMode=PA_NZ（arch35 tilingKey 500/501 两条模板 scatter_pa_kv_cache_nz_fully_load.h:98 / scatter_pa_kv_cache_nz_not_fully_load.h:176，master fcd915a424f8 2026-11-06 拉取缺陷仍在）：只过滤负 slot 未过滤上界，传入 slotMapping=numBlocks*blockSize 时两段接口返回 0，kernel 向 keyCache/valueCache 张量之外写 32 字节（一次 DataCopyPad）。已关闭单 #6571（同根因）的修复按 slot<0||slot>=numBlocks*blockSize 跳过，覆盖 A2/A3 的 5 处模板与 arch35 normal/ND 家族，PA_NZ 两条模板遗漏。自包含 C++ 复现（g++ -O2 直调两段接口）：slot=0 合法写入哨兵不变；slot=39168（=306×128）两段 0/0 且 keyCache 尾部 4096B guard 区哨兵被改写 32 字节；slot=100000 两段 0/507035 设备侧非法地址中断。资料约束说明第 8 条写明 slotMapping 取值 [0, num_blocks*block_size-1]。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7210 （同根因已关闭单：https://gitcode.com/cann/ops-transformer/issues/6571 ）
+  behavior: PD/KV cache 服务在 slotMapping 含上界值 numBlocks*blockSize 时（越界恰好一步）：接口返回成功，kernel 向 KV cache 张量之外写 32 字节，静默损坏相邻设备内存；只有大幅越界（如 100000）才被设备以 507035 拦截。被写坏的内存属于谁取决于分配布局，可能表现为其他张量数值错误或延迟崩溃。
+  trigger_surface: cacheMode=PA_NZ（tilingKey 500/501）+slotMapping 含 numBlocks*blockSize；Ascend950PR、CANN 9.2.0-beta.2
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

@@ -1,0 +1,70 @@
+id: INF-2399
+legacy_ids: []
+slug: flashinfer_pdl_routed_fp8_moe_wrong_rows
+aliases: []
+title: PDL 路由 FP8 MoE 依赖未就绪 scratch 返回错行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: trtllm-gen MoE PDL 时序
+  behavior: SM100 上 trtllm_fp8_block_scale_routed_moe 在 PDL（默认开启）下部分调用读取到尚未写完的 scratch/中间缓冲，返回部分错误行；PDL 关闭时同调用位级正确
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: SM100（GB200）PDL 默认开启、2560~8192 token 非图调用时，少量 token 行 MoE 输出错值（|diff| 至 3.5，非舍入噪声），按 8/16 行成组，比例 0.01%~3% 随内存布局浮动；无 NaN 无报错；关 PDL 或走 CUDA graph 后消失。
+  visibility: 静默错误
+mitigation:
+  detect: PDL on/off 位级对比 + workspace 0xFF 预填放大（确定性算子必须逐位一致）
+  fix: 规避：enable_pdl=False（issue 2026-11-04 新开，根因修复未见）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/8607
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0200
+original:
+  mechanism: flashinfer main c0d987da（2026-11-03）/53350021（11-04），trtllm-gen bmm batched_gemm-fdba669-16ba8ed（PyPI 0.7.2.post1 同）：GB200（SM100）上 trtllm_fp8_block_scale_routed_moe（DeepSeek 式 block FP8 预路由 top-k）PDL 开启（enable_pdl=None 对 SM90+ 默认开）时部分调用返回错误行。机制为 PDL 提前发射下个 kernel 读到尚未完成的 scratch：0xFF 预填 workspace 只是放大器（太早读返回垃圾而非碰巧正确的旧值），普通分配同样出错只是率低（随权重落位 0.01%~2%）。触发域 2560~8192 token（17~8192 同一 single-cluster routing kernel，但 1~2048 与 CUDA graph replay 未见）。单卡单流背靠背调用即可复现，无 NCCL/图/第二流。MoE 确定性，PDL off 位级全对（32000/96000 次全部 0 错）。报告者未给 kernel 内部源码定位（根因在 trtllm-gen kernel PDL 依赖时序，具体 warp 依赖未展开）。
+  source: https://github.com/flashinfer-ai/flashinfer/issues/8607
+  behavior: GB200 服务 DeepSeek 式 FP8 MoE 时，PDL 默认开启下少量 token 行的 MoE 输出错值（|diff| 至 3.5，非舍入噪声），成组出现（8/16 行），比例 0.01%~3% 随内存布局浮动；关 PDL 或开 CUDA graph 后消失。输出无 NaN 无报错，服务结果静默污染。
+  trigger_surface: flashinfer main/0.7.2.post1 + trtllm-gen bmm fdba669-16ba8ed；SM100（GB200）；enable_pdl 开启（默认）+ 2560~8192 token 非图调用。
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - 2026-11-05 回访：回访：#8607 仍 open，无状态变化
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: MoE路由
+        to: 算子/内核
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - original.notes
+  - date: '2026-11-12'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - original.notes

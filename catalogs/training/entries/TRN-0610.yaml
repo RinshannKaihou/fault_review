@@ -1,0 +1,78 @@
+id: TRN-0610
+legacy_ids: []
+slug: ds_zero12_stale_fp32_grad_unused_param
+aliases: []
+title: ZeRO-1/2 CPU offload 旧梯度重复施加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 重计算/卸载
+    stack: deepspeed
+    component: FP32 梯度分区跨步清理缺失
+  behavior: reset_cpu_buffers 只清 norm_for_param_grads 与 local_overflow，不清 FP32 分区梯度；未运行参数的旧 slice 被 optimizer 再次施加并遭本步 clip 重缩放
+effect:
+  objects:
+  - 模型权重
+  - 梯度
+  detail: 某窗口某可训参数全程无梯度时，optimizer 用上一窗口旧 slice 更新（且已被本步 clip 系数重新缩放）；该参数下一窗口运行则被边界 copy_ 覆盖而安全
+  visibility: 静默错误
+mitigation:
+  detect: 交替遮蔽某参数梯度（conditionally unused）对照 zero-grad 语义的参数更新
+  fix: '待定（issue 2026-11-03 open，无修复 PR；正文讨论须在 optimizer 消费后清零，与 #8949 累积窗口互补）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-04'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/8991
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/9018
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0595
+pattern: PAT-TRN-0064
+original:
+  mechanism: 'DeepSpeed #8991（2026-11-03 open）。ZeRO stage 1/2 + CPU optimizer offload + FP32 master 下，FP32 分区梯度在 step() 后不清零。reset_cpu_buffers() 只清 norm_for_param_grads 与 local_overflow；下一窗口边界仅当参数运行时经 async_inplace_copy_grad_to_fp32_buffer_from_gpu 的 dest_tensor.copy_() 替换其 slice。ignore_unused_parameters 默认 True：缺失参数不进 norm、step 继续，optimizer 对整个 single_partition_of_fp32_groups[i].grad 张量步进——旧 slice 被再次施加，且梯度裁剪已乘整张量，旧 slice 还被本步 clip 系数重缩放。复现步骤（issue 给出）：每参有梯度的 step → 后续某步该参数在窗口内所有 backward 缺席 → 对比零梯度 optimizer 的参数更新，DeepSpeed 施加上一窗口 slice。与 TRN-0595（ds !8981，ZeRO-3 未用参数梯度分区跨步驻留、旧梯度重复施加）同一『未用参数旧梯度驻留被重复施加』机制、不同 stage（1/2 vs 3）与代码路径（CPU offload FP32 buffer vs GPU 分区），标 var。正文并注明清零必须发生在 optimizer 消费当前窗口之后（多个请求边界先于一次 update 时早清会丢累积和，#8949 面）。'
+  source: GitHub issue：https://github.com/deepspeedai/DeepSpeed/issues/8991 （open）
+  behavior: ZeRO-1/2 + CPU 优化器 offload 训练中，若某可训参数在一个更新窗口内没产生任何梯度（条件分支跳过、该步未用到的模块），下一次 optimizer.step 会把这个参数上一窗口的旧梯度再加到权重上一次（且被当前步的梯度裁剪系数重新缩放）：无报错、无 NaN，权重持续被陈旧更新污染；该参数恢复运行后自动正常，问题只在『间歇性未用参数』上间歇出现。
+  trigger_surface: DeepSpeed ZeRO-1/2 + offload_optimizer(CPU) + FP32 master + ignore_unused_parameters=True（默认）+ 参数间歇性无梯度
+  discovery: 2026-11-04 每日扫描
+  notes:
+  - '2026-11-06 回访：回访：修复载体 !9018（open 2026-11-05，sfc-gh-truwase）重构 #8949 设计：按分区组预分配 CPU 累加器并修 reset_cpu_buffers 清零 FP32 分区梯度（明确修复 #8991 stale-gradient leak）；附 overflow 检测语义说明；未合入。'
+  - 2026-11-11 回访：回访：修复载体 !9018 已 merged（2026-11-09T03:15Z）；发布未核实。
+migration:
+  method: scan
+  scanned: '2026-11-04'
+  updates:
+  - date: '2026-11-04'
+    fields:
+    - pattern
+  - date: '2026-11-06'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-11'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-04
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 优化器
+        to: 重计算/卸载
+      effect:
+        from: 梯度
+        to: 模型权重

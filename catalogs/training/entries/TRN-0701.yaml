@@ -1,0 +1,65 @@
+id: TRN-0701
+legacy_ids: []
+slug: trl_dpo_sft_loss_grad_accum_split
+aliases: []
+title: DPO SFT loss 权重随梯度累积划分变化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: trl
+    component: DPOTrainer SFT 辅助 loss 聚合
+  behavior: DPOTrainer 的 SFT 辅助 loss 对不等长 chosen 按微批聚合，同一有效 batch 换梯度累积划分产生不同梯度
+effect:
+  objects:
+  - 梯度
+  - 训练信号
+  detail: batch_size=2×accum=1 与 batch_size=1×accum=2 一步梯度不同；含 SFC/MPO 配方受影响
+  visibility: 静默错误
+mitigation:
+  detect: 固定有效 batch 改累积划分捕获梯度对比（on_pre_optimizer_step）；不等长 completion 专项
+  fix: 待定（issue open 2026-11-08，含 pinned tiny 模型六组单步 CPU 对照脚本，未见修复 PR）
+labels:
+  stage:
+  - sft
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-10'
+remarks: 与 TRN-0173/TRN-0688 同族（归一化域/累积错配），载体 DPOTrainer
+evidence:
+- url: https://github.com/huggingface/trl/issues/8176
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0173
+pattern: PAT-TRN-0014
+original:
+  mechanism: 'huggingface/trl #8176（open，2026-11-08，commit 4ae4d34a86f3）：DPOTrainer 的 SFT 贡献随梯度累积划分变化——同一有效 batch、同初始权重与种子，batch_size=2+gradient_accumulation_steps=1 与 batch_size=1+gradient_accumulation_steps=2 产生不同梯度；不等长 chosen 响应下 SFT loss 权重按微批平均所致，文档化 MPO 配方受影响。复现：六组单步 CPU 训练对照（snapshot_download pinned trl-internal-testing/tiny-Qwen2ForCausalLM-2.5、同 examples/seed/有效 batch、clip 关闭、on_pre_optimizer_step 捕获全参数梯度）。与 TRN-0173（swift DAPO 双除 G）/TRN-0688（swift label_smoothing 微批均值）同族：归一化域/累积错配。'
+  source: https://github.com/huggingface/trl/issues/8176
+  behavior: 用 DPOTrainer（含 SFT 辅助 loss / MPO 配方）训练不等长 completion 数据：保持有效 batch 不变、只改 per_device_train_batch_size 与 gradient_accumulation_steps 的划分，一步的梯度就不同——调参与复现实验对累积步数不再不变，结果悄悄漂移；无报错，需固定划分对照捕获梯度才能发现。
+  trigger_surface: trl @4ae4d34a；DPOTrainer + SFT 辅助 loss + 不等长 chosen/rejected
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 训练信号
+        to: 梯度
+    issue_unfixed:
+    - detail

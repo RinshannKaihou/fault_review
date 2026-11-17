@@ -1,0 +1,56 @@
+id: INF-2566
+legacy_ids: []
+slug: vllm_alibi_slopes_dropped_flashinfer_fp8_kv
+aliases: []
+title: vLLM ALiBi 模型在 FlashInfer+FP8 KV 下丢偏置
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: attention backend 选择
+  behavior: 后端选择不把 ALiBi 作为条件；FlashInferImpl 保存 alibi_slopes 但从不传给 kernel，模型按无位置偏置的注意力计算。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  - 输出内容
+  detail: BLOOM-560m + --kv-cache-dtype fp8（SM89）prompt NLL 0.207→3.648；强制 TRITON_ATTN 为 0.218，说明 FP8 cache 本身正常；无 warning。
+  visibility: 静默错误
+mitigation:
+  detect: 同一 ALiBi 模型分别用 FlashAttention 与 FlashInfer+FP8 KV 跑固定 prompt，比 prompt_logprobs/NLL；检查后端选择日志。
+  fix: '#66950 让 FlashInfer 对 ALiBi 直接报错（open，未发布）；把 ALiBi 纳入后端选择条件的修复未核实'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-15'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/67772
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM main 9fbe012（RTX 4070 Laptop SM89、flashinfer-python 0.7.4）的后端选择不把 ALiBi 当作约束：--kv-cache-dtype fp8 时 FlashAttention 拒绝 FP8 KV，选择器落到 FlashInfer，而 vllm/v1/attention/backends/flashinfer.py 的 FlashInferImpl 只把 alibi_slopes 存起来、从不传给 kernel，模型在无警告下按无偏置注意力运行。报告者用 bigscience/bloom-560m、max_model_len=2048、prompt_logprobs 复现：auto（FlashAttention）prompt NLL 0.207，fp8（FlashInfer）3.648；强制 --attention-backend TRITON_ATTN + fp8 为 0.218，排除 FP8 cache 本身。读码结论：SM100 上 FlashInfer 优先级最高，ALiBi 模型默认命中；SM90+FP8 时 ALiBi 迫使 FA2，直接报 FlashAttention does not support fp8 kv-cache。#66950 让 FlashInfer 对 ALiBi 抛错，把静默错误变成启动错误，但后端选择仍未排除 ALiBi。
+  source: https://github.com/vllm-project/vllm/issues/67772 （open，2026-11-15）
+  behavior: BLOOM、falcon-rw-1b 这类带 ALiBi 的模型，在 SM89 上开 --kv-cache-dtype fp8 就会被路由到 FlashInfer：服务正常启动、正常出 token，但 ALiBi 的斜率完全没生效，同一 prompt 的 NLL 从 0.207 涨到 3.648，输出明显变差。没有 warning、没有报错，只有换回 FlashAttention 或对比 prompt_logprobs 才看得出来；SM100 上因为 FlashInfer 优先，ALiBi 模型默认就会踩到。
+  trigger_surface: vLLM + ALiBi 模型（BLOOM、falcon alibi=True）+ --kv-cache-dtype fp8 且后端落到 FlashInfer；SM89 实测，SM100 默认、SM90 启动报错。
+  discovery: 2026-11-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-15'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 运行时/执行
+        to: 算子/内核
+      effect:
+        from: 输出分布
+        to: 数值结果

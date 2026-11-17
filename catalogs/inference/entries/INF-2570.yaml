@@ -1,0 +1,53 @@
+id: INF-2570
+legacy_ids: []
+slug: cann_nsa_compress_attention_infer_first_call_corrupt
+aliases: []
+title: NsaCompressAttentionInfer 进程内首调局部错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: NsaCompressAttentionInfer
+  behavior: 多 token（S>1）且 numHeads 较大时，每个进程第一次调用返回局部错误输出，错误元素只取精确 0.0 与 128.0，同进程第二次起恢复正常，根因未定位。
+effect:
+  objects:
+  - 数值结果
+  detail: 首调 0.03%~0.35% 元素恒为 0.0/128.0，落在 DV=128 边界；20 个新进程 14 次首调错；单 token 对照组 20/20 正确；2/20 伴随 507015 且整行 0。
+  visibility: 静默错误
+mitigation:
+  detect: 常量 1.0 输入（解析解 attentionOut 恒 1）跑新进程首调，统计不等于 1 的元素；必须每次新进程，第二次调用会掩盖。
+  fix: 待定（issue open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7678
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnNsaCompressAttentionInfer（Atlas A3 ascend910_93、CANN 9.3.0、驱动 26.1.1、master e8992187）：多 token（S>1）+ 大 numHeads 下每个进程第一次调用返回局部错误输出，错误元素只取精确 0.0 与 128.0，占比 0.03%~0.35%，位置落在 DV=128 的整数倍边界、成组出现在 kv-head 组边界与 NQ 轴尾部。探针用常量 1.0 输入，解析解要求 attentionOut 逐元素恒 1.0；单 token 对照 20/20 正确，多 token 首调 14/20 错、6/20 对，同进程第二次起恢复。输出缓冲预填 0xDEAD 与 0xC0FF 两轮，坏元素都不等于填充值，仍为 0x0000/0x4300，排除读回残留。20 次新进程中有 2 次伴随 aclrtSynchronizeStream 返回 507015，此时整行 T 全 0。
+  source: https://gitcode.com/cann/ops-transformer/issues/7678 （open，2026-11-16，含 repro.cpp 与 20 次新进程统计）
+  behavior: 服务冷启动后的第一个多 token 请求会返回局部 0 或 128 的 attention 输出，占比虽小但恰好落在 head/值维边界，之后同一进程的请求正常。无报错，只有在常量输入的解析解下才能发现。
+  trigger_surface: Atlas A3 910_93 + CANN 9.3.0 + 驱动 26.1.1；aclnnNsaCompressAttentionInfer；S>1、NQ=512、NKV=4、D=DV=128、page=64、selBlockSize=64、cmpBlockSize=32。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence

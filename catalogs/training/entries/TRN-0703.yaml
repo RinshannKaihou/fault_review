@@ -1,0 +1,64 @@
+id: TRN-0703
+legacy_ids: []
+slug: torchtitan_hc_sinkhorn_eps_placement
+aliases: []
+title: HcSplitSinkhorn eps 位置偏离 DeepSeek 参考
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: torchtitan
+    component: dsv4 MHC Sinkhorn 归一化
+  behavior: 首行归一化用 E/(E.sum(-1,keepdim)+eps)，DeepSeek 参考实现为 E/E.sum(-1,keepdim)+eps（E=exp(logits-row_max)），其余 19 对行/列归一化一致
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  - 训练轨迹
+  detail: 前向在 FP64 下也不同；ordinary 与合成下溢 stress 输入下 Sinkhorn 权重和梯度均与参考有差
+  visibility: 静默错误
+mitigation:
+  detect: 与 DeepSeek 参考 kernel（HF 固定 revision）FP64 对拍前向与梯度；下溢 stress 输入专项
+  fix: 修复 PR https://github.com/pytorch/torchtitan/pull/5999 已 merged（2026-11-10T08:05Z，search 快照）；发布未核实
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/5975
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'pytorch/torchtitan #5975（open，2026-11-09）：torchtitan/models/deepseek_v4/mhc.py:62-69（c62c6a7）HcSplitSinkhorn.forward 首行归一化用 E/(E.sum(-1,keepdim=True)+eps)，而 DeepSeek V4/V4.1 公开参考 kernel（deepseek-ai/DeepSeek-V4-Flash 与 V4.1-Flash HF 权重库 inference/kernel.py 固定 revision，源码注释 comb.softmax(-1)+eps 并如此实现）为 E/E.sum(-1,keepdim=True)+eps；后续列归一化与其余 19 对行/列归一化一致。E=exp(logits-row_max)。FP64 下前向即不同：ordinary 输入与合成下溢 stress 输入（[[0,-120,-120,-120]]×4）两组的 Sinkhorn 权重及 autograd 梯度均与参考有差（issue 内 CPU 复现脚本）。影响 dsv4 训练与 DeepSeek 参考实现的数值等价性：自身可收敛，但与参考模型/官方权重不可比。'
+  source: https://github.com/pytorch/torchtitan/issues/5975
+  behavior: 在 torchtitan 训练 DeepSeek-V4 系（MHC Sinkhorn 混合权重）：模型前向与 DeepSeek 官方参考 kernel 在任意精度（含 FP64）下都有系统差——普通与极端下溢输入的 Sinkhorn 权重和梯度都与参考不同，无报错；与参考实现/官方权重对拍时数值对不齐、行为迁移与蒸馏基准不可比，单看自身 loss 无法发现。
+  trigger_surface: torchtitan dsv4 HcSplitSinkhorn（mhc.py c62c6a7）；eps 加法位置与参考不一致
+  discovery: 2026-11-10 每日扫描
+  notes:
+  - 2026-11-11 回访：回访：修复 !5999 merged。
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - mitigation.fix
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

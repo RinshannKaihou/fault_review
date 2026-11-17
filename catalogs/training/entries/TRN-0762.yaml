@@ -1,0 +1,64 @@
+id: TRN-0762
+legacy_ids: []
+slug: deepspeed_tiled_fused_logits_loss_head_grad_scaling
+aliases: []
+title: TiledFusedLogitsLoss 忽略外部 loss 缩放致头梯度偏大
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 损失计算
+    stack: deepspeed
+    component: TiledFusedLogitsLoss
+  behavior: 前向用 sum 归约，反向对 LM-head 梯度按 tile 求和但未乘外部归一化系数，head 梯度被放大有效 token 数倍。
+effect:
+  objects:
+  - 梯度
+  detail: output_reduction=sum 后除以有效 token 数 11：loss 误差 0、hidden grad 误差 1e-17，但 head.weight.grad 范数比 11.0，20/20 元素不符；CPU FP64 可复现。
+  visibility: 静默错误
+mitigation:
+  detect: 对 loss 归一化/加权后的 head.weight.grad 与单卡参考梯度逐元素对拍。
+  fix: 修复 PR https://github.com/deepspeedai/DeepSpeed/pull/9096（open，未合入）：把外部 loss 缩放一并作用到 LM-head 梯度；2026-11-17 回访新增
+labels:
+  stage:
+  - pretrain
+  - sft
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/9087
+  kind: github_issue
+- url: https://github.com/deepspeedai/DeepSpeed/pull/9096
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'deepspeedai/DeepSpeed #9087（2026-11-15，open，master 7caa7a2267bc5 / 0.20.1 source，Python 3.12.13 / PyTorch 2.13.0+cu130，CPU FP64，无编译算子）。TiledFusedLogitsLoss 在返回的 loss 被外部归一化/加权时，只把缩放用于 hidden-state 梯度，LM-head 梯度仍按未缩放的分块 sum 累加。最小复现：Linear(4,5,bias=False) double、x=[2,7,4]、labels 含 -100，TiledFusedLogitsLoss.apply(ce_sum, head, x, y, None, 3, params, ''sum'') / n（n=11 个有效 token）：loss error 0.0、hidden grad error 1.04e-17，但 head.weight.grad 范数比 11.0，20/20 元素不匹配。issue 指出 output_reduction=''sum'' + 有效 token 归一化是文档用法；根因在 backward 未接收/应用外部缩放（正文根因段被截断，未见修复 PR）。'
+  source: https://github.com/deepspeedai/DeepSpeed/issues/9087
+  behavior: 用 TiledFusedLogitsLoss 做分块 LM-head 损失、并对返回 loss 做有效 token 归一化或加权时，loss 数值和 hidden 梯度都对，唯独 lm_head 权重梯度被放大有效 token 数倍（示例 11×，20/20 元素不符）。训练不报错、loss 曲线正常，但 head 更新步长系统性偏大；单卡 CPU FP64 即可复现，只有逐参数对拍参考梯度才能发现。
+  trigger_surface: DeepSpeed TiledFusedLogitsLoss，output_reduction='sum' + 外部归一化/加权；CPU FP64 复现。
+  discovery: 2026-11-16 每日扫描
+  notes:
+  - '2026-11-17 回访：issue #9087 仍 open；同日出现修复 PR #9096（Fix external loss scaling in TiledFusedLogitsLoss），状态 open 未合入，机制判定不变。'
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - evidence
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix
+    - original.notes

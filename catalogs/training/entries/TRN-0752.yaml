@@ -1,0 +1,58 @@
+id: TRN-0752
+legacy_ids: []
+slug: torch_npu_put_negative_index_zero_grad
+aliases: []
+title: torch_npu put_ 负索引静默不写致 take 梯度全零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: aclnnInplacePut 负索引回绕
+  behavior: aclnnInplacePut 不回绕负索引：遇到负索引既不写也不报错返回成功；torch.take 的导数正是 zeros_like(self).put_(index, grad, accumulate=True)
+effect:
+  objects:
+  - 梯度
+  detail: put_ 负索引后 NPU 存储全 0（CPU 为 [1,0,0,0,1,0,0,0,1]），take 负索引反向梯度恒 0、无告警；同一 issue 的编译路径则报 507035
+  visibility: 静默错误
+mitigation:
+  detect: 对负索引张量做 put_/take 后与 CPU 或 eager 结果比对梯度；检查是否有非零梯度落在预期位置
+  fix: 已有修复 PR/MR：https://gitcode.com/Ascend/pytorch/merge_requests/49519（发布状态待核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: issue 明确是两个独立根因（torch-npu 编译路径重写 + op-plugin eager put_），本条按训练侧静默梯度面收录，编译路径的 507035 作为同一 issue 的 loud 面记录。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6059
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49519
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/pytorch issue #6059 定位到两个独立根因。① torch-npu 编译路径：torch_npu/_inductor/triton_experimental/lowering.py 的 _index_select_rewrite 为了让 gather 走 CANN register 算子，把 aten.index / aten._unsafe_index 重写成原生 aten.index_select，但把原始索引张量直接交过去——aten.index 允许负索引并按 ATen 语义回绕，aten.index_select 不允许，于是负索引下发 GatherV3 越界，设备抛 vector core exception 507035，只在下一次 stream 同步时浮出（日志可见 fault kernel_name=GatherV3_...）。torch.take 走上游分解 flattened[index]，正好命中该重写，所以 sample_inputs_take 的负索引样本必现。② op-plugin eager 路径：aten 的 put_ 按展平 self 索引、接受 [-numel, numel-1]，而 aclnnInplacePut 不回绕，遇到负索引什么都不写也不报错直接返回成功：put_(accumulate=True) CPU 得 [1,0,0,0,1,0,0,0,1]、NPU 得全 0，accumulate=False 同样全 0，正索引正常。torch.take 的导数是 zeros_like(self).put_(index, grad, accumulate=True)，因此 NPU 上 take 的负索引梯度恒为 0，CPU 为非零，全程无异常无告警。归因实验：纯 master 0/5 通过；只修根因一 3/5 通过（bool/int32/int64），float16/float32 仍因梯度比对失败；只修根因二 0/5；两者都修 5/5。环境 torch-npu master 3a98c281fa8342feeb99a6cd0fc43a78dc00cb61、torch 2.16.0.dev20261107+cpu、triton-ascend 3.6.0.post2、CANN 9.2.0-beta.2、Ascend 910B4 单卡。修复 MR !49519（open）只修根因一：索引交给 index_select 前做 where(idx<0, idx+size, idx)，动态 shape 拿不到静态回绕值时回落 aten.index，并加受理门（回绕会独立成 kernel 且静态 numel<65536 时辞退重写）。'
+  source: https://gitcode.com/Ascend/pytorch/issues/6059 ｜修复 https://gitcode.com/Ascend/pytorch/merge_requests/49519
+  behavior: 训练代码里用负索引做 gather/take（例如按 -1 取最后一个 token、或自定义 attention 里用负索引选位置）时，NPU eager 上前向数值是对的、反向梯度却整块为 0：参数拿不到任何更新，loss 却照常下降（因为前向正确），只有梯度检查或与 CPU 对拍才会暴露；同一份代码改用 torch.compile 则在第一次前向就报 507035（vector core exception，日志里显示 GatherV3 越界），看起来像编译后端不稳定。
+  trigger_surface: torch_npu eager 的 put_/take/scatter 类负索引路径（op-plugin aclnnInplacePut）；或 torch.compile + TORCHINDUCTOR_NPU_BACKEND=triton_experimental 下 aten.index/_unsafe_index/take 的负索引；Ascend 910B4、CANN 9.2.0-beta.2、triton-ascend 3.6.0.post2。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix

@@ -1,0 +1,54 @@
+id: INF-2408
+legacy_ids: []
+slug: foreach_copy_overlap_aliasing_nondeterministic
+aliases: []
+title: ForeachCopy 重叠视图静默算错且逐次不定
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ForeachCopy 别名重叠处理
+  behavior: host 层无重叠校验，kernel 升序分块拷贝无重叠处理，前向重叠时第 i+1 块源数据已被第 i 块写入覆盖
+effect:
+  objects:
+  - 数值结果
+  detail: x/out 同存储前向重叠时 19/20 次与 memmove 参考不一致（差异 5-10 元素、位置波动）；torch._foreach_copy_ NPU 5/5 静默算错，CPU 同构造显式抛错
+  visibility: 不可复现
+mitigation:
+  detect: 调用侧预检输入/输出 device 地址区间重叠；对照 torch CPU 会显式 RuntimeError 拒绝
+  fix: 待定（issue open；报告者给出方案 A host 重叠检测返 161002 / 方案 B memmove 语义降序搬运）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8261
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: CANN ops-nn aclnnForeachCopy（A2 910B3，CANN 9.2.0，master 46ff6fdb）。x 与 out 指向同一块 device 内存的重叠区间（out 起址=x 起址+5 元素）时两段返回 0 但输出偏离 memmove 参考语义且逐次不同：真机 20 次中 19 次不一致，差异元素 5-10 个波动，差异位置聚类于 8 元素（32B）搬运块边界与前向重叠的交叠窗口。根因：(1) CheckParams（aclnn_foreach_copy.cpp:128-151）只校验空指针/dtype/rank/format，未对 x[i]/out[i] device 地址区间做重叠检测，文档 385 行亦无别名约束；(2) kernel ForeachCopyND::SingleTensorProcess 按 CopyIn→ComputeAndCopyOut 升序逐块搬运（BUFFER_NUM=1），前向重叠时第 i+1 块源区间已被第 i 块写入覆盖；块间 MTE3→MTE2 事件同步不保证 GM 写对后续 GM 读的可见性，污染窗口逐次不同（非确定性）。框架层影响：torch._foreach_copy_ NPU 实现直接路由本接口——CPU 同构造直接抛 RuntimeError（explicitly 拒绝重叠输入），NPU 910B3 上 5/5 次静默算错（corrupt=5 rejected=0），torch 2.14.0+cpu/torch_npu 2.14.0。非重叠路径正常（no_overlap_ok=True），地址重叠是唯一触发条件。
+  source: https://gitcode.com/cann/ops-nn/issues/8261
+  behavior: 对一个 buffer 做重叠视图拷贝（如 buf[5:37] ← buf[0:32]）：CPU 版 PyTorch 会直接报错拒绝；NPU 版不报错、返回成功，但拷出来的数据是错的——而且每次跑错的元素位置还不一样（10 次里 9 次错，错 5 到 10 个元素浮动）。torch._foreach_copy_ 这类优化器批量拷贝路径用同款接口，重叠使用时结果静默污染且不可复现，极难排查。
+  trigger_surface: CANN 9.2.0；aclnnForeachCopy / torch._foreach_copy_ NPU 路由；x 与 out 指向同一存储的前向重叠区间；910B3 真机 20 次实测。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

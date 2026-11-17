@@ -1,0 +1,55 @@
+id: TRN-0742
+legacy_ids: []
+slug: orl_k3_cancellation_zero_gradient
+aliases: []
+title: OpenRLHF k3 KL 相减消去把梯度舍入为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: openrlhf
+    component: k3 KL 估计器
+  behavior: actor 与参考 logprob 接近时 k3 的 FP32 表达式 exp(-d)-1+d 发生相减消去，前向值变负或梯度舍入为 0。
+effect:
+  objects:
+  - 训练信号
+  detail: CPU 复现：k3 从 -4.47e-8 修到 +1.36e-13（FP64 参考同值）；KL 项梯度由 0 变 -2.98e-11 与 FP64 一致——近 on-policy 时 KL 正则静默失效或符号错。
+  visibility: 静默错误
+mitigation:
+  detect: k3 对近零 d 的 FP64 参考回归（近 on-policy 用例）；KL 系数非零但 KL 梯度范数恰为 0 的告警
+  fix: 修复 PR https://github.com/OpenRLHF/OpenRLHF/pull/1406（open）：改 expm1(-d)+d，|d|<1e-3 用三阶泰勒展开稳定前向值与梯度；62 CPU 测试通过
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-12'
+remarks: 与 TRN-0510（verl k3 相减消去致拒绝判定反转）同机制不同栈：k3 的 exp(-d)-1+d 在近零区 FP32 消去；TRN-0220（OpenRLHF k3 先 exp 后 clamp NaN 梯度）为同栈另一数值缺陷。
+evidence:
+- url: https://github.com/OpenRLHF/OpenRLHF/pull/1406
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0510
+pattern: PAT-TRN-0055
+original:
+  mechanism: 'OpenRLHF PR #1406（2026-11-11 open）。出厂 DAPO recipe 以 k3 为 KL loss（--algo.kl.use_loss --algo.kl.estimator k3 --algo.kl.init_coef 1e-3）；actor 与参考 logprob 接近时（近 on-policy 常态），FP32 下 exp(-d)-1+d 发生相减消去：k3 可为负或梯度被舍入为 0。修复改 expm1(-d)+d 并对 |d|<1e-3 用三阶泰勒展开稳定前向值与梯度；#1335 的预指数界与最终 clip 保留。CPU 复现：actor/ref BF16 logits [0,-2,-12.25]/[0,-2,-12.375] 选 token 0，FP32 log-prob 路径 k3 由 -4.47e-8 变 +1.36e-13（FP64 参考 +1.36e-13）；FP32 log-probs -0.1250000298023224/-0.125 下 KL 项（1e-3 缩放）梯度由 0 变 -2.98e-11，与 FP64 参考一致。新 FP64 参考回归修复前失败、修复后通过；62 CPU 测试通过。来源：https://github.com/OpenRLHF/OpenRLHF/pull/1406 。训练面：RLHF 近 on-policy 阶段 KL 正则静默失效（梯度 0）或符号错（负 k3）。'
+  source: https://github.com/OpenRLHF/OpenRLHF/pull/1406
+  behavior: 用 OpenRLHF DAPO recipe（k3 KL loss）训练到 actor 与参考模型接近时（越训越常见）：k3 估计量在 FP32 里因相减消去算出负值或把 KL 项梯度舍成 0——日志里 KL 系数照常非零，但 KL 正则实际不再约束策略（或短暂反号），无报错；复现显示修正前后 k3 值与梯度均与 FP64 参考对上才确认缺陷。
+  trigger_surface: 'OpenRLHF k3 estimator + kl.use_loss（DAPO recipe 默认启用）；d=log_ratio 近零（近 on-policy）；修复 #1406 open 未合'
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  updates:
+  - date: '2026-11-12'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

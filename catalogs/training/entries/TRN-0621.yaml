@@ -1,0 +1,71 @@
+id: TRN-0621
+legacy_ids: []
+slug: opsnn_geglu_grad_v2_fp16_intermediate_overflow
+aliases: []
+title: GeGluGradV2 FP16 中间乘积溢出致梯度失真
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: GeGluGradV2 FP16 路径
+  behavior: FP16 路径先用 half 计算 linear*dy 再转 float，中间乘积超 FP16 最大值 65504 即溢出为 ±inf，后续升精度无法恢复；而激活导数小于 1 时最终梯度本可能仍在 FP16 范围内。
+effect:
+  objects:
+  - 梯度
+  detail: linear=300、dy=300、gate=-1、approximate=1 时中间乘积 90000 超 65504，golden 返 -inf（正确约 -7468 有限）；注册 144 项中 32 项 FP16 溢出用例失败，修复后全过。
+  visibility: 数值异常
+mitigation:
+  detect: FP16 大激活（linear、dy 数百量级）+ gelu 导数 <1 的边界用例对拍 float64 autograd；kernel UT 检查非有限 FP16 输出。
+  fix: 修复 MR https://gitcode.com/cann/ops-nn/merge_requests/13576（open）：复用已有 FP32 临时缓冲、乘法前分别转换两个输入；不增 UB、不改公开接口。设备端编译/UT/精度以 CI 为准，未发布。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-05'
+remarks: 与 TRN-0392（SoftplusGrad 大负输入 inf×0=NaN）同『激活反向 FP16 中间量溢出』族：不同算子、不同溢出形态（此条先低精度乘后升精度）。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8078
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13576
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0392
+pattern: PAT-TRN-0068
+original:
+  mechanism: 'cann/ops-nn #8078（2026-11-04 open）+ 修复 !13576：GeGluGradV2 的 FP16 路径先用 half 计算 linear*dy 再把乘积转 float；中间乘积一旦超 FP16 最大 65504，后续升精度无法恢复，而激活导数小于 1 时最终梯度本可能仍在 FP16 范围内。示例 linear=300、dy=300、gate=-1、approximate=1：中间乘积 90000 溢出，float64 参考约 -7466.77、收窄 FP16 为 -7468 仍有限，当前注册 NumPy golden 返回 -inf 并报 overflow encountered in multiply。四个当前入口使用的 FP16 实现（arch35 tanh/erf、通用、310p）同一计算顺序，为源码路径核对（设备端未实测，golden 非有限已在 CPU 复现）。注册 golden 144 项中原版 112 通过/32 个 FP16 溢出用例失败；修订（先升 FP32 再乘）后 144 通过；恢复 FP16 中间乘积的 golden 变异相同 32 项重新失败。混合精度训练中较大线性分支激活+上游梯度可产生该中间范围。基线 master 14e7f2f05。'
+  source: https://gitcode.com/cann/ops-nn/issues/8078 ｜修复 PR：https://gitcode.com/cann/ops-nn/merge_requests/13576
+  behavior: 混合精度训练里 GeGLU 激活的反向梯度在 linear 分支激活值与上游梯度都较大（数百量级、乘积超 65504）时输出 ±inf 而非有限梯度（正确值约 -7468 这种量级），无报错；inf 梯度回传会污染后续梯度链或触发 loss 异常。常规小数值训练不受影响，golden 套件 144 项中 32 项此类边界失败，平时难暴露。
+  trigger_surface: CANN GeGluGradV2 FP16 路径（arch35 tanh/erf、通用 fp16、310p 四入口）+ linear*dy 中间乘积超 65504 + gelu 导数<1；混合精度大激活训练
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-07 回访：批次快照显示 !13576 已 closed（2026-11-06T09:49Z，未 merged），修复载体关闭，维持待新载体。
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  updates:
+  - date: '2026-11-05'
+    fields:
+    - pattern
+  - date: '2026-11-07'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  audit:
+    round: daily-audit-2026-11-05
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常
+    rewritten:
+    - behavior

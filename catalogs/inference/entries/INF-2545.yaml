@@ -1,0 +1,47 @@
+id: INF-2545
+legacy_ids: []
+slug: aclrt_stream_query_premature_complete
+aliases: []
+title: aclrtStreamQuery 提前返回 COMPLETE
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: cann
+    component: Stream::Query Stars 分支
+  behavior: 910B 的 Stars 分支只比较 SQ head/tail，sqHead==sqTail 即返回 COMPLETE；任务入队置位是同步的、推进 SQ 由发送线程异步完成，窗口内 SQ 为空被误判完成。
+effect:
+  objects:
+  - 数值结果
+  detail: 下发 2GB D2D 后 6µs 查询即返回 COMPLETE，紧接 SynchronizeStream 阻塞约 28.8ms，20/20 命中；按 COMPLETE 复用 buffer 会读到 DMA 未写完的数据。
+  visibility: 静默错误
+mitigation:
+  detect: aclrtMemcpyAsync 2GB D2D 后立即 aclrtStreamQuery，同时记录 aclrtSynchronizeStream 耗时；查询 COMPLETE 而同步仍阻塞 >1ms 即命中。
+  fix: 未核实修复 PR；报告给出修复建议（sqHead==sqTail 时再比较 lastTaskId_ 与已发送/已回收任务 id，或有未完成任务则返回 RT_ERROR_STREAM_NOT_COMPLETE）。规避：不要用 aclrtStreamQuery 判完成。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/runtime/issues/1375
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/runtime 的 Stream::Query（src/runtime/core/src/stream/stream.cc:2247）：910B 走 Stars 分支（:2255），只比较 SQ 的 head/tail，:2266 sqHead==sqTail 就直接返回 COMPLETE（:2286）。任务入队时 SetLastTaskId 是同步的（:2425），但发送线程把任务推进 SQ 是异步的；这段窗口里 SQ 为空，查询误判为完成。非 Stars 分支在 :2277 还会比较 latestTskId != lastTaskId_，Stars 分支漏了这一步。复现：Atlas A2 910B4、CANN 8.3.0.2.220，aclrtMemcpyAsync 下发 2GB D2D 后立即查询，6µs 返回 status=0（COMPLETE），随后 SynchronizeStream 实际阻塞 28825~28840µs，20/20 命中；9.2 master 源码中 Stars 分支逻辑相同。
+  source: https://gitcode.com/cann/runtime/issues/1375
+  behavior: 异步流水线里常见的写法是下发拷贝或计算后轮询 aclrtStreamQuery，看到 COMPLETE 就复用或释放 buffer；在 910B 上这个查询会在任务刚下发、DMA 还要跑约 29ms 时就返回完成，于是下一轮立刻覆写这块 buffer，下游读到的数据被静默改坏，没有任何错误码。
+  trigger_surface: Atlas A2 910B4、CANN 8.3.0.2.220；aclrtMemcpyAsync（2GB D2D）后立即查询，9.2 master 同逻辑；偶发、依赖发送线程时序。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

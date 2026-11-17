@@ -1,0 +1,55 @@
+id: INF-2512
+legacy_ids: []
+slug: swa_block_id_stale_kv_pool_save
+aliases: []
+title: 过期 SWA 块 ID 致 KV Pool 旧键发布
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: KV Pool tracker SWA 组 ID
+  behavior: chunked prefill 退休旧 SWA 块换 null block 时 tracker 可保留旧物理块 ID，元数据构建前不刷新组 ID——远端键缺失时按历史键发布该槽当前内容，bulk PUT 不过滤非正块 ID。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  detail: v0.30.0 SWA/RSWA + chunked prefill：KV Pool 可把已释放 SWA 槽的当前内容（可能已属其他请求）按旧键发布到远端，无报错；修复含回归测试与 7 项 CPU 诊断，完整 pytest 与 NPU 正确性验证未做。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: '主线修复 #20853（head b1a0e9b664bd3d2b17a0413949010c4e1d6eee29 的最终净变更：构建 running-request 元数据前从当前 KVCacheManager 请求表刷新可缓存 SWA/RSWA 组 ID、bulk PUT 跳过非正块 ID）；v0.30.0 backport https://github.com/vllm-project/vllm-ascend/pull/21556 与 v0.32.0rc !21557 均 open。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/pull/21556
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'vllm-ascend KV Pool（Mooncake 类远端 KV 池）与 vLLM chunked prefill 的 SWA 块生命周期交互：vLLM 在 chunked prefill 中退休旧 SWA 块并把请求表项替换为 null block，KV Pool 的 tracker 可保留旧物理块 ID；当远端该键缺失时，保存路径会把该槽位的当前内容（可能已被复用）按历史键发布出去。修复（主线 #20853 最终净变化）：构建 running-request 元数据前从当前 KVCacheManager 请求表刷新可缓存 SWA/RSWA 组 ID，bulk PUT 路径跳过非正块 ID，保留 release 分支已有的 save-queue 等待并在新 batch 为空时也排空 outstanding work、等待后检查 sender 失败。v0.30.0 backport PR !21556 基于 release 分支直接移植，未引入 main 的 tracker 重构；测试：上游回归测试（stale SWA ID 换当前 null ID）+ SWA 组选择（含不可缓存组）+ 7 项 CPU 诊断检查（原地刷新/保留他组/无 SWA/缺组/组选择/队列排空与失败检查/空批排空/null 块过滤）；完整 pytest、NPU 正确性、性能验证 pending（本地 Windows 无 torch/torch_npu）。'
+  source: 'https://github.com/vllm-project/vllm-ascend/pull/21556 （v0.30.0 backport；主线修复 #20853）'
+  behavior: 带滑动窗口注意力（SWA/RSWA）的模型在 chunked prefill 期间使用 KV Pool 保存：已退休并被替换为 null block 的旧 SWA 槽位，其物理块 ID 残留在 tracker 里，保存路径按旧键把该槽位当前内容发布到远端——若该槽已被其他请求复用，等于把别的请求的 KV 数据挂到历史键下供后续 GET，无任何报错；对外 GET 行为与配置不变。
+  trigger_surface: 'vllm-ascend v0.30.0（主线同缺陷由 #20853 修复）+ SWA/RSWA 模型 + chunked prefill + KV Pool 保存路径；远端键缺失时发布旧键。'
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: KV状态
+        to: 跨请求/跨样本数据

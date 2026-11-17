@@ -1,0 +1,54 @@
+id: INF-2528
+legacy_ids: []
+slug: flatquant_clip_3d_broadcast_shape_expansion
+aliases: []
+title: FlatQuant 裁剪三维输入广播错改序列维
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: FlatQuantOnlineWrapper 裁剪
+  behavior: _apply_clip 用展平 [B*S,H] 算出的 h_min/h_max（[B*S,1]）直接 clamp 三维 hidden_states：维度不匹配抛错，[B,S=1,H] 广播成 [B,2,H]，静默改序列维。
+effect:
+  objects:
+  - 数值结果
+  detail: CPU 必现（msmodelslim master cb83735f，PyTorch 2.9.0+cpu）：[2,1,4] 输入输出 [2,2,4]，序列维 1→2；[2,3,4] 报错。逐 token 裁剪应保持输入 shape。
+  visibility: 静默错误
+mitigation:
+  detect: 对 FlatQuantOnlineWrapper 分别喂 [2,3,4] 与 [2,1,4] 三维输入，检查输出 shape 是否与输入一致；把同一输入展平成 [-1,H] 执行后恢复形状作对照。
+  fix: 修复 PR !1173（open，未发布）：保留 FlatQuant 激活裁剪前后的 shape；!1172 同步保留导出的裁剪比例。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/msmodelslim/issues/694
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/msmodelslim/merge_requests/1173
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/msmodelslim issue #694（master cb83735f94604d308fa67784b1c7d5b8981addf0，PyTorch 2.9.0+cpu，Ubuntu 22.04/aarch64）：FlatQuantOnlineWrapper 开启裁剪后，_apply_clip 先把输入展平成 [batch*seq, hidden] 计算范围，却把二维范围 [B*S,1] 直接用于原始三维张量 hidden_states 的 clamp。复现：wrapper = FlatQuantOnlineWrapper(torch.nn.Identity()); wrapper._add_clip(torch.tensor([0.5]))；输入 [2,3,4] 时 h_min/h_max 形状 [6,1] 与 [2,3,4] 的维度 3 vs 6 不匹配，抛 RuntimeError: The size of tensor a (3) must match the size of tensor b (6) at non-singleton dimension 1；输入 [2,1,4]（B*S=2）时 [2,1] 被广播成 [1,2,1] 再与 [2,1,4] 计算，输出 shape 变成 [2,2,4]，序列维从 1 静默变成 2。期望逐 token 对最后一维裁剪、输出保持输入 shape；根因与修复方向是把 clamp 施加在展平视图上再恢复 init_shape，或把上下界恢复成可广播形状。修复 PR !1173 标题为 Preserve FlatQuant activation shapes during clipping，!1172 为 Preserve exported FlatQuant activation clipping ratios，均 open。'
+  source: https://gitcode.com/Ascend/msmodelslim/issues/694 ｜https://gitcode.com/Ascend/msmodelslim/merge_requests/1173
+  behavior: 用 msmodelslim 的 FlatQuant 在线量化 wrapper 处理三维激活（[batch, seq, hidden]）且序列长度为 1 时，裁剪后的输出 shape 会被静默扩成 [batch, 2, hidden]，序列维凭空多一倍；其他序列长度则直接抛 RuntimeError。前者不会报错，后续层按错误 shape 继续算，表现为输出长度/对齐错乱或精度异常。
+  trigger_surface: Ascend/msmodelslim FlatQuantOnlineWrapper + _add_clip；三维输入 [B,S,H]；S=1 时静默扩维，S>1 时 RuntimeError；CPU 即可复现，msmodelslim master cb83735f。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - effect

@@ -1,0 +1,53 @@
+id: TRN-0678
+legacy_ids: []
+slug: npu_graph_nondifferentiable_output_metadata
+aliases: []
+title: graph bridge 常量浮点输出被标记可微
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: graph bridge 常量输出标志
+  behavior: 自定义 Autograd Function 的 forward 未调用 mark_non_differentiable，原本不需要梯度的浮点常量输出被赋予 requires_grad=True 和 grad_fn
+effect:
+  objects:
+  - 梯度
+  detail: 常量 loss 的 backward 在 eager 应拒绝而 bridge 会执行无数据贡献的反向，甚至创建零参数梯度；与 weight decay 交互引入多余更新
+  visibility: 静默错误
+mitigation:
+  detect: 检查 (x*w, ones_like(x)) 型混合输出在 bridge 下第二输出的 requires_grad 标志
+  fix: 修复 PR https://gitcode.com/Ascend/pytorch/merge_requests/49263（open，未发布）：capture 时保留 requires_grad 标志并对分离输出 mark_non_differentiable
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: 与 TRN-0675 同 bridge 同日；3 例中 2 例失败（常量输出 flag 被改、常量 loss 未按 eager 报错）
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5952
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/merge_requests/49263
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5952（open；master ac0e1564）：make_graphed_callables 捕获反向时已为不需要梯度的输出保存 None，但其自定义 Autograd Function 的 forward 没有调用 mark_non_differentiable。因此 (x*w, torch.ones_like(x)) 中原本不需要梯度的浮点常量输出，在 graph bridge 下被赋予 requires_grad=True 和 grad_fn。对仅常量的 loss 调用 backward，eager 应拒绝，bridge 会执行无数据贡献的反向甚至创建零参数梯度；与 None 梯度保持缺失、零梯度可能触发 weight decay 的区别相关。修复 !49263（open）：保留 capture 输出的 requires_grad 标志，自定义 forward 返回分离输出时把原本不可微的输出标记 non-differentiable；不改输出存储/形状/PyTree 结构/正常梯度计算。复现为 CPU replay 替身（PyTorch 2.11.0），非真实 NPU capture。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5952 ｜ 修复 PR：https://gitcode.com/Ascend/pytorch/merge_requests/49263
+  behavior: 函数返回 (可微张量, 不需要梯度的浮点常量) 这类混合输出、经 make_graphed_callables 走 NPU graph bridge：第二个输出凭空获得 requires_grad=True 和 grad_fn；对纯常量 loss 调用 backward 时 eager 路径会直接报错拒绝，bridge 路径却照常执行一次没有数据贡献的反向、还可能创建全零参数梯度——零梯度再遇 weight decay 就带来多余参数更新；无崩溃、无告警。
+  trigger_surface: Ascend/pytorch master ac0e1564；make_graphed_callables + 混合可微/常量浮点输出；CPU replay 替身验证
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

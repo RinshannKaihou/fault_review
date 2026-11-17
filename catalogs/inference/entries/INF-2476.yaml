@@ -1,0 +1,61 @@
+id: INF-2476
+legacy_ids: []
+slug: triton_ascend_parseDiv_mask_unpredicated
+aliases: []
+title: 除法索引掩码不谓词化掩码外越界读
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: 掩码谓词化（MaskAnalysis）
+  behavior: MaskState::parseDiv 硬编码 return failure()，除法派生索引的掩码无法转访问范围，load 下发射成无谓词标量 memref.load，掩码仅剩尾部 select，掩码外 lane 仍访存。
+effect:
+  objects:
+  - 可用性/进度
+  - 跨请求/跨样本数据
+  detail: 生产 vLLM 行 gather kernel（rows=token_start+offsets//WIDTH）：掩码外 lane 仍发 GM 事务，TP 不整除时尾部越界读至多 9KB；落在未映射页即 vector core exception 507035 杀进程。
+  visibility: 报错
+mitigation:
+  detect: 待定
+  fix: 社区规避：把索引 clamp 在缓冲区内；修复建议（实现 parseDiv 或对不可证 mask 加 scf.if 守卫）未实施，https://github.com/triton-lang/triton-ascend/issues/3043。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: 触发 507035 AI Core 异常显式崩溃退出（fail-loud），无静默错误输出
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/3043
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend 3.6.0（Ascend 910_9382/A3、CANN 9.2.0；main 截至 2026-11-09 同样存在）：地址由整数除法派生的 tl.load（rows = start + offs // W）被下发射成 scf.for 内无谓词标量 memref.load，掩码只以尾部 arith.select 存活——掩码外 lane 仍发起 GM 事务。定位：third_party/ascend/lib/TritonMemoryAccess/MaskAnalysis.cpp 的 MaskState::parseDiv 是硬编码 return failure()（注释 temporarily disable parseDiv），DiscreteMaskAccessConversion 因此不做谓词化；enable_mask_fallback_conversion 被忽略/强制 False，无安全回退。#2332 的修复只覆盖仿射前缀掩码，本形态是残余。带最小复现（plain 版安全降级为有界 memref.copy，div 版崩溃）与 IR 对比。
+  source: https://github.com/triton-lang/triton-ascend/issues/3043
+  behavior: 任何用除法派生行号、靠 mask 防越界的 gather/shape kernel（如 vLLM 序列并行行 gather、padded 窗口）在 NPU 上会真实读取掩码外内存：num_tokens % tp_size != 0 时最后 rank 越界读至多 9KB；读到已映射页时无任何现象，落在未映射页则设备报 vector core exception（507035）、进程死亡。掩码形同虚设，kernel 必须自行把地址 clamp 进缓冲区。
+  trigger_surface: triton-ascend 3.6.0（main 仍在）+ 掩码谓词除法派生索引（offs//W、offs//BLOCK 等）的 tl.load；与缓冲区尾部的相对位置决定崩或静默。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 跨请求/跨样本数据
+        to: 可用性/进度
+    uncertain:
+    - detail
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

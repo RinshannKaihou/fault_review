@@ -1,0 +1,49 @@
+id: INF-2573
+legacy_ids: []
+slug: cann_ascend_quant_v3_nz_zero_byte_write
+aliases: []
+title: AscendQuantV3 NZ 合法形态零字节写出
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnnAscendQuantV3
+  behavior: NZ 通路 CalcTilingNz 只算、WriteTilingDataNz 只写 E/K/N/needCoreNum 四个标量，其余 22 个 uint32 全为 0；kernel numBlocks=40 发射成功，y 零字节写出。
+effect:
+  objects:
+  - 数值结果
+  detail: x fp32 NZ、dstType=3、y INT32、round 下两段 rc=0/0，y 的 1024B 缓冲 0x99 哨兵全保留；K=4/15/16/17/32/64 六点全零写出；ND 同数据输出 0x76543210 正确。
+  visibility: 静默错误
+mitigation:
+  detect: y 的 NZ 存储缓冲预填 0x99，执行后反向 cast 回读；仍为 0x99999999 即未写。
+  fix: 待定（issue open，未附修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-16'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8925
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnAscendQuantV3（Atlas A2/910B3、CANN 9.2.0、master f7e93280）资料 id7（:198-:203）声明 910b 支持 x fp32 NZ + dstType=3 + y INT32 NZ + roundMode=round。实测 T1 形态：真 NZ x=fp32[2,4,8]（dstShape=[2,1,1,16,8]，round-trip 反向 cast 全值一致）、dstType=3、y INT32 NZ、round——两段 rc=0/0、workspace 正常，但 y 的 1024B 缓冲（0x99 预填）0 字节被写，反向 cast 带回全 0x99999999。K 扫描 4/15/16/17/32/64 六点全部零写出（K=33 时 3072B 哨兵全保留）。plog（ASCEND_GLOBAL_LOG_LEVEL=0）显示 tilingKey=3（KEY_NZ）、AscendQuantV2_FP32_INT4_high_performance_3、numBlocks=40 发射成功，PrintTilingData 128B 中仅 E/K/N/needCoreNum 四个 int64 非零，其余 22 个 uint32 全 0。源码：op_api/aclnn_ascend_quant_v3.cpp 无 GetFormat 调用；op_host/ascend_quant_v2_tiling.cpp:598-611 CalcTilingNz 只算四个标量，:787-801 WriteTilingDataNz 只调四个 setter。ND 对照同数据输出 0x76543210×8 正确。
+  source: https://gitcode.com/cann/ops-nn/issues/8925 （open，2026-11-16，含 plog tiling dump 与 ND 对照）
+  behavior: 量化输出整块保持调用方原内存（实测 0x99999999）：下游把残留值当量化结果继续算，同一进程里前一次调用的输出会被误当成这一次的量化值。两段接口都返回成功、workspace 正常分配、无错误码也无日志，只有把输出缓冲预填不同哨兵并回读，才能看出这次调用根本没有写。
+  trigger_surface: Atlas A2 910B3 + CANN 9.2.0；aclnnAscendQuantV3；x 为 NZ fp32、dstType=3、y INT32 NZ、roundMode=round（资料 id7 声明支持）；master f7e93280。
+  discovery: 2026-11-16 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-16'
+  audit:
+    round: daily-audit-2026-11-17
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

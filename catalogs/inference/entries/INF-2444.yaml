@@ -1,0 +1,54 @@
+id: INF-2444
+legacy_ids: []
+slug: mooncake_hybrid_stale_block_hashes
+aliases: []
+title: hybrid/layerwise 截断后 block_hashes 未重建
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm
+    component: hybrid/layerwise 截断
+  behavior: '#20213 的 block_hashes 重建只加在两处连接器，hybrid 与 layerwise 同样截断 prompt 却未重建，hash 仍描述截断前 prompt，前缀缓存与 KV 复用决策失真'
+effect:
+  objects:
+  - KV状态
+  detail: hybrid（use_compress）与 layerwise（attention+Mamba hybrid）截断后本地前缀缓存查找仍用全 prompt hash，与连接器查找不一致，截断对齐查找的目标未达成；补两行 clear+update 即修；静态检查，无 runtime 复现
+  visibility: 静默错误
+mitigation:
+  detect: 截断请求后比对 block_hashes 与实际 token 数
+  fix: '待定（建议补 request.block_hashes.clear()+update_block_hashes() 两行，同 #20213）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-06'
+remarks: 静态检查发现；#20213 修复不完整覆盖。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/21166
+  kind: github_issue
+- url: https://github.com/vllm-project/vllm-ascend/issues/20213
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend main@e617b70（2026-11-06 静态检查）：#20213 修复 P 侧 prompt 截断后的 stale block_hashes 时，只在 kv_p2p/mooncake_connector.py:1925-1931 与 kv_p2p/mooncake/base_scheduler.py:212-218 两处加了 request.block_hashes.clear()+update_block_hashes()；同样的截断（_all_token_ids.pop()/num_prompt_tokens-=1/max_tokens=1/_p_side_truncated=True 四行）存在于 kv_p2p/mooncake_hybrid_connector.py:1425-1449（_truncate_request_for_prefill，need_truncate=use_compress）与 kv_p2p/mooncake_layerwise_connector.py:936-956（_truncate_request_for_hybrid_prefill，need_truncate=attn+Mamba hybrid cache），均无 hash 重建。Request.block_hashes 在构造时按全 prompt 计算，截断后所有基于 hash 的前缀缓存/KV 复用决策仍指向截断前 prompt；hybrid 连接器截断的明确目的（on_new_request 注释：先截断使本地与连接器查找用同一 prompt 长度）因此未达成。layerwise 还在 get_num_new_matched_tokens(:999-1000) 内截断，与另两处在 on_new_request 截断的查找顺序不一致。
+  source: https://github.com/vllm-project/vllm-ascend/issues/21166 （原修复：https://github.com/vllm-project/vllm-ascend/issues/20213 ）
+  behavior: hybrid 压缩或 attention+Mamba 混合模型走 mooncake PD 传输时：prompt 被 P 侧截断后，本地前缀缓存与 KV 复用决策仍按截断前完整 prompt 的 hash 判定，与连接器侧查找不一致——本应命中的前缀错失（吞吐损失）或按不匹配 hash 复用 KV，均无报错，表现为前缀命中率异常与偶发输出不一致。
+  trigger_surface: MooncakeHybridConnector（use_compress）或 MooncakeLayerwiseConnector（attention+Mamba hybrid）+P 侧 prompt 截断；main@e617b70
+  discovery: 2026-11-06 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  audit:
+    round: daily-audit-2026-11-07
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

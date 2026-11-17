@@ -1,0 +1,52 @@
+id: INF-2405
+legacy_ids: []
+slug: pool_key_indexer_concurrent_silent_unwrite
+aliases: []
+title: PoolKeyIndexer 高占用并发下输出整张量静默零写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: PoolKeyIndexer 并发输出写入
+  behavior: 多用例并发+设备 HBM 高占用（80-90%+）时输出写入阶段被整体静默跳过，双 API 返回 0；单用例独占从不触发
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: values 或 indices 输出整张量保持调用前内容（35 次零写/29 用例，并发批内 ~10%，从无部分写入）；复跑即恢复，偶发难归因
+  visibility: 静默错误
+mitigation:
+  detect: issue 附哨兵预填+扫描取证方法与独立复现脚本（3 worker×10 轮并发探测，--strict 可作回归门禁）；单用例独占运行恒不触发可作对照
+  fix: 待定（issue open 未见修复）
+labels:
+  stage: N/A
+  confidence: speculative
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7157
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'CANN ops-transformer aclnnPoolKeyIndexer（libopapi.so，CANN 9.3.0，Atlas 800I A2 910B3 多租户共享）。两轮 ATK 端到端精度测试 386 次哨兵取证（预填 indices=-987654321/values=-1.234567e30→执行→分块扫描）：多用例并发批（4 worker 为主，触发批 HBM ~48-55GB+、高峰 85-98%）下输出可能整张量保持调用前内容——values 100% 未写 26 次（2 次伴 indices 同时全零）或 indices 100% 未写 11 次，去重 35 次零写事件/29 个不同用例；单用例独占运行（51 次，含 ~30GB 占用）0 次。从无部分写入：非命中情形未写比例恒为 0% 或 100%，输出写入阶段被整体静默跳过而非数据通路部分损坏。GetWorkspaceSize 与执行均返回 0。覆盖 ps∈{1..128}（ps=1 的 1335/1397 亦中招）、rv True/False、fp16/bf16、indices 输出 0.056Gi~6.77Gi 元素——与缺陷几何无关。与同算子 int32 行基址回绕（#7156）正交：4 个 #7156 用例在并发批内同时呈现确定性 indices 溢出与偶发 values 零写，同次执行中前者确定性复现、后者随批次波动。29 用例中 28 个有复跑恢复证据。根因未定位（issue 未给出源码结论）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7157
+  behavior: 在多任务并发压测、显存占用很高（80% 以上）的服务环境下，这个选池算子偶发（约 10% 用例次）返回成功但输出一个字节都没写——读回来的是预填哨兵值或未初始化显存。同一用例单独跑或复跑就恢复正常。对任何真实调用方，这等于池选结果被静默换成了垃圾，且因为复跑可恢复，线上极难归因。
+  trigger_surface: CANN 9.3.0；aclnnPoolKeyIndexer；多用例并发（4-worker 批）+ HBM 高占用（~48-55GB+，80-90%+）；与用例几何/dtype/layout 无关；单用例独占不触发。
+  discovery: 2026-11-05 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - labels.confidence

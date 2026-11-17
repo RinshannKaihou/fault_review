@@ -1,0 +1,45 @@
+id: TRN-0777
+legacy_ids: []
+slug: megatron_gdn_fused_pre_kernels_int32_overflow
+aliases: []
+title: GDN 融合 pre 核 32 位偏移溢出污染激活与梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: megatron-lm
+    component: fused_pre_gated_delta
+  behavior: Triton kernel 用 32 位整数计算 row*row_stride 与 batch*batch_stride，张量元素数超过 2^31 后行偏移回绕，前向读错行、反向写到缓冲区外
+effect:
+  objects:
+  - 隐状态
+  - 梯度
+  detail: qkvzba 宽度 16480（TP2 后 8240）时单 rank 序列超过 130308（260617）token 即触发；新进程首步 loss 仍有限，随后梯度错误、末尾 GDN 行先出现 NaN
+  visibility: 数值异常
+mitigation:
+  detect: 对超 2^31 元素的输入比较最后若干行与单独小输入重算的结果；监控 GDN 输出尾部行的非有限值
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9470（open，未合入）：在 fused_pre_gated_delta_rule.py 与 fused_pre_kda.py 的 kernel 内把 row/batch 偏移乘积累加为 int64；新增两个 261376 行大输入测试
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-17'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9470
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'NVIDIA/Megatron-LM PR #9470（2026-11-16，open）。megatron/core/fusions/fused_pre_gated_delta_rule.py 中的 Triton kernel（--gdn-pre-gated-delta-rule-fusion 的 causal conv + SiLU + q/k/v 投影、g/beta 计算及其反向，dense 与 packed THD 两种布局）与 megatron/core/fusions/fused_pre_kda.py（Kimi Delta Attention 复用卷积核并加 decay feature/output gate/beta 尾核）都用 `ptr + row * row_stride + batch * batch_stride + channel` 形式寻址，且 row/batch 的乘积是 32 位。张量元素数超过 2^31 后行乘积回绕：前向从其它内存读行，反向还会写到缓冲区之外。以 qkvzba [seq_len, batch, in_proj_dim] 为例，16 个 key head、48 个 value head、维度 128 时 in_proj_dim=16480（TP2 或 headwise CP2 后每 rank 8240），因此每 rank 序列超过 130308（260617）token 就触发。训练症状：新进程首步 loss 仍有限（回绕读落在零填充内存上），但梯度已经错误，随后出现 NaN，非有限值最先出现在 GDN 输出的最后几行。修复把两个文件 kernel 内的 row/batch 偏移乘积改为 int64（x.to(tl.int64) * stride），channel/head 偏移仍为 32 位；低于 2^31 元素时结果不变。新增两个 261376 行测试（test_fused_pre_gated_delta_rule_large.py 需 48 GiB 空闲、实测峰值 22.5 GiB；test_fused_pre_kda_large.py 需 32 GiB、峰值 17 GiB）；未修复版两个测试均 CUDA illegal memory access，修复版通过。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/9470
+  behavior: 长上下文预训练开 GDN/KDA 融合 pre 核时，单 rank 序列长度越过约 13 万 token 的阈值后，训练不会立刻报错：第一步 loss 看起来正常，接着梯度开始不对，再往后 GDN 输出末尾几行先冒 NaN、loss 才崩。小规模复现（短序列）完全正常，只有把序列拉长到 2^31 元素以上才出现，容易被当成数值不稳定。
+  trigger_surface: Megatron-LM --gdn-pre-gated-delta-rule-fusion / Kimi Delta Attention 融合路径，单 rank 张量元素数 >2^31（qkvzba 宽 16480 时约 130308 token/rank）；Triton kernel。
+  discovery: 2026-11-17 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-17'
+  audit:
+    date: '2026-11-17'
+    method: manual_stewardship_review

@@ -1,0 +1,75 @@
+id: TRN-0631
+legacy_ids: []
+slug: opsnn_foreach_expm1_tensornum_gt256_oob_silent_skip
+aliases: []
+title: ForeachExpm1 tensorNum>256 越界写且尾部静默跳过
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ForeachExpm1 tensorNum 校验
+  behavior: 对 tensorNum>256 无校验：tiling 对定长 256 数组按 i<tensorNum 逐项写入发生 host 侧越界写；kernel 以 tensorCount 索引同一数组，index≥256 的张量不参与计算。
+effect:
+  objects:
+  - 数值结果
+  - 优化器状态
+  detail: 两段 rc 始终 0：A5 上 n≥257 kernel fault+部分张量静默错值（n=512 时 510 处）；910C 上 n=257/300 时 index≥256 的张量完全未写、sync=0 无报错——foreach 优化器长参数列表尾部更新静默丢失
+  visibility: 静默错误
+mitigation:
+  detect: 调用前断言 tensorNum≤256；对 foreach 输出列表尾部张量做哨兵 round-trip 校验
+  fix: 已有修复 PR/MR：https://gitcode.com/cann/ops-nn/pull/14059（发布状态待核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-06'
+remarks: 与 TRN-0444 同为 torch_npu/CANN foreach 族静默失效面；本条是列表长度上限缺失的越界写+静默跳过，影响 foreach 优化器长参数列表
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8254
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/14059
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0444
+- kind: cross
+  target: INF-2422
+pattern: PAT-TRN-0063
+original:
+  mechanism: 'cann/ops-nn issue #8254（2026-11-05 open）。aclnnForeachExpm1 对 tensorNum>256 没有任何校验：两段接口都返回 ACLNN_SUCCESS、workspaceSize 正常，但 tiling 对 tensorElements[i]（长度 256 的定长数组）按 i<tensorNum 逐项写入——n>256 时 host 侧结构体越界写；device kernel 以 tensorCount 索引同一 256 元素数组，index≥256 的张量不参与计算。实测（A5 Ascend950PR/CANN 9.3.0.B020 + 910C arch22 双探针）：A5 上 n=4/256 干净，n≥257 kernel fault（sync=507035，plog AI Core kernel execution failed）且部分张量输出静默错误（n=258→2 处、300→86 处、512→510 处，首错 idx=257）；910C 上 n=257/300 时 index≥256 的张量完全未被写（哨兵原样保留）且 sync=0 无任何报错。期望：同族 aclnnForeachNeg 在 arch35 上首段即拒绝 tensorNum>256。附完整探针代码与 plog。训练影响：torch._foreach_* 是 NPU 融合优化器（FusedAdam 等）对参数列表批量下发的底层路径，大模型参数分组超 256 个张量时尾部参数更新静默丢失（910C 形态）或部分错值（A5 形态）。'
+  source: https://gitcode.com/cann/ops-nn/issues/8254 （open；附双平台探针实测矩阵）
+  behavior: NPU 上用 foreach 类算子一次处理超过 256 个张量的列表（如大模型优化器参数分组批量更新）时：接口返回成功，A5 上部分张量结果静默算错或直接 kernel fault，910C 上第 257 个之后的张量完全没被计算、保持缓冲区旧值且无任何报错——优化器更新对尾部参数静默丢失，训练看起来正常实际部分参数没更新。
+  trigger_surface: aclnnForeachExpm1（torch._foreach_expm1 及 foreach 族同构 tiling 风险）、tensorNum>256；A5 950PR CANN 9.3.0.B020（kernel fault+错值）、910C CANN 9.3.0（静默未写）
+  discovery: 2026-11-06 每日扫描
+  notes:
+  - 2026-11-11 回访：回访：修复 PR !14059 揭示公共根因——ForeachCommonTiling::Init 枚举上界固定 MAX_TENSOR_CONT=256 且从不与 tensor list 实际成员数比对，成员数超 256 时超出部分不登记、tiling 仍 SUCCESS、kernel 只算前 256 个、第 257 个起输出保持调用方缓冲原值、两段接口返回成功；影响 A2/A3 全部走公共 tiling 的 foreach 算子（含 ForeachExpm1 910C 侧证据，eager+图模式）。!14059 open。
+migration:
+  method: scan
+  scanned: '2026-11-06'
+  updates:
+  - date: '2026-11-06'
+    fields:
+    - pattern
+  - date: '2026-11-11'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-17'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,55 @@
+id: INF-2475
+legacy_ids: []
+slug: npu_inductor_rsplit_multiaxis_reduction_48x
+aliases: []
+title: torch_npu 多轴归约编译结果为正确值 48 倍
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: rsplit 部分核切片改写
+  behavior: _npu_rewrite_rsplit_partial_body 只匹配扁平单层 r 循环锚点，promoted r-tree 嵌套双层零匹配被静默跳过，lo/hi 悬空，48 核各算全量再 combine 求和。
+effect:
+  objects:
+  - 数值结果
+  detail: 910B4 torch.compile 下归约轴含 dim0 且 ≥2 轴的多轴归约（如 x.sum(dim=[0,2,3])）结果为正确值的 48 倍，无异常无崩溃；换 batch/空间形状均复现，归约轴不含 dim0 则正确。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 修复方向已给未实施（rsplit 改写覆盖嵌套形态，或调整 rsplit 与 promoted-rtree 改写器时序），https://gitcode.com/Ascend/pytorch/issues/5972。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5972
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0690
+original:
+  mechanism: Ascend 910B4（48 向量核）、torch 2.16.0a0+gitff4f371 / torch_npu 2.16.0+git111ec0d、CANN 9.2.0、triton-ascend 3.6.0：torch.compile 把多轴归约拆成 partial（写 48 份 workspace）+combine 两个 kernel；生成源码里 r0_1_lo/r0_1_hi 算出但从未使用，内层两个循环仍从 0 遍历完整 64×64，每核各得完整结果。根因在 torch_npu/_inductor/triton_experimental/codegen/triton.py 的 _npu_rewrite_rsplit_partial_body：其锚点只写扁平单层 r 循环一种形态，而多轴归约 body 已被 _npu_rewrite_promoted_rtree_body 改写成嵌套双层，一个匹配都没有就静默跳过。已排除 split_reductions、NPU_RSPLIT_OUTER、combo_kernels 三条路径（分别实测仍错）。
+  source: https://gitcode.com/Ascend/pytorch/issues/5972
+  behavior: 一行普通的 x.sum(dim=[0,2,3])（NCHW 沿 batch 与空间维求和的常见写法）经 torch.compile 后结果是正确值的整整 48 倍，无异常无崩溃，数值看起来合理只是错了；触发规律是归约轴包含 dim 0 且归约轴数 ≥2，换 batch/空间形状均复现，归约轴不含 dim0 则正确。组合核用例 test_combo_kernel_split_large_reductions 的失败即由它引起。
+  trigger_surface: torch.compile（Inductor）+ 归约轴含 dim0 且 ≥2 轴的多轴归约；910B4 实测，版本见 mechanism。
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

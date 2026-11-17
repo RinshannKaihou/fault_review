@@ -1,0 +1,48 @@
+id: TRN-0693
+legacy_ids: []
+slug: msda_grad_bilinear_neighbor_oob_write
+aliases: []
+title: MultiScaleDeformableAttentionGrad 越界邻点写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: 双线性邻点梯度写入
+  behavior: kernel .h:386-391 四处双线性邻居 DataCopyPad 写入无条件执行，无越界判断（文档要求越界邻点不累加）
+effect:
+  objects:
+  - 数值结果
+  detail: gradValue 尾部固定 160 字节越界写（1024/4096/16384 三档 guard 恒定），相邻 device 内存被静默破坏
+  visibility: 静默错误
+mitigation:
+  detect: 输出缓冲后设哨兵区（预填 0xA5）round-trip 校验；memcheck 定位 illegal write of size 160
+  fix: 待定（issue open 2026-11-09，P1，memcheck 实测，未见修复 PR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8429
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn #8429（2026-11-09 open，910B2、CANN 9.2.0、Python 3.12.15，P1）：aclnnMultiScaleDeformableAttentionGrad 的 op_kernel/multi_scale_deformable_attention_grad.h:386-391 四处双线性邻点写入（(y0,x0)/(y0,x1)/(y1,x0)/(y1,x1)）无条件 DataCopyPad，无任何边界判断；文档 docs/aclnnMultiScaleDeformableAttentionGrad.md:49 明确要求「越界邻点不累加」。实测参数 value=fp32[1x1x1x8]/spatialShape=int32[1x2]/levelStartIndex=int32[1]/location=fp32[1x32x1x1x1x2]/attnWeight=fp32[1x32x1x1x1]/gradOutput=fp32[1x32x8]/gradValue=fp32[1x1x1x8]：numKeys=1 合法 k 仅 0，k(y1,x1)=1 已越界仍写 offset+8 起的 8 个 fp32（32B/次），多次累加得 160B；guard_verify 三档（1024/4096/16384B，预填 0xA5）dirty 恒 160B、first_off=0、span=[0,159]，为固定量真实越界非工具假象；memcheck 报 illegal write of size 160。训练面：DETR 系多尺度可变形注意力反向训练。'
+  source: https://gitcode.com/cann/ops-nn/issues/8429
+  behavior: 训练使用 MultiScaleDeformableAttention（DETR 系检测/分割模型）的反向：gradValue 输出缓冲区末尾之外固定 160 字节被静默写入（哨兵预填后三档 guard 均检出污染），相邻 device 张量/内存被破坏，算子返回成功、无报错；受害内存属谁不可控，表现为偶发他处数值错或迟到崩溃，需 memcheck 才能直接定位到 illegal write of size 160。
+  trigger_surface: 910B2、CANN 9.2.0；location 映射到边界采样点（y1/x1 邻点越界）的 deformable attention 反向
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

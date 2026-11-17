@@ -1,0 +1,52 @@
+id: INF-2530
+legacy_ids: []
+slug: flashinfer_jit_silu_and_mul_row_stride_ignored
+aliases: []
+title: FlashInfer JIT silu_and_mul 忽略行 stride
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: JIT silu_and_mul
+  behavior: JIT C++ activation 只校验末维为偶数和输出 shape，不校验输入/输出 stride；kernel 用 token_idx*2*d 与 token_idx*d 线性寻址，行带空洞时读写错位。
+effect:
+  objects:
+  - 数值结果
+  detail: 行 stride 视图中 last dim 仍连续故 wrapper 接受；输出按连续行起点写，读回错位并可能改到逻辑 view 外 padding；连续对照全部通过，非连续全部错。
+  visibility: 静默错误
+mitigation:
+  detect: 构造最后一维连续但行 stride 带空洞的输入/输出视图，与连续基线逐元素对拍；连续对照必须通过以排除数据巧合。
+  fix: '待定（issue #9396 open；期望正确支持输入/输出 stride 或入口显式拒绝非连续布局）。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/9396
+  kind: github_issue
+relations: []
+pattern: PAT-INF-0205
+original:
+  mechanism: 'flashinfer issue #9396（flashinfer 0.7.4、commit 77039051b0be921788dc2784ec41423b558878ec、RTX 4070 Laptop SM89、CUDA 13.3）：flashinfer.activation.silu_and_mul 的公共 JIT C++ 路径（区别于 flashinfer.triton.activation）在 Python wrapper 只校验最后一维为偶数和输出 shape，不校验输入/输出 stride；生成的 JIT kernel 使用线性寻址：输入行起点 token_idx*2*d、up 半区起点 token_idx*2*d+d、输出行起点 token_idx*d。docstring 只写输入 shape (..., 2*hidden_size) 与输出 shape，未声明必须连续。对于最后一维仍连续、但行 stride 带空洞的 view，wrapper 接受张量，kernel 却按连续行起点读写：输出写会落到 backing storage 的逻辑 view 之外 padding 区域。复现用 H=1024、rows=4 的行 stride 视图，连续对照全部正确、非连续全部错位；环境为本地 venv，作者未在干净上游环境复现。期望：支持 stride 时按 stride 寻址，否则入口拒绝非连续布局，不能静默出错或写逻辑 view 外。'
+  source: https://github.com/flashinfer-ai/flashinfer/issues/9396
+  behavior: 推理代码把 silu_and_mul 的输入或输出做成带行 stride 的视图（例如从更大的 fused buffer 里切一段、或输出写进 padded 缓冲）时，wrapper 接受调用且不报错，但 kernel 按连续行起点读写：输出值错位、部分位置没写，甚至改到逻辑 view 外的 padding；连续张量完全正常。
+  trigger_surface: flashinfer.activation.silu_and_mul（JIT C++ 路径）；输入或输出最后一维连续但行 stride 带空洞；flashinfer 0.7.4、SM89/CUDA 13.3。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  updates:
+  - date: '2026-11-14'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

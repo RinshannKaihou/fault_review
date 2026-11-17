@@ -1,0 +1,55 @@
+id: TRN-0737
+legacy_ids: []
+slug: verl_model_only_resume_stale_main_params
+aliases: []
+title: verl 只载模型 resume 首步以初始权重覆盖 ckpt
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: verl
+    component: MegatronCheckpointManager
+  behavior: load_contents 不含 optimizer 时只加载模型分片，不调 optimizer.reload_model_params，混精下优化器 FP32 main params 仍是建优化器时的初始权重。
+effect:
+  objects:
+  - 模型权重
+  detail: resume 后首个 optimizer.step() 用陈旧 main params 把刚加载的 ckpt 权重覆盖为『初始权重+一步』；无报错，actor/lr、loss、grad norm 均显示正常。
+  visibility: 静默错误
+mitigation:
+  detect: resume 后第一步前后各 dump 一步参数范数与 ckpt 对照；model-only resume 后首个 step 的权重与 ckpt 差应仅为一步更新量
+  fix: 修复 PR https://github.com/verl-project/verl/pull/8605（open）：model-only resume 后 reload optimizer params；未合入
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-12'
+remarks: Megatron-Core 在 MegatronOptimizer.reload_model_params 文档中明确要求此场景刷新 main params；属 verl 封装遗漏而非 Megatron 缺陷。
+evidence:
+- url: https://github.com/verl-project/verl/issues/8604
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'verl issue #8604（2026-11-08 open；main @ 31cfccb4，Megatron 后端、distributed optimizer、BF16 参数+FP32 main params）。resume 场景 load_contents=[model,extra]（不载优化器，如分支实验换 fresh optimizer/LR）时，MegatronCheckpointManager.load_checkpoint（megatron_checkpoint_manager.py ~L907-930）用 model.load_state_dict 加载分片，仅 should_load_optimizer 分支内触碰优化器——没有任何代码刷新优化器的 FP32 main params。混精下 Megatron 优化器持有每参数的 FP32 拷贝（建优化器时从模型即初始 HF 权重初始化），step() 更新该拷贝并写回模型：resume 后第一个 optimizer.step() 把刚加载的 ckpt 权限覆盖为『初始权重+一步』。Megatron-Core 的 MegatronOptimizer.reload_model_params 文档明确该场景必须刷新 main params，Megatron-LM 自带 checkpointing.py 在不载优化器分支调用 reload_model_params()，verl 全仓无该调用。来源：https://github.com/verl-project/verl/issues/8604 。训练面：RLHF/RL actor 的 model-only resume（换 LR/新优化器）训练静默回退到初始权重附近。'
+  source: https://github.com/verl-project/verl/issues/8604
+  behavior: 在 verl Megatron 后端做只加载模型、不加载优化器的断点续训（比如想换个学习率或全新优化器状态开分支）：恢复后训练看起来一切正常——lr、loss、grad norm 都正常——但第一个优化器 step 就把刚从 checkpoint 加载的权重悄悄覆盖回『初始权重 + 一步更新』，等于把整个 ckpt 白加载了；无报错无警告，通常要等评测/收敛异常才发现。
+  trigger_surface: verl Megatron 后端 + 混精（BF16 参数+FP32 main params）+ load_contents 不含 optimizer 的 resume；issue open 无修复
+  discovery: 2026-11-12 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-12'
+  updates:
+  - date: '2026-11-12'
+    fields:
+    - mitigation.fix
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

@@ -1,0 +1,61 @@
+id: TRN-0747
+legacy_ids: []
+slug: opsnn_add_rms_norm_eps_attr_float_truncation
+aliases: []
+title: AddRmsNorm epsilon attr 按 float 截断致 NaN
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: add_rms_norm epsilon attr
+  behavior: proto 以 Float(1e-6) 承载 epsilon，API 的 double 在执行前被截断；tiling 按 GetFloat 读出，|eps|<7e-46 下溢为 ±0.0f，-0.0f 令 epsilon<0 判假
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: eps=1e-50 与 0 位级一致：全零行 yOut 全 NaN（4096/4096）、rstdOut=inf；eps=-1e-50 两段 rc=0 放行；910B3/CANN 9.2.0
+  visibility: 数值异常
+mitigation:
+  detect: 配置里把 epsilon 设到 1e-30 以下或负值后做全零行前向；输出出现 NaN/inf 或 rc=0 但语义错误即为命中
+  fix: '待定（issue #8745 open，未见关联修复 MR；同族 #8694/#8731 在 AddRmsNormDynamicQuant（V2）上被执行段 561103 拒绝）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: C++ aclnn 直调契约外非法入参（GIGO 负向测试），正常 PyTorch/LLM 框架路径不可达
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8745
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8694
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8731
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'CANN ops-nn aclnnAddRmsNorm（norm 算子，Atlas A2 910B3、CANN 9.2.0 商用安装，ops-nn master 50bdfe72 复核仍在）的 epsilon 在函数原型里是 double，但 op def 用 Attr("epsilon").AttrType(OPTIONAL).Float(1e-6)（add_rms_norm_def.cpp:58）以 float 承载，API 传入的 double 在进入执行前被截断。tiling 侧 GetEpsilonParameter（add_rms_norm_tiling.cpp:382-392）以 GetFloat 读出 float：|eps|<7.0e-46 下溢为 ±0.0f；`epsilon < 0` 对 -0.0f 判假，因此 -1e-50 绕过校验。第一段 CheckAttr（op_api/aclnn_add_rms_norm.cpp:195-199）本身含 epsilon<0 校验，但只在 IsRegbase() 分支被调用（:208），非 regbase 平台（910B3）第一段没有 epsilon 校验——同族 #8304 在 regbase 平台（A5）对 eps=-1 返回 161002，而本条 A2 对 eps=-1.0 返回 561103，与该门控差异一致。实测（纯 aclnn C 两段式直调，x1 含全零行与非零行）：eps=1e-50 两段 rc=0/0，全零行 yOut 全 NaN（4096/4096）、rstdOut=inf，输出与 eps=0.0 逐字节一致（位级 diff=0）；eps=1e-45 时 rstdOut=2.671e+22（舍入到最小次正规数 1.4e-45，偏 15.5%）；eps=1e-46 起下溢为 0；eps=-1e-50 两段 rc=0/0 被静默接受。同族 #8694/#8731（AddRmsNormDynamicQuant / V2）为同一 double→float 截断，但在执行段被 561103 拒绝，属 fail-loud。'
+  source: https://gitcode.com/cann/ops-nn/issues/8745 ｜同族 https://gitcode.com/cann/ops-nn/issues/8694 、 https://gitcode.com/cann/ops-nn/issues/8731
+  behavior: 把 RMSNorm 的 epsilon 配成极小正值（如 1e-50）时，含全零行的输入会让对应输出整行变 NaN、rstd 变 inf，而接口两段都返回成功；配成极小负值时本该按资料约束拒绝，实际也返回成功并照常执行。默认 eps=1e-6 的训练不受影响，只有在自研 kernel 或对齐论文时压小 eps 才会踩到，症状是 loss 突然 NaN、定位时容易误判成数据或学习率问题。
+  trigger_surface: aclnnAddRmsNorm，Atlas A2/910B3（非 regbase 平台），CANN 9.2.0；epsilon 通过 API 传 double 且 |eps| 小于约 7e-46 或为小负值。
+  discovery: 2026-11-13 每日扫描
+  notes: []
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - status

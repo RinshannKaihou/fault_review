@@ -1,0 +1,55 @@
+id: INF-2510
+legacy_ids: []
+slug: add_rms_norm_quant_host_check_gaps
+aliases: []
+title: AddRmsNormQuant host 校验缺失 rc=0 静默放行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnn host 参数校验
+  behavior: 两条 host 校验缺失：zp2-only 组合应返 161002 却 rc=0 放行且 y2Out 不写；scales1 shape 与 gamma 不一致不校验，kernel 按归一化尾轴长度消费声明范围外 scales。
+effect:
+  objects:
+  - 数值结果
+  detail: A2 上双路量化两段接口与同步均返回 0 无报错：仅传 zeroPoints2 时 y2Out 保持调用前残留（32768 canary 全保留）被下游当量化结果消费；scales1 声明 [1] 实存 [64] 时 252/256 错值、max_abs_error=25，并发下摘要漂移。
+  visibility: 静默错误
+mitigation:
+  detect: rc 恒 0 无任何日志；#8644 观察到多线程下输出摘要漂移（越界读致输出依赖内存残留），可作线索，未评估为系统检测手段。
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/merge_requests/14265（reject zp2 without scales2 on non-regbase）、https://gitcode.com/cann/ops-nn/merge_requests/14266（validate scales1 shape against gamma），均 open，未发布。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-11'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8643
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8644
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/ops-nn aclnnAddRmsNormQuant host 侧（GetWorkspaceSize 第一段）参数校验缺口，同日同接口双报告：(1) #8643 zp2-only 组合——资料《约束说明》对 A3/910b/310p 明确『不支持仅传入 zeroPoints2Optional 而不传入 scales2Optional』且错误码表 161002 覆盖该组合，实测 A2（910B3、CANN 9.2.0 商用、ops-nn master c090cedd 2026-11-05）rc=0 放行；kernel 侧佐证：#2668 修复 PR #4788 将 isDual=scales2||zp2 仅应用于 950 regbase，其他版本显式保留 isDual=scales2，与 A2 上 zp2 不激活 y2 写出一致，缺口在 host 侧未按资料拒绝。(2) #8644 scales1 shape 校验缺失——参数表要求 scales1 shape 与 gamma 一致，声明 fp32[1]（buffer 实存 64 值）时第一段应 161002，实测 rc=0 放行且 kernel 按 numCol=64 消费声明范围外 scales：受控实验 252/256 错值（uniques=[1,7]，仅第 0 列用 scales[0]=0.5），随机输入 188/256 超容差 max_abs_error=25；真 1 元素 buffer 场景为越界读未定义行为（并发摘要漂移）。两报告均附纯 aclnn C 两段式直调复现脚本与真机输出。'
+  source: 'https://gitcode.com/cann/ops-nn/issues/8643 、https://gitcode.com/cann/ops-nn/issues/8644 （同日双报告；关联既往 zp2-only 三报 #2668/#5745/#7272 与 #7182/#7401 校验族）'
+  behavior: 在 Atlas A2 上调用 aclnnAddRmsNormQuant：只传 zeroPoints2 不传 scales2 时接口返回 0、y1Out/xOut 数值正确，但 y2Out 整个输出缓冲保持调用前的旧数据（预填 canary 32768/32768 未被写），拿到 rc=0 的调用方会认为双路量化成功并直接消费脏数据；scales1 的 shape 与 gamma 不一致时同样无报错，量化输出大面积错值（252/256、误差可达容差 1024 倍），换算错位直接污染下游全部 int8 数据，多次并发运行结果还不一样。
+  trigger_surface: Atlas A2（910B3）、CANN 9.2.0 商用安装、ops-nn master c090cedd；触发条件：scales2 空指针+zeroPoints2 非空（zp2-only），或 scales1 声明 shape 与 gamma 不一致；纯 aclnn C 两段式直调即触发，无 torch 依赖。
+  discovery: 2026-11-11 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-11'
+  audit:
+    round: daily-audit-2026-11-12
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - detail

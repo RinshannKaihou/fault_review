@@ -1,0 +1,58 @@
+id: TRN-0665
+legacy_ids: []
+slug: hcomm_rtsq_baseSqHead_cross_thread_race
+aliases: []
+title: hcomm RTSQ baseSqHead 跨线程无同步提前完成上报
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: cann
+    component: rtsq_a5 轮询锚点
+  behavior: baseSqHead_ 由数据面线程写、后台轮询线程读（约 10ms），非 atomic 无屏障；ARMv8 弱序允许读序重排，先读锚点再读硬件头的顺序无保证；环满等待锚点无刷新者、守卫无自愈。
+effect:
+  objects:
+  - 数值结果
+  - 可用性/进度
+  detail: step 误判接近一圈前进、newHead 超前 sqDepth-1，PollCompletion 把在途 DbSend 记录判为完成出队、向 CiTracker 上报未完成 CI（提前完成/错序）；环满叠加时空转到 sqFullTimeout 抛 InternalException。
+  visibility: 静默错误
+mitigation:
+  detect: 弱内存序设备上长时间压测校验 CI 完成顺序；TSAN/竞态检测覆盖轮询路径。
+  fix: issue 给出修复建议（atomic<u32> release/acquire 或读间 acquire fence；环满等待循环内周期性 RefreshSqHead；PollCompletion 守卫自愈），作者暂不处理（2026-11-06 回复），未见修复 PR（2026-11-07 复核 head de99de1a 未修改）。
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: 'PR #5844 检视遗留跟踪 issue（2 条 MEDIUM，两次独立复核确认未修）；数据竞争本身为 UB，完成上报错序属静默正确性风险面。'
+evidence:
+- url: https://gitcode.com/cann/hcomm/issues/1243
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'cann/hcomm #1243（2026-11-07 open）：PR #5844（fix sqHead warp，修复后台轮询约 10ms 过慢、RTSQ 消费指针多次回绕后 jetty SQ 溢出检查出错；新增 baseSqHead_ 解回绕追踪、dbSendSlots_ 深度 2x→8x）检视收尾两条 MEDIUM 遗留：① baseSqHead_ 跨线程无原子/屏障保护：数据面线程 RefreshSqHead() 写（rtsq_a5.cc:96-114，写点 :113），后台轮询线程 RtsqPollCompletionDaemon/CollRtsqPollCompletionDaemon 周期调用 PollCompletion→ReadUnwrappedSqHead 读（:117-135，读点 :119）；头文件 rtsq_a5.h:192 仍普通 u32，无 atomic/barrier/锁。ReadUnwrappedSqHead:119 注释要求「先读 baseSqHead_ 再 QuerySqHead」，但源码顺序在 ARMv8 弱内存序下允许 load-load 重排：baseSqHead_ 读到较新值而 hwHead 较旧时 step 算成接近一圈前进、newHead 最多超前 sqDepth-1，PollCompletion 把仍在途的 DbSend 记录判为已完成出队，向 CiTracker 上报未完成的 CI（提前完成/错序）。非原子并发读写本身即 C++ 数据竞争（UB）。同类成员 lastHead_/dbSendHead_/dbSendTail_/sqTailTotal_ 与 dbSendSlots_ 发布/消费同样无同步。作者回复（2026-11-06）：暂时不处理；复检 head de99de1a 确认未修改，第二次独立复核一致。② 环满等待期间 baseSqHead_ 可能无刷新者：RecordDbSendSlot 环满等待循环的 DispatchAllStreams 链路仅 AICPU 构建+本流仍有 pending SQE 时刷新锚点，每批首条 SQE 阻塞时 pendingSqeCnt==0 恒提前退出——等待循环内本流锚点无刷新者；PollCompletion 回退守卫命中直接 return 不自愈；发送侧环满等出队→出队因锚点滞后被守卫跳过→锚点无人推进→空转到 sqFullTimeout 抛 InternalException。作者回复部分成立。训练面：HCCL/hcomm 集合通信（梯度归约/SP 混合并行）完成事件错序上报属静默正确性风险；环满超时为可见挂起。修复建议（release/acquire 或 fence；等待循环内直接 RefreshSqHead；守卫自愈+用例断言）在 issue 中，未见修复 PR。'
+  source: https://gitcode.com/cann/hcomm/issues/1243
+  behavior: 950（A5）上跑 hcomm 通信库（集合通信轮询路径）长时间训练时：跨线程共享的 SQ 头部锚点在弱内存序下读序可重排，完成事件被提前/错序上报（在途记录判为已完成），上层收到未真正完成的 CI 通知——依赖完成顺序的逻辑拿到错序状态，无任何报错，偶发且难复现；另一个场景：发送环满叠加锚点滞后时发送侧空转直到 sqFullTimeout 抛 InternalException（挂起可见）。
+  trigger_surface: 'cann/hcomm rtsq_a5（Ascend 950 A5 路径）+ TASK_QUEUE 轮询（约 10ms 周期）+ PR #5844 合入后的 master；ARMv8 弱内存序；两次独立复核确认未修复（2026-11-07 head de99de1a）'
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误
+    uncertain:
+    - effect

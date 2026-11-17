@@ -1,0 +1,72 @@
+id: TRN-0676
+legacy_ids: []
+slug: aclnn_out_dtype_gate_miss_cross_type_write
+aliases: []
+title: aclnn 出参 dtype 未校验按 self 类型写回
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnn 出参 dtype 校验
+  behavior: CheckDtypeValid(self,…) 参数列表不含出参，出参 dtype 可任意传；执行按 self 的 dtype 连续写入被声明为其它类型的输出
+effect:
+  objects:
+  - 数值结果
+  detail: Unique valueOut=COMPLEX64 按 INT32 4 字节写回，调用方按 8 字节元素解释时元素边界与语义整体错位；MaxDim indices=FLOAT 把索引写成浮点值；两段均 0
+  visibility: 静默错误
+mitigation:
+  detect: 出参传白名单外 dtype（含 STRING 做负向对照）断言首段 161002
+  fix: 已有修复 PR/MR：https://gitcode.com/cann/ops-nn/merge_requests/13900（发布状态待核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-09'
+remarks: C++ aclnn 直调契约外非法入参（GIGO 负向测试），正常 PyTorch/LLM 框架路径不可达
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8386
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-math/issues/4618
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/merge_requests/13900
+  kind: gitcode_pr
+relations:
+- kind: var
+  target: TRN-0669
+original:
+  mechanism: 'ops-nn #8386（open；Atlas A2 910B2、CANN 9.3.0、master aba3533d，2026-11-08 复核仍在）：aclnnUnique 的 CheckDtypeValid(self, inverseOut) 参数列表不含 valueOut（:39-45），CheckParams 对 valueOut 仅判空；valueOut 建成 ACL_COMPLEX64 时两段均 0，底层按 self 的 INT32 4 字节连续写入，读回前 4 个 32 位字为 1,2,3,canary——调用方按 COMPLEX64 解释时元素 0 读成 (1,2)、元素 1 读成 (3,2139062143)，元素边界与语义整体错位。负向对照 valueOut=STRING 仍返回 0，证明该接口对 valueOut 的 dtype 完全没有校验；×8 卡与 CANN 9.2.0 复跑逐字相同排除环境因素。ops-math #4618（open；master 21016019/aae0dcf0）：aclnnMaxDim 的 indices 只允许 INT32/INT64，CheckDtypeValid(self, out) 不含 indices；indices=ACL_FLOAT 两段 0 并把索引以 float 写回 1.0/0.0；负向对照 indices=STRING 报 161001 证明白名单存在但漏了 FLOAT。修复：ops-nn !13900（open）Reject mismatched valueOut dtype in aclnnUnique；MaxDim 未见修复。与 TRN-0669（首段 dtype 校验缺口放行到执行段报内部错）同族，本例静默按错误语义写回。'
+  source: https://gitcode.com/cann/ops-nn/issues/8386 ｜ https://gitcode.com/cann/ops-math/issues/4618 ｜ 修复 PR（Unique）：https://gitcode.com/cann/ops-nn/merge_requests/13900
+  behavior: 把 aclnnUnique 的 valueOut 声明成白名单外的类型（如 COMPLEX64）或 aclnnMaxDim 的 indices 声明成 FLOAT：两段 API 都返回成功并正常执行——Unique 按 self 的 4 字节 INT32 写回 8 字节 COMPLEX64 输出（调用方解释出的元素完全错位），MaxDim 把整数索引写成 1.0/0.0 浮点值；无 161002、无告警，跨卡跨小版本稳定复现。
+  trigger_surface: Atlas A2 910B2、CANN 9.2.0/9.3.0；aclnnUnique valueOut 或 aclnnMaxDim indices 传白名单外 dtype
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  updates:
+  - date: '2026-11-09'
+    fields:
+    - pattern
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-17'
+    fields:
+    - status
+  - date: '2026-11-17'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    issue_unfixed:
+    - behavior

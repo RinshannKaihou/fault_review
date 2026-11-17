@@ -1,0 +1,63 @@
+id: INF-2473
+legacy_ids: []
+slug: fia_splitkv_lse_mte3_race
+aliases: []
+title: FIA split-KV LSE 搬运与 UB 复用竞态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: FIA epilogue LSE 同步
+  behavior: LSE_MODE=OUT_ONLY 且 splitkv 时，DataCopyPad 把 LSE 写 GM（MTE3）后原实现直接返回未等完成；tvUbTensor 被 non-split 任务 Brcb 覆写，MTE3 读与 V 写缺同步。
+effect:
+  objects:
+  - 数值结果
+  detail: Atlas A2 arch22 split-KV combine 且输出 LSE 的 FIA：同一 BlockEpilogue 先后跑 split-KV 与 non-split 任务时，combine 阶段 LSE 输出异常，竞争窗口相关非必现。
+  visibility: 不可复现
+mitigation:
+  detect: 待定
+  fix: 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/15558 ：LSE DataCopyPad 后补 SetFlag/WaitFlag<MTE3_V>(EVENT_ID5) 一对同步（open）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7287
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/15558
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer FusedInferAttentionScore（FIA）Atlas A2 arch22 路径，fused_block_epilogue_rescale_o.hpp 的 SubCoreCompute：LSE_MODE_==OUT_ONLY 且 splitParams.isSplitkv 时，Brcb 将 LSE 展开到 tvUbTensor（PIPE_V），DataCopyPad 把 LSE 写 GM（MTE3），随后原实现直接返回、未等待 MTE3 完成。tvUbTensor 是 BlockEpilogue 复用的 UB 成员（TV_UB_TENSOR_OFFSET），后续 non-split（isSplitkv==false）任务直接对其 Brcb 覆写；原有 SetFlag<MTE3_V>(EVENT_ID4) 仅置位、本文件内无对应 WaitFlag 消费，不能阻断复用。即 MTE3 读与 V 写之间缺同步，LSE 可能在搬运完成前被覆写。定位为当前 master 固有缺陷，不依赖特定版本；修复补一对 MTE3_V(EVENT_ID5) SetFlag/WaitFlag。
+  source: https://gitcode.com/cann/ops-transformer/issues/7287 修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/15558
+  behavior: 在 Atlas A2 上跑 FIA arch22 kernel、启用 split-KV combine 且需要输出 LSE，并且同一个 BlockEpilogue 实例在 split-KV 任务后紧跟 non-split 任务时，combine 阶段的 LSE 输出会异常（被提前覆写），是否出错取决于竞争窗口、非必现；输出值偶发错、无报错。
+  trigger_surface: aclnnFusedInferAttentionScore 系列 + arch22 + LSE_MODE=OUT_ONLY + split-KV combine + BlockEpilogue 跨 split/non-split 任务复用。
+  discovery: 2026-11-09 每日扫描
+  notes:
+  - '2026-11-10 回访：回访：issue #7287 已关闭（2026-11-10）；修复 !15558 补 MTE3_V(EVENT_ID5) 同步对，合入与随版发布状态未核实。'
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

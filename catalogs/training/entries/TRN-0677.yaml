@@ -1,0 +1,53 @@
+id: TRN-0677
+legacy_ids: []
+slug: aclnn_indexadd_out_variant_inplace_self
+aliases: []
+title: aclnnIndexAdd 出参版原地改写输入 self
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnIndexAdd 连续分支
+  behavior: self 连续时把结果原地写回输入张量再拷到 out；非连续时先 Contiguous 拷副本、改写落在副本上（连续改、非连续不改，证明是实现分支而非接口设计）
+effect:
+  objects:
+  - 数值结果
+  detail: 调用后 self 的 device 缓冲区字节被改写（资料声明 self 为输入）；out 数值正确，输入侧污染对重复使用 self 的程序静默传播
+  visibility: 静默错误
+mitigation:
+  detect: 同一块 device 缓冲区调用前后做原始字节比较（与 stride 布局无关）
+  fix: 待定（未见修复 PR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: 对照 torch.index_add（torch_npu 2.12.0）输入未被改写；判据为原始字节比较不存在逻辑序/物理序误差
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8390
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2461
+original:
+  mechanism: 'ops-nn #8390（open；Atlas A2 910B2、CANN 9.3.0、master d1efef7c，2026-11-08 实测）：aclnnIndexAdd 出参版签名 (self, dim, index, source, alpha, out, …)，资料把 self 声明为输入（aclnnIndexAdd.md:80-82）、out 声明为输出（:130-132）。self [512,8] fp32 连续时把结果原地写回 self 再拷到 out；非连续（stride 交换）时改写为 0——非连续先被 Contiguous 拷成副本，原地计算落在副本上。即『连续改、非连续不改』，证明改写来自实现分支而非接口设计。判据是同一块 device 缓冲区调用前后的原始字节比较。对照 torch.index_add（torch_npu 2.12.0）输入未被改写。推理库 INF-2461 已收同源。'
+  source: https://gitcode.com/cann/ops-nn/issues/8390
+  behavior: 用出参版 aclnnIndexAdd（传独立 out 缓冲区）处理连续张量：调用成功、out 结果正确，但 self 的 device 内存被原地改写成结果——如果程序后面还要用这份输入（再算别的、或它是另一个更大张量的视图），拿到的已是污染后的值；输入非连续时反而安全（改写发生在内部副本上）；无错误码，字节级比较才能发现。
+  trigger_surface: Atlas A2 910B2、CANN 9.3.0；aclnnIndexAdd 出参版 + self 连续
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max

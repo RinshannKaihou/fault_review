@@ -1,0 +1,81 @@
+id: TRN-0656
+legacy_ids: []
+slug: aclgraph_wait_event_current_stream_guard
+aliases: []
+title: aclgraph 跨流 wait_event 守卫按当前流误判
+kind: 故障
+status: retired
+cause:
+  objects:
+  - subsystem: 运行时/执行
+    stack: torch_npu
+    component: NPUEvent::block 排空守卫
+  behavior: hasCapturesUnderway 由设备级非空收窄为按当前流判捕获：wait_event 在 with stream 内调用时守卫 false、不排空队列，WAIT_EVENT 滞留，侧流未 join 捕获。
+effect:
+  objects:
+  - 可用性/进度
+  - 数值结果
+  detail: 侧流后续分配的图私有池过滤条件不命中、回落默认池 (0,0)，replay 出现地址异常服务挂死；同一语义两种写法（wait_event 在 with 内/外）结果不同。
+  visibility: 挂起
+mitigation:
+  detect: 多流捕获用例断言分配落在私有池（GRAPH-POOL 打印 match=1）；wait_event 写在 with 块外做对照。
+  fix: 已有修复 PR/MR：https://gitcode.com/Ascend/pytorch/pull/49378（发布状态待核实）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: aclgraph 流捕获重放地址报错挂死（fail-loud）
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/5948
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/issues/5933
+  kind: gitcode_issue
+- url: https://gitcode.com/Ascend/pytorch/pull/49378
+  kind: gitcode_pr
+- url: https://gitcode.com/Ascend/pytorch/pull/49380
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: 'Ascend/pytorch #5948（2026-11-07 open，分析载自 #5933 多流入图 replay 地址异常服务挂死）+ 前置 #5933（2026-11-06 open）：ACL Graph 多流捕获下 wait_event 写在 with torch.npu.stream(work_stream) 内或外导致不同结果。根因链：任务队列（TASK_QUEUE_ENABLE=1）下 wait_event 不立即下发而是入队 WAIT_EVENT 任务；NPUEvent::block（NPUEvent.cpp:123-147，fix 916426933e 2026-04-07 加入）在入队后若 hasCapturesUnderway 则 emptyAllNPUStream 排空、使 WAIT_EVENT 立即下发让侧流 join 捕获——侧流 join 后分配过滤器 captureIdMayInitCtx 才命中、路由进图私有池。提交 796d887076fe（!40352 mempool 对齐社区，2026-07-14）把 hasCapturesUnderway 从设备级 captures_underway 非空改为转发 is_capture_context()：按调用线程当前流（TLS）查 AclmdlRICaptureGetInfo。写法 A（wait_event 在 with 内）：当前流已切到未 join 的侧流 → NONE → 不排空 → WAIT 滞留 → 侧流未 join → 后续分配 filter 不命中 → 回落默认池 (0,0)（get_pool 打印 no filter matched）。写法 B（with 外）：当前流为捕获主流 → ACTIVE → 排空 → 正常。916426933e 时代设备级判定与当前流无关，故此前行为一致；796d887076fe 是语义收窄回归，其动机（use_mem_pool 下 release_cached_blocks 误跳过的 OOM 修复）与 NPUEvent::block 需要的设备级语义冲突。环境：torch 2.14.0+cpu、torch_npu 2.14.0+git8a5c7c7、CANN runtime 9.2.1；GRAPH-POOL error 级打印实证两写法分配路径分叉。修复建议（issue 内两方案）：门槛改设备级 num_active_captures_>0（推荐）或显式组合目标流未捕获+设备有捕获；未见修复 PR。规避：wait_event 移到 with 块外。'
+  source: https://gitcode.com/Ascend/pytorch/issues/5948 ｜现象载体：https://gitcode.com/Ascend/pytorch/issues/5933
+  behavior: NPU 上用 aclgraph 捕获含侧流 fork/join 的图（如 MoE shared-expert、并行分支）时：work_stream.wait_event(ready) 写在 with torch.npu.stream(work_stream) 块内则图 replay 出现地址异常、服务挂死（#5933 多流入图 replay 实测）；同一调用移到 with 之前则一切正常。两种写法语义等价但结果不同，取决于 wait_event 调用瞬间的「当前流」。侧流分配静默落入默认池而非图私有池，错池内存在 replay 时成为地址异常来源，失败形态不稳定。
+  trigger_surface: torch_npu aclgraph 图捕获 + 多流 fork/join + TASK_QUEUE_ENABLE=1（默认开）+ wait_event 在 with stream 块内调用；torch_npu 2.14.0（796d887076fe 之后）、CANN 9.2.1 分析实测
+  discovery: 2026-11-08 每日扫描
+  notes:
+  - 2026-11-11 回访：回访：修复 PR !49378（closed）/!49380（open）落地根因与修法——hasCapturesUnderway() 原按 TLS 当前流查 capture 状态（side 流尚未入 capture 时误答 NONE、不 drain 任务队列、下一笔分配落默认池 (0,0)），改判设备级 num_active_captures_>0；empty_cache 归还该块后 graph.replay() 写未映射地址。修复未发布。
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 可用性/进度
+      visibility:
+        from: 不可复现
+        to: 挂起
+  updates:
+  - date: '2026-11-11'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-17'
+    fields:
+    - status

@@ -1,0 +1,55 @@
+id: TRN-0664
+legacy_ids: []
+slug: verl_rollout_logprob_refit_last_round_only
+aliases: []
+title: verl rollout logprob 对拍只查末轮假 PASS
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 观测/评测
+    stack: verl
+    component: rollout_logprob_diff 脚本
+  behavior: scripts/rollout_logprob_diff.py --refit-rounds N 记录每一轮但只检查最后一轮摘要：早期 refit 轮可超阈值或产出非有限指标，最终轮健康即返回成功。
+effect:
+  objects:
+  - 测试判定
+  - 训练信号
+  detail: 第 1 轮 refit 超阈或 NaN/Inf、末轮恢复正常时脚本打印 PASSED、退出码 0；29 项 CPU 回归测试在原脚本上 27 项失败/2 项通过，其中 17 项证实假成功退出码；QAT/低精度对齐验收结果失真。
+  visibility: 静默错误
+mitigation:
+  detect: 对每轮 refit_runs 历史断言 finite kl 与 k3_kl<阈值；检查退出码与逐轮记录一致性。
+  fix: 修复 PR https://github.com/verl-project/verl/pull/8564（open 2026-11-05）：校验每个已记录轮次（finite kl/k3_kl + k3_kl<--max-k3-kl），任一轮失败即失败并报轮号与指标；29 项 CPU 回归（原始脚本 27 失败/2 过）。未合。
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-08'
+remarks: OBS 面（验收工具假 PASS），影响 TIM/QAT 对齐验收结论而非训练步本身——按观测/评测收录。
+evidence:
+- url: https://github.com/verl-project/verl/pull/8564
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'verl #8564（2026-11-05 open PR，含问题与修复）：scripts/rollout_logprob_diff.py --refit-rounds N 的假通过——早期 refit 轮可超 mismatch 阈值或产出非有限指标，但脚本只检查最后一轮摘要，最终轮健康即返回成功（脚本记录每一轮却只查最后）。影响：QAT/低精度对齐检查的验收结果失真——训推 logprob 一致性（TIM 面）验收可能因末轮恢复而放过早期轮的 KL 超阈/NaN。修复：用既有 finite-kl/k3_kl 与 k3_kl<--max-k3-kl 条件校验每个已记录轮次，任一轮失败返回失败并报一轮起始轮号与指标；所有轮仍测量、last-round JSON 摘要与 refit_runs 全史保留。回归：29 项 CPU 测试（真实脚本 main()、隔离分布式依赖），覆盖首轮/中轮/末轮失败、阈值相等、NaN/±Inf、多轮失败报告、健康/单轮；原始脚本 27 失败/2 过（17 个证实假成功退出码），修复后 29/29 过；另 30 项 CPU+2×H100 隔离 harness 过。相关 foundation #8287。不改量化与训练数值。'
+  source: https://github.com/verl-project/verl/pull/8564
+  behavior: 用 verl scripts/rollout_logprob_diff.py --refit-rounds N 做 rollout↔train logprob 对拍验收（如 QAT/低精度对齐）：当第 1 轮 refit 的 kl/k3_kl 超阈或为 NaN/Inf、而最后一轮恢复正常时，脚本打印 PASSED、退出码 0——验收通过是假的。实测 17 个用例证实假成功退出码；多轮中任何一轮的静默劣化都被末轮掩盖，TIM 回归被漏检。
+  trigger_surface: 'verl scripts/rollout_logprob_diff.py + --refit-rounds>1 + 早期轮超阈/非有限而末轮健康；CPU 回归与 H100 harness 实证；修复 #8564 open 未合'
+  discovery: 2026-11-08 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-08'
+  audit:
+    round: daily-audit-2026-11-08
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - labels.stage

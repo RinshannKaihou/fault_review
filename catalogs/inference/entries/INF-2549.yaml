@@ -1,0 +1,54 @@
+id: INF-2549
+legacy_ids: []
+slug: unique_consecutive_0d_uninitialized_inverse
+aliases: []
+title: unique_consecutive 0 维输入 inverse 未初始化
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: UniqueConsecutive 0 维
+  behavior: 无 dim 时按 self.sizes() 分配 y_inverse，0 维输入把 rank-0 张量交给 aclnnUniqueConsecutive；该算子不写 rank-0 的 inverse。
+effect:
+  objects:
+  - 数值结果
+  detail: 标量输入 return_inverse=True 时 inverse 为分配器旧内存值：脏分配器下六种 dtype 分别吐出 0 或 99344109427201，不弄脏分配器时间歇复现（干净零页看着像对的）；TestInductorOpInfoNPU 6 例首错为此。
+  visibility: 静默错误
+mitigation:
+  detect: 标量输入 + return_inverse=True，先分配并释放填充 0x5A5A5A5A5A5A 的块再调用，断言 inverse==0；同时跑 1 维视图对照。
+  fix: 'op-plugin PR #6218（open）0 维输入改走 rank-1 视图、返回前 reshape 回 0 维；报告者实测 6 例转通过，未发布。'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6080
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: op_plugin/ops/opapi/UniqueConsecutiveKernelNpuOpApi.cpp 在无 dim 时按 self.sizes() 分配 y_inverse，0 维输入即 rank-0，直接交给 aclnnUniqueConsecutive；该算子不写 rank-0 的 inverse 输出，把分配器给的旧内存原样返回。把输入换成 rank-1 视图（x.reshape(1)）后 inverse 稳定为 0，1 维及以上输入本来就正确。报告者在 Ascend 910B4、torch-npu master（3a98c281，op-plugin pin eee88cf4）、torch 2.16.0.dev20261107+cpu、triton-ascend 3.6.0.post2、CANN 9.2.0-beta.2 上复现：六种 dtype 的标量输入在脏分配器下分别吐出 0 或 99344109427201；不弄脏分配器时间歇复现（干净零页看着像对的）。TestInductorOpInfoNPU 有 6 个完整方法首错为此。修复方向为 rank-1 视图下发并把 inverse reshape 回 0 维。
+  source: https://gitcode.com/Ascend/pytorch/issues/6080
+  behavior: 对 0 维（标量）张量调用 torch.unique_consecutive(x, return_inverse=True) 时，values 与 counts 正常，inverse 却可能是任意旧内存值：同一输入连调三次得到 0/0/73014444033，下游拿这些索引去 gather 时读到错位置或越界，而干净环境下又看起来是对的。
+  trigger_surface: 0 维张量、return_inverse=True、无 dim；1 维及以上正确；910B4 + torch_npu master、CANN 9.2.0-beta.2、triton_experimental 后端。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - visibility

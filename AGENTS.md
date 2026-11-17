@@ -31,7 +31,7 @@ int8 量化档不得引入：重排分数在 12/12 池换序。纯词法使用�
 | 用症状/机制描述找相似故障模式 | `search "<描述>" --topk 5` |
 | 已知编号或 snake_case 名，取完整条目 | `lookup INF-0044` / `lookup sdc_multibit_warp_spray` |
 | 顺覆盖关系/交叉指针找关联条目 | `related TRN-0005 --depth 1` |
-| 看某个故障模式下的全部实例 | `search "<描述>" --pattern PAT-INF-0035`，或读模式文件 `catalog/<repo>/patterns/` |
+| 看某个故障模式下的全部实例 | `search "<描述>" --pattern PAT-INF-0035`，或读模式文件 `catalogs/<repo>/patterns/` |
 | 人工确认发布已审查的编目更新 | 先在隔离副本运行 `scripts/sync_catalogs.sh` 与定向校验；无读者窗口在正式库重跑、核验后才提交 `catalogs/`。脚本非原子，失败不得发布 |
 
 ## search 要点

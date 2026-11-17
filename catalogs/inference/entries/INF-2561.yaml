@@ -1,0 +1,50 @@
+id: INF-2561
+legacy_ids: []
+slug: ops_transformer_mixed_quant_sparse_flash_mla_metadata_prefill_dependent
+aliases: []
+title: 混合量化 SparseFlashMla metadata 依赖缓冲区初值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: 混合量化 MLA metadata
+  behavior: 源码侧 BalanceSchedule/GenMetadata 无条件 return true、Compute 返回 KERNEL_STATUS_OK；metadata 是否写出取决于出参缓冲区预填值的符号位。
+effect:
+  objects:
+  - 数值结果
+  detail: 合法输入、ParamsCheck 三步全过、两段接口返回 0：预填 0x00/0x5A 时写出 15 个不同值，预填 0xA5/0xFF 时 1360 个 int32 整份未写；T1=batch×maxSeqlenQ 为 1024 倍数且 cmpTopk>0、cmpMaskMode==0 触发。
+  visibility: 静默错误
+mitigation:
+  detect: metaData 预填两种互斥 canary（0xA5A5A5A5 / 0x5A5A5A5A）各跑一次，比对是否被写；扫 T1=1023/1024/1025/1040。
+  fix: '待定（issue #7581 open；master 新增 ShouldUseFd 分支但空调度仍静默成功，需按 master 复测触发组合）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-15'
+remarks: 安装包 9.3.0 的 BalanceSchedule 无 ShouldUseFd 分支，master a1e54cce 已有；具体触发组合属安装包版本，结构性“调度为空静默成功”在 master 仍在。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7581
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-transformer 的 aclnnMixedQuantSparseFlashMlaMetadata（Ascend950PR、CANN 9.3.0、master a1e54cce）在全部入参合法、ParamsCheck 三步全过时，两段接口返回 0/0，但 metaData 的 1360 个有效 int32（faMetadata[80][9]+fdMetadata[80][8]）是否被写取决于调用方缓冲区预填值：预填符号位 0（0x00/0x5A5A5A5A）写出 15 个不同值，预填符号位 1（0xA5A5A5A5/0xFFFFFFFF）时 1360 个值全等于预填值、整份未写。触发条件为 T1=batchSize×maxSeqlenQ 为 1024 的正整数倍且走 cmpTopkLength 路径（cmpTopk>0 且 cmpMaskMode==0）；1×1024、4×256、8×128、16×64、2×1024 均触发，1023/1025/1020/1040 不触发。源码侧 BalanceSchedule/GenMetadata 无条件 return true、Compute 返 KERNEL_STATUS_OK，报告者据此判断 kernel 在该路径读取了未初始化的输出缓冲区。
+  source: https://gitcode.com/cann/ops-transformer/issues/7581 （open，2026-11-15）
+  behavior: 调用混合量化 sparse MLA 的 metadata 接口时，同一份合法输入会因调用方预先往输出缓冲区填了什么而给出不同结果：缓冲区预填 0x00 或 0x5A 时 metadata 正常写出，预填 0xA5 或 0xFF 时整块 1360 个 int32 一个都没写、原样保留旧内容，而两段接口都返回成功。上层拿着上一次请求残留的调度元数据继续跑 sparse MLA，选块和读位置都可能错，但没有错误码、没有日志；只有对输出预填互斥 canary 再回读才能发现。
+  trigger_surface: aclnnMixedQuantSparseFlashMlaMetadata 两段式接口；T1=batch×maxSeqlenQ 为 1024 倍数且 cmpTopk>0、cmpMaskMode==0；Ascend950PR + CANN 9.3.0 安装包。
+  discovery: 2026-11-15 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-15'
+  audit:
+    round: daily-audit-2026-11-16
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+    - detail

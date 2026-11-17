@@ -1,0 +1,53 @@
+id: TRN-0685
+legacy_ids: []
+slug: fla_recurrent_gate_unmasked_oob_nan
+aliases: []
+title: FLA recurrent KDA/GDN2 gate 无掩码越界 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: triton
+    component: fused_recurrent gate load
+  behavior: kernel 把 head dim 铺到 BK=next_power_of_2(K)，gate g 每行以 stride K 无掩码读（q/k/dt_bias 有掩码）；K 非二次幂时每行越读 BK-K 条 lane
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 越界垃圾进入 padded state 行，0*exp(NaN) 模式把整个 head 输出变 NaN
+  visibility: 数值异常
+mitigation:
+  detect: head_dim 非二次幂（96/160/192）的 recurrent 前向与 eager 对账 NaN 检查
+  fix: 修复：flash-linear-attention/fla-core 0.6.0 mask=mask_k,other=0（0.5.2 不含）；Megatron 侧 pin https://github.com/NVIDIA/Megatron-LM/pull/8861（open，未发布）
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-09'
+remarks: 触发在 Megatron 的 MTP draft step（packed 单 token 序列走 fused_recurrent_kda/gdn2）；与 TRN-0407（ChunkKdaFwd 尾块）同为 KDA 族但缺陷点不同
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/8861
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'Megatron-LM #8861（open PR，2026-11-03）：flash-linear-attention 0.5.1 的 fused_recurrent_kda（fla/ops/kda/fused_recurrent.py:158）与 fused_recurrent_gdn2（gdn2/fused_recurrent.py:177）把 head dim K 铺到 BK=next_power_of_2(K)，对 per-channel gate g 的每个 (token,head) 行以 stride K 无掩码 load（q/k/dt_bias 有掩码）；K=96/160/192 等非二次幂时每行越读 BK-K 条 lane，最后一行越过 g 的末尾。越界垃圾落进 padded state 行，NaN 经 0*exp(NaN) 模式把该 head 整个输出变 NaN——gate 在 kernel 内形成与预计算 log decay 两种方式都成立（Megatron GDN2 即后者）。Megatron 在 packed 单 token 序列上跑这些 kernel：#8710 的 context-free MTP draft step。KDA/GDN2 接受这种 head dim（validate_kda 仅要求 K>0）。fla-core 0.6.0 对两处 load 加 mask=mask_k,other=0（kda:160/gdn2:180），0.5.2 不含。修复 PR pin flash-linear-attention==0.6.0（连带 fla-core==0.6.x）。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/8861
+  behavior: head_dim 非二次幂（96/160/192 等）的 KDA/GDN2 混合架构在 Megatron 里做 MTP draft（或任何走 fused_recurrent 的 packed 单 token 路径）：per-channel gate 的行尾越界读入垃圾，某 head 的输出整块变 NaN 并向下游传播；fla 0.5.1 确定性触发、升 0.6.0 即消；qwen3-next 等非二次幂 head dim 模型首当其冲。
+  trigger_surface: 'flash-linear-attention 0.5.1（fla-core 同代）fused_recurrent_kda/fused_recurrent_gdn2 + head dim 非二次幂；Megatron #8710 MTP draft step 单 token packed 序列'
+  discovery: 2026-11-09 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-09'
+  audit:
+    round: daily-audit-2026-11-09
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 隐状态
+        to: 数值结果

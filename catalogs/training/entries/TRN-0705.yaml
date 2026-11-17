@@ -1,0 +1,60 @@
+id: TRN-0705
+legacy_ids: []
+slug: megatron_gtp_eager_rs_ticket_buffer_share
+aliases: []
+title: GTP eager 归约票据共享输出缓冲错梯度
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: megatron-lm
+    component: GTP wgrad RS 票据缓冲
+  behavior: GTPWeightCache.release() 归还缓冲但保留 slot.buf，同 RS cache key 的两个 eager wgrad reduce-scatter 票据共用一个 pending 输出缓冲，后发 RS 覆写前者结果
+effect:
+  objects:
+  - 梯度
+  detail: eh_proj 的 depth-2 梯度被 linear_proj 的 depth-1 梯度替换，deterministic-mode 与同步 RS 参考平方范数差至 49%，loss 有限无报错
+  visibility: 静默错误
+mitigation:
+  detect: --deterministic-mode 下与同步 RS 参考逐参数对拍 main_grad；审计同 RS cache key 且无 _buf_parity 隔离的权重对
+  fix: 修复 PR https://github.com/NVIDIA/Megatron-LM/pull/9124 （open，2026-11-09）：含复现条件与机制分析；合入未核实
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-10'
+remarks: 与 TRN-0286/0682/0686 同族：overlap 异步归约输出缓冲生命周期错误
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9124
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0286
+pattern: PAT-TRN-0071
+original:
+  mechanism: 'NVIDIA/Megatron-LM #9124（open PR，2026-11-09）：GTP weight remat + 默认 GTP_CONFIG.async_reduction 下，两个 eager（非 CUDA graph 捕获）wgrad reduce-scatter（RS）票据可拥有同一输出缓冲，一个权重的异步 RS 覆写另一个仍在飞的结果。触发三条件：①eager 链上的 async wgrad RS；②某权重异步 RS pending 超过一步反向级联——MTP --mtp-use-repeated-layer 深度≥2 时 eh_proj 是 MTP 块链首权重、其 depth-2 RS 要等整个 depth-1 块后才 retire；③另一 MTP 权重同 RS cache key（padded unsharded shape、dtype、调度域）且无 _buf_parity 隔离（parity 只隔离链邻居）。实例：hybrid Nemotron proxy hidden 10240、80 heads×kv_channels 256（num_attention_heads*kv_channels==2*hidden_size）使 mtp.layers.0.eh_proj.weight 与 mtp...self_attention.linear_proj 同为 10240×20480，16 GPUs。--deterministic-mode 下首个迭代后除 eh_proj 外全部参数 main_grad 与同步 RS 参考一致，eh_proj 平方范数差至 49%（其 depth-2 梯度被 linear_proj 的 depth-1 梯度替换）。修复方向：release() 后清 slot.buf / 隔离同 key 票据（PR 分析在文中）。与 TRN-0286 同族（overlap 异步归约缓冲复用）。'
+  source: https://github.com/NVIDIA/Megatron-LM/pull/9124
+  behavior: 开 GTP weight remat（默认 async_reduction）训练带 MTP（repeated layer、深度≥2、头维配置使两权重同 shape）的模型：训练全程无报错、loss 有限，但 eh_proj 的梯度实际来自另一个权重（linear_proj）的 depth-1 梯度——deterministic-mode 对拍同步 RS 参考发现该参数 main_grad 平方范数差最高 49%，其余参数全部一致；错误梯度定向污染 MTP 投影层，最终模型质量受损而常规训练指标不可见。
+  trigger_surface: Megatron-LM GTP weight remat + async_reduction（默认）+ MTP repeated layer 深度≥2 + eager 链 + 同 RS cache key 权重对（如 80×256==2×10240）
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  updates:
+  - date: '2026-11-10'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-10
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem

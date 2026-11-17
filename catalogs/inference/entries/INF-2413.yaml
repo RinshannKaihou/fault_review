@@ -1,0 +1,59 @@
+id: INF-2413
+legacy_ids: []
+slug: triton_ascend_argmin_max_index_channel_corruption
+aliases: []
+title: triton-ascend argmin/argmax 索引通道静默损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: with_index 索引通道 lowering
+  behavior: minimum_with_index/maximum_with_index 的 helper lowering 损坏索引传播：kernel 文本语义正确，但多块 argmax 恒返回初始累加器索引 0，argmin 返回非极值索引
+effect:
+  objects:
+  - 数值结果
+  detail: fp16/bf16 argmin/argmax 经 torch.compile+triton_experimental 返回错误索引：argmax 恒返 0，argmin 返 19/37/10/3 等非极值索引；极值正确、无报错，确定性复现；torch_npu 默认排除兜底，需手动加回注册清单
+  visibility: 静默错误
+mitigation:
+  detect: compiled 与 eager 输出索引比对（极值相同、索引不同即中招）；12 配置矩阵见 issue
+  fix: torch_npu 已把 argmax/argmin 移出 triton 注册清单走 extern aclnn 兜底（线上业务暂不受影响，代价是低精度归约无法走 triton codegen）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-05'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/2981
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton-ascend 3.6.0+gita176ab28（CANN 9.2.0，PyTorch 2.16.0a0，torch_npu 2.16.0，910B4）。低精度 fp16/bf16 torch.argmin/argmax 经 torch.compile + triton_experimental 后端（TORCHINDUCTOR_NPU_BACKEND=triton_experimental）时索引错误：kernel 文本语义正确（tl.full 初值+循环 minimum_with_index 更新），缺陷在 helper lowering。12 配置实测（生产路径，s1=(32,128)/4096 元素，manual_seed(0)）：s1/s2 argmax fp16/bf16 全部恒返回 0（初始累加器索引，从未被候选更新）；argmin 返回 19/37/10/3 等非极值索引——并列最小集合（67 个位置，升序前 6 为 [61,117,419,456,534,585]）不含 19，19 位置元素值大于最小值，排除 tie-break 语义差异，属索引传播损坏。错误跨运行确定性复现（两次独立编译会话同返 19）。当前 torch_npu 已将 argmax/argmin 排除出 triton 注册清单（extern aclnn 兜底）保住数值正确性，默认路径不受影响；12 个 dtype-aware 契约用例被阻塞。
+  source: https://github.com/triton-lang/triton-ascend/issues/2981
+  behavior: 在昇腾 NPU 上用 torch.compile 编译含 argmin/argmax 的低精度（fp16/bf16）归约代码：返回的极值是对的，但索引是错的——多块场景 argmax 恒返回 0（指向的元素根本不是最大值），argmin 返回的索引也不指向最小值。无任何报错，数据静默错误。当前 torch_npu 默认把这两个算子踢出 triton 编译路径兜底，触发需手动加回注册清单。
+  trigger_surface: triton-ascend 3.6.0；910B4；fp16/bf16 argmin/argmax 走 triton_experimental codegen（torch_npu 默认已排除兜底，需手动 GENERATE_LIST.extend）；numel>单块容量时 argmax 恒 0。
+  discovery: 2026-11-05 每日扫描
+  notes:
+  - 2026-11-06 回访：#2981 仍 open 无状态变化
+migration:
+  method: scan
+  scanned: '2026-11-05'
+  audit:
+    round: daily-audit-2026-11-06
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior
+    - detail
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - original.notes
+  - date: '2026-11-17'
+    fields:
+    - original.notes

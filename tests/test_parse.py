@@ -202,6 +202,30 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(entry["_legacy_ids"], ["HW.99"])
         self.assertEqual([k for k in entry if "legacy" in k], ["_legacy_ids"])
 
+    def test_var_and_cross_relations_are_wired_bidirectionally(self):
+        parent = self._entry("TRN-0229", [], "父条目。")
+        child = self._entry("TRN-0242", [], "子条目。")
+        child["relations"] = [{"kind": "var", "target": "TRN-0229"}]
+        entries = parse.build_links([parent, child])
+        links = {e["id"]: {(l["id"], l["kind"]) for l in e["links"]} for e in entries}
+        self.assertEqual(links["TRN-0229"], {("TRN-0242", "var")})
+        self.assertEqual(links["TRN-0242"], {("TRN-0229", "var")})
+
+    def test_legacy_decimal_ids_do_not_cross_repos_or_match_percentages_and_versions(self):
+        inf_entry = {"id": "INF-0004", "repo": "inference", "name": "inf4", "neg": False,
+                     "relations": [], "_legacy_ids": ["1.4"], "fields": {"mechanism": "本条。"}, "raw": "本条。"}
+        inf_ver = {"id": "INF-0301", "repo": "inference", "name": "inf301", "neg": False,
+                   "relations": [], "_legacy_ids": ["3.5"], "fields": {"mechanism": "Nemotron-3.5 与 x=-3.5 实测，另与 3.5 对照。"}, "raw": ""}
+        inf_other = {"id": "INF-0999", "repo": "inference", "name": "inf999", "neg": False,
+                     "relations": [], "_legacy_ids": ["9.9"], "fields": {"mechanism": "比例 1.4% 提升，模型 Qwen-3.5，但与 1.4（同机制）相关。"}, "raw": ""}
+        trn_migrated = self._entry("TRN-0002", ["HW.02"], "错误率 1.4% 上升。")
+        entries = parse.build_links([inf_entry, inf_ver, inf_other, trn_migrated])
+        links = {e["id"]: {(l["repo"], l["id"], l["kind"]) for l in e["links"]} for e in entries}
+        # Training migrated entry citing "1.4%" must never link to inference 1.4
+        self.assertEqual(links["TRN-0002"], set())
+        # Inference migrated entry skips "1.4%" and "Qwen-3.5", but links genuine "与 1.4（"
+        self.assertEqual(links["INF-0999"], {("inference", "INF-0004", "mentions")})
+
 
 class TrainingBoundaryTests(unittest.TestCase):
     def test_fenced_rules_and_headings_stay_in_multiline_field(self):

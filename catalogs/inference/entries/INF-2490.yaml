@@ -1,0 +1,56 @@
+id: INF-2490
+legacy_ids: []
+slug: aclnn_gather_oob_index_silent_value
+aliases: []
+title: aclnnGather 越界索引静默返回错误值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: gather_v3 host 校验缺失
+  behavior: gather_v3.cpp host 侧只校验 dtype/shape 不校验 index 取值范围；kernel 内 CheckIdxValue 的 assert 在生产版本被编译掉，越界 index 不报 161002，静默返回错误值。
+effect:
+  objects:
+  - 数值结果
+  detail: self=[100,200,300,400]、dim=0 时 index=4 返回 100（读到第 0 个元素）、index=99 返回 0.0；GetWorkspaceSize 与执行均返回 0 无告警；文档明确 index 不支持越界应报错；错误值向下游传播。
+  visibility: 静默错误
+mitigation:
+  detect: 待定
+  fix: 待定（建议 CheckIdxValue 由 assert 改为返回错误码；无修复 PR）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-10'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8561
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0711
+original:
+  mechanism: 昇腾 910B3、CANN 9.2.0，cann/ops-nn master e91941a02 已复核。缺陷位置 index/gather_v3/op_host/op_api/gather_v3.cpp：host 只校验 dtype/shape。kernel 内 CheckIdxValue 的 assert 实际触发过（plog 记录 gather_v3_base.h:137 Assertion '(0 <= val && val < this->gxSize_)' failed. Index 99 out of range[0 4)!）但生产版本编译掉、执行未被阻止。文档《aclnnGather》参数说明写明 index 取值范围 [-self.shape[dim], self.shape[dim]-1]、不支持越界（预期报 161002）。C++ 两段接口复现：legal [0,2,3]→[100,300,400] 正确；oob=4→[100]；oob=99→[0]；两次调用 ret 均为 0。
+  source: https://gitcode.com/cann/ops-nn/issues/8561
+  behavior: 上板调 aclnnGather（或经框架走到 gather_v3 内核）时传入越界索引得不到报错：小越界返回错误位置的值（长度 4 的张量 index=4 返回第 0 个元素 100），大越界返回 0.0，GetWorkspaceSize 与执行都返回成功；错误值直接进入下游计算，除非对拍否则发现不了；合法 index 结果正确。
+  trigger_surface: aclnnGather + 越界 index（0.35+ 的任意越界值）；CANN 9.2.0 / master 均在。
+  discovery: 2026-11-10 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-10'
+  audit:
+    round: daily-audit-2026-11-11
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3
+    - glm-5.3
+    - qwen3.8-max
+  updates:
+  - date: '2026-11-17'
+    fields:
+    - relations

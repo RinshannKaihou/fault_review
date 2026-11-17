@@ -1,0 +1,49 @@
+id: INF-2523
+legacy_ids: []
+slug: matmul_v3_dav3510_fixpipe_splitm_by_output_dtype
+aliases: []
+title: MatMulV3 fp16 入 fp32 出 fixpipe 模式错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: MatMulV3 fixpipe 选择
+  behavior: GetL0C2OutDav3510 按输入 dtype 选 fixpipe：fp16/bf16 输入一律 1_1 且不置 splitM；splitM 应由 fp32 输出决定，导致 fp32 输出未走 1V2/M 轴切分。
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend950 bound 场景 fp16/bf16→fp32 输出精度实测 74.78%（应 ND_FIXPIPE_1_2+splitM）；fp32→fp32 与 fp16→fp16 组合正常。
+  visibility: 静默错误
+mitigation:
+  detect: 在 Ascend950 fixpipe bound 场景用 fp16/bf16 输入 + fp32 输出 matmul，对拍 FP32 参考；同时检查 tiling 里 splitM 是否为 true、fixpipe 模式是否 1V2。
+  fix: 修复 PR !14100（issue closed；合入/发布未核实）：按 cType==DT_FLOAT 选 ND_FIXPIPE_1_2 并置 splitM，删除不可达的 aType==FLOAT 分支，补 3 个 UT 与 380/380 op_host UT。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-13'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8656
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/14100
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn MatMulV3 在 Ascend950（DAV_3510）fixpipe 绑定（Bound）场景下，op_host/op_tiling/arch35/matmul_v3_tiling_helper.cpp 的 GetL0C2OutDav3510 此前按输入 dtype 选择 fixpipe 模式：fp16/bf16 输入一律返回 ND_FIXPIPE_1_1，只有输入为 FP32 时才置位 splitM。但 splitM 的语义是 fixpipe 场景 FP32 输出按 M 轴切分、由双 AIV 拷出，应由输出 dtype 决定；因此 fp16/bf16 输入 + FP32 输出既不切 M，也未走 1V2 路径，输出精度实测 74.78%。修复 PR !14100 改为按 args.cType==ge::DT_FLOAT 选择 ND_FIXPIPE_1_2 并置 splitM，删除 DAV_3510 dtype 组合中不可达的 aType==DT_FLOAT 分支，未命中前两个分支时兜底 ON_THE_FLY；新增 GetL0C2Out_Dav3510_* 3 个 UT，mat_mul_v3 op_host UT 380/380 通过（--soc=ascend950），Ascend950PR_9589 实测 CANN 10-28/11-04 各 42/42 用例通过。issue 已 closed。
+  source: https://gitcode.com/cann/ops-nn/issues/8656 ｜修复 https://gitcode.com/cann/ops-nn/pull/14100
+  behavior: 在 Ascend950 上做 fp16/bf16 输入、fp32 输出的 matmul（例如 lm_head/logits 或需要 FP32 累加输出的投影层），fixpipe 路径选错模式且 M 轴不切分，输出数值精度明显变差（实测用例通过率 74.78%），但算子不报错；同一形状改成 fp16 输出或 fp32 输入输出就正常，所以很容易被当成模型精度问题而不是 tiling 缺陷。
+  trigger_surface: Ascend950/DAV_3510、MatMulV3 fixpipe Bound 场景、输入 fp16/bf16 + 输出 fp32；CANN 版本未在 issue 固定，修复 PR !14100。
+  discovery: 2026-11-13 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-13'
+  audit:
+    round: daily-audit-2026-11-14
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
