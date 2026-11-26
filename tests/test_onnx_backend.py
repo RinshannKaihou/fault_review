@@ -260,5 +260,71 @@ class TokenizerPairParityTests(unittest.TestCase):
         self.assertLessEqual(len(enc[1].ids), 1024)
 
 
+class EntrypointFallbackTests(unittest.TestCase):
+    """Ensure fault-rag re-execs /usr/bin/python3 when invoked under Hermes' stripped Python."""
+
+    def test_reexecs_when_base_module_missing(self):
+        import subprocess
+        import tempfile
+
+        from fault_rag import __main__ as M
+
+        calls = []
+        with tempfile.NamedTemporaryFile() as fake_cur, tempfile.NamedTemporaryFile() as fake_alt:
+            old_env = os.environ.get("FAULT_RAG_PYTHON")
+            os.environ["FAULT_RAG_PYTHON"] = fake_alt.name
+            try:
+                switched = M._ensure_usable_python(
+                    ["search", "kv", "--no-rerank"],
+                    find_spec=lambda name: None if name == "jieba" else object(),
+                    execv=lambda path, argv: calls.append((path, argv)),
+                    executable=fake_cur.name,
+                )
+            finally:
+                if old_env is None:
+                    os.environ.pop("FAULT_RAG_PYTHON", None)
+                else:
+                    os.environ["FAULT_RAG_PYTHON"] = old_env
+
+        self.assertTrue(switched)
+        self.assertEqual(calls, [(fake_alt.name, [fake_alt.name, "-m", "fault_rag", "search", "kv", "--no-rerank"])])
+
+    def test_no_reexec_when_all_base_modules_present_or_same_binary(self):
+        from fault_rag import __main__ as M
+
+        calls = []
+        self.assertFalse(M._ensure_usable_python(
+            ["stats"],
+            find_spec=lambda _name: object(),
+            execv=lambda path, argv: calls.append((path, argv)),
+        ))
+        self.assertEqual(calls, [])
+
+        # Same binary as sys.executable -> must not infinite-loop
+        if os.path.exists("/usr/bin/python3"):
+            old_env = os.environ.get("FAULT_RAG_PYTHON")
+            os.environ.pop("FAULT_RAG_PYTHON", None)
+            try:
+                self.assertFalse(M._ensure_usable_python(
+                    ["stats"],
+                    find_spec=lambda _name: None,
+                    execv=lambda path, argv: calls.append((path, argv)),
+                    executable="/usr/bin/python3",
+                ))
+            finally:
+                if old_env is not None:
+                    os.environ["FAULT_RAG_PYTHON"] = old_env
+
+    def test_fault_rag_wrapper_stats(self):
+        import subprocess
+
+        wrapper = os.path.join(E.ROOT, "fault-rag")
+        if not os.path.exists(I.ENTRIES_JSONL):
+            self.skipTest("index not built")
+        proc = subprocess.run([wrapper, "stats"], capture_output=True, text=True, check=True)
+        payload = json.loads(proc.stdout)
+        self.assertGreater(payload["total"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
