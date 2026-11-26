@@ -42,7 +42,7 @@ EOF
 
 两次扫描之后运行；先推理后训练，由 `~/.hermes/profiles/third/scripts/fault_catalog_daily_audit.sh` 安全解析 `~/.bashrc`（及 `/root/.bashrc` 回退）中的 `JUDGE_API_KEY` 与 `JUDGE_API_URL`，依次调用两仓库的 `tools/daily_audit.sh` 完成 Git 前置检查、`cross-sync`、`pattern-sync`、`catalog_audit.py run`、生成视图、校验与推送。
 
-## RAG 每日同步与质检（03:30 UTC，脚本模式，`no-agent`）
+## RAG 每日同步与质检 `2ce97523eee9`（03:30 UTC，脚本模式，`no-agent`）
 
 每日审计之后运行；由 `~/.hermes/profiles/third/scripts/fault_rag_daily_sync.sh` 调用 `/workspace/RAG/fault_review/scripts/rag_auto_sync.py sync`：
 - 在隔离 `git worktree` 中同步已通过审计的 `active` 条目（自动跳过新建 `pending_audit` 与已隔离冲突项），复用向量缓存执行 `reindex`，并依次运行 CLI 门禁（bench 聚合 + indy 逐条）、Web 同构门禁与因果拓扑校验；若单条新条目挤占老题触发门禁回退，自动执行单条隔离（Quarantine）保其余健康条目照常发布并推送远端。

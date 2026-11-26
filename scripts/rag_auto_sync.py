@@ -464,7 +464,7 @@ def prepare_worktree_links(rag_root: Path, wt_dir: Path) -> None:
 def run_worktree_gates(wt_dir: Path, lexical_only: bool = False) -> dict[str, Any]:
     """Run reindex + CLI bench/indy gates + Web gate + Topology check inside wt_dir."""
     py = sys.executable
-    reindex_cmd = [py, "./fault-rag", "reindex"] + (["--lexical"] if lexical_only else [])
+    reindex_cmd = [py, "-m", "fault_rag", "reindex"] + (["--lexical"] if lexical_only else [])
     r_idx = subprocess.run(reindex_cmd, cwd=str(wt_dir), text=True, capture_output=True, timeout=1800)
     if r_idx.returncode != 0:
         return {
