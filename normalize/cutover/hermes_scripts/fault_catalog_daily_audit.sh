@@ -2,19 +2,34 @@
 # hermes cron (--no-agent) job: audit entries the daily scans wrote, in both catalog repos.
 # Install as ~/.hermes/profiles/third/scripts/fault_catalog_daily_audit.sh; stdout is delivered verbatim (Feishu).
 set -uo pipefail
-# Read JUDGE_API_KEY and JUDGE_API_URL safely without eval-ing shell lines from ~/.bashrc
+# Read JUDGE_API_KEY and JUDGE_API_URL safely without eval-ing shell lines.
+# Under Hermes profile isolation, $HOME may be ~/.hermes/profiles/<name>/home rather than ~root,
+# so check both $HOME/.bashrc and ~root/.bashrc (/root/.bashrc).
 read_rc_var() {
   local name="$1"
   python3 - "$name" "$HOME/.bashrc" <<'PY'
-import os, re, shlex, sys
-name, rc = sys.argv[1], sys.argv[2]
+import os, pwd, re, shlex, sys
+name = sys.argv[1]
+candidates = [sys.argv[2]]
+try:
+    candidates.append(os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".bashrc"))
+except KeyError:
+    pass
+candidates.append("/root/.bashrc")
 val = ""
-if os.path.exists(rc):
+seen = set()
+for rc in candidates:
+    if not rc or rc in seen or not os.path.exists(rc):
+        continue
+    seen.add(rc)
     for line in open(rc, encoding="utf-8", errors="ignore"):
         m = re.match(rf"^\s*export\s+{re.escape(name)}=(.+)$", line.strip())
         if m:
             toks = shlex.split(m.group(1), comments=True)
-            val = toks[0] if toks else ""
+            if toks:
+                val = toks[0]
+    if val:
+        break
 print(val, end="")
 PY
 }
