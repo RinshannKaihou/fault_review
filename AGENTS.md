@@ -3,7 +3,7 @@
 本仓库是**故障编目检索工具**（RAG），供任意 interactive agent CLI 通过 Bash 调用。
 不是在维护编目本身——编目真源在 `/workspace/inference_error_review` 与
 `/workspace/training_error_review`，本仓库对它们**严格只读**。检索与引用读的是
-`catalogs/` 下的 vendored 快照：两个编目的结构化条目 `catalogs/<repo>/entries/*.yaml`（经人工审查后手动同步，可能滞后于真源；每日扫描不自动同步 RAG；快照对应的上游提交见 `catalogs/SOURCES.txt`）。
+`catalogs/` 下的 vendored 快照：两个编目的结构化条目 `catalogs/<repo>/entries/*.yaml`（每日 `03:30 UTC` 在每日审计完成后由 `scripts/rag_auto_sync.py sync` 在隔离 `git worktree` 中经四道质量门禁自动同步已转正的 `active` 条目，新建 `pending_audit` 与单条门禁冲突项自动隔离暂缓；快照对应的上游提交见 `catalogs/SOURCES.txt`）。
 
 ## 入口
 
@@ -32,7 +32,8 @@ int8 量化档不得引入：重排分数在 12/12 池换序。纯词法使用�
 | 已知编号或 snake_case 名，取完整条目 | `lookup INF-0044` / `lookup sdc_multibit_warp_spray` |
 | 顺覆盖关系/交叉指针找关联条目 | `related TRN-0005 --depth 1` |
 | 看某个故障模式下的全部实例 | `search "<描述>" --pattern PAT-INF-0035`，或读模式文件 `catalogs/<repo>/patterns/` |
-| 人工确认发布已审查的编目更新 | 先在隔离副本运行 `scripts/sync_catalogs.sh` 与定向校验；无读者窗口在正式库重跑、核验后才提交 `catalogs/`。脚本非原子，失败不得发布 |
+| 自动/手动在隔离副本执行门禁同步 | `python3 scripts/rag_auto_sync.py sync`（支持 `--dry-run`；传统手工全量脚本 `scripts/sync_catalogs.sh` 仍保留） |
+| 查看或裁决自动同步挂起的人工工单 | `python3 scripts/rag_auto_sync.py status` / `python3 scripts/rag_auto_sync.py resolve <item_id> --action approve_exemption\|unquarantine\|dismiss` |
 
 ## search 要点
 
@@ -121,6 +122,12 @@ slice。**bench 用聚合口径**：R@5/R@10 不得低于基线，MRR/nDCG 容�
 `python3 web/eval/check_web.py`（同样的 bench 聚合 / indy 逐条规则，基线在 `web/eval/baselines/`），
 失败则线上保持上一版。本地复现：`python3 web/build_site.py && python3 web/eval/check_web.py`，处理规则同上。
 网页版没有重排，召回低于本 CLI；agent 检索一律用 CLI，不要用网页结果代替。
+
+### 每日自动同步与异步工单处理（`data/pending_human.json`）
+
+Hermes `third` 每日 `03:30 UTC` 运行 `scripts/rag_auto_sync.py sync`：
+- **第一档（低风险编目瑕疵）**：口语症状盲测未进 Top-10、疑似漏标 `var`/`cross` 或 `effect.objects` 因果逆序，自动写入 `/root/.hermes/profiles/third/cache/rag_feedback/{inference,training}_todo.jsonl` 交次日扫描任务回访自动闭环（单签名最多派发 1 次）。
+- **第二/三档（需人工裁决）**：单条挤占门禁被自动隔离的新条目（`gate_quarantined_entry`）、疑似实质重复需确认 `merge`（`suspected_duplicate`）、滞留 ≥2 天的 `pending_audit`（`stuck_pending_audit`）以及非单条门禁熔断（`gate_circuit_break`），均持久化在 `data/pending_human.json`。用户在飞书或 CLI 要求处理挂起项时，先跑 `python3 scripts/rag_auto_sync.py status` 阅读单路排名证据与冲突详情，经用户确认后用 `python3 scripts/rag_auto_sync.py resolve` 执行，不得未经用户确认擅自执行 `approve_exemption`。
 
 
 ## 故障排查
