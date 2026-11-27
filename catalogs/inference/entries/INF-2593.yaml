@@ -1,0 +1,56 @@
+id: INF-2593
+legacy_ids: []
+slug: flashinfer_topk_topp_zero_threshold_token0
+aliases: []
+title: FlashInfer top_k/top_p 零阈值静默返回 token 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: flashinfer
+    component: top_k/top_p sampling
+  behavior: top_k/top_p 采样接口对 k=0 或 p<=0 的退化阈值不做拒绝，不报错且固定返回 token 0；top_k_renorm_probs(k=0) 返回全零分布。
+effect:
+  objects:
+  - 输出内容
+  detail: 4×1000 随机分布、argmax=[850,471,775,228]，k=0 时 4 行恒返回 token 0（不在 row0 top-2）；p=0 同样恒 0；k=0 的 renorm 输出 4000/4000 为 0；重复采样只有 1 个唯一值。
+  visibility: 静默错误
+mitigation:
+  detect: k=0/p=0 的负向用例断言报错或退化为 greedy；检查 top_k_renorm_probs(k=0) 是否为全零；与 min_p=0 的正确 no-filter 行为对照
+  fix: 待定（open；issue 建议显式拒绝 k<=0/p<=0，p==0 退化为 greedy，renorm(k=0) 返回 NaN 或 identity）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-1045（SGLang seeded 采样遇空分布静默输出 token 0）同属采样退化/空分布静默返回 token 0；本条为 FlashInfer 的零阈值 top_k/top_p 空候选路径，涉及两条独立 kernel 与 renorm 链。
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/9981
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1045
+pattern: PAT-INF-0208
+original:
+  mechanism: flashinfer 0.7.3（A100 80GB、CUDA 13.0、torch 2.14.0+cu130）中，`top_k_sampling_from_probs`、`top_p_sampling_from_probs`、`top_k_top_p_sampling_from_logits` 以及 `top_k_renorm_probs` 对退化阈值不做拒绝：k=0 时 4×1000 随机分布（行 argmax=[850,471,775,228]）恒返回 token 0，且 token 0 不在 row0 的 top-2；p=0 同样 4 行恒返回 token 0；`top_k_renorm_probs(k=0)` 输出 4000/4000 为 0（不是 NaN），再喂给采样器继续得到 token 0；重复采样只有 1 个唯一值。`*_from_probs` 与 `*_from_logits` 两条独立 kernel、top-k-first + rejection 路径行为一致，`k=-1`/`k>vocab`/`p>=1` 则按文档做 unfiltered sampling，说明断裂点正好在零。库内 `min_p_sampling_from_probs(p,0.0)` 能正确做 no-filter（100 次抽到 96 个不同 token），所以这是采样 kernel 之间的语义不一致，不是设计选择。
+  source: https://github.com/flashinfer-ai/flashinfer/issues/9981（open，2026-11-24，含两条 kernel、四条 API 的确定性复现）
+  behavior: 直接调用 FlashInfer 的 top_k/top_p 采样接口时，如果把 k 设成 0 或 p 设成 0，接口不报错，而是每次固定返回 token 0：即使这一行的 argmax 是 850、top-2 是 [850,280]，也照样给 0；top_k_renorm_probs(k=0) 还会返回全零分布，继续采样仍然是 0。重复采样只有一个唯一值，完全不是从分布里采样，也不等于 greedy；服务端看到的是合法 token id，不会触发任何校验或告警，只有检查采样多样性或与 no-filter 语义对照才能发现。
+  trigger_surface: flashinfer 0.7.3 wheel、A100 80GB、CUDA 13.0、torch 2.14.0；top_k_sampling_from_probs/from_logits、top_p_sampling_from_probs、top_k_top_p_sampling_from_logits、top_k_renorm_probs；k=0 或 p<=0。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

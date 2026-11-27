@@ -1,0 +1,58 @@
+id: INF-2615
+legacy_ids: []
+slug: decoder_start_token_mixed_batch_skips_prepend
+aliases: []
+title: 批内混用 decoder start token 静默少加
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: transformers
+    component: generation/utils.py 前置判断
+  behavior: 用 (decoder_input_ids[:,0] != start_id).all() 决定是否整批前置 start token；批内一条已含就整体跳过，其余请求缺 start token。
+effect:
+  objects:
+  - 输入编码
+  - 输出内容
+  - 输出分布
+  detail: bart-base 8 步最大 score 差 1.297；opus-mt-en-de 生成 token 改变、译文错乱，score 差 13.03、raw logit 差 20.64；不抛异常，逐条单独跑正确。
+  visibility: 静默错误
+mitigation:
+  detect: 构造两条 decoder 前缀，一条含 decoder_start_token、一条不含，等长且无 pad，batch 生成后与逐条单独生成逐 token 比较。
+  fix: 待定（issue open，transformers 5.24.0.dev0）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/51216
+  kind: github_issue
+relations: []
+original:
+  mechanism: Transformers 5.24.0.dev0（commit fa9c04ea60c5e1d2ecc38064442973fa1ddccc72）的 GenerationMixin._prepare_decoder_input_ids_for_generation() 在 src/transformers/generation/utils.py 中用 (decoder_input_ids[:, 0] != decoder_start_token_id[:, 0]).all().item() 判断是否需要为整批前置 decoder_start_token。这个 .all() 要求批内每一行都缺 start token 才插入；当一批里同时存在「已含 start token」和「不含 start token」的请求时结果为 False，整个批都不插入，本来缺 start token 的请求就少了一个位置对齐。报告者在预训练 checkpoint 上用等长、无 decoder padding 的前缀复现：facebook/bart-base（start=2）A 前缀 [2,133,138,585]、B 前缀 [133,2634,2967,10]，批内 B 缺 start token 但不报错，8 步最大 score 差 1.296694；Helsinki-NLP/opus-mt-en-de（start=58100）同构造下生成 token 改变、译文错乱，最大 score 差 13.026532、raw logit 差 20.635527。逐条单独生成时两条都正确。
+  source: https://github.com/huggingface/transformers/issues/51216（open，2026-11-25，含两模型 score/logit 差表与复现代码）
+  behavior: 做 encoder-decoder 模型的批量生成时，如果同一批里有的请求的 decoder 前缀自带 decoder_start_token、有的没带，没带的那几条会静默少加这个起始 token：batch 结果与逐条单独生成明显不同，翻译模型会直接输出错乱的句子，但整个过程不抛异常、日志里也看不出问题。等长、无 padding 的前缀就能触发，因此服务端做动态批处理时很容易遇到；把请求拆成单条跑就完全正常。
+  trigger_surface: Transformers 5.24.0.dev0，bart-base / opus-mt-en-de 等 encoder-decoder 模型；batch 内同时存在含与不含 decoder_start_token 的 decoder_input_ids，且等长、无 decoder padding。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: 输入编码
+    uncertain:
+    - subsystem

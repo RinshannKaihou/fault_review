@@ -1,0 +1,55 @@
+id: TRN-0812
+legacy_ids: []
+slug: torch_npu_triton_experimental_drops_user_kernel
+aliases: []
+title: triton_experimental 静默丢弃用户 triton kernel
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: triton_experimental 后端
+  behavior: 后端未捕获 triton_kernel_wrapper_mutation，也不 graph break：生成的 wrapper 只 empty_strided 分配输出，用户 @triton.jit 启动既不在图里也不在生成代码里。
+effect:
+  objects:
+  - 数值结果
+  - 训练轨迹
+  detail: torch.compile 后返回未初始化张量：8192 元素两次编译分别 8192/8192、13/8192 错，两次结果 torch.equal=False；eager 正确，训练 loss 可有限但梯度已失真。
+  visibility: 不可复现
+mitigation:
+  detect: 用 run_and_get_code 检查生成 wrapper 是否包含 triton_kernel_wrapper_mutation；对比 eager 与编译输出的逐元素结果与重复运行一致性
+  fix: '待定（issue #6413 open，2026-11-24；期望支持捕获、graph break 或显式报错）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6413
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: TORCHINDUCTOR_NPU_BACKEND=triton_experimental 时，torch.compile 对编译区域内用户直接启动的 @triton.jit kernel 既不捕获也不打断图：run_and_get_code 看到的产物只有 `buf0 = empty_strided_npu((8192,), (1,), torch.float32); return (buf0,)`，没有 _add_one_kernel、没有 @triton.jit、也没有 triton_kernel_wrapper_mutation 节点，用户 kernel 整体消失。函数返回未初始化内存：950DT 独立进程 + 全新 TORCHINDUCTOR_CACHE_DIR 下，8192 元素第一次编译 8192/8192 错、第二次 13/8192 错，两次结果 torch.equal=False；eager 路径首 3 元素 1.1318/1.3323/1.7256 正确。任何在 compile 区域启动自写 triton kernel 的模型（自定义 attention、融合算子、第三方 kernel 库迁移）都会静默算错且不可复现。
+  source: 'Ascend/pytorch issue #6413（open，2026-11-24；950DT + torch_npu 2.7.1 独立进程复现，附生成代码证据）https://gitcode.com/Ascend/pytorch/issues/6413'
+  behavior: 开了 torch.compile（triton_experimental 后端）后训练能跑、loss 也可能有限，但凡是编译区域里调用自写 @triton.jit kernel 的层都返回未初始化张量：8192 个元素第一次全错、第二次只错 13 个，两次运行结果不同。日志无异常，eager 对照正确；自定义 attention/融合算子迁到 NPU 时最容易命中，梯度随后全被污染。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现

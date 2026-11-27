@@ -1,0 +1,57 @@
+id: INF-2612
+legacy_ids: []
+slug: sglang_mamba_ssm_state_bf16_accuracy_loss
+aliases: []
+title: SGLang SSM state 用 bf16 长推理掉 8 分
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: mamba_ssm_dtype 状态存储
+  behavior: 显式将 --mamba-ssm-dtype 设为 bfloat16 后，GDN 循环状态按 bf16 存储；每一步 decode 累加更新时，bf16 的 8 位尾数在长链上累积舍入误差。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: Qwen3.5-9B MATH-500 thinking 1000 次生成：float32 0.663 → bf16 0.584（−0.079±0.015），16k 截断 285→370；float16 同 2 字节无损失。
+  visibility: 质量退化
+mitigation:
+  detect: 固定模型与采样参数，只在 --mamba-ssm-dtype float32/bfloat16/float16 间切换跑长推理评测（MATH-500 thinking、16k 预算），同时统计 finish_reason=stop 与截断数；GSM8K 式短评测会漏检。
+  fix: 待定（issue open；float32 是模型默认，bf16 需显式开启）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/51531
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'SGLang v0.5.23 的 configs/mamba_utils.py 与 arg_groups/attention_hook.py 把 GDN（Mamba 系）循环状态按 --mamba-ssm-dtype 指定的 dtype 存储。Qwen3.5-9B 模型自身默认 mamba_ssm_dtype: float32；显式改成 bfloat16 后，状态在每一步 decode 上做累加更新，bf16 的 8 位尾数在长链上累积舍入误差，生成长度变长、更多请求跑满 16,384 token 预算仍未收敛。报告者在 MATH-500 thinking 模式（temperature 0.6、top-p 0.95、top-k 20、16,384 预算、每题 2 采样共 1,000 次生成）实测：float32 strict accuracy 0.663、截断 285；bfloat16 0.584（−0.079±0.015，按题配对 ±1 SE）、截断 370；float16 同样 2 字节但没有可测损失。界面上的 arg_groups/attention_hook.py 与 mamba_utils.py 在 main（cb97061）上与 v0.5.23 一致，报告者未在 main 重跑。短评测（GSM8K 式）看不出 bf16 的损失，这也是该配置此前被验证通过的原因。'
+  source: https://github.com/sgl-project/sglang/issues/51531（open，2026-11-19，含 MATH-500 配对统计与三 dtype 对照表）
+  behavior: 把 SGLang 的 Mamba/GDN 状态改成 bf16 跑长推理（数学、长链思考）时，服务不报任何错、吞吐和显存看起来都更好，但准确率悄悄掉了约 8 个点：MATH-500 从 0.663 降到 0.584，更多回答在 16k token 预算内没写完就被截断，中位长度明显变长。短问答、GSM8K 这类几步就结束的评测完全看不出差别，所以很容易被判为「bf16 状态无损」；换成同为 2 字节的 float16 反而没有损失。
+  trigger_surface: SGLang v0.5.23、Qwen3.5-9B；--mamba-ssm-dtype bfloat16（模型默认 float32），thinking 模式、temperature 0.6/top-p 0.95/top-k 20、16,384 token 预算的长推理负载。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 输出内容
+        to: KV状态
+    rewritten:
+    - behavior

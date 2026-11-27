@@ -1,0 +1,56 @@
+id: INF-2609
+legacy_ids: []
+slug: triton_experimental_multidim_scan_dim_fixup_miss
+aliases: []
+title: triton_experimental 多维 scan 轴修正漏配
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: _apply_linearize fixup
+  behavior: linearize 重锚 tile 槽位后，通用 dim fixup 只改写以 ", <dim>)" 结尾的参数；tl.associative_scan 中间位置参数、dim=-1、tl.full 末槽都没匹配，仍指向旧槽的轴。
+effect:
+  objects:
+  - 数值结果
+  detail: 多维非最内维cumsum/cumprod编译通过但扫错轴：int32 5×5×5 dim=1错100/125、绝对差26；fp32 cumprod相对误差129.74；仅查能否编过的smoke测试完全发现不了。
+  visibility: 静默错误
+mitigation:
+  detect: 对 2D 以上张量的每个 dim 做 cumsum/cumprod 与 eager 对拍，整型用例用绝对差、浮点用例用相对误差；只检查能否编译的 smoke 测试无效。
+  fix: 分支 fix-te-scan-dim-fixup（报告者给出，未合并，未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-2544 同属 NPU Inductor scan 族归约轴在 tile 重排后指向错误轴；本条触发在 linearize 之后的 dim 文本修正，INF-2544 在 NPUTritonKernel.scan 的轴假定。
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6461
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2544
+pattern: PAT-INF-0215
+original:
+  mechanism: 'torch_npu 的 triton_experimental 后端在 linearize 阶段重锚 tile 槽位之后，_apply_linearize 里那道通用 dim fixup 只改写以 ", <dim>)" 结尾的 dim 参数。上游 scan() 用三种它看不见的形态寻址归约轴：(1) tl.associative_scan((v,), triton_tensor_ndim() - num_reduction_dims, fn)，dim 是中间位置参数，文本是 ", 1," 而非 ", 1)"；(2) triton_helpers.select_one(.., rbase == (RBLOCK - 1), dim=-1, keep_dims=True)，写作 dim=-1；(3) <acc> = tl.full([<dense_size_list() 末槽置 1>], ..)，既非旧 dense_size 字面量也非全 1 字面量。x 树拆成多个 register 轴时归约槽会移动，这三行仍指向旧槽上现在坐着的那条轴；两条轴都非 singleton 时这不会编译失败，kernel 编得过但扫错轴。报告者在 CANN 9.3 + master、910B4、TORCHINDUCTOR_NPU_BACKEND=triton_experimental 上实测：int32 5×5×5、cumsum(dim=1) 有 100/125 个元素错（绝对差 26），fp16 cumsum 相对误差 15.54、cumprod 16.03（79.2% 元素错），fp32 cumsum 50.31、cumprod 129.74。与 #6459（一维 scan 编译失败）相互独立。'
+  source: https://gitcode.com/Ascend/pytorch/issues/6461（open，2026-11-26，含逐节点 opinfo 误差表与三种寻址形态源码定位）
+  behavior: 用 torch.compile 跑多维 cumsum/cumprod（例如按序列维对 2D/3D 张量做累积和），编译能通过、没有任何 warning，但结果沿错误的轴扫描：int32 用例 125 个元素里 100 个不对、绝对差 26，因为整型没有舍入，这只能是真错；fp32 cumprod 相对误差能到 130 倍。只检查「能不能编过」的 smoke 测试完全发现不了，要拿 eager 结果逐元素对拍才暴露。
+  trigger_surface: CANN 9.3 + master、Ascend 910B4，torch/torch_npu 2.16.0.dev20261107、triton 3.6.0 + triton_ascend 3.6.0.post2，TORCHINDUCTOR_NPU_BACKEND=triton_experimental；多维张量的 cumsum/cumprod（scan 族），非最内维。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

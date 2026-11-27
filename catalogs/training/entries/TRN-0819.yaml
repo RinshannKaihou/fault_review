@@ -1,0 +1,64 @@
+id: TRN-0819
+legacy_ids: []
+slug: gmsq_n_not_multiple_of_32_silent_wrong
+aliases: []
+title: GMSQ 非 32 对齐 N 输出静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: GMSQ Cast/ReduceMax
+  behavior: CastFp32ToInt8Template%32/%16分支缺兜底，dstOffset非16对齐整段不写；ReduceMaxSmall尾块在tailNum非16倍数时让WholeReduceMax纳入界外未初始化数据；host只校验N偶数
+effect:
+  objects:
+  - 数值结果
+  - 训练轨迹
+  detail: A8W8+NZ、N=2064/2104/2128/1072 时 int8 输出 16/16 行全错、每行 553~658/1032 元素超差；out_scale 错值或 NaN，无报错，同输入两次结果一致。
+  visibility: 静默错误
+mitigation:
+  detect: 按 N%32!=0 构造 A8W8 grouped matmul，与 CPU 参考逐行比对 int8 输出与 out_scale，检查 out_scale 是否 NaN
+  fix: PR https://gitcode.com/cann/ops-transformer/merge_requests/16506 merged（补 N%32 校验，改为拒绝）；PR 17330 open（升级为正确处理非对齐 N）
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8077
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/16506
+  kind: gitcode_pr
+- url: https://gitcode.com/cann/ops-transformer/merge_requests/17330
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-transformer 的 grouped_matmul_swiglu_quant（v1 与 v2 复刻分支，arch22/A2 910_93 共用 kernel 配置）在 A8W8 + FRACTAL_NZ weight 场景下存在三处叠加缺陷：一是 op_kernel/grouped_matmul_swiglu_quant_utils_kernel.h 的 CastFp32ToInt8Template 只处理 tokenLen%32==0 与 %16==0 两个分支，缺 else 兜底，dstOffset（loopIdx*tokenLen/2）非 16 对齐时该段输出整段不被写入；二是 ReduceMaxSmall 尾块在 tailNum 非 16 倍数时让 WholeReduceMax 把界外未初始化数据纳入归约，产生错误 max 或 NaN；三是 host/tiling 层只校验 N 为偶数、不校验 32 对齐，aclnn 接口 A8W8/A8W4 分支同样无该校验，非法配置被放行到 kernel 静默错值。实测 N=2064/2104/2128/1072（偶数非 32 倍），M=16、K=256、E=1，weight 经 npu_format_cast(w,29) 转 NZ：int8 输出 16/16 行全错，每行 553~658/1032 个元素 |err|>2，per-row maxerr 125~193；不经 int8 cast 的 out_scale（fp32）同样错误，N=2064 时偏差约 0.2，N=2104/2128/1072 时直接为 NaN，向下游全面污染。错误确定性复现，同输入两次运行输出完全一致，排除随机内存残留。修复 PR !16506 已合入（补 N%32 校验，把静默错值改为拒绝），PR !17330 仍 open（升级为对非对齐 N 输出正确结果）。
+  source: 'cann/ops-transformer issue #8077（closed，2026-11-19，A2 910_93 / CANN 9.1.0 / torch_npu 2.10.0.post4，附 9 档 N 扫描与逐行对照判据）https://gitcode.com/cann/ops-transformer/issues/8077 ；修复 PR https://gitcode.com/cann/ops-transformer/merge_requests/16506 （merged）、https://gitcode.com/cann/ops-transformer/merge_requests/17330 （open）'
+  behavior: 用 npu_grouped_matmul_swiglu_quant 做 A8W8 量化 MoE 的 gate/up 投影时，只要输出维度 N 是偶数但不是 32 的倍数（例如 2064、2104、2128、1072），训练全程不报任何错，但该层 int8 输出整行整行地错：16 行里 16 行都错，每行约 550~660 个元素误差超过 2（最大到 193）；同时 out_scale 这一路 fp32 输出也错，偏差约 0.2，或者直接变成 NaN，把下游量化全部污染。改成 N=2048 就正常，说明是尾块对齐问题；由于结果是确定性的，重跑也不会暴露，只能靠与 CPU 参考逐行对拍发现。
+  trigger_surface: A8W8 权重 FRACTAL_NZ、N 为偶数且非 32 倍数；A2/A3 arch22 kernel，v1/v2 均命中
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化
+    rewritten:
+    - behavior
+    uncertain:
+    - visibility

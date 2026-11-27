@@ -1,0 +1,52 @@
+id: INF-2584
+legacy_ids: []
+slug: cann_dynamic_block_quant_nonfinite_minscale_saturation
+aliases: []
+title: DynamicBlockQuant minScale=+Inf 致INT8饱和
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: aclnnDynamicBlockQuant
+  behavior: minScale 只校验 <0；NaN 与 +Inf 均放行。+Inf 激活钳制分支后 1/+Inf=0，scaleOut=0，y 全部饱和到 INT8 上限；NaN 则静默退化为不启用上界。
+effect:
+  objects:
+  - 数值结果
+  detail: x=[8,256] fp16（1.0~4.0）、dstType=INT8、minScale=+Inf 时两段 rc=0，y=0x7f（127）、scaleOut=0；合法基线 y=0x20/0x77、scaleOut=0.0315；-1/-Inf 正确返回 561002。
+  visibility: 静默错误
+mitigation:
+  detect: minScale 传 NaN/+Inf 的负向用例；断言返回 161002；检查 scaleOut 是否为 0 且 y 是否全为 INT8 上限
+  fix: 待定（open；issue 建议用 isfinite 校验非有限值）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8997
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '`aclnnDynamicBlockQuant` 的资料 `:110` 要求 minScale「取值不小于 0」，`:35` 公式 `scaleOut=min(input_max/(FP8_MAX/INT8_MAX),1/minScale)`。源码 `quant/dynamic_block_quant/op_host/dynamic_block_quant_tiling.cpp:252-256` 只做 `minScale < 0.0` 校验；`NaN < 0.0` 与 `+Inf < 0.0` 恒假，两者均放行。kernel `dynamic_block_quant.h:171` 用 `hasMinScale = minScale > 0.0f`，`+Inf > 0` 为真激活钳制分支，`:226` `1/+Inf=0`，`:355` 以 minScale 为下界钳制，于是 `scaleOut=0`，`y=round(x/0×…)` 全部饱和到 INT8 上限 127；NaN 则 `hasMinScale=false`，静默退化为不启用上界。实测 A2（DAV_2201，非 regbase）、CANN 9.3.0、ops-nn 01eb1bf74789dfabc4519612ac202f2eafe72edd：x=[8,256] fp16（1.0~4.0）、dstType=2(INT8)、rowBlockSize=1、colBlockSize=128，+Inf 时两段 rc=0，y[0]=0x7f、y[128]=0x7f、scaleOut[0]=0；合法基线 y[0]=0x20、y[128]=0x77、scaleOut=0.0314961；-1/-Inf 对照均返回 561002，证明校验存在且能拦负值，漏的只是非有限值。'
+  source: https://gitcode.com/cann/ops-nn/issues/8997（open，2026-11-17，含 +Inf/NaN/-Inf 三组对照与源码行号）
+  behavior: 把 DynamicBlockQuant 的 minScale 传成 +Inf 时，接口两段返回成功，但 scaleOut 被算成 0、整块 y 饱和成 INT8 的 127：输入 1.0~4.0 的正常激活全变成上限值，量化模型输出严重失真；传 NaN 则和 minScale=0 完全一样，上界约束被静默关掉。调用方看不到错误码，只有拿量化前后结果对比或检查 scaleOut=0 才能发现；传 -1 或 -Inf 反而会正确报 561002，说明只漏了非有限值。
+  trigger_surface: Ascend910_9362（A2/DAV_2201，非 regbase）、CANN 9.3.0、ops-nn 01eb1bf；aclnnDynamicBlockQuant、fp16 x、INT8 y、minScale=NaN/+Inf。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - title

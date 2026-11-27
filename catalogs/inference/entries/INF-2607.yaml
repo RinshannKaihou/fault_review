@@ -1,0 +1,51 @@
+id: INF-2607
+legacy_ids: []
+slug: fia_spec_verify_all_nan_finite_inputs
+aliases: []
+title: FIA 投机验证批对有限输入输出全 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm-ascend
+    component: FIA v2 verify 批 kernel
+  behavior: 同进程同层 ntok=1 decode 正确，ntok=4 的 TND_NTD/sparse_mode=3 verify 批约 50% 步骤输出全 NaN；q/k/mask 均无 NaN，NaN 由 kernel 内部产生，根因未定位。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: attn_nan=32768（[16,4,512] 全 NaN），约 50% verify 步骤失败，与请求顺序/内容相关；关闭投机（0 verify 步）同一 workload 从不失败。
+  visibility: 数值异常
+mitigation:
+  detect: 在 FIA 调用点统计 q/k 与输出 NaN 数；若 q/k 全 0 NaN 而输出整块 NaN 且仅在 ntok>1 出现，即为本条。
+  fix: 规避：verify 输出含 NaN 且 num_tokens>1 时按逐 token causal 窗用 MQA+fp32 softmax 重算；issue open，根因未定位。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: '与同批 vllm-ascend #23399 同环境但机制不同：#23399 是读到未写 KV 的 NaN，#23400 在 KV 池已清零、q/k 全有限时仍出全 NaN。'
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/23400
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend v0.32.0rc1（fla_npu a5 镜像）、Ascend950DT×2、TP2、--enforce-eager，Kimi-Linear-48B-A3B-Instruct FP8，MLA 层走 npu_fused_infer_attention_score_v2，ngram 投机 num_speculative_tokens=3。报告者把 KV 池整块清零、确认所有 gathered 行有限后，在调用点做进程内探针：q_nope [4,H,512]、q_pe [4,H,64]、k_nope [blocks,1,128,512]、k_pe [blocks,1,128,64]，input_layout="TND_NTD"、sparse_mode=3、actual_seq_lengths_q=[4]、actual_seq_kvlen=[25/26/…]、mask 2048×2048 且无 NaN、num_kv_heads=1；失败步 attn_nan=32768（[16,4,512] 输出全 NaN），而 q_nope/q_pe/k_nope/k_pe 的 NaN 计数全为 0。同一进程同一层、ntok=1 的 decode 批始终正确，约 50% 的 verify 步失败，模式与请求顺序/内容相关；关掉 drafting（0 个 verify 步）同一 workload 从不失败，说明问题限定在 verify 批形状的 kernel 调用内部。
+  source: https://github.com/vllm-project/vllm-ascend/issues/23400（open，2026-11-26，含调用点探针、NaN 计数与模型侧重算对照）
+  behavior: 开投机解码的 MLA 模型在 verify 步会间歇性返回整块 NaN 的 attention 输出：16 个 head、4 个 token、512 维全是 NaN，最终表现为空回复或乱码；约一半的 verify 步会中，且和请求顺序、内容相关，重跑同一请求可能又正常。把投机关掉、或改用 fp32 softmax 的逐 token 手算路径就完全正确，说明 q/k 输入本身是干净的，坏在 verify 批形的 kernel 内部；普通 ntok=1 的 decode 批在同一进程里一直正确。
+  trigger_surface: vllm-ascend v0.32.0rc1、Ascend950DT×2、TP2、--enforce-eager；Kimi-Linear-48B-A3B-Instruct FP8 的 MLA 层、npu_fused_infer_attention_score_v2；ngram 投机 num_speculative_tokens=3（verify 批 4 token×1 请求）、TND_NTD、sparse_mode=3、num_kv_heads=1。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

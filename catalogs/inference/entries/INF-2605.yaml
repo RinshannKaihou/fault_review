@@ -1,0 +1,53 @@
+id: INF-2605
+legacy_ids: []
+slug: attention_worker_combine_need_schedule_last_row_zero
+aliases: []
+title: AttentionWorkerCombine 清零每核末行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: attention_worker_combine
+  behavior: needSchedule=1 路径在每核分配 token 数×(K+1)×4 字节超过 outQue 的 UB 容量时，把该核处理区间的最后一行 token 输出整行写成 0，未按 y 的累加定义收尾。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: A2 910B2、R=1024/K=64/H=64：47 行（21,43,…,1023，每核 22 行区间末行）整行 0；R=4096 时 48 行；A3 910_93 时 40 行；同数据 needSchedule=0 位级一致；K=8 无异常；输出尾部 4KB 哨兵未被改写。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一份 token_data/expertScales 分别跑 needSchedule=1 与 0，按行比对 y；重点检查行号是否为每核区间的最后一行，并用 0xA5 哨兵确认不是越界写。
+  fix: 待定（issue open，无修复 PR，未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8830
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: ops-transformer 的 attention/attention_worker_combine 中，needSchedule=1 只应增加「等待 token_info_buf 的 R*(K+1) 个就绪 flag 全 1 并消费」的同步语义（attention_worker_combine_split_bs.h:92-100,190-205），不改变 y[i,h]=sum_{k=0}^{K-1} expertScales[i,k]*token_data[i,k,h]+token_data[i,K,h] 的数值定义。但在每核分到的 token 数×(K+1)×4 字节超过 outQue 的 UB 张量容量时，kernel 把该核区间最后一行整行写成 0：A2 910B2 / CANN 9.2.0 上 R=1024,K=64,H=64 有 47 行（21,43,65,…,1011,1023）、R=4096 有 48 行、R=512 有 1 行；R=1012/1016/1024/1036/1056 均为每核末行；H=512 同样；A3 910_93 / CANN 9.3.0.P009 上 R=1024 有 40 行。对照组仅把 needSchedule 从 1 改成 0，同 shape 同数据 0 行异常、max_ulp=0、exact=100%；K=8 时 0 行异常。输出缓冲尾部 4KB 的 0xA5 哨兵未被改写（guard_dirty=0），说明不是写越界到 y 之外，而是核内对末行漏做累加写回。
+  source: https://gitcode.com/cann/ops-transformer/issues/8830（open，2026-11-26，含 A2/A3 多 shape 实测与哨兵验证）
+  behavior: 开启 needSchedule 的 AttentionWorkerCombine（MoE/专家并行 attention 的 combine 阶段）在 token 数达到 1024/4096 这类常规批时，每个 AI core 负责区间的最后一行输出会变成整行 0：R=1024 时有 47 行、R=4096 时有 48 行的 token 贡献被清零，其余行完全正确，两段接口返回 0、没有告警。因为只有每核末行受影响，整体输出看起来仍有大量合理数值，很难从日志或少量抽样中发现；把 needSchedule 关掉或把 K 降到 8 就恢复正常，可作为判别手段。
+  trigger_surface: Ascend A2 910B2 / CANN 9.2.0 与 A3 910_93 / CANN 9.3.0.P009；aclnnAttentionWorkerCombine，needSchedule=1，K≥12（K=64 实测），每核 token 数×(K+1)×4 超过 outQue UB 容量，bf16。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

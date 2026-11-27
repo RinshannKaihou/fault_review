@@ -1,0 +1,57 @@
+id: INF-2601
+legacy_ids: []
+slug: matmul_reduce_scatter_v2_950_pertensor_bias_scaled
+aliases: []
+title: MC2 量化 matmul 把 bias 乘了 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: arch35 量化 MC2 kernel
+  behavior: arch35 量化 kernel 让 biasGM_ 直接进 mmv3.Init，bias 在反量化前生效、被 x1Scale*x2Scale 缩放；A2/A3 量化时反而把 bias 排除在 matmul 外。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Ascend950PR pertensor 量化 + 带 bias 的 MC2：x1 全 0、s1=s2=2^-4、bias=8 时资料公式 16.0、实测 0.0625（差 256 倍）；真实 scale≈1/448 时 bias 被衰减到 1e-6 量级，等于静默丢弃 bias。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 x1≡0、bias 非零、s1=s2 的 pertensor 量化 MC2 用例，按 (s1*s2)*(x1@x2)+bias 与实测比对；scale=1 与 scale≠1 两组对照可区分 bias 是否被缩放。
+  fix: issue 建议把 arch35 量化 kernel 的 bias 移到 dequant 之后按 fp32 累加（与 A2/A3 一致）；截至 2026-11-26 issue open，未见修复 PR（未核实）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8877
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0820
+original:
+  mechanism: cann/ops-transformer master 48c47ea16 的 arch35 量化 matmul-reduce-scatter 实现 op_kernel/arch35/quant_bmm_reduce_scatter_fp8_hif8.h:267 把 biasGM_ 直接传入 mmv3.Init(...)，因此 bias 在 x1Scale/x2Scale 反量化之前就参与矩阵乘累加，最终等价于 (s1*s2)*(x1@x2+bias)；而 A2/A3 实现 op_kernel/matmul_reduce_scatter_aiv_mode_matmul.h:63 用 aicCalBias = !quantFlag && hasBias，量化时 bias 不进 matmul。资料 docs/aclnnMatmulReduceScatterV2.md:436 的公式是 (x1Scale*x2Scale)*(x1@x2) + bias，bias 在括号外；:411 还要求 perblock 时 bias=nullptr。报告者在 Ascend950PR / CANN 9.3.0（Ascend-cann-950-ops V100R001C13B060）/ 驱动 25.7.rc1.10 上，用 fp8_e4m3 的 x1(128×256) 全 0、x2(256×256) 全 1、s1=s2=2^-4、bias=8、两 rank、commMode=ai_cpu、HCCL_OP_EXPANSION_MODE=AI_CPU 复现：scale=1.0 时输出 16.0 与资料同解，scale=2^-4 时输出 0.0625；同一 issue 还记录 x2 以 [n,k] 连续（资料写法）传入会被 161002 拒绝、只有 strides 转置视图能跑，说明该接口的文档与实现双向不一致。
+  source: 'https://gitcode.com/cann/ops-transformer/issues/8877（open，2026-11-26，含可编译 repro.cpp 与两 rank 实测输出；关联 #8342/#3581/#1897 均为同接口不同现象）'
+  behavior: 在 950 上跑带 bias 的 pertensor 量化 MatmulReduceScatter（例如把该 MC2 用于带 bias 的量化 MLP），输出看起来是正常量级的数，但 bias 项已经被 x1Scale*x2Scale 缩掉：scale 取真实的 1/448 量级时，bias 对结果的贡献从 8 变成 1e-6，等于这一层根本没有 bias。两段接口都返回 0，没有任何告警，只有把输出和 (s1*s2)*(x1@x2)+bias 的解析式逐元素对比、或把 scale 改成 1 再跑一次，才会发现差异随 scale 变化。
+  trigger_surface: Ascend950PR / CANN 9.3.0；aclnnMatmulReduceScatterV2 的 pertensor 量化路径（x1Scale/x2Scale 为标量）、bias 非空、fp8_e4m3 输入、HCCL 两 rank、commMode=ai_cpu；A2/A3 不走该 arch35 kernel。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

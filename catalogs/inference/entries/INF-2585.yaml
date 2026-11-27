@@ -1,0 +1,55 @@
+id: INF-2585
+legacy_ids: []
+slug: cann_embedding_negative_index_nan_rows
+aliases: []
+title: aclnnEmbedding 负索引未拦截静默产 NaN 行
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnEmbedding
+  behavior: CheckParams 只查空指针/dtype/最大维/out 维匹配，不查 indices 值域；负索引被直接送进 GatherV2/Embedding，负地址行读成 NaN，正向越界则按资料声明输出随机值。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: weight [8,16] FLOAT、indices 4 个 INT64，负值用例两段 rc=0，输出对应行全 NaN（NaN 数=负索引数×16），canary 残留 0/64 证明已写入；正向越界不产生 NaN。
+  visibility: 数值异常
+mitigation:
+  detect: 构造 indices 含 -1/-2 的用例，断言应返回 161002；检查输出是否出现整行 NaN
+  fix: 待定（open；issue 建议在 CheckParams 补 [0, weight.shape[0]) 值域检查）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-1983（EmbeddingBag indices 范围未校验，越界取到垃圾行）同属 embedding 类算子 indices 值域未校验；本条为前向 aclnnEmbedding，负索引走 GatherV2/Embedding 产生 NaN 行，而非 EmbeddingBag 的越界读。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8965
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1983
+pattern: PAT-INF-0211
+original:
+  mechanism: 资料《aclnnEmbedding.md》`:187` 明文规定「当 indices 中有负值时算子报错」，`:110` 把范围写死为 `[0, weight.shape[0])`；实现 `op_api/aclnn_embedding.cpp:125` 的 CheckParams 只做空指针、dtype、最大维 8、out/indices 维匹配四步，不看 indices 值域，也不查正向越界；`:285` 把 indices 直接 Contiguous 送进 `l0op::GatherV2`/`l0op::Embedding`。实测 Ascend 950PR/A5、CANN 9.3.0，weight=[8,16] FLOAT、indices INT64 4 个，输出预填 canary -1234.5：基线 [0,1,2,3] 输出 1.000/1.010/1.020；[-1,1,2,3] 两段 rc=0，输出 -nan 行，NaN 数=16；[-1,-2,-3,-4] NaN 数=64；[-1000000,1,2,3] NaN 数=16；canary 残留 0/64，证明输出被整体写入而非未初始化；正向越界 [0,1,2,8] 不产生 NaN，属资料已声明的「输出随机值」行为，不在本条范围。
+  source: https://gitcode.com/cann/ops-nn/issues/8965（open，2026-11-17，含 canary 与负索引 NaN 计数）
+  behavior: 在 Ascend 950PR 上调用 aclnnEmbedding 做 embedding 查表时，如果 indices 里出现 -1、-2 这类负值，接口两段都返回成功，但对应行会被写成整行 NaN：4 个负索引就有 64 个 NaN，合法索引的行仍然正常。资料明确说负值应报错，实际不报；调用方拿到形状正常的 [K, dim] 输出，只有下游出现 NaN loss/NaN logits 才会发现。正向越界的行为不同（输出随机值，不产生 NaN），所以不能靠「有没有 NaN」统一判断。
+  trigger_surface: Ascend950PR（A5）、CANN 9.3.0、ops-nn master 82d9467b；aclnnEmbedding、weight=[8,16] FLOAT、indices INT64 含负值。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

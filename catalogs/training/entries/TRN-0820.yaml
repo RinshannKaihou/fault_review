@@ -1,0 +1,58 @@
+id: TRN-0820
+legacy_ids: []
+slug: mc2_quant_bias_scaled_by_input_scales
+aliases: []
+title: MC2 pertensor 量化把 bias 乘输入 scale
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: MatmulReduceScatterV2
+  behavior: arch35 量化 kernel 让 biasGM_ 直接进 mmv3.Init，bias 在反量化前被 x1Scale*x2Scale 缩放；资料公式 bias 在括号外。A2/A3 量化路径则把 bias 排除在 matmul 外。
+effect:
+  objects:
+  - 数值结果
+  - 训练轨迹
+  detail: Ascend950PR：x1 全 0、s1=s2=2^-4、bias=8 时资料 16.0、实测 0.0625（差 256 倍）；真实 scale≈1/448 时 bias 被压到 1e-6，等于静默丢弃 bias，带 bias 的量化 MC2 全部受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 x1 全 0、bias 非零的 pertensor 量化 MC2 用例，比对输出是否等于 bias；覆盖 950 与 A2/A3 两条量化路径
+  fix: '待定（issue #8877 open，2026-11-26；三处 arch35 引用已按 master 48c47ea16 逐行核对，未见修复 MR）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8877
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2601
+original:
+  mechanism: cann/ops-transformer 的 aclnnMatmulReduceScatterV2 在 Ascend950PR 的 pertensor 量化路径上把 bias 乘了 x1Scale*x2Scale。资料 docs/aclnnMatmulReduceScatterV2.md:436 给出的公式是 (x1Scale*x2Scale)*(x1@x2) + bias，bias 在括号外、不参与输入 scale；arch35 量化 kernel 却让 biasGM_ 直接进 mmv3.Init，使 bias 在反量化前就参与计算并被 x1Scale*x2Scale 缩放。源码 master 48c47ea16 的三处 arch35 引用已逐行核对。最小判别：x1 全 0、s1=s2=2^-4、bias=8、两 rank，资料值 16.0，实测 0.0625，差 256 倍且与 matmul 结果无关；真实 pertensor scale 约 1/448 时 s1*s2≈5e-6，bias 被衰减到 1e-6 量级，等于静默丢弃 bias，所有带 bias 的量化 MC2 受影响。A2/A3 量化路径反而把 bias 排除在 matmul 外，两条路径语义都不对齐资料。报告附可编译 repro.cpp（两 rank、HCCL_OP_EXPANSION_MODE=AI_CPU）与对照组/缺陷组输出。
+  source: 'cann/ops-transformer issue #8877（open，2026-11-26，Ascend950PR / CANN 9.3.0 V100R001C13B060 / driver 25.7.rc1.10 / master 48c47ea16）https://gitcode.com/cann/ops-transformer/issues/8877'
+  behavior: 分布式训练里用量化 MC2（matmul+reduce-scatter 融合）且该层带 bias 时，前向输出会悄悄丢掉 bias：x1 全 0、bias=8 这种判别输入下，文档公式应得 16.0，实际只有 0.0625；换成真实量化 scale（约 1/448）后 bias 被压到 1e-6，等于这一层的偏置完全不起作用。训练不报错、loss 还能降，但每层都少了一个加性项，等于模型容量被静默削掉；只有把 x1 置零单独看 bias 贡献才能发现。
+  trigger_surface: Ascend950PR arch35 pertensor 量化 MatmulReduceScatterV2 且 bias 非空；A2/A3 量化路径语义亦与资料不符
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: 算子/内核
+        to: 量化

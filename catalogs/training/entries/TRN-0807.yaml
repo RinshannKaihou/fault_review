@@ -1,0 +1,66 @@
+id: TRN-0807
+legacy_ids: []
+slug: megatron_tracker_empty_file_restart_no_train
+aliases: []
+title: Megatron tracker 半写空文件致重启不训练
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: megatron-lm
+    component: checkpointing tracker
+  behavior: rank0 每次保存后非原子重写 tracker、覆盖 latest_train_state.pt；0.20.1 的 read_metadata 读到空 tracker 时打印 ERROR 并 sys.exit()。
+effect:
+  objects:
+  - 可用性/进度
+  - 指标/日志
+  detail: 0.20.1 上 tracker 为空时每次重启直接退出、11/12 次退出码 0，调度器当成功；main 上空 latest_train_state.pt 每次重启失败，--save-retain-interval 下后续保存报 ValueError。
+  visibility: 报错
+mitigation:
+  detect: 保存后检查 tracker 与 latest_train_state.pt 的非空/可解析性；把作业退出码 0 但 step 未前进纳入健康检查
+  fix: 'draft PR #9717（open，2026-11-23）：temp+fsync+os.replace 原子写 tracker，read_metadata 不可读时 exit 1，--save-retain-interval 解析失败显式报错'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/9713
+  kind: github_issue
+- url: https://github.com/NVIDIA/Megatron-LM/pull/9717
+  kind: github_pr
+relations:
+- kind: var
+  target: TRN-0748
+pattern: PAT-TRN-0084
+original:
+  mechanism: 'megatron/training/checkpointing.py 在每次保存后由 rank0 用 open(path,''w'') 原地重写 latest_checkpointed_iteration.txt，并用 shutil.copy 覆盖 latest_train_state.pt，都不是原子提交；若进程在写这两个文件时崩溃，会留下 0 字节文件。0.20.1 的 read_metadata 读到空 tracker 时打印 `ERROR: Invalid metadata file ... Exiting` 后调 sys.exit()，于是每次重启都在训练前退出；报告者 12 次重启里 11 次退出码为 0，调度器当成正常结束，另一次 rank0 SIGABRT。main 上改为优先读 latest_train_state.pt，空文件会让每次重启加载失败；开 --save-retain-interval 时后续保存还会因 int('''') 抛 ValueError。修复方向：两个文件都写临时文件 + fsync + os.replace，metadata 不可读时以非 0 退出。CPU/gloo、torch 2.15、2 进程、torch_dist 可复现。'
+  source: 'Megatron-LM issue #9713（open，2026-11-23；megatron-core 0.20.1 与 main 412eacc 均复现）https://github.com/NVIDIA/Megatron-LM/issues/9713 ；修复 draft PR https://github.com/NVIDIA/Megatron-LM/pull/9717'
+  behavior: 作业在保存 checkpoint 时被打断后，重启不训练直接退出：0.20.1 上每次重启都打印 invalid metadata 并 sys.exit()，12 次里 11 次退出码是 0，调度器显示成功、step 不前进；main 上换成空 latest_train_state.pt 让每次加载失败，开 --save-retain-interval 时后续保存报 ValueError。必须人工修文件才能恢复，监控若只看退出码会完全看不见。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 报错
+    rewritten:
+    - behavior

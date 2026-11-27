@@ -1,0 +1,57 @@
+id: TRN-0810
+legacy_ids: []
+slug: msswift_judge0_error_scores_zero_reward
+aliases: []
+title: Judge0 429/503 被当成 0 分 reward
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: ms-swift
+    component: CodeRewardByJudge0
+  behavior: 批量提交后读 error body 的 status 触发 KeyError，except 捕获所有异常并 return 0.0，只留一条 warning；没有重试或并发上限。
+effect:
+  objects:
+  - 训练信号
+  detail: 14 个 completion（7 对 7 错）在 Judge0 限流时返回 [1,0,1,0,1,0,1,0,0,0,0,0,0,0]，3 个正确解被判 0；GRPO 用错误 reward 继续更新，无失败信号。
+  visibility: 静默错误
+mitigation:
+  detect: 统计 reward 分布与 Judge0 HTTP 状态；对同一 completion 重放打分，检查 429/503 后是否变成 0
+  fix: '待定（issue #10613 open，2026-11-22；建议 429/5xx 按 Retry-After 退避重试并限制在飞请求数，报告者愿提 PR）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10613
+  kind: github_issue
+relations:
+- kind: var
+  target: TRN-0201
+pattern: PAT-TRN-0083
+original:
+  mechanism: 'examples/train/grpo/plugin/plugin.py 的 CodeRewardByJudge0 把一个 batch 的所有 completion 一次性提交给 Judge0，wait=true；服务器返回 429（限流/在飞提交过多）或 503（队列满）时，响应体没有 status.description 字段，response_json[''status''] 抛 KeyError，被外层 `except Exception as e: logger.warning(...); return 0.0` 吞掉。于是该 completion 得 0 分，与真正编译/用例失败无法区分，也不重试。复现：Judge0 允许的并发小于 batch，14 个 completion（7 对 7 错、每个 3 个用例）期望 [1,0]*7，实测最后 7 个全 0，其中 3 个本来是正确解；自建 Judge0 队列满时同样。建议按 Retry-After 退避重试并加 JUDGE0_MAX_CONCURRENCY；报告者给出该修改后 14 个 reward 全部正确。'
+  source: 'ms-swift issue #10613（open，2026-11-22；main e42be49，含 14 completion 实测与建议补丁）https://github.com/modelscope/ms-swift/issues/10613'
+  behavior: GRPO 训练继续跑、日志里只有一条 'Error from Judge0 executor' warning，但一批 completion 里正确解会被打成 0 分：14 个 completion 中 7 个正确，限流后实测 reward 只剩前 4 个 1.0，后 7 个全 0，其中 3 个是正确解。reward 分布被服务端 429/503 污染，advantage 随之错误，训练不会停下。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

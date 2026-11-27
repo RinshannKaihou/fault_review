@@ -1,0 +1,57 @@
+id: INF-2590
+legacy_ids: []
+slug: cann_moe_finalize_routing_v3_expert_ranges_ignored
+aliases: []
+title: MoeFinalizeRoutingV3 专家区间被静默忽略
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: cann
+    component: MoeFinalizeRoutingV3/V4
+  behavior: A2 membase 下，传入 zero/copy/constantExpertRange 时，V3/V4 专家通道逻辑整体未生效，tiling/kernel 未读取三个 range。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: 三区间 zero=0,1/copy=1,2/constant=2,4 时两段返回 0，输出 [[4,4],[6,6]] 而非公式要求 [[30,30],[200,200]]；非法区间也不报错。
+  visibility: 静默错误
+mitigation:
+  detect: 传任一非空专家区间，断言输出与不传时不同；非法区间应返回 161002
+  fix: 待定（open；需补 A2 实现或把资料改为不支持；训练库同机制条目 TRN-0378）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8343
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0378
+original:
+  mechanism: '`aclnnMoeFinalizeRoutingV3` 在显式下发专家通道参数（`zeroExpertRange`/`copyExpertRange`/`constantExpertRange` 加 `xOptional`/`alpha1Optional`/`alpha2Optional`/`vOptional`）时，通道逻辑整体未生效：输出与不设通道的纯 V2 聚合逐位一致（实测 `[[4,4],[6,6]]`），而资料计算公式要求 `[[30,30],[200,200]]`；两段调用均返回 0，无任何报错。源码定位：`op_host/moe_finalize_routing_v2_def.cpp:94-95` 把 ascend910b/ascend910_93 绑定 membaseCfg；A2 membase tiling 中 ExpertRange 出现次数为 0，只读 drop_pad_mode 与 k 属性，从不读索引 1/2/3 的三个 range；A2 kernel 15 个头文件中 zeroExpert/copyExpert/constantExpert 出现次数全为 0；arch35 tiling 则有 `GetDropPadModeAndExpertRangeAttrs`/`CheckExpertRangeValidity`。实测 NUM_ROWS=4,K=2,H=8,E=6：三区间覆盖全部专家后期望 100.0/114.0/120.0，实测全部与基线 97.410095 逐元素相同；非法取值（[-1,-5]、[1,99999]、区间重叠）同样 rc=0。环境 Atlas A2 910B2、CANN 9.3.0、ops-transformer master 5cfadc356。同机制已在训练库 TRN-0378（issue #6549）记录，本条为 V3/V4 在推理侧的新复现与证据。'
+  source: https://gitcode.com/cann/ops-transformer/issues/8343（open，2026-11-21，含专家区间期望/实测对照与源码计数）
+  behavior: 在 Atlas A2 上用 MoeFinalizeRoutingV3/V4 表达 zero/copy/constant 三类特殊专家（共享专家特殊处理、专家裁剪等）时，这些区间被静默忽略：传了 zero=0,1、copy=1,2、constant=2,4，输出仍然只是普通专家累加 [[4,4],[6,6]]，而按文档公式应为 [[30,30],[200,200]]。接口返回 0，非法区间（end<start、超上限、重叠）也不报错；模型输出整体偏差、专家行为与设计不符，只有对照参考实现或换到 950 平台才能发现。
+  trigger_surface: Atlas A2 910B2、CANN 9.3.0、ops-transformer master 5cfadc356；aclnnMoeFinalizeRoutingV3/V4，传 zero/copy/constantExpertRange + xOptional/alpha1/alpha2/vOptional。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - subsystem

@@ -1,0 +1,60 @@
+id: TRN-0811
+legacy_ids: []
+slug: recurrent_gated_delta_rule_ub_tail_stale
+aliases: []
+title: RecurrentGatedDeltaRule 长序列尾部读陈旧值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: RecurrentGatedDeltaRule
+  behavior: q/k 的 4K UB 缓冲区放不下整条序列时 kernel 未分段，尾部 token 读到上一段残留数据；host 侧不校验 T×Dk 上限。
+effect:
+  objects:
+  - 数值结果
+  - 梯度
+  detail: 合法 shape（Dk≤512、T>0）下 T×Dk=4097 起尾部错值：T=12/Dk=512 时 441/1536 元素超容差、max|out| 达 1e21（fp64 参考 0.0476）；4096 边界内 0/1024 超差，两段均 rc=0/0。
+  visibility: 静默错误
+mitigation:
+  detect: 按 T×Dk 在 4096 边界两侧做 fp64 对照扫描；检查 aclnn 返回码与尾部 token 的误差分布
+  fix: '待定（issue #8502 open，2026-11-24；未见修复 MR）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8502
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0775
+pattern: PAT-TRN-0085
+original:
+  mechanism: aclnnRecurrentGatedDeltaRule 的资料允许 0<Dk≤512、T>0 且 T≤BlockNum，但没有给 T×Dk 的上界。kernel 把 q/k 放进 4K 的 UB 缓冲，T×Dk>4096 时放不下整条序列，实现没有分段/回读，尾部 token 的上一步状态从缓冲区残留位置读取。host 侧 CheckShape 不做该组合校验，两段接口都返回 0。边界实测：16×256=4096 PASS、17×256=4097 FAIL、64×64 PASS、65×64 FAIL、8×512 PASS、9×512 FAIL；T=12、Dk=512、Nv=2、Dv=64 时 441/1536 元素超容差，max|out| 1e21 量级，fp64 参考 0.0476。对照组 0/1024 超差，golden 与文档公式互差 0.4%，排除夹具问题。
+  source: 'cann/ops-transformer issue #8502（open，2026-11-24；Ascend 950PR / CANN 9.3.0.P009 / abec8775，含边界扫描与 fp64 参考）https://gitcode.com/cann/ops-transformer/issues/8502'
+  behavior: 线性注意力/门控 delta 网络用 RecurrentGatedDeltaRule 处理较长序列时，前向不报错、返回码 0，但尾部 token 的输出出现极大错值（实测 max|out| 可达 1e21，fp64 参考只有 0.0476），441/1536 个元素超容差；序列较短（T×Dk≤4096）时完全正常，因此短跑和单元测试发现不了，训练 loss 会在长序列 batch 上突然爆掉或持续偏移。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

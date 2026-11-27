@@ -1,0 +1,47 @@
+id: INF-2589
+legacy_ids: []
+slug: cann_maximum_minimum_int_narrow_cast_before_compare
+aliases: []
+title: Maximum/Minimum 整数先窄化后比较致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnMaximum/Minimum
+  behavior: 950 RegBase 的 GetComputeType 对同 dtype 输入、out dtype 不安全的组合，把 computeType 置为 out dtype 并跳过结果转换；输入先 Cast 窄化再比较，顺序与文档相反。
+effect:
+  objects:
+  - 数值结果
+  detail: self=other=INT16、out=INT8、元素 200/100 时 API 通过，200 先变 -56，max 得 100；文档语义应 max(200,100)=200 再转 INT8 得 -56。INT64→INT32 的 min 也出现 0 vs -1 分歧。
+  visibility: 静默错误
+mitigation:
+  detect: 构造同 dtype 输入 + 可窄化/变号 out dtype 的对照（200/100→INT8、2^32-1/0→INT32），与 max-then-cast 参考比较
+  fix: 待定（open；issue 给出 GetComputeType 修复方案 computeType=inDtype、needOutputCast，未见 MR/发布）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/5253
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 在 Ascend 950PR/950DT（arch35/IsRegBase）上，`aclnnMaximum`/`aclnnMinimum` 的计算类型选择函数 `GetComputeType` 对「self 与 other 同 dtype、但该 dtype 到 out dtype 不满足 `IsMaxMinSafeInputDtype`」的合法入参组合，把 `computeType` 置为 out dtype 并跳过结果转换（修复前 `aclnn_maximum.cpp`/`aclnn_minimum.cpp` L134-136），即先把两个输入经 `l0op::Cast` 窄化/变型到 out dtype 再做 max/min。文档化推导契约要求在推导类型（同 dtype 输入时即输入 dtype）中计算、仅对结果做一次转换；非 RegBase 路径正是按推导类型实现。数值见证：aclnnMaximum self=other=INT16、out=INT8、元素 200/100，API 校验通过，200 先 Cast 成 INT8 变 -56，kernel max 得 100；按文档语义 max(200,100)=200 再转 INT8 得 -56。aclnnMinimum self=2^32-1、other=0（INT64）、out=INT32：先算后转 = 0，先转后算 = min(-1,0)=-1。另有 INT16 输出被 route 到不支持 AICore dtype 的合法调用失败。环境 950PR/950DT arch35、CANN 9.3.0、ops-math master。
+  source: https://gitcode.com/cann/ops-math/issues/5253（open，2026-11-25，含 INT16→INT8 与 INT64→INT32 数值见证）
+  behavior: 在 950 系列上用 aclnnMaximum/aclnnMinimum 做整型 min/max 时，如果输入同 dtype、输出是更窄或会变号的类型，接口不报错，但会先把输入窄化/变号再做比较：例如 INT16 的 200/100 要输出 INT8，200 先变成 -56，max 结果成了 100（文档语义应先比较得 200 再转成 -56）；INT64 的 2^32-1 和 0 输出 INT32，min 得到 -1 而不是 0。普通正值数据即可触发，输出仍是正常整数，只有和 max-then-cast 参考对照才能发现；同一输入在非 950 路径上结果正确。
+  trigger_surface: Ascend950PR/950DT（arch35/IsRegBase）、CANN 9.3.0、ops-math master；aclnnMaximum/aclnnMinimum、self/other 同 dtype、out 为可转换但非 IsMaxMinSafeInputDtype 的窄化/变号类型（int64→int32/int16/int8、int32→int16/int8、uint64→uint32/16/8、s8→u8 等）。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

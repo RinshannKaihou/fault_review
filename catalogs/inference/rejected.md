@@ -19,3 +19,4 @@
 ## R.4 C++ `aclnn` 契约外负向测试（GIGO）与非大模型算子
 
 - 绕过 PyTorch/推理引擎前端直接向 C++ 两段式 `aclnn*` 传入契约外非法参数（如 `eps < 0`、`RoPE mode=2^32`、`slotMapping=[-1]`）以及脱离大模型推理路径的传统 CV/3D/RNN 算子（如 `MaxPool3D`、`Winograd`、`Histc`、`LstmCell`）：不纳入 LLM 推理静默故障主编目。
+- [cann/ops-math #5305](https://gitcode.com/cann/ops-math/issues/5305)（2026-11-26）：`col2_im` 在 910B2 上 48 个输出中 10 个正确、32 个错值、6 个 NaN，属 `conv_transpose` 类传统 CV 重建算子、与 LLM 推理路径无关，按本条范围规则不占 `INF-*` 编号。

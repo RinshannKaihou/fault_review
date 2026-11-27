@@ -1,0 +1,57 @@
+id: TRN-0817
+legacy_ids: []
+slug: rms_norm_grad_quant_tail_column_large_index_grad_wrong
+aliases: []
+title: RmsNormGradQuant 尾列与大索引梯度错算
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: RmsNormGradQuant regbase
+  behavior: regbase 实现分段尾列的 Cast/Muls 未覆盖末列，FP32 中间乘加把交替大梯度压成饱和值，大张量 GM 元素地址按 uint32 截断（2^32 变 0）。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: (1,8193) 末列 dy=4×8193 时前 8192 个 int8 dx 全 0（应 -4）；大值除法场景输出全 -128 或全 0（应交替 ±4/±64）；65537×65536 尾行地址 4294967296 被截为 0。无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 RmsNormGradQuant 尾列非零 dy 与元素数 >2^32 的大张量，对 dx/dgamma 与 64 位独立参考逐元素比对
+  fix: PR https://gitcode.com/cann/ops-nn/pull/16346 open（2026-11-26，修 regbase 梯度归约与索引边界；未发布）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/10341
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/pull/16346
+  kind: gitcode_pr
+relations: []
+original:
+  mechanism: cann/ops-nn 的 RmsNormGradQuant regbase 实现（Ascend950PR、CANN 9.3.0、master 6805e792a）存在三类梯度错算：第一，分段尾列的 Cast/Muls 只覆盖整块，末列 dy 未被处理，导致 (1,8193) 输入、x=gamma=rstd=scale=1、dy 仅末列为 4×8193 时，前 8192 个 int8 dx 实际为 0（期望 -4）；第二，FP32 中间乘加在极大值处饱和：dy 交替 2^123/2^124、scale=2^120 时输出全 -128，dy=2^68、gamma 交替 ±2^60、x=1024、rstd=2^-10、scale=2^112 时输出全 0，而正确结果应为交替 ±4 与 ±64；第三，大张量搬运元素地址在 32 位域计算，(65537,65536) 形状、dy 仅末行置 1 时，尾行应从元素偏移 4294967296 起读，实际被截断为 0，dgamma 全错。前三个数值场景已在 950 上复现，大张量项已复现地址回绕但尚未整形状上板。前向与正常尺寸反向不受影响，全程无报错。修复 PR !16346（open）给出归约与索引边界修改，含正常值回归、入口覆盖、异常行测速与大张量验证边界。
+  source: 'cann/ops-nn issue #10341（open，2026-11-26，Ascend950PR / CANN 9.3.0 / master 6805e792a）https://gitcode.com/cann/ops-nn/issues/10341 ；修复 PR https://gitcode.com/cann/ops-nn/pull/16346 （open）'
+  behavior: 量化训练里用 RmsNormGradQuant 反传时，梯度会在三种看起来完全合法的输入上静默错掉：序列长度不是分块整数倍（如 8193）时，最后一列 dy 带来的贡献整段丢失，前 8192 个 int8 dx 全是 0 而参考是 -4；梯度幅度大（2^120 量级 scale）时输出被压成饱和的 -128 或直接全 0，参考是交替的 ±4、±64；张量元素数超过 2^32 时，最后几行的 GM 地址回绕，dgamma 从错误位置读数。三种情况都返回成功、loss 仍能下降，只有把 dx 与 64 位参考逐元素对拍才会发现，等于权重更新方向被悄悄改掉。
+  trigger_surface: Ascend950PR regbase RmsNormGradQuant；分段尾列、大梯度除法模式、元素数接近或超过 2^32
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - detail

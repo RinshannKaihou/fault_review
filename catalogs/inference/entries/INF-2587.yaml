@@ -1,0 +1,60 @@
+id: INF-2587
+legacy_ids: []
+slug: cann_flash_attention_score_scale_zero_wrong
+aliases: []
+title: FlashAttentionScore scale=0 非对齐 Skv 静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnFlashAttentionScore
+  behavior: Ascend950PR fp16、scaleValue=0、headNum>=16 且 Skv 非128倍数时，输出与公式定义的均匀注意力不符，整块偏离 mean(V)；Skv=128 或 fp32 不复现。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: Skv=129、Nq=16 fp16 时 max|out-mean(v)|=0.095181，192000/262144 元素偏差>1e-2；Skv=128 对照偏差 0.000000；两段 rc=0。
+  visibility: 静默错误
+mitigation:
+  detect: scale=0 时用 mean(V) 作解析参考；覆盖 Skv=128/129、headNum=8/16、fp16/fp32
+  fix: '待定（open；issue 关联 FIA V5 #6739 但表现不同，未见修复 MR）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-2192（FIA V5 scaleValue=0 输出恒为 mean(V)/2）同属 scale=0 触发的注意力静默错值；本条接口为 aclnnFlashAttentionScore，偏差非固定倍数且随 Skv%128/headNum 变化。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8413
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-2192
+pattern: PAT-INF-0213
+original:
+  mechanism: '`aclnnFlashAttentionScore` 在 Ascend950PR、fp16、`scaleValue=0`、`headNum=16`、`Skv=129` 时，GetWorkspaceSize 与 execute 都返回 0，但输出与公式定义的均匀注意力不符：`scale=0` 时 scores 恒 0，softmax 在 Skv 轴均匀，`attentionOut[b,n,i,:]` 应等于 `value[b,n,:,:]` 在 Skv 轴的算术平均；实测与 mean(V) 最大偏差 0.095181，192000/262144 个元素偏差 > 1e-2。对照：fp16、Nq=16、Skv=128、scale=0 时偏差 0.000000；fp32、Skv=129 也不复现。即缺陷随 `Skv%128` 与 headNum 变化，不是固定倍数，df 与 FIA V5 #6739 的固定 0.5×mean(V) 不同。环境 Ascend950PR、CANN 9.3.0、ops-transformer master a739e89cc1ba834107d072b8c20ccc8358887c19。'
+  source: https://gitcode.com/cann/ops-transformer/issues/8413（open，2026-11-23，含 Skv=128/129 对照与逐元素偏差）
+  behavior: 调用 FlashAttentionScore 时把 scale 显式传 0（资料未禁止），在 fp16、headNum>=16、Skv 不是 128 倍数的合法形状下，输出整块是错的：按公式应等于 value 在 Skv 轴的均值，实际最大偏差 0.095，26 万个元素里 19.2 万个偏差超过 1e-2。接口返回成功、没有 NaN、没有报错；Skv=128 或 fp32 又完全正确，所以只在特定形状组合下静默出现，调用方很难把精度异常归因到 attention scale。
+  trigger_surface: Ascend950PR、CANN 9.3.0、ops-transformer master a739e89、aclnnFlashAttentionScore、fp16、scaleValue=0、headNum>=16、Skv=129。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

@@ -1,0 +1,54 @@
+id: TRN-0804
+legacy_ids: []
+slug: blocksparse_attention_v3_mask_oob_columns
+aliases: []
+title: BlockSparseAttentionV3 越界 mask 列算出错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BlockSparseAttentionV3
+  behavior: blockSparseMask 宽度按 max(actualSeqLengthsKv) 的块数定义，短 batch 的越界列被置 1 时 kernel 未按该 batch 自身块数截断，仍把对应块当有效块 gather。
+effect:
+  objects:
+  - 数值结果
+  detail: A3 910_93/CANN 9.3.0 上 mask 4 列中越界 2 列置 1，两段 rc=0/0，max|out-CPU| 0.0622（容差 1e-3 的 62 倍），另一 shape 出现 1920 个 NaN；同数据越界列清零后 7e-5。
+  visibility: 数值异常
+mitigation:
+  detect: 按 max(actualSeqLengthsKv) 构造 mask 宽度、给短 batch 的越界列置 1，与按该 batch 自身块数截断的 CPU 参考对比
+  fix: '待定（issue #8693 open，2026-11-25）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8693
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: aclnnBlockSparseAttentionV3 的 blockSparseMask 宽度按 kvBlockNum = ceilDiv(max(actualSeqLengthsKv), blockShapeY) 定义，当一个 batch 的实际 KV 短于 max 时，它天然存在"没有对应 KV 的越界列"。kernel 做块选择时没有按该 batch 自身的 ceilDiv(actual, block) 截断，越界列被置 1 就把不存在/陈旧的块当成有效块 gather，输出错值；部分 shape 直接产生 NaN。复现：BNSD、B=1、N=2、Sq=256、KV 存储 512、actualSeqLengthsKv=[256]、blockShape=[128,128]，kvBlockNum=4 而该 batch 只有 2 个有效块；mask [1,1,1,1] 时 max|out-CPU| 0.0622（容差 1e-3 的 62 倍，另一 shape 1920 个 NaN），越界列清零 [1,1,0,0] 或 mask 只声明 2 列时 7e-5。文档未要求越界列必须为 0，也没声明其语义，按块选择语义不应返回 0 并给出错值。
+  source: 'cann/ops-transformer issue #8693（open，2026-11-25；A3 910_93 / CANN 9.3.0.P009 / master 700980a，含三组 mask 对照）https://gitcode.com/cann/ops-transformer/issues/8693'
+  behavior: 稀疏注意力在变长 batch 上用了按 max KV 长度算出的 blockSparseMask 时，短样本那一行若把越界列置 1，aclnnBlockSparseAttentionV3 仍返回 0/0，但输出出现错值（实测偏差是容差的 62 倍）甚至整片 NaN；把越界列清零或按该样本自身块数裁 mask 后立刻恢复正常，因此训练中的 NaN/精度劣化很难归因到 mask 构造。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 数值异常

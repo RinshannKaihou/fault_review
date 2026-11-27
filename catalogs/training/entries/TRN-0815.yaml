@@ -1,0 +1,54 @@
+id: TRN-0815
+legacy_ids: []
+slug: trl_grpo_resume_buffer_slice_replay
+aliases: []
+title: GRPO resume 重放已用过的 buffer 切片
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: trl
+    component: GRPOTrainer buffer 索引
+  behavior: _step 只在 training_step 中递增，resume 时未恢复；generation buffer 不保存，重建后按 self._step % steps_per_generation 从 slice 0 开始读。
+effect:
+  objects:
+  - 训练样本流
+  - 训练轨迹
+  detail: save_steps 不是 generation interval 整数倍时，续跑不报错、step 数和 loss 正常，但 step 2/3 重训已用 slice 0/1，第二次生成的 slice 2/3 不被使用，同一 prompt 重复训练、部分 prompt 被跳过。
+  visibility: 静默错误
+mitigation:
+  detect: 记录每个 global_step 实际训练的 buffer slice 与 prompt id，续跑后与不间断 run 的调度逐 step 对比
+  fix: '待定（issue #8552 open，2026-11-24；作者提议 resume 时按 global_step*gradient_accumulation_steps 恢复 _step 并加对照测试）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/trl/issues/8552
+  kind: github_issue
+relations: []
+original:
+  mechanism: GRPOTrainer.__init__ 把 self._step 置 0，之后只在 training_step 里递增，checkpoint 不保存该值。resume 后 _buffered_inputs 为 None，_prepare_inputs 按预期重建 buffer（生成一批 rollout），但随后仍用 self._buffered_inputs[self._step % steps_per_generation] 取切片，此时 _step 已回到 0，于是从 slice 0 而不是断点所在的 slice 继续。复现：steps_per_generation=4、save_steps=2、max_steps=8，从 checkpoint-2 续跑，step 2/3 又训练 slice 0/1（与 step 0/1 重复），第二次生成的 slice 2/3 从未使用；不间断 run 依次是 0,1,2,3 / 0,1,2,3。因为 dataloader sampler 本身已在正确位置，重新生成的 batch 与不间断 run 的下一批相同，只有切片下标错。save_steps 为 generation interval 整数倍时不触发。
+  source: 'TRL issue #8552（open，2026-11-24；CPU 30 秒复现，附 unbroken/resumed/修后三列调度对照）https://github.com/huggingface/trl/issues/8552'
+  behavior: 从 generation buffer 中途保存的 checkpoint 续跑，训练不报错、step 数和 loss 都正常，但续跑后在 step 2/3 又训练已经用过的 slice 0/1，后面生成的 slice 2/3 永远不进入训练；同一个 prompt 会被重复训练、另一些 prompt 被跳过。只有 save_steps 不是 steps_per_generation 整数倍（抢占式作业、steps_per_generation 大于 gradient_accumulation_steps、num_iterations>1 等）时出现。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 数据管线
+        to: RL训练回路
+    rewritten:
+    - detail

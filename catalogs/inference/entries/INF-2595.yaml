@@ -1,0 +1,60 @@
+id: INF-2595
+legacy_ids: []
+slug: transformers_qwen2_eager_fp16_leftpad_nan
+aliases: []
+title: Qwen2 eager fp16 左 padding 全掩码行 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: transformers
+    component: Qwen2 eager attention
+  behavior: eager attention 把 fp16 加性 mask（-65504）加到 fp16 scores；全掩码行任一分值低于约 -16 即舍入为 -inf，softmax 变 NaN，下一层 padding key 污染整条序列。
+effect:
+  objects:
+  - 输出分布
+  - 输出内容
+  detail: Qwen2.5-0.5B fp16/eager、34 个左 pad token 时最后 token logits 为 NaN，generate() 返回 [0,0,0,0,0]；pad 22–40 触发、0–21 有限；SDPA/bf16 正常；fp32 加 mask 或清零全掩码行权重可修复。
+  visibility: 数值异常
+mitigation:
+  detect: 左 padding 批在 eager fp16 下检查 logits 是否有限；覆盖 pad 数 22–40；与 SDPA/bf16 对照
+  fix: 待定（open；报告者给出两种已验证修复：mask 在 fp32 相加、或将无允许 key 的 query 行 softmax 权重清零；尚无 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-2158（Qwen4-Exp eager 左 padding 批 NaN logits）同属 eager 加性 mask + 全掩码行 → NaN 的机制；本条为 Qwen2 fp16 下 finfo.min 舍入到 -inf 的具体路径，历史条目为 Qwen4-Exp CPU FP32 的 mask 加法异常。
+evidence:
+- url: https://github.com/huggingface/transformers/issues/51079
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2158
+pattern: PAT-INF-0212
+original:
+  mechanism: transformers 5.23.0、torch 2.11.0+cu128、Qwen2.5-0.5B、`attn_implementation='eager'`、fp16。eager attention 把加性 mask 直接加到 fp16 scores，masked 项为 `torch.finfo(torch.float16).min=-65504`；在该值附近相邻 fp16 间隔 32，score 低于约 -16 时 `score + (-65504)` 舍入为 -inf。左 padding 的 query 行没有任何允许的 key，整行被 mask，layer 1 head 9 的 34 个 padding query 行原始 score 最高 -17.375，全部变成 -inf；softmax 对全 -inf 行返回 NaN，layer 2 中 padding 位置的 key 变成 NaN，NaN + mask 仍是 NaN，最终整条序列（含真实 token）的 logits 都变 NaN。复现：3-token prompt `" used to be"` 左 pad 34 个 token，最后 token logits `torch.isfinite(...).all()` 为 False，`generate()` 返回 `[0,0,0,0,0]`；pad 0–21 有限、22–40 为 NaN；SDPA/bf16 有限。两种修复在 prefill+15 decode 上与 fp32 eager 对照：mask 在 fp32 相加、或把无允许 key 的 query 行 softmax 权重清零，均消除 NaN 且未受影响行逐位不变。
+  source: https://github.com/huggingface/transformers/issues/51079（open，2026-11-22，含 pad 数阈值、根因测量与两种修复）
+  behavior: Qwen2.5 用 eager attention + fp16 做左 padding 批量生成时，只要 pad token 数达到 22–40，最后 token 的 logits 就变成 NaN，`generate()` 不报错，直接返回一串 token 0。同一 prompt 不加 padding 时正常，换 SDPA 或 bf16 也正常；pad 较少（0–21）时也正常，所以是一个随序列内容/长度变化的阈值型静默故障。NaN 会从 padding 行传播到下一层的所有 key，最终污染真实 token 的输出分布。
+  trigger_surface: transformers 5.23.0、torch 2.11.0+cu128、Qwen2.5-0.5B、attn_implementation='eager'、fp16、batch 含 22–40 个左 padding token。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

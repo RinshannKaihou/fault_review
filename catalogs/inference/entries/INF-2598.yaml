@@ -1,0 +1,55 @@
+id: INF-2598
+legacy_ids: []
+slug: vllm_ascend_missing_causal_conv1d_update_kernel_layout_confusion
+aliases: []
+title: vllm-ascend 缺失 conv 更新内核致 GDN/KDA 静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm-ascend
+    component: causal_conv1d_update
+  behavior: causal_conv1d_update_npu 未实现，import 失败后回退到只支持 dim-first 的 upstream 包装；GDN/KDA 的 dim-last 状态被按 mamba 布局读，stride 交换。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: GDN/KDA（Kimi K3、Qwen3-Next 等）每步 decode 的卷积窗口从错误位置读取，输出偏差实测 maxdiff=239（正确值 O(1–10)），无断言；同一调用偶发 RuntimeError，失败在崩溃与静默错值间漂移。
+  visibility: 静默错误
+mitigation:
+  detect: 用 transpose 到 mamba 布局的参考实现对照 dim-last 状态；检查启动警告 'causal_conv1d_update is unavailable'
+  fix: 待定（issue 建议实现 layout-dispatching 的 causal_conv1d_update_npu 并阻断 import 失败回退；open，未核实修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-0194（SGLang causal_conv1d_update 回退核错读状态）同属 fallback 卷积更新实现的状态布局误读族；本条是 vllm-ascend 缺失 NPU 内核后回退到 upstream PyTorch 包装，触发差异在 dim-last GDN/KDA 状态。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/23084
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-0194
+pattern: PAT-INF-0041
+original:
+  mechanism: 'PR #20377 在 vllm_ascend/patch/worker/patch_triton.py 增加 `from vllm_ascend.ops.triton.mamba.causal_conv1d import causal_conv1d_update_npu as _cc1d_update_npu; _cc1d.causal_conv1d_update = _cc1d_update_npu`，但同一提交只在 causal_conv1d.py 增加了 GDN 专用的 causal_conv1d_update_varlen，从未实现 causal_conv1d_update_npu。import 在每次启动时失败，rebind 从未生效，APIServer 与 EngineCore 各打印一次回退警告。回退后的 upstream `causal_conv1d_update` 把 conv_state 严格解释为 mamba 布局 `(cache_lines, dim, state_len)`、权重 `(dim, width)`；GDN/KDA 层实际使用 dim-last 状态 `(cache_lines, state_len, dim)` 与 `(width, dim)` 权重，dim 与 history stride 交换。kernel 级 MCVE：把 dim-last 输入 transpose 到 mamba 布局跑 upstream 包装再转回作 ground truth，直接以 dim-last 输入调用 upstream 包装得 maxdiff=239（正确值 O(1–10)），实现提议的 causal_conv1d_update_npu 后 maxdiff=0；生产 `validate_data=False`，无断言。环境 vllm-ascend nightly-main（vLLM 0.33.0）、torch_npu 2.10.0.post7、CANN 9.2.1、Atlas 800I A2（910B2）。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/23084（open，2026-11-24，含 kernel 级 MCVE、maxdiff=239 与修复建议）
+  behavior: GDN/KDA 混合模型（Kimi K3、Qwen3-Next、OLMo-GDN 等）在 vllm-ascend 上解码时，每个 decode step 的 conv_state 更新都从错误位置读取卷积窗口：输出仍正常返回，但数值与 transpose 参考差到 239，正确值只有 O(1–10)；没有断言或报错，生产关闭 validate_data 时完全静默。同一调用有时改为抛 RuntimeError，于是故障在崩溃与静默错值之间漂移；Mamba dim-first 布局的 Qwen3.8/short_conv 路径不受影响。
+  trigger_surface: vllm-ascend nightly-main（vLLM 0.33.0）、torch_npu 2.10.0.post7、CANN 9.2.1、Atlas 800I A2（910B2）；GDN/KDA 混合模型（Kimi K3、Qwen3-Next、OLMo-GDN）使用 dim-last conv 状态；Mamba dim-first 模型不触发。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,47 @@
+id: INF-2606
+legacy_ids: []
+slug: triton_experimental_int64_exempt_too_narrow
+aliases: []
+title: triton_experimental int64 截断大整数
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: _npu_int64_exempt 降型
+  behavior: 豁免名单只覆盖 RNG 类与 aten.div.*_mode；abs 等结果本身需携带大整数的算子不在名单内，指针与 compute type 一并降到 int32，超出范围的值静默截断。
+effect:
+  objects:
+  - 数值结果
+  detail: torch.abs(int64) 在 torch.compile 下：[INT64_MIN, 2^40, 2^31] → [0, 0, -2147483648]，eager/CPU 正确；2^31-1、5、7 正确，规律为取低 32 位，无编译诊断。
+  visibility: 静默错误
+mitigation:
+  detect: 对含 2^31/2^40/INT64_MIN 的 int64 张量分别跑 eager 与 torch.compile，逐元素比较；只做能否编译的 smoke 测试测不出。
+  fix: '待定（issue open；关联 #6477 为同一豁免机制在三条降型路上的另一面）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6486
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu/_inductor/triton_experimental/codegen/triton.py 的 int64→int32 降型逻辑里，豁免判据 _npu_int64_exempt 只覆盖 RNG 类算子与 aten.div.Tensor_mode / aten.div.Scalar_mode（且要求 val.dtype==int64）；其它算子的 fx_node 不在名单内时，kernel 的指针与 compute type 一起被降到 int32。对 torch.abs(int64) 这类结果本身必须携带大整数值的算子，超过 int32 的输入按 32 位读、输出再按 32 位写回，等价于取低 32 位。报告者在 CANN 9.3、910B4、TORCHINDUCTOR_NPU_BACKEND=triton_experimental 上实测：输入 [INT64_MIN, INT64_MIN+1, -2^40, -5, 2^40, 2^31, 2^31-1, 7]，CPU 与 NPU eager 都给 [INT64_MIN, INT64_MAX, 1099511627776, 5, 1099511627776, 2147483648, 2147483647, 7]，compile 给 [0, 1, 0, 5, 0, -2147483648, 2147483647, 7]，装得进 int32 的全部正确，装不下的全部变成低 32 位。
+  source: https://gitcode.com/Ascend/pytorch/issues/6486（open，2026-11-26，含 CPU/eager/compile 三路对照与落点代码）
+  behavior: 用 torch.compile 跑带 int64 索引或计数的模型（embedding 索引、token 计数、绝对位置等），只要数值超过 2^31，编译版本会把它们静默截成低 32 位：2^40 变 0、2^31 变负的 -2147483648，下游按错误索引取值或写入错误位置。编译过程没有任何诊断，eager 路径完全正确，因此只有把 compile 与 eager 的输出逐元素对比、或专门构造大整数用例才能发现。
+  trigger_surface: CANN 9.3、Ascend 910B4，torch_npu 2.16.0.dev、TORCHINDUCTOR_NPU_BACKEND=triton_experimental；torch.abs 等不在 _npu_int64_exempt 名单内、且结果需保留超过 int32 范围值的 int64 算子。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

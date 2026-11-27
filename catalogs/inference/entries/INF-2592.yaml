@@ -1,0 +1,48 @@
+id: INF-2592
+legacy_ids: []
+slug: cann_sparse_flash_attention_v2_950pr_ignores_value
+aliases: []
+title: SparseFlashAttentionV2 950PR 静默忽略 value
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: SparseFlashAttentionV2
+  behavior: 950PR 的 attentionMode=2 实现不读非空 value 张量，V 恒取 key；value 传全 0/全 1/等于 key 三种数据时 attentionOut 逐字节相同，只改 key 才变化。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: T1=2/T2=64/D=512/K=8 fp16，value=all0 与 all1 的 attentionOut sha256 相同；只改 key 时 max|diff|=1.024e3，证明探针有效；两段 rc=0，无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 固定 q/k，仅替换 value 数据，比较 attentionOut 位模式；同时替换 key 作阳性对照
+  fix: 待定（open；master 0feb6ec0 上 arch35 仍无 valueGm，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/7825
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend950PR 上调用 `aclnnSparseFlashAttentionV2`（attentionMode=2）时，只改 `value` 张量数据、其余输入完全不变，两段接口返回码均为 0，但 `attentionOut` 逐字节相同，说明 value 未参与计算，V 取自 key。对照：只改 key 时 attentionOut 变化 max|diff|=1.024e+03，证明读回与比较链有效；缺陷组 value 取全 0/全 1/=key 三套数据，三次 attentionOut 完全相同，max|diff|=0.000e+00；另一最小复现（T1=2,T2=64,D=512,K=8）value=all0 与 all1 的 attentionOut sha256 均为 1196f796…，仅改 key 才变。资料 `docs/aclnnSparseFlashAttentionV2.md:143-151` 写明 value 非空时应使用传入 value（空指针时才用 key），op_api `aclnn_sparse_flash_attention_v2.cpp:65` 也做 `valueTensor = (value == nullptr) ? key : value`；但 arch35 kernel 没有 valueGm 入参，非空 value 被丢弃。环境 Ascend950PR 8 卡、CANN 9.3.0、驱动 25.7.rc1、ops-transformer master 0feb6ec0。'
+  source: https://gitcode.com/cann/ops-transformer/issues/7825（open，2026-11-17，含 value 全 0/全 1 sha256 对照）
+  behavior: 在 950PR 上用 sparse flash attention 推理时，如果调用方传入了 value（非空），模型实际上仍拿 key 当 V 计算：只改 value 的数值，输出一个字节都不变；只有改 key 才会变。接口返回成功，没有任何告警，attention 输出形状和量级都正常，但数值是错的；任何依赖 V≠K 的稀疏注意力模型（如 MLA/DSA 的 value 分支）都会静默拿到错误结果。
+  trigger_surface: Ascend950PR（8卡）、CANN 9.3.0（950 ops 2026-11-11 构建）、驱动 25.7.rc1、ops-transformer master 0feb6ec0；attentionMode=2、fp16、value 非空、T1=2/T2=64/D=512/K=8。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

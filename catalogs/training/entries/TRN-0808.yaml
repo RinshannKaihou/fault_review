@@ -1,0 +1,51 @@
+id: TRN-0808
+legacy_ids: []
+slug: msswift_dynamic_sample_resample_same_batch
+aliases: []
+title: dynamic_sample 重采样反复取同一批 prompt
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 数据管线
+    stack: ms-swift
+    component: GRPO 重采样 dataloader
+  behavior: 重采样流复用第二份 train dataloader，其 RepeatSampler 把每个 generation batch 连续重复 N 次；每次 resample 只取一次。
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  detail: 开 gradient accumulation（steps_per_generation>1）时，std=0 的 prompt 被反复抽到、重试预算耗尽后回退原批；std>0 的 prompt 也连续占满多个 step，colocate TP>1 下同 seed 返回相同 completion。
+  visibility: 静默错误
+mitigation:
+  detect: 记录每次 dynamic_sample 重采样拿到的 prompt id/数据索引，检查同一 batch 是否在连续 step 内重复
+  fix: '待定（issue #10629 open，2026-11-25；建议重采样流使用 repeat_count=1 的独立 sampler）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10629
+  kind: github_issue
+relations: []
+original:
+  mechanism: _prepare_resample_data_iterator 从第二份 train dataloader 建流，而该 dataloader 的 sampler 是 TRL 的 RepeatSampler，repeat_count = num_iterations * steps_per_generation，其 __iter__ 会把同一批 generation batch 连续产出 repeat_count 次（训练主循环每个 accumulation step 取一次、只在第一次生成，所以需要这个重复）。_dynamic_sampling 每次重采样只调一次 next(self.dynamic_resample_iterator)，拿到的正是刚用过的那一批：std=0 的 prompt 被反复重抽，重试预算耗尽后报「There are still std=0 groups present after N retries.」并回退原批；std>0 的 prompt 也会连续填满多个 step。steps_per_generation 默认等于 gradient_accumulation_steps，因此默认开梯度累积的 run 都受影响；colocate 且 vllm_tensor_parallel_size>1 时请求 seed 按 TP 组固定，重抽还返回相同 completion。gradient_accumulation_steps=1 且 num_iterations=1 时 repeat_count=1，不触发。
+  source: 'ms-swift issue #10629（open，2026-11-25；v4.5.3/v4.6.1/main 9a1155e 复现，附源码行号）https://github.com/modelscope/ms-swift/issues/10629'
+  behavior: 开 --dynamic_sample true 后训练照常进行，但 std=0 的 prompt 会被反复重采样、重试预算耗尽后退回原 batch，日志只剩「There are still std=0 groups present after N retries.」；std>0 的同一个 prompt 也会连续出现在多个 step。默认开梯度累积时几乎每个 run 都会遇到，数据多样性下降、重采样算力被浪费，无报错。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

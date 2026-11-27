@@ -57,3 +57,9 @@
 ## B.12 算子仓内部单测参考脚本（golden / UT）与 msprobe 对拍溢出假绿
 
 `cann/ops-nn #8064`（`tests/assets/golden.py` 标量 `IndexError` 与广播除数错，原 `TRN-0613`）、`foreach log` 族 UT 漏校验（原 `TRN-0600`）以及 `Ascend/msprobe` Cosine 比对大数溢出/`nan_check` 反向落盘方向错（原 `TRN-0576`、`TRN-0628`）：均为测试资产或离线诊断工具自身缺陷，模型训练前反向计算本身未受损，统一归入盲区记录（原条目已 `retired`）。另 `cann/runtime #1357`（`aicpu_sched` 死 worker 致同步挂死，原 `TRN-0713`）并入 `B.1` 编排层假活。
+
+## B.13 mssanitizer memcheck 跨 kernel GM 影子残留与分步单元素写致 out of bounds 误报
+
+`Ascend/mssanitizer #272`（open，2026-11，910B2 / CANN 9.3.0）：memcheck 的 GM per-core 归属影子在 kernel 结束后未归还，下一个 kernel 复用同一段 GM 时把合法写报成 `out of bounds`。最小场景单次 `aclrtMalloc` 4096B：kernel1 由 8 个 block 各写 512B，kernel2 由 1 个 block 重写整段，主机侧 1024 个 float 全为 1.0（VERIFY_OK），kernel2 仍报 `out of bounds of size 3584`（=4096−512，即 kernel1 其它 7 个切片）；PyTorch 内存池复用场景第 17 次分配报 16 条（2×3584 + 14×3072），数值全部正确。`PYTORCH_NO_NPU_MEMORY_CACHING=1` 仅规避复用，`--log-level=error` 会关掉整个越界检查，都不是修复。修复 MR [!498](https://gitcode.com/Ascend/mssanitizer/merge_requests/498) / [!499](https://gitcode.com/Ascend/mssanitizer/merge_requests/499)（open，2026-11）针对影子归属残留。
+
+`#273`（open，2026-11，A3 910_93 / CANN 9.3.0.P009 / mssanitizer 26.3.0）：单个 kernel、单次 `aclrtMemcpy` 分配、无内存池复用，kernel 以每 36B 一跳做分步单元素写（合法索引 [0,tokensNum)）时，8 条报错地址全部落在 256B 输出张量内部（0x15000–0x150fc），前后各 4KB 守卫逐字节零改写；同进程 InplaceIndexAdd 再报 8 条 size 68。真越界阳性对照仍能报出，属地址归属判定误报。两类都是检测工具假阳性：告警会侵蚀越界检查可信度，按口径记盲区，不转述为模型计算已损坏。

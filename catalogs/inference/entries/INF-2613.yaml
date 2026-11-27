@@ -1,0 +1,57 @@
+id: INF-2613
+legacy_ids: []
+slug: flashinfer_min_p_fallback_zero_prob_token
+aliases: []
+title: FlashInfer min_p 回退返回零概率 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 解码/采样
+    stack: flashinfer
+    component: MinPSampling kernel
+  behavior: pivot=max_val*min_p，min_p=0 时 pivot=0，零概率槽（top-k/top-p 清零槽与 padded vocab）全被标为 valid；逆 CDF 未选中时回退 last_valid_id=d-1。
+effect:
+  objects:
+  - 输出内容
+  detail: padded_vocab=201024 的生产服务约 537k token 后返回 201023，被运行时域检查终止；无 padding 时静默返回被排除 token；全零分布 4×4096 返回 [4095×4] 且 valid=True。
+  visibility: 静默错误
+mitigation:
+  detect: 用全零概率分布或 top-k 后仅剩少量候选的分布跑 min_p_sampling_from_probs(min_p=0)，检查返回值是否落在零概率/padded 槽、valid 是否为 True；再与 min_p>0 的正常路径对照。
+  fix: issue 展示修后返回 [0,0,0,0] 且 valid=False；截至 2026-11-26 未见合并 PR（未核实）。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-2593 同属 FlashInfer 采样阈值退化导致静默返回固定 token；本条触发在 min_p=0 的 pivot=0 全槽 valid + 逆 CDF ULP 越界后的 fallback，而非 top_k/top_p 的零阈值。
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/9887
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2593
+pattern: PAT-INF-0208
+original:
+  mechanism: flashinfer 源码 560d7e296（nightly-v0.6.18，RTX 3090/SM86、Python 3.12.16、torch 2.14.1+cu130、CUDA 13.5）的 MinPSamplingFromProbKernel 计算 pivot = max_val * min_p，并把 x >= pivot 的槽位全部标记为 valid 交给 DeviceSamplingFromProb。默认 min_p=0 时 pivot=0，于是所有零概率槽（被 top-k/top-p 清零的、以及 padded vocab 的槽）都被当作合法候选；逆 CDF 循环在没有任何槽被选中时回退到 last_valid_id，落到 d-1。触发条件是 curand_uniform() 恰好返回 1.0（u==q），或第一遍总和 q 比 tile 总和 S 大几个 FP32 ULP 且 u 落在 (S,q]。生产环境 unpadded_vocab=200058、padded_vocab=201024，约 537k 生成 token 后返回 201023（padded_vocab-1），被服务运行时的域检查拒绝并终止服务；不 padding 时同一路径静默返回一个被 top-k/top-p 排除的 token。最小复现：4×4096 全零 probs、min_p=0，修复前返回 [4095,4095,4095,4095] 且 valid 全 True，修复后返回 [0,0,0,0] 且 valid 全 False。
+  source: https://github.com/flashinfer-ai/flashinfer/issues/9887（open，2026-11-23，含最小复现与生产触发计数）
+  behavior: 在用 min_p 采样（尤其是默认 min_p=0）时，极少数 token 会返回一个概率严格为 0 的 id：有 padded vocab 时是 vocab 末尾的 padding 槽（例如 201023），没有 padding 时是被 top-k/top-p 排除掉的 token。服务端如果做了 token 域校验会突然报错并终止；不做校验则静默采样到非法 token 并继续生成，输出从此跑偏。绝大多数请求完全正常，只有约几十万 token 里命中一次，因此很难复现，也很难和正常采样区分。
+  trigger_surface: flashinfer nightly-v0.6.18（560d7e296）、CUDA 13.5、RTX 3090/SM86；min_p_sampling_from_probs，min_p=0（默认）或极小的 min_p，输入分布含大量零概率槽/padded vocab；curand_uniform 返回 1.0 或 q 与 S 差几个 FP32 ULP 时命中。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

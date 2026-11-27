@@ -30,6 +30,8 @@ remarks: NPU 相关触发面：Ascend 上 FLA（Triton）不可用即落入缺�
 evidence:
 - url: https://github.com/verl-project/verl/issues/8629
   kind: github_issue
+- url: https://github.com/OpenRLHF/OpenRLHF/issues/1421
+  kind: github_issue
 relations: []
 original:
   mechanism: 'verl issue #8629（2026-11-11 open；verl 0.10.0.dev0，qwen3_5.py @ f78fd053 与 main 一致）。use_remove_padding=True 且未安装 flash-linear-attention（报告环境为 Ascend NPU，FLA Triton 内核不可用）时，Qwen3.5 的 gated-delta-net（线性注意力）层把整个 packed 微批当一个序列：循环状态跨样本携带。根因：_packed_chunk_gated_delta_rule 用 _call_accepts_kwarg 探测被调函数签名——FLA 缺失时 chunk_gated_delta_rule 解析为 transformers 的 torch_chunk_gated_delta_rule，其签名以 **kwargs 结尾，VAR_KEYWORD 分支使探测返回 True，cu_seqlens 被传入后被纯 PyTorch 实现静默吞掉（从不读取），紧邻的正确逐样本切分路径被跳过；FLA 的实现有显式 cu_seqlens 参数并在边界重置状态，故 GPU+FLA 环境不受影响、同配置跨环境行为不同。证据：同权重同输入单层 packed 调用 vs 逐样本调用，首样本一致、后续每个样本都不同（相对误差 ~20% 到 >90%）；端到端 step 1（策略未更新、trainer 与 rollout 应一致）修复前后指标对照表见 issue。来源：https://github.com/verl-project/verl/issues/8629 。训练面：GRPO/FSDP 训练 logprob 与 rollout 不一致，advantage/IS 全链被污染。'
@@ -37,6 +39,8 @@ original:
   behavior: 在没有 flash-linear-attention 的环境（如 Ascend NPU）用 verl 训练 Qwen3.5 类线性注意力模型并开 remove_padding：整个 packed 微批被当成一条序列，门控 delta 网络的循环状态从上一个样本带进下一个样本——训练全程无报错无警告，但后续样本的隐状态已被污染（单层对照相对误差 20%~90%+），trainer 算出的 logprob 与 rollout 引擎不再一致，step 1 即可观测到双方分歧，RL 信号整体失真。
   trigger_surface: verl use_remove_padding=True + Qwen3.5 gated-delta-net + FLA 未安装（Ascend NPU 典型）；GPU+FLA 不受影响；issue open
   discovery: 2026-11-12 每日扫描
+  notes:
+  - 2026-11-26 新增同机制实例（OpenRLHF）：--ds.packing_samples 把微批压成一行且 attention_mask=None，Qwen3.5 的 gated-DeltaNet 层只按 cu_seq_lens_q/seq_idx 切分，packed 样本循环状态串到下一段；Qwen3.5-2B 上 500-token 样本跟在 3000-token 后 max|Δlogp| 7.94 nats，GRPO vllm_kl 0.18–0.25（不 packing 时 0.0003–0.0006）。同属线性注意力 packing 状态泄漏，不另立条目。
 migration:
   method: scan
   scanned: '2026-11-12'
@@ -53,3 +57,8 @@ migration:
     uncertain:
     - subsystem
     - effect
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - evidence
+    - original.notes

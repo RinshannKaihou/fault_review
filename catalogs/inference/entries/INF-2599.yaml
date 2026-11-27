@@ -1,0 +1,57 @@
+id: INF-2599
+legacy_ids: []
+slug: vllm_ascend_pd_prefix_cache_kv_transfer_corruption
+aliases: []
+title: vllm-ascend PD 前缀缓存 KV 传输致输出损坏
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm-ascend
+    component: MooncakeConnectorV1 P→D
+  behavior: P/D 均启用 prefix caching 时，污染被锁定在 P→D KV 传输与前缀缓存命中路径，疑似 D 侧缓存与传输 KV 交互，致重复相同长 prompt 间歇性输出损坏；直连未复现。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: DeepSeek-V4.1-Flash W8A8 重复同一 25.9K prompt，经 PD 代理 2-3/5 次输出空内容/重复背景/多语言乱码/截断 tool-call 参数；8.5K prompt 4/6、短 prompt 0/13；直连 D 5/5 正确。
+  visibility: 不可复现
+mitigation:
+  detect: 同 prompt 经 PD 代理与直连 D 对照；关闭 D 侧 prefix caching 做差分；检查 tool-call JSON 非法告警
+  fix: 待定（open；issue 怀疑 D 侧 cache 与传输 KV 交互，尚未给出修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/22944
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'PD 分离部署（2 节点、每节点 8×Ascend 910C，1 Prefill + 1 Decode + proxy），vLLM 0.30.0、vllm-ascend 0.30.0rc2、CANN 9.2.0、MooncakeConnectorV1、block-size 128，P 与 D 两侧都启用 `--enable-prefix-caching`。重复提交完全相同的长 prompt（temperature=0）时，经 PD proxy 的 25.9K prompt 2-3/5 次错误，8.5K prompt 4/6 次错误，约 60-token 短 prompt 0/13；直连 Decode 节点（本地 prefill）5/5 正确，直连 Prefill 节点 3/3 正确。错误形态包括 content 为空、reasoning 循环耗尽 max_tokens、回显 prompt 背景文本、多语言随机 token 垃圾、截断 tool-call 参数；decode API server 日志持续出现 `Tool call ''exec_command'' has arguments that are not valid JSON (938 chars); coercing to an empty object` 告警。隔离实验把污染锁定在 P→D KV transfer + prefix-cache-hit 路径，D 侧 prefix caching 与传输 KV 的交互是主要嫌疑；issue 关联 #10253/#11353/#10867/#19502 同族。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/22944（open，2026-11-23，含 PD/直连隔离表与生产告警）
+  behavior: DeepSeek-V4.1-Flash W8A8 在 910C PD 分离集群、P/D 都开 prefix caching 时，重复同一个长 prompt 会间歇性拿到坏答案：有时 content 为空、reasoning 一直循环到 max_tokens；有时直接回显 prompt 的背景文本；生产环境还出现中英俄泰混杂的随机 token 乱码和截断的 tool-call 参数，API 日志持续报 tool-call JSON 非法。失败率随 prompt 变长上升（25.9K 时 2-3/5，8.5K 时 4/6），直连 Decode 节点 5/5 正确，说明坏 KV 只在 P→D 传输且命中前缀缓存时出现。
+  trigger_surface: vLLM 0.30.0 + vllm-ascend 0.30.0rc2、CANN 9.2.0（driver 26.2.rc1）、2 节点 8×910C、PD 分离 1P1D、MooncakeConnectorV1、P/D 均开 prefix caching、DeepSeek-V4.1-Flash W8A8、block-size 128、FULL_DECODE_ONLY、async scheduling。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 不可复现
+    rewritten:
+    - behavior

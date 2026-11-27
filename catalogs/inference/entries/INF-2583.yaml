@@ -1,0 +1,53 @@
+id: INF-2583
+legacy_ids: []
+slug: cann_aclnn_matmul_aclgraph_boundary_row_mismatch
+aliases: []
+title: ACLGraph 捕获 MatMul 边界行与 eager 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnMatmul ACLGraph
+  behavior: 相同输入与调用参数下，ACLGraph 捕获/重放的 BF16 MatMul 在 M=8 边界行输出与 eager 结构性不同，指向内部 tiling/累加，而非输入、参数或精度舍入。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: Qwen3-4B 投机解码 target 第0层 MLP gate_up（M=8、N=19456）graph 行7 sum=-17576.46 vs eager -5.55，量级差约3000倍；同层 attention 输出 graph/eager 逐位相同；多卡稳定复现。
+  visibility: 静默错误
+mitigation:
+  detect: 对 ACLGraph 捕获与 eager 的同一 MatMul 逐行比对输入/参数/输出 sha256；重点检查 M 非对齐的最后一行
+  fix: 待定（issue closed，正文未给修复 PR/版本；--deterministic_level 仅作用于 ATC 编译期，不适用运行期 aclnn+ACLGraph）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/9827
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: '延续 #8647 的 MatMul 确定性排查。Qwen3-4B 投机解码 target 第 0 层 MLP gate_up 融合 MatMul（M=8 verify block，N=19456=2×9728，BF16），第一个 verify call 的最后一行（位置 7）：输入 x [1,8,2560] 在 graph 与 eager 逐位相同（行 7 求和 2.0971，sha256 4e481db2…），调用参数也完全一致（self strides [20480,2560,1]、mat2 [2560,19456]、out [155648,19456,1]、cubeMathType=0），但输出经 silu(gate)*up 后在位置 7 结构性不同：graph 行求和 -17576.46（sha aabfb515…）vs eager -5.55（sha f706ade2…），量级差约 3000 倍，远超 BF16 舍入；同层 self_attn 输出 graph/eager 逐位相同（求和 2.0262），差异只在 MLP gate_up MatMul。相同输入 + 相同参数 + 不同输出，指向 ACLGraph 捕获的 MatMul kernel 在边界行的内部 tiling/累加，不是输入、参数或精度舍入；eager 与 2026-11-09 admitted 数值一致。环境 Ascend 910B3、CANN 9.3.0-beta.1、torch 2.14.0+cpu、torch_npu 2.14.0、transformers 5.21.0、BF16、torch_npu ACLGraph 捕获/重放。`--deterministic_level` 是 ATC 模型编译期选项，不作用于运行期 aclnn+ACLGraph；文档所述自动确定性 split-K 要求 fp32，也不适用。'
+  source: https://gitcode.com/cann/ops-nn/issues/9827（closed，2026-11-22，含逐行 sha256、调用参数与确定性开关核查）
+  behavior: Qwen3-4B 投机解码的 8 行 verify block 在 ACLGraph 捕获/重放下，MLP gate_up MatMul 的最后一行输出与 eager 结构性不同：graph 行求和 -17576，eager 只有 -5.55，差约 3000 倍；同一层的 attention 输出、MatMul 输入和调用参数都逐位相同。模型输出仍正常返回，没有 crash 或 NaN，只有拿 eager 对照或检查逐行 sum/sha256 才能发现；该现象在多次重建、不同物理卡上稳定复现。
+  trigger_surface: Ascend 910B3、CANN 9.3.0-beta.1、torch 2.14.0+cpu/torch_npu 2.14.0、BF16、torch_npu ACLGraph 捕获/重放、M=8 非对齐 verify block、N=19456。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

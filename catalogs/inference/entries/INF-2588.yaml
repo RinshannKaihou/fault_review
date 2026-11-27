@@ -1,0 +1,60 @@
+id: INF-2588
+legacy_ids: []
+slug: cann_kv_rms_norm_rope_cache_v2_index_rank_unchecked
+aliases: []
+title: KvRmsNormRopeCacheV2 index 秩未校验致错位
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: cann
+    component: KvRmsNormRopeCacheV2
+  behavior: 资料规定 index 支持 1–2 维，但 op_api 未校验 index rank；3/4 维 index（仅多前置 1 维）仍被接受且返回成功，导致 kCache/ckvCache 写入错位。
+effect:
+  objects:
+  - KV状态
+  - 数值结果
+  detail: A3/CANN 9.3.0 实测 index=[1,1,8] 时 kCacheRef 512、ckvCacheRef 4088 个元素与 2 维基线不同，[1,1,1,8] 时 448/3580 个不同；kRopeOut/cKvOut 无差异，rc=0 无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 同 seed 分别传 2/3/4 维 index，逐元素比较 kCache/ckvCache；断言 3/4 维应返回 561002
+  fix: 待定（open；issue 要求按错误码表补 index shape 校验，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-1573（同算子 regbase 越界写/错页/漏写）同属 KvRmsNormRopeCache 参数契约缺失导致 cache 写错位置；本条具体为 index rank 未校验，历史条目覆盖的是 index 值越界与 stride/页号缺陷。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8709
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1573
+pattern: PAT-INF-0209
+original:
+  mechanism: '`aclnnKvRmsNormRopeCacheV2` 的资料规定 `index` 支持 1–2 维（Norm 场景为二维 `[Bkv, Skv]`），错误码表 561002 明确包含「参数 index 的 shape 校验非法」；但 op_api 未校验 index rank。实测 A3（Ascend 910_93）/CANN 9.3.0.P009、ops-transformer master 91de0d99：同一 seed、同一 host 数据，只给 index 增加前置 1 维，2 维 `int64[1x8]` 基线 cache 与参考逐元素一致；3 维 `int64[1x1x8]` 两段 rc=0，kCacheRef 512 / ckvCacheRef 4088 个元素与基线不同；4 维 `int64[1x1x1x8]` rc=0，448/3580 个元素不同；kRopeOut/cKvOut 无差异，说明纯出参与 index 无关。cache 出参预填 0x5A5A，差异按逐元素统计，canary 证明是写入错位而非未写。'
+  source: https://gitcode.com/cann/ops-transformer/issues/8709（open，2026-11-26，含 A3 逐元素差异表与 SELFPROOF）
+  behavior: 调用 KvRmsNormRopeCacheV2 写 KV cache 时，如果 index 传成 3 维或 4 维（只是多一个前置维度，元素值和顺序都没变），接口仍然返回成功，但 kCache/ckvCache 里成百上千个元素与正确的 2 维基线不同：3 维时 512/4088 个元素错位，4 维时 448/3580 个。调用方看不到任何错误码或日志，只有后续 decode 结果异常、或拿参考实现逐元素比对 cache 才能发现；kRopeOut/cKvOut 还是对的，所以只看部分出参会误判为正常。
+  trigger_surface: Ascend 910_93（A3）、CANN 9.3.0.P009、ops-transformer master 91de0d99；aclnnKvRmsNormRopeCacheV2 Norm 模式，index 为 3/4 维（多前置 1 维）。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

@@ -1,0 +1,49 @@
+id: INF-2586
+legacy_ids: []
+slug: cann_expm1_a3_tiny_input_zero
+aliases: []
+title: aclnnExpm1 A3 极小输入静默退化为 0
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnExpm1
+  behavior: Atlas A3（910_93）上调用 aclnnExpm1 处理极小输入时，实测结果不是 expm1 的高精度值，而是 exp(x)-1 的减法结果。
+effect:
+  objects:
+  - 数值结果
+  detail: '|x|<2^-24 的 406 点中 404 点（99.5%）输出 0；|x|<2e-6 的 197 点 maxRelErr=100%，host expf(x)-1 同点仅 1.11e-7；各区间 maxAbsErr 恒约 2^-23，与 x 量级无关。'
+  visibility: 静默错误
+mitigation:
+  detect: 用 expm1f 作参考，覆盖 |x|∈[1e-30,1e-4]；检查输出是否被量化到 2^-23 格点、|x|<6e-8 是否为 0
+  fix: 待定（open；issue 要求恢复 expm1 专用实现，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/5050
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 资料 `math/expm1/docs/aclnnExpm1&aclnnInplaceExpm1.md` L26（README L16 同）承诺「对于 self 取值较小的场景，提供比直接用公式计算结果更高的精度」；实测相反：Atlas A3（910_93）、CANN 9.3.0.P009、ops-math master 3246d3f1 上 `aclnnExpm1` 在 |x|∈[1e-30,1e-4] 的 486/486 个点与 `Exp_NPU - 1.0f` 逐位等价，|x|<2^-24 的 406/406 个点也逐位等价；404/406 个点输出恰好 0。|x|<2e-6 的 197 点输出只有 17 个离散值（0,1×2^-23,…,16×2^-23），197/197 全落在 2^-23 整数倍格点，是「在 1.0 附近做减法」的量化特征；maxRelErr 100%，而 host `expf(x)-1` 同 197 点只有 1.11e-7。各区间 maxAbsErr 恒约 2^-23，与 x 量级无关；实现正确时绝对误差应随 |x| 线性缩小。阈值实测 max|x| with out==0 = 5.00000006e-08。
+  source: https://gitcode.com/cann/ops-math/issues/5050（open，2026-11-21，含 486/406/197 点统计与 2^-23 格点分析）
+  behavior: 在 Atlas A3 上调用 aclnnExpm1 处理极小输入时，结果不是 expm1 的高精度值，而是 exp(x)-1 的减法结果：|x| 小于约 6e-8 时 99.5% 的点直接输出 0，|x| 小于 2e-6 时相对误差 100%。接口返回成功、没有 NaN，输出仍是正常的 fp32 数值，只有拿 expm1f 参考或检查小值是否被量化到 2^-23 格点才能发现；对 softmax、loss、log-domain 计算里大量使用的小量 expm1，会静默丢掉整个增量。
+  trigger_surface: Atlas A3 910_93、CANN 9.3.0.P009、ops-math master 3246d3f1、aclnnExpm1、fp32、|x|<2^-24。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

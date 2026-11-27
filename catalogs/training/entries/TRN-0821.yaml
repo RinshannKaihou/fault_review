@@ -1,0 +1,57 @@
+id: TRN-0821
+legacy_ids: []
+slug: triton_ascend_math_subnormal_flush_zero
+aliases: []
+title: triton-ascend 数学函数次正规归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton
+    component: triton-ascend 数学函数
+  behavior: libdevice/tl 的 exp/exp2/div/sin/sqrt/atan/sinh/tanh/erf 在 lowering 时做 flush-to-zero：结果落次正规区间返回 0，部分先把次正规输入冲成 0 再计算。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: exp(-88)=0（应 6.05e-39）、exp2(-126)=0（应 1.175e-38 最小正规数）、1e-30/1e10=0（应 1e-40）、sqrt(±最小次正规)=[0,nan]；正常范围输入正确。
+  visibility: 静默错误
+mitigation:
+  detect: 对 tl.div/exp/exp2/libdevice 数学函数用小值（次正规与最小正规边界）做逐函数对拍；检查结果是否为 0 或 NaN
+  fix: 待定（#3322/#3323/#3349/#3356 等 issue open，2026-11-20~22；未见合并修复）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/3322
+  kind: github_issue
+- url: https://github.com/triton-lang/triton-ascend/issues/3323
+  kind: github_issue
+- url: https://github.com/triton-lang/triton-ascend/issues/3349
+  kind: github_issue
+- url: https://github.com/triton-lang/triton-ascend/issues/3356
+  kind: github_issue
+relations:
+- kind: cross
+  target: INF-2611
+original:
+  mechanism: triton-ascend 后端在 lowering 数学函数时统一做 flush-to-zero（FTZ），把次正规数当 0 处理，分两类：一是结果落进次正规区间即返回 0，tl.div（及 libdevice.div_rn/fdiv/fast_dividef 同一 fdiv 路径）算 1e-30/1e10 得 0.0、应 9.9999e-41，1e-30/1e12 得 0.0、应 1.0005e-42；libdevice.exp/tl.exp/fast_expf 对 x<-87.34 返回 0.0，exp(-88) 应 6.0546e-39、exp(-89) 应 2.2274e-39，这也是更早 cosh/sinh 过早溢出的上游根因（(exp(x)±1/exp(x))/2 中 1/exp(x) 分母被冲成 0 得 inf）；tl.exp2 更严重，连最小正规数 2^-126=1.1754943508e-38 都返回 0，-127/-128/-129 同样归零。二是先把次正规输入冲成 0 再计算：libdevice.sin/sqrt/atan/sinh/tanh 与 tl.erf 对 ±1.4e-45 输入返回 ±0（sqrt 返回 [0, nan]），正确结果应是非零次正规值或 sqrt 的 3.7e-23；同族还有 log/log2/log10（#3320）与 rsqrt（#3350）。对照 tl.mul 能正确保留次正规乘积（1e-20*1e-20=9.9999e-41），说明不是硬件统一 FTZ 模式，而是 division/数学函数 lowering 的专门缺陷。环境：Ascend 950PR、CANN 9.1.0、Triton-Ascend 3.2.2 fd24f3a、torch 2.7.1。
+  source: 'triton-lang/triton-ascend issue #3322（exp）、#3323（div）、#3349（exp2）、#3356（sin/sqrt/atan/sinh/tanh/erf），均 open，2026-11-20~22，Ascend 950PR/CANN 9.1.0/Triton-Ascend 3.2.2 https://github.com/triton-lang/triton-ascend/issues/3322 https://github.com/triton-lang/triton-ascend/issues/3323 https://github.com/triton-lang/triton-ascend/issues/3349 https://github.com/triton-lang/triton-ascend/issues/3356'
+  behavior: 用 triton-ascend 写训练 kernel（softmax、loss、归一化、门控、概率计算）时，只要中间值落到很小的范围就会被静默写成 0：exp(-88) 返回 0 而不是 6.05e-39，exp2(-126) 连最小的正规浮点数都返回 0，1e-30/1e10 的除法结果是 0，对最小次正规数求 sqrt 得到 [0, nan]。正常量级输入全部正确，所以单测和小模型都过；只有在长尾概率、极小分母、log/exp 归一化等场景才表现为某些 token 的概率被抹平、loss 出现无法解释的偏差，且换 GPU 复现不出来。
+  trigger_surface: triton-ascend 3.2.2 + Ascend 950PR；任何走 tl.div/tl.exp/tl.exp2/libdevice 数学函数且结果接近或低于 fp32 最小正规数的 kernel
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

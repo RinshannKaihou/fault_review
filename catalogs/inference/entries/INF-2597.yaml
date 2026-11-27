@@ -1,0 +1,53 @@
+id: INF-2597
+legacy_ids: []
+slug: vllm_ascend_async_eplb_weight_copy_race
+aliases: []
+title: vllm-ascend 异步 EPLB 权重拷贝污染在途前向
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 并行切分
+    stack: vllm-ascend
+    component: async EPLB rebalance
+  behavior: async rebalance 的 commit 用 non_blocking copy_ 写回专家权重，未与在途前向（含 multistream 旁路流与 graph replay）做流序同步，前向可读到撕裂权重。
+effect:
+  objects:
+  - 输出内容
+  detail: DeepSeek-V4-Flash W8A8 TP8+EP8、16 冗余专家、step=30 时 gsm8k 从 95.6 降到 89.3；禁 rearrange 或加 torch.npu.synchronize() 回到 95.3
+  visibility: 静默错误
+mitigation:
+  detect: 对比 EPLB rearrange on/off 的 gsm8k；在 move_from_buffer 前后加 synchronize 做差分；检查 commit 后静态权重指纹（全绿仍可能中招）
+  fix: 待定（open；issue 给出 synchronize 止血实验，未给修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/22199
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vllm-ascend #21168 家族（DeepSeek V4 expert weight mapping with redundant experts，基点 420d5cec4 + E9 6bf90f7b6），8×Ascend 910B2C、DeepSeek-V4-Flash w8a8、TP8+EP8、MRv2、MTP off、FULL_DECODE_ONLY graphs + multistream_overlap_shared_expert=true、EPLB num_redundant_experts=16/window_size=20/step_interval=30。`vllm/distributed/eplb/rebalance_execute.py` 的 `move_from_buffer()` 在 :504 用 `buffer→权重 w[dst].copy_(b[dst], non_blocking=True)`、在 :548 用 replica duplicate-fill `w[dst].copy_(w[src], non_blocking=True)`；在 runner 线程 step 间隙执行时，上一个 step 的 kernel（含 multistream 旁路流与 graph replay）仍在读专家权重，拷贝与其并发，在途前向读到撕裂权重，该请求 KV/轨迹被污染。提交后静态状态完全正确，因此损坏无持久痕迹，只击中 commit 时刻在途的请求。证据：commit 后每层 34 槽全量指纹 vs checkpoint 全局参考 48 次零失配、physical→logical 映射与 1024 行 replica 路由表全绿；三个损坏臂错集互不相交（时序性瞬时机制）；额外错题数 ∝ commit 次数；workspace move 前后加 `torch.npu.synchronize()` 后同 commit 剂量 gsm8k=95.30，同步是唯一变量。r0（无冗余专家）时 replica duplicate-fill 波不存在，竞争窗口小一个数量级，不复现但不代表无竞争。'
+  source: https://github.com/vllm-project/vllm-ascend/issues/22199（open，2026-11-17，含 gsm8k 剂量-响应与 synchronize 判决实验）
+  behavior: 开启动态 EPLB 重排后，DeepSeek-V4-Flash 的 gsm8k strict 从 95.6 掉到 89 左右（三次独立运行 89.31/87.57/90.52），必须同时有冗余专家和动态 rearrange 才触发；关闭 rearrange 或把 num_redundant_experts 设 0 就回到 95.3。服务没有 crash、没有报错，静态权重指纹全部正确，只有恰好在 commit 时刻在途的请求输出被污染，错集随机且随 commit 次数增加；在权重拷贝前后加 torch.npu.synchronize() 可完全恢复 95.3，说明是瞬时竞争而不是权重内容错误。
+  trigger_surface: 'vllm-ascend #21168 家族 + 8×Ascend 910B2C、DeepSeek-V4-Flash w8a8、TP8+EP8、MRv2（VLLM_USE_V2_MODEL_RUNNER=1）、FULL_DECODE_ONLY + multistream_overlap_shared_expert、num_redundant_experts=16、window_size=20、step_interval=30。'
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - subsystem
+    - visibility

@@ -1,0 +1,54 @@
+id: INF-2596
+legacy_ids: []
+slug: vllm_activation_gating_noncontiguous_silent_wrong
+aliases: []
+title: vLLM 激活/门控算子非连续输入静默错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: SiluAndMul 等 CUDA 激活族
+  behavior: vLLM CUDA 激活/门控族 launcher 未校验 contiguity/stride，非连续输入或 strided 输出被直传给按连续布局读写的 kernel。
+effect:
+  objects:
+  - 数值结果
+  - 跨请求/跨样本数据
+  detail: 非连续输入或 strided 输出视图时：同值但内层步长4的输入视图相对浮点参考误差1.82（连续对照0.0004）；NaN填充父视图[...,::2]作输出仅写1024/2048逻辑单元，其余NaN，另1024个视图外父单元被覆盖，等效越界。8输入、7输出复现。
+  visibility: 静默错误
+mitigation:
+  detect: 对每个激活算子用 stride 2/4/8 与 token-strided 的同值视图对照连续输出；输出视图用 NaN 预填 parent 检查未写单元与越界覆盖
+  fix: '待定（open；issue 建议在 wrapper 加 stride/contiguity 校验或 .contiguous()，参照 PR #67434）'
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/69663
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM 0.34.0 的 CUDA 激活/门控族 launcher 没有 contiguity/stride 校验：`SiluAndMul.forward_cuda` 等把张量直传 kernel，kernel 按连续布局读写。输入侧用「同值但 inner stride 4」的视图调用 `torch.ops._C.silu_and_mul`，输出与 float 参考的相对误差 1.82（连续输入对照 0.0004）；输出侧把 out 设为 NaN 填充 parent 的 `[..., ::2]` 视图，kernel 只写 1024/2048 个逻辑单元（其余保持 NaN），并有 1024 个 view 之外的 parent 单元被 kernel 垃圾覆盖，等效越界。已验证 8 个输入算子（silu_and_mul、gelu_and_mul、gelu_tanh_and_mul、mul_and_silu、relu_squared、silu_and_mul_with_clamp、swigluoai_and_mul、silu_and_mul_quant，stride 2/4/8 + token-strided、fp16，bf16 验证 7 个双输入算子）和输出侧 7 个双输入算子；同一棵树里 silu_and_mul_quant 对 strided 输出会大声拒绝，fused_add_rms_norm 自 PR #67434 起拒绝，plain rms_norm 正确处理 stride，只有这一族静默算错。引擎主路径输入通常连续，strided view 可能来自 torch.compile 融合切片/MoE 路由切片/TP 分片，端到端可达性报告者未证明。环境 vLLM 0.34.0、A100 80GB、CUDA 13.0、torch 2.14.0+cu130。'
+  source: https://github.com/vllm-project/vllm/issues/69663（open，2026-11-24，含输入/输出两侧复现与 8+7 算子清单）
+  behavior: 在 vLLM 的 CUDA 激活/门控算子（silu_and_mul、gelu_and_mul 等）上，如果传入的张量不是连续布局而是步长视图，接口不报错但结果全错：输入侧同值 stride 4 视图的相对误差 1.82；输出侧传入 strided 视图时只写一半逻辑单元，另外还会改写 view 之外的父 buffer，把相邻数据覆盖成 kernel 垃圾。普通连续输入完全正常，所以只有 torch.compile 融合切片、MoE 路由切片、TP 分片等产生非连续视图的路径才会中招；错误输出仍以正常形状返回，没有异常或日志。
+  trigger_surface: vLLM 0.34.0、A100 SM80、CUDA 13.0、torch 2.14.0；CUDA 激活/门控族（silu_and_mul、gelu_and_mul、gelu_tanh_and_mul、mul_and_silu、relu_squared、silu_and_mul_with_clamp、swigluoai_and_mul、silu_and_mul_quant）；非连续输入或 strided 输出视图。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    - detail

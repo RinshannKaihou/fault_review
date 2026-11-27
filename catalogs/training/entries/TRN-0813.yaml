@@ -1,0 +1,63 @@
+id: TRN-0813
+legacy_ids: []
+slug: torchtitan_nvfp4_mxfp8_fsdp_stacked_weight_reorder
+aliases: []
+title: NVFP4/MXFP8+FSDP 堆叠权重被二次重排
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: torchtitan
+    component: _ShardedFSDPTensor hook
+  behavior: pre-hook 把非 0 shard 维移到最前，FSDP2 已按该维拼接；post-hook 又按 dim0 语义还原，[2,F,D] 的 w13 行被重排两次，shape 不变故不报错。
+effect:
+  objects:
+  - 模型权重
+  - 数值结果
+  - 训练轨迹
+  detail: Shard(1) 的堆叠 gate/up 权重在多分片 rank 下被打乱（[2,8,4] 例：列 0 变成 [0,10,40,50,20,30,60,70]），NVFP4/MXFP8 线性层静默算错，loss 异常停滞；Shard(0) 权重不受影响。
+  visibility: 质量退化
+mitigation:
+  detect: 对比 FSDP all-gather 后 w13 与未分片参考权重的逐元素顺序；对 Shard(1) 的量化 Linear 做单层数值对照
+  fix: 'issue #6258 closed 2026-11-19；PR #6259 已关闭未合入（merged_at=None），bot 复核指向 draft PR #5874（open，2026-11-06），修复未落地'
+labels:
+  stage:
+  - pretrain
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/pytorch/torchtitan/issues/6258
+  kind: github_issue
+- url: https://github.com/pytorch/torchtitan/pull/6259
+  kind: github_pr
+- url: https://github.com/pytorch/torchtitan/pull/5874
+  kind: github_pr
+relations: []
+original:
+  mechanism: 'NVFP4/MXFP8 Linear 的权重是 _ShardedFSDPTensor 包装：fsdp_pre_all_gather 先移动 shard 维、fsdp_post_all_gather 再在 gather 后量化。对 Shard(1) 的堆叠 FFN 权重 w13（[2,F,D]，gate 与 up 叠在第一维），pre-hook 在 L401 把非 0 的 shard 维（F）移到最前，返回 [F/W,2,D]；FSDP2 把普通 all-gather 输入当作 padded shard 的行、按参数自身的 shard 维（dim1）拼接，而 post-hook 却假设 dim0 拼接来还原。结果同一批行被重排两次，shape 仍匹配，任何检查都不会报错。[2,8,4]、Shard(1)、2 rank 的例子里，gather 后第 0 列在 main 上是 [0,10,40,50,20,30,60,70]，正确顺序是 [0,10,20,30,40,50,60,70]；Shard(0) 权重不受影响。Claude bot 复核确认还波及 Dist-MoE 的 MXFP8 experts，并指出 draft PR #5874 才是正确修法。'
+  source: 'torchtitan issue #6258（closed 2026-11-19；NVFP4+FSDP 作业 loss 异常停滞）https://github.com/pytorch/torchtitan/issues/6258 ；修复 PR https://github.com/pytorch/torchtitan/pull/6259（closed 未合入）；替代 draft PR https://github.com/pytorch/torchtitan/pull/5874（open）'
+  behavior: NVFP4 或 MXFP8 量化训练配 FSDP、TP/FSDP 分片数大于 1 时，作业能启动、loss 有限但明显异常并停滞；gate/up 堆叠权重的行在 all-gather 后顺序错乱，量化线性层算出的激活错误。单卡或 Shard(0) 的权重看不出问题，换回 BF16 后 loss 曲线恢复。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 数值结果
+        to: 模型权重
+      visibility:
+        from: 静默错误
+        to: 质量退化

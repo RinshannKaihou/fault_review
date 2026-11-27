@@ -1,0 +1,53 @@
+id: INF-2616
+legacy_ids: []
+slug: triton_topk_sub32_dtype_signedness
+aliases: []
+title: tl.topk 对窄类型静默改 dtype 与符号
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: triton
+    component: standard.py sort_impl
+  behavior: K<N 时 sort_impl 把 <32 位输入提升到 32 位并用有符号比较：uint8→int32、float16/bfloat16→float32；K==N 时保持原 dtype。
+effect:
+  objects:
+  - 数值结果
+  detail: 16个uint8(200)：K=16时(~tk).to(int32)=55；K=8时tk为有符号int32的200，~tk得-201，输出不再是55；i8/u16/i16/f16/bf16同样被改位宽/符号，sm_75..sm_100与gfx942全后端。
+  visibility: 静默错误
+mitigation:
+  detect: 对 u8/i8/u16/i16/f16/bf16 的 tl.topk 分别取 K=N 与 K<N，检查返回张量 dtype 与符号；用 uint8(200) 做按位取反可放大符号错误。
+  fix: 待定（issue open，triton 3.9.0 与 main 458c1a25）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton/issues/12861
+  kind: github_issue
+relations: []
+original:
+  mechanism: triton 3.9.0（PyPI）与 main 458c1a25 的 python/triton/language/standard.py:507-529（sort_impl，第 510 与 524 行）以及 :218-224/:265-271（max/min）在实现 tl.topk(x, K) 时，只要 K<N 就把小于 32 位的输入提升到 32 位并用有符号比较：uint8 静默变成有符号 int32，float16/bfloat16 静默变成 float32；K==N 时保持输入 dtype。报告者的最小复现用 16 个 uint8(200)：K=16 时 (~tk).to(int32) 得到 55（uint8 语义正确），K=8 时 tk 已变成有符号 int32 的 200→按 int32 取反得 -201，输出不再是 55。i8/u16/i16/f16/bf16 同样被改位宽/符号。受影响目标覆盖所有 GPU 后端 sm_75..sm_100 与 gfx942；在同一 kernel 内混用 topk 结果与原 dtype 运算的代码会静默得到错值，而只看「topk 是否编过、元素个数对不对」的测试无法发现。
+  source: https://github.com/triton-lang/triton/issues/12861（open，2026-11-20，含最小复现与 standard.py 行号）
+  behavior: 在 Triton kernel 里对 uint8/int8/uint16/int16/float16/bfloat16 调 tl.topk 且 K 小于张量长度时，返回值的 dtype 和符号会被悄悄改掉：uint8 的 200 变成有符号 int32，后续按位取反从正确的 55 变成 -201；半精度浮点则被提升成 float32，与原始 dtype 的后续运算不再一致。K 等于长度时又完全正常，所以同一段代码会随 K 取值时对时错，编译和运行都没有任何提示。
+  trigger_surface: triton 3.9.0 与 main 458c1a25；tl.topk(x, K) 的输入 dtype 小于 32 位（u8/i8/u16/i16/f16/bf16）且 K<N；所有 GPU 后端（sm_75..sm_100、gfx942）。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      subsystem:
+        from: 编译器
+        to: 算子/内核
+    rewritten:
+    - detail

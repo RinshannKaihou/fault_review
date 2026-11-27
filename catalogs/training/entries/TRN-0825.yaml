@@ -1,0 +1,49 @@
+id: TRN-0825
+legacy_ids: []
+slug: npu_grad_scaler_new_scale_tensor_alias_inplace_rewrite
+aliases: []
+title: GradScaler new_scale 别名致用户张量被改写
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 优化器
+    stack: torch_npu
+    component: torch_npu GradScaler
+  behavior: GradScaler.update(new_scale=Tensor) 用 self._scale = new_scale 直接别名而非拷贝；溢出回退的 self._scale.mul_(backoff) 就地把结果写回调用方张量。
+effect:
+  objects:
+  - 优化器状态
+  - 训练信号
+  detail: update(new_scale=1024 tensor) 后用户 mul_(2) 会把 scaler scale 带到 2048；一次溢出回退后 scaler 与用户张量同为 512，用户张量被原地改写，全程无异常。
+  visibility: 静默错误
+mitigation:
+  detect: update(new_scale=tensor) 后原地改该张量看 get_scale() 是否变化；再触发一次溢出回退，比较用户张量前后值
+  fix: '待定（issue #6438 closed，2026-11-25，正文给最小修复 self._scale.copy_(new_scale) 并对照 sharded_grad_scaler.py:371，但未见关联 PR；master b707a3665 仍有缺陷）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6438
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: torch_npu/npu/amp/grad_scaler.py 的 GradScaler.update(new_scale=...) 在 new_scale 为 Tensor 时执行 self._scale = new_scale（约 :435），只做引用别名、不拷贝数值；上游 torch 2.10 的 torch/amp/grad_scaler.py 用 self._scale.fill_(new_scale)，同仓 sharded_grad_scaler.py:371 也已用 self._scale.copy_(new_scale)，仅非 sharded 版本漏掉拷贝，属同包内行为不一致。后果有两条：一是用户随后原地修改自己传入的张量（mul_/copy_/fill_，日志、EMA、跨迭代复用同一 buffer 的常见写法）会直接改变 scaler 实际使用的 loss scale；二是某次 step 检测到梯度溢出时，_npu_update_scale 走 self._scale.mul_(self._backoff_factor)（约 :491），别名状态下把回退结果原地写回用户张量。实测 Atlas A3（2×Ascend910_9382）、CANN 9.1.0、torch 2.10.0+cpu、torch_npu 2.10.0.post4（tag v26.1.0-pytorch2.10.0、git 5dd8ef3）：update(new_scale=1024 张量) 后用户 mul_(2)，get_scale() 从 1024 变 2048；一次 inf 梯度回退后 scaler 与用户张量同为 512，用户张量被改写，全程无异常抛出。应用最小修复后同一脚本输出 scaler 保持 1024、用户张量保持 1024。传 float 走新建张量分支不受影响；master b707a3665 该文件与 tag 逐行一致，缺陷仍在。
+  source: 'Ascend/pytorch issue #6438（closed，2026-11-25，Atlas A3 / CANN 9.1.0 / torch_npu 2.10.0.post4，附最小复现与修复前后输出）https://gitcode.com/Ascend/pytorch/issues/6438'
+  behavior: 训练脚本里用 scaler.update(new_scale=某个张量) 手动调 loss scale（搜索或调度 scale 的常见写法）时，这个张量会被 scaler 直接接管而不是拷贝：之后在别处 mul_/copy_/fill_ 它，scaler 的 scale 会跟着悄悄变（1024 被乘成 2048）；一旦某步梯度溢出触发回退，scaler 还会把 0.5 倍的结果原地写回你的张量（1024 变 512）。全程没有任何报错，日志里 scale 值和用户张量都“看起来正常”，只有对照检查才会发现；如果这个张量还用于 EMA、日志或跨迭代复用，后续训练就一直在用被污染的数值。
+  trigger_surface: torch_npu GradScaler.update(new_scale=<Tensor>)；溢出回退路径；传 float 不受影响
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,58 @@
+id: INF-2611
+legacy_ids: []
+slug: triton_ascend_libdevice_subnormal_ftz
+aliases: []
+title: triton-ascend libdevice 次正规数归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: triton-ascend
+    component: libdevice lowering FTZ
+  behavior: libdevice 与 tl.* 的 exp/sin/sqrt/atan/sinh/tanh/erf 在 lowering 时做 flush-to-zero：exp 的结果落进次正规区间返回 0，其余先把次正规输入冲成 0 再计算。
+effect:
+  objects:
+  - 数值结果
+  detail: exp(-88.0) 返回 0（应 6.0546e-39）、exp(-89.0) 返回 0（应 2.2274e-39）；最小次正规 ±1.4e-45 输入时 sin/atan/sinh/tanh/erf 返回 ±0，sqrt 返回 [0, nan]；正常范围输入正确。
+  visibility: 静默错误
+mitigation:
+  detect: 用 torch.nextafter(0,1) 构造最小次正规输入、用 -88/-89 构造次正规结果，分别跑 libdevice.sin/sqrt/exp 等与 torch CPU 对拍；正常量级用例全部通过不能证明无此问题。
+  fix: 待定（两条 issue 均 open；#3322 指出 cosh/sinh 早期溢出报告的上游根因就是 exp 次正规结果被冲零）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/triton-lang/triton-ascend/issues/3322
+  kind: github_issue
+- url: https://github.com/triton-lang/triton-ascend/issues/3356
+  kind: github_issue
+relations:
+- kind: cross
+  target: TRN-0821
+original:
+  mechanism: triton-ascend 的 libdevice 实现在 Ascend 后端 lowering 时对浮点运算启用 flush-to-zero。#3322：libdevice.exp、tl.exp、libdevice.fast_expf 三条入口都 lower 到 builder.create_exp，当结果落在 float32 次正规区间（x < -87.34）时返回 0.0：exp(-88.0) 得 0（正确 6.0546e-39）、exp(-89.0) 得 0（正确 2.2274e-39），边界扫描 exp(-87.0)=1.6458e-38 正常、exp(-87.5)=0（参考 9.982e-39）；cosh/sinh 用 (exp(x)±1/exp(x))/2 实现，exp(x) 次正规时 1/exp(x) 的分母被冲零，因此报成 inf，这是早期 cosh/sinh 溢出报告的上游根因。#3356：libdevice.sin/sqrt/atan/sinh/tanh 与 tl.erf 先把次正规输入冲成 0 再计算，最小次正规 ±1.4e-45 输入时 sin/atan/sinh/tanh/erf 返回 ±0（应 ±1.401298464324817e-45），sqrt 返回 [0, nan]（应 3.743392066509216e-23）；同族问题还覆盖 log/log2/log10（#3320）与 rsqrt（#3350）。环境为 Ascend 950PR、CANN 9.1.0、Triton-Ascend 3.2.0/3.2.2、torch 2.7.1。
+  source: https://github.com/triton-lang/triton-ascend/issues/3322 、https://github.com/triton-lang/triton-ascend/issues/3356（均 open，2026-11-20/11-22，含最小复现与期望值）
+  behavior: 在 Ascend 上用 Triton 写 attention/softmax/归一化这类会用 exp、sqrt、erf、tanh 的 kernel 时，只要中间结果进入次正规范围就会静默变成 0：exp(-88) 本应是 6e-39，kernel 返回 0；对最小次正规输入求 sqrt 还会得到 NaN。正常量级的数值完全正确，所以常规精度测试发现不了；只有在长序列、softmax 尾部很小区间、或逐元素与 CPU 对拍时才会看到概率被整体抹平、后续归一化出现 0/0 或 NaN。
+  trigger_surface: Ascend 950PR、CANN 9.1.0、Triton-Ascend 3.2.0/3.2.2、torch 2.7.1 / torch_npu 2.7.1.post8；libdevice.exp/fast_expf、tl.exp、libdevice.sin/sqrt/atan/sinh/tanh、tl.erf，以及依赖它们的 cosh/sinh；输入或结果落入 float32 次正规区间。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

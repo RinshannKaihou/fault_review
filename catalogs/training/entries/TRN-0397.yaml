@@ -18,7 +18,7 @@ effect:
   visibility: 静默错误
 mitigation:
   detect: 大 epsilon 与大数有限输入边界用例对拍 FP64 参考；dst_type 属性回读校验。
-  fix: 待定（issue open 2026-10-23，Ascend950PR/CANN 9.3.0 weekly，基线 e3f2542，含 kernel 验证记录但未见修复 MR）
+  fix: 修复 PR https://gitcode.com/cann/ops-nn/pull/16338 open（2026-11-26，修正 RegBase AddRmsNormQuant 归约缓冲与有限大方差路径；未发布）
 labels:
   stage:
   - shared
@@ -29,12 +29,19 @@ remarks: ''
 evidence:
 - url: https://gitcode.com/cann/ops-nn/issues/7272
   kind: gitcode_issue
-relations: []
+- url: https://gitcode.com/cann/ops-nn/issues/10337
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: INF-2608
+pattern: PAT-TRN-0086
 original:
   mechanism: CANN ops-nn AddRmsNormQuant V1/V2（arch35/Ascend950PR_9579，CANN 9.3.0 weekly.20261021.01，基线 e3f2542bf58f，TTK e25508ae 全部 --pc=1）多缺陷：(1) PERF 路径大 epsilon 下 Newton-Raphson 中间倒数下溢，把应非零的归一化结果变为 0——最小见证 FP32 shape(16,64) x1=1,x2=0,gamma=1e20,scale=1,epsilon=FLT_MAX，原 y1/resOut 为 0，参考 y1=5、resOut≈5.421；(2) 有限 FP32/BF16 输入因加法/平方或 norm*gamma 中间溢出产生错误量化结果——x1=1e20、x2=0、gamma=1、scale=0.01 时 FP64 参考归一化约 1、量化 100，原设备平方溢出后得 0；(3) dst_type 的 int64 属性被按 int32 读取（4294967298 被当作 2）；(4) NORMAL/SPLIT_REDUCE 用 32B rstd 缓冲区却按每核行号索引（越界）；(5) V2 ACLNN 未拒绝 rank=0 输入、legacy tiling gamma rank>x rank 无符号减法下溢可卡死、zp2-only 组合被静默忽略。kernel 正式验证 V1 352/352、V2 360/360 与定向 62/62+9/9+8/8+7/7 全 BINARY_MATCH（含有限大数/特殊值/大 epsilon 对照），V2 历史 FP16 3 个原始 FAIL 保留。量化训练/推理路径（W8A8 类 RMSNorm+量化融合算子）。issue open，未见修复 MR。
   source: https://gitcode.com/cann/ops-nn/issues/7272
   behavior: 量化训练里经过 AddRmsNormQuant（RMSNorm+量化融合）时，遇到大 epsilon 或极大有限数值（如 1e20 量级激活/权重）后，归一化和量化结果静默变 0 或明显错误（参考值应为非零正常数），接口成功、无告警；普通范围输入全部正确，只有数值边界输入踩中，量化后的 int8 输出整体失真。
   discovery: 2026-10-24 每日扫描
+  notes:
+  - 2026-11-27 同一 RegBase 实现的补充证据：NORMAL 9 行 tile 与 SPLIT 每核 9 行会访问第 9 个 RMS 倒数槽而公共缓冲只有 8 个 FP32 槽；gamma=2^67、epsilon=FLT_MAX 时 y1/y2/V2 第四输出退化为 0/5/0，普通 epsilon 下单列 x1=±1.5×2^63 亦可复现有限大方差倒数下溢。修复 PR !16338 open（2026-11-26）。
 migration:
   method: scan
   scanned: '2026-10-24'
@@ -48,3 +55,17 @@ migration:
     - kimi-k3
     - glm-5.3
     - qwen3.8-max
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-27'
+    fields:
+    - mitigation.fix
+  - date: '2026-11-27'
+    fields:
+    - relations
+  - date: '2026-11-27'
+    fields:
+    - pattern

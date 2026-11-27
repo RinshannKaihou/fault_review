@@ -1,0 +1,56 @@
+id: TRN-0803
+legacy_ids: []
+slug: batchnorm_backward_noncontig_gradinput_halfwrite
+aliases: []
+title: BatchNorm 反向非连续 gradInput 只写首块
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: BatchNorm 反向 Post 散写
+  behavior: BatchNormPost/FastBatchNormPost 用 l0op::ViewCopy 散写用户 gradInput 视图，行 stride 非紧凑时只拷首块即返回成功，不校验也不拒绝非连续出参。
+effect:
+  objects:
+  - 梯度
+  detail: gradInput 为 strides=[32,16,2] 的合法视图时两段 rc=0/0，8 个视图位只写对 4 个（fast 版通道 1 亦然），其余保留调用方旧值 -55；同调用 gradWeight 1D 非连续却写对，两次执行位级一致。
+  visibility: 静默错误
+mitigation:
+  detect: 用双色金丝雀预填非连续 gradInput 视图，调用后统计未写视图位；对照连续出参与 1D gradWeight
+  fix: 待定（#8814/#8819 open，2026-11-24；未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/8814
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/8819
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0755
+pattern: PAT-TRN-0058
+original:
+  mechanism: aclnnBatchNormBackward 在 op_host/op_api/aclnn_batch_norm_backward.cpp:453（2D-5D）/ :443（>5D）由 BatchNormPost 调 l0op::ViewCopy 把计算结果散写进用户 gradInput 视图；当视图的行 stride 非紧凑（如 strides=[32,16,2]、逻辑 (1,2,4)、底层 32 元素）时 ViewCopy 只拷首块就返回，后半视图位保留调用方旧值，函数仍返回成功。gradWeight 走 op::ResizeTo1D（:990），同场景 1D 非连续视图能写对，说明不是统一拒绝非连续出参。FastBatchNormBackward 的 FastBatchNormPost（>5D Reshape / 4D-5D ReFormat 两分支）同源：3D strides=[32,16,2] 视图 8 位只写对通道 0 的 4 位，通道 1 保留金丝雀 -55。两次执行位级一致，视图外无越界。非连续 view 是合法 ACL Tensor，接口应写满或显式返回不支持。
+  source: 'cann/ops-nn issue #8814（open，2026-11-24；A2 910B3 / CANN 9.3.0 weekly / 2b606401）https://gitcode.com/cann/ops-nn/issues/8814 ；cann/ops-nn issue #8819（open，2026-11-24；fast 版同源）https://gitcode.com/cann/ops-nn/issues/8819'
+  behavior: BatchNorm/FastBatchNorm 反向接收非连续 gradInput 视图时两段接口都返回 0，训练不报错，但只有第一块（非 fast 版前 4/8 位、fast 版通道 0）被写入，其余视图位仍是调用方预填的旧值：金丝雀 -55 原样保留，梯度静默缺失一半。视图外没有越界，重复执行结果一致，短跑或连续张量路径完全正常，只有并行切分/transpose 后传入非连续梯度缓冲时命中。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

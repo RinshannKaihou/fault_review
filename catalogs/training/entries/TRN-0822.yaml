@@ -1,0 +1,49 @@
+id: TRN-0822
+legacy_ids: []
+slug: npu_combine_bn_params_nc1hwc0_zeroes_bias
+aliases: []
+title: BN 参数合并存储后 NC1HWC0 清零 bias
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: torch_npu
+    component: BatchNorm2d NC1HWC0 前向
+  behavior: npu_combine_tensors 合并 BatchNorm weight/bias 存储后，FP16 NC1HWC0 训练态前向把 8 个 bias 元素写成 0；格式 2 或未合并存储不触发。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: 910B2 + CANN 9.2.0：bias 最大改变 0.25、8 个元素全清零；Conv2d+BN + FP16 AMP 训练中 NpuFusedAdamW 16 步参数最大差 0.3811，仅把 BN 参数转格式 3 后降到 3e-8。
+  visibility: 静默错误
+mitigation:
+  detect: 对比合并/不合并参数存储、格式 2/3 输入四种组合下前向前后 BN bias 是否改变；训练侧对照标准 AdamW 的参数轨迹
+  fix: '待定（issue #6494 open，2026-11-26；#5501 的首次 unscale 越界已由 !48953 修复，本条前向写 bias 尚未修）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6494
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'Ascend 910B2（CANN 9.2.0、torch_npu 2.13.0.post1、eager、jit_compile=False、allow_internal_format=True）上，nn.BatchNorm2d(8) 的 weight 与 bias 经 torch_npu.utils.combine_tensors.npu_combine_tensors 合并存储后，用格式 3（NC1HWC0）的 FP16 输入做一次训练态前向，8 个非零 bias 元素全部被清零，最大绝对改变 0.25；最小用例只执行一次前向即复现。对照四种组合：格式 2（ND）或不合并存储时 bias 改变为 0；格式 3 + 合并且存储时全部清零。合并缓冲区在 forward 与结果检查期间保持存活，排除提前释放。该现象在 #5501 的 Conv2d+BatchNorm 小网络中表现为训练偏离：FP16 AMP、默认 GradScaler、相同初始参数与输入对照标准 AdamW，NpuFusedAdamW 在默认 BN 格式 2 下从第 2 次前向开始出现差异，16 步内参数最大绝对差 0.3810619；全程梯度有限、双方 GradScaler 都保持 65536，排除溢出跳步；仅在创建优化器前把 BN 的 weight/bias 转为格式 3，最大参数差降到 2.98e-8。#5501 的首次 unscale_ 越界已由 !48953 修复，本条前向写 bias 是独立缺陷。'
+  source: 'Ascend/pytorch issue #6494（open，2026-11-26，910B2 / CANN 9.2.0 / torch_npu 2.13.0.post1 / b598b52 构建；正文另引关联 issue #5501 与修复 PR !48953）https://gitcode.com/Ascend/pytorch/issues/6494'
+  behavior: 把 BatchNorm 的 weight 和 bias 用 npu_combine_tensors 合并存储（追求省显存/省搬运的常见优化）后，只要输入是 FP16 的 NC1HWC0 格式，做一次训练态前向就把 bias 全部清零：8 个非零偏置变成 0，最大改变 0.25。整个过程没有报错，格式 2 的输入或不合并且存储都正常，所以很容易被当成模型/超参问题。真实训练里表现为参数轨迹慢慢偏离：Conv2d+BatchNorm 小网络用 FP16 AMP 训练 16 步，参数和标准 AdamW 最大差 0.38，梯度一直有限、GradScaler 也没跳步；只有把 BN 参数转成格式 3 才恢复到 3e-8 量级。
+  trigger_surface: 910B2 + torch_npu 2.13，BatchNorm 参数经 npu_combine_tensors 合并存储 + FP16 NC1HWC0（格式 3）输入 + 训练态前向
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

@@ -1,0 +1,55 @@
+id: INF-2604
+legacy_ids: []
+slug: ffn_worker_batching_out_num_zero_drops_all_tokens
+aliases: []
+title: FfnWorkerBatching out_num=0 静默丢弃全部 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: ffn_wb_common.h
+  behavior: ScheduleContext.FfnArea.out_num 未在资料参数表定义，kernel 却用 totalLength=outNum*BS*K 决定处理行数；out_num=0 时处理长度为 0，不报错也不校验取值范围。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  - 可用性/进度
+  detail: 144 个合法 token、out_num=0：两段 rc=0/0、actualTokenNum=0、Y 保持调用前内容，全部 token 被静默丢弃；out_num=A 对照 actual=144。生产者零初始化结构体或漏填该字段即触发。
+  visibility: 静默错误
+mitigation:
+  detect: 回读 actualTokenNum 与输入 token 数比较；用 out_num=A 与 out_num=0 两组对照，检查 Y 是否被写、groupList 是否仍为哨兵值。
+  fix: 待定（issue 建议资料补 out_num 语义/范围/缺省，或实现对 0/>A 显式报错；open，无修复 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: 训练库 TRN-0424 记录同一算子「二级指针未填」导致静默空批；本条是 out_num 未文档化且=0 的另一条空结果路径。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8846
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0424
+original:
+  mechanism: 'ops-transformer master 8a09858d8 的 ffn/ffn_worker_batching 中，kernel 在 ffn_wb_common.h:287 用 totalLength = outNum*BS*K 计算要处理的行数；ScheduleContext.FfnArea.out_num 在 docs/aclnnFfnWorkerBatching.md 的参数表（:117-124）里没有定义，只在调用示例结构体（:503）出现。报告者在 Ascend A2 910B2、CANN 9.3.0 上构造合法输入 A=2、BS=8、K=9（Y=144）、E=8、expert_ids 全合法，分别令 out_num=2（对照）与 0（缺陷）调用两段式接口：对照组 actualTokenNum=144、Y 被写满，缺陷组 GetWorkspaceSize=0、execute=0、actualTokenNum=0、Y 保持预置内容。groupList 预填 0x5A 哨兵、out 预清零，排除读写残留。同 issue 关联 #5778 记录同一算子二级指针未填的静默空批，两者都是「调用方漏填一个未文档化字段 → 算子返回成功但什么都不做」。'
+  source: https://gitcode.com/cann/ops-transformer/issues/8846（open，2026-11-26，含完整 repro.cpp 与两组实测输出）
+  behavior: 当上层调度代码用零初始化或漏填 ScheduleContext.FfnArea.out_num 时，aclnnFfnWorkerBatching 两段接口都返回成功，但 actualTokenNum 直接是 0，输出 y 保持调用前的旧内容，这一批 FFN token 全部凭空消失。调用方看到的是「成功但没结果」，日志里没有任何错误，只能通过回读 actualTokenNum 或比对 Y 才能发现；对照把 out_num 填成 A 就正常处理 144 个 token。
+  trigger_surface: Ascend A2 910B2 / CANN 9.3.0；aclnnFfnWorkerBatching，ScheduleContext.FfnArea.out_num=0（未文档化字段，缺省结构体即 0），其余参数合法。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 输出内容
+        to: 数值结果

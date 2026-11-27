@@ -1,0 +1,66 @@
+id: INF-2608
+legacy_ids: []
+slug: regbase_rmsnorm_quant_large_finite_zero_output
+aliases: []
+title: RegBase RMSNorm 系大有限值输出归零
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: cann
+    component: ops-nn RegBase RmsNorm 归约
+  behavior: RegBase 归一化在 FP32 中做 x² 平方与累加，很大但完全有限的输入可致平方和超 FP32 上限、rstd 下溢为 0；部分路径公共缓冲仅 8 个 FP32 槽却访问第 9 个 RMS 倒数槽。
+effect:
+  objects:
+  - 数值结果
+  detail: RmsNormDynamicMxQuant 两个 1e20 bf16 → y=[0,0]、rstd=0（修后 [1,1]）；RMSNormQuantV3 交替 ±1e19、gamma=8 → 0 而非 ±8；AddRmsNormQuant 大 epsilon 时 y1 全 0。
+  visibility: 静默错误
+mitigation:
+  detect: 用 1e19–1e20 量级有限输入、gamma 取 2^67/8、epsilon 取 FLT_MAX 与常值两组对照，回读 rstd 与 y；同时检查每核 9 行场景下 RMS 倒数槽的申请字节数（应为 96B 而非 24B）。
+  fix: PR 16328（RmsNormDynamicMxQuant）、16321（RMSNormQuantV3）、16338（AddRmsNormQuant）均见 GitCode，open，合并与发布未核实。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: 与训练库 TRN-0397（AddRmsNormQuant 大 epsilon/大数溢出错量化）同属 RegBase 归一化归约在 FP32 中溢出；本条覆盖推理侧 RmsNormDynamicMxQuant/RMSNormQuant 与 AddRmsNormQuant 三个算子。
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/10335
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/10332
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/10337
+  kind: gitcode_issue
+relations:
+- kind: cross
+  target: TRN-0397
+- kind: cross
+  target: TRN-0824
+original:
+  mechanism: cann/ops-nn master 6805e792a 的 RegBase 归一化实现在 FP32 中做 x² 平方与累加：RmsNormDynamicMxQuant 在 x 为 (1,2)、两个元素都是 BF16 可表示的 1e20、gamma=[1,1]、epsilon=1e-6 时，平方和 2e40 超出 FP32 上限，rstd 下溢为 0，y 整行变 0（旧 NumPy 参考的 FP32 平方同样溢出，板测对比会假通过；修后 rstd=1.00273031e-20、y=[1,1]）。RMSNormQuantV3 通过 aclnnRmsNormQuantV3 传 x=[2,37]、gamma/beta 为 [1,37] 广播视图或步长 2 切片时，基线 7 例中 4 例 workspace 查询失败；同波排查中 x 交替 ±1e19、gamma=8、scale=1 时输出 0 而非 ±8。AddRmsNormQuant/V2 共用 RegBase 实现另有两类归约缓冲容量缺口：NORMAL 的 9 行 tile 与 SPLIT 的每核 9 行都会访问第 9 个 RMS 倒数槽，而公共缓冲只有 8 个 FP32 槽（PERF 在 (129,257) 下申请 24B 却按 FP32 元素寻址，修正后应为 96B）；x1=±1、x2=0、gamma=2^67、epsilon=FLT_MAX 时主线的 y1 全 0、y2 全 5、V2 第四输出全 0，而独立 FP64 golden 要求 ±8、1 或 9、±8。
+  source: https://gitcode.com/cann/ops-nn/issues/10335 、https://gitcode.com/cann/ops-nn/issues/10332 、https://gitcode.com/cann/ops-nn/issues/10337（均 open，2026-11-26，Ascend950PR_9579 / CANN 9.3.0，附修复 PR 16328/16321/16338）
+  behavior: 在 950 上做量化推理时，如果 RMSNorm 输入出现很大但完全有限的数（1e19–1e20 量级的激活、或 bf16 可表示的极大值），归一化输出会整行变成 0，rstd 也变成 0，后续量化结果是全零或零点，推理直接输出无意义的 token。相同输入在普通量级下完全正常，NumPy/FP32 的旧参考实现也会同样溢出，所以常规板测对比发现不了；只有用 FP64 或高精度参考比对、并专门测大有限值边界才能看到。
+  trigger_surface: Ascend950PR / CANN 9.3.0；aclnnRmsNormQuantV3、aclnnRmsNormDynamicMxQuant、aclnnAddRmsNormQuant（含 V2）的 RegBase 模板，输入为 1e19–1e20 量级有限值、gamma 极大（2^67）或 epsilon=FLT_MAX，每核 9 行 tile / SPLIT 路径。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - relations
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior
+    uncertain:
+    - detail

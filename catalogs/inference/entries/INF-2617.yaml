@@ -1,0 +1,47 @@
+id: INF-2617
+legacy_ids: []
+slug: ttnn_gather_nonzero_blockfloat_element_size
+aliases: []
+title: ttnn gather/nonzero 按 1 字节读 block-float
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: tt-metal
+    component: gather/nonzero reader
+  behavior: kernel 用 get_tile_size()/get_tile_hw() 推单元素字节数：Bfp8_b 1088/1024=1、Bfp4_b 576/1024=0，随后按元素偏移逐字节拷贝/扫描 block-float 原始字节。
+effect:
+  objects:
+  - 数值结果
+  detail: bfloat8_b gather 2048 个输出中 2038 错，值跨度 1e-20–2.5e36；bfloat16 与 torch.gather 一致；bfloat8_b nonzero 对 4 个非零返回计数 2、坐标 0 和 32；Wormhole/Blackhole 均如此。
+  visibility: 静默错误
+mitigation:
+  detect: 对 bfloat8_b/bfloat4_b TILE 输入分别跑 gather/nonzero，与 bfloat16 同值结果和 torch 参考逐元素比对；用 4 个已知列位置的非零张量检查 nonzero 计数与坐标。
+  fix: 待定（issue open；nonzero 的 validation 只检查 element_size 为 1/2/4 字节，gather 无 block-float 分支）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/tenstorrent/tt-metal/issues/67315
+  kind: github_issue
+relations: []
+original:
+  mechanism: tt-metal 的 ttnn.gather 与 ttnn.nonzero 接受 block-float TILE 输入（bfloat8_b、bfloat4_b）但计算结果错误。根因是两者都用 tile 字节数除以每 tile 元素数来推单元素大小：gather 在 ttnn/cpp/ttnn/operations/data_movement/gather/device/kernels/dataflow/gather_reader_single_row_single_core.cpp L141-146 用 input_tensor_data_format_size = get_tile_size(cb)/get_tile_hw(cb)，Bfp8_b 的 tile 是 1088B（1024 字节 mantissa + 64 字节共享指数），1088/1024=1，于是 reader 按 1 字节步进拷贝，把按 face 排布的 mantissa 与分开存放的指数当成独立元素混合；Bfp4_b 是 576/1024=0，问题相同。nonzero 在 non_zero_indices_device_operation.cpp L27-31 只校验 element_size() 为 1/2/4 字节，bfloat8_b 的 element size 是 1 因此放行，reader 再把 block-float 原始字节逐字节当元素扫描。报告者在 Wormhole 与 Blackhole（ttsim v1.17.0）上实测：bfloat8_b gather 的 2048 个输出里 2038 个错、值从 1e-20 到 2.5e36，同输入 bfloat16 与 torch.gather 完全一致；bfloat8_b nonzero 对列 3/17/40/63 的 4 个非零返回计数 2、坐标落在列 0 与 32。
+  source: https://github.com/tenstorrent/tt-metal/issues/67315（open，2026-11-25，含 kernel 行号、tile 字节数与 Wormhole/Blackhole 实测）
+  behavior: 在 Tenstorrent 上用 bfloat8_b / bfloat4_b 的张量做 gather 或 nonzero 时，调用不报错、shape 也正确，但返回的是垃圾：gather 的 2048 个输出里 2038 个不对，数值跨度从 1e-20 到 2.5e36；nonzero 明明有 4 个非零却只报 2 个，坐标还落在 0 和 32 这种位置。换成 bfloat16 同一次调用就与 torch 完全一致，因此只有用 block-float 权重/激活做索引类操作的模型会中招，且看起来像正常的稀疏/索引结果，很难发现。
+  trigger_surface: tt-metal、Wormhole 与 Blackhole（ttsim v1.17.0）；ttnn.gather 与 ttnn.nonzero，输入为 bfloat8_b / bfloat4_b 的 TILE 张量；bfloat16 不触发。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

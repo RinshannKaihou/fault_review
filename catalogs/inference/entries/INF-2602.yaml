@@ -1,0 +1,51 @@
+id: INF-2602
+legacy_ids: []
+slug: recurrent_gated_delta_rule_ub_pad_uninit_state
+aliases: []
+title: RecurrentGatedDeltaRule 读 state UB 对齐空隙
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: arch22 CopyInState
+  behavior: CopyInState 用 DataCopyPad 只写每行 alignKState 个元素，dstStride 跳到更大的 alignK_，行内 32B 对齐空隙从未写，随后整行 DataCopy 进入计算。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: fp32 state 且 Dk%16∈1..8（如 Dk=65）时 initcheck 在同处报 uninitialized read 2080B，100 条用例 56 条命中；空隙残留 NaN 时零输入 out 出 NaN（200 次 72–77 次），Dk=64 对照 0 次。
+  visibility: 数值异常
+mitigation:
+  detect: 对 Dk%16≠0 的 fp32 state 用例跑 mssanitizer --tool=initcheck，查看 recurrent_gated_delta_rule_arch22.h:246 是否报未初始化读；或在同卡先制造 NaN 残留下跑零输入用例，检查 out 是否出现 NaN。
+  fix: 待定（issue open，无修复 PR；报告建议按 alignKState 写满行内空隙或让 DataCopy 只搬 alignKState 段，未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8870
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: 'ops-transformer master 8385df2e4（与 CANN 9.3.0 发布件一致）的 attention/recurrent_gated_delta_rule/op_kernel/arch22/recurrent_gated_delta_rule_arch22.h:246 中，CopyInState 的 DataCopyPad 只写每行 alignKState(72) 个元素，dstStride 直接跳到 alignK_(80)，行内第 72..79 共 8 个 float（32B）从未被写；紧接着 DataCopy(stateInUb, stateLocal, alignK_*curSingleV) 把含空隙的整行读进 MatVecMul → ReduceSum。用同源 --cce-enable-sanitizer 插桩 kernel 跑 mssanitizer --tool=initcheck 报 uninitialized read of size 2080（=8 float×65 行），栈顶即该行；100 条设计用例中 56 条（fp32 state 且 Dk%16∈1..8）命中，读 4–5632B，Dk=64 时 0 条。资料 docs/aclnnRecurrentGatedDeltaRule.md:320 只要求 0<Dk≤512、:146 允许 state 为 FLOAT32，没有 Dk 需 16 对齐的约束。报告者在 Atlas A2 910B2 单卡、CANN 9.3.0 上，用零输入（q/k/v/state=0、beta=0.5）验证：Dk=65 时 200 次运行有 72–77 次 out 出现 1–2 个 NaN，先写满 out 再用 Dk=65 仍 68–74 次（排除 out 残留），Dk=64 对照 0 次。关联 #8655（TextGatedResidual 950 同属 UB 未初始化读）。'
+  source: https://gitcode.com/cann/ops-transformer/issues/8870（open，2026-11-26，含 initcheck 插桩步骤、SELFPROOF 与完整 repro.cpp）
+  behavior: 在 fp32 state、Dk 不是 16 整数倍的配置（例如 Dk=65 的线性注意力/DeltaNet 层）上，算子输出会偶发 NaN：合法全零输入本应得到全 0，实际每次运行有三分之一左右出现个别 NaN 位置，且两段接口都返回 0。是否出现取决于 UB 里上一段残留的位型，同一进程里时好时坏；更常见的情况是空隙里是有限旧值，此时被 q 的 0 填充掩掉、结果看起来完全正常，只有 initcheck 能稳定指出这里读了未初始化内存。
+  trigger_surface: Atlas A2 910B2 / CANN 9.3.0；aclnnRecurrentGatedDeltaRule，state 为 FLOAT32、Dk%16∈1..8（Dk=65 等），T/Nv 任意；Dk=64 或 bf16 state 不触发。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

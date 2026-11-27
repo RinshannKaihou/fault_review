@@ -1,0 +1,53 @@
+id: TRN-0806
+legacy_ids: []
+slug: deepspeed_universal_ckpt_frozen_buffers_not_restored
+aliases: []
+title: universal ckpt 恢复漏冻结参数与 buffer
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 权重/检查点
+    stack: deepspeed
+    component: universal ckpt 加载分支
+  behavior: load_universal 分支跳过 load_module_state_dict，权重只从 zero/<param>/fp32.pt 恢复；ds_to_universal 只为优化器拥有的参数写该文件，冻结参数与 buffer 无来源。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: ZeRO-1/2/3 均复现：冻结 Linear 与 BatchNorm 的 weight/bias/running_mean/running_var/num_batches_tracked 加载后与保存值不同（max 差 0.17~2.0），训练从错误初值继续且无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 加载 universal ckpt 后逐 tensor 对比保存/加载 state_dict；确认已复制进 universal 目录的 *_model_states.pt 是否被消费
+  fix: '待定（issue #9134 open，2026-11-20；未见修复 PR）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/9134
+  kind: github_issue
+relations: []
+original:
+  mechanism: DeepSpeedEngine._load_checkpoint 的 universal 分支用 `if not self.load_universal_checkpoint():` 跳过 load_module_state_dict（engine.py:4752 附近），认为权重都由 zero/<param>/fp32.pt 恢复；但 ds_to_universal 只给优化器拥有的参数写 fp32.pt，冻结参数与注册 buffer 从未落盘到 zero 目录。源 *_model_states.pt 已被复制进 universal 文件夹却不再被读取，于是新模型的初值原样留下。复现：DP=2，模型含冻结 Linear 与 BatchNorm1d，保存后用 ds_to_universal 转换并以 load_universal 加载到 seed 不同的新模型；ZeRO-1/2/3 三个 stage 输出一致：running_mean 差 0.7603、running_var 0.1719、num_batches_tracked 差 2、冻结 Linear weight/bias 差 0.3506/0.2357，可训练参数全部一致。
+  source: DeepSpeed issue（open，2026-11-20；附 CPU/gloo 复现脚本与 master adcabcf9 实测输出）https://github.com/deepspeedai/DeepSpeed/issues/9134
+  behavior: 从 universal checkpoint 恢复后作业能正常启动，loss 有限、无 warning，但冻结层和 BatchNorm 统计量仍是重新构建模型时的随机初值：冻结 Linear 的 weight/bias 与保存值差 0.35/0.24，running_mean 差 0.76、running_var 差 0.17、num_batches_tracked 差 2。冻结主干、adapter 外挂或带 BN 的模型会静默从错误状态继续训练，短跑难以发现。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - detail

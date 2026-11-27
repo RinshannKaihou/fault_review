@@ -1,0 +1,55 @@
+id: TRN-0809
+legacy_ids: []
+slug: msswift_gdpo_dynamic_sample_drops_signal_groups
+aliases: []
+title: GDPO dynamic_sample 按原始 reward 和错杀组
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: ms-swift
+    component: GRPO 动态采样过滤器
+  behavior: DAPO 过滤器以 std(sum(w*r))>0 判组是否有梯度；GDPO 先按各 reward 组内归一化再加权，原始加权和 std=0 不代表 advantage 为 0。
+effect:
+  objects:
+  - 训练样本流
+  - 训练信号
+  detail: 3 个二值 reward、4 个 completion 的构造例中 R 全为 1（std=0）被整组丢弃，而 GDPO advantage 为 ±0.866、logits 梯度范数 1.732；one-hot reward 下 100% 混合组被误杀，dynamic_sample 退化为空转。
+  visibility: 静默错误
+mitigation:
+  detect: 对 GDPO 配置比较过滤判据与 compute_advantages 的实际输出：保留组的 std(R) 可为 0，丢弃组的 advantage 可非 0
+  fix: '待定（issue #10626 open，2026-11-25；issue 给出按估计器重定义过滤判据的方向，未见 PR）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/modelscope/ms-swift/issues/10626
+  kind: github_issue
+relations: []
+original:
+  mechanism: ms-swift 的 DAPO 动态采样过滤器在 GRPOTrainer.compute_std() 与 MegatronGRPOTrainer._dynamic_sampling() 中只保留 std(sum(w*r))>0 的组，该判据在 group/batch/none/rloo/reinforce_plus_plus 等估计器下确实等价于 advantage 非零；但 scale_rewards='gdpo' 的 advantage 不是原始加权和的函数：先按每个 reward 在组内归一化，再加权求和，最后做 batch 白化。构造例（3 个二值 reward、权重相同、4 个 completion，R 全为 1）std(R)=0 被整组丢弃，而 compute_advantages(scale_rewards='gdpo') 给出 [+0.866,+0.866,-0.866,-0.866]，在 4 类 softmax 头上对 logits 的梯度为 [-0.866,-0.866,+0.866,+0.866]、范数 1.732，是真实的策略梯度。反向错配也存在：不同尺度的反相关 reward 使 std(R)=2.3 被保留而 GDPO 信号≈0。模拟中 F=3/4 个 reward、num_generations=4 时约 1.7%/1.3% 的组被误杀；one-hot 指示 reward 下 100% 混合组被误杀，预算永远填不满，dynamic_sample 变成空转加浪费 rollout。
+  source: 'ms-swift issue #10626（open，2026-11-25；main d5253cbc5，CPU fp32/fp64 对照，含最小 repro 表）https://github.com/modelscope/ms-swift/issues/10626'
+  behavior: scale_rewards='gdpo' 与 dynamic_sample 同开时训练无报错，但一些明明有学习信号的组被当成 std=0 丢弃：构造的 4 个 completion 原始 reward 和全为 1，被整组替换，实际 GDPO advantage 是 ±0.866。用 one-hot 类 reward 时几乎所有混合组都被误杀，重采样预算耗尽后又回退原 batch，dynamic_sample 形同虚设，训练批次分布被按原始 reward 和而不是训练目标筛选。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - effect.objects
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

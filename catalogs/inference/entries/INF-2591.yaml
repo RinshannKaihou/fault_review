@@ -1,0 +1,58 @@
+id: INF-2591
+legacy_ids: []
+slug: cann_moe_finalize_routing_v4_fp16_accum_cancellation
+aliases: []
+title: MoeFinalizeRoutingV4 fp16 大 K 累加灾难性抵消
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: aclnnMoeFinalizeRoutingV4
+  behavior: fp16 路径用 half 精度顺序累加 K 个 expandedX 行；大值互相抵消时小项在 32768 上加 1 被舍入掉，最终结果与资料公式/fp32 中间量口径出现数量级偏差。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: K=96、前32行 1024/中32行 1/后32行 -1024 的合法输入，数学结果 32.0，实测输出 0.0；两段返回 0，调用方只能从模型精度异常发现。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 K 个大值正负抵消、小项夹在中间的用例，与 fp32 参考对照；检查输出是否为 0 或数量级偏差
+  fix: 待定（open；issue 建议改为 fp32 中间累加，未见修复 MR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-1582（同算子 bf16/fp16 中间精度口径不一致）同属 MoeFinalizeRouting 累加精度策略缺陷；本条具体为 fp16 原生 half 累加在大 K 抵消场景下的灾难性精度丢失。
+evidence:
+- url: https://gitcode.com/cann/ops-transformer/issues/8666
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: INF-1582
+pattern: PAT-INF-0210
+original:
+  mechanism: '`aclnnMoeFinalizeRoutingV4` 在 fp16 输入、K=96 的合法用例上输出 0.0，而按资料公式（以及仓内官方 golden 的 fp32 中间量口径）应为 32.0。输入 expandedX fp16 `[96,4]`：前 32 行 1024.0、中 32 行 1.0、后 32 行 -1024.0；expandedRowIdx=0..95，k=96，NUM_ROWS=1，无 scales/bias；数学结果 32×1024+32×1−32×1024=32.0。fp16 顺序累加在 32768 上加 1 全被舍入掉，再减 32768 得 0.0。K 较大（16–256）时 fp16 累加会吞掉小项，输出与资料公式/官方 golden 出现数量级偏差；两段式返回 0，调用方只能从模型精度异常发现。环境 Ascend 910B2（A2/arch22）、CANN 9.3.0、ops-transformer master e16a9ddc0edb69ef7a70e4b6e32d647f47f049aa。'
+  source: https://gitcode.com/cann/ops-transformer/issues/8666（open，2026-11-25，含 K=96 最小复现与 fp16 累加分析）
+  behavior: MoE 模型在 fp16 下做 finalize routing 时，只要 K 较大且各专家的 expandedX 有大值正负抵消，输出就会整块算错：例如前 32 行 1024、中 32 行 1、后 32 行 -1024，按公式应得 32.0，实际返回 0.0。接口两段都返回成功，没有 NaN、没有报错，只有模型精度异常才能暴露；K 越大、值域越极端，被吞掉的小项越多，MoE 路由后的隐状态随之系统性偏离。
+  trigger_surface: Ascend 910B2（A2/arch22）、CANN 9.3.0、ops-transformer master e16a9ddc；fp16 expandedX、K=16–256、大值域正负抵消。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-26'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

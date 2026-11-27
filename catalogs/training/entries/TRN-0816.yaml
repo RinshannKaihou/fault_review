@@ -1,0 +1,52 @@
+id: TRN-0816
+legacy_ids: []
+slug: verl_advantage_whitening_scope_minibatch_mismatch
+aliases: []
+title: advantage 白化范围与 PPO 更新 chunk 不一致
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: verl
+    component: PPOTrainer/TrainingWorker
+  behavior: advantage 在整批 sample 上只做一次 masked_whiten；actor 更新按 ppo_mini_batch_size 切成多个 optimizer chunk，worker 不按 chunk 重新归一化。
+effect:
+  objects:
+  - 训练信号
+  - 训练轨迹
+  detail: 同步 V1 + GAE、sampled batch 大于 actor mini-batch 时，全局 advantage 均值≈0 但各 chunk 均值非 0；ratio≈1 时 pg_loss≈-mean(A_chunk)，actor/loss 明显偏大、熵更快塌缩，无报错。
+  visibility: 质量退化
+mitigation:
+  detect: 在每个 train_batch chunk 内记录 response_mask 加权 advantage 均值/方差，与整批统计对比；同时看 pg_loss 是否随 chunk 均值漂移
+  fix: '待定（issue #8766 open，2026-11-19；未见修复 PR）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/verl-project/verl/issues/8766
+  kind: github_issue
+relations: []
+original:
+  mechanism: verl V1 同步/colocate trainer 的 PPOTrainer.step() 先按 train_batch_size 采一整批，_compute_advantage() 在该批上算 GAE，compute_gae_advantage_return() 调 masked_whiten(advantages, response_mask) 做整批白化；随后 _update_actor() 把 ppo_mini_batch_size 传给 TrainingWorker.train_mini_batch()，后者把 batch 切成多个 chunk 逐个 train_batch()，没有按 chunk 重新白化的路径。于是整批 token 加权 advantage 均值≈0，但单个 optimizer chunk 的均值可以明显偏离 0。ratio 接近 1 时策略损失近似 -mean(A_chunk)，产生 chunk 级策略梯度漂移，actor/loss 比 advantage 批与更新批对齐的异步 run 大，策略更快变尖、熵更快塌缩。影响 gae、reinforce_plus_plus、reinforce_plus_plus_baseline、gdpo 等带 masked_whiten 的估计器；同步 run 中 sampled batch 大于 actor mini-batch 即触发。
+  source: 'verl issue #8766（open，2026-11-19；V1 sync/colocate_async，含 per-chunk advantage 均值与 pg_loss 的观测方法）https://github.com/verl-project/verl/issues/8766'
+  behavior: 训练不报错、reward 曲线仍能上升，但 actor/loss 从最初几个 update 就明显大于同类异步配置，entropy 下降更快；把日志打进 TrainingWorker.train_mini_batch() 会看到每个 chunk 的 response_mask 加权 advantage 均值不为 0，而整批均值接近 0，pg_loss 跟着 -mean(A_chunk) 走。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-26
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化

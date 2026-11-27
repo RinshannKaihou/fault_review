@@ -35,6 +35,7 @@ evidence:
 - url: https://github.com/deepspeedai/DeepSpeed/pull/9071
   kind: github_pr
 relations: []
+pattern: PAT-TRN-0084
 original:
   mechanism: 'DeepSpeedEngine.save_checkpoint（deepspeed/runtime/engine.py）把每个 rank 的文件用 torch.save 直接写到 <save_dir>/<tag>/ 下的最终文件名，rank0 在自己文件写完后立即写 <save_dir>/latest，然后才走 dist.barrier()（#2202 把 barrier 移到写入之后），因此 latest 的写入与其它 rank 的分片完成之间没有任何顺序约束；latest 又是 open(...,''w'') 原地截断后写入，中间窗口为空文件，且 latest 与分片都没有 fsync。两单都给出 2 CPU rank、gloo、ZeRO-1 的独立复现脚本，并用测试专用 sleep 让窗口确定化。① #9067：另一 rank 仍在写 ZeRO 分片时 job 被杀，latest 指向缺该分片的 tag，之后每次 load_checkpoint(save_dir) 都抛 ZeRORuntimeException: Unable to load ZeRO checkpoint ... Saved fp32 weights are required for this checkpoint load，报错不指向缺失分片，需人工把 latest 改回上一个 tag；在 open 与 write 之间被杀则留下空 latest，重启 AssertionError。② #9066：显式 load_checkpoint(load_dir, tag=<older>) 回滚后，下一次保存复用被放弃那次 run 的 global_step<N> tag（默认 tag 由步数生成，两次 run 重名），崩溃可留下 rank0 model states 与部分分片来自 run B、其余分片来自 run A 的混合 tag，下一次 load_checkpoint 成功并接着训练；正在重写的文件被截断时则抛 EOFError。修复 PR #9071（open）在 checkpoint_engine.commit() 之后、rank0 写 latest 之前补 barrier，并用临时文件+rename 写 latest，只覆盖 #9067。'
   source: https://github.com/deepspeedai/DeepSpeed/issues/9067 ｜https://github.com/deepspeedai/DeepSpeed/issues/9066 ｜修复 https://github.com/deepspeedai/DeepSpeed/pull/9071
@@ -56,3 +57,6 @@ migration:
   - date: '2026-11-17'
     fields:
     - mitigation.fix
+  - date: '2026-11-26'
+    fields:
+    - pattern

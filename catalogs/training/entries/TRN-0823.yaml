@@ -1,0 +1,56 @@
+id: TRN-0823
+legacy_ids: []
+slug: batch_norm_grad_arch35_gm_offset_uint32_wrap
+aliases: []
+title: batch_norm_grad arch35 GM 偏移回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: batch_norm_grad arch35
+  behavior: gmOffset_ 成员为 uint32，SetGlobalBuffer 与块间步距用 uint32×uint32 中间乘法，元素总数超 2^32 即回绕；tiling 只校验各维为正、不限元素总量。
+effect:
+  objects:
+  - 梯度
+  - 训练轨迹
+  detail: NCHW (1,2097152,64,64)≈8.6e9 元素：RAR 全载（0x10000000）与切 R1（0x31000000）路径分核读错地址/越界，dx 静默错数或越界访存；同族 batch_norm_grad_v3 已修复未同步。
+  visibility: 静默错误
+mitigation:
+  detect: 构造元素总数 >2^32 的 NCHW BN 反向，与 64 位参考逐元素对拍 dx；静态检查 kernel 中 uint32 gmOffset_ 与 uint32×uint32 乘法
+  fix: '待定（issue #10316 open，2026-11-26；仅给根因与期望，未见修复 MR；同族 batch_norm_grad_v3 已由 c81cd93a02 修复）'
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/10316
+  kind: gitcode_issue
+relations:
+- kind: var
+  target: TRN-0271
+pattern: PAT-TRN-0013
+original:
+  mechanism: cann/ops-nn 的 batch_norm_grad（arch35）在 RAR 全载（tilingKey 0x10000000）与 RAR 切 R1（0x31000000）两条路径中，把 GM 偏移放在 uint32 域计算：op_kernel/arch35/batch_norm_grad_full_load_regbase.h 的分核基址成员 gmOffset_ 为 uint32（int64 tiling 字段赋值即截断），Init 的 SetGlobalBuffer 处 gmOffset_*r0Dim_、Process 循环偏移 i*aDimPerLoop_*r0Dim_、CopyInRAR/CopyOutRAR 块间步距 (aDim_-1)*r0Dim_*sizeof(DY_TYPE) 都是 uint32×uint32 中间乘法；batch_norm_grad_split_r1_regbase.h 的 gmOffset_ 成员与两处 RAR 块间步距同模式。元素总数超过 2^32 即回绕，分核读错地址/越界。可达性：tiling 只校验各维为正、不限元素总量，RAR 全载门控（r1×r0 整块入 UB）把大维约束在 aDim 上，aDim×r0≥2^32 的输入合法可达，例 NCHW (1,2097152,64,64)≈8.6e9 元素。同族算子 batch_norm_grad_v3 的同类问题已由 c81cd93a02 修复，本算子未同步。
+  source: 'cann/ops-nn issue #10316（open，2026-11-26，arch35，附 kernel 源码行级根因）https://gitcode.com/cann/ops-nn/issues/10316'
+  behavior: 用 batch_norm_grad 反传一个元素数超过 2^32 的合法大张量（例如 NCHW (1,2097152,64,64)，约 86 亿元素）时，算子在 RAR 全载和切 R1 两条路径上把分核 GM 偏移算错：有的核从错误地址读 dy/统计量，有的直接越界访存。返回码仍是成功，日志没有异常，但 dx 大面积错数，或者越界写坏相邻张量；因为错的是反向梯度，训练 loss 可能还在动，只是这一层的权重更新已经不可信。把 batch 或通道数缩小到元素总数低于 2^32 就恢复正常，说明是 32 位偏移回绕而非精度问题。
+  trigger_surface: arch35 batch_norm_grad，NCHW 元素总数 ≥2^32，RAR 全载或切 R1 tilingKey
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-27
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
