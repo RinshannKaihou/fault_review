@@ -302,6 +302,32 @@ class RagAutoSyncTests(unittest.TestCase):
             self.assertEqual(defects[0]["entry_id"], "INF-2600")
             self.assertEqual(defects[0]["defect"], "causal_inversion")
 
+    def test_publish_index_artifacts_relocates_worktree_paths_and_batch_search_bm25(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wt = base / "wt"
+            live = base / "live"
+            (wt / "data").mkdir(parents=True)
+            (live / "data").mkdir(parents=True)
+            (wt / "data" / "entries.jsonl").write_text(
+                json.dumps({"id": "INF-0001", "file": f"{wt.resolve()}/catalogs/inference/entries/INF-0001.yaml"}) + "\n",
+                encoding="utf-8",
+            )
+            (wt / "data" / "meta.json").write_text(
+                json.dumps({"sources": {"inference_entries": f"{wt.resolve()}/catalogs/inference/entries"}}),
+                encoding="utf-8",
+            )
+            RAS.publish_index_artifacts(wt, live)
+            relocated_entry = json.loads((live / "data" / "entries.jsonl").read_text(encoding="utf-8").strip())
+            relocated_meta = json.loads((live / "data" / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(relocated_entry["file"], f"{live.resolve()}/catalogs/inference/entries/INF-0001.yaml")
+            self.assertEqual(relocated_meta["sources"]["inference_entries"], f"{live.resolve()}/catalogs/inference/entries")
+
+        # Also verify batch_search_in_worktree works end-to-end against ROOT in lexical bm25 mode
+        res = RAS.batch_search_in_worktree(ROOT, [{"query": "KV cache", "topk": 3, "mode": "bm25", "no_rerank": True}])
+        self.assertEqual(len(res), 1)
+        self.assertGreaterEqual(len(res[0]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

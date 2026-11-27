@@ -90,6 +90,37 @@ def atomic_copy_file(src: Path, dst: Path) -> None:
             tmp_p.unlink()
 
 
+def atomic_relocate_text(src: Path, dst: Path, old_prefix: str, new_prefix: str) -> None:
+    """Atomically copy a text file while rewriting temporary worktree paths to live rag_root."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".tmp_{dst.name}_", dir=str(dst.parent))
+    os.close(fd)
+    tmp_p = Path(tmp)
+    try:
+        with src.open("r", encoding="utf-8") as fin, tmp_p.open("w", encoding="utf-8") as fout:
+            for line in fin:
+                fout.write(line.replace(old_prefix, new_prefix))
+        os.replace(tmp_p, dst)
+    finally:
+        if tmp_p.exists():
+            tmp_p.unlink()
+
+
+def publish_index_artifacts(wt_dir: Path, rag_root: Path) -> None:
+    """Atomically swap built index files from wt_dir/data into rag_root/data,
+    updating embeddings.npy first and rewriting wt_dir paths in entries.jsonl & meta.json."""
+    old_p = str(wt_dir.resolve())
+    new_p = str(rag_root.resolve())
+    for idx_file in ("embeddings.npy", "bm25.pkl"):
+        src_art = wt_dir / "data" / idx_file
+        if src_art.is_file():
+            atomic_copy_file(src_art, rag_root / "data" / idx_file)
+    for txt_file in ("entries.jsonl", "meta.json"):
+        src_txt = wt_dir / "data" / txt_file
+        if src_txt.is_file():
+            atomic_relocate_text(src_txt, rag_root / "data" / txt_file, old_p, new_p)
+
+
 def read_rc_var(name: str) -> str:
     """Safely read an exported variable from user/root .bashrc without shell eval."""
     val = os.environ.get(name, "").strip()
@@ -726,7 +757,7 @@ for q in qs:
         q["query"],
         topk=q.get("topk", 10),
         mode=q.get("mode", "hybrid"),
-        no_rerank=q.get("no_rerank", False),
+        rerank=not q.get("no_rerank", False),
         include_neg=False,
     )
     out.append([
@@ -752,6 +783,8 @@ print(json.dumps(out, ensure_ascii=False))
         timeout=900,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
+        if proc.stderr.strip():
+            sys.stderr.write(f"batch_search_in_worktree error: {proc.stderr.strip()[-300:]}\n")
         return [[] for _ in queries]
     try:
         return json.loads(proc.stdout)
@@ -1408,11 +1441,8 @@ def _run_sync_locked(
             wt_sha = git(wt_dir, "rev-parse", "HEAD").stdout.strip()
             git(rag_root, "merge", "--ff-only", "--quiet", wt_sha)
 
-        # Atomic swap of data/ artifacts (embeddings.npy FIRST so entries.jsonl is never ahead of embeddings.npy)
-        for idx_file in ("embeddings.npy", "entries.jsonl", "bm25.pkl", "meta.json"):
-            src_art = wt_dir / "data" / idx_file
-            if src_art.is_file():
-                atomic_copy_file(src_art, rag_root / "data" / idx_file)
+        # Atomic swap of data/ artifacts (embeddings.npy FIRST, rewriting wt_dir paths to rag_root)
+        publish_index_artifacts(wt_dir, rag_root)
 
         pushed_sha = git(rag_root, "rev-parse", "--short", "HEAD").stdout.strip()
         pend_inf = [p["id"] for p in stage_stats["excluded_pending"]["inference"]]
