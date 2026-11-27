@@ -31,6 +31,9 @@ MODELS = {
                                 ["onnx/model.onnx", "onnx/model.onnx_data",
                                  "tokenizer.json", "tokenizer_config.json",
                                  "special_tokens_map.json", "config.json"]),
+    "web-e5-small": ("Xenova/multilingual-e5-small",
+                     ["onnx/model_quantized.onnx", "tokenizer.json",
+                      "tokenizer_config.json", "special_tokens_map.json", "config.json"]),
 }
 
 
@@ -40,7 +43,14 @@ def fetch(name):
         kwargs = {"allow_patterns": allow}
     else:
         kwargs = {"ignore_patterns": ["*.onnx", "*.msgpack", "onnx/*", "*.h5", "*.tflite"]}
-    path = snapshot_download(repo, local_dir=os.path.join(ROOT, "models", name), **kwargs)
+    if name == "web-e5-small":
+        import json
+        model_cfg = json.load(open(os.path.join(ROOT, "web", "src", "model.json"), encoding="utf-8"))
+        kwargs["revision"] = model_cfg["revision"]
+        target_dir = os.path.join(ROOT, "models", "web", "Xenova", "multilingual-e5-small")
+    else:
+        target_dir = os.path.join(ROOT, "models", name)
+    path = snapshot_download(repo, local_dir=target_dir, **kwargs)
     size = sum(
         os.path.getsize(os.path.join(d, f))
         for d, _, files in os.walk(path)

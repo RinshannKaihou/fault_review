@@ -521,11 +521,22 @@ def run_worktree_gates(wt_dir: Path, lexical_only: bool = False) -> dict[str, An
         if lexical_only or not has_tf:
             build_args.insert(2, "--no-vectors")
             check_args.extend(["--tier", "bm25"])
-        b_proc = subprocess.run(build_args, cwd=str(wt_dir), text=True, capture_output=True, timeout=1800)
-        if b_proc.returncode != 0:
-            failures.append(f"web/build_site exited {b_proc.returncode}: {b_proc.stderr.strip()[-300:]}")
+        web_env = dict(os.environ)
+        offline_web_models = wt_dir / "models" / "web"
+        if (offline_web_models / "Xenova" / "multilingual-e5-small" / "onnx" / "model_quantized.onnx").is_file():
+            web_env["FAULT_RAG_WEB_MODEL_DIR"] = str(offline_web_models.resolve())
         else:
-            c_proc = subprocess.run(check_args, cwd=str(wt_dir), text=True, capture_output=True, timeout=1800)
+            web_env.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+            np_items = [x.strip() for x in (web_env.get("NO_PROXY") or web_env.get("no_proxy") or "").split(",") if x.strip()]
+            if "hf-mirror.com" not in np_items:
+                np_items.append("hf-mirror.com")
+            web_env["NO_PROXY"] = ",".join(np_items)
+            web_env["no_proxy"] = web_env["NO_PROXY"]
+        b_proc = subprocess.run(build_args, cwd=str(wt_dir), env=web_env, text=True, capture_output=True, timeout=1800)
+        if b_proc.returncode != 0:
+            failures.append(f"web/build_site exited {b_proc.returncode}: {b_proc.stderr.strip()[:600]}")
+        else:
+            c_proc = subprocess.run(check_args, cwd=str(wt_dir), env=web_env, text=True, capture_output=True, timeout=1800)
             if os.path.exists(rep_path):
                 try:
                     web_report = json.loads(Path(rep_path).read_text(encoding="utf-8"))
