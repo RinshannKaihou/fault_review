@@ -1,0 +1,53 @@
+id: INF-2621
+legacy_ids: []
+slug: nccl_symm_mem_allreduce_wrong_group
+aliases: []
+title: NCCL 对称内存 all-reduce 跨组取错 rank 集
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 集合通信
+    stack: vllm
+    component: pynccl 对称内存 all-reduce
+  behavior: VLLM_USE_NCCL_SYMM_MEM=1时，对称all-reduce op只注册一次并闭包首个注册组（TP组）；rank≥4、尺寸<16KiB或>512KiB且成员与TP组不同的组，op不接收调用组，按TP组rank集归约。
+effect:
+  objects:
+  - 数值结果
+  - 隐状态
+  detail: TP8+DCP4、每 rank 填 rank+1 时，DCP 组 [0..3]/[4..7] 应得 10/26，实际得到 TP 组和；不挂起不报错，DCP 解码输出被污染。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 TP 与另一组 rank 集不同的进程组，各组填 rank+1 后 all-reduce，核对每组结果是否等于本组成员之和；覆盖 ≥4 rank 且尺寸 ≤16KiB 或 ≥512KiB。
+  fix: 待定（#66304 提议把调用组传入 op；本条 issue open，未核实修复）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/70287
+  kind: github_issue
+relations: []
+original:
+  mechanism: 'vLLM 在 VLLM_USE_NCCL_SYMM_MEM=1 时，register_nccl_symmetric_ops（vllm/distributed/device_communicators/pynccl.py）只注册一次进程级 custom op all_reduce_symmetric_with_copy，该 op 闭包第一个注册它的组的 PyNCCL 通信器；world 组没有 device communicator，因此第一个注册组是 TP 组。CudaCommunicator.all_reduce 随后对任何 rank 数 ≥4 的组调用这个 op（min_world_size 来自 NCCL_SYMM_MEM_ALL_REDUCE_CONFIG，4 rank 时选 16KiB 以下与 512KiB 以上两档），op 从不接收调用组，于是成员与 TP 组不同的组（如 decode context parallel 组）会在 TP 组 rank 集上归约。TP 组每个 rank 同时到达调用，all-reduce 正常完成，不挂起也不报错。复现：单机 8 GPU、TP8、DCP4，对 get_dcp_group() 做 all-reduce，每 rank 填 rank+1，DCP 组 [0,1,2,3] 与 [4,5,6,7] 应得 10 与 26，实际得到 TP 组的和。相关 #66303 在 Qwen4Exp checkpoint 的 ETP 组报同一原因，#66304 提议把调用组传入 op。'
+  source: https://github.com/vllm-project/vllm/issues/70287（open，2026-11-27，含 8 卡 TP8/DCP4 最小复现与 512KiB/64KiB 分档）
+  behavior: 开启 VLLM_USE_NCCL_SYMM_MEM=1 后，凡是在 TP 组以外的通信组上做 all-reduce（例如 decode context parallel 组），拿到的是 TP 组的和而不是本组的和；进程不挂起、不报错、日志无异常，只有并行解码的输出数值被静默污染。把 NCCL 对称内存关掉或让该组与 TP 组同成员就恢复正常。
+  trigger_surface: VLLM_USE_NCCL_SYMM_MEM=1；组 rank 数 ≥4；调用尺寸落在 16KiB 以下或 512KiB 以上；非 TP 组（DCP/ETP 等）；TP 组自身不受影响
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

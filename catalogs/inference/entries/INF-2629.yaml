@@ -1,0 +1,60 @@
+id: INF-2629
+legacy_ids: []
+slug: sglang_lightning_attn_prefix_state_decay_off_by_one
+aliases: []
+title: SGLang lightning_attention 前缀核少一步衰减
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: sglang
+    component: lightning_attn prefill 核
+  behavior: _fwd_none_diag_kernel 用 q_decay=exp(-s*(off_c*CBLOCK+c))，但 KV[i] 存的是块折叠前的状态，query 实为 r+1 步后，历史项整体大 exp(s) 倍。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: linear_backend='minimax' 时新 prompt 0–255 token 正确、≥256 全错；chunked prefill 续非零 kv_history 时每个 token 都错；最终返回状态本身正确。
+  visibility: 静默错误
+mitigation:
+  detect: 对同一 prompt 比较 minimax 与 seg_la 后端输出，或用 fp64 闭式递归核对 256 之后及续块 token；最终状态对拍不能发现该问题。
+  fix: 待定（issue open；修复应把块间项改为 exp(-s*(r+1))，未核实是否已有 PR）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-27'
+remarks: 与 INF-1391（vLLM lightning_attn 前缀核）是同一 off-by-one 衰减机制的两套独立实现：vLLM 在 model_executor/layers/lightning_attn.py，SGLang 在 kernels/ops/attention/linear/lightning_attn.py；本条只在 linear_backend='minimax' 路径触发。
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/53616
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-1391
+pattern: PAT-INF-0216
+original:
+  mechanism: SGLang main 4f1fa3ad 的 python/sglang/kernels/ops/attention/linear/lightning_attn.py 中，_fwd_none_diag_kernel（prefill 路径）约 L378-382 用 q_decay = tl.exp(-s * (off_c * CBLOCK + c_array[:, None])) 乘块间项；而 _fwd_kv_reduce 存进 KV[i] 的是块 i 折叠前的 running state，即前一个块最后一个 token 之后的状态（块 0 为传入的 kv_history，约 L295-306）。按递归 S_t = exp(-s) S_{t-1} + k_t^T v_t、o_t = q_t S_t（同文件 linear_decode_forward_triton 用的约定），块内偏移 r = off_c*CBLOCK+c 的 query 距该存储状态是 r+1 步，块间项应为 exp(-s(r+1)) q_t KV[i]；核里用的是 exp(-s r)，历史状态贡献大了 exp(s) 倍。s 是每头斜率，80 层模型第 0 层最大 0.917，即 2.5 倍。同文件对角核按 exp(-s(i-j))、k_decay 按 exp(-s(BLOCK-(p+1))) 计算，均与 r+1 约定一致；返回的最终 state 也正确，只有输出错。触发路径为 LightningAttentionBackend（BailingHybridConfig 无 KDA，即 Ling-2.5/Ring-2.5，以及 MiniCPM-SALA 的 lightning 层）在 linear_backend=='minimax' 时调用 _prefill_and_mix_infer → BailingLinearKernel.jit_linear_forward_prefix → lightning_attention；默认 linear_backend='seg_la'。后果：新 prompt 0–255 token 正确（块 0 的 KV[0]=0），≥256 的每个 token 都错；从非零 kv_history 起的 chunked prefill 每个 token 都错。
+  source: https://github.com/sgl-project/sglang/issues/53616（open，2026-11-27，含公式推导、源码行号与两种触发形态）
+  behavior: SGLang 用 linear_backend='minimax' 服务 Ling-2.5/Ring-2.5 或 MiniCPM-SALA 的 lightning 线性注意力层时，prompt 超过 256 token 后每个 token 的输出都偏大（历史状态多衰减了一次的反面），chunked prefill 从第二块起整段都错；服务正常返回 HTTP 200，无报错、无 NaN，只有生成质量静默变差。换回默认 seg_la 后端就正常。
+  trigger_surface: SGLang main 4f1fa3ad；linear_backend='minimax'；LightningAttentionBackend（Ling-2.5/Ring-2.5、MiniCPM-SALA lightning 层）；prompt>256 token 或 chunked prefill 续非零 kv_history；默认 seg_la 不触发
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  updates:
+  - date: '2026-11-28'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - visibility

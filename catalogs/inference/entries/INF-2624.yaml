@@ -1,0 +1,50 @@
+id: INF-2624
+legacy_ids: []
+slug: triton_mla_bf16_lse_dcp_combine_error
+aliases: []
+title: TRITON_MLA 解码 LSE 存 bf16 致 DCP 偏差
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: TritonMLA decode LSE
+  behavior: forward_mqa 按 q.dtype 分配 decode LSE，stage-2 kernel 把 fp32 lse_val 存进 bf16 张量；DCP 合并按 exp(lse_r-lse) 加权时该误差直接进入权重。
+effect:
+  objects:
+  - 数值结果
+  detail: bf16 模型、decode context parallel 下 LSE 舍入误差约 0.03（bf16 间距 0.0625），每 rank 权重偏差约 3%，合并输出误差最高约 2.5%；不用 DCP 时不触发。
+  visibility: 静默错误
+mitigation:
+  detect: DCP>1 且 bf16 模型时对比 fp32 LSE 版本与现实现的合并输出；或把 lse 张量 dtype 改为 fp32 做 A/B。
+  fix: 待定（issue open；CUTLASS MLA 与 ROCm AITER 已用 fp32 LSE）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/70420
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM main 97dfd078 的 TritonMLAImpl.forward_mqa（vllm/v1/attention/backends/mla/triton_mla.py 约 L366-370）用 query dtype 分配 o 与 lse：lse = torch.zeros(B, q_num_heads, dtype=q.dtype)。stage-2 kernel 在 fp32 计算 lse_val = e_max + tl.log(e_sum)，再存进该张量（triton_decode_attention.py 约 L754-758），bf16 模型下 LSE 被舍入到 bf16。decode LSE 典型在 8–16，bf16 间距 0.0625，存储误差可达约 0.03。不用 DCP 时 LSE 不参与后续计算；开启 decode context parallel 时 MLAAttention 把它传给 DCP combine（mla_attention.py 约 L1286-1330），CorrectAttnCPOutKernel 按 exp(lse_r - lse) 缩放各 rank 的部分输出（dcp.py 约 L180-218），0.03 的 LSE 误差对应约 3% 的 rank 权重误差，直接进入合并后的注意力输出，端到端输出误差最高约 2.5%。CUTLASS MLA 用 torch.float32 分配 LSE（cutlass_mla.py 约 L222-226），ROCm AITER MLA 也走 fp32 LSE，说明这是 TRITON_MLA 单路径的 dtype 选择问题。
+  source: https://github.com/vllm-project/vllm/issues/70420（open，2026-11-27，含 bf16 间距计算、DCP combine 调用链与其他后端对照）
+  behavior: bf16 模型用 TRITON_MLA 并开启 decode context parallel 时，各 rank 的部分注意力结果按一个被舍入到 bf16 的 LSE 加权合并，合并后的输出最多偏差约 2.5%，生成内容静默劣化；不开 DCP 或换 CUTLASS/AITER MLA 就正常。整个链路不报错、不产生 NaN。
+  trigger_surface: vLLM main 97dfd078；TRITON_MLA 后端；bf16 query；decode context parallel (DCP)>1；非 DCP 路径不受影响
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

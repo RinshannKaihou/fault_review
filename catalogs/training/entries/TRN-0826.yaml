@@ -1,0 +1,53 @@
+id: TRN-0826
+legacy_ids: []
+slug: megatron_fp8_param_gather_round_to_nearest_update_stall
+aliases: []
+title: FP8 blockwise 参数舍入吞掉小更新
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: megatron-lm
+    component: distributed optimizer
+  behavior: distributed optimizer 每步把 FP32 master shard 按 round-to-nearest 舍入到 E4M3；master 由反量化 FP8 参数构建时所有权重落在网格点，step 位移小于半格即被丢弃。
+effect:
+  objects:
+  - 模型权重
+  - 训练轨迹
+  detail: GRPO Qwen2.5-0.5B（MLP INT4）模拟：250 步 reward 0.194、bf16 0.342；master 由 bf16+2 幂 scale 构建时 1/16 权重在舍入平局，首步约 3% 权重整格跳变、KL 0.84–1.30 nats/token，3 次 1 次崩溃。
+  visibility: 质量退化
+mitigation:
+  detect: 对 FP8 master 连续两步 dump 权重，统计 FP8 值未变化的参数比例；对比 bf16 基线的 reward 曲线与首步 KL
+  fix: '待定（issue #9844 open，2026-11-27；作者提出 opt-in `--fp8-param-rounding fixed_threshold` 并称 PR 已就绪，未见合并）'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-28'
+remarks: ''
+evidence:
+- url: https://github.com/NVIDIA/Megatron-LM/issues/9844
+  kind: github_issue
+relations: []
+original:
+  mechanism: Megatron-LM 的 `--fp8-param-gather --fp8-recipe blockwise` 在 distributed optimizer 中每步把 FP32 master shard 舍入到 E4M3（round-to-nearest）后写回 FP8 参数。报告给出两种 master 构建方式下的失效：(1) 无优化器状态微调加载时 master 由反量化 FP8 参数构建，所有 weight 初始落在 E4M3 网格点上，RL 一步只移动约 1e-6，而典型权重附近 E4M3 格宽约 2e-3，round-to-nearest 在位移未过半格前始终回到原网格点，更新被系统性丢弃、学习停滞；(2) master 由 bf16 checkpoint 值加 2 的幂 scale 构建时，1/16 权重恰在舍入平局上，第一步更新按符号打破平局，约 3% 权重同时整格跳变。作者在 Megatron 外模拟该 blockwise cast（GRPO、Qwen2.5-0.5B、MLP 权重 INT4 group 32，3 seed 均值）：停滞组 250 步平均 reward 0.194 vs bf16 0.342；平局跳变组首步策略 KL 0.84–1.30 nats/token，3 次中 1 次崩溃，且跳变幅度在 1e-8–1e-5 各学习率下相同。提出 opt-in `--fp8-param-rounding fixed_threshold`（每权重固定阈值 1/2+u，u 一次抽样；模拟中停滞组回到 0.341、cast 确定）。作者明确说明模拟在 Megatron 外部完成、非上游实机；Issue 为 feature request，2026-11-27 open。
+  source: 'Megatron-LM issue #9844（open，2026-11-27；含两种 master 构建方式的 GRPO 实测与外部模拟脚本链接）https://github.com/NVIDIA/Megatron-LM/issues/9844'
+  behavior: 用 `--fp8-param-gather --fp8-recipe blockwise` 做 FP8 RL 微调时，训练不报错、loss 看似正常，但策略几乎不学：从反量化 FP8 权重起步时，小步更新被 round-to-nearest 反复舍回原网格点，250 步 reward 只有 bf16 的一半左右；从 bf16 checkpoint 起步时，首步就有约 3% 权重整格跳变，KL 冲到 0.8–1.3 nats/token，多次运行中偶发崩溃。降低学习率不改变跳变幅度，只有关掉 FP8 参数聚合或改舍入方式才恢复。
+  trigger_surface: --fp8-param-gather --fp8-recipe blockwise；FP32 master 由反量化 FP8 参数或 bf16+2 幂 scale checkpoint 构建；RL 微调小步长
+  discovery: 2026-11-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-28'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 静默错误
+        to: 质量退化

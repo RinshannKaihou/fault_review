@@ -19,7 +19,7 @@ effect:
   visibility: 静默错误
 mitigation:
   detect: 记录每个 global_step 实际训练的 buffer slice 与 prompt id，续跑后与不间断 run 的调度逐 step 对比
-  fix: '待定（issue #8552 open，2026-11-24；作者提议 resume 时按 global_step*gradient_accumulation_steps 恢复 _step 并加对照测试）'
+  fix: '待定（#8552 于 2026-11-26 作为 #7787 的重复关闭；修复补丁在 #7787 跟踪，未合并）'
 labels:
   stage:
   - rl
@@ -30,12 +30,17 @@ remarks: ''
 evidence:
 - url: https://github.com/huggingface/trl/issues/8552
   kind: github_issue
-relations: []
+relations:
+- kind: var
+  target: TRN-0316
+pattern: PAT-TRN-0087
 original:
   mechanism: GRPOTrainer.__init__ 把 self._step 置 0，之后只在 training_step 里递增，checkpoint 不保存该值。resume 后 _buffered_inputs 为 None，_prepare_inputs 按预期重建 buffer（生成一批 rollout），但随后仍用 self._buffered_inputs[self._step % steps_per_generation] 取切片，此时 _step 已回到 0，于是从 slice 0 而不是断点所在的 slice 继续。复现：steps_per_generation=4、save_steps=2、max_steps=8，从 checkpoint-2 续跑，step 2/3 又训练 slice 0/1（与 step 0/1 重复），第二次生成的 slice 2/3 从未使用；不间断 run 依次是 0,1,2,3 / 0,1,2,3。因为 dataloader sampler 本身已在正确位置，重新生成的 batch 与不间断 run 的下一批相同，只有切片下标错。save_steps 为 generation interval 整数倍时不触发。
   source: 'TRL issue #8552（open，2026-11-24；CPU 30 秒复现，附 unbroken/resumed/修后三列调度对照）https://github.com/huggingface/trl/issues/8552'
   behavior: 从 generation buffer 中途保存的 checkpoint 续跑，训练不报错、step 数和 loss 都正常，但续跑后在 step 2/3 又训练已经用过的 slice 0/1，后面生成的 slice 2/3 永远不进入训练；同一个 prompt 会被重复训练、另一些 prompt 被跳过。只有 save_steps 不是 steps_per_generation 整数倍（抢占式作业、steps_per_generation 大于 gradient_accumulation_steps、num_iterations>1 等）时出现。
   discovery: 2026-11-26 每日扫描
+  notes:
+  - '2026-11-28 上游 2026-11-26 以 duplicate 关闭：与 #7787 同一根因（_step 未随 resume 恢复、generation block 边界偏移），维护者称 #7787 已有补丁在途；本条保留为复现明细。'
 migration:
   method: scan
   scanned: '2026-11-26'
@@ -52,3 +57,12 @@ migration:
         to: RL训练回路
     rewritten:
     - detail
+  updates:
+  - date: '2026-11-28'
+    fields:
+    - mitigation.fix
+    - original.notes
+    - relations
+  - date: '2026-11-28'
+    fields:
+    - pattern

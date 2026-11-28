@@ -1,0 +1,50 @@
+id: INF-2620
+legacy_ids: []
+slug: fa3_causal_sliding_window_prefill_hd128_256_wrong
+aliases: []
+title: FA3 causal 滑窗 prefill 头维 128/256 错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm
+    component: FA3 varlen SWA 核
+  behavior: FA3 在长 query chunk 的 causal sliding-window prefill 中，head dim 128/256 的部分行偏离 fp32 参考；同输入 FA2 正常，窗口 1000 与 1024 结果不同。
+effect:
+  objects:
+  - 数值结果
+  detail: H100 bf16：head dim 128/256、窗口 1000 时 max abs err 0.118/0.188（FA2 0.010/0.009）；vLLM 自测 4 个 bf16 hd256 sliding_window=256 用例失败，最大 0.229/0.336。
+  visibility: 静默错误
+mitigation:
+  detect: 同输入分别用 fa_version=3 与 2、并对照 fp32 参考，覆盖 head dim 64/128/256、窗口 300–1500、seq≥1500；hd64 与 decode 作阴性对照。
+  fix: 待定（issue open；报告怀疑上游 Dao-AILab/flash-attention#1366，未核实）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/70199
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 的 FA3 后端（vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so 与 vllm-project/flash-attention main 8bfb5666 自编 sm_90 均复现）在 causal=True、window_size=[W-1,0]、max_seqlen_q 为长 query chunk 的 varlen prefill 上，head dim 128 与 256 的输出偏离 fp32 参考；FA2 同构建同输入与参考一致。报告脚本：L=2048、H=16、bf16 q/k/v，cu_seqlens=[0,L]，窗口 1000/1024，用 float32 einsum 构造 causal-and-window mask 的 softmax 参考。实测 head dim 128/window 1000 FA3 1.177e-01 对 FA2 1.028e-02；hd128/1024 FA3 1.028e-02；hd256/1000 FA3 1.881e-01 对 FA2 8.729e-03；hd256/1024 FA3 1.826e-01 对 FA2 8.729e-03。vLLM 自测 tests/kernels/attention/test_flash_attn.py 在 H100 上 4 个 bf16 head-dim-256 sliding_window=256 用例失败（129 token query over 463 keys），最大绝对差 0.229/0.336；更大扫描误差达 0.51，坏行是每个 query 范围的子集、从窗口后 128/512 的倍数附近开始；num_splits=1 同样错。head dim 64 与 decode 不受影响，窗口 1024 通过而 1000 失败，精确触发面尚未映射。
+  source: https://github.com/vllm-project/vllm/issues/70199（open，2026-11-26，含逐窗口误差表、vLLM 自测失败用例与 FA2 对照）
+  behavior: 在 H100 上用 vLLM 默认 FLASH_ATTN 后端跑 gemma-2/3、Mistral 这类滑窗模型的长 prompt prefill，当 query chunk 超过滑窗宽度、head dim 为 128 或 256 时，部分注意力行算错，和 float32 参考差 0.1–0.5；同输入切到 FA2 就正常。接口不报错，生成质量只在特定窗口和头维度组合下变差，短 prompt 和 decode 看不出来。
+  trigger_surface: H100 80GB HBM3、torch 2.14.0+cu130、vLLM main 0e3c8dbda / flash-attention main 8bfb5666；FA3；bf16；causal sliding-window prefill；head dim 128/256；query chunk 跨窗（L=2048，窗口 1000/1024）；hd64 与 decode 不触发
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

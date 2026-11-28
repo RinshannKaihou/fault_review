@@ -1,0 +1,54 @@
+id: TRN-0828
+legacy_ids: []
+slug: cann_tiling_u32_length_overflow_empty_tensor_branch
+aliases: []
+title: tiling 32 位长度溢出把大张量当空张量
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: host tiling 长度计算
+  behavior: HuberLossGrad 的 uint32 元素数乘 typeLength、EluGradV2 的 uint32 元素数在跨 2^32 时回绕为 0，tiling 走空张量分支、零工作量并返回成功。
+effect:
+  objects:
+  - 梯度
+  - 模型权重
+  detail: HuberLossGrad FP32 [1073741824]（2^30×4B=2^32）inputLength 回绕 0，每核 0 tile，不写输出；EluGradV2 FP16 [65536,65536] totalLength=0 走空张量分支；两段均成功，输出保留旧值/未初始化。
+  visibility: 静默错误
+mitigation:
+  detect: 构造元素数 ≥2^32 或 FP32 总字节数 ≥2^32 的合法输入，预填金丝雀并检查 host tiling 的 totalLength/inputLength 是否为 0，再与 64 位参考逐元素对拍
+  fix: 待定（#10454/#10455 open，2026-11-27；报告建议用 uint64_t 计算总元素/字节数，下发 32 位 tiling 字段前检查并分块，或显式拒绝；未见修复 MR）
+labels:
+  stage:
+  - shared
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-28'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-nn/issues/10454
+  kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-nn/issues/10455
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-nn 两个算子的 host tiling 用 32 位无符号数承接长度，溢出后走空张量分支。HuberLossGrad：experimental/loss/huber_loss_grad/op_host/huber_loss_grad_tiling.cpp 把 GetStorageShape().GetShapeSize() 直接赋给 uint32_t inputNum，再用 uint32_t inputLength = inputNum * typeLength 计算总字节；FLOAT 形状 [1073741824]（2^30 元素）时 inputNum 可表示，但 2^30×4 = 2^32 在 32 位无符号运算中回绕为 0，inputLengthAlgin32、smallCoreDataNum、finalSmallTileNum 随之为 0，KernelHuberLossGrad::Init/Process 为该核设置 0 个输出元素和 0 个 tile，kernel 正常返回但不写输出；该形状下 predictions/targets/grad_output 合计约 12 GiB，设备内存允许时可实际分配。EluGradV2：experimental/activation/elu_grad_v2/op_host/elu_grad_v2_tiling.cpp 把 GetShapeSize() 直接保存到 uint32_t totalLength，无元素数上限校验；FP16 [65536,65536]（2^32 元素，grads/activations/out 各约 8 GiB，合计约 24 GiB）转成 uint32_t 为 0，`if (totalLength == 0U)` 空张量分支把 totalLength/bigCoreDataNum/smallCoreDataNum/lastCoreDataNum 置 0、SetBlockDim(1U) 并返回 GRAPH_SUCCESS，输出未被计算或写入。两份报告均基于 tiling、shape 推导与算子定义的源码核查，因 NPU SSH 不可用未做实机复现；算子定义未声明元素数上限，shape 推导直接沿用输入 shape。
+  source: 'cann/ops-nn issue #10454（open，2026-11-27，HuberLossGrad FP32 2^30 元素字节数溢出）https://gitcode.com/cann/ops-nn/issues/10454 ；cann/ops-nn issue #10455（open，2026-11-27，EluGradV2 元素数 2^32 被当空张量）https://gitcode.com/cann/ops-nn/issues/10455'
+  behavior: 在 910B 上用 HuberLossGrad 反传一个 10 亿级 FP32 元素的合法大张量（约 12 GiB 输入输出）时，接口返回成功、日志无异常，但输出梯度整块没有被写，仍是调用方预填的旧值或未初始化内存；EluGradV2 在 FP16 42.9 亿元素（[65536,65536]，约 24 GiB）时同样返回成功却不计算。把张量缩小到 2^32 以下立刻恢复正常，所以短跑和小模型完全看不出来，只有大词表/大 batch 的真机训练才会命中，表现为这一层梯度静默缺失或脏值。
+  trigger_surface: Ascend910B；HuberLossGrad FP32 元素数 ≥2^30（总字节 ≥2^32）或 EluGradV2 任意 dtype 元素数 ≥2^32；动态 shape、无元素数上限校验
+  discovery: 2026-11-28 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-28'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max

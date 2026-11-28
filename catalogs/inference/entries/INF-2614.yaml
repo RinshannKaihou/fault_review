@@ -1,0 +1,50 @@
+id: INF-2614
+legacy_ids: []
+slug: flashinfer_merge_state_dtype_unchecked
+aliases: []
+title: FlashInfer merge_state 不校验 dtype
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: cascade merge_state
+  behavior: 只校验 shape/device，不校验 dtype：s 非 fp32 时新 LSE 写进临时副本，v dtype 不一致时按 v_a 重解释位型，mask 不是 bool/uint8 时按字节读。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: 3 路链式合并偏差最大 3.9；fp16+bf16 v 偏差 1.4–1.9，bf16+fp16 约 400，fp16+fp32 出 NaN；int32 mask [1,1,0,1] 只合并第 0 行；全部无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 对 merge_state_in_place 传 fp16/bf16/fp64 的 s 后回读调用方 s 是否被更新；对 v_a/v_b 混 dtype、mask 用 int32 的用例与 fp32/bool 基线比对。
+  fix: 待定（issue open，建议在 cascade 入口显式校验 s/v/mask 的 dtype 并拒绝）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/10073
+  kind: github_issue
+relations: []
+original:
+  mechanism: FlashInfer main d0cbb476c 的 cascade merge 系列算子（merge_state、merge_state_in_place）在 cascade.cu 里只做 CHECK_SHAPE 与设备一致性检查，不检查 dtype，并按 v_a.dtype() 派发 kernel，于是三类非法输入被接受后静默算错：(1) merge_state_in_place 的 s 不是 fp32（fp16/bf16/fp64）时，v 仍被合并，但新 LSE 写进 cascade.py 里 s = s.to(torch.float32) 生成的临时副本，调用方的 s 永远不更新，后续再拿这个旧 LSE 继续合并会偏，3 路链式合并实测最多差 3.9；(2) v_b/v_other 与 v_a/v 的 dtype 不同时，kernel 按 v_a 的 dtype 重新解释另一张量的位型，fp16+bf16 差 1.4–1.9、bf16+fp16 差约 400、fp16+fp32 直接出 NaN；(3) mask 不是 bool/uint8 时 kernel 按字节读，int32 的 [1,1,0,1] 只有第 0 行被合并且仍返回成功。docstring 确实写了 s 应为 fp32，但实现没有拒绝，FlashInfer 自身调用链总是传 fp32，因此只影响直接调用公开 API 的用户。
+  source: https://github.com/flashinfer-ai/flashinfer/issues/10073（open，2026-11-26，RTX 4060 Laptop 与 RTX 4090 双机复现，FlashInfer main d0cbb476c）
+  behavior: 直接调用 FlashInfer 的 cascade merge_state 接口做多级 attention 合并时，如果 LSE 用了 fp16/bf16、两路 v 的 dtype 不一致、或 mask 用了 int32，接口都正常返回、不报错，但结果是错的：链式合并的 LSE 可能一直用旧值，最多偏 3.9；v dtype 混用时数值偏差从 1.4 到 400，甚至直接出 NaN；int32 mask 只合并第一行，其余行被静默丢掉。常见用法（全部 fp32）完全正确，所以只有混用 dtype 的调用方会中招。
+  trigger_surface: FlashInfer main d0cbb476c，RTX 4060 Laptop（CUDA 13.3、torch 2.14.1+cu130）与 RTX 4090（CUDA 13.0、torch 2.9）；merge_state / merge_state_in_place 的 s 非 fp32、v_b/v_other dtype 与 v_a 不一致、mask 非 bool/uint8。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - behavior

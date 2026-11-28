@@ -1,0 +1,52 @@
+id: INF-2623
+legacy_ids: []
+slug: npu_inductor_persistent_masked_softmax_tail_mask
+aliases: []
+title: NPU Inductor persistent softmax 丢尾部掩码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 编译器
+    stack: torch_npu
+    component: Inductor 持久归约核
+  behavior: 动态行长 229 的 FP16 masked softmax 归约块对齐到 232，生成的 r_mask 未参与读取、写回和归约，尾部三个 lane 访问相邻行。
+effect:
+  objects:
+  - 数值结果
+  - 输出内容
+  detail: seq 维动态 [31,229] 的 QK-masked-softmax-V 子图最大绝对误差 0.9386，同一输入重复运行输出波动；softmax 分母混入额外元素。
+  visibility: 静默错误
+mitigation:
+  detect: 对动态 seq [31,229] 的 masked softmax 子图用 3 个 seed 各跑 5 次，与 eager 按 1e-3 绝对误差比对，并检查同输入重复运行是否稳定。
+  fix: 待定（issue open；报告者说明需同时补 filter_masks 与 persistent reduction 输入屏蔽）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/Ascend/pytorch/issues/6509
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: Ascend/pytorch（TorchNPU 2.10，Ascend 950）上 torch.compile 对动态行长的 FP16 masked softmax 生成 persistent reduction：行长 229、归约块对齐到 232，生成的 r_mask 没有参与读取、写回和归约，尾部 3 个 lane 访问相邻行，softmax 分母因此混入额外元素，原地输出还出现重复运行波动。同一 ATen 子图在 2.13 生成的代码保留归约轴访存掩码，并在 max 和 sum 前分别用负无穷和零屏蔽无效元素。复现：Q/K/V 形状 [1024,3,64]、[1024,64,229]、[1024,229,64]，mask [256,229] 为有效前缀掩码，计算 QK BMM、masked softmax、与 V 的 BMM；序列维标记动态范围 [31,229]，torch.compile(fullgraph=True) + max_autotune=True；seed 0/1/2 各跑五次，对 NPU eager 按绝对误差 1e-3 比较，完整子图最大绝对误差 0.9386。仅修正写回掩码仍有精度差异，同时补齐访存掩码和归约中性值后独立 kernel 通过。修复应覆盖 NPUIndexTritonKernel.filter_masks 与 persistent reduction 输入值屏蔽，并沿用 2.10 已有静态块证明与 Welford 布局逻辑。
+  source: https://gitcode.com/Ascend/pytorch/issues/6509（open，2026-11-27，含动态形状、seed 重复实验与 2.13 对照）
+  behavior: 在 Ascend 950 上用 torch.compile 跑动态序列长度的 masked softmax 注意力，当实际长度落在 229 这类非对齐值、归约块补齐到 232 时，输出注意力结果和 eager 差到 0.9 以上，同一输入重复跑结果还会变；没有任何报错或 NaN，评测指标只会莫名下降。把序列长度改成对齐值或退回 eager 就正常。
+  trigger_surface: TorchNPU 2.10 / Ascend 950；torch.compile(fullgraph=True, max_autotune=True)；FP16 masked softmax；序列维动态且实际长度非 32 对齐（229）；2.13 代码不触发
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      visibility:
+        from: 不可复现
+        to: 静默错误

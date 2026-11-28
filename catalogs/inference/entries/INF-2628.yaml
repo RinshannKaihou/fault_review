@@ -1,0 +1,54 @@
+id: INF-2628
+legacy_ids: []
+slug: flashinfer_cuda_rmsnorm_row_offset_uint32_wrap
+aliases: []
+title: FlashInfer CUDA RMSNorm 行偏移 32 位回绕
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: flashinfer
+    component: norm.cuh RMSNorm 系列
+  behavior: 六个 CUDA JIT norm kernel 用 uint32_t 计算 bx*stride 的行起始偏移，行起点达到 2^32 元素时回绕，读写落到错误行。
+effect:
+  objects:
+  - 数值结果
+  detail: 3 行 bf16、行距 2^31 元素时第 3 行返回第 1 行结果（max err 3.52）；连续 fp16 (350000,12288) 从第 349526 行起错，回绕块还改写第 0 行；无报错。
+  visibility: 静默错误
+mitigation:
+  detect: 用 as_strided 构造行距 2^31 的 3 行张量，逐行与 fp32 参考比对并检查 y[2]==y[0]；或用 (350000,12288) fp16 全量对拍并检查第 0 行是否被改写。
+  fix: 待定（issue open；CuTe DSL norm 与 CUDA LayerNorm 已改用 64 位偏移）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-27'
+remarks: 与 INF-2540（aclnnIsInf 超 2^31 元素偏移溢出）同属 32 位偏移算术在大元素量下回绕；本条载体是 CUDA RMSNorm 行基址，阈值 2^32 元素。
+evidence:
+- url: https://github.com/flashinfer-ai/flashinfer/issues/9838
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2540
+pattern: PAT-INF-0217
+original:
+  mechanism: 'flashinfer 0.7.5（commit 253986e2，B200 SM100）的 CUDA JIT norm kernel 在 include/flashinfer/norm.cuh 中把一行的元素偏移算作 bx * stride 并存进 uint32_t，行起点达到 2^32 元素时回绕，落在错误地址，返回错误行且不抛异常。涉及全部六个 kernel：RMSNormKernel、RMSNormQuantKernel、QKRMSNormKernel、FusedAddRMSNormKernel、FusedAddRMSNormQuantKernel、FusedAddRMSNormFP8BlockQuantKernel；它们在 FLASHINFER_USE_CUDA_NORM=1 或 CuTe DSL 无法覆盖目标设备时启用，fused_add_rmsnorm_fp8_block_quant 没有其他后端。复现：H=128、stride=2^31，buf 长 2*stride+H 的 bf16，as_strided 成 (3,H)/(stride,1) 并写入随机值，y=rmsnorm(x,w) 后逐行与 fp32 参考比较，输出 [0.0, 0.0, 3.515625]，且 y[2] 与 y[0] 完全相同；连续 fp16 (350000,12288) 输入从第 349526 行起错，回绕块还会覆写第 0 行。CuTe DSL norm 自 #3007、#3392，CUDA LayerNorm 自 #8378 已用正确偏移。'
+  source: https://github.com/flashinfer-ai/flashinfer/issues/9838（open，2026-11-22，含 as_strided 两行复现与连续大张量行号）
+  behavior: 当 RMSNorm 的输入是大张量、某一行起始位置超过 2^32 个元素（或行距被做成 2^31 这类大跨度）时，后面的行会读到前面的行：输出里出现整行重复，甚至把第 0 行改写掉，和 fp32 参考差到 3.5 以上。调用不报错、不产生 NaN，只有数值静默错位，普通中小模型尺寸下看不出来。
+  trigger_surface: flashinfer 0.7.5 CUDA norm 路径（FLASHINFER_USE_CUDA_NORM=1 或 CuTe DSL 不支持的目标）；bf16/fp16；行起始偏移 ≥2^32 元素（如 stride=2^31 的 3 行视图，或 (350000,12288) fp16）
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  updates:
+  - date: '2026-11-28'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []

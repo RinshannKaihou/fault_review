@@ -1,0 +1,49 @@
+id: INF-2618
+legacy_ids: []
+slug: splitv_ubsplit_gather_index_uint16_wrap
+aliases: []
+title: split_v UB-split gather 索引 16 位回绕致错值
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: cann
+    component: split_v UB-split 核
+  behavior: SplitVUbSplit 的 DataCopyGatherVf 用 uint16 lane 计算行×pitch+列+n 偏移，单块元素数超过 65536/sizeof(T) 时索引回绕，gather 从错误位置取数。
+effect:
+  objects:
+  - 数值结果
+  detail: Ascend960 上 split_v 切分 int8/uint8/bool，当单块 UB 可容纳超 65536 元素、size_splits 含≤128B 小段且 N 足够大使 nUbFactor 跨 16 位时，输出整行错值且无报错；950/910B 因 UB 较小不触发。
+  visibility: 静默错误
+mitigation:
+  detect: 构造 size_splits 含 ≤128B 小段、N 足够大使 nUbFactor 跨 16 位，与 golden 逐元素比对，观察整行错值。
+  fix: 待定（issue open，2026-11-27；报告建议对 UB-split 路径套用 same_len 系已有限制）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://gitcode.com/cann/ops-math/issues/5340
+  kind: gitcode_issue
+relations: []
+original:
+  mechanism: cann/ops-math 的 split_v 在 UB-split 路径（tilingKey=TILING_KEY_UB_SPLIT=103，kernel conversion/split_v/op_kernel/arch35/split_v_ub_split.h）上，DataCopyGatherVf 的 gather 源索引 idx=行×pitch+列+n偏移 在 U=uint16 的 16 位 lane 上运算：B8/B16 实例化为 SplitVUbSplit<uint8_t,uint16_t,int16_t> 与 <uint16_t,uint16_t,int16_t>，值域上限 65535。SplitVUbSplit::Process 的因子推导保证单块 tile 跨度恒 ≤ ubSizeNum_，因此当平台 UB 大到 ubSizeNum_ > 65536/sizeof(T)（如 Ascend960 单块 B8 约 94K 元素）时索引回绕，Reg::Gather 从错误位置取数，输出整行错值。950 等平台 UB 上限 253952B，单块 B8 约 63.5K 元素，未越界。host 侧 SplitVTiling::AdjustUbFactor 对 same_len 系 kernel 已按 gather 源字节跨度 ≤2*INT16_MAX 钳制（B16 tile ≤32767 元素、B8 ≤65534），注释明确提到 B8/B16 需判断 gather-index 范围，本缺陷是该口径在 UB-split(103) 路径上的缺失。报告给出 Ascend960 上 int8/uint8/bool、size_splits 含 ≤128B 小段、N 大使 nUbFactor 约 26K+ 的触发条件，执行全程无错误码。
+  source: https://gitcode.com/cann/ops-math/issues/5340（open，2026-11-27，含 kernel/tiling 源码定位与触发条件）
+  behavior: 在 Ascend960 上用 split_v 切分 int8/uint8/bool 张量，当单个 UB 块能容纳超过 65536 个元素、且 size_splits 里有很短的小段时，输出会有整行数据取自错误偏移，和 golden 对不上；接口不返回错误码、不打印告警，调用方看到的是看似正常但成片错误的结果。同样的模型和切分参数在 950/910B 上因 UB 较小不触发。
+  trigger_surface: Ascend960（UB 单块 B8 约 94K 元素）；int8/uint8/bool 输入且 size_splits 含 ≤128B 小段；N 足够大使 nUbFactor 跨 16 位；950/910B 单块 ≤65534 元素不触发
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    rewritten:
+    - detail

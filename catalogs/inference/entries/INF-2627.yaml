@@ -1,0 +1,58 @@
+id: INF-2627
+legacy_ids: []
+slug: transformers_moe_models_drop_position_ids_packed_mask
+aliases: []
+title: 三模型漏传 position_ids 破坏 packed 掩码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 模型定义
+    stack: transformers
+    component: 三模型 mask_kwargs
+  behavior: 三个模型的 mask_kwargs 不含 position_ids，create_causal_mask 无法调用 find_packed_sequence_indices，packed 批不生成块对角掩码。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - 隐状态
+  - 输出内容
+  detail: padding-free/packed 批下每个文档 attends 到行内所有更早文档；只改第一个文档即可让第二个文档 logits 变化（应恒为 0）；eager/sdpa/flex_attention 均受影响。
+  visibility: 静默错误
+mitigation:
+  detect: 用 DataCollatorWithFlattening 打包两文档，只改第一文档，断言第二文档 logits 变化为 0；覆盖 gpt_oss/afmoe/granitemoehybrid，并用 llama 作对照。
+  fix: 待定（issue open，transformers main 2f1bc5e；修复为把 position_ids 放进 mask_kwargs）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/huggingface/transformers/issues/51072
+  kind: github_issue
+relations: []
+original:
+  mechanism: Transformers main 2f1bc5e（5.24.0.dev0）中，packed / padding-free 输入（input_ids 加每个文档从 0 重新计数的 position_ids、无 attention_mask）依赖 create_causal_mask 读取 position_ids，再由 find_packed_sequence_indices 生成块对角掩码。LlamaModel 等绝大多数 decoder 都把 position_ids 放进 mask_kwargs，但 GptOss、AfMoE、GraniteMoeHybrid 三个模型的 mask_kwargs 只有 config、inputs_embeds、attention_mask、cache，缺 position_ids，因此 packing 永远检测不到，每个 packed 文档 attends 到同一行里所有更早的文档。影响 eager（GPT-OSS 未配置 kernel 时的默认）、sdpa（AfMoE、GraniteMoeHybrid）与 flex_attention；flash/kernel 后端不受影响，因为 decoder layer 把 position_ids 直接传给 attention call，attention 自己会检测 packing。报告给出 CPU 小模型独立复现：用 DataCollatorWithFlattening 打包两文档，只改第一个文档，测量第二个文档 logits 的位移，正确实现必须为 0。
+  source: https://github.com/huggingface/transformers/issues/51072（open，2026-11-21，含三模型 mask_kwargs 源码与 CPU 打包复现脚本）
+  behavior: 用 padding-free/packed 方式把多篇文档拼进一条序列做推理或训练时，GPT-OSS、AfMoE、GraniteMoeHybrid 的每个 token 会看到同一行里排在它前面的其他文档内容，文档隔离完全失效；单独跑每篇文档结果正常，打包后 logits 随之改变。没有报错，只有评测或训练质量静默下降，flash 后端反而正常。
+  trigger_surface: transformers main 2f1bc5e / 5.24.0.dev0；GptOss、AfMoE、GraniteMoeHybrid；packed 或 padding-free 输入（position_ids 每文档重置、无 attention_mask）；eager/sdpa/flex_attention；flash 后端不受影响
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: 隐状态
+        to: 跨请求/跨样本数据
+    uncertain:
+    - visibility

@@ -1,0 +1,62 @@
+id: INF-2610
+legacy_ids: []
+slug: fia_mla_reads_kv_beyond_actual_seq_kvlen
+aliases: []
+title: FIA MLA 读超 actual_seq_kvlen 致 NaN
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 算子/内核
+    stack: vllm-ascend
+    component: FIA v2 分页 attention
+  behavior: TND_NTD + sparse_mode=3 的 verify 批上，kernel 按 2048 宽 mask 块对齐读，越过 actual_seq_kvlen 读到 KV 池未写行 NaN，被 mask 的行仍经 softmax 传播。
+effect:
+  objects:
+  - 数值结果
+  - KV状态
+  detail: Kimi-Linear-48B FP8、TP2、ngram num_speculative_tokens=3：第二个请求拿到未写块后 verify 输出 [16,4,512] 全 NaN；首个请求干净，关投机后恢复。
+  visibility: 数值异常
+mitigation:
+  detect: 在 verify 步前读取 block_table 引用块的 k_nope 视图统计 NaN 行数，并与 attention 输出的 NaN 计数对照；把整池预热写满有限值后再跑可复现首个请求干净、后续请求失败。
+  fix: 规避：decode 前把 block_table 引用块中含 NaN 行的块清零（已写行有限、不受影响）；issue open，未核实修复。
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: var
+  discovered: '2026-11-26'
+remarks: 与 INF-2154（FlashInfer MLA 页尾 padding NaN 传入有效输出）共享「mask 之外的 KV 尾部 NaN 仍进入 attention」机制，本条为 Ascend FIA 按 2048 宽 mask 块对齐读、越过 actual_seq_kvlen 的形态。
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/23399
+  kind: github_issue
+relations:
+- kind: var
+  target: INF-2154
+pattern: PAT-INF-0214
+original:
+  mechanism: vllm-ascend v0.32.0rc1（fla_npu a5 镜像）、Ascend950DT×2、TP2、--enforce-eager 上跑 Kimi-Linear-48B-A3B-Instruct FP8（hybrid GDN/MLA，MLA 层用 v1 attention 后端 npu_fused_infer_attention_score_v2）。MLA KV 池用 torch.empty 分配，从未写的行残留 NaN；启动 warmup 也会把自己序列长度之外的块写成 NaN。投机验证步 FIA 以 input_layout="TND_NTD"、sparse_mode=3（bottom-right mask）、actual_seq_kvlen=<seq_len> 调用，kernel 按 mask 的 2048 宽跨度做块对齐读，越过 actual_seq_kvlen 读到这些未写行；被 mask 的 NaN 行仍参与 softmax，使整个 verify 输出变 NaN（16 head×4 token×512 维）。报告者逐 verify 步统计 layer 3 的 k_nope 视图：干净步 blkcounts=[0,0,0,0,0,0]，失败步 blkcounts=[79,80,63,45,35,75]、kvl=[26]、attn_nan=32768；q_nope/q_pe/k_pe 在所有用例 0 NaN，mask 无 NaN。首个请求落在 warmup 已写有限的块上所以干净，第二个请求拿到从未写的块就失败；关掉 drafting（0 个 verify 步）同一 workload 完全干净。
+  source: https://github.com/vllm-project/vllm-ascend/issues/23399（open，2026-11-26，含进程内探针与逐块 NaN 计数）
+  behavior: 用 MLA 模型开投机解码和前缀缓存时，第二个及之后的请求会在 verify 步整体输出 NaN：一次生成 4 个 token、16 个 head、512 维全部是 NaN，表现为空回复或乱码；第一个请求往往完全正常，因此很容易被误判为偶发。把投机关掉、或把 KV 池里含 NaN 的块先清零，同一 workload 立刻恢复正常，说明不是输入或权重问题，而是 attention 读到了序列长度之外的未写 KV 行。
+  trigger_surface: vllm-ascend v0.32.0rc1、Ascend950DT×2、TP2、--enforce-eager；Kimi-Linear-48B-A3B-Instruct FP8 的 MLA 层、npu_fused_infer_attention_score_v2；ngram 投机 num_speculative_tokens=3（verify 批 4 token）、TND_NTD、sparse_mode=3；prefix caching 开或关均可复现。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - pattern
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - detail
+    uncertain:
+    - subsystem

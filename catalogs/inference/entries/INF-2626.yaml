@@ -1,0 +1,53 @@
+id: INF-2626
+legacy_ids: []
+slug: sglang_jet_nemotron_unified_memory_state_not_written
+aliases: []
+title: SGLang Jet-Nemotron 统一内存不回写状态
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: sglang
+    component: fla input_guard 丢状态
+  behavior: FusedRecurrentUpdateFunction.forward被普通@input_guard装饰，对不在keep_strides里的每个张量参数调用.contiguous()；统一内存下非连续状态池更新落入临时副本并被丢弃。
+effect:
+  objects:
+  - KV状态
+  - 输出内容
+  detail: 开启 --enable-unified-memory 后 Jet-Nemotron/JetVLM 每个请求第二次 forward 起从零状态解码，输出静默错误；非统一内存路径正常。
+  visibility: 静默错误
+mitigation:
+  detect: 同一请求多步 decode 对比统一内存开关；检查 state pool 在 forward 后是否变化（副本写不回时保持不变），并与非统一内存 MambaPool 结果比对。
+  fix: 待定（issue open；launcher 已支持 stride_h0_source，需在 input_guard 的 keep_strides 放行状态池）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/sgl-project/sglang/issues/53615
+  kind: github_issue
+relations: []
+original:
+  mechanism: SGLang main 4f1fa3ad 的 JetNemotronLinearAttention.forward 把层的 state pool 作为 initial_state_source 传给 fused_recurrent_gated_delta_rule_update，由核原地更新（jet_nemotron.py 约 L314-324）；JetVLM 复用 JetNemotronForCausalLM。开启 --enable-unified-memory 时，该 pool 是 KV arena 状态视图里的 temporal[layer]，一个 slot entry 同时存放所有状态层的 conv 行与 temporal 行（mem_cache/kv/layout/state.py 约 L116-140、parts.py 约 L44-80），slot stride 等于整个 entry，视图非连续；Jet-Nemotron-2B 的 4 个状态层几何下 stride(0)=912384 元素，而 packed slot 只有 221184。FusedRecurrentUpdateFunction.forward 被普通 @input_guard 装饰（fla/fused_recurrent.py 约 L1162-1164），input_guard 会对不在 keep_strides 里的每个张量参数调 .contiguous()（fla/utils.py 约 L145-197），因此核读写的是一份临时连续副本，副本用完即丢，状态池从未被写回。launcher 本身已支持 strided pool：它把 stride_h0_source=initial_state_source.stride(0) 传下去并注释说明用于 envelope-strided 统一内存池（约 L1125-1129），核按 h0_source + idx*stride_h0_source 取存（约 L1061-1068），只是被装饰器破坏。不开统一内存时 MambaPool 分配连续张量，.contiguous() 是 no-op，因此正常。后果是每个请求第二次 forward 起从清零状态解码。
+  source: https://github.com/sgl-project/sglang/issues/53615（open，2026-11-27，含 stride 数值、调用链与 launcher 既有 stride 支持）
+  behavior: 给 Jet-Nemotron/JetVLM 开 --enable-unified-memory 后，请求的第一步还能正常解码，从第二步起线性注意力状态变成全零，模型像没看过前文一样继续生成，输出静默错误；不报错、不崩溃、吞吐也正常。关掉统一内存就恢复。
+  trigger_surface: SGLang main 4f1fa3ad；--enable-unified-memory；Jet-Nemotron/JetVLM（jet 线性注意力层）；decode 第二步起；非统一内存路径不触发
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    rewritten:
+    - behavior

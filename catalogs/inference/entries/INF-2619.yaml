@@ -1,0 +1,58 @@
+id: INF-2619
+legacy_ids: []
+slug: vllm_ascend_mamba_align_prefix_cache_cross_request_reuse
+aliases: []
+title: vllm-ascend Mamba 前缀缓存跨请求复用错答
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: KV缓存
+    stack: vllm-ascend
+    component: Mamba align 模式状态复用
+  behavior: 混合 GDN 模型默认 mamba cache mode='align'，前缀缓存按 token 前缀命中复用 mamba/GDN 状态，但发散点不是安全状态边界，状态被跨 prompt 复用。
+effect:
+  objects:
+  - 跨请求/跨样本数据
+  - KV状态
+  - 输出内容
+  detail: 开启默认 prefix caching 时，3个共享长前缀、后段不同的并发请求都返回最先填充共享前缀那条请求的内容，自身信息不出现；不同输入可产生逐字节相同输出；8K请求出现128个'!'。串行重放正确，关闭后8K/32K检索升至100.0。
+  visibility: 静默错误
+mitigation:
+  detect: 并发发送共享长前缀、后段各埋不同标记的请求，检查每个响应是否返回自己的标记；串行重放与 --no-enable-prefix-caching 作对照。
+  fix: 规避：--no-enable-prefix-caching（报告者实测完全修复）；根因修复未见，issue open
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm-ascend/issues/23545
+  kind: github_issue
+relations: []
+original:
+  mechanism: vllm-ascend 0.32.0rc2.dev48（vLLM 0.32.0）在 Ascend 950DT、TP=2、eager 模式下服务 Kimi-Linear-48B-A3B-Instruct（KimiLinearForCausalLM，hybrid GDN + full attention，FP8 checkpoint）。开启 prefix caching 时 vLLM core 为 KimiLinearForCausalLM 默认选择 mamba cache mode='align'，并打印 'Mamba cache mode is set to align ... by default when prefix caching is enabled'。三个并发请求共享长公共前缀、在公共前缀之后各自埋入不同的 magic number，结果三个响应都包含最先填充共享前缀那条请求的数字，另外两条的数字从未出现；换两种任务后出现三条不同输入产生逐字节相同输出。8K 请求出现 128 个 '!' 的退化输出。同一组请求串行重放全部正确；加 --no-enable-prefix-caching 后长上下文检索分数从 8K/32K 的 0.0/33.3 提升到 100.0。报告者判断根因在 mamba 状态复用边界：prefix cache 命中的发散点不是线性注意力状态的安全边界，状态不应在不同 prompt 间复用。
+  source: https://github.com/vllm-project/vllm-ascend/issues/23545（open，2026-11-27，含并发串答、串行对照与关闭 APC 的端到端分数）
+  behavior: 给混合线性注意力模型开启默认 prefix caching 后，多个请求只要共享一段长前缀、后面内容不同，就会互相串答案：每个并发请求都返回最先那条请求里的内容，自己的信息完全不出现；不同输入甚至会产出逐字节相同的回答。长上下文任务从 8K 起出现整段 '!' 的退化输出。串行发或关掉 prefix caching 就恢复正常，服务本身不报错、不崩溃，只有答案静默错。
+  trigger_surface: vllm-ascend 0.32.0rc2.dev48 / vLLM 0.32.0；Ascend 950DT；KimiLinearForCausalLM（hybrid GDN+full）FP8；enable_prefix_caching=True（默认）；chunked prefill 2048；TP=2 eager
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      effect:
+        from: KV状态
+        to: 跨请求/跨样本数据
+    rewritten:
+    - detail

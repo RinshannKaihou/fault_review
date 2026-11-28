@@ -1,0 +1,53 @@
+id: INF-2622
+legacy_ids: []
+slug: vllm_grouped_topk_noncontiguous_scores_wrong_weights
+aliases: []
+title: vLLM grouped_topk 非连续 scores 路由权重错
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: MoE路由
+    stack: vllm
+    component: grouped_topk CUDA 核
+  behavior: grouped_topk 不校验 scores 连续性、也不使用 stride(0)，对 base[:, :num_experts] 这类隔列视图按连续布局读取，路由权重静默偏离。
+effect:
+  objects:
+  - 数值结果
+  - 输出分布
+  detail: 4×16 的 base[:, :16] 视图与连续副本 torch.equal，但 grouped_topk 权重 max_abs_diff=0.0792；不报错，专家选择与加权随之偏离。
+  visibility: 静默错误
+mitigation:
+  detect: 把 scores 拷成连续副本与隔列视图分别调用 grouped_topk，比较 weights/indices；视图与副本数值相等是前提条件。
+  fix: 待定（issue open；期望 honor stride 或显式 is_contiguous 检查）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/70379
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM 0.34.0（main 99d66fffac23，torch 2.14.0+cu130，Tesla T4）的 vllm._custom_ops.grouped_topk 不校验 scores.is_contiguous()，也不使用 scores.stride(0)。传入 2D 切片 scores = base[:, :num_experts]（base 为 4×48 全 99，前 16 列写入随机值）时，切片与连续副本 torch.equal 成立，但分组 top-k 的权重 max_abs_diff=0.0792249，indices 也随之偏离；连续副本与连续原张量的结果一致。原因是 CUDA 核按连续行主序寻址，行间实际间隔 48 个元素却被当成 16 个，越过切片边界读到 padding 列。期望 honor scores.stride(0)，或在入口用 STD_TORCH_CHECK(scores.is_contiguous()) / .contiguous() 显式处理。最小复现：base=torch.full((4,48),99.)，base[:,:16]=torch.randn(4,16)，比较 ops.grouped_topk(sv,...) 与 ops.grouped_topk(s_s,...) 的 weights。
+  source: https://github.com/vllm-project/vllm/issues/70379（open，2026-11-27，含 torch.equal 前提与 0.0792 权重差复现）
+  behavior: 把 MoE 的 scores 以非连续切片（例如从更大的 buffer 里切出前 num_experts 列）传给 vLLM 的 grouped_topk 时，路由权重和专家索引会算错，权重最大差 0.08 左右；切片和连续张量在 PyTorch 里数值完全相同，所以调用方完全看不出异常。接口不报错、不告警，MoE 层据此选错专家并加权，模型输出静默劣化。
+  trigger_surface: vLLM 0.34.0 / main 99d66fff；vllm._custom_ops.grouped_topk；scores 为非连续 2D 视图（stride(0) 大于行宽）；连续输入正常
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    uncertain:
+    - behavior

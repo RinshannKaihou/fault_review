@@ -1,0 +1,54 @@
+id: INF-2625
+legacy_ids: []
+slug: vllm_int4_kv_ignores_chunk_lookback_rswa
+aliases: []
+title: vLLM INT4 KV 注意力漏 chunk/R-SWA 掩码
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: 量化
+    stack: vllm
+    component: unified_attention_int4 掩码
+  behavior: INT4_PER_TOKEN_HEAD 分支调 unified_attention_int4 时不传 chunk_lookback/rswa_prefix_lens/rswa_window，kernel 用默认 -1/False。
+effect:
+  objects:
+  - 数值结果
+  detail: 启用 --kv-cache-dtype int4_per_token_head 且 TRITON_ATTN 时，chunk_lookback 层把局部注意力算成普通滑窗，R-SWA 层算成整段 causal，无报错无告警。
+  visibility: 静默错误
+mitigation:
+  detect: 对含 chunk_lookback / R-SWA 的层，同输入分别用 int4_per_token_head 与 bf16 KV 跑 unified_attention，与按真实掩码构造的逐 token 参考比对。
+  fix: 待定（issue open；建议把三个掩码参数透传到 int4 分支）
+labels:
+  stage: N/A
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-27'
+remarks: ''
+evidence:
+- url: https://github.com/vllm-project/vllm/issues/70419
+  kind: github_issue
+relations: []
+original:
+  mechanism: vLLM main 97dfd078 的 TritonAttentionImpl.forward 把 chunk_lookback、rswa_prefix_lens、rswa_window 传给 unified_attention（vllm/v1/attention/backends/triton_attn.py 约 L714-751），但 unified_attention 的 INT4_PER_TOKEN_HEAD 分支调用 unified_attention_int4 时没有传这三个参数（vllm/v1/attention/ops/triton_unified_attention.py 约 L1050-1087）。unified_attention_int4 的签名也没有这些参数（int4_per_token_head.py 约 L906-933），_attn_packed 调 compute_tile_loop_bounds（约 L494-508）与 compute_kv_seq_mask（约 L576-585）时使用默认 CHUNK_LOOKBACK=-1、USE_R_SWA=False；而核心 kernel 路径会传真实值（triton_unified_attention.py 约 L1522-1524、L1547-1552）。后果是：chunk_lookback 的 chunked local attention 被当成普通 sliding window 计算；rswa_prefix_lens/rswa_window 的 R-SWA 被当成整段 causal attention。触发需要 --kv-cache-dtype int4_per_token_head 加 TRITON_ATTN 后端，分别对应 rnj1 的 chunked 层与 deepseek_v2.py 的 RSWAAttention；无错误、无告警。
+  source: https://github.com/vllm-project/vllm/issues/70419（open，2026-11-27，含调用链源码定位与两类受影响层）
+  behavior: 用 INT4 per-token-head KV cache 跑带 chunked local attention 或 R-SWA 的模型，这些层实际拿到的是错误掩码：局部窗口被当成普通滑窗、R-SWA 被当成整段 causal，注意力和后续输出静默偏差；服务正常返回、无报错无告警，切成 bf16 KV 才恢复。
+  trigger_surface: --kv-cache-dtype int4_per_token_head；TRITON_ATTN 后端；含 chunk_lookback 的层（如 rnj1 chunked 层）或 R-SWA 层（deepseek_v2 RSWAAttention）
+  discovery: 2026-11-27 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-27'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel:
+    - kimi-k3.1-pro
+    - glm-5.3
+    - qwen3.8-max
+    corrected:
+      subsystem:
+        from: KV缓存
+        to: 量化

@@ -1,0 +1,54 @@
+id: TRN-0805
+legacy_ids: []
+slug: deepspeed_hybrid_rollout_vocab_shard_token_pick
+aliases: []
+title: HybridEngineRollout 从词表分片取 token
+kind: 故障
+status: active
+cause:
+  objects:
+  - subsystem: RL训练回路
+    stack: deepspeed
+    component: HybridEngineRollout
+  behavior: 输入embedding与输出头tied且未设tensor_parallel.vocab_parallel_lm_head时，AutoTP将lm_head换为gather_output=False的词表并行层，解码复用时每rank取本地下标。
+effect:
+  objects:
+  - 训练信号
+  - 输出内容
+  detail: TP>1 且输入输出 tied 时 rollout 正常返回，但 token 只来自 rank0 词表前缀，其余 rank 记录分片下标；温度>0 且种子按 DP rank 偏移时，同 TP 组会采出不同 token。
+  visibility: 静默错误
+mitigation:
+  detect: 对比 rollout 返回 token 与 gather 后全词表 logits 的 argmax/采样结果；检查 VocabParallelLinear 的 gather_output 与各 rank 记录 token 的一致性
+  fix: 'issue #9158 于 2026-11-25 closed（completed）；修复 PR 未核实'
+labels:
+  stage:
+  - rl
+  confidence: documented
+  coverage: NEW
+  discovered: '2026-11-26'
+remarks: ''
+evidence:
+- url: https://github.com/deepspeedai/DeepSpeed/issues/9158
+  kind: github_issue
+relations: []
+original:
+  mechanism: HybridEngineRollout 在 AutoTP 模型上生成时直接调用训练用的 lm_head 模块。当模型 tie 了输入 embedding 与输出头且未设 tensor_parallel.vocab_parallel_lm_head 时，AutoTP 把头替换成 VocabParallelLinear（embedding 同理），gather_output=False，以便训练 loss 使用 rank 局部 logits。rollout 复用同一模块，于是每条 decode 路径（generate、static graph、continuous）在每 rank 上只得到 [batch, vocab/tp_size] 的 logits 并取本地下标：rank0 的分片从 id 0 开始，取到的是真实 token id 但只覆盖词表前 1/tp；其他 rank 返回分片内下标，不是 token id。下一步 forward 用 VocabParallelEmbedding 各 rank 查表再求和，实际继续解码 rank0 的选择，其余 rank 的记录与模型输入不一致。第二、三个问题：温度>0 时各 rank 用各自的随机状态采样，种子按 DP rank 偏移时同 TP 组会采出不同 token；DeepSpeedStaticCache 不是 HF Cache 子类，AutoTP 的输入一致性检查按 identity 比较，在首次训练步前做 rollout 会直接抛错。
+  source: 'DeepSpeed issue #9158（2026-11-24，master ccdc60d5c，Qwen3-0.6B/4B 复现；2026-11-25 closed completed）https://github.com/deepspeedai/DeepSpeed/issues/9158'
+  behavior: tied embedding 模型在 AutoTP 下做 rollout，生成不报错、文本看起来也像样，但采样只在 rank0 的词表分片内进行，其他 rank 记录的是分片下标；训练侧拿到的 rollout token 与模型实际解码的 token 不一致，logprob/advantage 随之错位。温度>0 时同一 TP 组的 rank 还可能各采各的 token，下一步 all-reduce 把不同输入的激活混在一起。
+  discovery: 2026-11-26 每日扫描
+migration:
+  method: scan
+  scanned: '2026-11-26'
+  audit:
+    round: daily-audit-2026-11-28
+    base:
+    - glm-5.3-flash
+    - deepseek-v4.1-flash
+    - qwen3.8-flash
+    panel: []
+    corrected:
+      effect:
+        from: 输出内容
+        to: 训练信号
+    rewritten:
+    - behavior

@@ -14,7 +14,7 @@ cause:
 effect:
   objects:
   - 数值结果
-  detail: x2 非连续视图下四个 shape 两段 rc=0；fp16 8×256×4 与 AG@x2ᵀ maxdiff 13.3、与连续读 storage maxdiff 0.0036，bf16 32×256×16 为 23.2/0.0306；同视图交 aclnnMatmul 报 161002。
+  detail: 转置/非连续权重视图进 MC2 矩阵乘后结果静默错：四个 shape 两段 rc=0，fp16 8×256×4 与 AG@x2ᵀ maxdiff 13.3、与连续读 storage 0.0036；bf16 23.2/0.0306；同视图 aclnnMatmul 报 161002。
   visibility: 静默错误
 mitigation:
   detect: 用 shape=(n,k)、strides=(1,k) 的合法转置视图构造 x2，与 AG(x1)@x2ᵀ 及「连续读 storage」两套解析式同时对比；后者吻合而前者不吻合即为本条。
@@ -32,6 +32,8 @@ evidence:
   kind: gitcode_issue
 - url: https://gitcode.com/cann/ops-transformer/issues/8737
   kind: gitcode_issue
+- url: https://gitcode.com/cann/ops-transformer/issues/8896
+  kind: gitcode_issue
 relations: []
 original:
   mechanism: cann/ops-transformer 的 MC2 融合算子（allgather+matmul、matmul+alltoall）在 AIV/A2 分支上，host 侧 tiling 只校验 shape/dtype，不检查 x2 的 strides；kernel 以连续行主序指针读 x2 storage。报告者用 shape=(4,256)、strides=(1,4)、storage=(256,4) 的合法 ACL 转置视图（storage_head 与 viewᵀ 一致，明确不是畸形张量）验证：AllGatherMatmulV2 fp16 8×256×4 时输出与 AG@x2ᵀ maxdiff 13.3、与「连续读 storage」maxdiff 0.0036，bf16 32×256×16 时 23.2 / 0.0306，四个 shape 全部两段返回 0；x2 为 ND 连续的 654 条用例中 626 条 PASS，同样视图交 aclnnMatmul 会被 161002 拒绝，说明不是 ACL 通用行为。同批 issue 在 MatmulAlltoAllV2（#8737）与 QuantMatmulAlltoAllV2（#8841）记录同类 x2 隔列切片/首轴留洞视图被按连续布局读取，rc=0 但输出错值；资料 :75 与 :468 明确把 x2 转置列为支持面。
@@ -39,6 +41,8 @@ original:
   behavior: 把 x2 以转置视图（例如外部框架为省一次 copy 传 stride 交换的 (n,k) 张量）喂给 AllGatherMatmulV2 一类 MC2 算子时，接口返回成功、没有任何报错，但结果是把 x2 的底层存储当成 (n,k) 连续矩阵读出来的另一个矩阵乘积，与正确的 AG(x1)@x2ᵀ 相差十几到几十；只有用解析式或与 aclnnMatmul 对拍才能发现。x2 连续时同一算子数值完全正确，因此问题只在带 stride 的视图上出现。
   trigger_surface: Atlas A3 910_9362 / A2 910B2，CANN 9.3.0.P009 / 9.2.0；AllGatherMatmulV2、MatmulAlltoAllV2、QuantMatmulAlltoAllV2 的 AIV 分支（commMode=aiv）、x2 以非连续 strides 传入（转置视图、隔列切片、首轴留洞）。
   discovery: 2026-11-26 每日扫描
+  notes:
+  - 2026-11-27 新增同机制证据：ops-transformer#8896 在 Ascend950PR 上用自包含 C++ 双 rank 复现 aclnnAllGatherMatmul——非转置的非连续 x2（隔列视图 strides=(16,1)）与出参视图 both 两段 rc=0，输出 out=[23552,0] 而非 k；A2 分支在 op_api 已有 !transposeX2 && !IsTensorContiguous 检查，950 转发 V2 主路径没有这层校验。
 migration:
   method: scan
   scanned: '2026-11-26'
@@ -51,3 +55,11 @@ migration:
     panel: []
     rewritten:
     - detail
+  updates:
+  - date: '2026-11-27'
+    fields:
+    - evidence
+    - original.notes
+  - date: '2026-11-27'
+    fields:
+    - effect.detail
